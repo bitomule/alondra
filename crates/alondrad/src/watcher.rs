@@ -50,8 +50,11 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             obs.pid = pid;
             obs.updated_at = Some(mtime);
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs));
-            if meaningful && hub.append(Event::DaemonSeen(obs.clone())).is_err() {
-                eprintln!("alondrad: no se pudo guardar la observación de {short}");
+            if meaningful {
+                if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
+                    eprintln!("alondrad: no se pudo guardar la observación de {short}");
+                }
+                crate::classify::spawn_if_unclear(&hub, &obs.session_id);
             }
             if let Some(p) = pid
                 && registered.get(&obs.session_id) != Some(&p)

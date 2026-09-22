@@ -14,8 +14,17 @@ const MIN_CONFIDENCE: f64 = 0.6;
 pub fn spawn_if_unclear(hub: &Arc<Hub>, session_id: &str) {
     let target = hub.read(|v| {
         v.nodes.get(session_id).and_then(|n| {
-            (n.state == NodeState::Unclear && n.has_plugin && n.classified.is_none())
-                .then(|| (n.turn, n.last_message.clone()))
+            let text = if n.has_plugin {
+                n.last_message.clone()
+            } else {
+                let joined = [n.daemon_detail.as_deref(), n.daemon_needs.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(". ");
+                (!joined.trim().is_empty() && joined.trim() != "stopped").then_some(joined)
+            };
+            (n.state == NodeState::Unclear && n.classified.is_none()).then_some((n.turn, text))
         })
     });
     let Some((turn, Some(message))) = target else { return };

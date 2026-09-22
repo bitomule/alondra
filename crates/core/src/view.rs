@@ -264,6 +264,9 @@ impl View {
         if d.pid.is_some() {
             node.pid = d.pid;
         }
+        if !node.has_plugin && (node.daemon_detail != d.detail || node.daemon_needs != d.needs) {
+            node.classified = None;
+        }
         node.daemon_detail = d.detail.clone();
         node.daemon_needs = d.needs.clone();
         node.daemon_updated_at = d.updated_at;
@@ -597,6 +600,25 @@ mod tests {
             ..Default::default()
         })]);
         assert_eq!(v.nodes["s"].state, NodeState::Delivered);
+    }
+
+    #[test]
+    fn daemon_classification_expires_when_detail_changes() {
+        let obs = |detail: &str| Event::DaemonSeen(DaemonObservation {
+            session_id: "s".into(),
+            short_id: "s".into(),
+            state: Some("working".into()),
+            tempo: Some("idle".into()),
+            detail: Some(detail.into()),
+            pid: Some(1),
+            ..Default::default()
+        });
+        let mut v = run(&[obs("awaiting machine")]);
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        v.apply(2, 2000, &Event::Classified { session_id: "s".into(), turn: 0, state: NodeState::WaitingMachine, confidence: Some(0.9) });
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
+        v.apply(3, 3000, &obs("something else"));
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
     }
 
     #[test]
