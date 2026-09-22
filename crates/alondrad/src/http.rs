@@ -292,13 +292,29 @@ fn resolve_caller(view: &View, c: &Caller) -> Option<(String, Option<String>)> {
 }
 
 #[derive(Deserialize)]
+#[serde(untagged)]
+enum OptionIn {
+    Label(String),
+    Full(QuestionOption),
+}
+
+impl From<OptionIn> for QuestionOption {
+    fn from(o: OptionIn) -> Self {
+        match o {
+            OptionIn::Label(label) => QuestionOption { label, description: None },
+            OptionIn::Full(q) => q,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct AskBody {
     #[serde(flatten)]
     caller: Caller,
     title: String,
     detail: Option<String>,
     #[serde(default)]
-    options: Vec<QuestionOption>,
+    options: Vec<OptionIn>,
     #[serde(default)]
     links: Vec<Link>,
     #[serde(default)]
@@ -332,8 +348,9 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
         .collect()
 }
 
-async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
+async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
     let stamp = now_millis();
+    let options: Vec<QuestionOption> = std::mem::take(&mut b.options).into_iter().map(Into::into).collect();
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
@@ -344,7 +361,7 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
             node_name: name,
             title: b.title.clone(),
             detail: b.detail.clone(),
-            options: b.options.clone(),
+            options: options.clone(),
             links: b.links.clone(),
             attachments: attachments.clone(),
             blocking: b.blocking,

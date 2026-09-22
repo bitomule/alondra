@@ -32,7 +32,7 @@ enum Cmd {
     /// Servidor MCP para los nodos (lo arranca el plugin)
     #[command(hide = true)]
     Mcp {
-        #[arg(long, default_value = "node")]
+        #[arg(long, env = "ALONDRA_ROLE", default_value = "node")]
         role: String,
     },
     /// Hook de Stop: espera mensajes para esta sesión (lo arranca el plugin)

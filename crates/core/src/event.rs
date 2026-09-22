@@ -52,6 +52,7 @@ pub enum Event {
     Hook(HookEvent),
     DaemonSeen(DaemonObservation),
     ProcessExited { session_id: String, pid: i32 },
+    NodeRemoved { session_id: String },
     MarkedOrchestrator { session_id: String },
     QuestionAsked(Question),
     QuestionAnswered { id: u64, answer: Answer },
@@ -71,6 +72,7 @@ impl Event {
             Event::Hook(h) => Some(&h.session_id),
             Event::DaemonSeen(d) => Some(&d.session_id),
             Event::ProcessExited { session_id, .. }
+            | Event::NodeRemoved { session_id }
             | Event::MarkedOrchestrator { session_id }
             | Event::Classified { session_id, .. }
             | Event::WaitingMachine { session_id, .. } => Some(session_id),
@@ -86,6 +88,7 @@ impl Event {
             Event::Hook(_) => "hook",
             Event::DaemonSeen(_) => "daemon_seen",
             Event::ProcessExited { .. } => "process_exited",
+            Event::NodeRemoved { .. } => "node_removed",
             Event::MarkedOrchestrator { .. } => "marked_orchestrator",
             Event::QuestionAsked(_) => "question_asked",
             Event::QuestionAnswered { .. } => "question_answered",

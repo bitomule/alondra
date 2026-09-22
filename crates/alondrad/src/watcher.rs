@@ -3,13 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use alondra_core::{DaemonObservation, Event, now_millis};
+use alondra_core::{DaemonObservation, Event};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::hub::Hub;
 
-const RECENT_WINDOW_MS: i64 = 48 * 3600 * 1000;
 const SCAN_EVERY: Duration = Duration::from_secs(3);
 
 struct Seen {
@@ -24,16 +23,23 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
     let mut registered: HashMap<String, i32> = HashMap::new();
 
     reap_dead_on_start(&hub);
+    forget_removed_on_start(&hub, &claude_home.join("jobs"));
 
     loop {
         let roster = read_roster(&claude_home.join("daemon/roster.json"));
-        for (dir, short) in job_dirs(&claude_home.join("jobs")) {
+        let dirs = job_dirs(&claude_home.join("jobs"));
+        let present: std::collections::HashSet<&String> = dirs.iter().map(|(_, s)| s).collect();
+        let gone: Vec<String> = seen.keys().filter(|k| !present.contains(k)).cloned().collect();
+        for short in gone {
+            if let Some(s) = seen.remove(&short) {
+                registered.remove(&s.obs.session_id);
+                let _ = hub.append(Event::NodeRemoved { session_id: s.obs.session_id });
+            }
+        }
+        for (dir, short) in dirs {
             let state_path = dir.join("state.json");
             let Some(mtime) = mtime_millis(&state_path) else { continue };
             let pid = roster.get(&short).copied();
-            if pid.is_none() && now_millis() - mtime > RECENT_WINDOW_MS {
-                continue;
-            }
             let unchanged = seen
                 .get(&short)
                 .is_some_and(|s| s.mtime == mtime && s.obs.pid == pid);
@@ -82,6 +88,19 @@ fn reap_dead_on_start(hub: &Hub) {
     });
     for (session_id, pid) in dead {
         let _ = hub.append(Event::ProcessExited { session_id, pid });
+    }
+}
+
+fn forget_removed_on_start(hub: &Hub, jobs: &Path) {
+    let removed: Vec<String> = hub.read(|v| {
+        v.nodes
+            .values()
+            .filter(|n| n.in_daemon && !jobs.join(&n.short_id).join("state.json").exists())
+            .map(|n| n.session_id.clone())
+            .collect()
+    });
+    for session_id in removed {
+        let _ = hub.append(Event::NodeRemoved { session_id });
     }
 }
 

@@ -3,6 +3,7 @@ mod http;
 mod hub;
 mod machine;
 mod store;
+mod wake;
 mod watcher;
 
 use std::net::SocketAddr;
@@ -25,6 +26,7 @@ async fn main() -> Result<()> {
     let hub = Arc::new(hub::Hub::open(alondra_home.clone(), hold)?);
     tokio::spawn(watcher::run(hub.clone(), claude_home));
     tokio::spawn(machine::run(hub.clone()));
+    tokio::spawn(wake::run(hub.clone()));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("no puedo escuchar en {addr}"))?;

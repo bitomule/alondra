@@ -268,7 +268,6 @@ fn state_color(s: NodeState) -> Color {
         NodeState::WaitingMachine => Color::LightRed,
         NodeState::Working => Color::Green,
         NodeState::Done => Color::DarkGray,
-        NodeState::Down => Color::Red,
     }
 }
 
@@ -337,7 +336,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         .nodes
         .iter()
         .map(|n| {
-            let name = if n.is_orchestrator { format!("★ {}", n.display_name()) } else { n.display_name().to_string() };
+            let star = if n.is_orchestrator { "★ " } else { "" };
+            let sleep = if n.alive { "" } else { " 💤" };
+            let name = format!("{star}{}{sleep}", n.display_name());
             let src = match n.state_source {
                 alondra_core::StateSource::Classifier => "*",
                 alondra_core::StateSource::Daemon => "~",
@@ -359,7 +360,7 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     let help = match app.focus {
         Focus::Questions => "Enter ver · 1-4 elegir opción · r responder · o orquestador · Tab flota · q salir",
-        Focus::Nodes => "Enter ver · m mensaje al nodo · o orquestador · Tab preguntas · q salir   (~ demonio, * jev)",
+        Focus::Nodes => "Enter ver · m mensaje al nodo · o orquestador · Tab preguntas · q salir   (~ demonio, * jev, 💤 dormido)",
     };
     let status = app
         .status

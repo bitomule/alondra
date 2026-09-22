@@ -11,7 +11,6 @@ pub enum NodeState {
     WaitingMachine,
     Working,
     Done,
-    Down,
 }
 
 impl NodeState {
@@ -22,7 +21,6 @@ impl NodeState {
             NodeState::Delivered => "entrega resultado",
             NodeState::WaitingMachine => "esperando máquina",
             NodeState::Done => "terminado",
-            NodeState::Down => "caído",
             NodeState::Unclear => "no sé qué quiere",
         }
     }
@@ -62,6 +60,8 @@ pub struct Node {
     pub cwd: Option<String>,
     pub pid: Option<i32>,
     pub alive: bool,
+    #[serde(default)]
+    pub in_daemon: bool,
     pub is_orchestrator: bool,
     pub has_plugin: bool,
     pub state: NodeState,
@@ -91,6 +91,7 @@ impl Node {
             cwd: None,
             pid: None,
             alive: true,
+            in_daemon: false,
             is_orchestrator: false,
             has_plugin: false,
             state: NodeState::Working,

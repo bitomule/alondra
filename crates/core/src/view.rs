@@ -50,6 +50,15 @@ impl View {
                 }
                 Some(session_id.clone())
             }
+            Event::NodeRemoved { session_id } => {
+                self.nodes.remove(session_id);
+                for q in self.questions.values_mut() {
+                    if &q.session_id == session_id && q.status.is_open() {
+                        q.status = QuestionStatus::Orphaned;
+                    }
+                }
+                None
+            }
             Event::MarkedOrchestrator { session_id } => {
                 self.node_mut(session_id, at).is_orchestrator = true;
                 Some(session_id.clone())
@@ -250,11 +259,10 @@ impl View {
         if d.cwd.is_some() {
             node.cwd = d.cwd.clone();
         }
+        node.in_daemon = true;
+        node.alive = d.pid.is_some();
         if d.pid.is_some() {
             node.pid = d.pid;
-            node.alive = true;
-        } else if !node.has_plugin {
-            node.alive = false;
         }
         node.daemon_detail = d.detail.clone();
         node.daemon_needs = d.needs.clone();
@@ -264,7 +272,6 @@ impl View {
             node.busy = d.tempo.as_deref() == Some("active");
             node.usage_limited = false;
             node.turn_signal = match d.state.as_deref() {
-                Some("done") if d.pid.is_none() => Some(TurnSignal::Finished),
                 Some("done") => Some(TurnSignal::Delivered),
                 _ => None,
             };
@@ -316,12 +323,6 @@ impl View {
 }
 
 pub fn derive(node: &Node, open_blocking_question: bool) -> (NodeState, StateSource) {
-    if !node.alive {
-        if node.state == NodeState::Done || node.turn_signal == Some(TurnSignal::Finished) {
-            return (NodeState::Done, StateSource::Watcher);
-        }
-        return (NodeState::Down, StateSource::Watcher);
-    }
     let hooks_or_daemon = if node.has_plugin { StateSource::Hooks } else { StateSource::Daemon };
     if open_blocking_question || node.waiting_permission {
         return (NodeState::WaitingAnswer, hooks_or_daemon);
@@ -452,11 +453,12 @@ mod tests {
     }
 
     #[test]
-    fn process_exit_beats_everything() {
+    fn process_exit_ends_working_but_node_stays_listed() {
         let mut v = run(&[hook("s", "UserPromptSubmit"), hook("s", "PreToolUse")]);
         v.nodes.get_mut("s").unwrap().pid = Some(42);
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 42 });
-        assert_eq!(v.nodes["s"].state, NodeState::Down);
+        assert!(!v.nodes["s"].alive);
+        assert_ne!(v.nodes["s"].state, NodeState::Working);
     }
 
     #[test]
@@ -561,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_node_without_process_is_not_shown_alive() {
+    fn dormant_daemon_node_keeps_its_state() {
         let v = run(&[Event::DaemonSeen(DaemonObservation {
             session_id: "s".into(),
             short_id: "s".into(),
@@ -570,11 +572,23 @@ mod tests {
             pid: None,
             ..Default::default()
         })]);
-        assert_eq!(v.nodes["s"].state, NodeState::Down);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
+        assert!(!v.nodes["s"].alive);
     }
 
     #[test]
-    fn finished_daemon_node_without_process_is_done() {
+    fn removed_node_disappears_and_orphans_its_questions() {
+        let mut v = run(&[
+            hook("s", "UserPromptSubmit"),
+            Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask)),
+        ]);
+        v.apply(3, 3000, &Event::NodeRemoved { session_id: "s".into() });
+        assert!(!v.nodes.contains_key("s"));
+        assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
+    }
+
+    #[test]
+    fn finished_daemon_node_without_process_is_delivered() {
         let v = run(&[Event::DaemonSeen(DaemonObservation {
             session_id: "s".into(),
             short_id: "s".into(),
@@ -582,7 +596,7 @@ mod tests {
             pid: None,
             ..Default::default()
         })]);
-        assert_eq!(v.nodes["s"].state, NodeState::Done);
+        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
     }
 
     #[test]
