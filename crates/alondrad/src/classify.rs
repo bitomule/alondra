@@ -1,0 +1,54 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use alondra_core::{Event, NodeState};
+use serde_json::Value;
+use tokio::process::Command;
+
+use crate::hub::Hub;
+
+const QUESTION: &str = "Es el último mensaje de un agente de programación que acaba de terminar su turno. ¿En qué estado queda, visto desde la persona que lo supervisa?";
+const OPTIONS: &str = "esperando_respuesta,entrega_resultado,esperando_maquina,trabajando,ninguna";
+const MIN_CONFIDENCE: f64 = 0.6;
+
+pub fn spawn_if_unclear(hub: &Arc<Hub>, session_id: &str) {
+    let target = hub.read(|v| {
+        v.nodes.get(session_id).and_then(|n| {
+            (n.state == NodeState::Unclear && n.has_plugin && n.classified.is_none())
+                .then(|| (n.turn, n.last_message.clone()))
+        })
+    });
+    let Some((turn, Some(message))) = target else { return };
+    let hub = hub.clone();
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let Some((state, confidence)) = classify(&message).await else { return };
+        let _ = hub.append(Event::Classified { session_id, turn, state, confidence: Some(confidence) });
+    });
+}
+
+async fn classify(message: &str) -> Option<(NodeState, f64)> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("jevi")
+            .args(["ask", QUESTION, "--options", OPTIONS, "-s", message, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let answer = v.get("answers")?.get("answer")?;
+    let label = answer.get("label")?.as_str()?;
+    let confidence = answer.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
+    let state = match label {
+        _ if confidence < MIN_CONFIDENCE => NodeState::Unclear,
+        "esperando_respuesta" => NodeState::WaitingAnswer,
+        "entrega_resultado" => NodeState::Delivered,
+        "esperando_maquina" => NodeState::WaitingMachine,
+        "trabajando" => NodeState::Working,
+        _ => NodeState::Unclear,
+    };
+    Some((state, confidence))
+}

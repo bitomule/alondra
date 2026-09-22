@@ -1,0 +1,16 @@
+pub mod event;
+pub mod model;
+pub mod view;
+
+pub use event::{DaemonObservation, Event, HookEvent};
+pub use model::*;
+pub use view::View;
+
+pub const DEFAULT_PORT: u16 = 47800;
+
+pub fn now_millis() -> Millis {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
