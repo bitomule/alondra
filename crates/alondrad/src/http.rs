@@ -78,7 +78,7 @@ const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
 /// the phone and the Mac app keep their keys in the Secure Enclave.
 fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("");
-    let touches_key = |s: &str| s.contains(USER_KEY_FILE);
+    let touches_key = |s: &str| s.contains(USER_KEY_FILE) || (s.contains("Application Support") && s.to_lowercase().contains("alondra"));
     match tool? {
         "Bash" => {
             let command = field("command");
@@ -970,6 +970,7 @@ mod node_guard_tests {
         assert!(bash("alondra answer 55 Mergea").is_some());
         assert!(bash("cd /tmp && ~/.local/bin/alondra send orquestador hola").is_some());
         assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
+        assert!(bash("ls ~/Library/'Application Support'/com.bitomule.alondra.mac").is_some());
         assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
     }
 

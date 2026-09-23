@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alondra_core::view::derive;
 use alondra_core::{
@@ -18,9 +18,13 @@ const GRACE: Duration = Duration::from_secs(180);
 const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
 const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
 
+const WORKING_RECHECK: Duration = Duration::from_secs(15 * 60);
+const WORKING_VERDICTS_BEFORE_ASKING: u32 = 3;
+
 #[derive(Default)]
 struct Memory {
     settled: HashSet<String>,
+    working: HashMap<String, (u32, Instant)>,
 }
 
 pub async fn run(hub: Arc<Hub>) {
@@ -62,6 +66,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     let pending: Vec<(String, String, bool)> =
         hub.read(|v| v.nodes.values().filter(|n| needs_attention(v, n)).map(|n| (n.session_id.clone(), key(n), n.has_plugin)).collect());
     memory.settled.retain(|k| pending.iter().any(|(_, key, _)| key == k));
+    memory.working.retain(|k, _| pending.iter().any(|(_, key, _)| key == k));
 
     let mut due = vec![];
     for (session, key, has_plugin) in pending {
@@ -95,11 +100,24 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     }
 
     for (session, due_key) in due {
+        if let Some((verdicts, at)) = memory.working.get(&due_key)
+            && at.elapsed() < WORKING_RECHECK * 2u32.pow(verdicts.saturating_sub(1))
+        {
+            continue;
+        }
         let Some(said) = hub.read(|v| v.nodes.get(&session).map(what_it_said)) else { continue };
-        let expects = match &said {
+        let mut expects = match &said {
             Some(text) => what_node_expects(text).await,
             None => Expects::Unsure,
         };
+        if expects == Expects::Working {
+            let verdicts = memory.working.get(&due_key).map_or(0, |(n, _)| *n) + 1;
+            if verdicts < WORKING_VERDICTS_BEFORE_ASKING {
+                memory.working.insert(due_key, (verdicts, Instant::now()));
+                continue;
+            }
+            expects = Expects::Unsure;
+        }
         hub.append_with(|v| {
             let node = v.nodes.get(&session)?;
             if needs_attention(v, node) && key(node) == due_key { settle(v, node, expects) } else { None }
