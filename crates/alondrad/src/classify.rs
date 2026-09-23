@@ -16,16 +16,15 @@ fn tail(text: &str) -> &str {
 
 fn report_question(user: &str) -> String {
     format!(
-        "This is a report a coding agent sends to {user}. Classify it. asks = it asks {user} to decide, approve, answer or do \
-         something; done = it tells {user} about something finished, a result, a finding or a failure he should know about; \
-         progress = the work is still under way and the agent does not need {user} yet, even if it lists the steps done so far."
+        "This is a report a coding agent sends to {user}. Does it ask {user} for something NEW: a decision, an approval, \
+         an answer or an action that is not already an open question? Mentioning a question that is already open, or \
+         describing what was done, is not asking."
     )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportVerdict {
     Asks,
-    Progress,
     Fine,
 }
 
@@ -33,7 +32,7 @@ pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", &report_question(user), "--options", "asks,done,progress,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
+            .args(["ask", &report_question(user), "--options", "asks,does_not_ask,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )
@@ -42,7 +41,6 @@ pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
     let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return ReportVerdict::Fine };
     match v["answers"]["answer"]["label"].as_str() {
         Some("asks") => ReportVerdict::Asks,
-        Some("progress") => ReportVerdict::Progress,
         _ => ReportVerdict::Fine,
     }
 }

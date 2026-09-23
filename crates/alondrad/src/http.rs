@@ -70,6 +70,14 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
+fn keep_rejected(home: &std::path::Path, title: &str, body: Option<&str>) {
+    use std::io::Write;
+    let line = json!({"at": now_millis(), "title": title, "body": body}).to_string();
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("rejected-reports.jsonl")) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 pub const USER_KEY_FILE: &str = "tui-key.pem";
 const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
 
@@ -681,25 +689,13 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         match crate::classify::judge_report(&text, user).await {
             crate::classify::ReportVerdict::Asks => {
                 eprintln!("alondrad: report gate: rejected a report that asks for something: {}", b.title);
+                keep_rejected(&hub.home, &b.title, b.body.as_deref());
                 return err(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     format!(
                         "This report asks {user} to decide or do something, and a report is only for reading. Send each \
                          decision as its own question with ask (a one-line title, context in detail, options) and keep \
                          only the informative part in report. If the question is already open in Alondra, do not repeat it."
-                    ),
-                );
-            }
-            crate::classify::ReportVerdict::Progress if b.kind == Some(ReportKind::Final) || !b.attachments.is_empty() => {}
-            crate::classify::ReportVerdict::Progress => {
-                eprintln!("alondrad: report gate: rejected a progress-only report: {}", b.title);
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!(
-                        "This report only says the work is still under way and you do not need {user} yet. That is noise \
-                         for {user}: do not send it, or send it with kind progress, which stays out of the inbox. If it \
-                         does carry something {user} must know now (a result, a finding, a failure), rewrite the title \
-                         to say that thing and send it again."
                     ),
                 );
             }
