@@ -11,6 +11,7 @@ use crate::classify::{Expects, what_node_expects};
 use crate::hub::Hub;
 
 const EVERY: Duration = Duration::from_secs(15);
+const DEBOUNCE: Duration = Duration::from_secs(1);
 const TITLE_MAX: usize = 110;
 const MARK: &str = "sentinel:";
 const GRACE: Duration = Duration::from_secs(180);
@@ -24,10 +25,9 @@ struct Memory {
 
 pub async fn run(hub: Arc<Hub>) {
     let mut memory = Memory::default();
-    let mut every = tokio::time::interval(EVERY);
-    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        every.tick().await;
+        hub.wait_event(EVERY).await;
+        tokio::time::sleep(DEBOUNCE).await;
         if let Err(e) = sweep(&hub, &mut memory).await {
             eprintln!("alondrad: sentinel: {e}");
         }
@@ -41,7 +41,8 @@ fn nudge_text(user: &str) -> String {
          `ask` if you need a decision (one question per decision, with options), `report` with kind final if you are \
          done, or `wait_for_machine` if you are waiting for resources. If you are still working on your own (a build, an \
          upload, a review, a long command), send nothing: do not report that you do not need {user}, that is noise. \
-         If you have not done any of this in 3 minutes, Alondra will read your last message and act on it."
+         If you have not done any of this in 3 minutes, Alondra will turn your last message into an item in {user}'s \
+         inbox; it never answers or closes anything for you."
     )
 }
 
@@ -191,11 +192,11 @@ fn finished_report(v: &View, node: &Node) -> Report {
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone(),
-        title: format!("Finished: {}", cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no summary"))),
+        title: format!("Looks finished: {}", cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no summary"))),
         body: Some(said),
         links: vec![],
         attachments: vec![],
-        kind: ReportKind::Final,
+        kind: ReportKind::Notice,
         created_at: now_millis(),
         read: false,
     }
@@ -251,8 +252,8 @@ mod tests {
         let mut v = waiting_view("Task complete and reported to hive/corpus-router.\nEverything committed locally.");
         let event = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
         let Event::ReportPosted(r) = &event else { panic!() };
-        assert_eq!(r.kind, ReportKind::Final);
-        assert_eq!(r.title, "Finished: Task complete and reported to hive/corpus-router.");
+        assert_eq!(r.kind, ReportKind::Notice);
+        assert_eq!(r.title, "Looks finished: Task complete and reported to hive/corpus-router.");
         v.apply(4, 4000, &event);
         assert!(!needs_attention(&v, &v.nodes["s"]));
     }
