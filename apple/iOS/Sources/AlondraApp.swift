@@ -57,6 +57,15 @@ private struct RootView: View {
         case triage, fleet, new
     }
 
+    /// While the app is in front of the user (it leaves the foreground when the screen locks),
+    /// alondrad holds back pushes, as it does for the TUI and the Mac.
+    private func reportActivity() async {
+        while !Task.isCancelled {
+            try? await fleet.client.activity(client: "iphone")
+            try? await Task.sleep(for: .seconds(60))
+        }
+    }
+
     private struct SyncKey: Hashable {
         let url: String
         let device: String?
@@ -88,6 +97,10 @@ private struct RootView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await push.refreshAuthorization()
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active, pairing.isPaired else { return }
+            await reportActivity()
         }
         .overlay(alignment: .top) { NoticeToast() }
         .closeRefusalAlert(fleet)
