@@ -33,6 +33,7 @@ async fn main() -> Result<()> {
     tokio::spawn(machine::run(hub.clone()));
     tokio::spawn(wake::run(hub.clone()));
     tokio::spawn(notifier::run(hub.clone()));
+    tokio::spawn(retention(hub.clone()));
 
     let auth = Arc::new(auth::Auth::open(&alondra_home)?);
     let push = Arc::new(push::Push::open(&alondra_home)?);
@@ -44,4 +45,19 @@ async fn main() -> Result<()> {
     let app = http::router(hub, auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+async fn retention(hub: Arc<hub::Hub>) {
+    let hours = |key: &str, default: f64| std::env::var(key).ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
+    let keep = std::time::Duration::from_secs_f64(hours("ALONDRA_RETENTION_HOURS", 14.0 * 24.0) * 3600.0);
+    let every = std::time::Duration::from_secs_f64(hours("ALONDRA_COMPACT_EVERY_HOURS", 6.0) * 3600.0);
+    loop {
+        tokio::time::sleep(every).await;
+        let hub = hub.clone();
+        match tokio::task::spawn_blocking(move || hub.compact(keep)).await {
+            Ok(Ok(deleted)) => eprintln!("alondrad: compactado, {deleted} eventos antiguos borrados"),
+            Ok(Err(e)) => eprintln!("alondrad: no pude compactar: {e}"),
+            Err(e) => eprintln!("alondrad: la compactación se cayó: {e}"),
+        }
+    }
 }

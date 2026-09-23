@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import random
+import shutil
 import subprocess
 import threading
 import time
@@ -76,9 +77,11 @@ def main():
     args = ap.parse_args()
     home = f"/tmp/alondra-soak-{os.getpid()}"
     os.makedirs(home, exist_ok=True)
-    env = dict(os.environ, ALONDRA_HOME=home, ALONDRA_PORT=str(PORT), ALONDRA_HOLD="0",
+    binary = os.path.join(home, "alondrad-soak")
+    shutil.copy2(args.binary, binary)
+    env = dict(os.environ, ALONDRA_HOME=home, ALONDRA_PORT=str(PORT), ALONDRA_HOLD="0", ALONDRA_RETENTION_HOURS="0.5", ALONDRA_COMPACT_EVERY_HOURS="0.25",
                CLAUDE_HOME=home + "/no-claude")
-    proc = subprocess.Popen([args.binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     stop = threading.Event()
     workers = [threading.Thread(target=f, args=(stop,), daemon=True) for f in [hooks, questions] + [waiter] * 8]

@@ -24,8 +24,8 @@ impl Hub {
     pub fn open(home: PathBuf, hold_enabled: bool) -> Result<Self> {
         std::fs::create_dir_all(home.join("files"))?;
         let store = Store::open(&home.join("alondra.db"))?;
-        let mut view = View::default();
-        let n = store.replay(|seq, at, ev| view.apply(seq, at, &ev))?;
+        let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
+        let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
         eprintln!("alondrad: {n} eventos reproducidos, {} nodos", view.nodes.len());
         let (tick, _) = watch::channel(0);
         Ok(Hub {
@@ -55,6 +55,15 @@ impl Hub {
         drop(store);
         self.bump();
         Ok(Some((seq, event)))
+    }
+
+    pub fn compact(&self, retention: std::time::Duration) -> Result<usize> {
+        let now = alondra_core::now_millis();
+        let before = now - retention.as_millis() as i64;
+        self.append(Event::Pruned { before })?;
+        let mut store = self.writer.lock().expect("writer envenenado");
+        let view = self.view.read().expect("view envenenada").clone();
+        store.compact(&view, now, before)
     }
 
     pub fn append(&self, event: Event) -> Result<u64> {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Answer, Message, NodeState, Question, Report};
+use crate::model::{Answer, Message, Millis, NodeState, Question, Report};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct HookEvent {
@@ -69,6 +69,7 @@ pub enum Event {
     MessageHanded { id: u64 },
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
     WaitingMachine { session_id: String, reason: String },
+    Pruned { before: Millis },
 }
 
 impl Event {
@@ -107,6 +108,7 @@ impl Event {
             Event::MessageHanded { .. } => "message_handed",
             Event::Classified { .. } => "classified",
             Event::WaitingMachine { .. } => "waiting_machine",
+            Event::Pruned { .. } => "pruned",
         }
     }
 }

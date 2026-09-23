@@ -23,6 +23,23 @@ pub struct View {
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
 
 impl View {
+    pub fn prune(&mut self, before: Millis) {
+        self.questions.retain(|_, q| {
+            let settled = matches!(
+                q.status,
+                QuestionStatus::Delivered | QuestionStatus::Withdrawn | QuestionStatus::Orphaned | QuestionStatus::AnsweredInTerminal
+            );
+            !(settled && q.asked_at < before)
+        });
+        self.reports.retain(|_, r| !(r.read && r.created_at < before));
+        self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
+        let nodes = &self.nodes;
+        self.messages.retain(|_, m| {
+            let settled = m.delivered_at.is_some() || !nodes.contains_key(&m.session_id);
+            !(settled && m.created_at < before)
+        });
+    }
+
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
         self.seq = seq;
         if let Some(sid) = event.session_id()
@@ -151,6 +168,10 @@ impl View {
             Event::WaitingMachine { session_id, .. } => {
                 self.node_mut(session_id, at).turn_signal = Some(TurnSignal::WaitingMachine);
                 Some(session_id.clone())
+            }
+            Event::Pruned { before } => {
+                self.prune(*before);
+                None
             }
         };
         if let Some(sid) = touched {
@@ -717,5 +738,35 @@ mod tests {
         }
         v.nodes.get_mut("old").unwrap().alive = false;
         assert_eq!(v.resolve_node("lumo/x").unwrap().session_id, "new");
+    }
+
+    #[test]
+    fn prune_drops_only_settled_old_things() {
+        let mut v = View::default();
+        v.apply(1, 1000, &hook("s", "Stop"));
+        let q = |id: u64, status: QuestionStatus, at: Millis| Question {
+            id,
+            session_id: "s".into(),
+            node_name: None,
+            title: "t".into(),
+            detail: None,
+            options: vec![],
+            links: vec![],
+            attachments: vec![],
+            blocking: true,
+            origin: QuestionOrigin::Ask,
+            tool_use_id: None,
+            to_orchestrator: false,
+            node_context: None,
+            status,
+            answer: None,
+            asked_at: at,
+        };
+        v.questions.insert(1, q(1, QuestionStatus::Delivered, 100));
+        v.questions.insert(2, q(2, QuestionStatus::Open, 100));
+        v.questions.insert(3, q(3, QuestionStatus::Answered, 100));
+        v.questions.insert(4, q(4, QuestionStatus::Delivered, 9000));
+        v.apply(2, 10_000, &Event::Pruned { before: 5000 });
+        assert_eq!(v.questions.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4]);
     }
 }
