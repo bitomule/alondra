@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alondra_core::view::derive;
 use alondra_core::{
@@ -14,10 +14,11 @@ const EVERY: Duration = Duration::from_secs(15);
 const TITLE_MAX: usize = 110;
 const MARK: &str = "sentinel:";
 const GRACE: Duration = Duration::from_secs(180);
+const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
+const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
 
 #[derive(Default)]
 struct Memory {
-    nudged: HashMap<String, (String, Instant)>,
     settled: HashSet<String>,
 }
 
@@ -59,7 +60,6 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
 
     let pending: Vec<(String, String, bool)> =
         hub.read(|v| v.nodes.values().filter(|n| needs_attention(v, n)).map(|n| (n.session_id.clone(), key(n), n.has_plugin)).collect());
-    memory.nudged.retain(|session, (k, _)| pending.iter().any(|(s, key, _)| s == session && key == k));
     memory.settled.retain(|k| pending.iter().any(|(_, key, _)| key == k));
 
     let mut due = vec![];
@@ -71,10 +71,11 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             due.push((session, key));
             continue;
         }
-        match memory.nudged.get(&session) {
-            Some((_, at)) if at.elapsed() >= GRACE => due.push((session, key)),
-            Some(_) => {}
-            None => {
+        let last_nudge = hub.read(|v| last_nudge_at(v, &session));
+        match last_nudge {
+            Some(at) if now_millis() - at < GRACE.as_millis() as i64 => {}
+            Some(at) if now_millis() - at < NUDGE_COOLDOWN_MS => due.push((session, key)),
+            _ => {
                 let text = nudge_text(&hub.config.name);
                 hub.append_with(|v| {
                     Some(Event::MessageQueued(Message {
@@ -88,7 +89,6 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
                         delivered_at: None,
                     }))
                 })?;
-                memory.nudged.insert(session, (key, Instant::now()));
             }
         }
     }
@@ -108,6 +108,14 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn last_nudge_at(v: &View, session: &str) -> Option<i64> {
+    v.messages
+        .values()
+        .filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(NUDGE_PREFIX))
+        .map(|m| m.created_at)
+        .max()
+}
+
 fn what_it_said(node: &Node) -> Option<String> {
     let message = node.last_message.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let needs = node.daemon_needs.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -117,7 +125,11 @@ fn what_it_said(node: &Node) -> Option<String> {
 fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
     match expects {
         Expects::Working => None,
-        Expects::Nothing => Some(Event::ReportPosted(finished_report(v, node))),
+        Expects::Nothing => {
+            let report = finished_report(v, node);
+            let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
+            (!repeated).then_some(Event::ReportPosted(report))
+        }
         other => Some(Event::QuestionAsked(question_for(v, node, other))),
     }
 }
@@ -256,6 +268,31 @@ mod tests {
     fn a_node_still_working_on_its_own_gets_nothing() {
         let v = waiting_view("Build 188 uploaded to TestFlight, processing. I will send it to beta review once Apple is done.");
         assert!(settle(&v, &v.nodes["s"], Expects::Working).is_none());
+    }
+
+    #[test]
+    fn the_same_finished_report_is_not_posted_twice() {
+        let mut v = waiting_view("Task complete.");
+        let first = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
+        v.apply(4, 4000, &first);
+        assert!(settle(&v, &v.nodes["s"], Expects::Nothing).is_none());
+    }
+
+    #[test]
+    fn a_nudge_is_remembered_from_the_stored_messages() {
+        let mut v = waiting_view(ASKS);
+        assert_eq!(last_nudge_at(&v, "s"), None);
+        v.apply(4, 4000, &Event::MessageQueued(Message {
+            id: 1,
+            session_id: "s".into(),
+            from: MessageFrom::Alondra,
+            text: nudge_text("Ana"),
+            answers_question: None,
+            created_at: 4000,
+            handed_at: None,
+            delivered_at: None,
+        }));
+        assert_eq!(last_nudge_at(&v, "s"), Some(4000));
     }
 
     #[test]

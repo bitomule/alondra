@@ -1,8 +1,7 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::{Event, Message, MessageFrom, NodeState, now_millis};
+use alondra_core::{Event, Message, MessageFrom, now_millis};
 
 use crate::hub::Hub;
 
@@ -17,7 +16,6 @@ pub async fn run(hub: Arc<Hub>) {
             v.questions.keys().next_back().copied().unwrap_or(0),
         )
     });
-    let mut unclear_told: HashSet<(String, i64)> = HashSet::new();
     let mut machine_alarm = false;
     loop {
         tokio::time::sleep(DIGEST_EVERY).await;
@@ -31,20 +29,6 @@ pub async fn run(hub: Arc<Hub>) {
             for q in v.questions.range(last_question + 1..).map(|(_, q)| q).filter(|q| q.to_orchestrator && q.status.is_open()) {
                 lines.push(format!("- Question #{} for you from {}: {}", q.id, q.node_name.clone().unwrap_or_default(), q.title));
             }
-            for n in v.nodes.values().filter(|n| n.state == NodeState::Unclear && !n.is_orchestrator && n.in_daemon) {
-                if unclear_told.contains(&(n.session_id.clone(), n.state_since)) {
-                    continue;
-                }
-                let said: String = n
-                    .last_message
-                    .clone()
-                    .or(n.daemon_detail.clone())
-                    .unwrap_or_default()
-                    .chars()
-                    .take(200)
-                    .collect();
-                lines.push(format!("- {} finished without saying what it wants: \"{said}\"", n.display_name()));
-            }
             Some((orchestrator, lines, v.reports.keys().next_back().copied().unwrap_or(0), v.questions.keys().next_back().copied().unwrap_or(0)))
         });
         let low_memory = machine.memory_free_percent.is_some_and(|p| p < LOW_MEMORY_PERCENT);
@@ -52,11 +36,6 @@ pub async fn run(hub: Arc<Hub>) {
         let Some((orchestrator, mut lines, max_report, max_question)) = digest else { continue };
         last_report = max_report;
         last_question = max_question;
-        hub.read(|v| {
-            for n in v.nodes.values().filter(|n| n.state == NodeState::Unclear) {
-                unclear_told.insert((n.session_id.clone(), n.state_since));
-            }
-        });
         if (low_memory || overloaded) && !machine_alarm {
             lines.push(format!(
                 "- Machine at its limit: {}% memory free, load {:.0}. Do not launch new nodes until it goes down.",
