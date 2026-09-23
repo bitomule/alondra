@@ -128,18 +128,18 @@ mod tests {
 
     #[test]
     fn edits_in_the_middle_and_deletes_words() {
-        let mut t = TextInput::with("hola mundo");
+        let mut t = TextInput::with("hello world");
         t.handle(key(KeyCode::Left, KeyModifiers::NONE));
         t.handle(key(KeyCode::Char('!'), KeyModifiers::NONE));
-        assert_eq!(t.text(), "hola mund!o");
+        assert_eq!(t.text(), "hello worl!d");
         t.handle(key(KeyCode::End, KeyModifiers::NONE));
         t.handle(key(KeyCode::Char('w'), KeyModifiers::CONTROL));
-        assert_eq!(t.text(), "hola ");
+        assert_eq!(t.text(), "hello ");
         t.handle(key(KeyCode::Enter, KeyModifiers::ALT));
         t.insert_str("a\r\nb");
-        assert_eq!(t.text(), "hola \na\nb");
+        assert_eq!(t.text(), "hello \na\nb");
         t.handle(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert_eq!(t.text(), "hola \na\n");
+        assert_eq!(t.text(), "hello \na\n");
     }
 
     #[test]

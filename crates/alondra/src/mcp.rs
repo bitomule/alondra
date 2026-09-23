@@ -13,10 +13,10 @@ pub enum Role {
 }
 
 fn instructions(role: Role, user: &str) -> String {
-    let who = format!("La persona que supervisa la flota se llama {user}: donde las herramientas y el skill de Alondra dicen «el usuario», es {user}.");
+    let who = format!("The person who supervises the fleet is called {user}: wherever Alondra's tools and skill say \"the user\", that is {user}.");
     match role {
-        Role::Node => format!("Alondra conecta este nodo con {user} y con el orquestador. Si necesitas que {user} decida algo, usa `ask` con un título de una línea y todo el contexto en `detail`, enlaces a PRs y ficheros adjuntos; después termina tu turno: la respuesta te llegará sola como mensaje. Cuando entregues algo (una PR, un informe, un documento) usa `report`. Si estás parado por falta de máquina, usa `wait_for_machine`. {who}"),
-        Role::Orchestrator => format!("Alondra es tu sistema nervioso: estado fiable de la flota (`fleet`, `node`), capacidad de la máquina (`machine`), y manos (`launch`, `send`). Las preguntas de los nodos a {user} le llegan directamente; tú recibes en tu bandeja lo que es para ti. Usa `ask` para preguntarle algo a {user} y `report` para informarle. {who}"),
+        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. If you need {user} to decide something, use `ask` with a one-line title and all the context in `detail`, links to PRs and attached files; then end your turn: the answer will reach you on its own as a message. When you deliver something (a PR, a report, a document) use `report`. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
+        Role::Orchestrator => format!("Alondra is your nervous system: reliable fleet state (`fleet`, `node`), machine capacity (`machine`), and hands (`launch`, `send`). The nodes' questions to {user} reach {user} directly; your inbox gets what is meant for you. Use `ask` to ask {user} something and `report` to inform {user}. {who}"),
     }
 }
 
@@ -24,13 +24,13 @@ fn ask_schema(user: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": format!("La pregunta en una línea: es lo que {user} ve en la notificación")},
-            "detail": {"type": "string", "description": format!("Todo el contexto que {user} necesita para contestar sin preguntarte nada (markdown)")},
-            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": format!("Opciones posibles; {user} siempre puede contestar con texto libre")},
-            "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "PRs, commits o URLs relevantes"},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Rutas absolutas de ficheros que {user} debe ver (p. ej. el plan que debe aprobar)")},
-            "blocking": {"type": "boolean", "description": "true si no puedes seguir sin la respuesta (por defecto true)"},
-            "to_orchestrator": {"type": "boolean", "description": format!("true si la pregunta es para el orquestador y no para {user}")}
+            "title": {"type": "string", "description": format!("The question in one line: it is what {user} sees in the notification")},
+            "detail": {"type": "string", "description": format!("All the context {user} needs to answer without asking you anything (markdown)")},
+            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": format!("Possible options; {user} can always answer with free text")},
+            "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "Relevant PRs, commits or URLs"},
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
+            "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
+            "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")}
         },
         "required": ["title"]
     })
@@ -40,11 +40,11 @@ fn report_schema(user: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "Qué entregas, en una línea"},
-            "body": {"type": "string", "description": "El informe (markdown), breve: lo medido, lo que cambia y lo que queda"},
-            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("notice = algo que {user} tiene que saber (breve). document = un documento para que lo lea (plan, informe largo): adjunta la ruta en attachments. final = has terminado y no queda nada pendiente. Si necesitas que {user} APRUEBE algo, no uses report: usa ask con el documento adjunto.")},
+            "title": {"type": "string", "description": "What you deliver, in one line"},
+            "body": {"type": "string", "description": "The report (markdown), short: what was measured, what changes and what is left"},
+            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("notice = something {user} needs to know (short). document = a document for {user} to read (plan, long report): attach its path in attachments. final = you are done and nothing is pending. If you need {user} to APPROVE something, do not use report: use ask with the document attached.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de documentos que entregas"}
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"}
         },
         "required": ["title"]
     })
@@ -52,17 +52,17 @@ fn report_schema(user: &str) -> Value {
 
 fn tools(role: Role, user: &str) -> Value {
     let mut list = vec![
-        json!({"name": "ask", "description": format!("Pregunta estructurada a {user} (o al orquestador). Vuelve al momento con el número; la respuesta llega como mensaje cuando termines el turno."), "inputSchema": ask_schema(user)}),
-        json!({"name": "report", "description": format!("Algo para que {user} lo lea, sin decisión pendiente: un aviso breve, un documento largo (plan, informe) o que has terminado. Le llega a su bandeja; si comenta algo, te llega como mensaje."), "inputSchema": report_schema(user)}),
-        json!({"name": "wait_for_machine", "description": "Declara que estás parado esperando recursos de la máquina (RAM, compilación, límite de uso).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
+        json!({"name": "ask", "description": format!("Structured question to {user} (or to the orchestrator). Returns right away with the number; the answer arrives as a message when you end your turn."), "inputSchema": ask_schema(user)}),
+        json!({"name": "report", "description": format!("Something for {user} to read, with no decision pending: a short notice, a long document (plan, report) or that you are done. It lands in {user}'s inbox; any comment comes back to you as a message."), "inputSchema": report_schema(user)}),
+        json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {
         list.extend([
-            json!({"name": "fleet", "description": "Resumen de la flota: nodos no terminados con su estado, preguntas abiertas, informes sin leer y máquina. Para el detalle de uno, `node`.", "inputSchema": {"type": "object", "properties": {}}}),
-            json!({"name": "node", "description": "Detalle de un nodo: estado, herramienta en curso, último mensaje, preguntas, informes y línea de tiempo.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Nombre, id corto o session_id"}}, "required": ["node"]}}),
-            json!({"name": "machine", "description": "Capacidad de la máquina: memoria, carga, CPU y disco.", "inputSchema": {"type": "object", "properties": {}}}),
-            json!({"name": "send", "description": "Manda un mensaje a un nodo; le llega en cuanto termine su turno (o al momento si está parado).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
-            json!({"name": "launch", "description": "Lanza un nodo nuevo con el plugin de Alondra.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["name", "cwd", "prompt"]}}),
+            json!({"name": "fleet", "description": "Fleet summary: unfinished nodes with their state, open questions, unread reports and the machine. For one node's detail, `node`.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "node", "description": "A node's detail: state, tool in progress, last message, questions, reports and timeline.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
+            json!({"name": "machine", "description": "Machine capacity: memory, load, CPU and disk.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "send", "description": "Send a message to a node; it arrives as soon as its turn ends (or right away if it is stopped).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
+            json!({"name": "launch", "description": "Launch a new node with the Alondra plugin.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["name", "cwd", "prompt"]}}),
         ]);
     }
     Value::Array(list)
@@ -109,16 +109,16 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "ask" => {
             let r = client.post("/v1/questions", &merge(args.clone(), &who))?;
             let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
-            format!("Pregunta #{id} registrada y enviada a {user}. Termina tu turno cuando no tengas nada más que hacer: la respuesta te llegará sola como mensaje.")
+            format!("Question #{id} recorded and sent to {user}. End your turn when you have nothing else to do: the answer will reach you on its own as a message.")
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
-            format!("Informe #{} entregado a {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
+            format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
         }
         "wait_for_machine" => {
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
             client.post("/v1/waiting-machine", &merge(json!({"reason": reason}), &who))?;
-            "Anotado: estás esperando máquina.".to_string()
+            "Noted: you are waiting for the machine.".to_string()
         }
         "fleet" if role == Role::Orchestrator => serde_json::to_string_pretty(&fleet_summary(&client.get::<Value>("/v1/overview")?))?,
         "machine" if role == Role::Orchestrator => {
@@ -133,10 +133,10 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
             client.post(&format!("/v1/nodes/{}/messages", urlencode(key)), &json!({"text": text, "from": "orchestrator"}))?;
-            format!("Mensaje en la bandeja de {key}.")
+            format!("Message in the inbox of {key}.")
         }
         "launch" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/launch", args)?)?,
-        other => anyhow::bail!("herramienta desconocida: {other}"),
+        other => anyhow::bail!("unknown tool: {other}"),
     })
 }
 
@@ -207,10 +207,10 @@ pub fn serve(role: Role) -> Result<()> {
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match call(&client, role, &user, name, &args) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-                    Err(e) => json!({"content": [{"type": "text", "text": format!("Error de Alondra: {e}")}], "isError": true}),
+                    Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {e}")}], "isError": true}),
                 })
             }
-            _ => Err(json!({"code": -32601, "message": format!("método no soportado: {method}")})),
+            _ => Err(json!({"code": -32601, "message": format!("unsupported method: {method}")})),
         };
         let resp = match result {
             Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),

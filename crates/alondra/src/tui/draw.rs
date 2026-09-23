@@ -1133,46 +1133,45 @@ mod tests {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
         let s = screen(&mut app, 100, 24);
-        assert!(s.contains("Todo al día"), "{s}");
-        assert!(s.contains("encarga trabajo nuevo"));
+        assert!(s.contains("All caught up"), "{s}");
+        assert!(s.contains("order new work"));
     }
 
     #[test]
     fn options_are_visible_without_opening_anything_even_when_narrow() {
-        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Plan, &["Aprobar", "Pedir cambios"])]);
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Plan, &["Approve", "Request changes"])]);
         app.loaded = true;
         for (w, h) in [(60, 16), (100, 30), (200, 60)] {
             let s = screen(&mut app, w, h);
-            assert!(s.contains("1 Aprobar"), "{w}x{h}\n{s}");
-            assert!(s.contains("? ayuda"), "{w}x{h}\n{s}");
+            assert!(s.contains("1 Approve"), "{w}x{h}\n{s}");
+            assert!(s.contains("? help"), "{w}x{h}\n{s}");
         }
     }
 
     #[test]
-    fn english_is_the_base_language() {
+    fn spanish_follows_the_language_setting() {
         let (mut app, _rx) = app_with(vec![]);
-        i18n::set_for_this_thread(i18n::Lang::En);
+        i18n::set_for_this_thread(i18n::Lang::Es);
         app.loaded = true;
         let s = screen(&mut app, 100, 24);
-        assert!(s.contains("All caught up"), "{s}");
-        assert!(s.contains("Inbox 0"), "{s}");
-        assert!(s.contains("? help"), "{s}");
+        assert!(s.contains("Todo al día"), "{s}");
+        assert!(s.contains("? ayuda"), "{s}");
     }
 
     #[test]
     fn a_long_question_shows_there_is_more_and_scrolls_to_its_end() {
-        let mut q = question(1, QuestionOrigin::Ask, &["Sí"]);
-        q.detail = Some((1..=60).map(|i| format!("Línea {i}.")).collect::<Vec<_>>().join("\n\n"));
+        let mut q = question(1, QuestionOrigin::Ask, &["Yes"]);
+        q.detail = Some((1..=60).map(|i| format!("Line {i}.")).collect::<Vec<_>>().join("\n\n"));
         let (mut app, _rx) = app_with(vec![q]);
         app.loaded = true;
         let s = screen(&mut app, 110, 30);
-        assert!(s.contains("líneas más"), "{s}");
-        assert!(!s.contains("Línea 60."), "{s}");
+        assert!(s.contains("more lines"), "{s}");
+        assert!(!s.contains("Line 60."), "{s}");
         press(&mut app, "l");
         press(&mut app, "G");
         let s = screen(&mut app, 110, 30);
-        assert!(s.contains("Línea 60."), "{s}");
-        assert!(s.contains("↑ fin"), "{s}");
+        assert!(s.contains("Line 60."), "{s}");
+        assert!(s.contains("↑ end"), "{s}");
         press(&mut app, "gg");
         ctrl(&mut app, 'd');
         assert!(app.detail_scroll > 0);
@@ -1181,7 +1180,7 @@ mod tests {
     #[test]
     fn the_reader_shows_the_end_of_a_single_huge_paragraph() {
         let mut q = question(1, QuestionOrigin::Ask, &[]);
-        q.detail = Some(format!("{} FINAL", "palabra ".repeat(1500)));
+        q.detail = Some(format!("{} FINAL", "word ".repeat(1500)));
         let (mut app, _rx) = app_with(vec![q]);
         app.loaded = true;
         press(&mut app, "o");
@@ -1195,7 +1194,7 @@ mod tests {
             screen(&mut app, 80, 24);
         }
         let s = screen(&mut app, 80, 24);
-        assert!(s.contains("Pregunta 1"), "{s}");
+        assert!(s.contains("Question 1"), "{s}");
         for _ in 0..200 {
             press(&mut app, "j");
             screen(&mut app, 80, 24);
@@ -1209,9 +1208,9 @@ mod tests {
         let (mut app, _rx) = app_with(vec![]);
         press(&mut app, "?");
         let s = screen(&mut app, 100, 20);
-        assert!(s.contains("líneas más"), "{s}");
+        assert!(s.contains("more lines"), "{s}");
         press(&mut app, "G");
         let s = screen(&mut app, 100, 20);
-        assert!(s.contains("Siempre"), "{s}");
+        assert!(s.contains("Always"), "{s}");
     }
 }

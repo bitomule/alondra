@@ -68,13 +68,13 @@ enum Cmd {
         #[arg(long, help = tr!("Print a single value", "Imprime un solo valor"))]
         get: Option<String>,
     },
-    /// Servidor MCP para los nodos (lo arranca el plugin)
+    /// MCP server for the nodes (started by the plugin)
     #[command(hide = true)]
     Mcp {
         #[arg(long, env = "ALONDRA_ROLE", default_value = "node")]
         role: String,
     },
-    /// Hook de Stop: espera mensajes para esta sesión (lo arranca el plugin)
+    /// Stop hook: waits for messages for this session (started by the plugin)
     #[command(hide = true)]
     Inbox,
 }

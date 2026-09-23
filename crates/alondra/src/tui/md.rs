@@ -509,10 +509,10 @@ fn render_block(b: &Block, width: usize, table: &[usize]) -> Vec<Line<'static>> 
 }
 
 pub fn feedback(comments: &[(String, String)], general: &str, author: &str) -> String {
-    let mut out = format!("Comentarios de {author}:");
+    let mut out = format!("Comments from {author}:");
     for (i, (quote, text)) in comments.iter().enumerate() {
         let body = text.trim().lines().map(|l| format!("   {l}")).collect::<Vec<_>>().join("\n");
-        out.push_str(&format!("\n\n{}. Sobre «{}»:\n{body}", i + 1, clip(quote, QUOTE_MAX)));
+        out.push_str(&format!("\n\n{}. On \"{}\":\n{body}", i + 1, clip(quote, QUOTE_MAX)));
     }
     let general = general.trim();
     if !general.is_empty() {
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn parses_the_blocks_a_plan_is_made_of() {
-        let md = "# Plan\n\nPrimer párrafo\nsigue aquí.\n\n- uno\n  sigue uno\n- [x] dos\n  1. anidado\n\n```rust\nfn main() {}\n\n```\n\n> cita\n> larga\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n";
+        let md = "# Plan\n\nFirst paragraph\ncontinues here.\n\n- one\n  continues one\n- [x] two\n  1. nested\n\n```rust\nfn main() {}\n\n```\n\n> long\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n";
         let b = parse(md);
         let kinds: Vec<&Kind> = b.iter().map(|b| &b.kind).collect();
         assert_eq!(
@@ -550,50 +550,50 @@ mod tests {
                 &Kind::Rule,
             ]
         );
-        assert_eq!(b[1].plain(), "Primer párrafo sigue aquí.");
-        assert_eq!(b[2].plain(), "uno sigue uno");
+        assert_eq!(b[1].plain(), "First paragraph continues here.");
+        assert_eq!(b[2].plain(), "one continues one");
         assert_eq!(b[5].lines, vec!["fn main() {}".to_string(), String::new()]);
         assert_eq!(b[7].plain(), "a | b");
     }
 
     #[test]
     fn quote_drops_markdown_and_stops_at_200_chars() {
-        let b = parse("Usa **`cargo`** y [la guía](https://x.y) *ya*.");
-        assert_eq!(b[0].plain(), "Usa cargo y la guía ya.");
-        let long = parse(&"palabra ".repeat(60))[0].quote();
+        let b = parse("Use **`cargo`** and [the guide](https://x.y) *now*.");
+        assert_eq!(b[0].plain(), "Use cargo and the guide now.");
+        let long = parse(&"word ".repeat(60))[0].quote();
         assert_eq!(long.chars().count(), QUOTE_MAX);
         assert!(long.ends_with('…'));
     }
 
     #[test]
     fn snake_case_and_lone_asterisks_stay_literal() {
-        assert_eq!(strip_inline("mi_var_x y 2 * 3 * 4"), "mi_var_x y 2 * 3 * 4");
-        assert_eq!(strip_inline(r"52\. dos \*no\*"), "52. dos *no*");
+        assert_eq!(strip_inline("my_var_x and 2 * 3 * 4"), "my_var_x and 2 * 3 * 4");
+        assert_eq!(strip_inline(r"52\. two \*not\*"), "52. two *not*");
     }
 
     #[test]
     fn feedback_has_the_exact_format_the_nodes_expect() {
-        let f = feedback(&[("El paso 2".into(), "Hazlo antes\ndel paso 1".into()), ("Tabla".into(), "Sobra".into())], "Por lo demás, bien.", "Ana");
+        let f = feedback(&[("Step 2".into(), "Do it before\nstep 1".into()), ("Table".into(), "Not needed".into())], "Otherwise, fine.", "Ana");
         assert_eq!(
             f,
-            "Comentarios de Ana:\n\n1. Sobre «El paso 2»:\n   Hazlo antes\n   del paso 1\n\n2. Sobre «Tabla»:\n   Sobra\n\nPor lo demás, bien."
+            "Comments from Ana:\n\n1. On \"Step 2\":\n   Do it before\n   step 1\n\n2. On \"Table\":\n   Not needed\n\nOtherwise, fine."
         );
-        assert_eq!(feedback(&[], "  Solo esto  ", "Ana"), "Comentarios de Ana:\n\nSolo esto");
+        assert_eq!(feedback(&[], "  Just this  ", "Ana"), "Comments from Ana:\n\nJust this");
     }
 
     #[test]
     fn wrap_respects_width_prefixes_and_long_words() {
-        let lines = wrap(vec![Span::raw("uno dos tres cuatro supercalifragilístico")], 12, vec![Span::raw("• ")], vec![Span::raw("  ")]);
+        let lines = wrap(vec![Span::raw("one two three four supercalifragilisticexpialidocious")], 12, vec![Span::raw("• ")], vec![Span::raw("  ")]);
         for l in &lines {
             assert!(l.width() <= 12, "{:?}", text_of(l));
         }
-        assert_eq!(text_of(&lines[0]), "• uno dos");
-        assert!(text_of(&lines[1]).starts_with("  tres"));
+        assert_eq!(text_of(&lines[0]), "• one two");
+        assert!(text_of(&lines[1]).starts_with("  three"));
     }
 
     #[test]
     fn ranges_cover_each_block_and_skip_the_gaps() {
-        let blocks = parse("# T\n\nuno\n\n- a\n- b");
+        let blocks = parse("# T\n\none\n\n- a\n- b");
         let r = render(&blocks, 40);
         assert_eq!(r.ranges, vec![(0, 1), (2, 3), (4, 5), (5, 6)]);
         assert_eq!(r.lines.len(), 6);
@@ -601,8 +601,8 @@ mod tests {
 
     #[test]
     fn truncate_counts_display_width() {
-        assert_eq!(truncate("hola mundo", 6), "hola …");
+        assert_eq!(truncate("some words", 6), "some …");
         assert_eq!(truncate("📎📎📎", 5), "📎📎…");
-        assert_eq!(truncate("corto", 10), "corto");
+        assert_eq!(truncate("short", 10), "short");
     }
 }
