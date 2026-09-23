@@ -1,0 +1,406 @@
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use alondra_core::config::{self, Config, FileConfig};
+use anyhow::Result;
+use serde_json::{Value, json};
+
+use crate::client::Client;
+use crate::setup;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    Pass,
+    Warn,
+    Fail,
+}
+
+#[derive(Debug)]
+pub struct Check {
+    pub name: &'static str,
+    pub status: Status,
+    pub detail: String,
+    pub fix: String,
+}
+
+fn check(name: &'static str, status: Status, detail: impl Into<String>, fix: impl Into<String>) -> Check {
+    Check { name, status, detail: detail.into(), fix: fix.into() }
+}
+
+fn output(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+    let child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let Ok(Ok(out)) = rx.recv_timeout(timeout) else {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        return None;
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Some((out.status.success(), text))
+}
+
+pub fn config_check(path: &Path, text: Option<&str>) -> Check {
+    let p = path.display();
+    match text.map(FileConfig::parse) {
+        None => check(
+            "config",
+            Status::Warn,
+            trf!("{p} does not exist: running on defaults", "{p} no existe: funciona con los valores por defecto"),
+            tr!("alondra setup", "alondra setup"),
+        ),
+        Some(Ok(_)) => check("config", Status::Pass, trf!("{p} read", "{p} leído"), ""),
+        Some(Err(e)) => check("config", Status::Fail, trf!("{p} is not valid: {e}", "{p} no es válido: {e}"), trf!("fix or remove {p}", "corrige o borra {p}")),
+    }
+}
+
+/// The daemon reports the settings it started with; a difference means it needs a restart.
+pub fn drift(running: &Value, local: &Config) -> Vec<String> {
+    let want = json!({"name": local.name, "port": local.port, "listen": local.listen.to_string(), "public_url": local.public_url,
+                      "legacy_bridge": local.legacy_bridge, "wake": local.wake});
+    let mut out = vec![];
+    if let Some(want) = want.as_object() {
+        for (k, v) in want {
+            if let Some(r) = running.get(k)
+                && r != v
+            {
+                out.push(format!("{k}: {r} ≠ {v}"));
+            }
+        }
+    }
+    out
+}
+
+pub fn daemon_check(health: Result<Value, String>, local: &Config) -> Check {
+    let label = &local.service_label;
+    let uid = unsafe { libc::getuid() };
+    let restart = format!("launchctl kickstart -k gui/{uid}/{label}");
+    match health {
+        Err(e) => check("alondrad", Status::Fail, e, trf!("alondra setup (or {restart})", "alondra setup (o {restart})")),
+        Ok(h) => {
+            let version = h.get("version").and_then(Value::as_str).unwrap_or("?").to_string();
+            let port = local.port;
+            match h.get("config").map(|c| drift(c, local)) {
+                Some(d) if !d.is_empty() => {
+                    let d = d.join(", ");
+                    check(
+                        "alondrad",
+                        Status::Warn,
+                        trf!("answers ({version}) but runs with other settings: {d}", "responde ({version}) pero con otros ajustes: {d}"),
+                        restart,
+                    )
+                }
+                _ => check("alondrad", Status::Pass, trf!("answers on port {port} ({version})", "responde en el puerto {port} ({version})"), ""),
+            }
+        }
+    }
+}
+
+pub fn service_check(print: Option<&str>, label: &str) -> Check {
+    match print {
+        None => check(
+            "launchd",
+            Status::Fail,
+            trf!("service {label} is not loaded", "el servicio {label} no está cargado"),
+            tr!("alondra setup", "alondra setup"),
+        ),
+        Some(text) if text.contains("state = running") => check("launchd", Status::Pass, trf!("{label} running", "{label} en marcha"), ""),
+        Some(_) => check(
+            "launchd",
+            Status::Warn,
+            trf!("{label} loaded but not running", "{label} cargado pero parado"),
+            "tail ~/.alondra/alondrad.log",
+        ),
+    }
+}
+
+pub fn plugin_check(list: Option<&Value>, repo: Option<&Path>) -> Check {
+    let add = repo.map_or_else(|| "<repo>".to_string(), |r| r.display().to_string());
+    let fix = format!("claude plugin marketplace add {add} && claude plugin install {}", setup::PLUGIN_ID);
+    let Some(list) = list else {
+        return check("plugin", Status::Fail, tr!("could not list Claude Code plugins", "no pude listar los plugins de Claude Code"), fix);
+    };
+    let entry = list.as_array().and_then(|a| a.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(setup::PLUGIN_ID)));
+    match entry {
+        None => check("plugin", Status::Fail, tr!("the alondra plugin is not installed", "el plugin alondra no está instalado"), fix),
+        Some(p) if p.get("enabled") == Some(&Value::Bool(false)) => check(
+            "plugin",
+            Status::Fail,
+            tr!("the alondra plugin is disabled", "el plugin alondra está desactivado"),
+            format!("claude plugin enable {}", setup::PLUGIN_ID),
+        ),
+        Some(p) => {
+            let v = p.get("version").and_then(Value::as_str).unwrap_or("?");
+            let id = setup::PLUGIN_ID;
+            check("plugin", Status::Pass, trf!("{id} {v} installed", "{id} {v} instalado"), "")
+        }
+    }
+}
+
+pub fn hooks_port_check(port: u16) -> Option<Check> {
+    (port != alondra_core::DEFAULT_PORT).then(|| {
+        let default = alondra_core::DEFAULT_PORT;
+        check(
+            "hooks",
+            Status::Warn,
+            trf!(
+                "alondrad uses port {port}, but the plugin's hooks post to {default}: nodes will not report their state",
+                "alondrad usa el puerto {port}, pero los hooks del plugin llaman al {default}: los nodos no informarán de su estado"
+            ),
+            trf!("use port {default} (remove `port` from config.toml and ALONDRA_PORT)", "usa el puerto {default} (quita `port` de config.toml y ALONDRA_PORT)"),
+        )
+    })
+}
+
+pub fn jevi_doctor_has_key(text: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("key:") && l.trim_start_matches("key:").trim() == "present"
+    })
+}
+
+pub fn jevi_ask_ok(stdout: &str) -> Result<(), String> {
+    let v: Value = serde_json::from_str(stdout.lines().find(|l| l.trim_start().starts_with('{')).unwrap_or("")).map_err(|e| e.to_string())?;
+    if v.get("ok") == Some(&Value::Bool(true)) && v.pointer("/answers/answer").is_some() {
+        Ok(())
+    } else {
+        Err(v.get("error").map(|e| e.to_string()).unwrap_or_else(|| v.to_string()).chars().take(200).collect())
+    }
+}
+
+pub fn jevi_checks() -> Vec<Check> {
+    let install = tr!("install jevi from its repo (see INSTALL.md) and put it on PATH", "instala jevi desde su repo (ver INSTALL.md) y ponlo en el PATH");
+    let Some((_, version)) = output("jevi", &["--version"], Duration::from_secs(5)) else {
+        return vec![check("jevi", Status::Fail, tr!("jevi is not on PATH", "jevi no está en el PATH"), install)];
+    };
+    let version = version.trim().to_string();
+    let set_key = tr!("jevi config set-key < file-with-your-OpenRouter-key", "jevi config set-key < fichero-con-tu-clave-de-OpenRouter");
+    let mut out = vec![check("jevi", Status::Pass, version, "")];
+    match output("jevi", &["doctor"], Duration::from_secs(10)) {
+        Some((_, text)) if jevi_doctor_has_key(&text) => out.push(check("jevi key", Status::Pass, tr!("jevi has a key", "jevi tiene clave"), "")),
+        _ => {
+            out.push(check("jevi key", Status::Fail, tr!("jevi has no key", "jevi no tiene clave"), set_key));
+            return out;
+        }
+    }
+    let ask = output("jevi", &["ask", "Is this a greeting?", "-s", "hello", "--json", "--soft", "--timeout", "8000"], Duration::from_secs(12));
+    out.push(match ask.map(|(_, t)| jevi_ask_ok(&t)) {
+        Some(Ok(())) => check("jevi ask", Status::Pass, tr!("jevi answers", "jevi responde"), ""),
+        Some(Err(e)) => check("jevi ask", Status::Fail, trf!("jevi does not answer: {e}", "jevi no responde: {e}"), "jevi doctor --live"),
+        None => check("jevi ask", Status::Fail, tr!("jevi did not answer in 12 s", "jevi no respondió en 12 s"), "jevi doctor --live"),
+    });
+    out
+}
+
+pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -> Check {
+    let fix = tr!(
+        "alondra setup --apns-key-path … --apns-key-id … --apns-team-id … --apns-topic <your bundle ID>",
+        "alondra setup --apns-key-path … --apns-key-id … --apns-team-id … --apns-topic <tu bundle ID>"
+    );
+    let Some(text) = text else {
+        return check("apns", Status::Warn, tr!("no apns.json: no notifications", "sin apns.json: no hay notificaciones"), fix);
+    };
+    match serde_json::from_str::<setup::Apns>(text) {
+        Err(e) => check("apns", Status::Fail, trf!("apns.json is not valid: {e}", "apns.json no es válido: {e}"), fix),
+        Ok(a) if !key_exists(&a.key_path) => {
+            let k = a.key_path.display();
+            check("apns", Status::Fail, trf!("the key {k} does not exist", "la llave {k} no existe"), fix)
+        }
+        Ok(a) => {
+            let topic = a.topic;
+            check("apns", Status::Pass, trf!("apns.json for {topic}", "apns.json para {topic}"), "")
+        }
+    }
+}
+
+/// `/v1/push/check` sends to a made-up token: Apple answering BadDeviceToken proves the key,
+/// team and topic are accepted; 403 means the key or team is wrong.
+pub fn push_round_trip(result: Result<Value, String>) -> Check {
+    let restart = tr!("check key_id, team_id and topic in apns.json, then restart alondrad", "revisa key_id, team_id y topic en apns.json y reinicia alondrad");
+    match result {
+        Err(e) => check("apns push", Status::Fail, e, restart),
+        Ok(v) => {
+            let status = v.get("status").and_then(Value::as_u64).unwrap_or(0);
+            let body = v.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+            match status {
+                400 if body.contains("BadDeviceToken") => {
+                    check("apns push", Status::Pass, tr!("Apple accepts the key (test token rejected as expected)", "Apple acepta la llave (rechaza el token de prueba, como debe)"), "")
+                }
+                403 => check("apns push", Status::Fail, trf!("Apple rejects the key: {body}", "Apple rechaza la llave: {body}"), restart),
+                _ => check("apns push", Status::Warn, trf!("unexpected answer from Apple: {status} {body}", "respuesta inesperada de Apple: {status} {body}"), restart),
+            }
+        }
+    }
+}
+
+pub fn claude_version_check(out: Option<&str>) -> Check {
+    match out.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => check("claude", Status::Pass, v.to_string(), ""),
+        None => check("claude", Status::Fail, tr!("Claude Code (`claude`) is not on PATH", "Claude Code (`claude`) no está en el PATH"), "https://docs.claude.com/claude-code"),
+    }
+}
+
+pub fn tmux_check(out: Option<&str>, wake: bool) -> Check {
+    match out.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => check("tmux", Status::Pass, v.to_string(), ""),
+        None => check(
+            "tmux",
+            if wake { Status::Fail } else { Status::Warn },
+            tr!("tmux is missing: Alondra cannot wake stopped nodes", "falta tmux: Alondra no puede despertar nodos parados"),
+            "brew install tmux",
+        ),
+    }
+}
+
+pub fn run(json_out: bool) -> Result<()> {
+    let env = |k: &str| std::env::var(k).ok();
+    let home = config::alondra_home(&env);
+    let path = config::path_in(&home);
+    let text = std::fs::read_to_string(&path).ok();
+    let mut checks = vec![config_check(&path, text.as_deref())];
+    let local = Config::load().unwrap_or_else(|_| Config::defaults());
+
+    let client = Client::new(Duration::from_secs(5));
+    let health = client.get::<Value>("/v1/health").map_err(|e| e.to_string());
+    let up = health.is_ok();
+    checks.push(daemon_check(health, &local));
+    checks.extend(hooks_port_check(local.port));
+
+    let uid = unsafe { libc::getuid() };
+    let print = output("launchctl", &["print", &format!("gui/{uid}/{}", local.service_label)], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
+    checks.push(service_check(print.as_deref(), &local.service_label));
+
+    let claude = output("claude", &["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t);
+    checks.push(claude_version_check(claude.as_deref()));
+    let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
+    checks.push(plugin_check(setup::plugin_list().as_ref(), repo.as_deref()));
+
+    let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
+    checks.push(tmux_check(tmux.as_deref(), local.wake));
+    checks.extend(jevi_checks());
+
+    let apns_text = std::fs::read_to_string(home.join("apns.json")).ok();
+    let apns = apns_file_check(apns_text.as_deref(), |p| p.is_file());
+    let apns_ok = apns.status == Status::Pass;
+    checks.push(apns);
+    if apns_ok && up {
+        checks.push(push_round_trip(client.post("/v1/push/check", &json!({})).map_err(|e| e.to_string())));
+    }
+    if up {
+        let devices = client.get::<Value>("/v1/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
+        checks.push(if devices > 0 {
+            check("pairing", Status::Pass, trf!("{devices} paired device(s)", "{devices} dispositivo(s) vinculado(s)"), "")
+        } else {
+            check("pairing", Status::Warn, tr!("no paired iPhone", "ningún iPhone vinculado"), "alondra pair")
+        });
+    }
+
+    let failed = checks.iter().any(|c| c.status == Status::Fail);
+    if json_out {
+        let list: Vec<Value> = checks
+            .iter()
+            .map(|c| json!({"check": c.name, "status": format!("{:?}", c.status).to_lowercase(), "detail": c.detail, "fix": c.fix}))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({"ok": !failed, "checks": list}))?);
+    } else {
+        for c in &checks {
+            let mark = match c.status {
+                Status::Pass => "✓",
+                Status::Warn => "!",
+                Status::Fail => "✗",
+            };
+            println!("{mark} {:<10} {}", c.name, c.detail);
+            if c.status != Status::Pass && !c.fix.is_empty() {
+                println!("  {:<10} → {}", "", c.fix);
+            }
+        }
+    }
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local() -> Config {
+        Config::resolve("/h".into(), &FileConfig { name: Some("Ana".into()), wake: Some(true), ..Default::default() }, |_| None, || None)
+    }
+
+    #[test]
+    fn jevi_output_is_read_without_the_key() {
+        assert!(jevi_doctor_has_key("provider:  openrouter\nkey:       present\nmodel: x"));
+        assert!(!jevi_doctor_has_key("key:       MISSING"));
+        assert!(!jevi_doctor_has_key(""));
+        assert!(jevi_ask_ok(r#"{"ok":true,"answers":{"answer":{"verdict":"yes"}}}"#).is_ok());
+        assert!(jevi_ask_ok(r#"{"ok":false,"error":"no key"}"#).unwrap_err().contains("no key"));
+        assert!(jevi_ask_ok("garbage").is_err());
+    }
+
+    #[test]
+    fn push_check_reads_apples_answer() {
+        assert_eq!(push_round_trip(Ok(json!({"status": 400, "body": "{\"reason\":\"BadDeviceToken\"}"}))).status, Status::Pass);
+        assert_eq!(push_round_trip(Ok(json!({"status": 403, "body": "{\"reason\":\"InvalidProviderToken\"}"}))).status, Status::Fail);
+        assert_eq!(push_round_trip(Ok(json!({"status": 500, "body": ""}))).status, Status::Warn);
+        assert_eq!(push_round_trip(Err("APNs no configurado".into())).status, Status::Fail);
+    }
+
+    #[test]
+    fn the_running_daemon_is_compared_with_the_file() {
+        let l = local();
+        let same = json!({"name": "Ana", "port": 47800, "listen": "127.0.0.1", "public_url": null, "legacy_bridge": false, "wake": true});
+        assert!(drift(&same, &l).is_empty());
+        assert_eq!(daemon_check(Ok(json!({"version": "0.1.0", "config": same})), &l).status, Status::Pass);
+        let stale = json!({"name": "Bea", "port": 47800, "listen": "127.0.0.1", "public_url": null, "legacy_bridge": false, "wake": true});
+        assert_eq!(drift(&stale, &l), vec!["name: \"Bea\" ≠ \"Ana\""]);
+        assert_eq!(daemon_check(Ok(json!({"config": stale})), &l).status, Status::Warn);
+        assert_eq!(daemon_check(Ok(json!({"version": "old"})), &l).status, Status::Pass);
+        assert_eq!(daemon_check(Err("no responde".into()), &l).status, Status::Fail);
+    }
+
+    #[test]
+    fn service_plugin_and_tools() {
+        assert_eq!(service_check(Some("gui/501/x = {\n\tstate = running\n\tpid = 12\n}"), "x").status, Status::Pass);
+        assert_eq!(service_check(Some("state = not running"), "x").status, Status::Warn);
+        assert_eq!(service_check(None, "x").status, Status::Fail);
+
+        let list = json!([{"id": "alondra@alondra", "version": "0.1.2", "enabled": true}]);
+        let c = plugin_check(Some(&list), None);
+        assert_eq!(c.status, Status::Pass);
+        assert!(c.detail.contains("alondra@alondra 0.1.2"));
+        assert_eq!(plugin_check(Some(&json!([{"id": "alondra@alondra", "enabled": false}])), None).status, Status::Fail);
+        assert_eq!(plugin_check(Some(&json!([])), None).status, Status::Fail);
+        assert!(plugin_check(None, Some(Path::new("/src/alondra"))).fix.contains("marketplace add /src/alondra"));
+
+        assert!(hooks_port_check(alondra_core::DEFAULT_PORT).is_none());
+        assert_eq!(hooks_port_check(47897).map(|c| c.status), Some(Status::Warn));
+        assert_eq!(tmux_check(None, true).status, Status::Fail);
+        assert_eq!(tmux_check(None, false).status, Status::Warn);
+        assert_eq!(claude_version_check(Some("2.1.280 (Claude Code)\n")).detail, "2.1.280 (Claude Code)");
+    }
+
+    #[test]
+    fn config_and_apns_files() {
+        let p = Path::new("/h/config.toml");
+        assert_eq!(config_check(p, None).status, Status::Warn);
+        assert_eq!(config_check(p, Some("name = \"Ana\"")).status, Status::Pass);
+        assert_eq!(config_check(p, Some("nmae = 1")).status, Status::Fail);
+        let apns = r#"{"key_path": "/k.p8", "key_id": "K", "team_id": "T", "topic": "a.b"}"#;
+        assert_eq!(apns_file_check(Some(apns), |_| true).status, Status::Pass);
+        assert_eq!(apns_file_check(Some(apns), |_| false).status, Status::Fail);
+        assert_eq!(apns_file_check(Some("{}"), |_| true).status, Status::Fail);
+        assert_eq!(apns_file_check(None, |_| true).status, Status::Warn);
+    }
+}

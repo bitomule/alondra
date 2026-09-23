@@ -1,8 +1,8 @@
 BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
-PLIST := $(HOME)/Library/LaunchAgents/com.bitomule.alondra.plist
+LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 
-.PHONY: build test install run tui launchd unlaunchd restart status cargo-test mac
+.PHONY: build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -28,20 +28,21 @@ tui:
 status:
 	$(BIN)/alondra status
 
+doctor:
+	$(BIN)/alondra doctor
+
+setup: install
+	$(BIN)/alondra setup --bin $(BIN) --repo $(CURDIR)
+
 restart:
-	launchctl kickstart -k gui/$$(id -u)/com.bitomule.alondra
+	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
 
 launchd: install
-	sed -e 's|@BIN@|$(BIN)|g' -e 's|@HOME@|$(HOME)|g' -e 's|@PLUGIN@|$(PLUGIN)|g' launchd/com.bitomule.alondra.plist.in > $(PLIST)
-	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
-	-pkill -f "$(BIN)/alondrad$$"
-	sleep 1
-	launchctl bootstrap gui/$$(id -u) $(PLIST)
-	@echo "alondrad arranca solo al iniciar sesión y se reinicia si cae. Registro: ~/.alondra/alondrad.log"
+	$(BIN)/alondra setup --bin $(BIN) --skip-plugin --skip-pair
 
 unlaunchd:
-	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
-	rm -f $(PLIST)
+	launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null || true
+	rm -f $(HOME)/Library/LaunchAgents/$(LABEL).plist
 
 mac:
 	bazelisk build //apple:AlondraMac

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.bitomule.alondra</string>
+    <string>@LABEL@</string>
     <key>ProgramArguments</key>
     <array>
         <string>@BIN@/alondrad</string>
@@ -12,12 +12,8 @@
     <dict>
         <key>PATH</key>
         <string>@BIN@:@HOME@/.claude/local:@HOME@/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>ALONDRA_PUBLIC_URL</key>
-        <string>https://alondra.davidcollado.dev</string>
-        <key>ALONDRA_LISTEN</key>
-        <string>0.0.0.0</string>
-        <key>ALONDRA_WAKE</key>
-        <string>1</string>
+        <key>ALONDRA_HOME</key>
+        <string>@ALONDRA_HOME@</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -26,8 +22,8 @@
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardErrorPath</key>
-    <string>@HOME@/.alondra/alondrad.log</string>
+    <string>@ALONDRA_HOME@/alondrad.log</string>
     <key>StandardOutPath</key>
-    <string>@HOME@/.alondra/alondrad.log</string>
+    <string>@ALONDRA_HOME@/alondrad.log</string>
 </dict>
 </plist>

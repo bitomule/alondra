@@ -2,8 +2,10 @@
 mod i18n;
 mod attach;
 mod client;
+mod doctor;
 mod inbox;
 mod mcp;
+mod setup;
 mod tui;
 
 use std::time::Duration;
@@ -37,19 +39,35 @@ enum Cmd {
         "Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso"
     ))]
     Pair {
-        #[arg(long, env = "ALONDRA_PUBLIC_URL", help = tr!(
-            "Public URL the device uses to reach the Mac (e.g. https://alondra.yourdomain.com)",
-            "URL pública por la que el dispositivo llega al Mac (p. ej. https://alondra.tudominio.com)"
+        #[arg(long, help = tr!(
+            "Public URL the device uses to reach the Mac (default: public_url from config.toml)",
+            "URL pública por la que el dispositivo llega al Mac (por defecto: public_url de config.toml)"
         ))]
-        url: String,
+        url: Option<String>,
     },
     #[command(about = tr!("Paired devices; --revoke <id> removes one", "Dispositivos vinculados; con --revoke <id> quita uno"))]
     Devices {
         #[arg(long, help = tr!("Id of the device to unpair", "Id del dispositivo que se desvincula"))]
         revoke: Option<String>,
     },
-    #[command(about = tr!("Check that alondrad responds", "Comprueba que alondrad responde"))]
-    Doctor,
+    #[command(about = tr!(
+        "Check the whole installation: daemon, service, plugin, jevi, notifications, tmux",
+        "Comprueba toda la instalación: servidor, servicio, plugin, jevi, notificaciones, tmux"
+    ))]
+    Doctor {
+        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
+        json: bool,
+    },
+    #[command(about = tr!(
+        "Install or update Alondra on this Mac: config.toml, apns.json, launchd service, Claude Code plugin and pairing",
+        "Instala o actualiza Alondra en este Mac: config.toml, apns.json, servicio de launchd, plugin de Claude Code y vinculación"
+    ))]
+    Setup(Box<setup::Args>),
+    #[command(about = tr!("Show the effective settings (environment > config.toml > default)", "Enseña los ajustes en vigor (entorno > config.toml > por defecto)"))]
+    Config {
+        #[arg(long, help = tr!("Print a single value", "Imprime un solo valor"))]
+        get: Option<String>,
+    },
     /// Servidor MCP para los nodos (lo arranca el plugin)
     #[command(hide = true)]
     Mcp {
@@ -70,12 +88,12 @@ fn main() -> Result<()> {
         None => tui::run(),
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, text }) => {
-            Client::new(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "by": "David", "device": "cli"}))?;
+            Client::new(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
             println!("{}", trf!("Answered #{id}", "Contestada #{id}"));
             Ok(())
         }
         Some(Cmd::Send { node, text }) => {
-            let r = Client::new(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" "), "from": "david"}))?;
+            let r = Client::new(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" ")}))?;
             let msg = r.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             println!("{}", trf!("Message {msg} is in {node}'s inbox", "Mensaje {msg} en la bandeja de {node}"));
             Ok(())
@@ -85,16 +103,43 @@ fn main() -> Result<()> {
             let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
             attach::attach(&short)
         }
-        Some(Cmd::Pair { url }) => pair(&url),
+        Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
+            Some(url) => pair(&url),
+            None => anyhow::bail!(tr!(
+                "No public URL: pass --url or set public_url with `alondra setup --public-url …`",
+                "No hay URL pública: pasa --url o ponla con `alondra setup --public-url …`"
+            )),
+        },
         Some(Cmd::Devices { revoke }) => devices(revoke),
-        Some(Cmd::Doctor) => {
-            let v: serde_json::Value = Client::new(Duration::from_secs(5)).get("/v1/health")?;
-            println!("{v}");
-            Ok(())
-        }
+        Some(Cmd::Doctor { json }) => doctor::run(json),
+        Some(Cmd::Setup(args)) => setup::run(*args),
+        Some(Cmd::Config { get }) => show_config(get.as_deref()),
         Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
         Some(Cmd::Inbox) => std::process::exit(inbox::run()?),
     }
+}
+
+fn show_config(get: Option<&str>) -> Result<()> {
+    let c = alondra_core::config::Config::load().map_err(|e| anyhow::anyhow!(e))?;
+    let rows = [
+        ("home", c.home.display().to_string()),
+        ("name", c.name.clone()),
+        ("port", c.port.to_string()),
+        ("listen", c.listen.to_string()),
+        ("public_url", c.public_url.clone().unwrap_or_default()),
+        ("legacy_bridge", c.legacy_bridge.to_string()),
+        ("wake", c.wake.to_string()),
+        ("retention_hours", c.retention_hours.to_string()),
+        ("service_label", c.service_label.clone()),
+    ];
+    match get {
+        Some(key) => match rows.iter().find(|(k, _)| *k == key) {
+            Some((_, v)) => println!("{v}"),
+            None => anyhow::bail!(trf!("unknown setting: {key}", "ajuste desconocido: {key}")),
+        },
+        None => rows.iter().for_each(|(k, v)| println!("{k} = {v}")),
+    }
+    Ok(())
 }
 
 fn status() -> Result<()> {
