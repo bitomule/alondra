@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
-    QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
+    QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::Extension;
@@ -39,6 +39,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
         .route("/v1/nodes/{key}/close", post(close_node))
         .route("/v1/nodes/{key}/messages", post(send_message))
+        .route("/v1/nodes/{key}/interrupt", post(interrupt))
         .route("/v1/nodes/{key}/ack", post(acknowledge))
         .route("/v1/questions", post(ask))
         .route("/v1/actions", post(request_action))
@@ -145,6 +146,13 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         eprintln!("alondrad: hook lost: {e}");
         return Json(json!({})).into_response();
+    }
+    if event == "Stop" {
+        let user = hub.config.name.clone();
+        let moved = hub.append_with(|v| v.nodes.get(&session_id).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued));
+        if let Err(e) = moved {
+            eprintln!("alondrad: could not act on a stalled node: {e}");
+        }
     }
     if event == "PreToolUse"
         && let Some(reason) = forbidden_for_nodes(tool.as_deref(), p.get("tool_input"))
@@ -829,6 +837,20 @@ async fn report_read(State(hub): State<AppState>, Path(id): Path<u64>) -> Respon
 struct MessageBody {
     text: String,
     from: Option<MessageFrom>,
+}
+
+async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    let Some(short) = hub.read(|v| v.resolve_node(&key).map(|n| n.short_id.clone())) else {
+        return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
+    };
+    if !hub.config.wake {
+        return err(StatusCode::CONFLICT, "this alondrad does not touch node sessions (wake is off)");
+    }
+    match tokio::task::spawn_blocking(move || crate::wake::interrupt(&short)).await {
+        Ok(Ok(())) => Json(json!({"interrupted": key})).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e),
+        Err(e) => internal(e.into()),
+    }
 }
 
 async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {

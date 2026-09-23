@@ -8,6 +8,7 @@ public enum NodeState: String, Codable, Sendable {
     case waitingMachine = "waiting_machine"
     case done
     case unclear
+    case stalled
 
     public var label: String {
         switch self {
@@ -18,6 +19,7 @@ public enum NodeState: String, Codable, Sendable {
         case .waitingMachine: String(localized: "waiting for the machine", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "done", table: "AlondraShared", bundle: #bundle)
         case .unclear: String(localized: "unclear what it wants", table: "AlondraShared", bundle: #bundle)
+        case .stalled: String(localized: "stalled", table: "AlondraShared", bundle: #bundle)
         }
     }
 

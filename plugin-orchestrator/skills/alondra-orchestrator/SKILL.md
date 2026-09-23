@@ -10,7 +10,7 @@ Alondra MCP server. Their answers are typed into your session as if they wrote t
 
 Alondra is your nervous system. It gives you:
 - **eyes:** `fleet`, `node` and `machine`;
-- **hands:** `launch` and `send`;
+- **hands:** `launch`, `send` and `interrupt`;
 - **a channel to the user:** `ask` and `report`.
 
 The paperwork you used to do by hand is now done by Alondra, so your job is only judgment.
@@ -47,9 +47,16 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
      user, tell it to ask with `ask`; if it is done, tell it to say so with `report` and
      `kind: final`.
    - Machine at its limit: do not launch anything and tell the user which node you would stop.
-3. **Close what is finished.** Close only what is verified: committed on `origin/main` and
+3. **Stalled nodes.** They arrive as "[Alondra] Stalled node: …", and they are yours, not the user's:
+   - A node that ended its turn twice without declaring anything (Alondra already nudged it once):
+     read its last message. If you can tell what it should do next, send it on with `send`. If
+     you cannot, ask the user with `ask`.
+   - A node inside one call far longer than usual (45 min; 2 h for a subagent): if the call
+     looks hung, stop it with `interrupt` and send the node on; if it is legitimately long,
+     leave it.
+4. **Close what is finished.** Close only what is verified: committed on `origin/main` and
    nothing left unpushed. Anything else, ask.
-4. **Diagnose across nodes.** If several fail at once, suspect the shared state before the
+5. **Diagnose across nodes.** If several fail at once, suspect the shared state before the
    code of each one.
 
 ## To the user

@@ -72,23 +72,36 @@ fn tmux(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn type_into(short: &str, text: &str) -> Result<(), String> {
+/// Presses Esc in the node's session, which stops the call in flight the way it would at the keyboard.
+pub fn interrupt(short: &str) -> Result<(), String> {
+    let session = attach(short)?;
+    tmux(&["send-keys", "-t", &session.0, "Escape"])?;
+    std::thread::sleep(Duration::from_secs(2));
+    Ok(())
+}
+
+fn attach(short: &str) -> Result<TmuxSession, String> {
     let name = format!("alondra-{short}");
     let _ = tmux(&["kill-session", "-t", &name]);
     tmux(&["new-session", "-d", "-s", &name, "-c", "/tmp", "-x", "200", "-y", "50", &format!("claude attach {short}")])?;
-    let session = TmuxSession(name.clone());
+    let session = TmuxSession(name);
     let start = Instant::now();
-    let screen = loop {
+    loop {
         std::thread::sleep(Duration::from_secs(1));
         let screen = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
         if screen.contains('❯') || screen.lines().filter(|l| !l.trim().is_empty()).count() > 8 {
-            std::thread::sleep(Duration::from_secs(2));
-            break tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or(screen);
+            return Ok(session);
         }
         if start.elapsed() > PAINT_TIMEOUT {
             return Err("the session did not render in time".into());
         }
-    };
+    }
+}
+
+fn type_into(short: &str, text: &str) -> Result<(), String> {
+    let session = attach(short)?;
+    std::thread::sleep(Duration::from_secs(2));
+    let screen = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
     if MENU_MARKERS.iter().any(|m| screen.contains(m)) {
         return Err("the node is in a menu; not typing over it".into());
     }

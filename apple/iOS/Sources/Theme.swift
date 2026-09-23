@@ -102,7 +102,7 @@ extension NodeState {
         case .delivered: Palette.sage
         case .waitingMachine: Palette.slate
         case .done: Palette.sage
-        case .unclear: Palette.rose
+        case .unclear, .stalled: Palette.rose
         }
     }
 
@@ -115,6 +115,7 @@ extension NodeState {
         case .waitingMachine: "hourglass"
         case .done: "checkmark"
         case .unclear: "questionmark"
+        case .stalled: "pause.circle"
         }
     }
 }

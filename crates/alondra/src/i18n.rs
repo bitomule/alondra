@@ -82,6 +82,7 @@ pub fn state(s: NodeState) -> &'static str {
         NodeState::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
         NodeState::Done => tr!("done", "terminado"),
         NodeState::Unclear => tr!("unclear what it wants", "no sé qué quiere"),
+        NodeState::Stalled => tr!("stalled", "parado"),
     }
 }
 

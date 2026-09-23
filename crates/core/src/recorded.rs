@@ -111,9 +111,9 @@ fn a_restart_changes_nothing() {
 #[test]
 fn auditoria_an_ask_that_was_closed_explains_nothing() {
     let (_, states) = replay(AUDITORIA, AUDITORIA_SID);
-    assert_eq!(at_seq(&states, 1715), NodeState::Unclear, "stopped at 10:08:49 with nothing declared");
+    assert_eq!(at_seq(&states, 1715), NodeState::Stalled, "stopped at 10:08:49 with nothing declared");
     assert_eq!(at_seq(&states, 1720), NodeState::WaitingAnswer, "asked question 31 at 10:09:03");
-    assert!(between(&states, 1823, 4206).iter().all(|s| *s == NodeState::Unclear), "withdrawn at 10:12, idle until 13:46");
+    assert!(between(&states, 1823, 4206).iter().all(|s| *s != NodeState::Working), "withdrawn at 10:12, idle until 13:46");
 }
 
 /// Its final report at 13:46:50 was contradicted two seconds after the turn ended: the Claude
