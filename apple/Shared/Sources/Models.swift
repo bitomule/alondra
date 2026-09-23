@@ -101,6 +101,27 @@ struct Machine: Codable, Hashable, Sendable {
     let unreliable: Bool
 }
 
+struct Report: Codable, Identifiable, Hashable, Sendable {
+    let id: UInt64
+    let sessionId: String
+    let nodeName: String?
+    let title: String
+    let body: String?
+    let links: [Link]
+    let attachments: [Attachment]
+    let kind: String
+    let createdAt: Int64
+
+    var kindLabel: String {
+        switch kind {
+        case "delivery": "Entrega"
+        case "finding": "Hallazgo"
+        case "final": "Terminado"
+        default: "Progreso"
+        }
+    }
+}
+
 struct SentMessage: Codable, Identifiable, Hashable, Sendable {
     let id: UInt64
     let from: String
@@ -114,7 +135,7 @@ struct Overview: Codable, Sendable {
     let tick: UInt64
     let nodes: [Node]
     let openQuestions: [Question]
-    let news: [Node]
+    let news: [Report]
     let orchestratorMessages: [SentMessage]
     let machine: Machine
 }

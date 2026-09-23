@@ -16,7 +16,7 @@ final class FleetStore {
     }
 
     var questions: [Question] { overview?.openQuestions ?? [] }
-    var news: [Node] { overview?.news ?? [] }
+    var news: [Report] { overview?.news ?? [] }
     var sentToOrchestrator: [SentMessage] { (overview?.orchestratorMessages ?? []).filter { $0.from == "david" } }
     var nodes: [Node] { overview?.nodes ?? [] }
     var orchestrator: Node? { nodes.first { $0.isOrchestrator && $0.alive } }
@@ -62,6 +62,23 @@ final class FleetStore {
         do {
             try await client.send(to: node.sessionId, text: text)
             if acknowledge { try await client.acknowledge(node.sessionId) }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func reply(to report: Report, text: String) async {
+        do {
+            try await client.send(to: report.sessionId, text: text)
+            try await client.markRead(report.id)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func markRead(_ report: Report) async {
+        do {
+            try await client.markRead(report.id)
         } catch {
             lastError = error.localizedDescription
         }

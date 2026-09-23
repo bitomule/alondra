@@ -28,6 +28,8 @@ enum Cmd {
     Answer { id: u64, text: Vec<String> },
     /// Manda un mensaje a un nodo (nombre, id corto o session_id)
     Send { node: String, text: Vec<String> },
+    /// Abre el terminal de un nodo (← con la línea vacía vuelve)
+    Attach { node: String },
     /// Comprueba que alondrad responde
     Doctor,
     /// Servidor MCP para los nodos (lo arranca el plugin)
@@ -58,6 +60,11 @@ fn main() -> Result<()> {
             let r = Client::new(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" "), "from": "david"}))?;
             println!("Mensaje {} en la bandeja de {node}", r.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
             Ok(())
+        }
+        Some(Cmd::Attach { node }) => {
+            let v: serde_json::Value = Client::new(Duration::from_secs(5)).get(&format!("/v1/nodes/{}", mcp::urlencode(&node)))?;
+            let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
+            attach::attach(&short)
         }
         Some(Cmd::Doctor) => {
             let v: serde_json::Value = Client::new(Duration::from_secs(5)).get("/v1/health")?;

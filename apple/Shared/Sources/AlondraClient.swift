@@ -34,6 +34,10 @@ struct AlondraClient: Sendable {
         try await post("v1/questions/\(question)/answer", body)
     }
 
+    func markRead(_ report: UInt64) async throws {
+        try await post("v1/reports/\(report)/read", [:])
+    }
+
     func acknowledge(_ session: String) async throws {
         try await post("v1/nodes/\(session)/ack", [:])
     }

@@ -3,7 +3,7 @@ import SwiftUI
 enum Selection: Hashable {
     case orchestrator
     case question(UInt64)
-    case news(String)
+    case report(UInt64)
     case node(String)
 }
 
@@ -26,12 +26,12 @@ public struct FleetView: View {
                         QuestionRow(question: question).tag(Selection.question(question.id))
                     }
                 }
-                Section("Novedades (\(store.news.count))") {
+                Section("Para leer (\(store.news.count))") {
                     if store.news.isEmpty {
-                        Text("Nada nuevo").foregroundStyle(.secondary)
+                        Text("Nada para leer").foregroundStyle(.secondary)
                     }
-                    ForEach(store.news) { node in
-                        NewsRow(node: node).tag(Selection.news(node.sessionId))
+                    ForEach(store.news) { report in
+                        ReportRow(report: report).tag(Selection.report(report.id))
                     }
                 }
                 Section("Flota (\(store.nodes.count))", isExpanded: $fleetExpanded) {
@@ -51,9 +51,15 @@ public struct FleetView: View {
                 } else {
                     ContentUnavailableView("Contestada", systemImage: "checkmark.circle", description: Text("Esta pregunta ya no está abierta."))
                 }
-            case .news(let id), .node(let id):
+            case .report(let id):
+                if let report = store.news.first(where: { $0.id == id }) {
+                    ReportDetail(report: report, store: store)
+                } else {
+                    ContentUnavailableView("Leído", systemImage: "checkmark.circle")
+                }
+            case .node(let id):
                 if let node = store.nodes.first(where: { $0.sessionId == id }) {
-                    NodeDetail(node: node, store: store, isNews: store.news.contains { $0.sessionId == id })
+                    NodeDetail(node: node, store: store)
                 } else {
                     ContentUnavailableView("Sin nodo", systemImage: "questionmark.circle")
                 }
@@ -87,18 +93,67 @@ struct QuestionRow: View {
     }
 }
 
-struct NewsRow: View {
-    let node: Node
+struct ReportRow: View {
+    let report: Report
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                Circle().fill(node.state.color).frame(width: 7, height: 7)
-                Text(node.displayName).fontWeight(.medium).lineLimit(1)
-                Text("· \(ago(node.lastMessageAt ?? node.stateSince))").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(report.kindLabel).font(.caption).padding(.horizontal, 5).background(.cyan.opacity(0.2), in: .capsule)
+                Text(report.title).lineLimit(2)
             }
-            Text(node.summary).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+            Text("\(report.nodeName ?? "") · hace \(ago(report.createdAt))").font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+struct ReportDetail: View {
+    let report: Report
+    let store: FleetStore
+    @State private var reply = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(report.kindLabel) · \(report.nodeName ?? "") · hace \(ago(report.createdAt))").font(.subheadline).foregroundStyle(.secondary)
+                    Text(report.title).font(.title2.bold()).textSelection(.enabled)
+                }
+                if let body = report.body, !body.isEmpty {
+                    Text((try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(body))
+                        .textSelection(.enabled)
+                }
+                ForEach(report.links, id: \.self) { link in
+                    if let url = URL(string: link.url) {
+                        SwiftUI.Link(destination: url) { Label(link.title ?? link.url, systemImage: "arrow.up.right.square") }
+                    }
+                }
+                ForEach(report.attachments, id: \.self) { file in
+                    Button {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: file.storedPath ?? file.sourcePath))
+                    } label: {
+                        Label(file.name, systemImage: "doc.text")
+                    }
+                    .buttonStyle(.link)
+                }
+                HStack {
+                    TextField("Responder a \(report.nodeName ?? "el nodo")…", text: $reply, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(send)
+                    Button("Enviar", action: send).disabled(reply.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Leído") { Task { await store.markRead(report) } }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 760, alignment: .leading)
+        }
+    }
+
+    private func send() {
+        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        reply = ""
+        Task { await store.reply(to: report, text: text) }
     }
 }
 

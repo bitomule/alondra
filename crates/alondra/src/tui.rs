@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use alondra_core::{Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, StateSource, now_millis};
+use alondra_core::{Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, Report, ReportKind, StateSource, now_millis};
 use anyhow::Result;
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -31,6 +31,7 @@ enum Mode {
 enum Target {
     Answer(u64, String),
     Message { session: String, name: String, ack: bool },
+    ReplyReport { report: u64, session: String, name: String },
 }
 
 struct App {
@@ -44,7 +45,7 @@ struct App {
     mode: Mode,
     status: Option<(String, i64)>,
     pinned_question: Option<u64>,
-    pinned_news: Option<String>,
+    pinned_news: Option<u64>,
     pinned_fleet: Option<String>,
 }
 
@@ -173,8 +174,8 @@ fn repin(app: &mut App) {
     {
         app.questions.select(Some(i));
     }
-    if let Some(sid) = &app.pinned_news
-        && let Some(i) = app.data.news.iter().position(|n| &n.session_id == sid)
+    if let Some(id) = app.pinned_news
+        && let Some(i) = app.data.news.iter().position(|r| r.id == id)
     {
         app.news.select(Some(i));
     }
@@ -187,7 +188,7 @@ fn repin(app: &mut App) {
 
 fn pin(app: &mut App) {
     app.pinned_question = selected_question(app).map(|q| q.id);
-    app.pinned_news = selected_news(app).map(|n| n.session_id);
+    app.pinned_news = selected_news(app).map(|r| r.id);
     app.pinned_fleet = selected_fleet(app).map(|n| n.session_id);
 }
 
@@ -199,7 +200,7 @@ fn selected_question(app: &App) -> Option<Question> {
     app.questions.selected().and_then(|i| app.data.open_questions.get(i).cloned())
 }
 
-fn selected_news(app: &App) -> Option<Node> {
+fn selected_news(app: &App) -> Option<Report> {
     app.news.selected().and_then(|i| app.data.news.get(i).cloned())
 }
 
@@ -218,7 +219,7 @@ fn node_of(app: &App, session: &str) -> Option<Node> {
 fn attach_target(app: &App) -> Option<String> {
     match app.focus {
         Focus::Fleet => selected_fleet(app).map(|n| n.short_id),
-        Focus::News => selected_news(app).map(|n| n.short_id),
+        Focus::News => selected_news(app).and_then(|r| node_of(app, &r.session_id)).map(|n| n.short_id),
         Focus::Questions => selected_question(app).and_then(|q| node_of(app, &q.session_id)).map(|n| n.short_id),
     }
 }
@@ -290,8 +291,9 @@ fn handle_key(app: &mut App, client: &Client, k: KeyEvent) -> bool {
                 }
             }
             Focus::News => {
-                if let Some(n) = selected_news(app) {
-                    app.mode = input(Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: true });
+                if let Some(r) = selected_news(app) {
+                    let name = r.node_name.clone().unwrap_or_else(|| r.session_id.chars().take(8).collect());
+                    app.mode = input(Target::ReplyReport { report: r.id, session: r.session_id, name });
                 }
             }
             Focus::Fleet => {
@@ -301,9 +303,9 @@ fn handle_key(app: &mut App, client: &Client, k: KeyEvent) -> bool {
             }
         },
         KeyCode::Char('x') | KeyCode::Char(' ') if app.focus == Focus::News => {
-            if let Some(n) = selected_news(app) {
-                match client.post(&format!("/v1/nodes/{}/ack", urlencode(&n.session_id)), &json!({})) {
-                    Ok(_) => flash(app, format!("Visto: {}", n.display_name())),
+            if let Some(r) = selected_news(app) {
+                match client.post(&format!("/v1/reports/{}/read", r.id), &json!({})) {
+                    Ok(_) => flash(app, format!("Leído: {}", r.title)),
                     Err(e) => flash(app, format!("Error: {e}")),
                 }
             }
@@ -342,10 +344,17 @@ fn submit(app: &mut App, client: &Client, target: Target, text: String, option: 
             }
             r
         }
+        Target::ReplyReport { report, session, .. } => {
+            let r = client.post(&format!("/v1/nodes/{}/messages", urlencode(session)), &json!({"text": text, "from": "david"}));
+            if r.is_ok() {
+                let _ = client.post(&format!("/v1/reports/{report}/read"), &json!({}));
+            }
+            r
+        }
     };
     match (res, target) {
         (Ok(_), Target::Answer(id, _)) => flash(app, format!("Contestada #{id}: le llega al nodo que preguntó")),
-        (Ok(_), Target::Message { name, .. }) => flash(app, format!("Enviado a {name}")),
+        (Ok(_), Target::Message { name, .. }) | (Ok(_), Target::ReplyReport { name, .. }) => flash(app, format!("Enviado a {name}")),
         (Err(e), _) => flash(app, format!("Error: {e}")),
     }
 }
@@ -455,11 +464,20 @@ fn draw_questions(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(List::new(items).block(b).highlight_style(Style::new().add_modifier(Modifier::REVERSED)), area, &mut app.questions);
 }
 
+fn report_kind(k: ReportKind) -> &'static str {
+    match k {
+        ReportKind::Delivery => "entrega",
+        ReportKind::Finding => "hallazgo",
+        ReportKind::Progress => "progreso",
+        ReportKind::Final => "terminado",
+    }
+}
+
 fn draw_news(f: &mut Frame, app: &mut App, area: Rect) {
     let n = app.data.news.len();
-    let b = block(&format!("Novedades ({n})"), app.focus == Focus::News);
+    let b = block(&format!("Para leer ({n})"), app.focus == Focus::News);
     if n == 0 {
-        f.render_widget(Paragraph::new("  Ningún nodo ha entregado nada nuevo.".dark_gray()).block(b), area);
+        f.render_widget(Paragraph::new("  Ningún nodo te ha enviado nada para leer.".dark_gray()).block(b), area);
         return;
     }
     let width = area.width.saturating_sub(6) as usize;
@@ -467,16 +485,13 @@ fn draw_news(f: &mut Frame, app: &mut App, area: Rect) {
         .data
         .news
         .iter()
-        .map(|node| {
-            let at = node.last_message_at.unwrap_or(node.state_since);
-            let sleep = if node.alive { "" } else { " 💤" };
+        .map(|r| {
+            let who = r.node_name.clone().unwrap_or_else(|| r.session_id.chars().take(8).collect());
+            let extras = r.links.len() + r.attachments.len();
+            let clip = if extras > 0 { format!(" · 📎{extras}") } else { String::new() };
             ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled("● ", Style::new().fg(state_color(node.state))),
-                    Span::raw(format!("{}{sleep}", node.display_name())).bold(),
-                    format!("  {} · {}", node.state.label(), ago(at)).dark_gray(),
-                ]),
-                Line::from(format!("  {}", one_line(&said(node), width))),
+                Line::from(vec![format!("{} ", report_kind(r.kind)).cyan(), one_line(&r.title, width.saturating_sub(12)).bold()]),
+                Line::from(format!("  {who} · {}{clip}", ago(r.created_at)).dark_gray()),
             ])
         })
         .collect();
@@ -554,9 +569,9 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.focus {
-        Focus::Questions => "1-4 elegir · r responder · Enter ver · a su terminal · o orquestador · Tab novedades · f flota · q salir",
-        Focus::News => "r responder al nodo · x visto · Enter leer entero · a su terminal · o orquestador · Tab preguntas · f flota · q salir",
-        Focus::Fleet => "r mensaje · Enter ver · a su terminal (Ctrl+Z vuelve) · o orquestador · f volver · q salir   ~ demonio · * jev · 💤 dormido",
+        Focus::Questions => "1-4 elegir · r responder · Enter ver · a su terminal (← vuelve) · o orquestador · Tab novedades · f flota · q salir",
+        Focus::News => "Enter leer · r responder al nodo · x leído · a su terminal (← vuelve) · o orquestador · Tab preguntas · f flota · q salir",
+        Focus::Fleet => "r mensaje · Enter ver · a su terminal (← vuelve) · o orquestador · f volver · q salir   ~ demonio · * jev · 💤 dormido",
     };
     let status = app
         .status
@@ -572,7 +587,7 @@ fn draw_overlay(f: &mut Frame, app: &App) {
         Mode::Input { target, buffer } => {
             let title = match target {
                 Target::Answer(id, t) => format!("Responder #{id}: {}   (Enter envía · Alt+Enter salto · Esc cancela)", one_line(t, 50)),
-                Target::Message { name, .. } => format!("Mensaje a {name}   (Enter envía · Esc cancela)"),
+                Target::Message { name, .. } | Target::ReplyReport { name, .. } => format!("Mensaje a {name}   (Enter envía · Esc cancela)"),
             };
             let area = centered(f.area(), 100, 8);
             f.render_widget(Clear, area);
@@ -616,9 +631,24 @@ fn open_detail(app: &mut App) {
             }
             app.mode = Mode::Detail { title: format!("#{} · {}", q.id, q.node_name.clone().unwrap_or_default()), body: Text::from(lines), scroll: 0 };
         }
-        Focus::News | Focus::Fleet => {
-            let node = if app.focus == Focus::News { selected_news(app) } else { selected_fleet(app) };
-            let Some(n) = node else { return };
+        Focus::News => {
+            let Some(r) = selected_news(app) else { return };
+            let mut lines: Vec<Line> = vec![Line::from(r.title.clone().bold()), Line::default()];
+            if let Some(b) = &r.body {
+                lines.extend(b.lines().map(|l| Line::from(l.to_string())));
+                lines.push(Line::default());
+            }
+            for l in &r.links {
+                lines.push(Line::from(format!("  ↗ {} {}", l.title.clone().unwrap_or_default(), l.url).cyan()));
+            }
+            for a in &r.attachments {
+                lines.push(Line::from(format!("  📎 {}", a.stored_path.clone().unwrap_or_else(|| a.source_path.clone())).cyan()));
+            }
+            let who = r.node_name.clone().unwrap_or_default();
+            app.mode = Mode::Detail { title: format!("{} · {who}", report_kind(r.kind)), body: Text::from(lines), scroll: 0 };
+        }
+        Focus::Fleet => {
+            let Some(n) = selected_fleet(app) else { return };
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![
                     Span::styled(n.state.label(), Style::new().fg(state_color(n.state)).bold()),

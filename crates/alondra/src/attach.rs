@@ -1,47 +1,220 @@
+use std::io::Write;
+use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+
+const LEFT_ARROWS: [&[u8]; 2] = [b"\x1b[D", b"\x1bOD"];
+
+struct RawMode;
+
+impl RawMode {
+    fn enter() -> Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(RawMode)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+struct Fd(RawFd);
+
+impl Drop for Fd {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.0) };
+    }
+}
+
+fn window_size() -> libc::winsize {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    if ws.ws_row == 0 || ws.ws_col == 0 {
+        ws.ws_row = 50;
+        ws.ws_col = 200;
+    }
+    ws
+}
+
+#[derive(Default, Clone, Copy, PartialEq)]
+enum Esc {
+    #[default]
+    None,
+    Start,
+    Csi,
+    Ss3,
+    Str,
+    StrEnd,
+}
+
+/// Characters typed on the node's prompt line since it was last empty. Escape
+/// sequences (arrows, function keys, and the terminal's own replies to queries)
+/// do not count; Enter, Ctrl+U and Ctrl+C empty it.
+#[derive(Default)]
+struct LineTracker {
+    typed: usize,
+    esc: Esc,
+}
+
+impl LineTracker {
+    fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.esc = match self.esc {
+                Esc::Start => match b {
+                    b'[' => Esc::Csi,
+                    b'O' => Esc::Ss3,
+                    b'P' | b']' | b'_' | b'^' | b'X' => Esc::Str,
+                    _ => Esc::None,
+                },
+                Esc::Csi if (0x40..=0x7e).contains(&b) => Esc::None,
+                Esc::Csi => Esc::Csi,
+                Esc::Ss3 => Esc::None,
+                Esc::Str if b == 0x07 => Esc::None,
+                Esc::Str if b == 0x1b => Esc::StrEnd,
+                Esc::Str => Esc::Str,
+                Esc::StrEnd if b == b'\\' => Esc::None,
+                Esc::StrEnd => Esc::Str,
+                Esc::None => {
+                    match b {
+                        0x1b => {
+                            self.esc = Esc::Start;
+                            continue;
+                        }
+                        b'\r' | b'\n' | 0x15 | 0x03 => self.typed = 0,
+                        0x7f | 0x08 => self.typed = self.typed.saturating_sub(1),
+                        0x80..=0xbf => {}
+                        0x20.. => self.typed += 1,
+                        _ => {}
+                    }
+                    Esc::None
+                }
+            };
+        }
+    }
+}
 
 pub fn attach(short_id: &str) -> Result<()> {
+    let mut ws = window_size();
+    let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
+    let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
+    if r != 0 {
+        bail!("no pude abrir un pseudoterminal");
+    }
+    let master = Fd(master);
+    let slave_fd = slave;
     let mut cmd = Command::new("claude");
     cmd.arg("attach").arg(short_id).current_dir("/tmp");
     unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            libc::signal(libc::SIGTTOU, libc::SIG_IGN);
-            libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpid());
-            libc::signal(libc::SIGTTOU, libc::SIG_DFL);
-            Ok(())
-        });
+        cmd.stdin(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
+            .stdout(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
+            .stderr(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
+            .pre_exec(|| {
+                libc::setsid();
+                libc::ioctl(0, libc::TIOCSCTTY as _, 0);
+                Ok(())
+            });
     }
-    let child = cmd.spawn().context("no pude lanzar claude attach")?;
-    let pid = child.id() as libc::pid_t;
-    unsafe {
-        libc::signal(libc::SIGTTOU, libc::SIG_IGN);
-        libc::setpgid(pid, pid);
-        libc::tcsetpgrp(libc::STDIN_FILENO, pid);
-    }
+    let mut child = cmd.spawn().context("no pude lanzar claude attach")?;
+    unsafe { libc::close(slave_fd) };
+
+    let raw = RawMode::enter()?;
+    let mut stdout = std::io::stdout();
+    let mut line = LineTracker::default();
+    let mut buf = [0u8; 16 * 1024];
+    let mut left_to_alondra = false;
+    let mut log = std::env::var("ALONDRA_ATTACH_LOG").ok().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     loop {
-        let mut status = 0;
-        let r = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
-        if r < 0 {
-            break;
+        let current = window_size();
+        if current.ws_row != ws.ws_row || current.ws_col != ws.ws_col {
+            ws = current;
+            unsafe { libc::ioctl(master.0, libc::TIOCSWINSZ, &ws) };
         }
-        if libc::WIFSTOPPED(status) {
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-                libc::kill(pid, libc::SIGCONT);
+        let mut fds = [
+            libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: master.0, events: libc::POLLIN, revents: 0 },
+        ];
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 200) };
+        if n < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-            continue;
+            break;
         }
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+        if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let got = unsafe { libc::read(master.0, buf.as_mut_ptr().cast(), buf.len()) };
+            if got <= 0 {
+                break;
+            }
+            stdout.write_all(&buf[..got as usize])?;
+            stdout.flush()?;
+        }
+        if fds[0].revents & libc::POLLIN != 0 {
+            let got = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
+            if got <= 0 {
+                break;
+            }
+            let input = &buf[..got as usize];
+            if let Some(f) = log.as_mut() {
+                let _ = writeln!(f, "typed={} input={:?}", line.typed, input);
+            }
+            if line.typed == 0 && LEFT_ARROWS.contains(&input) {
+                left_to_alondra = true;
+                break;
+            }
+            line.feed(input);
+            unsafe { libc::write(master.0, input.as_ptr().cast(), input.len()) };
+        }
+        if let Ok(Some(_)) = child.try_wait() {
             break;
         }
     }
-    unsafe {
-        libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
-        libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+    drop(raw);
+    if left_to_alondra || child.try_wait().ok().flatten().is_none() {
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     }
+    let _ = child.wait();
     Ok(())
+}
+
+trait FromRawFdOwned {
+    unsafe fn from_raw_fd_owned(fd: RawFd) -> Stdio;
+}
+
+impl FromRawFdOwned for Stdio {
+    unsafe fn from_raw_fd_owned(fd: RawFd) -> Stdio {
+        use std::os::fd::FromRawFd;
+        unsafe { Stdio::from_raw_fd(fd) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_line_after_enter_and_escape_sequences_do_not_count() {
+        let mut t = LineTracker::default();
+        t.feed(b"hola");
+        assert_eq!(t.typed, 4);
+        t.feed(b"\x1b[D\x1b[C");
+        assert_eq!(t.typed, 4);
+        t.feed(b"\x7f\x7f");
+        assert_eq!(t.typed, 2);
+        t.feed(b"\r");
+        assert_eq!(t.typed, 0);
+        t.feed("ñ".as_bytes());
+        assert_eq!(t.typed, 1);
+    }
+
+    #[test]
+    fn terminal_replies_are_not_typing() {
+        let mut t = LineTracker::default();
+        t.feed(b"\x1bP>|tmux 3.5a\x1b\\\x1b[?1;2;4c");
+        t.feed(b"\x1b]11;rgb:0000/0000/0000\x07");
+        assert_eq!(t.typed, 0);
+    }
 }

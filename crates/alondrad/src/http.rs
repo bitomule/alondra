@@ -229,7 +229,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         let open: Vec<&Question> = v.questions.values().filter(|q| q.status.is_open()).collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
-        let news: Vec<&alondra_core::Node> = v.news(now_millis());
+        let news: Vec<&Report> = v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress).collect();
         let orchestrator_messages: Vec<&Message> = v
             .nodes
             .values()
