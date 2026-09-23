@@ -16,6 +16,9 @@ const TITLE_MAX: usize = 110;
 const MARK: &str = "sentinel:";
 const GRACE: Duration = Duration::from_secs(180);
 const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
+/// A node without the plugin may be parked on a terminal menu; the menu watcher gets this long
+/// to find it before jev reads its last message.
+const MENU_FIRST_MS: i64 = 90 * 1000;
 
 #[derive(Default)]
 struct Memory {
@@ -66,7 +69,10 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             continue;
         }
         if !has_plugin {
-            due.push((session, key));
+            let since = hub.read(|v| v.nodes.get(&session).map(|n| n.state_since)).unwrap_or(0);
+            if now_millis() - since >= MENU_FIRST_MS {
+                due.push((session, key));
+            }
             continue;
         }
         let last_nudge = hub.read(|v| last_nudge_at(v, &session));
