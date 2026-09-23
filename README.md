@@ -1,7 +1,7 @@
 # Alondra
 
 El sistema nervioso del orquestador de la colmena: estado fiable de cada nodo de Claude Code
-y de la máquina, preguntas estructuradas que llegan a David y vuelven a su nodo, y
+y de la máquina, preguntas estructuradas que llegan al usuario y vuelven a su nodo, y
 herramientas para que el orquestador actúe.
 
 | Carpeta | Qué es |
@@ -10,14 +10,16 @@ herramientas para que el orquestador actúe.
 | `crates/alondrad` | Demonio 24/7: hooks, vigilante, SQLite, API |
 | `crates/alondra` | CLI, TUI, servidor MCP de los nodos y hook de bandeja |
 | `plugin/` | Plugin de Claude Code: hooks, herramientas `ask`/`report` y skill |
-| `launchd/` | Servicio de macOS para `alondrad` |
+| `launchd/` | Plantilla del servicio de macOS para `alondrad` (la instala `alondra setup`) |
+| `signing/` | Firma de las apps: `signing.example.bzl` → copia local `signing.bzl` y perfiles |
 | `docs/plan.md` | Diseño y plan por fases |
 
 ## Probarlo
 
 ```bash
 make install        # compila con Bazel e instala alondra y alondrad en ~/.local/bin
-make launchd        # alondrad arranca solo al iniciar sesión y se reinicia si cae
+alondra setup       # config.toml, servicio de launchd, plugin y vinculación del iPhone (--help, --dry-run)
+alondra doctor      # qué funciona y qué falta, con cómo arreglarlo
 alondra             # la TUI
 alondra status      # lo mismo en texto
 ```
@@ -29,6 +31,10 @@ claude --bg --name "prueba/alondra" --plugin-dir ~/Projects/alondra/plugin --per
 ```
 
 o, desde el orquestador, con su herramienta `launch`.
+
+Los ajustes viven en `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
+`legacy_bridge`, `wake`, `retention_hours`, `service_label`). Una variable de entorno
+`ALONDRA_*` manda sobre el fichero; `alondra config` enseña los valores en vigor.
 
 **El orquestador** se arranca con `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: los
 mismos hooks más las herramientas `fleet`, `node`, `machine`, `send` y `launch`. Alondra le
