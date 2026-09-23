@@ -62,6 +62,24 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     Some((state, confidence))
 }
 
+const ASKS_QUESTION: &str = "Es un informe que un agente de programación manda a David para que lo lea. ¿Le pide a David que decida, apruebe, conteste o haga algo?";
+const ASKS_MIN_CONFIDENCE: f64 = 0.8;
+
+pub async fn report_asks_for_action(text: &str) -> bool {
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("jevi")
+            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer", "-s", text, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let Ok(Ok(out)) = out else { return false };
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return false };
+    let answer = &v["answers"]["answer"];
+    answer["label"].as_str() == Some("pide_algo") && answer["confidence"].as_f64().unwrap_or(0.0) >= ASKS_MIN_CONFIDENCE
+}
+
 const SEARCH_CONCURRENCY: usize = 8;
 
 pub async fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {

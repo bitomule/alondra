@@ -621,6 +621,17 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
+    if b.kind != Some(ReportKind::Progress) {
+        let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
+        if crate::classify::report_asks_for_action(&text).await {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Este informe le pide a David que decida o haga algo, y un informe es solo para leer. \
+                 Manda cada decisión como su propia pregunta con ask (título de una línea, contexto en detail, opciones) \
+                 y deja en report solo lo informativo. Si la pregunta ya está abierta en Alondra, no la repitas.",
+            );
+        }
+    }
     let stamp = now_millis();
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
     let res = hub.append_with(|v| {
@@ -834,7 +845,7 @@ struct LaunchBody {
     permission_mode: Option<String>,
 }
 
-async fn launch(State(hub): State<AppState>, Json(b): Json<LaunchBody>) -> Response {
+async fn launch(Json(b): Json<LaunchBody>) -> Response {
     if !std::path::Path::new(&b.cwd).is_dir() {
         return err(StatusCode::BAD_REQUEST, format!("no existe el directorio {}", b.cwd));
     }

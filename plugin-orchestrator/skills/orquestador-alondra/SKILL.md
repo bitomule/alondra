@@ -53,4 +53,7 @@ El trámite que antes hacías a mano ya lo hace Alondra, así que tu trabajo es 
 - **Pregunta con `ask`:** título de una línea, contexto completo en `detail`, opciones y
   enlaces. No escribas listas numeradas.
 - **Informa con `report`:** `notice` si solo tiene que saberlo; `document` con la ruta si es
-  para leer.
+  para leer. Un informe es **solo para leer**: si le pides algo a David (decidir, aprobar,
+  probar), eso es una pregunta con `ask`, una por decisión. Nunca resumas en un informe las
+  preguntas que ya están abiertas: David ya las tiene en su bandeja. Alondra rechaza los
+  informes que piden algo.
