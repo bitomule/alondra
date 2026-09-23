@@ -212,7 +212,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
         _ => (
             h.tool_summary.clone().map(|t| t.chars().take(120).collect()).unwrap_or_else(|| h.tool_name.clone().unwrap_or_default()),
-            Some(h.tool_summary.clone().unwrap_or_else(|| input.to_string())),
+            h.tool_summary.clone().filter(|t| t.chars().count() > 120).or_else(|| h.tool_summary.is_none().then(|| input.to_string())),
             vec![
                 QuestionOption { label: answer_option::ALLOW.into(), description: None },
                 QuestionOption { label: answer_option::DENY.into(), description: Some("Write the reason".into()) },
@@ -232,7 +232,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         origin,
         tool_use_id: h.tool_use_id.clone(),
         to_orchestrator: false,
-        node_context: node.and_then(|n| n.last_message.clone()),
+        node_context: if origin == QuestionOrigin::Permission { None } else { node.and_then(|n| n.last_message.clone()) },
         status: QuestionStatus::Open,
         answer: None,
         asked_at: now_millis(),
