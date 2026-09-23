@@ -1,5 +1,5 @@
 {
   "name": "alondra",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Connects the node to Alondra: reliable state, structured questions to the user, permissions and plans from the phone."
 }
