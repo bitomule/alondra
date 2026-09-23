@@ -61,6 +61,16 @@
         }
       }
     },
+    "CPU in use: %lld%%. Load average %@ over %lld cores: how many processes want the CPU at once.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CPU en uso: %lld%%. Carga media %@ con %lld núcleos: cuántos procesos quieren la CPU a la vez."
+          }
+        }
+      }
+    },
     "Cancel": {
       "localizations": {
         "es": {
@@ -77,6 +87,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "No encuentro el servidor de Alondra"
+          }
+        }
+      }
+    },
+    "Claude this week: %lld%% of the weekly limit used. It resets %@; from here that leaves about %lld%% per day.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude esta semana: %lld%% del límite semanal usado. Se reinicia %@; desde ahora quedan unos %lld%% por día."
           }
         }
       }
@@ -201,6 +221,16 @@
         }
       }
     },
+    "Memory in use: %lld%% (%@ available). Below 15%% free, Alondra tells the orchestrator not to launch nodes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memoria en uso: %lld%% (%@ disponibles). Con menos del 15%% libre, Alondra le dice al orquestador que no lance nodos."
+          }
+        }
+      }
+    },
     "Menu": {
       "localizations": {
         "es": {
@@ -247,6 +277,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Orquestador"
+          }
+        }
+      }
+    },
+    "Over pace: the orchestrator asks you before launching new nodes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vas por encima del ritmo: el orquestador te pregunta antes de lanzar nodos nuevos."
           }
         }
       }
@@ -311,6 +351,16 @@
         }
       }
     },
+    "The load is so high that these readings may be wrong.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carga es tan alta que estas lecturas pueden estar mal."
+          }
+        }
+      }
+    },
     "The server isn’t responding": {
       "localizations": {
         "es": {
@@ -337,6 +387,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Este dispositivo no está vinculado"
+          }
+        }
+      }
+    },
+    "Today: %lld%% of the week spent, against the %lld%% that today's share allows.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoy: gastado el %lld%% de la semana, frente al %lld%% que te toca hoy."
           }
         }
       }
