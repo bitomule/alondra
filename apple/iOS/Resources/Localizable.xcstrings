@@ -1591,6 +1591,16 @@
         }
       }
     },
+    "Your turn": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te toca"
+          }
+        }
+      }
+    },
     "alive": {
       "localizations": {
         "es": {

@@ -151,6 +151,9 @@ fn state_color(s: NodeState) -> Color {
 }
 
 pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color) {
+    if q.action {
+        return ("▶", tr!("your turn", "te toca"), Color::LightYellow);
+    }
     match q.origin {
         QuestionOrigin::Plan => ("◆", tr!("plan", "plan"), Color::LightMagenta),
         QuestionOrigin::Permission => ("!", tr!("permission", "permiso"), Color::LightRed),
@@ -248,7 +251,7 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
         Item::Q(q) => {
             for (i, o) in q.options.iter().enumerate().take(9) {
                 meta.push(Span::styled(format!("  {}", i + 1), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
-                meta.push(Span::styled(format!(" {}", md::one_line(&o.label)), Style::new().fg(SOFT)));
+                meta.push(Span::styled(format!(" {}", md::one_line(i18n::option_label(&o.label))), Style::new().fg(SOFT)));
             }
         }
         Item::R(r) => {
@@ -340,6 +343,13 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     lines.push(fit(meta, width));
     lines.push(Line::default());
     lines.extend(wrap(vec![Span::styled(md::one_line(title), Style::new().add_modifier(Modifier::BOLD))], width, vec![], vec![]));
+    if let Item::Q(q) = item
+        && !q.steps.is_empty()
+    {
+        let steps: String = q.steps.iter().enumerate().map(|(i, s)| format!("{}. {}\n", i + 1, s.trim())).collect();
+        lines.push(Line::default());
+        lines.extend(md::render(&md::parse(&steps), width).lines);
+    }
     if let Some(b) = body.as_ref().filter(|b| !b.trim().is_empty()) {
         lines.push(Line::default());
         lines.extend(md::render(&md::parse(b), width).lines);
@@ -389,9 +399,9 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 .enumerate()
                 .take(9)
                 .map(|(i, o)| {
-                    let mut spans = vec![keycap(&(i + 1).to_string()), Span::styled(format!(" {}", md::one_line(&o.label)), Style::new().add_modifier(Modifier::BOLD))];
+                    let mut spans = vec![keycap(&(i + 1).to_string()), Span::styled(format!(" {}", md::one_line(i18n::option_label(&o.label))), Style::new().add_modifier(Modifier::BOLD))];
                     if let Some(d) = o.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                        spans.push(Span::styled(format!("  {}", md::one_line(d)), Style::new().fg(DIM)));
+                        spans.push(Span::styled(format!("  {}", md::one_line(i18n::option_label(d))), Style::new().fg(DIM)));
                     }
                     fit(spans, width)
                 })
@@ -860,7 +870,7 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize, approval: 
                 lines.push(Line::default());
                 lines.push(Line::from(tr!("Or choose directly", "O elige directamente").fg(DIM)));
                 for (i, o) in q.options.iter().enumerate().take(9) {
-                    lines.push(fit(vec![Span::styled(format!("{:<6}", i + 1), Style::new().fg(ACCENT).bold()), Span::raw(md::one_line(&o.label))], width));
+                    lines.push(fit(vec![Span::styled(format!("{:<6}", i + 1), Style::new().fg(ACCENT).bold()), Span::raw(md::one_line(i18n::option_label(&o.label)))], width));
                 }
             }
         }
@@ -896,7 +906,12 @@ fn composer_height(input: &super::input::TextInput, width: u16) -> u16 {
 fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
     let Some(c) = app.composer.as_ref() else { return };
     let title = match &c.target {
-        Target::Answer { id, title } => {
+        Target::Answer { id, title, option: Some(o) } => {
+            let t = md::one_line(title);
+            let o = i18n::option_label(o);
+            trf!("#{id} {t} · {o}: write why", "#{id} {t} · {o}: escribe por qué")
+        }
+        Target::Answer { id, title, option: None } => {
             let t = md::one_line(title);
             trf!("Reply to #{id} · {t}", "Responder a #{id} · {t}")
         }

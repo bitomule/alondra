@@ -41,6 +41,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/nodes/{key}/messages", post(send_message))
         .route("/v1/nodes/{key}/ack", post(acknowledge))
         .route("/v1/questions", post(ask))
+        .route("/v1/actions", post(request_action))
         .route("/v1/questions/{id}", get(question_detail))
         .route("/v1/questions/{id}/answer", post(answer))
         .route("/v1/questions/{id}/withdraw", post(withdraw))
@@ -238,6 +239,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         answer: None,
         asked_at: now_millis(),
         action: false,
+        steps: vec![],
     }
 }
 
@@ -527,6 +529,8 @@ struct AskBody {
     blocking: bool,
     #[serde(default)]
     to_orchestrator: bool,
+    #[serde(default)]
+    steps: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -552,15 +556,33 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
         .collect()
 }
 
-async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
+async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
     if b.title.trim().is_empty() || b.detail.as_deref().is_none_or(|d| d.trim().is_empty()) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("A question needs a one-line title and a detail with all the context {} needs to answer without asking you anything.", hub.config.name),
         );
     }
+    record_question(hub, b, false)
+}
+
+async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
+    b.steps.retain(|s| !s.trim().is_empty());
+    if b.title.trim().is_empty() || b.steps.is_empty() {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("An action needs a one-line title saying what {} has to do and the steps to do it.", hub.config.name),
+        );
+    }
+    b.options = vec![];
+    b.blocking = true;
+    b.to_orchestrator = false;
+    record_question(hub, b, true)
+}
+
+fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
     let stamp = now_millis();
-    let options: Vec<QuestionOption> = std::mem::take(&mut b.options).into_iter().map(Into::into).collect();
+    let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
@@ -582,7 +604,8 @@ async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Respons
             status: QuestionStatus::Open,
             answer: None,
             asked_at: stamp,
-            action: false,
+            action,
+            steps: b.steps.clone(),
         }))
     });
     match res {
@@ -636,9 +659,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
-    let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
+    let reply = if q.action {
+        action_reply(&answer, &user)
+    } else {
+        let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
+        format!("{chosen}{}", b.text)
+    };
     let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
-    let text = if other_open { format!("About \"{}\": {chosen}{}", q.title, b.text) } else { format!("{chosen}{}", b.text) };
+    let text = if other_open { format!("About \"{}\": {reply}", q.title) } else { reply };
     eprintln!("alondrad: answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
@@ -655,6 +683,21 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     match res {
         Ok(_) => Json(json!({"id": id, "delivered": "inbox"})).into_response(),
         Err(e) => internal(e),
+    }
+}
+
+/// What the node reads when the user resolves a "your turn" card.
+fn action_reply(answer: &Answer, user: &str) -> String {
+    let said = answer.text.trim();
+    let extra = |label: &str| (!said.is_empty() && !said.eq_ignore_ascii_case(label)).then(|| format!(" {user} adds: {said}")).unwrap_or_default();
+    match answer.option.as_deref() {
+        Some(answer_option::DONE) => format!("{user} has done it.{}", extra(answer_option::DONE)),
+        Some(answer_option::CANNOT) if said.is_empty() || said.eq_ignore_ascii_case(answer_option::CANNOT) => {
+            format!("{user} cannot do it as asked. Find out what is in the way and explain it again with simpler steps.")
+        }
+        Some(answer_option::CANNOT) => format!("{user} cannot do it as asked: {said}"),
+        _ if said.eq_ignore_ascii_case(answer_option::DONE) => format!("{user} has done it."),
+        _ => said.to_string(),
     }
 }
 
@@ -1091,6 +1134,21 @@ mod tests {
         let out = decision(QuestionOrigin::Plan, &a);
         assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
         assert_eq!(out["hookSpecificOutput"]["permissionDecisionReason"], "Explain the risk");
+    }
+
+    #[test]
+    fn resolving_an_action_card_tells_the_node_what_happened() {
+        let cases = [
+            (answered("Done", Some("Done")), "Ana has done it."),
+            (answered("done", None), "Ana has done it."),
+            (answered("Key saved in the vault", Some("Done")), "Ana has done it. Ana adds: Key saved in the vault"),
+            (answered("I have no access to App Store Connect", Some("I can't / explain")), "Ana cannot do it as asked: I have no access to App Store Connect"),
+            (answered("I can't / explain", Some("I can't / explain")), "Ana cannot do it as asked. Find out what is in the way and explain it again with simpler steps."),
+            (answered("Which key?", None), "Which key?"),
+        ];
+        for (a, expected) in cases {
+            assert_eq!(action_reply(&a, "Ana"), expected, "{a:?}");
+        }
     }
 
     #[test]

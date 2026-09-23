@@ -151,12 +151,32 @@
         }
       }
     },
+    "Done": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hecho"
+          }
+        }
+      }
+    },
     "Finished": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Terminado"
+          }
+        }
+      }
+    },
+    "I can't / explain": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No puedo / explícamelo"
           }
         }
       }

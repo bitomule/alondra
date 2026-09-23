@@ -1261,6 +1261,16 @@
         }
       }
     },
+    "Your turn": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te toca"
+          }
+        }
+      }
+    },
     "iPhone paired": {
       "localizations": {
         "es": {

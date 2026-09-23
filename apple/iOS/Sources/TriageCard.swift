@@ -176,7 +176,7 @@ struct TriageCard: View {
             if question.origin == "plan", let plan = question.detail {
                 excerpt(plan, cta: String(localized: "Review the plan"))
             } else {
-                if let detail = question.detail, !detail.isEmpty {
+                if let detail = question.readableDetail, !detail.isEmpty {
                     if question.origin == "permission" {
                         Text(detail)
                             .font(.mono(.callout))
@@ -546,7 +546,11 @@ enum OptionTone {
 
     init(_ label: String) {
         let lower = label.lowercased()
-        if ["aprobar", "permitir", "sí", "si", "vale", "adelante", "ok", "approve", "allow", "yes"].contains(where: { lower.hasPrefix($0) }) {
+        if label == AnswerOption.done {
+            self = .positive
+        } else if label == AnswerOption.cannot {
+            self = .negative
+        } else if ["aprobar", "permitir", "sí", "si", "vale", "adelante", "ok", "approve", "allow", "yes"].contains(where: { lower.hasPrefix($0) }) {
             self = .positive
         } else if ["denegar", "no", "cancelar", "rechazar", "deny", "reject", "cancel"].contains(where: { lower == $0 || lower.hasPrefix("\($0) ") }) {
             self = .negative

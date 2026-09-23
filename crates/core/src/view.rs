@@ -473,6 +473,7 @@ mod tests {
             answer: None,
             asked_at: 0,
             action: false,
+            steps: vec![],
         }
     }
 
@@ -699,6 +700,7 @@ mod tests {
             answer: None,
             asked_at: at,
             action: false,
+            steps: vec![],
         };
         v.questions.insert(1, q(1, QuestionStatus::Delivered, 100));
         v.questions.insert(2, q(2, QuestionStatus::Open, 100));

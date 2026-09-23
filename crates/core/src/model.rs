@@ -397,6 +397,8 @@ pub struct Question {
     pub asked_at: Millis,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub action: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -495,6 +497,17 @@ pub mod answer_option {
     pub const ALLOW: &str = "Allow";
     pub const DENY: &str = "Deny";
     pub const MORE_CONTEXT: &str = "I need more context";
+    pub const DONE: &str = "Done";
+    pub const CANNOT: &str = "I can't / explain";
+    pub const WRITE_THE_REASON: &str = "Write the reason";
+
+    /// The two answers a "your turn" card offers: it is done, or the user explains what stops them.
+    pub fn for_action() -> Vec<super::QuestionOption> {
+        vec![
+            super::QuestionOption { label: DONE.into(), description: None },
+            super::QuestionOption { label: CANNOT.into(), description: Some(WRITE_THE_REASON.into()) },
+        ]
+    }
 
     const LEGACY: [(&str, &str); 5] = [
         ("Aprobar", APPROVE),

@@ -84,6 +84,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
                 answer: None,
                 asked_at: now_millis(),
                 action: false,
+                steps: vec![],
             }))
         })?;
         if let Some((_, Event::QuestionAsked(q))) = res {
