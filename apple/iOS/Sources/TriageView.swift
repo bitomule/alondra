@@ -172,7 +172,9 @@ private struct CardStack: View {
 
     var body: some View {
         let queue = fleet.queue
-        let visible = Array(queue.prefix(depthLimit))
+        let visible = drag > 0 && queue.count > 2
+            ? Array(([queue[0], queue[queue.count - 1]] + queue.dropFirst().dropLast()).prefix(depthLimit))
+            : Array(queue.prefix(depthLimit))
         VStack(spacing: 10) {
             ZStack(alignment: .top) {
                 ForEach(visible.reversed()) { item in
