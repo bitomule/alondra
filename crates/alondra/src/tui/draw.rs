@@ -223,27 +223,51 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
     let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working && n.alive).count();
-    let mut right = vec![Span::styled(trf!("{working} working ", "{working} trabajando "), Style::new().fg(DIM))];
-    for r in readings(m, app.data.usage.as_ref()) {
+    let lw: usize = left.iter().map(Span::width).sum();
+    f.render_widget(Paragraph::new(Line::from(left)), area);
+    if !app.loaded {
+        return;
+    }
+    let reads = readings(m, app.data.usage.as_ref());
+    let fits = |spans: &[Span]| lw + spans.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize;
+    let right = [gauges(&reads, working, true), gauges(&reads, working, false)].into_iter().find(|r| fits(r));
+    if let Some(right) = right {
+        f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
+    }
+}
+
+/// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
+fn gauges(reads: &[Reading], working: usize, named: bool) -> Vec<Span<'static>> {
+    let mut out = vec![Span::styled(trf!("{working} working ", "{working} trabajando "), Style::new().fg(DIM))];
+    let mut group = None;
+    for r in reads {
         let color = match r.level {
             Level::Calm => ACCENT,
             Level::Warm => Color::Yellow,
             Level::Hot => Color::LightRed,
         };
+        let new_group = group != Some(r.group);
+        let gap = match (named, group.is_some() && new_group) {
+            (false, _) => " ",
+            (true, true) => " │ ",
+            (true, false) => "  ",
+        };
+        out.push(Span::styled(gap, Style::new().fg(DIM)));
+        if named {
+            if new_group {
+                out.push(Span::styled(format!("{} ", r.group), Style::new().fg(SOFT).add_modifier(Modifier::BOLD)));
+            }
+            out.push(Span::styled(format!("{} ", r.name), Style::new().fg(SOFT)));
+        }
+        group = Some(r.group);
         let filled = ((r.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
-        right.push(Span::raw(" "));
-        right.push(Span::styled("▰".repeat(filled), Style::new().fg(color)));
-        right.push(Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)));
+        out.push(Span::styled("▰".repeat(filled), Style::new().fg(color)));
+        out.push(Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)));
         let label_style = if r.level == Level::Hot { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
-        right.push(Span::styled(format!(" {}", r.label), label_style));
+        out.push(Span::styled(format!(" {}", if named { &r.label } else { &r.short }), label_style));
     }
-    right.push(Span::raw(" "));
-    let lw: usize = left.iter().map(Span::width).sum();
-    let rw: usize = right.iter().map(Span::width).sum();
-    f.render_widget(Paragraph::new(Line::from(left)), area);
-    if app.loaded && lw + rw + 2 <= area.width as usize {
-        f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
-    }
+    out.push(Span::raw(" "));
+    out
 }
 
 const BAR_CELLS: usize = 4;
@@ -257,8 +281,11 @@ pub(super) enum Level {
 
 #[derive(Debug, PartialEq)]
 pub(super) struct Reading {
+    pub group: &'static str,
+    pub name: &'static str,
     pub value: f64,
     pub label: String,
+    pub short: String,
     pub level: Level,
 }
 
@@ -267,20 +294,29 @@ pub(super) struct Reading {
 pub(super) fn readings(m: &alondra_core::Machine, u: Option<&alondra_core::usage::Usage>) -> Vec<Reading> {
     let mut out = vec![];
     if let Some(u) = u {
-        out.push(Reading { value: u.week_percent / 100.0, label: format!("{}%", u.week_percent.round()), level: if u.week_percent >= 85.0 { Level::Hot } else { Level::Calm } });
+        let week = format!("{}%", u.week_percent.round());
+        out.push(Reading { group: "Claude", name: tr!("week", "semana"), value: u.week_percent / 100.0, short: week.clone(), label: week, level: if u.week_percent >= 85.0 { Level::Hot } else { Level::Calm } });
         if let Some((spent, share)) = u.today_spent.zip(u.today_share) {
             let level = if u.over_pace { Level::Hot } else if spent >= share * 0.75 { Level::Warm } else { Level::Calm };
-            out.push(Reading { value: spent / share.max(0.1), label: format!("{}/{}%", spent.round(), share.round()), level });
+            let (spent, share) = (spent.round(), share.round());
+            out.push(Reading {
+                group: "Claude",
+                name: tr!("today", "hoy"),
+                value: spent / share.max(0.1),
+                label: trf!("{spent}% of {share}%", "{spent}% de {share}%"),
+                short: format!("{spent}/{share}%"),
+                level,
+            });
         }
     }
     if let Some(free) = m.memory_free_percent {
         let used = 100 - free.min(100);
         let level = if free < 15 { Level::Hot } else if free < 30 { Level::Warm } else { Level::Calm };
-        out.push(Reading { value: used as f64 / 100.0, label: format!("{used}%"), level });
+        out.push(Reading { group: "Mac", name: "RAM", value: used as f64 / 100.0, label: format!("{used}%"), short: format!("{used}%"), level });
     }
     let cpu = m.cpu_usage as f64;
     let level = if m.unreliable { Level::Hot } else if cpu >= 85.0 { Level::Warm } else { Level::Calm };
-    out.push(Reading { value: cpu / 100.0, label: format!("{}%", cpu.round()), level });
+    out.push(Reading { group: "Mac", name: "CPU", value: cpu / 100.0, label: format!("{}%", cpu.round()), short: format!("{}%", cpu.round()), level });
     out
 }
 
@@ -1381,11 +1417,13 @@ mod tests {
         app.data.machine.cpu_usage = 34.0;
         app.data.usage = Some(alondra_core::usage::Usage { week_percent: 53.0, today_spent: Some(41.0), today_share: Some(17.6), per_day_left: 9.0, over_pace: true, ..Default::default() });
         let s = screen(&mut app, 160, 20);
-        assert!(s.contains("▰▰▱▱ 53% ▰▰▰▰ 41/18% ▰▰▱▱ 44% ▰▱▱▱ 34%"), "{s}");
+        assert!(s.contains("Claude week ▰▰▱▱ 53%  today ▰▰▰▰ 41% of 18% │ Mac RAM ▰▰▱▱ 44%  CPU ▰▱▱▱ 34%"), "{s}");
+        let s = screen(&mut app, 90, 20);
+        assert!(s.contains("▰▰▱▱ 53% ▰▰▰▰ 41/18% ▰▰▱▱ 44% ▰▱▱▱ 34%"), "bare bars when there is no room for names\n{s}");
         let r = readings(&app.data.machine, app.data.usage.as_ref());
         assert_eq!(r.iter().map(|r| r.level).collect::<Vec<_>>(), [Level::Calm, Level::Hot, Level::Calm, Level::Calm]);
         app.data.usage = None;
-        assert!(screen(&mut app, 160, 20).contains("▰▰▱▱ 44% ▰▱▱▱ 34%"));
+        assert!(screen(&mut app, 160, 20).contains("Mac RAM ▰▰▱▱ 44%  CPU ▰▱▱▱ 34%"));
     }
 
     #[test]
