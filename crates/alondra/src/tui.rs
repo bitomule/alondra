@@ -438,6 +438,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             break;
                         }
                         Flow::Review { id, number, dir } => {
+                            draw(terminal, &mut app)?;
                             let _ = execute!(stdout(), DisableBracketedPaste);
                             let res = crate::attach::run_tool("tuicr", &["--stdout", "--no-update-check", "pr", &number.to_string()], &dir, crate::attach::Over::Tui);
                             crossterm::terminal::enable_raw_mode()?;
@@ -1067,7 +1068,11 @@ impl App {
                 if let Some(p) = self.selected_pr() {
                     let cwd = self.node(&p.pr.session_id).and_then(|n| n.cwd.clone());
                     match clone_of(cwd.as_deref(), &p.pr.repo) {
-                        Some(dir) => return Flow::Review { id: p.pr.id, number: p.pr.number, dir },
+                        Some(dir) => {
+                            let number = p.pr.number;
+                            self.flash(trf!("Opening PR #{number} in tuicr…", "Abriendo el PR #{number} en tuicr…"));
+                            return Flow::Review { id: p.pr.id, number, dir };
+                        }
                         None => {
                             let repo = p.pr.repo.clone();
                             self.fail(trf!("No local copy of {repo} to review it in", "No hay copia local de {repo} donde revisarlo"));
@@ -1950,6 +1955,23 @@ pub(crate) mod tests {
         assert!(has_comments(export));
         assert!(!has_comments(""));
         assert!(!has_comments("I reviewed your code.\n"));
+    }
+
+    #[test]
+    fn opening_tuicr_says_so_before_the_screen_goes_to_it() {
+        let repo = std::env::temp_dir().join(format!("alondra-review-{}", std::process::id()));
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let (mut app, _rx) = app_with(vec![]);
+        let mut node = alondra_core::model::Node::new("s1", 0);
+        node.cwd = Some(repo.display().to_string());
+        app.data.nodes = vec![crate::client::FleetNode { node, project: None }];
+        app.data.prs = vec![pr_card(None)];
+        app.reconcile();
+        app.settle_until = 0;
+        let flow = app.on_key(KeyEvent::from(KeyCode::Char('d')));
+        std::fs::remove_dir_all(&repo).unwrap();
+        assert!(matches!(flow, Flow::Review { id: 4, number: 12, .. }));
+        assert_eq!(app.flash.as_ref().map(|f| f.text.as_str()), Some("Opening PR #12 in tuicr…"));
     }
 
     #[test]

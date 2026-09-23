@@ -13,6 +13,8 @@ struct PRReviewView: View {
     @State private var note = ""
     @State private var commenting: DiffLine?
     @State private var sending = false
+    @State private var colours = DiffColours()
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         ScrollView {
@@ -26,11 +28,18 @@ struct PRReviewView: View {
                     Text("Tap a line to comment on it")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(files) { file in
-                            PhoneDiffFile(file: file, comments: comments) { commenting = $0 }
+                            Section {
+                                ForEach(file.lines) { line in
+                                    PhoneDiffLine(line: line, coloured: colours.lines[line.id], comment: line.anchor.flatMap { comments[$0] }) { commenting = $0 }
+                                }
+                            } header: {
+                                DiffFileHeader(file: file)
+                            }
                         }
                     }
+                    .task(id: scheme) { await colours.load(files, dark: scheme == .dark) }
                 } else if let failure {
                     Label(failure, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
@@ -62,7 +71,7 @@ struct PRReviewView: View {
     }
 
     private var review: String {
-        ReviewExport.text(comments: orderedComments(comments, in: files ?? []), general: note)
+        ReviewExport.text(comments: ReviewExport.ordered(comments, in: files ?? []), general: note)
     }
 
     private var bar: some View {
@@ -95,26 +104,19 @@ struct PRReviewView: View {
     }
 }
 
-private struct PhoneDiffFile: View {
-    let file: DiffFile
-    let comments: [String: String]
+private struct PhoneDiffLine: View {
+    let line: DiffLine
+    let coloured: AttributedString?
+    let comment: String?
     let onSelect: (DiffLine) -> Void
-    @Environment(\.colorScheme) private var scheme
-    @State private var coloured: [String: AttributedString] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            DiffFileHeader(file: file)
-            ForEach(file.lines) { line in
-                Button {
-                    onSelect(line)
-                } label: {
-                    DiffCodeLine(line: line, coloured: coloured[line.id])
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .disabled(line.anchor == nil)
-                if let anchor = line.anchor, let comment = comments[anchor] {
+        Button {
+            onSelect(line)
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                DiffCodeLine(line: line, coloured: coloured)
+                if let comment {
                     Label(comment, systemImage: "text.bubble.fill")
                         .font(.caption)
                         .padding(8)
@@ -122,9 +124,9 @@ private struct PhoneDiffFile: View {
                         .background(Color.accentColor.opacity(0.12))
                 }
             }
+            .contentShape(.rect)
         }
-        .clipShape(.rect(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
-        .task(id: scheme) { coloured = await DiffHighlighter.highlight(file, dark: scheme == .dark) }
+        .buttonStyle(.plain)
+        .disabled(line.anchor == nil)
     }
 }

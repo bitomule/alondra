@@ -483,7 +483,12 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
     match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
-        Ok(to) => Json(json!({"id": id, "sent_to": to})).into_response(),
+        Ok(to) => {
+            if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
+                eprintln!("alondrad: changes sent on PR card #{id}, card not set aside: {e}");
+            }
+            Json(json!({"id": id, "sent_to": to})).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -587,7 +592,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
-            "prs": crate::prs::open(v).map(|p| {
+            "prs": crate::prs::in_inbox(v).map(|p| {
                 let mut value = serde_json::to_value(p).unwrap_or(Value::Null);
                 value["preferred_method"] = serde_json::to_value(v.merge_methods.get(&p.repo)).unwrap_or(Value::Null);
                 value

@@ -92,6 +92,11 @@ pub struct PullRequest {
     pub opened_at: Millis,
     #[serde(default)]
     pub fetched: bool,
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    /// The head commit when changes were last requested; empty when it was not known yet.
+    #[serde(default)]
+    pub changes_requested_on: Option<String>,
 }
 
 impl PullRequest {
@@ -117,7 +122,14 @@ impl PullRequest {
             mergeable: None,
             opened_at: at,
             fetched: false,
+            head_sha: None,
+            changes_requested_on: None,
         })
+    }
+
+    /// Changes were requested and the node has not pushed since: the card waits off the inbox.
+    pub fn awaiting_push(&self) -> bool {
+        self.changes_requested_on.as_deref().is_some_and(|on| on == self.head_sha.as_deref().unwrap_or(""))
     }
 }
 
@@ -185,6 +197,30 @@ mod tests {
         still_open.state = PrState::Open;
         v.apply(7, 16, &Event::PrUpdated(still_open));
         assert_eq!(v.prs[&2].state, PrState::Dismissed, "a refresh does not bring back a dismissed card");
+    }
+
+    #[test]
+    fn a_card_waits_for_new_commits_after_changes_are_requested() {
+        use crate::event::Event;
+        use crate::view::View;
+        let cases: &[(Option<&str>, Option<&str>, bool)] = &[
+            (Some("a1"), Some("a1"), true),
+            (Some("a1"), Some("b2"), false),
+            (None, None, true),
+            (None, Some("b2"), false),
+        ];
+        for &(head_at_review, head_now, waits) in cases {
+            let mut v = View::default();
+            v.apply(1, 10, &Event::PrOpened { url: "https://github.com/a/b/pull/3".into(), session_id: "s".into() });
+            let mut pr = v.prs[&1].clone();
+            pr.head_sha = head_at_review.map(str::to_string);
+            v.apply(2, 11, &Event::PrUpdated(pr.clone()));
+            assert!(!v.prs[&1].awaiting_push(), "no review yet");
+            v.apply(3, 12, &Event::PrChangesRequested { id: 1 });
+            pr.head_sha = head_now.map(str::to_string);
+            v.apply(4, 13, &Event::PrUpdated(pr));
+            assert_eq!(v.prs[&1].awaiting_push(), waits, "head {head_at_review:?} at review, {head_now:?} now");
+        }
     }
 
     #[test]

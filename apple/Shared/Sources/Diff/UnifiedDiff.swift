@@ -1,25 +1,5 @@
 import Foundation
 
-public struct DiffLine: Identifiable, Hashable, Sendable {
-    public enum Kind: Sendable { case hunk, context, added, removed, note }
-
-    public let id: String
-    public let kind: Kind
-    public let text: String
-    public let old: Int?
-    public let new: Int?
-    /// `path:line` that a comment on this line is anchored to, as tuicr writes it.
-    public let anchor: String?
-}
-
-public struct DiffFile: Identifiable, Hashable, Sendable {
-    public let path: String
-    public let lines: [DiffLine]
-    public var id: String { path }
-    public var additions: Int { lines.filter { $0.kind == .added }.count }
-    public var deletions: Int { lines.filter { $0.kind == .removed }.count }
-}
-
 /// Reads `gh pr diff` output: files, hunks, and each line with its old and new numbers.
 public enum UnifiedDiff {
     public static func parse(_ text: String) -> [DiffFile] {
@@ -83,20 +63,5 @@ public enum UnifiedDiff {
             return Int(part.dropFirst().split(separator: ",").first ?? "1") ?? 1
         }
         return (start("-"), start("+"))
-    }
-}
-
-/// Line comments and a general note in the same shape tuicr exports, so the node reads a review
-/// the same way whichever client it came from.
-public enum ReviewExport {
-    public static func text(comments: [(anchor: String, text: String)], general: String) -> String {
-        var out: [String] = []
-        if !comments.isEmpty {
-            out.append("I reviewed your code and have the following comments. Please address them.")
-            out.append(comments.enumerated().map { "\($0.offset + 1). `\($0.element.anchor)` - \($0.element.text)" }.joined(separator: "\n"))
-        }
-        let note = general.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !note.isEmpty { out.append(note) }
-        return out.joined(separator: "\n\n")
     }
 }

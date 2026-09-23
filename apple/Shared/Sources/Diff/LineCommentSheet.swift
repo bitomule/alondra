@@ -10,10 +10,12 @@ public struct LineCommentSheet: View {
     @State private var text = ""
     @FocusState private var focused: Bool
 
+    /// `initial` seeds the text once; later changes to it are not followed.
     public init(line: DiffLine, initial: String, onSave: @escaping (String) -> Void) {
         self.line = line
         self.initial = initial
         self.onSave = onSave
+        _text = State(initialValue: initial)
     }
 
     public var body: some View {
@@ -49,9 +51,6 @@ public struct LineCommentSheet: View {
         }
         .padding(20)
         .frame(minWidth: 380)
-        .onAppear {
-            text = initial
-            focused = true
-        }
+        .onAppear { focused = true }
     }
 }

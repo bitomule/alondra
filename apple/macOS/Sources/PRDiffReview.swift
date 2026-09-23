@@ -7,33 +7,23 @@ struct PRDiffReview: View {
     let files: [DiffFile]
     let draft: ReviewDraft
     var focus: FocusState<DetailField?>.Binding
-
-    var body: some View {
-        LazyVStack(alignment: .leading, spacing: 16) {
-            ForEach(files) { file in
-                DiffFileSection(file: file, draft: draft, focus: focus)
-            }
-        }
-    }
-}
-
-private struct DiffFileSection: View {
-    let file: DiffFile
-    let draft: ReviewDraft
-    var focus: FocusState<DetailField?>.Binding
     @Environment(\.colorScheme) private var scheme
-    @State private var coloured: [String: AttributedString] = [:]
+    @State private var colours = DiffColours()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            DiffFileHeader(file: file)
-            ForEach(file.lines) { line in
-                CommentableDiffLine(line: line, coloured: coloured[line.id], draft: draft, focus: focus)
+        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ForEach(files) { file in
+                Section {
+                    ForEach(file.lines) { line in
+                        CommentableDiffLine(line: line, coloured: colours.lines[line.id], draft: draft, focus: focus)
+                    }
+                } header: {
+                    DiffFileHeader(file: file)
+                }
             }
         }
-        .clipShape(.rect(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
-        .task(id: scheme) { coloured = await DiffHighlighter.highlight(file, dark: scheme == .dark) }
+        .task(id: scheme) { await colours.load(files, dark: scheme == .dark) }
     }
 }
 

@@ -13,7 +13,7 @@ use crate::hub::Hub;
 
 const EVERY: Duration = Duration::from_secs(20);
 const REFRESH: Duration = Duration::from_secs(120);
-const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,state";
+const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,state,headRefOid";
 
 pub async fn run(hub: Arc<Hub>) {
     let mut fetched: HashMap<u64, Instant> = HashMap::new();
@@ -34,6 +34,11 @@ pub async fn run(hub: Arc<Hub>) {
 
 pub fn open(v: &View) -> impl Iterator<Item = &PullRequest> {
     v.prs.values().filter(|p| p.state == PrState::Open)
+}
+
+/// Open cards that want the user now; one waiting for the node's next push stays out.
+pub fn in_inbox(v: &View) -> impl Iterator<Item = &PullRequest> {
+    open(v).filter(|p| !p.awaiting_push())
 }
 
 async fn gh_json(args: &[&str]) -> Option<Value> {
@@ -73,6 +78,7 @@ pub fn refreshed(pr: &PullRequest, view: &Value, repo: Option<&Value>) -> PullRe
         deletions: n("deletions"),
         changed_files: n("changedFiles"),
         mergeable: s("mergeable"),
+        head_sha: s("headRefOid").or_else(|| pr.head_sha.clone()),
         fetched: true,
         ..pr.clone()
     }
@@ -100,7 +106,7 @@ mod tests {
         let pr = PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", None, 0).unwrap();
         let view = json!({
             "title": "Menus become cards", "body": "What and why", "baseRefName": "fase-1", "headRefName": "menus",
-            "additions": 120, "deletions": 8, "changedFiles": 5, "mergeable": "MERGEABLE", "state": "OPEN",
+            "additions": 120, "deletions": 8, "changedFiles": 5, "mergeable": "MERGEABLE", "state": "OPEN", "headRefOid": "abc123",
             "statusCheckRollup": [
                 {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://x/1"},
                 {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://x/2"},
@@ -120,6 +126,7 @@ mod tests {
         assert_eq!(r.merge_methods, [MergeMethod::Merge, MergeMethod::Rebase]);
         let merged = refreshed(&r, &json!({"state": "MERGED"}), None);
         assert_eq!(merged.state, PrState::Merged);
+        assert_eq!((r.head_sha.as_deref(), merged.head_sha.as_deref()), (Some("abc123"), Some("abc123")), "the head is kept when gh leaves it out");
         assert_eq!(merged.merge_methods, [MergeMethod::Merge, MergeMethod::Rebase], "kept when the repo could not be read");
     }
 }
