@@ -10,12 +10,12 @@ final class ReviewDraft {
     var editing: String?
     var editorText = ""
 
-    var feedback: String {
-        ReviewFeedback.format(comments, general: general)
+    func feedback(author: String) -> String {
+        ReviewFeedback.format(comments, general: general, author: author)
     }
 
     var hasFeedback: Bool {
-        !feedback.isEmpty
+        !feedback(author: "").isEmpty
     }
 
     func comment(for anchor: String) -> ReviewComment? {

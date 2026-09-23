@@ -202,7 +202,7 @@ struct NodeDetail: View {
                         .font(.display(.largeTitle, weight: .bold))
                         .fixedSize(horizontal: false, vertical: true)
                     if let cwd = node.cwd {
-                        Text(cwd.replacingOccurrences(of: "/Users/example/", with: "~/"))
+                        Text(cwd.replacing(/^\/Users\/[^\/]+\//, with: "~/"))
                             .font(.mono(.caption))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)

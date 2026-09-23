@@ -2,6 +2,7 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extensio
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 
 swift_library(
     name = "AlondraShared",
@@ -20,7 +21,7 @@ swift_library(
 
 macos_application(
     name = "AlondraMac",
-    bundle_id = "com.bitomule.alondra.mac",
+    bundle_id = MAC_BUNDLE_ID,
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"],
     minimum_os_version = "26.0",
@@ -45,8 +46,8 @@ swift_library(
 
 ios_application(
     name = "AlondraiOS",
-    bundle_id = "com.bitomule.alondra",
-    provisioning_profile = "//signing:Alondra_Development.mobileprovision",
+    bundle_id = IOS_BUNDLE_ID,
+    provisioning_profile = "//signing:" + IOS_PROFILE,
     bundle_name = "Alondra",
     entitlements = "iOS/Alondra.entitlements",
     families = ["iphone"],
@@ -67,13 +68,13 @@ swift_library(
 
 ios_extension(
     name = "AlondraNotificationService",
-    bundle_id = "com.bitomule.alondra.NotificationService",
+    bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
     bundle_name = "AlondraNotificationService",
     families = ["iphone"],
     infoplists = ["iOSNotificationService/Info.plist"],
     minimum_os_version = "26.0",
     resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
-    provisioning_profile = "//signing:Alondra_NotificationService_Development.mobileprovision",
+    provisioning_profile = "//signing:" + NOTIFICATION_SERVICE_PROFILE,
     version = ":Version",
     deps = [":AlondraNotificationServiceLib"],
 )

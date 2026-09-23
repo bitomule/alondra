@@ -239,7 +239,7 @@ struct ReviewView: View {
     }
 
     private var feedbackText: String {
-        ReviewFeedback.format(feedbackComments, general: general)
+        ReviewFeedback.format(feedbackComments, general: general, author: fleet.userName)
     }
 
     private func approveOption(_ question: Question) -> String? {

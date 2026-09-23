@@ -72,7 +72,7 @@ public struct AlondraClient: Sendable {
     }
 
     public func answer(_ question: UInt64, text: String, option: String?) async throws {
-        var body = ["text": text, "by": "David", "device": device]
+        var body = ["text": text, "device": device]
         body["option"] = option
         try await post("v1/questions/\(question)/answer", body)
     }

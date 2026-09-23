@@ -23,11 +23,11 @@ public enum ReviewFeedback {
         return collapsed.prefix(quoteLimit - 1).trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    public static func format(_ comments: [ReviewComment], general: String) -> String {
+    public static func format(_ comments: [ReviewComment], general: String, author: String) -> String {
         let general = general.trimmingCharacters(in: .whitespacesAndNewlines)
         let notes = comments.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !notes.isEmpty else { return general }
-        var parts = ["Comentarios de David:"]
+        var parts = [author.isEmpty ? "Comentarios:" : "Comentarios de \(author):"]
         for (index, comment) in notes.enumerated() {
             let body = comment.text
                 .trimmingCharacters(in: .whitespacesAndNewlines)

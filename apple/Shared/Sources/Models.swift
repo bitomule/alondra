@@ -139,6 +139,7 @@ public struct Overview: Codable, Sendable {
     public let news: [Report]
     public let orchestratorMessages: [SentMessage]
     public let machine: Machine
+    public let user: String?
 }
 
 public func ago(_ millis: Int64) -> String {

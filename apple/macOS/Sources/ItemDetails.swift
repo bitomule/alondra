@@ -29,7 +29,7 @@ struct QuestionDetail: View {
     private var key: String { "q\(question.id)" }
     private var textAttachments: [Attachment] { question.attachments.filter(\.isText) }
     private var otherAttachments: [Attachment] { question.attachments.filter { !$0.isText } }
-    private var feedback: String { draft.feedback }
+    private var feedback: String { draft.feedback(author: store.userName) }
 
     var body: some View {
         DetailScaffold {
@@ -217,7 +217,7 @@ struct ReportDetail: View {
     private var isDocument: Bool { report.kind == "document" }
     private var textAttachments: [Attachment] { isDocument ? report.attachments.filter(\.isText) : [] }
     private var otherAttachments: [Attachment] { report.attachments.filter { !textAttachments.contains($0) } }
-    private var feedback: String { draft.feedback }
+    private var feedback: String { draft.feedback(author: store.userName) }
 
     var body: some View {
         DetailScaffold {

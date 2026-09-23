@@ -105,9 +105,9 @@ struct NewRequestView: View {
     }
 
     private func requestText(_ raw: String) -> String {
-        let prefix = "[Alondra] Petición nueva de David: "
-        guard raw.hasPrefix(prefix) else { return raw }
-        return String(raw.dropFirst(prefix.count).prefix { $0 != "\n" })
+        let prefix = "[Alondra] Petición nueva de "
+        guard raw.hasPrefix(prefix), let colon = raw.range(of: ": ") else { return raw }
+        return String(raw[colon.upperBound...].prefix { $0 != "\n" })
     }
 
     private var sendBar: some View {

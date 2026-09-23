@@ -88,7 +88,7 @@ final class DevicePairing {
 }
 
 enum KeyStore {
-    private static let service = "com.bitomule.alondra.signing-key"
+    private static let service = (Bundle.main.bundleIdentifier ?? "alondra") + ".signing-key"
     private static let secureEnclaveAccount = "secure-enclave"
     private static let softwareAccount = "software"
 

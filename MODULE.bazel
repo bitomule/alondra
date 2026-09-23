@@ -24,3 +24,7 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+alondra_signing = use_repo_rule("//signing:repo.bzl", "alondra_signing")
+
+alondra_signing(name = "alondra_signing")

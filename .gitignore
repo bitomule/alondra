@@ -2,3 +2,4 @@ target/
 .bazel_vendored/
 bazel-*
 signing/*.mobileprovision
+signing/signing.bzl

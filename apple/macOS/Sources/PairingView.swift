@@ -5,7 +5,7 @@ import SwiftUI
 
 struct PairingView: View {
     private let client = AlondraClient.local
-    private let fallbackURL = "https://alondra.davidcollado.dev"
+    private let fallbackURL = "http://\(ProcessInfo.processInfo.hostName):47800"
 
     @State private var invite: PairingInvite?
     @State private var issuedAt = Date()

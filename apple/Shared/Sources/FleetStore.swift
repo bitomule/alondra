@@ -62,6 +62,7 @@ public final class FleetStore {
     public var news: [Report] { overview?.news ?? [] }
     public var nodes: [Node] { overview?.nodes ?? [] }
     public var machine: Machine? { overview?.machine }
+    public var userName: String { overview?.user ?? "" }
     public var orchestrator: Node? { nodes.filter(\.isOrchestrator).max { !$0.alive && $1.alive } }
     public var sentToOrchestrator: [SentMessage] {
         (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
