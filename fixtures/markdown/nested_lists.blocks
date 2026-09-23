@@ -1,0 +1,12 @@
+item 0 | - Level one
+item 1 | - Level two
+item 2 | - Level three with code
+item 1 | - Back to two
+item 0 | 1. First
+item 1 | 1. Sub first
+item 2 | - bullet under sub
+item 1 | 2. Sub second
+item 0 | 2. Second
+item 0 | [ ] open task
+item 0 | [x] done task
+item 1 | [ ] nested task

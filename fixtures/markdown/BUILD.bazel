@@ -1,0 +1,8 @@
+filegroup(
+    name = "markdown",
+    srcs = glob([
+        "*.md",
+        "*.blocks",
+    ]),
+    visibility = ["//visibility:public"],
+)

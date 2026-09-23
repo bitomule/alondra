@@ -16,6 +16,7 @@ swift_library(
 swift_test(
     name = "AlondraSharedTests",
     srcs = glob(["Shared/Tests/**/*.swift"]),
+    data = ["//fixtures/markdown"],
     deps = [":AlondraShared"],
 )
 

@@ -555,6 +555,9 @@ pub fn feedback(comments: &[(String, String)], general: &str, author: &str) -> S
 }
 
 #[cfg(test)]
+mod corpus;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

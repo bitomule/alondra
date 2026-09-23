@@ -14,5 +14,6 @@ rust_binary(
 rust_test(
     name = "alondra_test",
     crate = ":alondra",
+    data = ["//fixtures/markdown"],
     edition = "2024",
 )

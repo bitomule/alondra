@@ -1,0 +1,24 @@
+PR #134 está mergeada y desplegada: la copia que usan los runs semanales ya lleva las reglas nuevas y la comprobación de Apple Ads. Lo he confirmado leyendo el fichero en `main` y en la copia instalada.
+
+## Redraft, dónde está
+
+**En la tienda sigue la 4.4.2.** La 4.5.0 (build 190) está subida y validada desde el 21-sep, pero nadie la ha enviado a revisión.
+
+**Tres PR abiertos, todos esperándote:**
+
+| PR | Qué hace | ¿Bloquea la 4.5.0? |
+|---|---|---|
+| [Redraft #255](https://github.com/example/Redraft/pull/255) | Textos de tienda de la 4.5.0: alemán tuteando, el promocional sin "4.3" y el término "duplicado" en chino | **Sí.** Sin estos textos no se puede lanzar `/appstore` |
+| [Redraft #256](https://github.com/example/Redraft/pull/256) | Pedir valoración a partir de 48 horas y no de 7 días. Hoy no se le pide a nadie | No, pero es la mejora de ASO con más impacto |
+| [RedraftWeb #33](https://github.com/example/RedraftWeb/pull/33) | Enlaces internos del blog hacia las 3 páginas desde las que más se descarga | No, va aparte |
+
+**La decisión que queda:** el #256 es código y el build 190 no lo lleva. Hay dos opciones:
+
+- **Publicar la 4.5.0 tal cual (build 190):** sale ya, pero el arreglo de las valoraciones espera a la versión siguiente. Mientras tanto, EE. UU. sigue sin estrellas.
+- **Mergear el #256 y subir un build 191 de la 4.5.0:** unas horas más de trabajo, y el arreglo sale en esta misma versión.
+
+Mi recomendación es la segunda. EE. UU. es el 40% de las búsquedas y no tiene ni una estrella, y los runs llevan semanas sin encontrar nada que pese más en la tienda.
+
+Me dijiste que aún estabas cerrando la 4.5. Cuando termines, dime cuál de las dos y lo hago: merge, build, `/appstore`.
+
+Aparte, en agent-skills queda la [PR #135](https://github.com/example/agent-skills/pull/135), que hace que git ignore los restos de instalar skills. No es de Redraft y no corre prisa.
