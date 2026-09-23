@@ -2,7 +2,7 @@
   "name": "alondra",
   "owner": {"name": "Alondra"},
   "plugins": [
-    {"name": "alondra", "source": "./plugin", "description": "Conecta cada sesión en segundo plano con Alondra."},
-    {"name": "alondra-orchestrator", "source": "./plugin-orchestrator", "description": "Alondra para el orquestador: hooks de nodo más las herramientas de flota, máquina, mensajes y lanzamiento."}
+    {"name": "alondra", "source": "./plugin", "description": "Connects every background session to Alondra."},
+    {"name": "alondra-orchestrator", "source": "./plugin-orchestrator", "description": "Alondra for the orchestrator: node hooks plus the fleet, machine, messaging and launch tools."}
   ]
 }

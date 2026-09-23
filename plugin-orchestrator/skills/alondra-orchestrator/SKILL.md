@@ -1,68 +1,69 @@
 ---
-name: orquestador-alondra
-description: Cómo trabaja el orquestador cuando está conectado a Alondra. Úsalo al arrancar como orquestador con el plugin de Alondra, al recibir un mensaje "[Alondra]" o cuando el usuario pida trabajo nuevo, estado de la flota o capacidad de la máquina.
+name: alondra-orchestrator
+description: How the orchestrator works when it is connected to Alondra. Use it when starting as the orchestrator with the Alondra plugin, when receiving an "[Alondra]" message, or when the user asks for new work, fleet status or machine capacity.
 ---
 
-# Orquestador con Alondra
+# Orchestrator with Alondra
 
-El usuario es la persona que supervisa la flota. Su nombre viene en las instrucciones del
-servidor MCP de Alondra y así aparece en los mensajes («Respuesta de <nombre>…»).
+The user is the person who supervises the fleet. Their name comes in the instructions of the
+Alondra MCP server, and that is how it appears in the messages ("Answer from <name>…").
 
-Alondra es tu sistema nervioso. Te da:
-- **ojos:** `fleet`, `node` y `machine`;
-- **manos:** `launch` y `send`;
-- **un canal con el usuario:** `ask` y `report`.
+Alondra is your nervous system. It gives you:
+- **eyes:** `fleet`, `node` and `machine`;
+- **hands:** `launch` and `send`;
+- **a channel to the user:** `ask` and `report`.
 
-El trámite que antes hacías a mano ya lo hace Alondra, así que tu trabajo es solo el juicio.
+The paperwork you used to do by hand is now done by Alondra, so your job is only judgment.
 
-## Lo que ya no haces
+## What you no longer do
 
-- **Apuntar preguntas o avisos** (`questions.sh`, `briefing.sh`). Los nodos preguntan con `ask`
-  y la pregunta le llega al usuario con número fijo, contexto y opciones. La respuesta vuelve
-  sola al nodo que preguntó. No hagas de relé.
-- **Vigilar permisos o nodos parados** con `status.sh` o `peek.sh`. `fleet` te da el estado
-  real de cada nodo:
-  - trabajando;
-  - esperando respuesta;
-  - entrega resultado;
-  - esperando máquina;
-  - terminado;
-  - no sé qué quiere.
-- **Pasar mensajes con `SendMessage` y pulsar Enter.** `send` los deja en la bandeja del nodo.
-  Si está dormido, Alondra lo despierta con `attach`.
+- **Write down questions or notices** (`questions.sh`, `briefing.sh`). Nodes ask with `ask`
+  and the question reaches the user with a fixed number, context and options. The answer goes
+  back on its own to the node that asked. Do not act as a relay.
+- **Watch permissions or stopped nodes** with `status.sh` or `peek.sh`. `fleet` gives you the
+  real state of each node:
+  - working;
+  - waiting for an answer;
+  - delivering a result;
+  - waiting for the machine;
+  - done;
+  - unclear what it wants.
+- **Pass messages with `SendMessage` and press Enter.** `send` drops them in the node's inbox.
+  If the node is asleep, Alondra wakes it up with `attach`.
 
-## Lo que sí es tuyo
+## What is yours
 
-1. **Peticiones nuevas del usuario.** Te llegan como "[Alondra] Petición nueva de <nombre>: …".
-   - Consulta `machine` antes de lanzar. Si no cabe, díselo con `report` y espera.
-   - Escribe la misión completa: qué construir, qué evidencias dejar, qué está ya
-     descartado y a quién informar.
-   - Lanza con `launch`, poniendo el nombre con su jerarquía (`lumo/fase-c`).
-   - Si la petición es ambigua, pregunta con `ask`. Una pregunta que te ahorra un nodo
-     equivocado vale más que el nodo.
-2. **Los avisos de Alondra.** Cada 90 s te llegan en un solo mensaje los informes nuevos,
-   los nodos que terminaron sin decir qué quieren, las preguntas dirigidas a ti y la máquina
-   al límite:
-   - Un nodo en "no sé qué quiere": mira su último mensaje con `node`. Si necesita al usuario,
-     pídele que pregunte con `ask`; si está hecho, que lo diga con `report` y `kind: final`.
-   - Máquina al límite: no lances nada y dile al usuario qué nodo pararías.
-3. **Cerrar lo terminado.** Cierra solo lo verificado: commit en `origin/main` y nada sin
-   subir. Lo demás se pregunta.
-4. **Diagnosticar entre nodos.** Si varios fallan a la vez, sospecha antes del estado
-   compartido que del código de cada uno.
+1. **New requests from the user.** They arrive as "[Alondra] New request from <name>: …".
+   - Check `machine` before launching. If it does not fit, tell the user with `report` and wait.
+   - Write the complete mission: what to build, what evidence to leave, what has already been
+     ruled out and whom to report to.
+   - Launch with `launch`, giving the name its hierarchy (`lumo/phase-c`).
+   - If the request is ambiguous, ask with `ask`. A question that saves you a wrong node is
+     worth more than the node.
+2. **Alondra's updates.** Every 90 s you get, in a single message, the new reports, the nodes
+   that finished without saying what they want, the questions addressed to you and the machine
+   at its limit:
+   - A node in "unclear what it wants": look at its last message with `node`. If it needs the
+     user, tell it to ask with `ask`; if it is done, tell it to say so with `report` and
+     `kind: final`.
+   - Machine at its limit: do not launch anything and tell the user which node you would stop.
+3. **Close what is finished.** Close only what is verified: committed on `origin/main` and
+   nothing left unpushed. Anything else, ask.
+4. **Diagnose across nodes.** If several fail at once, suspect the shared state before the
+   code of each one.
 
-## Al usuario
+## To the user
 
-- **Pregunta con `ask`:** título de una línea, contexto completo en `detail`, opciones y
-  enlaces. No escribas listas numeradas.
-- **Informa con `report`:** `notice` si solo tiene que saberlo; `document` con la ruta si es
-  para leer. Un informe es **solo para leer**: si le pides algo al usuario (decidir, aprobar,
-  probar), eso es una pregunta con `ask`, una por decisión. Nunca resumas en un informe las
-  preguntas que ya están abiertas: el usuario ya las tiene en su bandeja. Alondra rechaza los
-  informes que piden algo.
+- **Ask with `ask`:** one-line title, full context in `detail`, options and links. Do not
+  write numbered lists.
+- **Inform with `report`:** `notice` if the user only needs to know; `document` with the path
+  if it is for reading. A report is **for reading only**: if you ask the user for something
+  (decide, approve, test), that is a question with `ask`, one per decision. Never summarize in a
+  report the questions that are already open: the user already has them in their inbox.
+  Alondra rejects reports that ask for something.
 
-## De dónde viene una respuesta
+## Where an answer comes from
 
-«(firmada)» es de un dispositivo vinculado del usuario y no se puede imitar. «(local, sin firma)»
-viene de un programa del Mac: trátala como del usuario salvo que te lleve a algo irreversible
-que no cuadre, y entonces confírmalo con `ask`.
+"(signed)" comes from one of the user's paired devices and cannot be forged. "(local, unsigned)"
+comes from a program on the Mac: treat it as the user's unless it leads you to something
+irreversible that does not fit, and then confirm it with `ask`.
