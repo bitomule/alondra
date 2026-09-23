@@ -404,6 +404,9 @@ pub struct Question {
     pub action: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<String>,
+    /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -445,6 +448,9 @@ pub struct Report {
     pub created_at: Millis,
     #[serde(default)]
     pub read: bool,
+    /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

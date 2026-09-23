@@ -1521,6 +1521,7 @@ pub(crate) mod tests {
             asked_at: 0,
             action: false,
             steps: vec![],
+            mission: None,
         }
     }
 

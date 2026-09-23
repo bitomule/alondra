@@ -189,6 +189,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         asked_at: now_millis(),
         action: expects == Expects::Act,
         steps: vec![],
+        mission: node.mission.clone(),
     }
 }
 
@@ -212,6 +213,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
         kind: ReportKind::Notice,
         created_at: now_millis(),
         read: false,
+        mission: node.mission.clone(),
     }
 }
 
@@ -270,6 +272,16 @@ mod tests {
         assert!(needs_attention(&v, &v.nodes["s"]));
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         assert_eq!(q.title, "Should I ship 4.5.0 now or merge #256 first?");
+    }
+
+    #[test]
+    fn cards_built_from_the_terminal_carry_the_node_mission() {
+        let mut v = waiting_view(ASKS);
+        v.nodes.get_mut("s").unwrap().mission = Some("Ship Lumo 4.5".into());
+        let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
+        assert_eq!(q.mission.as_deref(), Some("Ship Lumo 4.5"));
+        let Some(Event::ReportPosted(r)) = settle(&v, &v.nodes["s"], Expects::Finished) else { panic!() };
+        assert_eq!(r.mission.as_deref(), Some("Ship Lumo 4.5"));
     }
 
     #[test]

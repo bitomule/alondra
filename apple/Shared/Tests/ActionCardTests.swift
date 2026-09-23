@@ -26,4 +26,13 @@ import Testing
         #expect(AnswerOption.done == "Done")
         #expect(AnswerOption.cannot == "I can't / explain")
     }
+
+    @Test func aCardFromTheTerminalCarriesTheOpeningOfTheMission() throws {
+        let long = String(repeating: "word ", count: 80)
+        let q = try question(",\"mission\":\"Ship Lumo\\n\\n4.5 \(long)\"")
+        let excerpt = try #require(InboxItem.question(q).missionExcerpt)
+        #expect(excerpt.hasPrefix("Ship Lumo 4.5 word"))
+        #expect(excerpt.hasSuffix("…"))
+        #expect(InboxItem.question(try question("")).missionExcerpt == nil)
+    }
 }

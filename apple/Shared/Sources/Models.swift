@@ -125,6 +125,7 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let askedAt: Int64
     public let action: Bool?
     public let steps: [String]?
+    public let mission: String?
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }
@@ -165,6 +166,7 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let attachments: [Attachment]
     public let kind: String
     public let createdAt: Int64
+    public let mission: String?
 
     public var kindLabel: String {
         switch kind {
@@ -173,6 +175,19 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
         case "final": String(localized: "Finished", table: "AlondraShared", bundle: #bundle)
         default: String(localized: "Progress", table: "AlondraShared", bundle: #bundle)
         }
+    }
+}
+
+extension InboxItem {
+    /// The opening of the node's mission, on cards Alondra built from its terminal.
+    public var missionExcerpt: String? {
+        let mission: String? = switch self {
+        case .question(let q): q.mission
+        case .report(let r): r.mission
+        }
+        let flat = (mission ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !flat.isEmpty else { return nil }
+        return flat.count <= 240 ? flat : String(flat.prefix(240)).trimmingCharacters(in: .whitespaces) + "…"
     }
 }
 

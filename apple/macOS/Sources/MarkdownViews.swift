@@ -83,6 +83,7 @@ struct BlockView: View {
                     GridRow {
                         ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
                             Text(inlineMarkdown(cell)).fontWeight(.semibold)
+                                .frame(maxWidth: 320, alignment: .leading)
                         }
                     }
                     Divider()
@@ -90,6 +91,7 @@ struct BlockView: View {
                         GridRow {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 Text(inlineMarkdown(cell))
+                                    .frame(maxWidth: 320, alignment: .leading)
                             }
                         }
                     }

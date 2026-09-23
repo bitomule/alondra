@@ -651,6 +651,16 @@
         }
       }
     },
+    "Mission": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Misión"
+          }
+        }
+      }
+    },
     "New": {
       "localizations": {
         "es": {
