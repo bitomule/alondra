@@ -1,0 +1,7 @@
+{
+  "name": "alondra",
+  "owner": {"name": "David Collado"},
+  "plugins": [
+    {"name": "alondra", "source": "./plugin", "description": "Conecta cada sesión en segundo plano con Alondra."}
+  ]
+}

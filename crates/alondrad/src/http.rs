@@ -838,11 +838,9 @@ async fn launch(State(hub): State<AppState>, Json(b): Json<LaunchBody>) -> Respo
     if !std::path::Path::new(&b.cwd).is_dir() {
         return err(StatusCode::BAD_REQUEST, format!("no existe el directorio {}", b.cwd));
     }
-    let plugin = std::env::var("ALONDRA_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|_| hub.home.join("plugin"));
     let mut cmd = tokio::process::Command::new("claude");
     cmd.current_dir(&b.cwd)
-        .args(["--bg", "--name", &b.name, "--plugin-dir"])
-        .arg(&plugin)
+        .args(["--bg", "--name", &b.name])
         .args(["--permission-mode", b.permission_mode.as_deref().unwrap_or("auto")]);
     if let Some(m) = &b.model {
         cmd.args(["--model", m]);

@@ -1,5 +1,4 @@
 target/
 .bazel_vendored/
 bazel-*
-plugin/bin/
 signing/*.mobileprovision
