@@ -39,6 +39,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
     draw_foot(f, app, foot);
+    draw_flash(f, app, body);
     if app.help {
         draw_help(f, app);
     }
@@ -1020,17 +1021,26 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
     }
 }
 
+/// Action results float above the key bar, wrapped, so they never hide the keys or get cut.
+fn draw_flash(f: &mut Frame, app: &App, body: Rect) {
+    let Some(fl) = &app.flash else { return };
+    let (mark, color) = if fl.error { ("✗ ", Color::LightRed) } else { ("✓ ", Color::LightGreen) };
+    let width = body.width.saturating_sub(4).clamp(10, 100);
+    let text = format!("{mark}{}", fl.text);
+    let lines = (text.chars().count() as u16).div_ceil(width.saturating_sub(4).max(1)).clamp(1, 6);
+    let height = lines + 2;
+    let area = Rect { x: body.x + (body.width.saturating_sub(width)) / 2, y: body.bottom().saturating_sub(height), width, height };
+    f.render_widget(Clear, area);
+    let panel = Panel::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(color));
+    f.render_widget(Paragraph::new(Span::styled(text, Style::new().fg(color).bold())).wrap(Wrap { trim: true }).block(panel), area);
+}
+
 fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     if let Some(input) = app.cmdline.as_ref() {
         let text = input.text();
         f.render_widget(Paragraph::new(Line::from(vec![Span::styled(":", Style::new().fg(ACCENT).bold()), Span::raw(text)])), area);
         let (_, (_, col)) = input.layout(usize::MAX / 2);
         f.set_cursor_position(Position { x: area.x + 1 + col as u16, y: area.y });
-        return;
-    }
-    if let Some(fl) = &app.flash {
-        let (mark, color) = if fl.error { ("✗ ", Color::LightRed) } else { ("✓ ", Color::LightGreen) };
-        f.render_widget(Paragraph::new(fit(vec![Span::styled(format!(" {mark}{}", fl.text), Style::new().fg(color).bold())], area.width as usize)), area);
         return;
     }
     let width = area.width as usize;
