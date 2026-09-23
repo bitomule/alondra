@@ -38,9 +38,9 @@ public enum DeviceSigningKey: Sendable {
     case secureEnclave(SecureEnclave.P256.Signing.PrivateKey)
     case software(P256.Signing.PrivateKey)
 
-    public static func generate() throws -> DeviceSigningKey {
-        if SecureEnclave.isAvailable {
-            return .secureEnclave(try SecureEnclave.P256.Signing.PrivateKey())
+    public static func generate() -> DeviceSigningKey {
+        if SecureEnclave.isAvailable, let key = try? SecureEnclave.P256.Signing.PrivateKey() {
+            return .secureEnclave(key)
         }
         return .software(P256.Signing.PrivateKey())
     }

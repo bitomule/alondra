@@ -3,10 +3,13 @@ import SwiftUI
 
 @main
 struct AlondraMacApp: App {
+    @State private var device = LocalDevice()
+
     var body: some Scene {
         WindowGroup("Alondra") {
             FleetView()
                 .frame(minWidth: 860, minHeight: 540)
+                .environment(device)
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
@@ -18,6 +21,7 @@ struct AlondraMacApp: App {
 
         Window("Pair an iPhone", id: "pairing") {
             PairingView()
+                .environment(device)
         }
         .windowResizability(.contentSize)
     }

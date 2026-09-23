@@ -4,7 +4,8 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 struct PairingView: View {
-    private let client = AlondraClient.local
+    @Environment(LocalDevice.self) private var device
+    private var client: AlondraClient { device.client }
     private let fallbackURL = "http://\(ProcessInfo.processInfo.hostName):47800"
 
     @State private var invite: PairingInvite?

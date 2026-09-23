@@ -11,6 +11,7 @@ extension EnvironmentValues {
 }
 
 public struct FleetView: View {
+    @Environment(LocalDevice.self) private var device
     @State private var store = FleetStore()
     @State private var drafts = Drafts()
     @State private var selection: Selection?
@@ -54,13 +55,33 @@ public struct FleetView: View {
         .sheet(isPresented: $showingNew) {
             NewRequestSheet(store: store)
         }
-        .task { await store.run() }
+        .task {
+            store.use(device.client)
+            await store.run()
+        }
+        .onChange(of: device.client.identity) { store.use(device.client) }
+        .task(id: store.connection) { await pairIfNeeded() }
         .onChange(of: inboxIDs, initial: true) { old, new in
             follow(from: old, to: new)
         }
     }
 
     private var inboxIDs: [String] { store.inbox.map(\.id) }
+
+    private func pairIfNeeded() async {
+        guard store.connection == .unpaired || (store.connection == .online && !device.isPaired) else { return }
+        while !Task.isCancelled {
+            do {
+                try await device.pair()
+                return
+            } catch where error.isCancellation {
+                return
+            } catch {
+                store.lastError = String(localized: "Couldn’t pair this Mac with alondrad: \(error.friendlyDescription)")
+            }
+            try? await Task.sleep(for: .seconds(30))
+        }
+    }
 
     private var subtitle: String {
         guard store.connected, let overview = store.overview else { return String(localized: "No connection to alondrad") }

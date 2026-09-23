@@ -391,6 +391,16 @@
         }
       }
     },
+    "Couldn’t pair this Mac with alondrad: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No pude vincular este Mac con alondrad: %@"
+          }
+        }
+      }
+    },
     "Couldn’t read it: %@": {
       "localizations": {
         "es": {

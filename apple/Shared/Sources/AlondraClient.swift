@@ -153,7 +153,7 @@ public struct AlondraClient: Sendable {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        if let signer, !isLoopback {
+        if let signer {
             try RequestSignature.sign(&request, with: signer)
         }
         let (data, response) = try await session.data(for: request)

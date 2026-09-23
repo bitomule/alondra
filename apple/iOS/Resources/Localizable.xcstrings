@@ -421,16 +421,6 @@
         }
       }
     },
-    "Couldn’t save the key to the keychain (%@)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No pude guardar la clave en el llavero (%@)"
-          }
-        }
-      }
-    },
     "Couldn’t send": {
       "localizations": {
         "es": {
