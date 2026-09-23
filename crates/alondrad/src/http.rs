@@ -690,6 +690,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
                     ),
                 );
             }
+            crate::classify::ReportVerdict::Progress if b.kind == Some(ReportKind::Final) || !b.attachments.is_empty() => {}
             crate::classify::ReportVerdict::Progress => {
                 eprintln!("alondrad: report gate: rejected a progress-only report: {}", b.title);
                 return err(
