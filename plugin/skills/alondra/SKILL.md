@@ -1,32 +1,31 @@
 ---
 name: alondra
-description: Cómo hablar con el usuario y con el orquestador a través de Alondra. Úsalo cuando necesites una decisión del usuario, cuando entregues algo o cuando estés parado por falta de máquina.
+description: How to talk to the user and to the orchestrator through Alondra. Use it when you need a decision from the user, when you deliver something, or when you are stopped for lack of machine resources.
 ---
 
 # Alondra
 
-El usuario es la persona que supervisa la flota. Su nombre viene en las instrucciones del
-servidor MCP de Alondra y así aparece en los mensajes («Respuesta de <nombre>…»).
+The user is the person who supervises the fleet. Their name comes in the instructions of the
+Alondra MCP server, and that is how it appears in the messages ("Answer from <name>…").
 
-Estás conectado a Alondra. No tienes que reportar tu estado: Alondra lo ve sola.
+You are connected to Alondra. You do not have to report your state: Alondra sees it on its own.
 
-- **Necesitas que el usuario decida algo** → herramienta `ask`. Título de una línea (es lo que ve
-  en la notificación), todo el contexto en `detail`, las PRs en `links` y los ficheros en
-  `attachments`. Después termina tu turno: la respuesta te llega sola como mensaje. No
-  escribas la pregunta suelta en tu último mensaje.
-- **Preguntas de menú** (`AskUserQuestion`) también llegan al usuario; úsalas para elecciones
-  cortas.
-- **El usuario tiene que saber algo** → `report` con `kind: "notice"`, breve.
-- **Un documento para que lo lea** (plan, informe largo) → `report` con `kind: "document"` y la
-  ruta en `attachments`. Si además necesitas que lo **apruebe**, no es un report: es un `ask`
-  con el documento adjunto.
-- **Has terminado** y no queda nada pendiente → `report` con `kind: "final"`.
-- **Parado por la máquina** (RAM, compilación en cola, límite de uso) → `wait_for_machine`.
+- **You need the user to decide something** → the `ask` tool. One-line title (it is what they
+  see in the notification), all the context in `detail`, PRs in `links` and files in
+  `attachments`. Then end your turn: the answer reaches you on its own as a message. Do not
+  write the question loose in your last message.
+- **Menu questions** (`AskUserQuestion`) also reach the user; use them for short choices.
+- **The user needs to know something** → `report` with `kind: "notice"`, short.
+- **A document for them to read** (plan, long report) → `report` with `kind: "document"` and the
+  path in `attachments`. If you also need them to **approve** it, it is not a report: it is an
+  `ask` with the document attached.
+- **You are done** and nothing is pending → `report` with `kind: "final"`.
+- **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
 
-## De dónde viene una respuesta
+## Where an answer comes from
 
-Las respuestas llegan como «Respuesta de <nombre> desde <dispositivo> (firmada)» o «desde el Mac
-(local, sin firma)». La firmada viene de un dispositivo vinculado del usuario y no se puede
-imitar. La local viene de un programa del Mac: casi siempre es el usuario en la app o en la TUI,
-pero si te pide algo que no se deshace (publicar, borrar, forzar un push) y no cuadra con lo
-que venías haciendo, confírmalo con `ask` antes de hacerlo.
+Answers arrive as "Answer from <name> via <device> (signed)" or "via the Mac (local,
+unsigned)". The signed one comes from one of the user's paired devices and cannot be forged.
+The local one comes from a program on the Mac: it is almost always the user in the app or the
+TUI, but if it asks you for something that cannot be undone (publish, delete, force-push) and it
+does not fit with what you were doing, confirm it with `ask` before doing it.

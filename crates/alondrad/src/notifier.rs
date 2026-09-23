@@ -26,10 +26,10 @@ pub async fn run(hub: Arc<Hub>) {
             let orchestrator = v.nodes.values().find(|n| n.is_orchestrator)?.session_id.clone();
             let mut lines = vec![];
             for r in v.reports.range(last_report + 1..).map(|(_, r)| r).filter(|r| r.session_id != orchestrator) {
-                lines.push(format!("- Informe #{} de {}: {}", r.id, r.node_name.clone().unwrap_or_default(), r.title));
+                lines.push(format!("- Report #{} from {}: {}", r.id, r.node_name.clone().unwrap_or_default(), r.title));
             }
             for q in v.questions.range(last_question + 1..).map(|(_, q)| q).filter(|q| q.to_orchestrator && q.status.is_open()) {
-                lines.push(format!("- Pregunta #{} para ti de {}: {}", q.id, q.node_name.clone().unwrap_or_default(), q.title));
+                lines.push(format!("- Question #{} for you from {}: {}", q.id, q.node_name.clone().unwrap_or_default(), q.title));
             }
             for n in v.nodes.values().filter(|n| n.state == NodeState::Unclear && !n.is_orchestrator && n.in_daemon) {
                 if unclear_told.contains(&(n.session_id.clone(), n.state_since)) {
@@ -43,7 +43,7 @@ pub async fn run(hub: Arc<Hub>) {
                     .chars()
                     .take(200)
                     .collect();
-                lines.push(format!("- {} terminó sin decir qué quiere: «{said}»", n.display_name()));
+                lines.push(format!("- {} finished without saying what it wants: \"{said}\"", n.display_name()));
             }
             Some((orchestrator, lines, v.reports.keys().next_back().copied().unwrap_or(0), v.questions.keys().next_back().copied().unwrap_or(0)))
         });
@@ -59,7 +59,7 @@ pub async fn run(hub: Arc<Hub>) {
         });
         if (low_memory || overloaded) && !machine_alarm {
             lines.push(format!(
-                "- Máquina al límite: memoria {}% libre, carga {:.0}. No lances nodos nuevos hasta que baje.",
+                "- Machine at its limit: {}% memory free, load {:.0}. Do not launch new nodes until it goes down.",
                 machine.memory_free_percent.unwrap_or(0),
                 machine.load[0]
             ));
@@ -68,7 +68,7 @@ pub async fn run(hub: Arc<Hub>) {
         if lines.is_empty() {
             continue;
         }
-        let text = format!("[Alondra] Novedades de la flota:\n{}", lines.join("\n"));
+        let text = format!("[Alondra] Fleet updates:\n{}", lines.join("\n"));
         let _ = hub.append_with(|v| {
             Some(Event::MessageQueued(Message {
                 id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,

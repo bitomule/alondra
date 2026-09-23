@@ -47,7 +47,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
         std::fs::read_to_string(&paths.imported).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     loop {
         if let Err(e) = sync(&hub, &paths, &mut imported).await {
-            eprintln!("alondrad: puente con las preguntas viejas: {e}");
+            eprintln!("alondrad: bridge to the old questions: {e}");
         }
         tokio::time::sleep(POLL).await;
     }
@@ -79,7 +79,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
                 origin: QuestionOrigin::Ask,
                 tool_use_id: None,
                 to_orchestrator: false,
-                node_context: Some(format!("Pregunta #{} del sistema anterior", entry.n)),
+                node_context: Some(format!("Question #{} from the previous system", entry.n)),
                 status: QuestionStatus::Open,
                 answer: None,
                 asked_at: now_millis(),
@@ -143,7 +143,7 @@ async fn close_in_old_store(script: &Path, n: u64, answer: Option<&str>) {
     let n = n.to_string();
     let args: Vec<Vec<String>> = match answer {
         Some(text) => vec![
-            vec!["answer".into(), n.clone(), format!("{text} (contestada en Alondra)")],
+            vec!["answer".into(), n.clone(), format!("{text} (answered in Alondra)")],
             vec!["delivered".into(), n],
         ],
         None => vec![vec!["close".into(), n]],
@@ -188,8 +188,8 @@ mod tests {
 
     #[test]
     fn title_is_the_first_sentence_capped_on_a_word() {
-        assert_eq!(title_of("Lumo: el arreglo está en la PR #150. Con pruebas."), "Lumo: el arreglo está en la PR #150");
-        assert_eq!(detail_of("Lumo: el arreglo está en la PR #150. Con pruebas."), "Con pruebas.");
+        assert_eq!(title_of("Lumo: the fix is in PR #150. With tests."), "Lumo: the fix is in PR #150");
+        assert_eq!(detail_of("Lumo: the fix is in PR #150. With tests."), "With tests.");
         let long = format!("{} fin. Resto.", "palabra ".repeat(40));
         assert_eq!(detail_of(&long), long);
         let long = "palabra ".repeat(40);

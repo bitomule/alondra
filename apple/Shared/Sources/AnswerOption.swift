@@ -3,11 +3,11 @@ import Foundation
 /// Option labels that alondrad writes and later matches, so they travel to and from the
 /// server unchanged; only what the person sees is translated.
 public enum AnswerOption {
-    public static let approve = "Aprobar"
-    public static let requestChanges = "Pedir cambios"
-    public static let allow = "Permitir"
-    public static let deny = "Denegar"
-    public static let moreContext = "Necesito más contexto"
+    public static let approve = "Approve"
+    public static let requestChanges = "Request changes"
+    public static let allow = "Allow"
+    public static let deny = "Deny"
+    public static let moreContext = "I need more context"
 
     public static func displayLabel(_ label: String) -> String {
         switch label {
@@ -22,8 +22,8 @@ public enum AnswerOption {
 
     public static func displayDescription(_ description: String) -> String {
         switch description {
-        case "Escribe qué cambiar": String(localized: "Write what to change", table: "AlondraShared", bundle: #bundle)
-        case "Escribe el motivo": String(localized: "Write the reason", table: "AlondraShared", bundle: #bundle)
+        case "Write what to change": String(localized: "Write what to change", table: "AlondraShared", bundle: #bundle)
+        case "Write the reason": String(localized: "Write the reason", table: "AlondraShared", bundle: #bundle)
         default: description
         }
     }

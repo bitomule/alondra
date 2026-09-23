@@ -155,7 +155,7 @@ struct TriageCard: View {
             Text(item.nodeName ?? node?.displayName ?? String(localized: "node"))
                 .font(.mono(.subheadline, weight: .medium))
                 .foregroundStyle(Palette.ink.opacity(0.85))
-            if let project = node?.project {
+            if let project = node?.projectName {
                 Text(project)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -509,7 +509,7 @@ struct TriageCard: View {
     }
 
     static func needsText(_ option: QuestionOption) -> Bool {
-        if let description = option.description, description.lowercased().hasPrefix("escribe") { return true }
+        if let description = option.description, ["write", "escribe"].contains(where: { description.lowercased().hasPrefix($0) }) { return true }
         return [AnswerOption.requestChanges, AnswerOption.deny].contains(option.label)
     }
 }

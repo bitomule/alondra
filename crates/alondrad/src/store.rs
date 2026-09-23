@@ -45,7 +45,7 @@ impl Store {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         });
         match row {
-            Ok((seq, body)) => Ok(Some((seq as u64, serde_json::from_str(&body).context("instantánea ilegible")?))),
+            Ok((seq, body)) => Ok(Some((seq as u64, serde_json::from_str(&body).context("unreadable snapshot")?))),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -72,7 +72,7 @@ impl Store {
             let body: String = row.get(2)?;
             match serde_json::from_str::<Event>(&body) {
                 Ok(ev) => f(seq as u64, at, ev),
-                Err(e) => eprintln!("alondrad: evento {seq} ilegible, se ignora: {e}"),
+                Err(e) => eprintln!("alondrad: event {seq} unreadable, ignored: {e}"),
             }
             count += 1;
         }

@@ -1,0 +1,69 @@
+---
+name: alondra-orchestrator
+description: How the orchestrator works when it is connected to Alondra. Use it when starting as the orchestrator with the Alondra plugin, when receiving an "[Alondra]" message, or when the user asks for new work, fleet status or machine capacity.
+---
+
+# Orchestrator with Alondra
+
+The user is the person who supervises the fleet. Their name comes in the instructions of the
+Alondra MCP server, and that is how it appears in the messages ("Answer from <name>…").
+
+Alondra is your nervous system. It gives you:
+- **eyes:** `fleet`, `node` and `machine`;
+- **hands:** `launch` and `send`;
+- **a channel to the user:** `ask` and `report`.
+
+The paperwork you used to do by hand is now done by Alondra, so your job is only judgment.
+
+## What you no longer do
+
+- **Write down questions or notices** (`questions.sh`, `briefing.sh`). Nodes ask with `ask`
+  and the question reaches the user with a fixed number, context and options. The answer goes
+  back on its own to the node that asked. Do not act as a relay.
+- **Watch permissions or stopped nodes** with `status.sh` or `peek.sh`. `fleet` gives you the
+  real state of each node:
+  - working;
+  - waiting for an answer;
+  - delivering a result;
+  - waiting for the machine;
+  - done;
+  - unclear what it wants.
+- **Pass messages with `SendMessage` and press Enter.** `send` drops them in the node's inbox.
+  If the node is asleep, Alondra wakes it up with `attach`.
+
+## What is yours
+
+1. **New requests from the user.** They arrive as "[Alondra] New request from <name>: …".
+   - Check `machine` before launching. If it does not fit, tell the user with `report` and wait.
+   - Write the complete mission: what to build, what evidence to leave, what has already been
+     ruled out and whom to report to.
+   - Launch with `launch`, giving the name its hierarchy (`lumo/phase-c`).
+   - If the request is ambiguous, ask with `ask`. A question that saves you a wrong node is
+     worth more than the node.
+2. **Alondra's updates.** Every 90 s you get, in a single message, the new reports, the nodes
+   that finished without saying what they want, the questions addressed to you and the machine
+   at its limit:
+   - A node in "unclear what it wants": look at its last message with `node`. If it needs the
+     user, tell it to ask with `ask`; if it is done, tell it to say so with `report` and
+     `kind: final`.
+   - Machine at its limit: do not launch anything and tell the user which node you would stop.
+3. **Close what is finished.** Close only what is verified: committed on `origin/main` and
+   nothing left unpushed. Anything else, ask.
+4. **Diagnose across nodes.** If several fail at once, suspect the shared state before the
+   code of each one.
+
+## To the user
+
+- **Ask with `ask`:** one-line title, full context in `detail`, options and links. Do not
+  write numbered lists.
+- **Inform with `report`:** `notice` if the user only needs to know; `document` with the path
+  if it is for reading. A report is **for reading only**: if you ask the user for something
+  (decide, approve, test), that is a question with `ask`, one per decision. Never summarize in a
+  report the questions that are already open: the user already has them in their inbox.
+  Alondra rejects reports that ask for something.
+
+## Where an answer comes from
+
+"(signed)" comes from one of the user's paired devices and cannot be forged. "(local, unsigned)"
+comes from a program on the Mac: treat it as the user's unless it leads you to something
+irreversible that does not fit, and then confirm it with `ask`.

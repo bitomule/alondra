@@ -244,12 +244,12 @@ struct ReviewView: View {
 
     private func approveOption(_ question: Question) -> String? {
         if question.origin == "plan" { return AnswerOption.approve }
-        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.approve) || $0 == AnswerOption.allow }
+        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.approve) || $0.hasPrefix("Aprobar") || $0 == AnswerOption.allow }
     }
 
     private func changeOption(_ question: Question) -> String? {
         if question.origin == "plan" { return AnswerOption.requestChanges }
-        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
+        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
     }
 
     private func finish(_ label: String, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {

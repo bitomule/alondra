@@ -76,7 +76,7 @@ struct NodeDetail: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(node.project ?? String(localized: "no project"), systemImage: "folder")
+                Label(node.projectName ?? String(localized: "no project"), systemImage: "folder")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if node.isOrchestrator {

@@ -1197,7 +1197,7 @@ impl App {
         let label = r.approval.as_ref().and_then(|a| a.approve.clone());
         let text = match self.reviews.get(&r.key).filter(|rv| !rv.is_empty()) {
             Some(rv) => rv.feedback(),
-            None => label.clone().unwrap_or_else(|| "Aprobado".into()),
+            None => label.clone().unwrap_or_else(|| "Approved".into()),
         };
         let node = r.node.clone();
         self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref()))], trf!("Approved → {node}", "Aprobado → {node}"));
@@ -1297,7 +1297,7 @@ impl App {
             if n.is_orchestrator {
                 orchestrator.push(i);
             } else {
-                groups.entry(n.project.clone().unwrap_or_else(|| tr!("others", "otros").into())).or_default().push(i);
+                groups.entry(n.project.clone().filter(|p| p != alondra_core::OTHERS_PROJECT).unwrap_or_else(|| tr!("others", "otros").into())).or_default().push(i);
             }
         }
         let mut sorted: Vec<(String, bool, Vec<usize>)> = groups.into_iter().map(|(p, v)| (p, false, v)).collect();
@@ -1472,7 +1472,7 @@ pub(crate) mod tests {
             id,
             session_id: "s1".into(),
             node_name: Some("demo".into()),
-            title: format!("Pregunta {id}"),
+            title: format!("Question {id}"),
             detail: None,
             options: options.iter().map(|l| QuestionOption { label: l.to_string(), description: None }).collect(),
             links: vec![],
@@ -1489,7 +1489,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
-        i18n::set_for_this_thread(i18n::Lang::Es);
+        i18n::set_for_this_thread(i18n::Lang::En);
         let (tx, rx) = mpsc::sync_channel(8);
         let mut app = App::new(tx);
         app.data.open_questions = questions;
@@ -1499,17 +1499,17 @@ pub(crate) mod tests {
 
     #[test]
     fn plans_and_approve_or_change_questions_get_the_review_keys() {
-        let plan = approval_of(&question(1, QuestionOrigin::Plan, &["Aprobar", "Pedir cambios"])).unwrap();
-        assert_eq!(plan.approve.as_deref(), Some("Aprobar"));
-        assert_eq!(plan.changes.as_deref(), Some("Pedir cambios"));
-        let demo = approval_of(&question(2, QuestionOrigin::Ask, &["Aprobar", "Cambiar"])).unwrap();
-        assert_eq!(demo.changes.as_deref(), Some("Cambiar"));
-        assert!(approval_of(&question(3, QuestionOrigin::Ask, &["Sí", "No"])).is_none());
+        let plan = approval_of(&question(1, QuestionOrigin::Plan, &["Approve", "Request changes"])).unwrap();
+        assert_eq!(plan.approve.as_deref(), Some("Approve"));
+        assert_eq!(plan.changes.as_deref(), Some("Request changes"));
+        let spanish = approval_of(&question(2, QuestionOrigin::Ask, &["Aprobar", "Cambiar"])).unwrap();
+        assert_eq!(spanish.changes.as_deref(), Some("Cambiar"));
+        assert!(approval_of(&question(3, QuestionOrigin::Ask, &["Yes", "No"])).is_none());
     }
 
     #[test]
     fn answering_advances_to_the_next_item_and_guards_against_a_double_press() {
-        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"]), question(2, QuestionOrigin::Ask, &["Sí"])]);
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Yes"]), question(2, QuestionOrigin::Ask, &["Yes"])]);
         assert_eq!(app.sel, Some(Key::Q(1)));
         app.hide(Key::Q(1));
         assert_eq!(app.sel, Some(Key::Q(2)));
@@ -1536,7 +1536,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
         app.hide(Key::Q(1));
         assert!(app.inbox_keys().is_empty());
-        app.on_msg(Msg::Posted { key: Some(Key::Q(1)), result: Err("caído".into()) });
+        app.on_msg(Msg::Posted { key: Some(Key::Q(1)), result: Err("down".into()) });
         app.reconcile();
         assert_eq!(app.sel, Some(Key::Q(1)));
     }
@@ -1545,11 +1545,11 @@ pub(crate) mod tests {
     fn a_cancelled_reply_comes_back_as_a_draft() {
         let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
         app.compose(Target::Answer { id: 1, title: "t".into() }, "");
-        app.composer.as_mut().unwrap().input.insert_str("medio escrito");
+        app.composer.as_mut().unwrap().input.insert_str("half written");
         app.cancel_composer();
         assert!(app.composer.is_none());
         app.compose(Target::Answer { id: 1, title: "t".into() }, "");
-        assert_eq!(app.composer.as_ref().unwrap().input.text(), "medio escrito");
+        assert_eq!(app.composer.as_ref().unwrap().input.text(), "half written");
     }
 
     #[test]
@@ -1558,7 +1558,7 @@ pub(crate) mod tests {
         rv.comments.push(Comment { block: 1, quote: "a".into(), text: "x".into() });
         rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
         rv.comments.sort_by_key(|c| c.block);
-        assert!(rv.feedback().starts_with(&format!("Comentarios de {}:\n\n1. Sobre «b»:", crate::client::config().name)));
+        assert!(rv.feedback().starts_with(&format!("Comments from {}:\n\n1. On \"b\":", crate::client::config().name)));
     }
 
     pub(super) fn press(app: &mut App, keys: &str) -> Flow {
@@ -1578,8 +1578,8 @@ pub(crate) mod tests {
     }
 
     fn long_question(id: u64) -> Question {
-        let mut q = question(id, QuestionOrigin::Ask, &["Sí", "No"]);
-        q.detail = Some((1..=80).map(|i| format!("Párrafo {i}.")).collect::<Vec<_>>().join("\n\n"));
+        let mut q = question(id, QuestionOrigin::Ask, &["Yes", "No"]);
+        q.detail = Some((1..=80).map(|i| format!("Paragraph {i}.")).collect::<Vec<_>>().join("\n\n"));
         q
     }
 
@@ -1639,7 +1639,7 @@ pub(crate) mod tests {
     #[test]
     fn the_reader_scrolls_through_a_block_taller_than_the_screen() {
         let mut q = question(1, QuestionOrigin::Ask, &[]);
-        q.detail = Some("palabra ".repeat(2000));
+        q.detail = Some("word ".repeat(2000));
         let (mut app, _rx) = app_with(vec![q]);
         press(&mut app, "o");
         let r = app.reader.as_mut().unwrap();
@@ -1663,22 +1663,22 @@ pub(crate) mod tests {
     #[test]
     fn slash_searches_the_reading_and_n_cycles_through_matches() {
         let mut q = question(1, QuestionOrigin::Ask, &[]);
-        q.detail = Some("uno\n\ndos gato\n\ntres\n\ncuatro gato\n\ncinco".into());
+        q.detail = Some("one\n\ntwo cat\n\nthree\n\nfour cat\n\nfive".into());
         let (mut app, _rx) = app_with(vec![q]);
-        press(&mut app, "o/gato");
-        assert!(app.reader.as_ref().unwrap().find.as_ref().is_some_and(|f| f.editing && f.input.text() == "gato"));
+        press(&mut app, "o/cat");
+        assert!(app.reader.as_ref().unwrap().find.as_ref().is_some_and(|f| f.editing && f.input.text() == "cat"));
         code(&mut app, KeyCode::Enter);
         let r = app.reader.as_ref().unwrap();
-        assert_eq!(r.blocks[r.cursor].plain(), "dos gato");
+        assert_eq!(r.blocks[r.cursor].plain(), "two cat");
         press(&mut app, "n");
         let r = app.reader.as_ref().unwrap();
-        assert_eq!(r.blocks[r.cursor].plain(), "cuatro gato");
+        assert_eq!(r.blocks[r.cursor].plain(), "four cat");
         press(&mut app, "n");
         let r = app.reader.as_ref().unwrap();
-        assert_eq!(r.blocks[r.cursor].plain(), "dos gato");
+        assert_eq!(r.blocks[r.cursor].plain(), "two cat");
         press(&mut app, "N");
         let r = app.reader.as_ref().unwrap();
-        assert_eq!(r.blocks[r.cursor].plain(), "cuatro gato");
+        assert_eq!(r.blocks[r.cursor].plain(), "four cat");
         code(&mut app, KeyCode::Esc);
         assert!(app.reader.as_ref().is_some_and(|r| r.find.is_none()));
         code(&mut app, KeyCode::Esc);
@@ -1702,7 +1702,7 @@ pub(crate) mod tests {
 
     #[test]
     fn typing_in_the_reply_box_never_triggers_normal_mode_keys() {
-        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"])]);
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Yes"])]);
         press(&mut app, "r");
         assert!(app.composer.is_some());
         assert!(matches!(press(&mut app, "q:ggjko1?/nG"), Flow::Go));

@@ -419,7 +419,7 @@ mod tests {
             id,
             session_id: sid.into(),
             node_name: None,
-            title: "¿Mergeo?".into(),
+            title: "Merge it?".into(),
             detail: None,
             options: vec![],
             links: vec![],
@@ -460,7 +460,7 @@ mod tests {
         let mut v = v;
         v.apply(9, 9000, &Event::QuestionAnswered {
             id: 1,
-            answer: Answer { text: "sí".into(), option: None, by: None, device: None, at: 9000 },
+            answer: Answer { text: "yes".into(), option: None, by: None, device: None, at: 9000 },
         });
         assert_ne!(v.nodes["s"].state, NodeState::WaitingAnswer);
     }
@@ -519,7 +519,7 @@ mod tests {
             id: 1,
             session_id: "s".into(),
             node_name: None,
-            title: "Hecho".into(),
+            title: "Done".into(),
             body: None,
             links: vec![],
             attachments: vec![],
@@ -601,7 +601,7 @@ mod tests {
             id: 1,
             session_id: "s".into(),
             from: crate::model::MessageFrom::User,
-            text: "sigue".into(),
+            text: "go on".into(),
             answers_question: None,
             created_at: 3000,
             handed_at: None,
@@ -688,7 +688,7 @@ mod tests {
         v.apply(5, 5000, &Event::Acknowledged { session_id: "s".into() });
         assert!(v.news(9000).is_empty());
         v.apply(6, 6000, &hook("s", "UserPromptSubmit"));
-        v.apply(7, 7000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("otra cosa".into()), ..Default::default() }));
+        v.apply(7, 7000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("something else".into()), ..Default::default() }));
         v.apply(8, 8000, &Event::Classified { session_id: "s".into(), turn: 2, state: NodeState::Delivered, confidence: None });
         assert_eq!(v.news(9000).len(), 1);
     }
@@ -702,14 +702,14 @@ mod tests {
     #[test]
     fn project_comes_from_the_repo_folder_even_in_worktrees() {
         let mut n = Node::new("s", 0);
-        n.cwd = Some("/Users/d/Projects/Lumo/.claude/worktrees/fase-c".into());
+        n.cwd = Some("/Users/d/Projects/Lumo/.claude/worktrees/phase-c".into());
         assert_eq!(n.project(), "Lumo");
         n.cwd = None;
-        n.name = Some("hive/servidor".into());
+        n.name = Some("hive/server".into());
         assert_eq!(n.project(), "hive");
         n.is_orchestrator = true;
         n.cwd = Some("/Users/d/Projects/Lumo".into());
-        assert_eq!(n.project(), "orquestador");
+        assert_eq!(n.project(), "orchestrator");
     }
 
     #[test]

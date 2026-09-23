@@ -29,7 +29,7 @@ impl Hub {
         let store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
-        eprintln!("alondrad: {n} eventos reproducidos, {} nodos", view.nodes.len());
+        eprintln!("alondrad: {n} events replayed, {} nodes", view.nodes.len());
         let (tick, _) = watch::channel(0);
         Ok(Hub {
             writer: Mutex::new(store),
@@ -45,9 +45,9 @@ impl Hub {
     }
 
     pub fn append_with(&self, build: impl FnOnce(&View) -> Option<Event>) -> Result<Option<(u64, Event)>> {
-        let mut store = self.writer.lock().expect("writer envenenado");
+        let mut store = self.writer.lock().expect("writer lock poisoned");
         let event = {
-            let view = self.view.read().expect("vista envenenada");
+            let view = self.view.read().expect("view lock poisoned");
             match build(&view) {
                 Some(e) => e,
                 None => return Ok(None),
@@ -55,7 +55,7 @@ impl Hub {
         };
         let at = now_millis();
         let seq = store.append(at, &event)?;
-        self.view.write().expect("vista envenenada").apply(seq, at, &event);
+        self.view.write().expect("view lock poisoned").apply(seq, at, &event);
         drop(store);
         self.bump();
         Ok(Some((seq, event)))
@@ -65,8 +65,8 @@ impl Hub {
         let now = alondra_core::now_millis();
         let before = now - retention.as_millis() as i64;
         self.append(Event::Pruned { before })?;
-        let mut store = self.writer.lock().expect("writer envenenado");
-        let view = self.view.read().expect("view envenenada").clone();
+        let mut store = self.writer.lock().expect("writer lock poisoned");
+        let view = self.view.read().expect("view lock poisoned").clone();
         store.compact(&view, now, before)
     }
 
@@ -75,20 +75,20 @@ impl Hub {
     }
 
     pub fn read<T>(&self, f: impl FnOnce(&View) -> T) -> T {
-        f(&self.view.read().expect("vista envenenada"))
+        f(&self.view.read().expect("view lock poisoned"))
     }
 
     pub fn timeline(&self, session: &str, limit: usize) -> Result<Vec<(u64, i64, String)>> {
-        self.writer.lock().expect("writer envenenado").session_timeline(session, limit)
+        self.writer.lock().expect("writer lock poisoned").session_timeline(session, limit)
     }
 
     pub fn set_machine(&self, m: Machine) {
-        *self.machine.write().expect("máquina envenenada") = m;
+        *self.machine.write().expect("machine lock poisoned") = m;
         self.bump();
     }
 
     pub fn machine(&self) -> Machine {
-        self.machine.read().expect("máquina envenenada").clone()
+        self.machine.read().expect("machine lock poisoned").clone()
     }
 
     fn bump(&self) {
@@ -116,27 +116,27 @@ impl Hub {
 
     pub fn register_hold(&self, question: u64) -> oneshot::Receiver<Answer> {
         let (tx, rx) = oneshot::channel();
-        self.holds.lock().expect("holds envenenado").insert(question, tx);
+        self.holds.lock().expect("holds lock poisoned").insert(question, tx);
         rx
     }
 
     pub fn release_hold(&self, question: u64, answer: Answer) -> bool {
-        match self.holds.lock().expect("holds envenenado").remove(&question) {
+        match self.holds.lock().expect("holds lock poisoned").remove(&question) {
             Some(tx) => tx.send(answer).is_ok(),
             None => false,
         }
     }
 
     pub fn drop_hold(&self, question: u64) {
-        self.holds.lock().expect("holds envenenado").remove(&question);
+        self.holds.lock().expect("holds lock poisoned").remove(&question);
     }
 
     pub fn holds_count(&self) -> usize {
-        self.holds.lock().expect("holds envenenado").len()
+        self.holds.lock().expect("holds lock poisoned").len()
     }
 
     pub fn claim_inbox(&self, session: &str) -> u64 {
-        let mut w = self.inbox_waiters.lock().expect("inbox envenenado");
+        let mut w = self.inbox_waiters.lock().expect("inbox lock poisoned");
         let generation = w.get(session).copied().unwrap_or(0) + 1;
         w.insert(session.to_string(), generation);
         drop(w);
@@ -145,17 +145,17 @@ impl Hub {
     }
 
     pub fn inbox_current(&self, session: &str, generation: u64) -> bool {
-        self.inbox_waiters.lock().expect("inbox envenenado").get(session).copied() == Some(generation)
+        self.inbox_waiters.lock().expect("inbox lock poisoned").get(session).copied() == Some(generation)
     }
 
     pub fn release_inbox(&self, session: &str, generation: u64) {
-        let mut w = self.inbox_waiters.lock().expect("inbox envenenado");
+        let mut w = self.inbox_waiters.lock().expect("inbox lock poisoned");
         if w.get(session).copied() == Some(generation) {
             w.remove(session);
         }
     }
 
     pub fn inbox_listening(&self) -> Vec<String> {
-        self.inbox_waiters.lock().expect("inbox envenenado").keys().cloned().collect()
+        self.inbox_waiters.lock().expect("inbox lock poisoned").keys().cloned().collect()
     }
 }

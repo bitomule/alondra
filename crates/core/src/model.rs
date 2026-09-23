@@ -4,6 +4,9 @@ pub type Millis = i64;
 
 pub const NEWS_WINDOW_MS: Millis = 48 * 3600 * 1000;
 
+pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
+pub const OTHERS_PROJECT: &str = "others";
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
@@ -18,12 +21,12 @@ pub enum NodeState {
 impl NodeState {
     pub fn label(self) -> &'static str {
         match self {
-            NodeState::Working => "trabajando",
-            NodeState::WaitingAnswer => "esperando respuesta",
-            NodeState::Delivered => "entrega resultado",
-            NodeState::WaitingMachine => "esperando máquina",
-            NodeState::Done => "terminado",
-            NodeState::Unclear => "no sé qué quiere",
+            NodeState::Working => "working",
+            NodeState::WaitingAnswer => "waiting for an answer",
+            NodeState::Delivered => "delivering a result",
+            NodeState::WaitingMachine => "waiting for the machine",
+            NodeState::Done => "done",
+            NodeState::Unclear => "unclear what it wants",
         }
     }
 }
@@ -127,7 +130,7 @@ impl Node {
 
     pub fn project(&self) -> String {
         if self.is_orchestrator {
-            return "orquestador".to_string();
+            return ORCHESTRATOR_PROJECT.to_string();
         }
         if let Some(cwd) = &self.cwd
             && let Some(rest) = cwd.split("/Projects/").nth(1)
@@ -140,7 +143,7 @@ impl Node {
             .as_deref()
             .and_then(|n| n.split('/').next())
             .filter(|p| !p.is_empty())
-            .unwrap_or("otros")
+            .unwrap_or(OTHERS_PROJECT)
             .to_string()
     }
 
@@ -262,10 +265,10 @@ pub enum ReportKind {
 impl ReportKind {
     pub fn label(self) -> &'static str {
         match self {
-            ReportKind::Notice => "aviso",
-            ReportKind::Document => "documento",
-            ReportKind::Progress => "progreso",
-            ReportKind::Final => "terminado",
+            ReportKind::Notice => "notice",
+            ReportKind::Document => "document",
+            ReportKind::Progress => "progress",
+            ReportKind::Final => "finished",
         }
     }
 }
@@ -324,4 +327,47 @@ pub struct Machine {
     pub disk_total: u64,
     pub disk_available: u64,
     pub unreliable: bool,
+}
+
+/// Option labels the server writes on held questions and matches when they come back.
+/// Apps shipped before the switch to English send the Spanish labels, so `canonical`
+/// maps them onto the English ones.
+pub mod answer_option {
+    pub const APPROVE: &str = "Approve";
+    pub const REQUEST_CHANGES: &str = "Request changes";
+    pub const ALLOW: &str = "Allow";
+    pub const DENY: &str = "Deny";
+    pub const MORE_CONTEXT: &str = "I need more context";
+
+    const LEGACY: [(&str, &str); 5] = [
+        ("Aprobar", APPROVE),
+        ("Pedir cambios", REQUEST_CHANGES),
+        ("Permitir", ALLOW),
+        ("Denegar", DENY),
+        ("Necesito más contexto", MORE_CONTEXT),
+    ];
+
+    pub fn canonical(label: &str) -> &str {
+        LEGACY.iter().find(|(old, _)| label.trim().eq_ignore_ascii_case(old)).map_or(label, |(_, new)| new)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn legacy_spanish_labels_map_onto_the_english_ones() {
+            assert_eq!(canonical("Aprobar"), APPROVE);
+            assert_eq!(canonical("Pedir cambios"), REQUEST_CHANGES);
+            assert_eq!(canonical("Permitir"), ALLOW);
+            assert_eq!(canonical("denegar "), DENY);
+            assert_eq!(canonical("Necesito más contexto"), MORE_CONTEXT);
+        }
+
+        #[test]
+        fn english_and_free_labels_pass_through() {
+            assert_eq!(canonical(APPROVE), APPROVE);
+            assert_eq!(canonical("Merge #150"), "Merge #150");
+        }
+    }
 }
