@@ -125,6 +125,22 @@ impl Node {
         finished && recent && !self.is_orchestrator && self.acknowledged_at.is_none_or(|a| a < said_at)
     }
 
+    pub fn project(&self) -> String {
+        if let Some(cwd) = &self.cwd
+            && let Some(rest) = cwd.split("/Projects/").nth(1)
+            && let Some(first) = rest.split('/').next()
+            && !first.is_empty()
+        {
+            return first.to_string();
+        }
+        self.name
+            .as_deref()
+            .and_then(|n| n.split('/').next())
+            .filter(|p| !p.is_empty())
+            .unwrap_or("otros")
+            .to_string()
+    }
+
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.short_id)
     }
@@ -231,10 +247,24 @@ pub struct Question {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportKind {
-    Delivery,
-    Finding,
+    #[serde(alias = "delivery", alias = "finding", alias = "aviso")]
+    Notice,
+    #[serde(alias = "documento")]
+    Document,
     Progress,
+    #[serde(alias = "terminado")]
     Final,
+}
+
+impl ReportKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReportKind::Notice => "aviso",
+            ReportKind::Document => "documento",
+            ReportKind::Progress => "progreso",
+            ReportKind::Final => "terminado",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

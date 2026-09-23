@@ -61,3 +61,34 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     };
     Some((state, confidence))
 }
+
+const SEARCH_CONCURRENCY: usize = 8;
+
+pub async fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
+    let question = format!("¿Este agente encaja con lo que busca la persona: «{query}»?");
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(SEARCH_CONCURRENCY));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (session, text) in candidates {
+        let question = question.clone();
+        let semaphore = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let out = tokio::time::timeout(
+                Duration::from_secs(10),
+                Command::new("jevi").args(["ask", &question, "-s", &text, "--json", "--soft", "--timeout", "8000"]).kill_on_drop(true).output(),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+            (v.get("answers")?.get("answer")?.get("verdict")?.as_str()? == "yes").then_some(session)
+        });
+    }
+    let mut found = vec![];
+    while let Some(r) = tasks.join_next().await {
+        if let Ok(Some(s)) = r {
+            found.push(s);
+        }
+    }
+    found
+}

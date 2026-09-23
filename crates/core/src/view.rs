@@ -108,7 +108,7 @@ impl View {
                 let node = self.node_mut(&r.session_id, at);
                 node.turn_signal = Some(match r.kind {
                     ReportKind::Final => TurnSignal::Finished,
-                    ReportKind::Delivery | ReportKind::Finding => TurnSignal::Delivered,
+                    ReportKind::Notice | ReportKind::Document => TurnSignal::Delivered,
                     ReportKind::Progress => node.turn_signal.unwrap_or(TurnSignal::Delivered),
                 });
                 let mut r = r.clone();
@@ -667,6 +667,22 @@ mod tests {
         v.apply(7, 7000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("otra cosa".into()), ..Default::default() }));
         v.apply(8, 8000, &Event::Classified { session_id: "s".into(), turn: 2, state: NodeState::Delivered, confidence: None });
         assert_eq!(v.news(9000).len(), 1);
+    }
+
+    #[test]
+    fn old_report_kinds_still_replay() {
+        let k: crate::model::ReportKind = serde_json::from_str("\"delivery\"").unwrap();
+        assert_eq!(k, crate::model::ReportKind::Notice);
+    }
+
+    #[test]
+    fn project_comes_from_the_repo_folder_even_in_worktrees() {
+        let mut n = Node::new("s", 0);
+        n.cwd = Some("/Users/d/Projects/Lumo/.claude/worktrees/fase-c".into());
+        assert_eq!(n.project(), "Lumo");
+        n.cwd = None;
+        n.name = Some("hive/servidor".into());
+        assert_eq!(n.project(), "hive");
     }
 
     #[test]

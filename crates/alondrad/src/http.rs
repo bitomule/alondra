@@ -34,11 +34,14 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/v1/questions/{id}", get(question_detail))
         .route("/v1/questions/{id}/answer", post(answer))
         .route("/v1/questions/{id}/withdraw", post(withdraw))
+        .route("/v1/questions/{id}/more-context", post(more_context))
         .route("/v1/reports", post(report))
         .route("/v1/reports/{id}/read", post(report_read))
         .route("/v1/inbox/{session}", get(inbox))
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
+        .route("/v1/requests", post(new_request))
+        .route("/v1/search", get(search))
         .route("/v1/health", get(health))
         .with_state(hub)
 }
@@ -190,7 +193,11 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
     };
     let _ = hub.append(Event::QuestionDelivered { id });
     let input = p.get("tool_input").cloned().unwrap_or(Value::Null);
-    let text = answer.option.clone().unwrap_or_else(|| answer.text.clone());
+    let text = match answer.option.as_deref() {
+        Some("Necesito más contexto") | None => answer.text.clone(),
+        Some(o) => o.to_string(),
+    };
+    let wants_context = answer.option.as_deref() == Some("Necesito más contexto");
     let approves = |yes: &str| answer.option.as_deref() == Some(yes) || answer.text.trim().eq_ignore_ascii_case(yes);
     let body = match origin {
         QuestionOrigin::AskUserQuestion => {
@@ -207,11 +214,11 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         QuestionOrigin::Plan if approves("Aprobar") => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
         QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": format!("David pide cambios en el plan: {}", answer.text)}}),
+            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("David pide cambios en el plan: {}", answer.text) }}}),
         _ if approves("Permitir") => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"}}}),
         _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": format!("David lo deniega: {}", answer.text)}}}),
+            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("David lo deniega: {}", answer.text) }}}}),
     };
     Json(body).into_response()
 }
@@ -236,6 +243,14 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .find(|n| n.is_orchestrator)
             .map(|o| v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20).collect())
             .unwrap_or_default();
+        let nodes: Vec<Value> = nodes
+            .into_iter()
+            .map(|n| {
+                let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
+                value["project"] = Value::String(n.project());
+                value
+            })
+            .collect();
         json!({
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
@@ -439,6 +454,19 @@ async fn answer(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<
     }
 }
 
+#[derive(Deserialize)]
+struct MoreContextBody {
+    note: Option<String>,
+}
+
+async fn more_context(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
+    let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" Lo que le falta: {n}.")).unwrap_or_default();
+    let text = format!(
+        "David necesita más contexto antes de decidir.{note} Explica lo que está en juego, las opciones con sus consecuencias y tu recomendación, y vuelve a preguntar."
+    );
+    answer(State(hub), Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), device: None, by: Some("David".into()) })).await
+}
+
 async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     match hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn }) {
         Ok(_) => Json(json!({"id": id})).into_response(),
@@ -472,7 +500,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             body: b.body.clone(),
             links: b.links.clone(),
             attachments: attachments.clone(),
-            kind: b.kind.unwrap_or(ReportKind::Delivery),
+            kind: b.kind.unwrap_or(ReportKind::Notice),
             created_at: stamp,
             read: false,
         }))
@@ -567,6 +595,70 @@ async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -
         Ok(None) => err(StatusCode::BAD_REQUEST, "no sé qué sesión es el orquestador"),
         Err(e) => internal(e),
     }
+}
+
+#[derive(Deserialize)]
+struct RequestBody {
+    text: String,
+}
+
+async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
+    let text = format!("[Alondra] Petición nueva de David: {}\n\nPrepara la misión y lanza el nodo con la herramienta launch de Alondra, o pregúntale con ask si falta algo.", b.text);
+    let res = hub.append_with(|v| {
+        let o = v.nodes.values().find(|n| n.is_orchestrator)?;
+        Some(Event::MessageQueued(Message {
+            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            session_id: o.session_id.clone(),
+            from: MessageFrom::David,
+            text: text.clone(),
+            answers_question: None,
+            created_at: now_millis(),
+            handed_at: None,
+            delivered_at: None,
+        }))
+    });
+    match res {
+        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(None) => err(StatusCode::CONFLICT, "el orquestador no está conectado a Alondra"),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+}
+
+async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> Json<Value> {
+    let q = sq.q.trim().to_lowercase();
+    if q.is_empty() {
+        return Json(json!({"via": "none", "sessions": []}));
+    }
+    let candidates: Vec<(String, String)> = hub.read(|v| {
+        v.nodes
+            .values()
+            .map(|n| {
+                let text = format!(
+                    "Nodo {} del proyecto {}. Estado: {}. {}",
+                    n.display_name(),
+                    n.project(),
+                    n.state.label(),
+                    n.last_message.clone().or(n.daemon_detail.clone()).unwrap_or_default().chars().take(600).collect::<String>()
+                );
+                (n.session_id.clone(), text)
+            })
+            .collect()
+    });
+    let literal: Vec<&String> = candidates
+        .iter()
+        .filter(|(_, t)| q.split_whitespace().all(|w| t.to_lowercase().contains(w)))
+        .map(|(s, _)| s)
+        .collect();
+    if !literal.is_empty() {
+        return Json(json!({"via": "texto", "sessions": literal}));
+    }
+    let matches = crate::classify::search(&sq.q, candidates).await;
+    Json(json!({"via": "jev", "sessions": matches}))
 }
 
 #[derive(Deserialize)]

@@ -23,7 +23,7 @@ fn ask_schema() -> Value {
             "detail": {"type": "string", "description": "Todo el contexto que David necesita para contestar sin preguntarte nada (markdown)"},
             "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": "Opciones posibles; David siempre puede contestar con texto libre"},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "PRs, commits o URLs relevantes"},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de ficheros que David debe ver"},
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de ficheros que David debe ver (p. ej. el plan que debe aprobar)"},
             "blocking": {"type": "boolean", "description": "true si no puedes seguir sin la respuesta (por defecto true)"},
             "to_orchestrator": {"type": "boolean", "description": "true si la pregunta es para el orquestador y no para David"}
         },
@@ -37,7 +37,7 @@ fn report_schema() -> Value {
         "properties": {
             "title": {"type": "string", "description": "Qué entregas, en una línea"},
             "body": {"type": "string", "description": "El informe (markdown), breve: lo medido, lo que cambia y lo que queda"},
-            "kind": {"type": "string", "enum": ["delivery", "finding", "progress", "final"], "description": "final = has terminado y no queda nada pendiente"},
+            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": "notice = algo que David tiene que saber (breve). document = un documento para que lo lea (plan, informe largo): adjunta la ruta en attachments. final = has terminado y no queda nada pendiente. Si necesitas que David APRUEBE algo, no uses report: usa ask con el documento adjunto."},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de documentos que entregas"}
         },
@@ -48,7 +48,7 @@ fn report_schema() -> Value {
 fn tools(role: Role) -> Value {
     let mut list = vec![
         json!({"name": "ask", "description": "Pregunta estructurada a David (o al orquestador). Vuelve al momento con el número; la respuesta llega como mensaje cuando termines el turno.", "inputSchema": ask_schema()}),
-        json!({"name": "report", "description": "Informa a David de una entrega, un hallazgo o de que has terminado.", "inputSchema": report_schema()}),
+        json!({"name": "report", "description": "Algo para que David lo lea, sin decisión pendiente: un aviso breve, un documento largo (plan, informe) o que has terminado. Le llega a su bandeja; si comenta algo, te llega como mensaje.", "inputSchema": report_schema()}),
         json!({"name": "wait_for_machine", "description": "Declara que estás parado esperando recursos de la máquina (RAM, compilación, límite de uso).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {

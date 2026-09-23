@@ -19,6 +19,44 @@ final class FleetStore {
     var news: [Report] { overview?.news ?? [] }
     var sentToOrchestrator: [SentMessage] { (overview?.orchestratorMessages ?? []).filter { $0.from == "david" } }
     var nodes: [Node] { overview?.nodes ?? [] }
+
+    var inbox: [InboxItem] {
+        let questions = questions.map(InboxItem.question).sorted { $0.date > $1.date }
+        let reports = news.map(InboxItem.report).sorted { $0.date > $1.date }
+        return questions + reports
+    }
+
+    func items(for session: String) -> [InboxItem] {
+        inbox.filter { $0.sessionId == session }
+    }
+
+    var projects: [(name: String, nodes: [Node])] {
+        Dictionary(grouping: nodes) { $0.project ?? "otros" }
+            .map { (name: $0.key, nodes: $0.value) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func moreContext(_ question: Question, note: String) async {
+        do {
+            try await client.moreContext(question.id, note: note)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func newRequest(_ text: String) async -> Bool {
+        do {
+            try await client.newRequest(text)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func smartSearch(_ query: String) async -> SearchResult? {
+        try? await client.search(query)
+    }
     var orchestrator: Node? { nodes.first { $0.isOrchestrator && $0.alive } }
 
     func start() {

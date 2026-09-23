@@ -13,6 +13,9 @@ Estás conectado a Alondra. No tienes que reportar tu estado: Alondra lo ve sola
   escribas la pregunta suelta en tu último mensaje.
 - **Preguntas de menú** (`AskUserQuestion`) también llegan a David; úsalas para elecciones
   cortas.
-- **Entregas algo** (PR, informe, documento) → `report`. Con `kind: "final"` cuando ya no te
-  queda nada pendiente.
+- **David tiene que saber algo** → `report` con `kind: "notice"`, breve.
+- **Un documento para que lo lea** (plan, informe largo) → `report` con `kind: "document"` y la
+  ruta en `attachments`. Si además necesitas que lo **apruebe**, no es un report: es un `ask`
+  con el documento adjunto.
+- **Has terminado** y no queda nada pendiente → `report` con `kind: "final"`.
 - **Parado por la máquina** (RAM, compilación en cola, límite de uso) → `wait_for_machine`.

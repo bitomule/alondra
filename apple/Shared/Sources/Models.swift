@@ -43,6 +43,7 @@ struct Node: Codable, Identifiable, Hashable, Sendable {
     let lastMessageAt: Int64?
     let daemonDetail: String?
     let daemonNeeds: String?
+    let project: String?
 
     var displayName: String { name ?? shortId }
 
@@ -114,8 +115,8 @@ struct Report: Codable, Identifiable, Hashable, Sendable {
 
     var kindLabel: String {
         switch kind {
-        case "delivery": "Entrega"
-        case "finding": "Hallazgo"
+        case "notice": "Aviso"
+        case "document": "Documento"
         case "final": "Terminado"
         default: "Progreso"
         }
@@ -148,4 +149,35 @@ func ago(_ millis: Int64) -> String {
     case ..<86400: return "\(seconds / 3600) h"
     default: return "\(seconds / 86400) d"
     }
+}
+
+enum InboxItem: Identifiable, Hashable {
+    case question(Question)
+    case report(Report)
+
+    var id: String {
+        switch self {
+        case .question(let q): "q\(q.id)"
+        case .report(let r): "r\(r.id)"
+        }
+    }
+
+    var date: Int64 {
+        switch self {
+        case .question(let q): q.askedAt
+        case .report(let r): r.createdAt
+        }
+    }
+
+    var sessionId: String {
+        switch self {
+        case .question(let q): q.sessionId
+        case .report(let r): r.sessionId
+        }
+    }
+}
+
+struct SearchResult: Codable, Sendable {
+    let via: String
+    let sessions: [String]
 }

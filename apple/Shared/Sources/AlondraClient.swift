@@ -34,6 +34,21 @@ struct AlondraClient: Sendable {
         try await post("v1/questions/\(question)/answer", body)
     }
 
+    func moreContext(_ question: UInt64, note: String) async throws {
+        try await post("v1/questions/\(question)/more-context", ["note": note])
+    }
+
+    func newRequest(_ text: String) async throws {
+        try await post("v1/requests", ["text": text])
+    }
+
+    func search(_ query: String) async throws -> SearchResult {
+        var components = URLComponents(url: base.appending(path: "v1/search"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try Self.decoder.decode(SearchResult.self, from: data)
+    }
+
     func markRead(_ report: UInt64) async throws {
         try await post("v1/reports/\(report)/read", [:])
     }

@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use alondra_core::{Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, Report, ReportKind, StateSource, now_millis};
+use alondra_core::{Node, NodeState, Question, QuestionOrigin, Report, ReportKind, StateSource, now_millis};
 use anyhow::Result;
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -32,6 +32,8 @@ enum Target {
     Answer(u64, String),
     Message { session: String, name: String, ack: bool },
     ReplyReport { report: u64, session: String, name: String },
+    NewRequest,
+    MoreContext(u64, String),
 }
 
 struct App {
@@ -205,15 +207,15 @@ fn selected_news(app: &App) -> Option<Report> {
 }
 
 fn selected_fleet(app: &App) -> Option<Node> {
-    app.fleet.selected().and_then(|i| app.data.nodes.get(i).cloned())
+    app.fleet.selected().and_then(|i| app.data.nodes.get(i).map(|n| n.node.clone()))
 }
 
 fn orchestrator(app: &App) -> Option<Node> {
-    app.data.nodes.iter().find(|n| n.is_orchestrator).cloned()
+    app.data.nodes.iter().find(|n| n.is_orchestrator).map(|n| n.node.clone())
 }
 
 fn node_of(app: &App, session: &str) -> Option<Node> {
-    app.data.nodes.iter().find(|n| n.session_id == session).cloned()
+    app.data.nodes.iter().find(|n| n.session_id == session).map(|n| n.node.clone())
 }
 
 fn attach_target(app: &App) -> Option<String> {
@@ -240,7 +242,7 @@ fn handle_key(app: &mut App, client: &Client, k: KeyEvent) -> bool {
                 KeyCode::Enter => {
                     let (target, text) = (target.clone(), buffer.trim().to_string());
                     app.mode = Mode::Normal;
-                    if !text.is_empty() {
+                    if !text.is_empty() || matches!(target, Target::MoreContext(..)) {
                         submit(app, client, target, text, None);
                     }
                 }
@@ -280,6 +282,12 @@ fn handle_key(app: &mut App, client: &Client, k: KeyEvent) -> bool {
         KeyCode::Down | KeyCode::Char('j') => move_sel(app, 1),
         KeyCode::Up | KeyCode::Char('k') => move_sel(app, -1),
         KeyCode::Enter => open_detail(app),
+        KeyCode::Char('n') => app.mode = input(Target::NewRequest),
+        KeyCode::Char('c') if app.focus == Focus::Questions => {
+            if let Some(q) = selected_question(app) {
+                app.mode = input(Target::MoreContext(q.id, q.title));
+            }
+        }
         KeyCode::Char('o') => match orchestrator(app) {
             Some(n) => app.mode = input(Target::Message { session: n.session_id, name: "el orquestador".into(), ack: false }),
             None => flash(app, "El orquestador todavía no está conectado a Alondra"),
@@ -344,6 +352,8 @@ fn submit(app: &mut App, client: &Client, target: Target, text: String, option: 
             }
             r
         }
+        Target::NewRequest => client.post("/v1/requests", &json!({"text": text})),
+        Target::MoreContext(id, _) => client.post(&format!("/v1/questions/{id}/more-context"), &json!({"note": text})),
         Target::ReplyReport { report, session, .. } => {
             let r = client.post(&format!("/v1/nodes/{}/messages", urlencode(session)), &json!({"text": text, "from": "david"}));
             if r.is_ok() {
@@ -355,6 +365,8 @@ fn submit(app: &mut App, client: &Client, target: Target, text: String, option: 
     match (res, target) {
         (Ok(_), Target::Answer(id, _)) => flash(app, format!("Contestada #{id}: le llega al nodo que preguntó")),
         (Ok(_), Target::Message { name, .. }) | (Ok(_), Target::ReplyReport { name, .. }) => flash(app, format!("Enviado a {name}")),
+        (Ok(_), Target::MoreContext(id, _)) => flash(app, format!("#{id} devuelta al nodo: te la volverá a preguntar con más contexto")),
+        (Ok(_), Target::NewRequest) => flash(app, "Enviado al orquestador: preparará la misión y lanzará el nodo"),
         (Err(e), _) => flash(app, format!("Error: {e}")),
     }
 }
@@ -412,7 +424,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         let [questions, news] = Layout::vertical([Constraint::Length(q_height), Constraint::Min(4)]).areas(left);
         draw_questions(f, app, questions);
         draw_news(f, app, news);
-        draw_orchestrator(f, app, right);
+        draw_compact_fleet(f, app, right);
     }
     draw_foot(f, app, foot);
     draw_overlay(f, app);
@@ -465,12 +477,7 @@ fn draw_questions(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn report_kind(k: ReportKind) -> &'static str {
-    match k {
-        ReportKind::Delivery => "entrega",
-        ReportKind::Finding => "hallazgo",
-        ReportKind::Progress => "progreso",
-        ReportKind::Final => "terminado",
-    }
+    k.label()
 }
 
 fn draw_news(f: &mut Frame, app: &mut App, area: Rect) {
@@ -498,41 +505,29 @@ fn draw_news(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(List::new(items).block(b).highlight_style(Style::new().add_modifier(Modifier::REVERSED)), area, &mut app.news);
 }
 
-fn draw_orchestrator(f: &mut Frame, app: &App, area: Rect) {
-    let b = block("Orquestador  (o para escribirle)", false);
-    let Some(o) = orchestrator(app) else {
-        f.render_widget(
-            Paragraph::new(vec![
-                Line::from("No está conectado a Alondra.".dark_gray()),
-                Line::default(),
-                Line::from("Arráncalo con".dark_gray()),
-                Line::from("--plugin-dir ~/Projects/alondra/plugin-orchestrator".dark_gray()),
-            ])
-            .wrap(Wrap { trim: false })
-            .block(b),
-            area,
-        );
-        return;
-    };
-    let mut lines: Vec<Line> = vec![Line::from(vec![
-        Span::styled(o.state.label(), Style::new().fg(state_color(o.state)).bold()),
-        format!(" · {}", ago(o.state_since)).dark_gray(),
-    ])];
-    if let Some(t) = &o.tool {
-        lines.push(Line::from(format!("Ahora: {} {}", t.name, one_line(t.summary.as_deref().unwrap_or(""), 60)).dark_gray()));
+fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
+    let mut projects: std::collections::BTreeMap<String, Vec<&crate::client::FleetNode>> = std::collections::BTreeMap::new();
+    for n in &app.data.nodes {
+        projects.entry(n.project.clone().unwrap_or_else(|| "otros".into())).or_default().push(n);
     }
-    lines.push(Line::default());
-    lines.extend(said(&o).lines().map(|l| Line::from(l.to_string())));
-    let mine: Vec<&Message> = app.data.orchestrator_messages.iter().filter(|m| m.from == MessageFrom::David).take(3).collect();
-    if !mine.is_empty() {
+    let mut lines: Vec<Line> = vec![];
+    if let Some(o) = orchestrator(app) {
+        lines.push(Line::from(vec!["★ orquestador ".bold(), Span::styled(o.state.label(), Style::new().fg(state_color(o.state)))]));
         lines.push(Line::default());
-        lines.push(Line::from("Le has escrito:".dark_gray()));
-        for m in mine {
-            let mark = if m.delivered_at.is_some() { "✓" } else if m.handed_at.is_some() { "→" } else { "…" };
-            lines.push(Line::from(format!("{mark} {}", one_line(&m.text, 80)).dark_gray()));
+    }
+    for (project, nodes) in projects {
+        let busy = nodes.iter().filter(|n| n.alive).count();
+        lines.push(Line::from(format!("{project} ({busy}/{})", nodes.len()).bold()));
+        for n in nodes.iter().filter(|n| n.alive || n.state == NodeState::WaitingAnswer) {
+            let name = n.display_name().rsplit('/').next().unwrap_or(n.display_name()).to_string();
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::new().fg(state_color(n.state))),
+                Span::raw(one_line(&name, 26)),
+                format!(" {}", n.state.label()).dark_gray(),
+            ]));
         }
     }
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(b), area);
+    f.render_widget(Paragraph::new(lines).block(block("Flota por proyecto  (f para verla entera)", false)), area);
 }
 
 fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
@@ -569,9 +564,9 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     let help = match app.focus {
-        Focus::Questions => "1-4 elegir · r responder · Enter ver · a su terminal (← vuelve) · o orquestador · Tab novedades · f flota · q salir",
-        Focus::News => "Enter leer · r responder al nodo · x leído · a su terminal (← vuelve) · o orquestador · Tab preguntas · f flota · q salir",
-        Focus::Fleet => "r mensaje · Enter ver · a su terminal (← vuelve) · o orquestador · f volver · q salir   ~ demonio · * jev · 💤 dormido",
+        Focus::Questions => "1-4 elegir · r responder · c necesito más contexto · Enter ver · a su terminal (← vuelve) · n nuevo · Tab para leer · f flota · q salir",
+        Focus::News => "Enter leer · r responder al nodo · x leído · a su terminal (← vuelve) · n nuevo · Tab preguntas · f flota · q salir",
+        Focus::Fleet => "r mensaje · Enter ver · a su terminal (← vuelve) · n nuevo · f volver · q salir   ~ demonio · * jev · 💤 dormido",
     };
     let status = app
         .status
@@ -588,6 +583,8 @@ fn draw_overlay(f: &mut Frame, app: &App) {
             let title = match target {
                 Target::Answer(id, t) => format!("Responder #{id}: {}   (Enter envía · Alt+Enter salto · Esc cancela)", one_line(t, 50)),
                 Target::Message { name, .. } | Target::ReplyReport { name, .. } => format!("Mensaje a {name}   (Enter envía · Esc cancela)"),
+                Target::MoreContext(id, t) => format!("#{id} {}: ¿qué te falta saber? (opcional)   (Enter envía · Esc cancela)", one_line(t, 40)),
+                Target::NewRequest => "¿Qué quieres? El orquestador preparará la misión y lanzará el nodo   (Enter envía · Esc cancela)".to_string(),
             };
             let area = centered(f.area(), 100, 8);
             f.render_widget(Clear, area);

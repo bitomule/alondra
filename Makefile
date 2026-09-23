@@ -15,8 +15,8 @@ cargo-test:
 
 install: build
 	mkdir -p $(BIN) $(PLUGIN)/bin $(HOME)/.alondra
-	install -m 755 bazel-bin/crates/alondrad/alondrad $(BIN)/alondrad
-	install -m 755 bazel-bin/crates/alondra/alondra $(BIN)/alondra
+	install -m 755 $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(BIN)/alondrad
+	install -m 755 $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) $(BIN)/alondra
 	ln -sf $(BIN)/alondra $(PLUGIN)/bin/alondra
 	@echo "Instalado en $(BIN). Plugin: $(PLUGIN)"
 
@@ -43,5 +43,5 @@ mac:
 	bazelisk build //apple:AlondraMac
 	rm -rf $(HOME)/Applications/Alondra.app
 	mkdir -p $(HOME)/Applications
-	unzip -q -o bazel-bin/apple/AlondraMac.zip -d $(HOME)/Applications
+	unzip -q -o $$(bazelisk cquery --output=files //apple:AlondraMac 2>/dev/null | grep '\.zip$$' | head -1) -d $(HOME)/Applications
 	open $(HOME)/Applications/Alondra.app

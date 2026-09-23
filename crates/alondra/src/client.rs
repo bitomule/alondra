@@ -1,20 +1,33 @@
 use std::time::Duration;
 
-use alondra_core::{Machine, Message, Node, Question, Report};
+use alondra_core::{Machine, Node, Question, Report};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+#[derive(Deserialize, Clone)]
+pub struct FleetNode {
+    #[serde(flatten)]
+    pub node: Node,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+impl std::ops::Deref for FleetNode {
+    type Target = Node;
+    fn deref(&self) -> &Node {
+        &self.node
+    }
+}
+
 #[derive(Deserialize, Clone, Default)]
 pub struct Overview {
     pub tick: u64,
-    pub nodes: Vec<Node>,
+    pub nodes: Vec<FleetNode>,
     pub open_questions: Vec<Question>,
     #[serde(default)]
     pub news: Vec<Report>,
-    #[serde(default)]
-    pub orchestrator_messages: Vec<Message>,
     pub machine: Machine,
 }
 
