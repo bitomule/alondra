@@ -101,6 +101,7 @@ pub enum Signal {
     UsageLimit,
     DeclaredWait,
     FinalReport,
+    Reviewed,
     Report,
     NoProcess,
     #[serde(other)]

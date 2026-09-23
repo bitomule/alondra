@@ -145,10 +145,18 @@ impl View {
                 Some((sid, Trigger::Report))
             }
             Event::ReportRead { id } => {
-                if let Some(r) = self.reports.get_mut(id) {
+                let session = self.reports.get_mut(id).map(|r| {
                     r.read = true;
+                    r.session_id.clone()
+                });
+                let node = session.as_ref().and_then(|s| self.nodes.get_mut(s));
+                match node {
+                    Some(n) => {
+                        n.acknowledged_at = Some(at);
+                        session.map(|s| (s, Trigger::Report))
+                    }
+                    None => None,
                 }
-                None
             }
             Event::MessageQueued(m) => {
                 self.messages.insert(m.id, m.clone());

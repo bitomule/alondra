@@ -791,14 +791,24 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
     if busy {
         return err(StatusCode::CONFLICT, format!("{short} is working; wait until it stops before closing it"));
     }
-    let worktree = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
+    let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
         .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("worktreePath").and_then(Value::as_str).map(PathBuf::from));
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let worktree = job.as_ref().and_then(|v| v.get("worktreePath").and_then(Value::as_str).map(PathBuf::from));
+    let branch = job.as_ref().and_then(|v| v.get("worktreeBranch").and_then(Value::as_str).map(str::to_string));
+    let mut cleared_broken = false;
     let mut said = String::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         match run_claude(&["rm", &short]).await {
             Ok(text) if text.contains(&format!("removed {short}")) => said = text,
+            Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {
+                let (Some(dir), Some(branch)) = (worktree.as_ref(), branch.as_deref()) else { return err(StatusCode::CONFLICT, text) };
+                if let Err(why) = discard_if_identical(dir, branch).await {
+                    return err(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}"));
+                }
+                cleared_broken = true;
+                continue;
+            }
             Ok(text) => return err(StatusCode::CONFLICT, text),
             Err(e) => return err(StatusCode::BAD_GATEWAY, e),
         }
@@ -815,6 +825,49 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
         }
     }
     err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
+}
+
+/// A worktree whose git link is broken can only be deleted by hand. It is deleted only when
+/// its files are exactly its branch, it has no new files and the branch is fully pushed.
+async fn discard_if_identical(dir: &std::path::Path, branch: &str) -> Result<(), String> {
+    let link = std::fs::read_to_string(dir.join(".git")).map_err(|e| format!("no .git link: {e}"))?;
+    let gitdir = link.trim().strip_prefix("gitdir: ").ok_or("unexpected .git link")?;
+    let repo_git = PathBuf::from(gitdir).parent().and_then(|p| p.parent()).map(PathBuf::from).ok_or("unexpected gitdir")?;
+    let index = std::env::temp_dir().join(format!("alondra-index-{}-{}", std::process::id(), now_millis()));
+    let git = |args: Vec<String>| {
+        let repo_git = repo_git.clone();
+        let index = index.clone();
+        async move {
+            let out = tokio::process::Command::new("git")
+                .env("GIT_INDEX_FILE", &index)
+                .arg(format!("--git-dir={}", repo_git.display()))
+                .args(&args)
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            }
+            Ok::<String, String>(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+    };
+    let tree = format!("--work-tree={}", dir.display());
+    git(vec!["read-tree".into(), branch.into()]).await?;
+    let differs = git(vec![tree.clone(), "diff".into(), "--stat".into()]).await;
+    let _ = std::fs::remove_file(&index);
+    if !differs?.is_empty() {
+        return Err(format!("its files differ from the branch {branch}"));
+    }
+    git(vec!["read-tree".into(), branch.into()]).await?;
+    let untracked = git(vec![tree, "ls-files".into(), "--others".into(), "--exclude-standard".into()]).await;
+    let _ = std::fs::remove_file(&index);
+    if !untracked?.is_empty() {
+        return Err("it has files that are not in git".into());
+    }
+    if git(vec!["rev-list".into(), "--count".into(), format!("origin/{branch}..{branch}")]).await? != "0" {
+        return Err(format!("the branch {branch} has commits that are not pushed"));
+    }
+    tokio::fs::remove_dir_all(dir).await.map_err(|e| e.to_string())
 }
 
 async fn run_claude(args: &[&str]) -> Result<String, String> {
@@ -1033,3 +1086,44 @@ mod node_guard_tests {
         assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/tmp/x.md"}))).is_none());
     }
 }
+
+#[cfg(test)]
+mod broken_worktree_tests {
+    use super::*;
+
+    fn sh(dir: &std::path::Path, cmd: &str) {
+        let ok = std::process::Command::new("sh").arg("-c").arg(cmd).current_dir(dir).status().unwrap().success();
+        assert!(ok, "{cmd}");
+    }
+
+    fn broken_worktree(tag: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("alondra-wt-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        sh(&root, "git init -q --bare origin.git && git init -q repo && cd repo && git commit -q --allow-empty -m a && git remote add origin ../origin.git");
+        sh(&root.join("repo"), "git worktree add -q -b wt ../wt && cd ../wt && echo x > f && git add f && git commit -q -m f && git push -q origin wt");
+        sh(&root.join("repo"), "rm -rf .git/worktrees/wt");
+        (root.clone(), root.join("wt"))
+    }
+
+    #[tokio::test]
+    async fn an_identical_pushed_broken_worktree_is_deleted() {
+        let (root, wt) = broken_worktree("same");
+        discard_if_identical(&wt, "wt").await.unwrap();
+        assert!(!wt.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_broken_worktree_with_changes_is_kept() {
+        let (root, wt) = broken_worktree("changed");
+        std::fs::write(wt.join("f"), "changed").unwrap();
+        assert!(discard_if_identical(&wt, "wt").await.is_err());
+        std::fs::write(wt.join("f"), "x\n").unwrap();
+        std::fs::write(wt.join("new"), "n").unwrap();
+        assert!(discard_if_identical(&wt, "wt").await.is_err());
+        assert!(wt.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+

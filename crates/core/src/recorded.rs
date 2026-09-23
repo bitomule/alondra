@@ -164,5 +164,8 @@ fn quill_a_declared_wait_survives_wakes_nobody_sent() {
 fn ctrl_trivial_one_report_settles_a_dormant_node_for_good() {
     let (_, states) = replay(CTRL_TRIVIAL, CTRL_TRIVIAL_SID);
     assert_eq!(at_seq(&states, 2930), NodeState::Unclear, "dormant, idle, no plugin: the sentinel's");
-    assert!(between(&states, 2966, 4439).iter().all(|s| *s == NodeState::Delivered), "delivered from the first report on");
+    assert!(
+        between(&states, 2966, 4439).iter().all(|s| matches!(s, NodeState::Delivered | NodeState::Done)),
+        "delivered from the first report on, done once the user read it"
+    );
 }

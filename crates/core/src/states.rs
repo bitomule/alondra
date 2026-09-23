@@ -71,6 +71,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
+    row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
     Row {
         name: "working evidence went stale: handed to the sentinel",
@@ -164,7 +165,10 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     let agreed = !daemon_contradicts(node, declared);
     match node.turn_signal {
         Some(TurnSignal::Finished) if agreed && node.has_plugin => f.add(Signal::FinalReport, Some(declared)),
-        Some(TurnSignal::Finished | TurnSignal::Delivered) if agreed => f.add(Signal::Report, Some(declared)),
+        Some(TurnSignal::Finished | TurnSignal::Delivered) if agreed => {
+            f.add(Signal::Reviewed, node.acknowledged_at.filter(|&read| read >= declared));
+            f.add(Signal::Report, Some(declared));
+        }
         _ => {}
     }
 
@@ -388,6 +392,7 @@ mod tests {
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
+            Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
             Case { what: "a tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((16 * min, false)), state: NodeState::Unclear, row: stale },
             Case { what: "a turn that ended with nothing", events: vec![hook("UserPromptSubmit"), hook("Stop")], sweep: None, state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::Nothing) },
         ]
