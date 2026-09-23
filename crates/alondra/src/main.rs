@@ -103,7 +103,7 @@ fn main() -> Result<()> {
         Some(Cmd::Attach { node }) => {
             let v: serde_json::Value = Client::new(Duration::from_secs(5)).get(&format!("/v1/nodes/{}", mcp::urlencode(&node)))?;
             let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
-            attach::attach(&short)
+            attach::attach(&short, attach::Over::Shell)
         }
         Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
             Some(url) => pair(&url),
