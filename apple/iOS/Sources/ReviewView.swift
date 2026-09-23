@@ -41,6 +41,12 @@ struct ReviewView: View {
                 header
                     .padding(.bottom, 24)
                 content
+                if case .question(let question) = item, question.origin != "plan", !question.options.isEmpty {
+                    OptionGrid(options: question.options, picked: nil) { option in
+                        choose(option, in: question)
+                    }
+                    .padding(.top, 28)
+                }
                 if loaded, loadError == nil {
                     commentsSummary
                         .padding(.top, 32)
@@ -261,6 +267,15 @@ struct ReviewView: View {
 
     private var feedbackText: String {
         ReviewFeedback.format(feedbackComments, general: general, author: fleet.userName)
+    }
+
+    private func choose(_ option: QuestionOption, in question: Question) {
+        if TriageCard.needsText(option), !hasFeedback {
+            generalFocused = true
+            return
+        }
+        let text = hasFeedback ? feedbackText : option.label
+        finish(option.label) { try await $0.answer(question.id, text: text, option: option.label) }
     }
 
     private func approveOption(_ question: Question) -> String? {

@@ -556,7 +556,7 @@ enum OptionTone {
     }
 }
 
-private struct OptionGrid: View {
+struct OptionGrid: View {
     let options: [QuestionOption]
     let picked: QuestionOption?
     let onPick: (QuestionOption) -> Void
