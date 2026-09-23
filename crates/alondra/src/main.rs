@@ -77,6 +77,9 @@ enum Cmd {
     /// Hook de Stop: espera mensajes para esta sesión (lo arranca el plugin)
     #[command(hide = true)]
     Inbox,
+    /// Prints the raw bytes and the parsed key of every key pressed, to debug terminal input
+    #[command(hide = true)]
+    Keys,
 }
 
 fn main() -> Result<()> {
@@ -116,6 +119,7 @@ fn main() -> Result<()> {
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
         Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
         Some(Cmd::Inbox) => std::process::exit(inbox::run()?),
+        Some(Cmd::Keys) => keys_probe(),
     }
 }
 
@@ -199,4 +203,24 @@ fn devices(revoke: Option<String>) -> Result<()> {
         println!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or(""));
     }
     Ok(())
+}
+
+fn keys_probe() -> anyhow::Result<()> {
+    use crossterm::event::{Event, KeyCode, read};
+    println!("Press keys; q quits.\r");
+    crossterm::terminal::enable_raw_mode()?;
+    let result = (|| -> anyhow::Result<()> {
+        loop {
+            if let Event::Key(k) = read()? {
+                print!("{:?} {:?} {:?} {:?}\r\n", k.code, k.modifiers, k.kind, k.state);
+                if k.code == KeyCode::Char('q') {
+                    return Ok(());
+                }
+            } else {
+                print!("other event\r\n");
+            }
+        }
+    })();
+    crossterm::terminal::disable_raw_mode()?;
+    result
 }

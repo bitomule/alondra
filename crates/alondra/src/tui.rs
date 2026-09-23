@@ -1686,6 +1686,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn capitals_typed_with_shift_reach_every_text_field() {
+        let shifted = |app: &mut App, c: char| app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT));
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"])]);
+        press(&mut app, "r");
+        shifted(&mut app, 'H');
+        press(&mut app, "ola ");
+        shifted(&mut app, 'Ñ');
+        assert_eq!(app.composer.as_ref().unwrap().input.text(), "Hola Ñ");
+        code(&mut app, KeyCode::Esc);
+        press(&mut app, "n");
+        shifted(&mut app, 'A');
+        assert_eq!(app.composer.as_ref().unwrap().input.text(), "A");
+    }
+
+    #[test]
     fn typing_in_the_reply_box_never_triggers_normal_mode_keys() {
         let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"])]);
         press(&mut app, "r");

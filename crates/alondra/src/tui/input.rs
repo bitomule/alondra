@@ -63,7 +63,14 @@ impl TextInput {
             KeyCode::Char('w') if ctrl => self.delete_word(),
             KeyCode::Char('a') if ctrl => self.cursor = self.line_start(),
             KeyCode::Char('e') if ctrl => self.cursor = self.line_end(),
-            KeyCode::Char(c) if !ctrl => self.insert(c),
+            KeyCode::Char(c) if !ctrl => {
+                let shifted = k.modifiers.contains(KeyModifiers::SHIFT) && c.is_lowercase();
+                if shifted {
+                    c.to_uppercase().for_each(|u| self.insert(u));
+                } else {
+                    self.insert(c);
+                }
+            }
             KeyCode::Backspace if alt => self.delete_word(),
             KeyCode::Backspace if self.cursor > 0 => {
                 self.cursor -= 1;
@@ -82,37 +89,48 @@ impl TextInput {
         true
     }
 
-    /// Lines hard-wrapped at `width`, and the cursor's (row, column) in them.
+    /// Lines word-wrapped at `width` (a word longer than a line is split), and the cursor's
+    /// (row, column) in them.
     pub fn layout(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(2);
-        let mut lines = vec![String::new()];
-        let mut col = 0;
-        let mut cursor = (0, 0);
+        let mut rows: Vec<Vec<(usize, char)>> = vec![vec![]];
+        let row_width = |row: &[(usize, char)]| row.iter().map(|&(_, c)| char_width(c)).sum::<usize>();
         for (i, &c) in self.chars.iter().enumerate() {
-            if i == self.cursor {
-                cursor = (lines.len() - 1, col);
-            }
             if c == '\n' {
-                lines.push(String::new());
-                col = 0;
+                rows.push(vec![]);
                 continue;
             }
-            let w = char_width(c);
-            if col + w > width {
-                lines.push(String::new());
-                col = 0;
+            let row = rows.last_mut().expect("at least one row");
+            if c == ' ' || row_width(row) + char_width(c) <= width {
+                row.push((i, c));
+                continue;
             }
-            if let Some(l) = lines.last_mut() {
-                l.push(c);
-            }
-            col += w;
+            let carried = match row.iter().rposition(|&(_, ch)| ch == ' ') {
+                Some(space) if space + 1 < row.len() || space + 1 == row.len() => row.split_off(space + 1),
+                _ => vec![],
+            };
+            rows.push(carried);
+            rows.last_mut().expect("just pushed").push((i, c));
         }
-        if self.cursor == self.chars.len() {
-            if col >= width {
-                lines.push(String::new());
-                col = 0;
+        let mut cursor = None;
+        for (r, row) in rows.iter().enumerate() {
+            let mut col = 0;
+            for &(i, c) in row {
+                if i == self.cursor {
+                    cursor = Some((r, col.min(width - 1)));
+                }
+                col += char_width(c);
             }
-            cursor = (lines.len() - 1, col);
+        }
+        let cursor = cursor.unwrap_or_else(|| {
+            let before_cursor_newline = self.chars[..self.cursor].iter().filter(|&&c| c == '\n').count();
+            let r = if self.cursor == self.chars.len() { rows.len() - 1 } else { before_cursor_newline.min(rows.len() - 1) };
+            let col = row_width(&rows[r]);
+            if col >= width { (r + 1, 0) } else { (r, col) }
+        });
+        let mut lines: Vec<String> = rows.into_iter().map(|row| row.into_iter().map(|(_, c)| c).collect()).collect();
+        if cursor.0 >= lines.len() {
+            lines.push(String::new());
         }
         (lines, cursor)
     }
@@ -140,6 +158,28 @@ mod tests {
         assert_eq!(t.text(), "hola \na\nb");
         t.handle(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(t.text(), "hola \na\n");
+    }
+
+    #[test]
+    fn shift_with_a_lowercase_letter_types_a_capital() {
+        let mut t = TextInput::default();
+        t.handle(key(KeyCode::Char('h'), KeyModifiers::SHIFT));
+        t.handle(key(KeyCode::Char('O'), KeyModifiers::SHIFT));
+        t.handle(key(KeyCode::Char('l'), KeyModifiers::NONE));
+        t.handle(key(KeyCode::Char('á'), KeyModifiers::SHIFT));
+        assert_eq!(t.text(), "HOlÁ");
+    }
+
+    #[test]
+    fn layout_wraps_at_words_not_in_the_middle_of_them() {
+        let mut t = TextInput::default();
+        "the quick brown fox".chars().for_each(|c| t.insert(c));
+        let (lines, cursor) = t.layout(10);
+        assert_eq!(lines, vec!["the quick ", "brown fox"]);
+        assert_eq!(cursor, (1, 9));
+        let mut long = TextInput::default();
+        "abcdefghij klm".chars().for_each(|c| long.insert(c));
+        assert_eq!(long.layout(4).0, vec!["abcd", "efgh", "ij ", "klm"]);
     }
 
     #[test]

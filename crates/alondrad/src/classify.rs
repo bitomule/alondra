@@ -68,23 +68,37 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     Some((state, confidence))
 }
 
-fn asks_question(user: &str) -> String {
-    format!("Es un informe que un agente de programación manda a {user} para que lo lea. ¿Le pide a {user} que decida, apruebe, conteste o haga algo?")
+fn report_question(user: &str) -> String {
+    format!(
+        "This is a report a coding agent sends to {user}. Classify it. asks = it asks {user} to decide, approve, answer or do \
+         something; done = it tells {user} about something finished, a result, a finding or a failure he should know about; \
+         progress = the work is still under way and the agent does not need {user} yet, even if it lists the steps done so far."
+    )
 }
 
-pub async fn report_asks_for_action(text: &str, user: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReportVerdict {
+    Asks,
+    Progress,
+    Fine,
+}
+
+pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", &asks_question(user), "--options", "pide_algo,solo_leer,no_se_sabe", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
+            .args(["ask", &report_question(user), "--options", "asks,done,progress,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )
     .await;
-    let Ok(Ok(out)) = out else { return false };
-    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return false };
-    let answer = &v["answers"]["answer"];
-    answer["label"].as_str() == Some("pide_algo")
+    let Ok(Ok(out)) = out else { return ReportVerdict::Fine };
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return ReportVerdict::Fine };
+    match v["answers"]["answer"]["label"].as_str() {
+        Some("asks") => ReportVerdict::Asks,
+        Some("progress") => ReportVerdict::Progress,
+        _ => ReportVerdict::Fine,
+    }
 }
 
 const EXPECTS_QUESTION: &str = "This is the last message of a coding agent that has just ended its turn. What does it expect from the person supervising it? decide = it asks them to decide or answer something; act = it asks them to do something outside (test on a device, get a key, review something); nothing = it is done and expects nothing from that person.";

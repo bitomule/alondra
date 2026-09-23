@@ -637,15 +637,29 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     if b.kind != Some(ReportKind::Progress) {
         let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
         let user = &hub.config.name;
-        if crate::classify::report_asks_for_action(&text, user).await {
-            return err(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!(
-                    "Este informe le pide a {user} que decida o haga algo, y un informe es solo para leer. \
-                     Manda cada decisión como su propia pregunta con ask (título de una línea, contexto en detail, opciones) \
-                     y deja en report solo lo informativo. Si la pregunta ya está abierta en Alondra, no la repitas."
-                ),
-            );
+        match crate::classify::judge_report(&text, user).await {
+            crate::classify::ReportVerdict::Asks => {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "This report asks {user} to decide or do something, and a report is only for reading. Send each \
+                         decision as its own question with ask (a one-line title, context in detail, options) and keep \
+                         only the informative part in report. If the question is already open in Alondra, do not repeat it."
+                    ),
+                );
+            }
+            crate::classify::ReportVerdict::Progress => {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!(
+                        "This report only says the work is still under way and you do not need {user} yet. That is noise \
+                         for {user}: do not send it, or send it with kind progress, which stays out of the inbox. If it \
+                         does carry something {user} must know now (a result, a finding, a failure), rewrite the title \
+                         to say that thing and send it again."
+                    ),
+                );
+            }
+            crate::classify::ReportVerdict::Fine => {}
         }
     }
     let stamp = now_millis();
