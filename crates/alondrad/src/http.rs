@@ -781,23 +781,54 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
 }
 
 async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session)) = hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone()))) else {
+    let Some((short, session, busy)) =
+        hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.state == alondra_core::NodeState::Working)))
+    else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
-    let run = tokio::process::Command::new("claude").args(["rm", &short]).kill_on_drop(true).output();
-    match tokio::time::timeout(Duration::from_secs(60), run).await {
-        Ok(Ok(out)) => {
-            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string();
-            if text.contains(&format!("removed {short}")) {
-                let _ = hub.append(Event::NodeRemoved { session_id: session });
-                Json(json!({"ok": true, "output": text})).into_response()
-            } else {
-                err(StatusCode::CONFLICT, text)
-            }
-        }
-        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
-        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "claude rm did not answer in 60 s"),
+    if busy {
+        return err(StatusCode::CONFLICT, format!("{short} is working; wait until it stops before closing it"));
     }
+    let worktree = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("worktreePath").and_then(Value::as_str).map(PathBuf::from));
+    let mut said = String::new();
+    for _ in 0..2 {
+        match run_claude(&["rm", &short]).await {
+            Ok(text) if text.contains(&format!("removed {short}")) => said = text,
+            Ok(text) => return err(StatusCode::CONFLICT, text),
+            Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+        }
+        match run_claude(&["agents", "--json", "--all"]).await {
+            Ok(list) if !listed(&list, &short) => {
+                if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
+                    return err(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display()));
+                }
+                let _ = hub.append(Event::NodeRemoved { session_id: session });
+                return Json(json!({"ok": true, "output": said})).into_response();
+            }
+            Ok(_) => continue,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+        }
+    }
+    err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
+}
+
+async fn run_claude(args: &[&str]) -> Result<String, String> {
+    let run = tokio::process::Command::new("claude").args(args).kill_on_drop(true).output();
+    match tokio::time::timeout(Duration::from_secs(60), run).await {
+        Ok(Ok(out)) => Ok(format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("claude {} did not answer in 60 s", args.join(" "))),
+    }
+}
+
+fn listed(agents_json: &str, short: &str) -> bool {
+    serde_json::from_str::<Value>(agents_json)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .is_some_and(|a| a.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(short)))
 }
 
 async fn forget_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
