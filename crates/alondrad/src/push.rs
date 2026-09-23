@@ -196,8 +196,9 @@ fn question_payload(q: &Question, badge: usize) -> Value {
     let body = if options.is_empty() { who.clone() } else { format!("{who} · {options}") };
     json!({
         "aps": {"alert": {"title": q.title, "body": body}, "sound": "default", "category": category,
-                "thread-id": q.session_id, "badge": badge},
-        "alondra": {"kind": "question", "id": q.id, "origin": origin}
+                "thread-id": q.session_id, "badge": badge, "mutable-content": 1},
+        "alondra": {"kind": "question", "id": q.id, "origin": origin,
+                    "options": q.options.iter().map(|o| o.label.clone()).collect::<Vec<_>>()}
     })
 }
 
