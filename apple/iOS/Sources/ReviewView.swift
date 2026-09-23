@@ -157,30 +157,12 @@ struct ReviewView: View {
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Comentario general (opcional)", text: $general, axis: .vertical)
-                    .lineLimit(2...8)
-                    .focused($generalFocused)
-                if hasFeedback {
-                    Button {
-                        sendFeedback()
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.body.weight(.bold))
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .tint(kind.tint)
-                    .disabled(sending)
-                    .accessibilityLabel(sendLabel)
-                    .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .animation(.spring(duration: 0.3, bounce: 0.3), value: hasFeedback)
-            .padding(14)
-            .background(Palette.card, in: .rect(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
+            TextField("Comentario general (opcional)", text: $general, axis: .vertical)
+                .lineLimit(2...8)
+                .focused($generalFocused)
+                .padding(14)
+                .background(Palette.card, in: .rect(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
         }
     }
 
@@ -239,13 +221,6 @@ struct ReviewView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
-    }
-
-    private var sendLabel: String {
-        switch item {
-        case .question(let question): changeOption(question) ?? "Responder"
-        case .report: "Enviar comentarios"
-        }
     }
 
     private func sendFeedback() {
