@@ -151,6 +151,16 @@
         }
       }
     },
+    "Orchestrator": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Orquestador"
+          }
+        }
+      }
+    },
     "Permission": {
       "localizations": {
         "es": {

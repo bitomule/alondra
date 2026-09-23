@@ -27,14 +27,14 @@ public enum ReviewFeedback {
         let general = general.trimmingCharacters(in: .whitespacesAndNewlines)
         let notes = comments.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !notes.isEmpty else { return general }
-        var parts = [author.isEmpty ? "Comentarios:" : "Comentarios de \(author):"]
+        var parts = [author.isEmpty ? "Comments:" : "Comments from \(author):"]
         for (index, comment) in notes.enumerated() {
             let body = comment.text
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: "\n")
                 .map { "   " + $0 }
                 .joined(separator: "\n")
-            parts.append("\(index + 1). Sobre «\(quote(comment.quote))»:\n\(body)")
+            parts.append("\(index + 1). On \"\(quote(comment.quote))\":\n\(body)")
         }
         if !general.isEmpty { parts.append(general) }
         return parts.joined(separator: "\n\n")

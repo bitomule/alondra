@@ -118,7 +118,7 @@ struct QuestionDetail: View {
     }
 
     private func needsText(_ option: QuestionOption) -> Bool {
-        option.description?.lowercased().hasPrefix("escribe") == true
+        ["write", "escribe"].contains { option.description?.lowercased().hasPrefix($0) == true }
     }
 
     private func optionDetail(_ option: QuestionOption) -> String? {

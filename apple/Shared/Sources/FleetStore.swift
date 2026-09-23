@@ -100,7 +100,7 @@ public final class FleetStore {
         let visible = (questions + reports).filter { !hidden.contains($0.id) }
         inbox = visible
         pendingBySession = visible.reduce(into: [:]) { $0[$1.sessionId, default: 0] += 1 }
-        projects = Dictionary(grouping: nodes) { $0.project ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }
+        projects = Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }
             .map { (name: $0.key, nodes: $0.value.sorted(by: Self.attentionOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

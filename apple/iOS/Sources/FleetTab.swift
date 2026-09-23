@@ -330,7 +330,7 @@ struct NodeDetail: View {
 
 extension FleetStore {
     var projectsByRecency: [(name: String, nodes: [Node])] {
-        Dictionary(grouping: nodes) { $0.project ?? String(localized: "No project") }
+        Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "No project") }
             .map { (name: $0.key, nodes: $0.value.sorted(by: Self.recencyOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

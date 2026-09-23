@@ -1,6 +1,36 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Allow": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permitir"
+          }
+        }
+      }
+    },
+    "Approve": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobar"
+          }
+        }
+      }
+    },
+    "Deny": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Denegar"
+          }
+        }
+      }
+    },
     "I need more context": {
       "localizations": {
         "es": {
@@ -17,6 +47,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Responder"
+          }
+        }
+      }
+    },
+    "Request changes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir cambios"
           }
         }
       }

@@ -114,9 +114,19 @@ enum QuestionCategories {
         return UInt64(category.identifier.dropFirst(prefix.count))
     }
 
+    private static func title(for label: String) -> String {
+        switch label {
+        case "Approve": String(localized: "Approve")
+        case "Request changes": String(localized: "Request changes")
+        case "Allow": String(localized: "Allow")
+        case "Deny": String(localized: "Deny")
+        default: label
+        }
+    }
+
     private static func category(for question: OptionQuestion, identifier: String) -> UNNotificationCategory {
         let options = question.options.map { label in
-            UNNotificationAction(identifier: optionPrefix + label, title: label, options: [.authenticationRequired])
+            UNNotificationAction(identifier: optionPrefix + label, title: title(for: label), options: [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: options + [
             UNTextInputNotificationAction(

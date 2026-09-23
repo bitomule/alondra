@@ -47,6 +47,12 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
 
     public var displayName: String { name ?? shortId }
 
+    public var projectName: String? {
+        if isOrchestrator { return String(localized: "Orchestrator", table: "AlondraShared", bundle: #bundle) }
+        if project == "others" { return String(localized: "others", table: "AlondraShared", bundle: #bundle) }
+        return project
+    }
+
     public var summary: String {
         if let tool { return "\(tool.name) \(tool.summary ?? "")" }
         return lastMessage ?? daemonNeeds ?? daemonDetail ?? ""
