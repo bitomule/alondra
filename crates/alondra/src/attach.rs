@@ -25,7 +25,7 @@ impl Drop for RawMode {
 }
 
 const RESET_MODES: &[u8] =
-    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[?1049l\x1b[?25h";
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<99u\x1b[=0;1u\x1b[>4;0m\x1b[?1049l\x1b[?25h";
 
 pub fn reset_terminal_modes() {
     let mut out = std::io::stdout();
@@ -261,5 +261,18 @@ mod tests {
         t.feed(b"\x1bP>|tmux 3.5a\x1b\\\x1b[?1;2;4c");
         t.feed(b"\x1b]11;rgb:0000/0000/0000\x07");
         assert_eq!(t.typed, 0);
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::RESET_MODES;
+
+    #[test]
+    fn reset_clears_every_keyboard_mode_claude_code_turns_on() {
+        let reset = String::from_utf8_lossy(RESET_MODES);
+        for off in ["\x1b[>4;0m", "\x1b[<99u", "\x1b[?1003l", "\x1b[?1006l", "\x1b[?1004l", "\x1b[?2004l"] {
+            assert!(reset.contains(off), "missing {off:?}");
+        }
     }
 }

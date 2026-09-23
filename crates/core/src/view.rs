@@ -152,6 +152,11 @@ impl View {
                     m.handed_at = Some(at);
                     sid = Some(m.session_id.clone());
                 }
+                if let Some(node) = sid.as_ref().and_then(|s| self.nodes.get_mut(s)) {
+                    node.busy = true;
+                    node.turn_signal = None;
+                    node.last_seen = node.last_seen.max(at);
+                }
                 sid
             }
             Event::Classified { session_id, turn, state, confidence } => {
@@ -796,5 +801,25 @@ mod tests {
         assert_eq!(derive(&n, false).0, NodeState::Working);
         n.busy = false;
         assert_ne!(derive(&n, false).0, NodeState::Working);
+    }
+
+    #[test]
+    fn a_node_that_was_just_written_to_is_working() {
+        let mut v = View::default();
+        v.apply(1, 1000, &hook("s", "UserPromptSubmit"));
+        v.apply(2, 2000, &hook("s", "Stop"));
+        v.apply(3, 3000, &Event::MessageQueued(Message {
+            id: 1,
+            session_id: "s".into(),
+            from: crate::model::MessageFrom::User,
+            text: "go on".into(),
+            answers_question: None,
+            created_at: 3000,
+            handed_at: None,
+            delivered_at: None,
+        }));
+        assert_ne!(v.nodes["s"].state, NodeState::Working);
+        v.apply(4, 4000, &Event::MessageHanded { id: 1 });
+        assert_eq!(v.nodes["s"].state, NodeState::Working);
     }
 }

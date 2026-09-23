@@ -343,6 +343,7 @@ pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Msg>(64);
     let sync_tx = tx.clone();
     std::thread::Builder::new().name("alondra-sync".into()).spawn(move || sync_loop(sync_tx))?;
+    crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
     let res = main_loop(&mut terminal, App::new(tx), rx);
@@ -946,24 +947,18 @@ impl App {
                 }
             }
             KeyCode::Char('x') => {
-                if let Some(r) = self.selected_report() {
-                    self.mark_read(&r);
-                }
-            }
-            KeyCode::Char('X') => {
-                if let Some(r) = self.selected_report() {
+                let now = now_millis();
+                if let Some((session, until)) = self.pending_close.clone()
+                    && now < until
+                {
+                    self.pending_close = None;
+                    let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
+                    self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+                } else if let Some(r) = self.selected_report() {
                     let name = who(&r.node_name, &r.session_id);
-                    if self.confirm_close(&r.session_id, &name) {
-                        self.post(
-                            Some(Key::R(r.id)),
-                            vec![
-                                (format!("/v1/nodes/{}/close", urlencode(&r.session_id)), json!({})),
-                                (format!("/v1/reports/{}/read", r.id), json!({})),
-                            ],
-                            trf!("Read, and {name} closed", "Leído, y {name} cerrado"),
-                        );
-                        self.hide(Key::R(r.id));
-                    }
+                    self.mark_read(&r);
+                    self.pending_close = Some((r.session_id.clone(), now + 4000));
+                    self.flash(trf!("Read. Press x again to also close {name}", "Leído. Pulsa x otra vez para cerrar también {name}"));
                 }
             }
             KeyCode::Char(c @ '1'..='9') => {
@@ -1004,7 +999,7 @@ impl App {
             return true;
         }
         self.pending_close = Some((session.to_string(), now + 4000));
-        self.fail(trf!("Press X again to close {name} (claude rm, never discards work)", "Pulsa X otra vez para cerrar {name} (claude rm, nunca descarta trabajo)"));
+        self.fail(trf!("Press x again to close {name} (claude rm, never discards work)", "Pulsa x otra vez para cerrar {name} (claude rm, nunca descarta trabajo)"));
         false
     }
 
@@ -1400,7 +1395,7 @@ impl App {
                 Some(s) => s.editing = true,
                 None => self.search = Some(Search { input: TextInput::default(), editing: true, typed_at: now_millis(), remote: Remote::Idle }),
             },
-            KeyCode::Char('X') => {
+            KeyCode::Char('x') => {
                 if let Some(n) = self.selected_node() {
                     let (session, name) = (n.session_id.clone(), n.display_name().to_string());
                     if self.confirm_close(&session, &name) {

@@ -989,7 +989,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             k("o", tr!("expand", "expandir")),
             k("r", tr!("message", "mensaje")),
             k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
-            k("X", tr!("close node", "cerrar nodo")),
+            k("x", tr!("close node", "cerrar nodo")),
             k("n", tr!("new", "nuevo")),
             k("Tab", tr!("inbox", "bandeja")),
             k("q", tr!("quit", "salir")),
@@ -1011,7 +1011,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v
         }
         Some(Item::R(_)) => {
-            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído")), k("X", tr!("read + close", "leído y cerrar")), k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))];
+            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído")), k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }
@@ -1070,8 +1070,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("1-9", tr!("choose one of the question's options", "elegir una opción de la pregunta")),
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
-        row("x", tr!("mark as read", "marcar como leído")),
-        row("X", tr!("read and close the node that sent it", "leído y cerrar el nodo que lo envió")),
+        row("x", tr!("mark as read; x again closes the node that sent it", "marcar como leído; x otra vez cierra el nodo que lo envió")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line returns)", "abrir el terminal del nodo (← con la línea vacía vuelve)")),
         Line::default(),
@@ -1087,7 +1086,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),
         row("r · ⏎", tr!("message the node · its terminal", "mensaje al nodo · su terminal")),
         row("o", tr!("expand the node's detail to full screen", "expandir el detalle del nodo a pantalla completa")),
-        row("X", tr!("close the node (twice to confirm; never discards work)", "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)")),
+        row("x", tr!("close the node (twice to confirm; never discards work)", "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)")),
         Line::default(),
         section(tr!("Always", "Siempre")),
         row("Tab", tr!("inbox ⇄ fleet", "bandeja ⇄ flota")),
