@@ -1,0 +1,5 @@
+{
+  "name": "alondra-orchestrator",
+  "version": "0.1.0",
+  "description": "Alondra para el orquestador: los mismos hooks que un nodo, más las herramientas de flota, máquina, mensajes y lanzamiento."
+}

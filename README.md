@@ -28,8 +28,17 @@ Un nodo conectado a Alondra se lanza con el plugin:
 claude --bg --name "prueba/alondra" --plugin-dir ~/Projects/alondra/plugin --permission-mode auto -- "<misión>"
 ```
 
-o, desde el orquestador, con su herramienta `launch`. Al orquestador se le conecta
-arrancándolo con el mismo plugin y `ALONDRA_ROLE=orchestrator`.
+o, desde el orquestador, con su herramienta `launch`.
+
+**El orquestador** se arranca con `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: los
+mismos hooks más las herramientas `fleet`, `node`, `machine`, `send` y `launch`. Alondra le
+avisa sola, cada 90 s y en un único mensaje, de:
+- los informes nuevos de los nodos;
+- las preguntas dirigidas a él;
+- los nodos que terminan sin decir qué quieren;
+- la máquina, cuando se queda sin memoria o se satura.
+
+(`claude --bg` no hereda variables de entorno, así que el rol va en su propio plugin.)
 
 ### La TUI
 

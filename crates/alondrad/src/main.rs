@@ -2,6 +2,7 @@ mod classify;
 mod http;
 mod hub;
 mod machine;
+mod notifier;
 mod store;
 mod wake;
 mod watcher;
@@ -27,6 +28,7 @@ async fn main() -> Result<()> {
     tokio::spawn(watcher::run(hub.clone(), claude_home));
     tokio::spawn(machine::run(hub.clone()));
     tokio::spawn(wake::run(hub.clone()));
+    tokio::spawn(notifier::run(hub.clone()));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("no puedo escuchar en {addr}"))?;
