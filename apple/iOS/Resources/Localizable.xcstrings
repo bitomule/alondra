@@ -361,6 +361,16 @@
         }
       }
     },
+    "Changes requested": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambios pedidos"
+          }
+        }
+      }
+    },
     "Check the Server": {
       "localizations": {
         "es": {
@@ -651,6 +661,16 @@
         }
       }
     },
+    "It has conflicts with its base branch": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiene conflictos con su rama base"
+          }
+        }
+      }
+    },
     "Leave for Later": {
       "localizations": {
         "es": {
@@ -707,6 +727,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Leído"
+          }
+        }
+      }
+    },
+    "Merge (%@)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusionar (%@)"
+          }
+        }
+      }
+    },
+    "Merge PR #%llu?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Fusionar el PR #%llu?"
+          }
+        }
+      }
+    },
+    "Merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusionado"
+          }
+        }
+      }
+    },
+    "Merge…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusionar…"
           }
         }
       }
@@ -901,6 +961,16 @@
         }
       }
     },
+    "Open on GitHub": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir en GitHub"
+          }
+        }
+      }
+    },
     "Opens in Waiting for You": {
       "localizations": {
         "es": {
@@ -1031,6 +1101,16 @@
         }
       }
     },
+    "Pull request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pull request"
+          }
+        }
+      }
+    },
     "Question": {
       "localizations": {
         "es": {
@@ -1137,6 +1217,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Contesta a %@…"
+          }
+        }
+      }
+    },
+    "Request Changes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir cambios"
           }
         }
       }
@@ -1267,6 +1357,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Servidor"
+          }
+        }
+      }
+    },
+    "Set Aside": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apartar"
+          }
+        }
+      }
+    },
+    "Set aside": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apartado"
           }
         }
       }
@@ -1547,6 +1657,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lo último que dijo"
+          }
+        }
+      }
+    },
+    "What should change?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué hay que cambiar?"
           }
         }
       }

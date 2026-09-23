@@ -16,7 +16,8 @@ extension InboxItem {
     public var place: InboxPlace {
         switch self {
         case .question(let q): InboxPlace(group: 0, date: q.askedAt, serial: q.id)
-        case .report(let r): InboxPlace(group: 1, date: r.createdAt, serial: r.id)
+        case .report(let r): InboxPlace(group: 2, date: r.createdAt, serial: r.id)
+        case .pullRequest(let p): InboxPlace(group: 1, date: p.openedAt, serial: p.id)
         }
     }
 }

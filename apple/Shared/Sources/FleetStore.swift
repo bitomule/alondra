@@ -72,7 +72,7 @@ public final class FleetStore {
 
     private var ordered: [InboxItem] {
         guard let overview else { return [] }
-        let items = overview.openQuestions.map(InboxItem.question) + overview.news.map(InboxItem.report)
+        let items = overview.openQuestions.map(InboxItem.question) + (overview.prs ?? []).map(InboxItem.pullRequest) + overview.news.map(InboxItem.report)
         return InboxRing.ordered(items.filter { !hidden.contains($0.id) })
     }
 
@@ -103,7 +103,8 @@ public final class FleetStore {
     private func rebuild() {
         let questions = questions.map(InboxItem.question).sorted { $0.date > $1.date }
         let reports = news.map(InboxItem.report).sorted { $0.date > $1.date }
-        let visible = (questions + reports).filter { !hidden.contains($0.id) }
+        let prs = (overview?.prs ?? []).map(InboxItem.pullRequest).sorted { $0.date > $1.date }
+        let visible = (questions + prs + reports).filter { !hidden.contains($0.id) }
         inbox = visible
         pendingBySession = visible.reduce(into: [:]) { $0[$1.sessionId, default: 0] += 1 }
         projects = Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }

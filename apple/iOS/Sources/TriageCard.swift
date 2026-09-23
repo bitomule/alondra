@@ -19,6 +19,7 @@ struct TriageCard: View {
     @State private var showNodeContext = false
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
+    @State private var merging: String?
 
     private var kind: Kind { Kind(item) }
     private var actionTint: Color { kind.tint == Palette.slate ? Palette.dawn : kind.tint }
@@ -217,6 +218,27 @@ struct TriageCard: View {
                 reviewButton(String(localized: "Read the document"), detail: attachment.name, symbol: "doc.richtext")
             }
             links(report.links)
+        case .pullRequest(let pr):
+            Text(pr.summary)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
+            if pr.hasConflicts {
+                Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Palette.dawn)
+            }
+            ForEach(pr.checks ?? [], id: \.self) { check in
+                Label(check.name, systemImage: check.passed ? "checkmark.circle.fill" : check.failed ? "xmark.circle.fill" : "clock")
+                    .font(.footnote)
+                    .foregroundStyle(check.passed ? Palette.sage : check.failed ? Palette.rose : Palette.dawn)
+            }
+            if let body = pr.body, !body.isEmpty {
+                if body.count > 600 {
+                    excerpt(body, cta: String(localized: "Read it all"))
+                } else {
+                    blocks(body)
+                }
+            }
         }
     }
 
@@ -398,6 +420,51 @@ struct TriageCard: View {
                     }
                     .buttonStyle(.plain)
                 }
+            }
+        case .pullRequest(let pr):
+            VStack(spacing: 10) {
+                replyField(placeholder: String(localized: "What should change?")) {
+                    let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                    resolve(Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)) {
+                        try await $0.requestChanges(onPullRequest: pr.id, text: text)
+                    }
+                }
+                Menu {
+                    ForEach(pr.methods, id: \.self) { method in
+                        Button(PullRequest.methodLabel(method)) { merging = method }
+                    }
+                } label: {
+                    Label("Merge…", systemImage: "arrow.triangle.merge")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(FilledStyle(tint: Palette.sage))
+                .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
+                    if let method = merging {
+                        Button("Merge (\(PullRequest.methodLabel(method)))") {
+                            resolve(Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)) {
+                                try await $0.mergePullRequest(pr.id, method: method)
+                            }
+                        }
+                    }
+                } message: {
+                    Text(pr.summary)
+                }
+                HStack {
+                    if let url = URL(string: pr.url) {
+                        Link(destination: url) {
+                            Label("Open on GitHub", systemImage: "arrow.up.right.square")
+                        }
+                    }
+                    Spacer()
+                    Button("Set Aside") {
+                        resolve(Stamp(label: String(localized: "Set aside"), symbol: "tray.and.arrow.down", tint: Palette.slate)) {
+                            try await $0.dismissPullRequest(pr.id)
+                        }
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
             }
         }
     }

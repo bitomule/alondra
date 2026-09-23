@@ -219,6 +219,16 @@ struct ReviewView: View {
                         .tint(Palette.sageDeep)
                         .disabled(sending)
                     }
+                case .pullRequest:
+                    Button {
+                        sendFeedback()
+                    } label: {
+                        Label("Request Changes", systemImage: "arrow.uturn.backward")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .modifier(GlassEmphasis(prominent: hasFeedback))
+                    .tint(Palette.dawn)
+                    .disabled(!hasFeedback || sending)
                 case .report(let report):
                     Button {
                         sendFeedback()
@@ -262,6 +272,8 @@ struct ReviewView: View {
                 try await client.send(to: report.sessionId, text: text)
                 try await client.markRead(report.id)
             }
+        case .pullRequest(let pr):
+            finish(HandoffLabel.sent) { try await $0.requestChanges(onPullRequest: pr.id, text: text) }
         }
     }
 
@@ -327,6 +339,8 @@ struct ReviewView: View {
                 return try await fleet.client.fileText(path)
             }
             return report.body ?? ""
+        case .pullRequest(let pr):
+            return pr.body ?? ""
         }
     }
 }

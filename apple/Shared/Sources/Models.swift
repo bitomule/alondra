@@ -186,6 +186,7 @@ extension InboxItem {
         let mission: String? = switch self {
         case .question(let q): q.mission
         case .report(let r): r.mission
+        case .pullRequest: nil
         }
         let flat = (mission ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !flat.isEmpty else { return nil }
@@ -230,6 +231,7 @@ public struct Overview: Codable, Sendable {
     public let orchestratorMessages: [SentMessage]
     public let machine: Machine
     public let usage: Usage?
+    public let prs: [PullRequest]?
     public let user: String?
 }
 
@@ -246,11 +248,13 @@ public func ago(_ millis: Int64) -> String {
 public enum InboxItem: Identifiable, Hashable {
     case question(Question)
     case report(Report)
+    case pullRequest(PullRequest)
 
     public var id: String {
         switch self {
         case .question(let q): "q\(q.id)"
         case .report(let r): "r\(r.id)"
+        case .pullRequest(let p): "p\(p.id)"
         }
     }
 
@@ -258,6 +262,7 @@ public enum InboxItem: Identifiable, Hashable {
         switch self {
         case .question(let q): q.askedAt
         case .report(let r): r.createdAt
+        case .pullRequest(let p): p.openedAt
         }
     }
 
@@ -265,6 +270,7 @@ public enum InboxItem: Identifiable, Hashable {
         switch self {
         case .question(let q): q.sessionId
         case .report(let r): r.sessionId
+        case .pullRequest(let p): p.sessionId
         }
     }
 }
@@ -291,6 +297,7 @@ extension InboxItem {
         switch self {
         case .question(let q): q.title
         case .report(let r): r.title
+        case .pullRequest(let p): p.title
         }
     }
 
@@ -298,6 +305,7 @@ extension InboxItem {
         switch self {
         case .question(let q): q.nodeName
         case .report(let r): r.nodeName
+        case .pullRequest(let p): p.nodeName
         }
     }
 }
