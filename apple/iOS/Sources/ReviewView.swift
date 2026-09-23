@@ -200,7 +200,7 @@ struct ReviewView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .modifier(GlassEmphasis(prominent: hasFeedback))
-                    .tint(kind.tint)
+                    .tint(Palette.dawn)
                     .disabled(!hasFeedback || sending)
                     if let approve = approveOption(question) {
                         Button {
@@ -217,11 +217,11 @@ struct ReviewView: View {
                     Button {
                         sendFeedback()
                     } label: {
-                        Label("Send Comments", systemImage: "paperplane")
+                        Label("Send", systemImage: "paperplane")
                             .frame(maxWidth: .infinity)
                     }
                     .modifier(GlassEmphasis(prominent: hasFeedback))
-                    .tint(kind.tint)
+                    .tint(Palette.dawn)
                     .disabled(!hasFeedback || sending)
                     Button {
                         finish(HandoffLabel.read) { try await $0.markRead(report.id) }
