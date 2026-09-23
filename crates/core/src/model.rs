@@ -15,6 +15,7 @@ pub enum NodeState {
     Unclear,
     Delivered,
     WaitingMachine,
+    Stalled,
     Working,
     Done,
 }
@@ -29,6 +30,7 @@ impl NodeState {
             NodeState::WaitingMachine => "waiting for the machine",
             NodeState::Done => "done",
             NodeState::Unclear => "unclear what it wants",
+            NodeState::Stalled => "stalled",
         }
     }
 
@@ -40,6 +42,7 @@ impl NodeState {
             "delivered" => NodeState::Delivered,
             "waiting_machine" => NodeState::WaitingMachine,
             "done" => NodeState::Done,
+            "stalled" => NodeState::Stalled,
             _ => NodeState::Unclear,
         }
     }
@@ -93,6 +96,7 @@ pub enum Signal {
     OpenQuestion,
     PermissionPrompt,
     ActionRequested,
+    CallStuck,
     ToolInFlight,
     Hook,
     MessageHanded,
@@ -103,6 +107,7 @@ pub enum Signal {
     FinalReport,
     Reviewed,
     Report,
+    TurnEndedUndeclared,
     NoProcess,
     #[serde(other)]
     Nothing,

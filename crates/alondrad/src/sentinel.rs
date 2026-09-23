@@ -16,7 +16,6 @@ const TITLE_MAX: usize = 110;
 const MARK: &str = "sentinel:";
 const GRACE: Duration = Duration::from_secs(180);
 const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
-const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
 
 #[derive(Default)]
 struct Memory {
@@ -34,23 +33,15 @@ pub async fn run(hub: Arc<Hub>) {
     }
 }
 
-fn nudge_text(user: &str) -> String {
-    format!(
-        "[Alondra] Your turn ended without telling {user} anything through Alondra, so they cannot tell whether you are \
-         waiting on them. What you write in your terminal does not reach them. Declare your state with an Alondra tool: \
-         `ask` if you need a decision (one question per decision, with options), `request_action` if {user} has to do \
-         something outside Alondra, `report` with kind final if you are \
-         done, or `wait_for_machine` if you are waiting for resources. If you are still working on your own (a build, an \
-         upload, a review, a long command), send nothing: do not report that you do not need {user}, that is noise. \
-         If you have not done any of this in 3 minutes, Alondra will turn your last message into an item in {user}'s \
-         inbox; it never answers or closes anything for you."
-    )
-}
-
 async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     let strained = hub.machine().strained();
     if hub.read(|v| v.due(now_millis(), strained)) {
         hub.append(Event::Clock { machine_strained: strained })?;
+    }
+    let user = hub.config.name.clone();
+    let stalled: Vec<String> = hub.read(|v| v.nodes.values().filter(|n| n.state == NodeState::Stalled).map(|n| n.session_id.clone()).collect());
+    for session in stalled {
+        hub.append_with(|v| v.nodes.get(&session).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued))?;
     }
     let now = now_millis();
     let stale: Vec<u64> = hub.read(|v| {
@@ -83,7 +74,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             Some(at) if now_millis() - at < GRACE.as_millis() as i64 => {}
             Some(at) if now_millis() - at < NUDGE_COOLDOWN_MS => due.push((session, key)),
             _ => {
-                let text = nudge_text(&hub.config.name);
+                let text = states::nudge_text(&hub.config.name);
                 hub.append_with(|v| {
                     Some(Event::MessageQueued(Message {
                         id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -118,7 +109,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
 fn last_nudge_at(v: &View, session: &str) -> Option<i64> {
     v.messages
         .values()
-        .filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(NUDGE_PREFIX))
+        .filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(states::NUDGE_PREFIX))
         .map(|m| m.created_at)
         .max()
 }
@@ -162,7 +153,7 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 /// inbox. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || talking_with_user(v, node) {
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::talking_with_user(v, node) {
         return false;
     }
     let key = key(node);
@@ -170,21 +161,6 @@ fn needs_attention(v: &View, node: &Node) -> bool {
         q.session_id == node.session_id
             && (q.status.is_open() || (q.tool_use_id.as_deref() == Some(key.as_str()) && q.status != QuestionStatus::Withdrawn))
     })
-}
-
-/// The user typed the node's last prompt in its own terminal: they are talking with it and
-/// have its answer on screen. Prompts Alondra typed, and the launch mission, do not count.
-fn talking_with_user(v: &View, node: &Node) -> bool {
-    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
-    let Some(prompt) = node.last_prompt.as_deref().map(squash).filter(|p| !p.is_empty()) else { return false };
-    if prompt.starts_with("[Alondra]") || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt) {
-        return false;
-    }
-    let typed_by_alondra = v.messages.values().filter(|m| m.session_id == node.session_id).any(|m| {
-        let head: String = squash(&m.text).chars().take(60).collect();
-        !head.is_empty() && prompt.contains(&head)
-    });
-    !typed_by_alondra
 }
 
 fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
@@ -281,6 +257,8 @@ mod tests {
         v.apply(0, 500, &Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(42), ..Default::default() }));
         v.apply(1, 1000, &hook("UserPromptSubmit", None));
         v.apply(2, 2000, &hook("Stop", Some(last)));
+        v.nodes.get_mut("s").unwrap().has_plugin = false;
+        v.apply(3, 2500, &Event::Clock { machine_strained: false });
         v
     }
 
@@ -345,7 +323,7 @@ mod tests {
             id: 1,
             session_id: "s".into(),
             from: MessageFrom::Alondra,
-            text: nudge_text("Ana"),
+            text: states::nudge_text("Ana"),
             answers_question: None,
             created_at: 4000,
             handed_at: None,
@@ -377,12 +355,12 @@ mod tests {
         let mut v = waiting_view(ASKS);
         v.nodes.get_mut("s").unwrap().last_prompt = Some("the TUI shift key does not work".into());
         assert!(!needs_attention(&v, &v.nodes["s"]));
-        v.nodes.get_mut("s").unwrap().last_prompt = Some(nudge_text("Ana"));
+        v.nodes.get_mut("s").unwrap().last_prompt = Some(states::nudge_text("Ana"));
         v.apply(9, 9000, &Event::MessageQueued(Message {
             id: 7,
             session_id: "s".into(),
             from: MessageFrom::Alondra,
-            text: nudge_text("Ana"),
+            text: states::nudge_text("Ana"),
             answers_question: None,
             created_at: 9000,
             handed_at: None,

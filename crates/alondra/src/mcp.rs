@@ -83,6 +83,7 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "node", "description": "A node's detail: state, tool in progress, last message, questions, reports and timeline.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity: memory, load, CPU and disk.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
+            json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in. Use it only when Alondra tells you a node is stuck inside one call and it looks hung; then send it on with `send`.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
             json!({"name": "launch", "description": "Launch a new node with the Alondra plugin.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["name", "cwd", "prompt"]}}),
         ]);
     }
@@ -160,6 +161,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
             client.post(&format!("/v1/nodes/{}/messages", urlencode(key)), &json!({"text": text, "from": "orchestrator"}))?;
             format!("Message queued for {key}; Alondra will type it into its session.")
+        }
+        "interrupt" if role == Role::Orchestrator => {
+            let key = args.get("node").and_then(Value::as_str).unwrap_or("");
+            client.post(&format!("/v1/nodes/{}/interrupt", urlencode(key)), &json!({}))?;
+            format!("Pressed Esc in {key}'s session. Send it on with `send` if it should carry on.")
         }
         "launch" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/launch", args)?)?,
         other => anyhow::bail!("unknown tool: {other}"),

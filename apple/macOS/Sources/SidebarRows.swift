@@ -131,6 +131,7 @@ extension NodeState {
         case .waitingAnswer: .orange
         case .yourTurn: .pink
         case .unclear: .purple
+        case .stalled: .red
         case .delivered: .blue
         case .waitingMachine: .yellow
         case .working: .green

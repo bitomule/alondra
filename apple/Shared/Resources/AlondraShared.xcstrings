@@ -421,6 +421,16 @@
         }
       }
     },
+    "stalled": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "parado"
+          }
+        }
+      }
+    },
     "unclear what it wants": {
       "localizations": {
         "es": {

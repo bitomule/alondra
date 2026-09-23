@@ -7,7 +7,7 @@
 //! daemon record in the log that time has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    Evidence, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
+    Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
 };
 use crate::view::View;
 
@@ -15,8 +15,14 @@ const MINUTE: Millis = 60 * 1000;
 
 /// A hook that shows the node inside a turn counts as work for this long.
 pub const HOOK_FRESH_MS: Millis = 5 * MINUTE;
-/// A tool opened by PreToolUse and never closed stops counting after this long.
-pub const TOOL_FRESH_MS: Millis = 15 * MINUTE;
+/// A single call counts as work for this long; past it, a background node is stuck in it.
+pub const CALL_LIMIT_MS: Millis = 45 * MINUTE;
+/// Subagents legitimately run longer than any other call.
+pub const SUBAGENT_CALL_LIMIT_MS: Millis = 120 * MINUTE;
+
+pub fn call_limit(tool: &str) -> Millis {
+    if matches!(tool, "Agent" | "Task") { SUBAGENT_CALL_LIMIT_MS } else { CALL_LIMIT_MS }
+}
 /// The Claude daemon saying "active" counts for this long after it was last observed.
 pub const DAEMON_FRESH_MS: Millis = 30 * MINUTE;
 /// A background task (a Bash run in the background, a subagent, a monitor) reported by the
@@ -63,6 +69,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("an open question waits for the user", Signal::OpenQuestion, NodeState::WaitingAnswer),
     row("a permission prompt is on screen", Signal::PermissionPrompt, NodeState::WaitingAnswer),
     row("an action waits for the user", Signal::ActionRequested, NodeState::YourTurn),
+    row("a single call ran far longer than usual", Signal::CallStuck, NodeState::Stalled),
     row("a tool is in flight", Signal::ToolInFlight, NodeState::Working),
     row("a recent hook inside a turn", Signal::Hook, NodeState::Working),
     row("Alondra just typed a message into the session", Signal::MessageHanded, NodeState::Working),
@@ -73,6 +80,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
     row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
+    row("a turn ended without a declaration", Signal::TurnEndedUndeclared, NodeState::Stalled),
     Row {
         name: "working evidence went stale: handed to the sentinel",
         from: WORKING,
@@ -144,7 +152,8 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::PermissionPrompt, node.waiting_permission.then_some(node.last_seen));
     f.add(Signal::ActionRequested, action);
 
-    f.add(Signal::ToolInFlight, fresh(node.tool.as_ref().map(|t| t.since), now, TOOL_FRESH_MS));
+    f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
+    f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| now - t.since <= call_limit(&t.name)).map(|t| t.since));
     f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| node.busy), now, HOOK_FRESH_MS));
     let after_stop = |at: &Millis| node.last_stop_at.is_none_or(|stop| *at > stop);
     f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop), now, HOOK_FRESH_MS));
@@ -171,6 +180,9 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         }
         _ => {}
     }
+
+    let undeclared = node.watched() && node.has_plugin && node.turn_signal.is_none() && node.last_work_at.is_some() && !talking_with_user(view, node);
+    f.add(Signal::TurnEndedUndeclared, node.last_stop_at.filter(|stop| undeclared && *stop >= node.episode_since));
 
     f.add(Signal::NoProcess, (!node.alive).then_some(node.last_seen));
     f.add(Signal::Nothing, Some(node.last_seen));
@@ -207,6 +219,7 @@ pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, ma
     let facts = facts_with(view, node, now, machine_strained);
     let drop_tool = node.tool.is_some()
         && facts.at(Signal::ToolInFlight).is_none()
+        && facts.at(Signal::CallStuck).is_none()
         && facts.at(Signal::DaemonActive).is_none()
         && facts.at(Signal::BackgroundTask).is_none();
     if node.is_orchestrator {
@@ -256,7 +269,7 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
             NodeState::Done => !reported(&[ReportKind::Final]),
             NodeState::Delivered => !reported(&[ReportKind::Final, ReportKind::Notice, ReportKind::Document]),
-            NodeState::Unclear => false,
+            NodeState::Unclear | NodeState::Stalled => false,
         };
         if missing {
             found.push((sid.clone(), "its state has no inbox item behind it"));
@@ -267,6 +280,120 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
         }
     }
     found
+}
+
+/// The user typed the node's last prompt in its own terminal: they are talking with it and
+/// have its answer on screen. Prompts Alondra typed, and the launch mission, do not count.
+pub fn talking_with_user(v: &View, node: &Node) -> bool {
+    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some(prompt) = node.last_prompt.as_deref().map(squash).filter(|p| !p.is_empty()) else { return false };
+    if prompt.starts_with("[Alondra]") || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt) {
+        return false;
+    }
+    let typed_by_alondra = v.messages.values().filter(|m| m.session_id == node.session_id).any(|m| {
+        let head: String = squash(&m.text).chars().take(60).collect();
+        !head.is_empty() && prompt.contains(&head)
+    });
+    !typed_by_alondra
+}
+
+pub const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
+const STALLED_PREFIX: &str = "[Alondra] Stalled node";
+
+/// What Alondra does about a stalled node: nudge it once, and if it stalls again before anyone
+/// writes to it, hand it to the orchestrator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StallMove {
+    Nudge,
+    TellOrchestrator { orchestrator: String },
+}
+
+pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
+    if node.state != NodeState::Stalled {
+        return None;
+    }
+    let orchestrator = || view.nodes.values().find(|n| n.is_orchestrator && n.alive);
+    let told = |orchestrator: &Node, tag: &str| {
+        view.messages.values().any(|m| m.session_id == orchestrator.session_id && m.from == MessageFrom::Alondra && m.text.starts_with(STALLED_PREFIX) && m.text.contains(tag))
+    };
+    if let Some(tool) = node.tool.as_ref().filter(|_| node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck)) {
+        let o = orchestrator()?;
+        return (!told(o, &stuck_tag(node, tool.since))).then(|| StallMove::TellOrchestrator { orchestrator: o.session_id.clone() });
+    }
+    let since = node.episode_since;
+    let alondra_wrote = |session: &str, prefix: &str, about: Option<&str>| {
+        view.messages.values().any(|m| {
+            m.session_id == session && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.starts_with(prefix) && about.is_none_or(|a| m.text.contains(a))
+        })
+    };
+    if !alondra_wrote(&node.session_id, NUDGE_PREFIX, None) {
+        return Some(StallMove::Nudge);
+    }
+    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
+    let tag = stalled_tag(node);
+    (!alondra_wrote(&orchestrator.session_id, STALLED_PREFIX, Some(&tag))).then(|| StallMove::TellOrchestrator { orchestrator: orchestrator.session_id.clone() })
+}
+
+fn stalled_tag(node: &Node) -> String {
+    format!("({})", node.short_id)
+}
+
+fn stuck_tag(node: &Node, since: Millis) -> String {
+    format!("({} call@{since})", node.short_id)
+}
+
+pub fn stuck_text(node: &Node, user: &str, now: Millis) -> Option<String> {
+    let tool = node.tool.as_ref()?;
+    let minutes = (now - tool.since) / MINUTE;
+    let call = format!("{} {}", tool.name, tool.summary.as_deref().unwrap_or("")).trim().to_string();
+    Some(format!(
+        "{STALLED_PREFIX}: {} {} has been inside one call for {minutes} min: {call}. If it is hung, stop it with \
+         `interrupt` and send it on with `send`; if the call is legitimately long, leave it. If you cannot tell, ask {user} with `ask`.",
+        node.display_name(),
+        stuck_tag(node, tool.since)
+    ))
+}
+
+pub fn nudge_text(user: &str) -> String {
+    format!(
+        "{NUDGE_PREFIX} {user} anything through Alondra, so they cannot tell whether you are \
+         waiting on them. What you write in your terminal does not reach them. Declare your state with an Alondra tool: \
+         `ask` if you need a decision (one question per decision, with options), `request_action` if {user} has to do \
+         something outside Alondra, `report` with kind final if you are done, or `wait_for_machine` if you are waiting \
+         for resources. If you are still working on your own (a build, an upload, a review, a long command), send \
+         nothing: do not report that you do not need {user}, that is noise."
+    )
+}
+
+pub fn stalled_text(node: &Node, user: &str) -> String {
+    let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
+    format!(
+        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything, and Alondra already nudged it once. \
+         Its last message:\n\n{said}\n\nSend it on with `send` if you can tell what it should do next; if you cannot, \
+         ask {user} with `ask`.",
+        node.display_name(),
+        stalled_tag(node)
+    )
+}
+
+/// The message a stall move puts in a session.
+pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
+    let stuck = node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck);
+    let (session_id, text) = match stall_move(view, node)? {
+        StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
+        StallMove::TellOrchestrator { orchestrator } if stuck => (orchestrator, stuck_text(node, user, at)?),
+        StallMove::TellOrchestrator { orchestrator } => (orchestrator, stalled_text(node, user)),
+    };
+    Some(Message {
+        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id,
+        from: MessageFrom::Alondra,
+        text,
+        answers_question: None,
+        created_at: at,
+        handed_at: None,
+        delivered_at: None,
+    })
 }
 
 #[cfg(test)]
@@ -394,7 +521,9 @@ mod tests {
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
-            Case { what: "a tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((16 * min, false)), state: NodeState::Unclear, row: stale },
+            Case { what: "a background call past its limit", events: background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), sweep: Some((46 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::CallStuck) },
+            Case { what: "a foreground tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((46 * min, false)), state: NodeState::Unclear, row: stale },
+            Case { what: "a background node that ended its turn without declaring", events: vec![daemon("working", "active", 0, None), hook("UserPromptSubmit"), hook("Stop")], sweep: Some((30 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::TurnEndedUndeclared) },
             Case { what: "a turn that ended with nothing", events: vec![hook("UserPromptSubmit"), hook("Stop")], sweep: None, state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::Nothing) },
         ]
     }
@@ -413,24 +542,124 @@ mod tests {
         }
     }
 
+    fn background(events: &[Event]) -> Vec<Event> {
+        let mut all = vec![daemon("working", "active", 0, None)];
+        all.extend_from_slice(events);
+        all
+    }
+
+    #[test]
+    fn only_an_undeclared_end_of_turn_of_a_background_node_is_stalled() {
+        let [queued, handed] = message(MessageFrom::User);
+        let typed = Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some("what is left?".into()), ..Default::default() });
+        let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
+            ("ended its turn saying what it will do next", background(&[hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("asked first", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")]), NodeState::WaitingAnswer),
+            ("handed the user an action", background(&[hook("UserPromptSubmit"), question(true, QuestionOrigin::Ask), hook("Stop")]), NodeState::YourTurn),
+            ("reported final", background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
+            ("declared a machine wait", background(&[hook("UserPromptSubmit"), wait(), hook("Stop")]), NodeState::WaitingMachine),
+            ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Unclear),
+            ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], NodeState::Unclear),
+            ("declared, then got a new message and stopped silently", background(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+        ];
+        for (what, events, state) in cases {
+            assert_eq!(run(&events, None).nodes["s"].state, state, "{what}");
+        }
+    }
+
+    fn alondra_says(v: &mut View, session: &str, text: String, seq: u64) {
+        let id = v.messages.keys().next_back().copied().unwrap_or(0) + 1;
+        let m = Message { id, session_id: session.into(), from: MessageFrom::Alondra, text, answers_question: None, created_at: T0 + seq as Millis * 1000, handed_at: None, delivered_at: None };
+        v.apply(seq, T0 + seq as Millis * 1000, &Event::MessageQueued(m));
+    }
+
+    #[test]
+    fn a_stalled_node_is_nudged_once_and_then_handed_to_the_orchestrator() {
+        let with_orchestrator = |v: &mut View| {
+            v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+            v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        };
+        let stalled = || run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+
+        let v = stalled();
+        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge), "first stall");
+
+        let mut v = stalled();
+        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "nudged, no orchestrator alive");
+
+        let mut v = stalled();
+        with_orchestrator(&mut v);
+        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
+        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::TellOrchestrator { orchestrator: "o".into() }), "stalled again after the nudge");
+        let text = stalled_text(&v.nodes["s"], "Ana");
+        alondra_says(&mut v, "o", text, 61);
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the orchestrator already has it");
+
+        let mut v = stalled();
+        with_orchestrator(&mut v);
+        alondra_says(&mut v, "s", nudge_text("Ana"), 60);
+        let [queued, handed] = message(MessageFrom::Orchestrator);
+        for (i, e) in [queued, handed, hook("UserPromptSubmit"), hook("Stop")].iter().enumerate() {
+            v.apply(70 + i as u64, T0 + (70 + i as Millis) * 1000, e);
+        }
+        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge), "the orchestrator sent it on and it stalled again");
+
+        let v = run(&background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), None);
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "not stalled");
+    }
+
     #[test]
     fn working_without_fresh_evidence_is_demoted() {
         let min = 60_000;
         assert_eq!(run(&[hook("UserPromptSubmit")], Some((6 * min, false))).nodes["s"].state, NodeState::Unclear);
-        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], Some((31 * min, false))).nodes["s"].state, NodeState::Unclear);
-        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], Some((121 * min, false))).nodes["s"].state, NodeState::Unclear);
+        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], Some((31 * min, false))).nodes["s"].state, NodeState::Stalled);
+        assert_eq!(run(&[hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], Some((121 * min, false))).nodes["s"].state, NodeState::Stalled);
     }
 
     #[test]
     fn a_daemon_active_before_the_stop_does_not_count() {
         let v = run(&[hook("UserPromptSubmit"), daemon("working", "active", 0, None), hook("Stop")], None);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Stalled);
     }
 
     #[test]
     fn a_stale_tool_is_no_longer_shown() {
-        let v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")], Some((16 * 60_000, false)));
+        let v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")], Some((46 * 60_000, false)));
         assert!(v.nodes["s"].tool.is_none());
+    }
+
+    fn call(name: &str) -> Event {
+        Event::Hook(HookEvent { session_id: "s".into(), event: "PreToolUse".into(), tool_name: Some(name.into()), tool_use_id: Some("c".into()), ..Default::default() })
+    }
+
+    #[test]
+    fn a_call_is_stuck_only_past_the_limit_for_its_kind() {
+        let min = 60_000;
+        let cases = [
+            ("a build at 40 min", "Bash", 40 * min, NodeState::Working),
+            ("a build at 46 min", "Bash", 46 * min, NodeState::Stalled),
+            ("a subagent at 90 min", "Agent", 90 * min, NodeState::Working),
+            ("a subagent at 121 min", "Task", 121 * min, NodeState::Stalled),
+        ];
+        for (what, name, after, state) in cases {
+            let v = run(&background(&[hook("UserPromptSubmit"), call(name)]), Some((after, false)));
+            assert_eq!(v.nodes["s"].state, state, "{what}");
+            assert!(v.nodes["s"].tool.is_some(), "{what}: the call stays on show");
+        }
+    }
+
+    #[test]
+    fn a_stuck_call_goes_to_the_orchestrator_once() {
+        let mut v = run(&background(&[hook("UserPromptSubmit"), call("Bash")]), Some((50 * 60_000, false)));
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "no orchestrator alive");
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::TellOrchestrator { orchestrator: "o".into() }));
+        let m = stall_message(&v, &v.nodes["s"], "Ana", T0 + 50 * 60_000).unwrap();
+        assert!(m.text.contains("inside one call for 49 min: Bash"), "{}", m.text);
+        v.apply(52, T0 + 50 * 60_000, &Event::MessageQueued(m));
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None);
     }
 
     #[test]
