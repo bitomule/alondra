@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::auth::{Auth, is_local};
+use crate::push::{Push, Registration};
 use crate::classify;
 use crate::hub::Hub;
 
@@ -25,8 +26,10 @@ const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
 
 type AppState = Arc<Hub>;
 
-pub fn router(hub: Arc<Hub>, auth: Arc<Auth>) -> Router {
+pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
     Router::new()
+        .route("/v1/push/register", post(push_register))
+        .route("/v1/push/check", post(push_check))
         .route("/v1/pairing", post(new_pairing))
         .route("/v1/pair", post(pair))
         .route("/v1/devices", get(devices))
@@ -52,6 +55,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/file", get(file))
         .layer(Extension(auth))
+        .layer(Extension(push))
         .with_state(hub)
 }
 
@@ -303,6 +307,51 @@ async fn revoke_device(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer):
         return r;
     }
     if auth.revoke(&id) { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "no existe") }
+}
+
+#[derive(Deserialize)]
+struct PushRegisterBody {
+    token: String,
+    environment: Option<String>,
+    quiet_start: Option<String>,
+    quiet_end: Option<String>,
+}
+
+async fn push_register(
+    Extension(push): Extension<Arc<Push>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(b): Json<PushRegisterBody>,
+) -> Response {
+    let device = if is_local(&peer, &headers) {
+        headers.get("x-alondra-device").and_then(|v| v.to_str().ok()).unwrap_or("local").to_string()
+    } else {
+        headers.get("x-alondra-device").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string()
+    };
+    if b.token.is_empty() || !b.token.chars().all(|c| c.is_ascii_hexdigit()) {
+        return err(StatusCode::BAD_REQUEST, "token no válido");
+    }
+    let reg = Registration {
+        token: b.token.to_lowercase(),
+        environment: b.environment.unwrap_or_else(|| "sandbox".into()),
+        quiet_start: b.quiet_start,
+        quiet_end: b.quiet_end,
+        updated_at: now_millis(),
+    };
+    match push.register(&device, reg) {
+        Ok(()) => Json(json!({"ok": true, "push_enabled": push.enabled()})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(r) = local_only(&peer, &headers) {
+        return r;
+    }
+    match push.check().await {
+        Ok((status, body)) => Json(json!({"status": status, "body": body})).into_response(),
+        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
+    }
 }
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {

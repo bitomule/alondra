@@ -4,6 +4,7 @@ mod http;
 mod hub;
 mod machine;
 mod notifier;
+mod push;
 mod store;
 mod wake;
 mod watcher;
@@ -32,11 +33,13 @@ async fn main() -> Result<()> {
     tokio::spawn(notifier::run(hub.clone()));
 
     let auth = Arc::new(auth::Auth::open(&alondra_home)?);
+    let push = Arc::new(push::Push::open(&alondra_home)?);
+    tokio::spawn(push::run(hub.clone(), push.clone()));
     let ip: std::net::IpAddr = std::env::var("ALONDRA_LISTEN").ok().and_then(|v| v.parse().ok()).unwrap_or([127, 0, 0, 1].into());
     let addr = SocketAddr::new(ip, port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("no puedo escuchar en {addr}"))?;
     eprintln!("alondrad: escuchando en http://{addr}, datos en {}", alondra_home.display());
-    let app = http::router(hub, auth.clone()).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
+    let app = http::router(hub, auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
