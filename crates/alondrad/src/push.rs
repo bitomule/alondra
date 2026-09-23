@@ -233,8 +233,15 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
         let (questions, reports, badge, max_q, max_r) = hub.read(|v| {
             let pending = v.questions.values().filter(|q| q.status.is_open() && !q.to_orchestrator).count()
                 + v.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).count();
-            let qs: Vec<Question> = v.questions.range(last_q + 1..).map(|(_, q)| q.clone()).filter(|q| q.status.is_open() && !q.to_orchestrator).collect();
-            let rs: Vec<Report> = v.reports.range(last_r + 1..).map(|(_, r)| r.clone()).filter(|r| r.kind != ReportKind::Progress).collect();
+            let awake = |session: &str| v.nodes.get(session).is_none_or(|n| n.alive);
+            let qs: Vec<Question> = v
+                .questions
+                .range(last_q + 1..)
+                .map(|(_, q)| q.clone())
+                .filter(|q| q.status.is_open() && !q.to_orchestrator && awake(&q.session_id))
+                .collect();
+            let rs: Vec<Report> =
+                v.reports.range(last_r + 1..).map(|(_, r)| r.clone()).filter(|r| r.kind != ReportKind::Progress && awake(&r.session_id)).collect();
             (qs, rs, pending, v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0))
         });
         last_q = last_q.max(max_q);
