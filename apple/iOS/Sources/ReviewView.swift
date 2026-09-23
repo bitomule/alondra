@@ -14,6 +14,7 @@ struct ReviewView: View {
     @State private var general = ""
     @State private var composing: MarkdownBlock?
     @State private var sending = false
+    @State private var closing: CloseRequest?
     @FocusState private var generalFocused: Bool
 
     private var kind: Kind { Kind(item) }
@@ -53,6 +54,26 @@ struct ReviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .safeAreaBar(edge: .bottom) { actionBar }
+        .toolbar {
+            if case .report(let report) = item, let node = fleet.node(report.sessionId) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button(role: .destructive) {
+                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                        } label: {
+                            Label("Read and Close Node", systemImage: "xmark.bin")
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
+                    }
+                    .disabled(sending)
+                }
+            }
+        }
+        .closeConfirmation($closing) { _ in
+            guard case .report(let report) = item else { return }
+            finish(HandoffLabel.readAndClosed) { try await $0.readAndClose(report) }
+        }
         .sheet(item: $composing) { block in
             CommentSheet(block: block, initial: comments[block.id] ?? "") { text in
                 withAnimation(.spring(duration: 0.4, bounce: 0.25)) {

@@ -211,6 +211,7 @@ struct ReportDetail: View {
     @Bindable var draft: ReviewDraft
     @FocusState private var focus: DetailField?
     @State private var armed = false
+    @State private var closing: CloseRequest?
     @Environment(\.searchActive) private var searchActive
 
     private var key: String { "r\(report.id)" }
@@ -248,6 +249,14 @@ struct ReportDetail: View {
                         send: sendFeedback
                     )
                     ReadButton(prominent: feedback.isEmpty, action: markRead)
+                    if let node = store.node(report.sessionId) {
+                        Button("Read and Close Node…", role: .destructive) {
+                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .help("Mark as read and close the node that sent it (claude rm)")
+                    }
                 }
                 HStack {
                     Spacer()
@@ -262,6 +271,9 @@ struct ReportDetail: View {
             armed = true
         }
         .triageKeys(focus: $focus, handle: handleKey)
+        .closeConfirmation($closing) { _ in
+            resolve { await store.readAndClose(report) }
+        }
     }
 
     private func handleKey(_ character: Character) -> Bool {

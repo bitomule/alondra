@@ -351,6 +351,26 @@
         }
       }
     },
+    "Close Node…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrar nodo…"
+          }
+        }
+      }
+    },
+    "Close this node with claude rm": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cierra este nodo con claude rm"
+          }
+        }
+      }
+    },
     "Comment": {
       "localizations": {
         "es": {
@@ -621,6 +641,16 @@
         }
       }
     },
+    "Mark as read and close the node that sent it (claude rm)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Marca como leído y cierra el nodo que lo envió (claude rm)"
+          }
+        }
+      }
+    },
     "New": {
       "localizations": {
         "es": {
@@ -877,6 +907,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "R escribe · ↩ envía"
+          }
+        }
+      }
+    },
+    "Read and Close Node…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leer y cerrar nodo…"
           }
         }
       }

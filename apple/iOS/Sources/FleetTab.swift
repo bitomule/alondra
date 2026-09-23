@@ -5,6 +5,7 @@ struct FleetTab: View {
     @Environment(FleetStore.self) private var fleet
     @State private var query = ""
     @State private var showSleeping = false
+    @State private var closing: CloseRequest?
 
     private var sections: [(name: String, nodes: [Node])] {
         let needle = query.trimmingCharacters(in: .whitespaces)
@@ -32,6 +33,21 @@ struct FleetTab: View {
                                 NodeRow(node: node, pending: fleet.pending(for: node.sessionId).count)
                             }
                             .listRowBackground(Palette.card.opacity(0.85))
+                            .swipeActions(edge: .trailing) {
+                                Button {
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                } label: {
+                                    Label("Close Node", systemImage: "xmark.bin")
+                                }
+                                .tint(Palette.rose)
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                } label: {
+                                    Label("Close Node", systemImage: "xmark.bin")
+                                }
+                            }
                         }
                     } header: {
                         ProjectHeader(name: section.name, nodes: section.nodes)
@@ -63,6 +79,9 @@ struct FleetTab: View {
                 NodeDetail(session: session)
             }
             .refreshable { await fleet.refresh() }
+            .closeConfirmation($closing) { request in
+                Task { await fleet.close(request) }
+            }
         }
     }
 }
@@ -166,6 +185,8 @@ struct NodeDetail: View {
     let session: String
 
     @Environment(FleetStore.self) private var fleet
+    @Environment(\.dismiss) private var dismiss
+    @State private var closing: CloseRequest?
     @State private var message = ""
     @State private var sending = false
     @State private var sentCount = 0
@@ -182,6 +203,26 @@ struct NodeDetail: View {
         .background(DawnBackground(glow: fleet.node(session)?.state.tint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            if let node = fleet.node(session) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button(role: .destructive) {
+                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                        } label: {
+                            Label("Close Node", systemImage: "xmark.bin")
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
+                    }
+                }
+            }
+        }
+        .closeConfirmation($closing) { request in
+            Task {
+                if await fleet.close(request) { dismiss() }
+            }
+        }
         .sensoryFeedback(.success, trigger: sentCount)
     }
 
@@ -329,6 +370,13 @@ struct NodeDetail: View {
 }
 
 extension FleetStore {
+    @discardableResult
+    func close(_ request: CloseRequest) async -> Bool {
+        let ok = await perform { try await $0.closeNode(request.session) }
+        if ok { notice = Notice(String(localized: "\(request.name) closed")) }
+        return ok
+    }
+
     var projectsByRecency: [(name: String, nodes: [Node])] {
         Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "No project") }
             .map { (name: $0.key, nodes: $0.value.sorted(by: Self.recencyOrder)) }

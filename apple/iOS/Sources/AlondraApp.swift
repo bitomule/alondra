@@ -90,6 +90,7 @@ private struct RootView: View {
             await push.refreshAuthorization()
         }
         .overlay(alignment: .top) { NoticeToast() }
+        .closeRefusalAlert(fleet)
         .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
             guard scenePhase != .background else { return }
             if let client = AlondraClient(string: serverURL, device: "iphone", signer: pairing.signer) {

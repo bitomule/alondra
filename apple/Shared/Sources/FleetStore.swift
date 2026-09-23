@@ -30,6 +30,7 @@ public final class FleetStore {
     }
     public private(set) var connection = Connection.connecting
     public var lastError: String?
+    public var refusal: String?
     public var notice: Notice?
     public var handoff: Handoff?
     public var leaving: String?
@@ -224,7 +225,7 @@ public final class FleetStore {
             animate(.spring(duration: 0.5, bounce: 0.2)) {
                 _ = hidden.remove(item.id)
             }
-            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
+            report(error)
             return false
         }
     }
@@ -234,8 +235,16 @@ public final class FleetStore {
             try await action(client)
             return true
         } catch {
-            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
+            report(error)
             return false
+        }
+    }
+
+    private func report(_ error: any Error) {
+        if let refused = error as? CloseRefused {
+            refusal = refused.message
+        } else {
+            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
         }
     }
 
@@ -278,6 +287,29 @@ public final class FleetStore {
         await resolving("r\(report.id)") {
             try await client.markRead(report.id)
         }
+    }
+
+    @discardableResult
+    public func readAndClose(_ report: Report) async -> Bool {
+        guard await close(session: report.sessionId) else { return false }
+        return await markRead(report)
+    }
+
+    @discardableResult
+    public func close(_ node: Node) async -> Bool {
+        await close(session: node.sessionId)
+    }
+
+    private func close(session: String) async -> Bool {
+        do {
+            try await client.closeNode(session)
+            return true
+        } catch let refused as CloseRefused {
+            refusal = refused.message
+        } catch {
+            lastError = error.localizedDescription
+        }
+        return false
     }
 
     public func newRequest(_ text: String) async -> Bool {

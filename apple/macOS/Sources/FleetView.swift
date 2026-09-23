@@ -20,6 +20,7 @@ public struct FleetView: View {
     @State private var smartMatches: Set<String>?
     @State private var smartStatus = ""
     @State private var showingNew = false
+    @State private var closing: CloseRequest?
     @FocusState private var searchFocused: Bool
     @AppStorage("collapsedProjects") private var collapsedRaw = ""
 
@@ -55,6 +56,11 @@ public struct FleetView: View {
         .sheet(isPresented: $showingNew) {
             NewRequestSheet(store: store)
         }
+        .closeConfirmation($closing) { request in
+            guard let node = store.node(request.session) else { return }
+            Task { await store.close(node) }
+        }
+        .closeRefusalAlert(store)
         .task {
             store.use(device.client)
             await store.run()
@@ -127,8 +133,15 @@ public struct FleetView: View {
                 Section(isExpanded: expansion(for: project.name)) {
                     ForEach(project.nodes) { node in
                         NodeRow(node: node)
-                                .badge(store.pendingCount(for: node.sessionId))
+                            .badge(store.pendingCount(for: node.sessionId))
                             .tag(Selection.node(node.sessionId))
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                } label: {
+                                    Label("Close Node…", systemImage: "xmark.bin")
+                                }
+                            }
                     }
                 } header: {
                     ProjectHeader(name: project.name, nodes: project.nodes)

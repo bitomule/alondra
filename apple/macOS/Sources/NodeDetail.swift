@@ -7,6 +7,7 @@ struct NodeDetail: View {
     let drafts: Drafts
     let open: (String) -> Void
     @FocusState private var focus: DetailField?
+    @State private var closing: CloseRequest?
 
     var body: some View {
         let draft = drafts.draft(for: "n\(node.sessionId)")
@@ -70,6 +71,21 @@ struct NodeDetail: View {
             }
         } bar: {
             NodeComposer(node: node, store: store, draft: draft, focus: $focus)
+        }
+        .toolbar {
+            ToolbarItem {
+                Button(role: .destructive) {
+                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                } label: {
+                    Label("Close Node…", systemImage: "xmark.bin")
+                }
+                .help("Close this node with claude rm")
+            }
+        }
+        .closeConfirmation($closing) { _ in
+            let store = store
+            let node = node
+            Task { await store.close(node) }
         }
     }
 

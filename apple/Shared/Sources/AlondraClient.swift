@@ -97,6 +97,20 @@ public struct AlondraClient: Sendable {
         try await post("v1/reports/\(report)/read", [:])
     }
 
+    public func closeNode(_ key: String) async throws {
+        let url = base.appending(path: "v1/nodes").appending(component: key).appending(path: "close")
+        do {
+            _ = try await perform("POST", url: url, body: Data("{}".utf8), session: Self.longPoll)
+        } catch AlondraError.server(let message) {
+            throw CloseRefused(message: message)
+        }
+    }
+
+    public func readAndClose(_ report: Report) async throws {
+        try await closeNode(report.sessionId)
+        try await markRead(report.id)
+    }
+
     public func acknowledge(_ session: String) async throws {
         try await post("v1/nodes/\(session)/ack", [:])
     }
@@ -143,7 +157,11 @@ public struct AlondraClient: Sendable {
     }
 
     private func perform(_ method: String, _ path: String, query: [(String, String)] = [], body: Data? = nil, session: URLSession) async throws -> Data {
-        var url = base.appending(path: path)
+        try await perform(method, url: base.appending(path: path), query: query, body: body, session: session)
+    }
+
+    private func perform(_ method: String, url: URL, query: [(String, String)] = [], body: Data? = nil, session: URLSession) async throws -> Data {
+        var url = url
         if !query.isEmpty {
             url.append(queryItems: query.map { URLQueryItem(name: $0.0, value: $0.1) })
         }
@@ -164,7 +182,9 @@ public struct AlondraClient: Sendable {
     private static func check(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse, http.statusCode >= 400 else { return }
         if http.statusCode == 401 { throw AlondraError.unauthorized }
-        let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = json ?? (text.isEmpty || text.hasPrefix("{") ? nil : text)
         throw AlondraError.server(message ?? String(localized: "The server responded \(http.statusCode)", table: "AlondraShared", bundle: #bundle))
     }
 }
@@ -230,6 +250,12 @@ public enum AlondraError: LocalizedError, Equatable {
         case .unauthorized: String(localized: "This device is not paired", table: "AlondraShared", bundle: #bundle)
         }
     }
+}
+
+public struct CloseRefused: LocalizedError, Equatable {
+    public let message: String
+
+    public var errorDescription: String? { message }
 }
 
 extension Error {

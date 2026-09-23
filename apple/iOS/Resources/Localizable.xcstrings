@@ -21,6 +21,16 @@
         }
       }
     },
+    "%@ closed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ cerrado"
+          }
+        }
+      }
+    },
     "%@ receives it, prepares the mission and launches the node.": {
       "localizations": {
         "es": {
@@ -351,6 +361,16 @@
         }
       }
     },
+    "Close Node": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrar nodo"
+          }
+        }
+      }
+    },
     "Code": {
       "localizations": {
         "es": {
@@ -657,6 +677,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Mensaje enviado a %@"
+          }
+        }
+      }
+    },
+    "More": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más"
           }
         }
       }
@@ -987,6 +1017,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Leído"
+          }
+        }
+      }
+    },
+    "Read and Close Node": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leer y cerrar nodo"
+          }
+        }
+      }
+    },
+    "Read and closed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leído y cerrado"
           }
         }
       }
