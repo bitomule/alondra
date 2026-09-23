@@ -1933,7 +1933,7 @@ pub(crate) mod tests {
         assert!(!needs_text(&card.options[0]));
     }
 
-    fn pr_card(preferred: Option<alondra_core::pr::MergeMethod>) -> crate::client::PrCard {
+    pub(super) fn pr_card(preferred: Option<alondra_core::pr::MergeMethod>) -> crate::client::PrCard {
         use alondra_core::pr::{MergeMethod, PullRequest};
         let mut pr = PullRequest::opened(4, "https://github.com/a/b/pull/12", "s1", Some("demo".into()), 0).unwrap();
         pr.title = "Menus become cards".into();

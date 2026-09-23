@@ -353,7 +353,6 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
 
 fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let keys = app.inbox_keys();
-    let nq = keys.iter().filter(|k| matches!(k, Key::Q(_))).count();
     let focused = app.focus == Pane::List || !app.detail_view.shown;
     let block = panel(Line::from(tr!(" Inbox ", " Bandeja ").bold()), focused);
     let inner = block.inner(area);
@@ -380,8 +379,13 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = vec![];
     let mut sel_range = None;
-    let sections = [(true, tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT, nq), (false, tr!("TO READ", "PARA LEER"), Color::Cyan, keys.len() - nq)];
-    for (questions, label, color, count) in sections {
+    let sections: [(fn(&Key) -> bool, &str, Color); 3] = [
+        (|k| matches!(k, Key::Q(_)), tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
+        (|k| matches!(k, Key::P(_)), tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
+        (|k| matches!(k, Key::R(_)), tr!("TO READ", "PARA LEER"), Color::Cyan),
+    ];
+    for (belongs, label, color) in sections {
+        let count = keys.iter().filter(|k| belongs(k)).count();
         if count == 0 {
             continue;
         }
@@ -389,7 +393,7 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::default());
         }
         lines.push(Line::from(vec![Span::styled(format!(" {label} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(count.to_string(), Style::new().fg(DIM))]));
-        for &k in keys.iter().filter(|k| matches!(k, Key::Q(_)) == questions) {
+        for &k in keys.iter().filter(|k| belongs(k)) {
             let selected = app.sel == Some(k);
             let start = lines.len();
             lines.extend(item_lines(app, k, width, selected));
@@ -1315,7 +1319,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::tests::{app_with, ctrl, press, question};
+    use super::super::tests::{app_with, ctrl, pr_card, press, question};
     use super::*;
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -1332,6 +1336,18 @@ mod tests {
         let s = screen(&mut app, 100, 24);
         assert!(s.contains("All caught up"), "{s}");
         assert!(s.contains("order new work"));
+    }
+
+    #[test]
+    fn pull_requests_have_their_own_section_between_questions_and_reading() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Plan, &["Approve"])]);
+        app.loaded = true;
+        app.data.prs = vec![pr_card(None)];
+        app.reconcile();
+        let s = screen(&mut app, 120, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at("WAITING FOR YOU 1") < at("PULL REQUESTS 1"), "{s}");
+        assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
     }
 
     #[test]
