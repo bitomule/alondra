@@ -29,6 +29,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/v1/changes", get(changes))
         .route("/v1/nodes/{key}", get(node_detail))
         .route("/v1/nodes/{key}/messages", post(send_message))
+        .route("/v1/nodes/{key}/ack", post(acknowledge))
         .route("/v1/questions", post(ask))
         .route("/v1/questions/{id}", get(question_detail))
         .route("/v1/questions/{id}/answer", post(answer))
@@ -228,8 +229,16 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         let open: Vec<&Question> = v.questions.values().filter(|q| q.status.is_open()).collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
+        let news: Vec<&alondra_core::Node> = v.news(now_millis());
+        let orchestrator_messages: Vec<&Message> = v
+            .nodes
+            .values()
+            .find(|n| n.is_orchestrator)
+            .map(|o| v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20).collect())
+            .unwrap_or_default();
         json!({
-            "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open,
+            "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
+            "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine,
             "inbox_listening": listening,
         })
@@ -505,6 +514,15 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     match res {
         Ok(Some((_, Event::MessageQueued(m)))) => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
         Ok(_) => err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}")),
+        Err(e) => internal(e),
+    }
+}
+
+async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    let res = hub.append_with(|v| v.resolve_node(&key).map(|n| Event::Acknowledged { session_id: n.session_id.clone() }));
+    match res {
+        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}")),
         Err(e) => internal(e),
     }
 }

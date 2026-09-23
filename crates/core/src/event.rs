@@ -44,6 +44,10 @@ pub struct DaemonObservation {
     pub needs: Option<String>,
     #[serde(default)]
     pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub last_text: Option<String>,
+    #[serde(default)]
+    pub last_text_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -53,6 +57,7 @@ pub enum Event {
     DaemonSeen(DaemonObservation),
     ProcessExited { session_id: String, pid: i32 },
     NodeRemoved { session_id: String },
+    Acknowledged { session_id: String },
     MarkedOrchestrator { session_id: String },
     QuestionAsked(Question),
     QuestionAnswered { id: u64, answer: Answer },
@@ -73,6 +78,7 @@ impl Event {
             Event::DaemonSeen(d) => Some(&d.session_id),
             Event::ProcessExited { session_id, .. }
             | Event::NodeRemoved { session_id }
+            | Event::Acknowledged { session_id }
             | Event::MarkedOrchestrator { session_id }
             | Event::Classified { session_id, .. }
             | Event::WaitingMachine { session_id, .. } => Some(session_id),
@@ -89,6 +95,7 @@ impl Event {
             Event::DaemonSeen(_) => "daemon_seen",
             Event::ProcessExited { .. } => "process_exited",
             Event::NodeRemoved { .. } => "node_removed",
+            Event::Acknowledged { .. } => "acknowledged",
             Event::MarkedOrchestrator { .. } => "marked_orchestrator",
             Event::QuestionAsked(_) => "question_asked",
             Event::QuestionAnswered { .. } => "question_answered",

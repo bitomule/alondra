@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub type Millis = i64;
 
+pub const NEWS_WINDOW_MS: Millis = 48 * 3600 * 1000;
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
@@ -80,6 +82,8 @@ pub struct Node {
     pub classified: Option<Classification>,
     pub usage_limited: bool,
     pub last_seen: Millis,
+    #[serde(default)]
+    pub acknowledged_at: Option<Millis>,
 }
 
 impl Node {
@@ -110,7 +114,15 @@ impl Node {
             classified: None,
             usage_limited: false,
             last_seen: at,
+            acknowledged_at: None,
         }
+    }
+
+    pub fn has_news(&self, now: Millis) -> bool {
+        let finished = matches!(self.state, NodeState::Delivered | NodeState::Done | NodeState::Unclear | NodeState::WaitingMachine);
+        let said_at = self.last_message_at.unwrap_or(self.state_since).max(self.state_since);
+        let recent = now - said_at < NEWS_WINDOW_MS;
+        finished && recent && !self.is_orchestrator && self.acknowledged_at.is_none_or(|a| a < said_at)
     }
 
     pub fn display_name(&self) -> &str {

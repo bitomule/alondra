@@ -21,6 +21,8 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
     let register = spawn_pid_watcher(exit_tx);
     let mut seen: HashMap<String, Seen> = HashMap::new();
     let mut registered: HashMap<String, i32> = HashMap::new();
+    let mut transcripts: HashMap<String, PathBuf> = HashMap::new();
+    let projects = claude_home.join("projects");
 
     reap_dead_on_start(&hub);
     forget_removed_on_start(&hub, &claude_home.join("jobs"));
@@ -49,6 +51,12 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             let Some(mut obs) = read_state(&state_path, &short) else { continue };
             obs.pid = pid;
             obs.updated_at = Some(mtime);
+            if let Some(path) = transcript_path(&mut transcripts, &projects, &obs.session_id)
+                && let Some((text, at)) = last_assistant_text(&path)
+            {
+                obs.last_text = Some(text);
+                obs.last_text_at = at;
+            }
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs));
             if meaningful {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
@@ -119,6 +127,114 @@ fn differs(a: &DaemonObservation, b: &DaemonObservation) -> bool {
         || a.name != b.name
         || a.cwd != b.cwd
         || a.pid != b.pid
+        || a.last_text != b.last_text
+}
+
+fn transcript_path(cache: &mut HashMap<String, PathBuf>, projects: &Path, session_id: &str) -> Option<PathBuf> {
+    if let Some(p) = cache.get(session_id)
+        && p.exists()
+    {
+        return Some(p.clone());
+    }
+    let file = format!("{session_id}.jsonl");
+    let found = std::fs::read_dir(projects)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path().join(&file))
+        .find(|p| p.exists())?;
+    cache.insert(session_id.to_string(), found.clone());
+    Some(found)
+}
+
+const TAIL_BYTES: u64 = 512 * 1024;
+
+fn last_assistant_text(path: &Path) -> Option<(String, Option<i64>)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut candidates: Vec<(String, Option<i64>)> = vec![];
+    for line in text.lines().rev() {
+        if candidates.len() >= 3 {
+            break;
+        }
+        if is_human_prompt(line) {
+            break;
+        }
+        if !line.contains("\"assistant\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array) else { continue };
+        let texts: Vec<&str> = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect();
+        if texts.is_empty() {
+            continue;
+        }
+        let at = v.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_millis);
+        let joined: String = texts.join("\n").chars().take(4000).collect();
+        candidates.push((joined, at));
+    }
+    let newest_at = candidates.first().and_then(|c| c.1);
+    let best = candidates.into_iter().max_by_key(|c| c.0.chars().count())?;
+    Some((best.0, newest_at.or(best.1)))
+}
+
+fn is_human_prompt(line: &str) -> bool {
+    if !line.contains("\"user\"") {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
+    if v.get("type").and_then(Value::as_str) != Some("user") || v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    match v.get("message").and_then(|m| m.get("content")) {
+        Some(Value::String(s)) => !s.starts_with('<'),
+        Some(Value::Array(blocks)) => blocks.iter().any(|b| {
+            b.get("type").and_then(Value::as_str) == Some("text")
+                && b.get("text").and_then(Value::as_str).is_some_and(|t| !t.starts_with('<'))
+        }),
+        _ => false,
+    }
+}
+
+fn parse_rfc3339_millis(s: &str) -> Option<i64> {
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let time = time.trim_end_matches('Z');
+    let (hms, frac) = time.split_once('.').unwrap_or((time, "0"));
+    let mut t = hms.split(':').map(|x| x.parse::<i64>().ok());
+    let (h, mi, sec) = (t.next()??, t.next()??, t.next()??);
+    let ms: i64 = format!("{:0<3}", &frac[..frac.len().min(3)]).parse().ok()?;
+    let (y2, m2) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * m2 + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(((days * 86400 + h * 3600 + mi * 60 + sec) * 1000) + ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_claude_timestamps() {
+        assert_eq!(parse_rfc3339_millis("1970-01-01T00:00:01.500Z"), Some(1500));
+        assert_eq!(parse_rfc3339_millis("2026-09-22T20:46:20.398Z"), Some(1790109980398));
+    }
 }
 
 fn job_dirs(jobs: &Path) -> Vec<(PathBuf, String)> {
@@ -164,6 +280,8 @@ fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
         detail: s("detail"),
         needs: s("needs"),
         updated_at: None,
+        last_text: None,
+        last_text_at: None,
     })
 }
 

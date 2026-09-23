@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use alondra_core::{Machine, Node, Question};
+use alondra_core::{Machine, Message, Node, Question};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -11,6 +11,10 @@ pub struct Overview {
     pub tick: u64,
     pub nodes: Vec<Node>,
     pub open_questions: Vec<Question>,
+    #[serde(default)]
+    pub news: Vec<Node>,
+    #[serde(default)]
+    pub orchestrator_messages: Vec<Message>,
     pub machine: Machine,
 }
 

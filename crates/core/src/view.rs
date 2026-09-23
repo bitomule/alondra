@@ -16,6 +16,8 @@ pub struct View {
     pub questions: BTreeMap<u64, Question>,
     pub reports: BTreeMap<u64, Report>,
     pub messages: BTreeMap<u64, Message>,
+    #[serde(default)]
+    pub removed: std::collections::BTreeSet<String>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -23,6 +25,11 @@ const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error
 impl View {
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
         self.seq = seq;
+        if let Some(sid) = event.session_id()
+            && self.removed.contains(sid)
+        {
+            return;
+        }
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
@@ -52,10 +59,17 @@ impl View {
             }
             Event::NodeRemoved { session_id } => {
                 self.nodes.remove(session_id);
+                self.removed.insert(session_id.clone());
                 for q in self.questions.values_mut() {
                     if &q.session_id == session_id && q.status.is_open() {
                         q.status = QuestionStatus::Orphaned;
                     }
+                }
+                None
+            }
+            Event::Acknowledged { session_id } => {
+                if let Some(n) = self.nodes.get_mut(session_id) {
+                    n.acknowledged_at = Some(at);
                 }
                 None
             }
@@ -270,6 +284,10 @@ impl View {
         node.daemon_detail = d.detail.clone();
         node.daemon_needs = d.needs.clone();
         node.daemon_updated_at = d.updated_at;
+        if !node.has_plugin && d.last_text.is_some() {
+            node.last_message = d.last_text.clone();
+            node.last_message_at = d.last_text_at.or(d.updated_at);
+        }
         if !node.has_plugin {
             node.last_seen = node.last_seen.max(d.updated_at.unwrap_or(at));
             node.busy = d.tempo.as_deref() == Some("active");
@@ -295,6 +313,12 @@ impl View {
             };
         }
         node.state_source = source;
+    }
+
+    pub fn news(&self, now: Millis) -> Vec<&Node> {
+        let mut v: Vec<&Node> = self.nodes.values().filter(|n| n.has_news(now)).collect();
+        v.sort_by_key(|n| std::cmp::Reverse(n.last_message_at.unwrap_or(n.state_since).max(n.state_since)));
+        v
     }
 
     pub fn open_questions(&self) -> impl Iterator<Item = &Question> {
@@ -591,6 +615,15 @@ mod tests {
     }
 
     #[test]
+    fn late_events_do_not_resurrect_a_removed_node() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &Event::NodeRemoved { session_id: "s".into() });
+        v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 1 });
+        v.apply(4, 4000, &hook("s", "SessionEnd"));
+        assert!(!v.nodes.contains_key("s"));
+    }
+
+    #[test]
     fn finished_daemon_node_without_process_is_delivered() {
         let v = run(&[Event::DaemonSeen(DaemonObservation {
             session_id: "s".into(),
@@ -619,6 +652,21 @@ mod tests {
         assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
         v.apply(3, 3000, &obs("something else"));
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+    }
+
+    #[test]
+    fn delivered_node_is_news_until_acknowledged_and_again_after_new_turn() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::Delivered, confidence: None });
+        v.apply(3, 3000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("PR #4 lista".into()), ..Default::default() }));
+        v.apply(4, 4000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::Delivered, confidence: None });
+        assert_eq!(v.news(9000).len(), 1);
+        v.apply(5, 5000, &Event::Acknowledged { session_id: "s".into() });
+        assert!(v.news(9000).is_empty());
+        v.apply(6, 6000, &hook("s", "UserPromptSubmit"));
+        v.apply(7, 7000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("otra cosa".into()), ..Default::default() }));
+        v.apply(8, 8000, &Event::Classified { session_id: "s".into(), turn: 2, state: NodeState::Delivered, confidence: None });
+        assert_eq!(v.news(9000).len(), 1);
     }
 
     #[test]

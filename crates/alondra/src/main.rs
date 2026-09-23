@@ -1,3 +1,4 @@
+mod attach;
 mod client;
 mod inbox;
 mod mcp;

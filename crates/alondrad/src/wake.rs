@@ -11,7 +11,7 @@ type Pending = Vec<(u64, String, Option<u64>)>;
 
 const RETRY_AFTER: Duration = Duration::from_secs(120);
 const PAINT_TIMEOUT: Duration = Duration::from_secs(25);
-const MENU_MARKERS: &[&str] = &["Enter to select", "to navigate", "Do you want to proceed", "❯ 1."];
+const MENU_MARKERS: &[&str] = &["Enter to select", "to navigate", "Do you want to proceed", "❯ 1.", "trust this folder", "Enter to confirm"];
 
 pub async fn run(hub: Arc<Hub>) {
     let mut last_try: HashMap<String, Instant> = HashMap::new();
@@ -76,7 +76,7 @@ fn tmux(args: &[&str]) -> Result<String, String> {
 fn type_into(short: &str, text: &str) -> Result<(), String> {
     let name = format!("alondra-{short}");
     let _ = tmux(&["kill-session", "-t", &name]);
-    tmux(&["new-session", "-d", "-s", &name, "-x", "200", "-y", "50", &format!("claude attach {short}")])?;
+    tmux(&["new-session", "-d", "-s", &name, "-c", "/tmp", "-x", "200", "-y", "50", &format!("claude attach {short}")])?;
     let session = TmuxSession(name.clone());
     let start = Instant::now();
     let screen = loop {
