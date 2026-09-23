@@ -48,6 +48,9 @@ on its own, every 90 s and in a single message, of:
 
 (`claude --bg` does not inherit environment variables, so the role goes in its own plugin.)
 
+If no orchestrator is running or dormant, alondrad launches one this way on its own and posts a
+notice saying so (only when `wake` is on).
+
 ### The TUI
 
 - **Waiting for you**: questions from the nodes (structured, menu, permissions and plans).

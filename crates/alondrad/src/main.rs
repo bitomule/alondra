@@ -1,6 +1,7 @@
 mod auth;
 mod classify;
 mod http;
+mod keeper;
 mod hub;
 mod legacy;
 mod machine;
@@ -29,11 +30,12 @@ async fn main() -> Result<()> {
     let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
     tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
     if config.legacy_bridge {
-        tokio::spawn(legacy::run(hub.clone(), claude_home));
+        tokio::spawn(legacy::run(hub.clone(), claude_home.clone()));
     }
     tokio::spawn(machine::run(hub.clone()));
     if config.wake {
         tokio::spawn(wake::run(hub.clone()));
+        tokio::spawn(keeper::run(hub.clone(), claude_home.clone()));
     }
     tokio::spawn(notifier::run(hub.clone()));
     tokio::spawn(retention(hub.clone(), config.retention_hours));
