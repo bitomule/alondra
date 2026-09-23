@@ -117,7 +117,8 @@ public struct FleetView: View {
             ?? String(localized: "\(Int(machine.memoryAvailable / 1_073_741_824)) GB free")
         let load = String(localized: "load \(Int((machine.load.first ?? 0).rounded()))")
         let alive = store.nodes.filter(\.alive).count
-        return [pending, String(localized: "\(alive) active nodes"), memory, load + (machine.unreliable ? " ⚠︎" : "")].joined(separator: " · ")
+        let usage = overview.usage.map { $0.summary + ($0.isOverPace ? " ⚠︎" : "") }
+        return ([pending, String(localized: "\(alive) active nodes")] + [usage].compactMap { $0 } + [memory, load + (machine.unreliable ? " ⚠︎" : "")]).joined(separator: " · ")
     }
 
     private var sidebar: some View {

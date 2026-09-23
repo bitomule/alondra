@@ -5,6 +5,7 @@ pub mod model;
 #[cfg(test)]
 mod recorded;
 pub mod states;
+pub mod usage;
 pub mod view;
 
 pub use event::{DaemonObservation, Event, HookEvent};

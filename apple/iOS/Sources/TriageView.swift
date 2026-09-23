@@ -386,6 +386,13 @@ private struct MachineDetail: View {
                         Label("Unreliable readings", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(Palette.dawn)
                     }
+                    if let usage = fleet.usage {
+                        row(String(localized: "Claude usage"), usage.summary)
+                        if usage.isOverPace {
+                            Label("Today is over its share of the week", systemImage: "gauge.with.dots.needle.100percent")
+                                .foregroundStyle(Palette.rose)
+                        }
+                    }
                 }
             }
         }

@@ -199,11 +199,30 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{gb:.1} GB free", "{gb:.1} GB libres"));
     let warn = if m.unreliable { " ⚠" } else { "" };
     let load = m.load[0];
-    let right = trf!("{working} working · memory {mem} · load {load:.1}{warn} ", "{working} trabajando · memoria {mem} · carga {load:.1}{warn} ");
+    let machine = trf!("{working} working · memory {mem} · load {load:.1}{warn} ", "{working} trabajando · memoria {mem} · carga {load:.1}{warn} ");
+    let mut right = vec![];
+    if let Some(u) = &app.data.usage {
+        let style = if u.over_pace { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
+        right.push(Span::styled(usage_text(u), style));
+        right.push(Span::styled(" · ", Style::new().fg(DIM)));
+    }
+    right.push(Span::styled(machine, Style::new().fg(DIM)));
     let lw: usize = left.iter().map(Span::width).sum();
+    let rw: usize = right.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
-    if app.loaded && lw + str_width(&right) + 2 <= area.width as usize {
-        f.render_widget(Paragraph::new(Line::from(right.fg(DIM)).right_aligned()), area);
+    if app.loaded && lw + rw + 2 <= area.width as usize {
+        f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
+    }
+}
+
+pub(super) fn usage_text(u: &alondra_core::usage::Usage) -> String {
+    let week = u.week_percent.round();
+    match u.today_spent.zip(u.today_share) {
+        Some((spent, share)) => {
+            let (spent, share) = (spent.round(), share.round());
+            trf!("week {week}% · today {spent}/{share}%", "semana {week}% · hoy {spent}/{share}%")
+        }
+        None => trf!("week {week}%", "semana {week}%"),
     }
 }
 
@@ -1205,6 +1224,17 @@ mod tests {
         assert!(s.contains("Mission: Ship Lumo 4.5 to the App Store."), "{s}");
         assert!(s.contains('…'), "{s}");
         assert_eq!(mission_excerpt("  a\n\n b "), "a b");
+    }
+
+    #[test]
+    fn the_header_shows_the_week_and_today_against_its_slice() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.usage = Some(alondra_core::usage::Usage { week_percent: 53.0, today_spent: Some(41.0), today_share: Some(17.6), per_day_left: 9.0, over_pace: true, ..Default::default() });
+        let s = screen(&mut app, 160, 20);
+        assert!(s.contains("week 53% · today 41/18%"), "{s}");
+        app.data.usage = Some(alondra_core::usage::Usage { week_percent: 53.0, ..Default::default() });
+        assert!(screen(&mut app, 160, 20).contains("week 53% ·"));
     }
 
     #[test]

@@ -351,6 +351,16 @@
         }
       }
     },
+    "Claude usage": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uso de Claude"
+          }
+        }
+      }
+    },
     "Close": {
       "localizations": {
         "es": {
@@ -1387,6 +1397,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hasta"
+          }
+        }
+      }
+    },
+    "Today is over its share of the week": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoy va por encima de su parte de la semana"
           }
         }
       }

@@ -481,6 +481,26 @@
         }
       }
     },
+    "week %lld%%": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "semana %lld%%"
+          }
+        }
+      }
+    },
+    "week %lld%% · today %lld/%lld%%": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "semana %lld%% · hoy %lld/%lld%%"
+          }
+        }
+      }
+    },
     "working": {
       "localizations": {
         "es": {

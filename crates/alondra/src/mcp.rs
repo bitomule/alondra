@@ -81,10 +81,10 @@ fn tools(role: Role, user: &str) -> Value {
         list.extend([
             json!({"name": "fleet", "description": "Fleet summary: unfinished nodes with their state, open questions, unread reports and the machine. For one node's detail, `node`.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "node", "description": "A node's detail: state, tool in progress, last message, questions, reports and timeline.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "machine", "description": "Machine capacity: memory, load, CPU and disk.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in. Use it only when Alondra tells you a node is stuck inside one call and it looks hung; then send it on with `send`.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": "Launch a new node with the Alondra plugin.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["name", "cwd", "prompt"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. Refused while today is over its slice of the weekly subscription usage (see `machine`), unless {user} said to launch anyway: then pass over_pace_ok."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd", "prompt"]}}),
         ]);
     }
     Value::Array(list)
@@ -150,7 +150,7 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "fleet" if role == Role::Orchestrator => serde_json::to_string_pretty(&fleet_summary(&client.get::<Value>("/v1/overview")?))?,
         "machine" if role == Role::Orchestrator => {
             let v: Value = client.get("/v1/overview")?;
-            serde_json::to_string_pretty(v.get("machine").unwrap_or(&Value::Null))?
+            serde_json::to_string_pretty(&json!({"machine": v.get("machine"), "usage": v.get("usage")}))?
         }
         "node" if role == Role::Orchestrator => {
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
@@ -191,7 +191,7 @@ fn fleet_summary(o: &Value) -> Value {
         .map(|r| pick(r, &["id", "title", "kind", "node_name"]))
         .collect();
     json!({"nodes": active, "done_nodes": done, "open_questions": questions, "unread_reports": unread,
-           "orchestrator_messages": o.get("orchestrator_messages"), "machine": o.get("machine")})
+           "orchestrator_messages": o.get("orchestrator_messages"), "machine": o.get("machine"), "usage": o.get("usage")})
 }
 
 pub fn urlencode(s: &str) -> String {

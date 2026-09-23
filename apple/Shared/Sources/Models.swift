@@ -200,6 +200,26 @@ public struct SentMessage: Codable, Identifiable, Hashable, Sendable {
     public let deliveredAt: Int64?
 }
 
+public struct Usage: Codable, Hashable, Sendable {
+    public let weekPercent: Double
+    public let weekResetsAt: Int64
+    public let todaySpent: Double?
+    public let todayShare: Double?
+    public let perDayLeft: Double
+    public let overPace: Bool?
+
+    public var isOverPace: Bool { overPace == true }
+
+    /// "week 53% · today 41/18%": the week so far, and today against its slice of the week.
+    public var summary: String {
+        let week = Int(weekPercent.rounded())
+        guard let spent = todaySpent, let share = todayShare else {
+            return String(localized: "week \(week)%", table: "AlondraShared", bundle: #bundle)
+        }
+        return String(localized: "week \(week)% · today \(Int(spent.rounded()))/\(Int(share.rounded()))%", table: "AlondraShared", bundle: #bundle)
+    }
+}
+
 public struct Overview: Codable, Sendable {
     public let tick: UInt64
     public let nodes: [Node]
@@ -207,6 +227,7 @@ public struct Overview: Codable, Sendable {
     public let news: [Report]
     public let orchestratorMessages: [SentMessage]
     public let machine: Machine
+    public let usage: Usage?
     public let user: String?
 }
 
