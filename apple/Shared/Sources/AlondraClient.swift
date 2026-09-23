@@ -89,6 +89,10 @@ public struct AlondraClient: Sendable {
         try await post("v1/prs/\(id)/changes", ["text": text])
     }
 
+    public func pullRequestDiff(_ id: UInt64) async throws -> String {
+        String(decoding: try await get("v1/prs/\(id)/diff"), as: UTF8.self)
+    }
+
     public func dismissPullRequest(_ id: UInt64) async throws {
         try await post("v1/prs/\(id)/dismiss", [:])
     }

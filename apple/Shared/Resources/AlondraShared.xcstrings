@@ -161,6 +161,16 @@
         }
       }
     },
+    "Delete": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Borrar"
+          }
+        }
+      }
+    },
     "Deny": {
       "localizations": {
         "es": {
@@ -381,6 +391,16 @@
         }
       }
     },
+    "Save": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar"
+          }
+        }
+      }
+    },
     "Squash": {
       "localizations": {
         "es": {
@@ -437,6 +457,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hoy: gastado el %lld%% de la semana, frente al %lld%% que te toca hoy."
+          }
+        }
+      }
+    },
+    "What should change here?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué hay que cambiar aquí?"
           }
         }
       }

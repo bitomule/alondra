@@ -91,6 +91,8 @@ pub enum Event {
     PrUpdated(crate::pr::PullRequest),
     PrMerged { id: u64, method: crate::pr::MergeMethod },
     PrDismissed { id: u64 },
+    /// Changes were requested on the PR; its card waits until the node pushes again.
+    PrChangesRequested { id: u64 },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
     Clock {
@@ -145,6 +147,7 @@ impl Event {
             Event::PrUpdated(_) => "pr_updated",
             Event::PrMerged { .. } => "pr_merged",
             Event::PrDismissed { .. } => "pr_dismissed",
+            Event::PrChangesRequested { .. } => "pr_changes_requested",
             Event::Clock { .. } => "clock",
         }
     }

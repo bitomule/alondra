@@ -40,8 +40,14 @@ struct TriageView: View {
             .toolbar { toolbar }
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(item: $reviewing) { item in
-                ReviewView(item: item)
-                    .navigationTransition(.zoom(sourceID: item.id, in: zoom))
+                Group {
+                    if case .pullRequest(let pr) = item {
+                        PRReviewView(pr: pr)
+                    } else {
+                        ReviewView(item: item)
+                    }
+                }
+                .navigationTransition(.zoom(sourceID: item.id, in: zoom))
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showPairing) {

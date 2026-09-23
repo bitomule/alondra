@@ -10,6 +10,7 @@ swift_library(
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
+    deps = ["@swiftpkg_highlightswift//:HighlightSwift"],
 )
 
 swift_test(

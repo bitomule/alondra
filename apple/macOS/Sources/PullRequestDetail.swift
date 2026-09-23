@@ -5,13 +5,19 @@ import SwiftUI
 struct PullRequestDetail: View {
     let pr: PullRequest
     let store: FleetStore
+    let drafts: Drafts
+    @Bindable var draft: ReviewDraft
     @State private var method: String
-    @State private var note = ""
     @State private var confirmingMerge = false
+    @State private var files: [DiffFile]?
+    @State private var diffError: String?
+    @FocusState private var focus: DetailField?
 
-    init(pr: PullRequest, store: FleetStore) {
+    init(pr: PullRequest, store: FleetStore, drafts: Drafts, draft: ReviewDraft) {
         self.pr = pr
         self.store = store
+        self.drafts = drafts
+        self.draft = draft
         _method = State(initialValue: pr.methods.first ?? "merge")
     }
 
@@ -42,14 +48,18 @@ struct PullRequestDetail: View {
                         Label("Open on GitHub", systemImage: "arrow.up.right.square")
                     }
                 }
+                changes
             }
         } bar: {
+            VStack(alignment: .leading, spacing: 12) {
+            CommentsSummary(draft: draft)
             HStack(alignment: .center, spacing: 10) {
-                TextField("What should change?", text: $note, axis: .vertical)
+                TextField("What should change?", text: $draft.general, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
-                Button("Request Changes") { requestChanges() }
-                    .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .focused($focus, equals: .reply)
+                Button(draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")) { requestChanges() }
+                    .disabled(review.isEmpty)
                     .controlSize(.large)
                 Picker("Method", selection: $method) {
                     ForEach(pr.methods, id: \.self) { m in
@@ -66,6 +76,8 @@ struct PullRequestDetail: View {
                     .controlSize(.large)
                     .help("Take the card out of the inbox without merging")
             }
+            }
+            .animation(.snappy(duration: 0.2), value: draft.comments.count)
         }
         .confirmationDialog("Merge PR #\(pr.number)?", isPresented: $confirmingMerge) {
             Button("Merge (\(PullRequest.methodLabel(method)))") { merge() }
@@ -79,11 +91,44 @@ struct PullRequestDetail: View {
         Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.mergePullRequest(id, method: method) } }
     }
 
+    @ViewBuilder
+    private var changes: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Changes")
+                .font(.title3.weight(.semibold))
+            if let files {
+                Text("Hover over a line to comment on it")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                PRDiffReview(files: files, draft: draft, focus: $focus)
+            } else if let diffError {
+                Label(diffError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .task(id: pr.id) { await loadDiff() }
+    }
+
+    private var review: String {
+        ReviewExport.text(comments: draft.comments.map { ($0.anchor, $0.text) }, general: draft.general)
+    }
+
+    private func loadDiff() async {
+        do {
+            files = UnifiedDiff.parse(try await store.client.pullRequestDiff(pr.id))
+        } catch {
+            diffError = error.localizedDescription
+        }
+    }
+
     private func requestChanges() {
-        let (id, text) = (pr.id, note.trimmingCharacters(in: .whitespacesAndNewlines))
+        let (id, text) = (pr.id, review)
         Task {
             if await store.resolve(.pullRequest(pr), { try await $0.requestChanges(onPullRequest: id, text: text) }) {
-                note = ""
+                drafts.discard(InboxItem.pullRequest(pr).id)
             }
         }
     }

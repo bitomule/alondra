@@ -225,7 +225,9 @@ impl View {
             Event::PrUpdated(pr) => {
                 if let Some(known) = self.prs.get_mut(&pr.id) {
                     let dismissed = known.state == crate::pr::PrState::Dismissed && pr.state == crate::pr::PrState::Open;
+                    let requested = known.changes_requested_on.take();
                     *known = pr.clone();
+                    known.changes_requested_on = requested;
                     if dismissed {
                         known.state = crate::pr::PrState::Dismissed;
                     }
@@ -242,6 +244,12 @@ impl View {
             Event::PrDismissed { id } => {
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.state = crate::pr::PrState::Dismissed;
+                }
+                None
+            }
+            Event::PrChangesRequested { id } => {
+                if let Some(pr) = self.prs.get_mut(id) {
+                    pr.changes_requested_on = Some(pr.head_sha.clone().unwrap_or_default());
                 }
                 None
             }

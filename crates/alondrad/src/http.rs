@@ -59,6 +59,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/merge", post(merge_pr))
         .route("/v1/prs/{id}/changes", post(request_pr_changes))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
+        .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/file", get(file))
         .layer(Extension(auth))
         .layer(Extension(push))
@@ -482,7 +483,12 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
     match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
-        Ok(to) => Json(json!({"id": id, "sent_to": to})).into_response(),
+        Ok(to) => {
+            if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
+                eprintln!("alondrad: changes sent on PR card #{id}, card not set aside: {e}");
+            }
+            Json(json!({"id": id, "sent_to": to})).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -506,6 +512,30 @@ fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, fr
     match res {
         Some((_, Event::MessageQueued(m))) => Ok(m.session_id),
         _ => anyhow::bail!("neither the node nor an orchestrator is there to receive it"),
+    }
+}
+
+/// Large enough for any PR a person reviews on a phone; beyond it the diff is cut, and says so.
+const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+    let Some(url) = hub.read(|v| v.prs.get(&id).map(|p| p.url.clone())) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    let out = tokio::time::timeout(Duration::from_secs(60), tokio::process::Command::new("gh").args(["pr", "diff", &url]).kill_on_drop(true).output()).await;
+    match out {
+        Ok(Ok(o)) if o.status.success() => {
+            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
+            if text.len() > MAX_DIFF_BYTES {
+                let cut = (0..=MAX_DIFF_BYTES).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+                text.truncate(cut);
+                text.push_str("\n\\ Alondra: the diff was cut here; open the PR on GitHub for the rest\n");
+            }
+            ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response()
+        }
+        Ok(Ok(o)) => err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
+        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "gh pr diff did not finish within 60 s"),
     }
 }
 
@@ -562,7 +592,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
-            "prs": crate::prs::open(v).map(|p| {
+            "prs": crate::prs::in_inbox(v).map(|p| {
                 let mut value = serde_json::to_value(p).unwrap_or(Value::Null);
                 value["preferred_method"] = serde_json::to_value(v.merge_methods.get(&p.repo)).unwrap_or(Value::Null);
                 value
