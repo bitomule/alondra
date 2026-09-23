@@ -37,6 +37,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
+        .route("/v1/nodes/{key}/close", post(close_node))
         .route("/v1/nodes/{key}/messages", post(send_message))
         .route("/v1/nodes/{key}/ack", post(acknowledge))
         .route("/v1/questions", post(ask))
@@ -776,6 +777,26 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
         Ok(Some((_, Event::MessageQueued(m)))) => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
         Ok(_) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
         Err(e) => internal(e),
+    }
+}
+
+async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    let Some((short, session)) = hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone()))) else {
+        return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
+    };
+    let run = tokio::process::Command::new("claude").args(["rm", &short]).kill_on_drop(true).output();
+    match tokio::time::timeout(Duration::from_secs(60), run).await {
+        Ok(Ok(out)) => {
+            let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string();
+            if text.contains(&format!("removed {short}")) {
+                let _ = hub.append(Event::NodeRemoved { session_id: session });
+                Json(json!({"ok": true, "output": text})).into_response()
+            } else {
+                err(StatusCode::CONFLICT, text)
+            }
+        }
+        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
+        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "claude rm did not answer in 60 s"),
     }
 }
 

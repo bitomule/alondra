@@ -317,6 +317,7 @@ pub struct App {
     pub fleet_scroll: usize,
     pub fleet_detail_scroll: usize,
     pub show_sleeping: bool,
+    pending_close: Option<(String, i64)>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -473,7 +474,8 @@ impl App {
             fleet_idx: 0,
             fleet_scroll: 0,
             fleet_detail_scroll: 0,
-            show_sleeping: false,
+            show_sleeping: true,
+            pending_close: None,
             search: None,
             composer: None,
             reader: None,
@@ -948,6 +950,22 @@ impl App {
                     self.mark_read(&r);
                 }
             }
+            KeyCode::Char('X') => {
+                if let Some(r) = self.selected_report() {
+                    let name = who(&r.node_name, &r.session_id);
+                    if self.confirm_close(&r.session_id, &name) {
+                        self.post(
+                            Some(Key::R(r.id)),
+                            vec![
+                                (format!("/v1/nodes/{}/close", urlencode(&r.session_id)), json!({})),
+                                (format!("/v1/reports/{}/read", r.id), json!({})),
+                            ],
+                            trf!("Read, and {name} closed", "Leído, y {name} cerrado"),
+                        );
+                        self.hide(Key::R(r.id));
+                    }
+                }
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(q) = self.selected_question() {
                     self.choose(&q, c as usize - '1' as usize);
@@ -976,6 +994,18 @@ impl App {
         );
         self.reader = None;
         self.hide(Key::Q(q.id));
+    }
+
+    /// Closing a node cannot be undone, so it takes a second press within a few seconds.
+    fn confirm_close(&mut self, session: &str, name: &str) -> bool {
+        let now = now_millis();
+        if self.pending_close.as_ref().is_some_and(|(s, until)| s == session && now < *until) {
+            self.pending_close = None;
+            return true;
+        }
+        self.pending_close = Some((session.to_string(), now + 4000));
+        self.fail(trf!("Press X again to close {name} (claude rm, never discards work)", "Pulsa X otra vez para cerrar {name} (claude rm, nunca descarta trabajo)"));
+        false
     }
 
     fn mark_read(&mut self, r: &Report) {
@@ -1370,13 +1400,13 @@ impl App {
                 Some(s) => s.editing = true,
                 None => self.search = Some(Search { input: TextInput::default(), editing: true, typed_at: now_millis(), remote: Remote::Idle }),
             },
-            KeyCode::Char('d') => {
-                self.show_sleeping = !self.show_sleeping;
-                self.flash(if self.show_sleeping {
-                    tr!("Showing sleeping nodes too", "Muestro también los nodos dormidos")
-                } else {
-                    tr!("Hiding sleeping nodes", "Oculto los nodos dormidos")
-                });
+            KeyCode::Char('X') => {
+                if let Some(n) = self.selected_node() {
+                    let (session, name) = (n.session_id.clone(), n.display_name().to_string());
+                    if self.confirm_close(&session, &name) {
+                        self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+                    }
+                }
             }
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_node() {
