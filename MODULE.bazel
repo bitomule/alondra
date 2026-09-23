@@ -2,6 +2,8 @@ module(name = "alondra", version = "0.1.0")
 
 bazel_dep(name = "apple_support", version = "2.8.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "rules_apple", version = "5.0.0-rc3", repo_name = "build_bazel_rules_apple")
+bazel_dep(name = "rules_swift", version = "4.0.0-rc3", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "rules_rust", version = "0.74.0")
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

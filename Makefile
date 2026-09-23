@@ -2,10 +2,10 @@ BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 PLIST := $(HOME)/Library/LaunchAgents/com.bitomule.alondra.plist
 
-.PHONY: build test install run tui launchd unlaunchd status cargo-test
+.PHONY: build test install run tui launchd unlaunchd status cargo-test mac
 
 build:
-	bazelisk build //crates/...
+	bazelisk build //crates/... //apple:AlondraMac
 
 test:
 	bazelisk test //crates/...
@@ -38,3 +38,10 @@ launchd: install
 unlaunchd:
 	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
 	rm -f $(PLIST)
+
+mac:
+	bazelisk build //apple:AlondraMac
+	rm -rf $(HOME)/Applications/Alondra.app
+	mkdir -p $(HOME)/Applications
+	unzip -q -o bazel-bin/apple/AlondraMac.zip -d $(HOME)/Applications
+	open $(HOME)/Applications/Alondra.app
