@@ -22,7 +22,7 @@ fn instructions(role: Role, user: &str) -> String {
          Write every question, report and message for {user} in {language}, whatever language this conversation is in."
     );
     match role {
-        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}: only these tools do. If you need {user} to decide something, use `ask` (one question per decision, a one-line title, all the context in `detail`, options, links); then end your turn, and Alondra will type the answer into this session. If {user} has to do something outside Alondra (test on a device, get a key, check a console), use `request_action` with the steps instead of leaving it written in your terminal. When you finish, use `report` with kind final. Use `report` otherwise only for a result or finding {user} must read now; never to say you are still working or do not need {user} (that is noise and Alondra rejects it). While you work on your own, including waiting for a build or an upload, send nothing. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
+        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}: only these tools do. If you need {user} to decide something, use `ask` (one question per decision, a one-line title, all the context in `detail`, options, links); then end your turn, and Alondra will type the answer into this session. If {user} has to do something outside Alondra (test on a device, get a key, check a console), use `request_action` with the steps instead of leaving it written in your terminal. When you finish, use `report` with kind final. Use `report` otherwise only for a result or finding {user} must read now; never to say you are still working or do not need {user} (that is noise and Alondra rejects it). While you work on your own, including waiting for a build or an upload, send nothing. If a question of yours no longer needs {user} (settled another way, or you moved on), `withdraw` it. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
         Role::Orchestrator => format!("Alondra is your nervous system: reliable fleet state (`fleet`, `node`), machine capacity (`machine`), and hands (`launch`, `send`). The nodes' questions to {user} reach {user} directly; what is meant for you is typed into your session. Use `ask` to ask {user} something and `report` to inform {user}. {who}"),
     }
 }
@@ -75,6 +75,7 @@ fn tools(role: Role, user: &str) -> Value {
         json!({"name": "ask", "description": format!("Structured question to {user} (or to the orchestrator). Returns right away with the number; end your turn and Alondra types the answer into this session."), "inputSchema": ask_schema(user)}),
         json!({"name": "request_action", "description": format!("Hand {user} something to do outside Alondra (test on the iPhone, get a key, check App Store Connect). {user} sees a \"Your turn\" card with the steps and answers \"Done\" or explains why they cannot; end your turn and Alondra types that into this session."), "inputSchema": action_schema(user)}),
         json!({"name": "report", "description": format!("Tell {user} you are done (kind final) or give {user} a result, finding or document to read. Not for progress, not for asking: those are noise here, and questions go through ask. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
+        json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}}, "required": ["id"]}}),
         json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {
@@ -141,6 +142,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
             format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
+        }
+        "withdraw" => {
+            let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("id is required"))?;
+            client.post(&format!("/v1/questions/{id}/withdraw"), &who)?;
+            format!("Question #{id} withdrawn; its card is gone.")
         }
         "wait_for_machine" => {
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");

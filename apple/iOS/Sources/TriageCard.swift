@@ -127,12 +127,14 @@ struct TriageCard: View {
     }
 
     private var topLine: some View {
-        HStack(alignment: .center) {
+        HStack(alignment: .center, spacing: 8) {
             KindBadge(kind: kind)
             Spacer()
             Text(relative(item.date))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
             Button(action: onSkip) {
                 Image(systemName: "arrow.uturn.forward")
                     .font(.footnote.weight(.semibold))
@@ -268,7 +270,7 @@ struct TriageCard: View {
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: 132, alignment: .topLeading)
                 .clipped()
-                .mask(LinearGradient(stops: [.init(color: .black, location: 0.55), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                .mask(LinearGradient(stops: [.init(color: .black, location: 0.45), .init(color: .clear, location: 0.9)], startPoint: .top, endPoint: .bottom))
                 HStack(spacing: 10) {
                     Image(systemName: "text.viewfinder")
                         .font(.title3)
@@ -289,6 +291,11 @@ struct TriageCard: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .background(kind.tint.opacity(0.10))
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(kind.tint.opacity(0.25))
+                        .frame(height: 1)
+                }
             }
             .background(Palette.cardRaised.opacity(0.6))
             .clipShape(.rect(cornerRadius: 20, style: .continuous))

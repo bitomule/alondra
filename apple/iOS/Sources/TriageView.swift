@@ -184,7 +184,7 @@ private struct CardStack: View {
                 ForEach(visible.reversed()) { item in
                     let depth = visible.firstIndex(of: item) ?? 0
                     TriageCard(item: item, isFront: depth == 0, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) })
-                        .frame(height: depth == 0 ? nil : frontHeight, alignment: .top)
+                        .frame(maxHeight: depth == 0 ? nil : frontHeight, alignment: .top)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                             if depth == 0 { frontHeight = height }
                         }

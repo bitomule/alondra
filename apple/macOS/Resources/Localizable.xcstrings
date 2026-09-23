@@ -1031,6 +1031,16 @@
         }
       }
     },
+    "Pull Requests": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pull requests"
+          }
+        }
+      }
+    },
     "Question": {
       "localizations": {
         "es": {

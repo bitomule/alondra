@@ -258,6 +258,10 @@ public enum InboxItem: Identifiable, Hashable {
         }
     }
 
+    public var isPullRequest: Bool {
+        if case .pullRequest = self { true } else { false }
+    }
+
     public var date: Int64 {
         switch self {
         case .question(let q): q.askedAt

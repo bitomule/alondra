@@ -130,24 +130,25 @@ public struct FleetView: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                if visibleInbox.isEmpty {
+                if waiting.isEmpty {
                     Label(query.isEmpty ? String(localized: "All caught up") : String(localized: "Nothing matches"), systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(visibleInbox) { item in
+                ForEach(waiting) { item in
                     InboxRow(item: item)
                         .tag(Selection.item(item.id))
                 }
             } header: {
-                HStack(spacing: 6) {
-                    Text("Waiting for You")
-                    if !store.inbox.isEmpty {
-                        Text(store.inbox.count, format: .number)
-                            .monospacedDigit()
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
-                            .background(Color.orange, in: .capsule)
+                SidebarCountHeader(title: String(localized: "Waiting for You"), count: store.inbox.count(where: { !$0.isPullRequest }), tint: .orange)
+            }
+            if !pullRequests.isEmpty {
+                Section {
+                    ForEach(pullRequests) { item in
+                        InboxRow(item: item)
+                            .tag(Selection.item(item.id))
                     }
+                } header: {
+                    SidebarCountHeader(title: String(localized: "Pull Requests"), count: store.inbox.count(where: \.isPullRequest), tint: .purple)
                 }
             }
             ForEach(filteredProjects, id: \.name) { project in
@@ -232,6 +233,9 @@ public struct FleetView: View {
     private var terms: [Substring] {
         query.lowercased().split(separator: " ")
     }
+
+    private var waiting: [InboxItem] { visibleInbox.filter { !$0.isPullRequest } }
+    private var pullRequests: [InboxItem] { visibleInbox.filter(\.isPullRequest) }
 
     private var visibleInbox: [InboxItem] {
         guard !terms.isEmpty else { return store.inbox }
