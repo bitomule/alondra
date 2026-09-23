@@ -174,7 +174,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
     Question {
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
-        node_name: node.name.clone(),
+        node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
         title,
         detail: said,
         options: vec![],
@@ -197,7 +197,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
     Report {
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
-        node_name: node.name.clone(),
+        node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
         title: cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(node.name.as_deref().unwrap_or(&node.short_id))),
         body: Some(said),
         links: vec![],
