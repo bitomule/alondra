@@ -35,11 +35,22 @@ pub fn spawn_if_unclear(hub: &Arc<Hub>, session_id: &str) {
     });
 }
 
+const TAIL_CHARS: usize = 4000;
+
+fn tail(text: &str) -> &str {
+    let count = text.chars().count();
+    if count <= TAIL_CHARS {
+        return text;
+    }
+    let start = text.char_indices().nth(count - TAIL_CHARS).map_or(0, |(i, _)| i);
+    &text[start..]
+}
+
 async fn classify(message: &str) -> Option<(NodeState, f64)> {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", QUESTION, "--options", OPTIONS, "-s", message, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
+            .args(["ask", QUESTION, "--options", OPTIONS, "-s", tail(message), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )
@@ -52,9 +63,6 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     let confidence = answer.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
     let state = match label {
         "esperando_respuesta" => NodeState::WaitingAnswer,
-        "entrega_resultado" => NodeState::Delivered,
-        "esperando_maquina" => NodeState::WaitingMachine,
-        "trabajando" => NodeState::Working,
         _ => NodeState::Unclear,
     };
     Some((state, confidence))
@@ -66,7 +74,7 @@ pub async fn report_asks_for_action(text: &str) -> bool {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer,no_se_sabe", "-s", text, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
+            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer,no_se_sabe", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )
@@ -106,4 +114,18 @@ pub async fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<Strin
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_keeps_the_end_where_the_question_is() {
+        let text = format!("{}¿mergeo la PR?", "á".repeat(5000));
+        let t = tail(&text);
+        assert!(t.ends_with("¿mergeo la PR?"));
+        assert_eq!(t.chars().count(), TAIL_CHARS);
+        assert_eq!(tail("corto"), "corto");
+    }
 }
