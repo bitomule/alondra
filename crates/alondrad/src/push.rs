@@ -221,6 +221,14 @@ fn kind_key(k: ReportKind) -> &'static str {
     }
 }
 
+/// After the user last did something in a client, pushes stay quiet for this long: whatever
+/// arrives meanwhile is already on the screen they are using.
+pub const ACTIVE_WINDOW_MS: i64 = 5 * 60 * 1000;
+
+fn in_a_client(activity: &std::collections::HashMap<String, i64>, now: i64) -> bool {
+    activity.values().any(|at| now - at <= ACTIVE_WINDOW_MS)
+}
+
 pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
     if !push.enabled() {
         return;
@@ -247,6 +255,9 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
         });
         last_q = last_q.max(max_q);
         last_r = last_r.max(max_r);
+        if in_a_client(&hub.activity(), alondra_core::now_millis()) {
+            continue;
+        }
         for q in questions {
             push.broadcast(&question_payload(&q, badge), true).await;
         }
@@ -259,6 +270,23 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn using_any_client_in_the_last_5_minutes_silences_pushes() {
+        let min = 60_000;
+        let now = 100 * min;
+        let cases: Vec<(&str, Vec<(&str, i64)>, bool)> = vec![
+            ("no client ever used", vec![], false),
+            ("the TUI a minute ago", vec![("tui", now - min)], true),
+            ("the Mac 4 minutes ago", vec![("mac", now - 4 * min)], true),
+            ("the Mac 6 minutes ago", vec![("mac", now - 6 * min)], false),
+            ("the TUI long ago, the Mac just now", vec![("tui", now - 60 * min), ("mac", now)], true),
+        ];
+        for (what, used, silent) in cases {
+            let activity = used.into_iter().map(|(c, at)| (c.to_string(), at)).collect();
+            assert_eq!(in_a_client(&activity, now), silent, "{what}");
+        }
+    }
 
     #[test]
     fn quiet_hours_across_midnight() {

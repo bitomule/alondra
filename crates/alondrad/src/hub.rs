@@ -17,6 +17,7 @@ pub struct Hub {
     tick: watch::Sender<u64>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     own_attaches: Mutex<HashSet<String>>,
+    activity: Mutex<HashMap<String, i64>>,
     pub home: PathBuf,
     pub config: Config,
     pub hold_enabled: bool,
@@ -38,6 +39,7 @@ impl Hub {
             tick,
             holds: Mutex::new(HashMap::new()),
             own_attaches: Mutex::new(HashSet::new()),
+            activity: Mutex::new(HashMap::new()),
             home,
             config,
             hold_enabled,
@@ -79,6 +81,16 @@ impl Hub {
     pub fn own_attach(&self, short: &str) -> OwnAttach<'_> {
         self.own_attaches.lock().expect("attaches lock poisoned").insert(short.to_string());
         OwnAttach { hub: self, short: short.to_string() }
+    }
+
+    /// The user did something in a client.
+    pub fn touch(&self, client: &str) {
+        self.activity.lock().expect("activity lock poisoned").insert(client.to_string(), now_millis());
+    }
+
+    /// When the user last did something in each client.
+    pub fn activity(&self) -> HashMap<String, i64> {
+        self.activity.lock().expect("activity lock poisoned").clone()
     }
 
     pub fn is_own_attach(&self, short: &str) -> bool {

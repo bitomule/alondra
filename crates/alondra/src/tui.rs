@@ -311,6 +311,7 @@ pub struct App {
     pub list_scroll: usize,
     pub detail_scroll: usize,
     settle_until: i64,
+    activity_told: i64,
     hidden: HashMap<Key, i64>,
     pub fleet_sel: Option<String>,
     fleet_idx: usize,
@@ -338,6 +339,8 @@ pub struct App {
     last_clock: i64,
     tx: SyncSender<Msg>,
 }
+
+const ACTIVITY_EVERY_MS: i64 = 60_000;
 
 pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Msg>(64);
@@ -399,6 +402,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
             dirty = false;
         }
         if event::poll(IDLE_POLL)? {
+            app.note_activity();
             loop {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
@@ -475,6 +479,7 @@ impl App {
             list_scroll: 0,
             detail_scroll: 0,
             settle_until: 0,
+            activity_told: 0,
             hidden: HashMap::new(),
             fleet_sel: None,
             fleet_idx: 0,
@@ -555,6 +560,18 @@ impl App {
     fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>) + Send + 'static) {
         let tx = self.tx.clone();
         std::thread::spawn(move || job(&tx));
+    }
+
+    /// Tells alondrad the user is at the TUI, at most once a minute, so it holds back pushes.
+    fn note_activity(&mut self) {
+        let now = now_millis();
+        if now - self.activity_told < ACTIVITY_EVERY_MS {
+            return;
+        }
+        self.activity_told = now;
+        self.spawn(|_| {
+            let _ = Client::for_user(Duration::from_secs(5)).post("/v1/activity", &json!({"client": "tui"}));
+        });
     }
 
     fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
