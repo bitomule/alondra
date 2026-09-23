@@ -1,0 +1,3 @@
+Run `cat log | grep err | wc -l` to count.
+| this line starts with a pipe but is not a table
+Use a || b in shell.

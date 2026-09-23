@@ -1,0 +1,1 @@
+para 0 | This has bold, italic, underscore italic, both, code with **stars**, strike, a link, an autolink https://example.com and a bare https://example.com/path_with_underscores. Line two of the same paragraph.\nHard break above (a backslash).

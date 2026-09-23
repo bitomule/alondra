@@ -1,0 +1,4 @@
+item 0 | 1. Install:
+code:bash 1 | brew install tuicr
+item 0 | 2. Run it:
+code:bash 1 | tuicr pr 12

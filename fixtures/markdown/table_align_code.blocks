@@ -1,0 +1,3 @@
+head:lrc 0 | Name · Count · Note
+row 1 | a|b · 12 · bold and link
+row 2 | two · 3 · grep -E 'x' file

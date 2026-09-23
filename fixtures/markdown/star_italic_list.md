@@ -1,0 +1,2 @@
+* star bullet
++ plus bullet
