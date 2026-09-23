@@ -32,6 +32,8 @@ status:
 launchd: install
 	sed -e 's|@BIN@|$(BIN)|g' -e 's|@HOME@|$(HOME)|g' -e 's|@PLUGIN@|$(PLUGIN)|g' launchd/com.bitomule.alondra.plist.in > $(PLIST)
 	launchctl bootout gui/$$(id -u) $(PLIST) 2>/dev/null || true
+	-pkill -f "$(BIN)/alondrad$$"
+	sleep 1
 	launchctl bootstrap gui/$$(id -u) $(PLIST)
 	@echo "alondrad arranca solo al iniciar sesión y se reinicia si cae. Registro: ~/.alondra/alondrad.log"
 
