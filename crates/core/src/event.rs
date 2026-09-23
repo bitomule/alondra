@@ -15,6 +15,8 @@ pub struct HookEvent {
     #[serde(default)]
     pub last_message: Option<String>,
     #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
     pub notification_type: Option<String>,
     #[serde(default)]
     pub error_type: Option<String>,
@@ -46,6 +48,10 @@ pub struct DaemonObservation {
     pub updated_at: Option<i64>,
     #[serde(default)]
     pub last_text: Option<String>,
+    #[serde(default)]
+    pub last_prompt: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
     #[serde(default)]
     pub last_text_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

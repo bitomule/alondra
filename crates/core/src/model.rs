@@ -163,6 +163,10 @@ pub struct Node {
     pub waiting_permission: bool,
     pub last_message: Option<String>,
     pub last_message_at: Option<Millis>,
+    #[serde(default)]
+    pub last_prompt: Option<String>,
+    #[serde(default)]
+    pub mission: Option<String>,
     pub daemon_detail: Option<String>,
     pub daemon_needs: Option<String>,
     pub daemon_updated_at: Option<Millis>,
@@ -224,6 +228,8 @@ impl Node {
             waiting_permission: false,
             last_message: None,
             last_message_at: None,
+            last_prompt: None,
+            mission: None,
             daemon_detail: None,
             daemon_needs: None,
             daemon_updated_at: None,

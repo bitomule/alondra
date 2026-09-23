@@ -33,13 +33,13 @@ fn ask_schema(user: &str) -> Value {
         "properties": {
             "title": {"type": "string", "description": format!("The question in one line: it is what {user} sees in the notification")},
             "detail": {"type": "string", "description": format!("All the context {user} needs to answer without asking you anything (markdown)")},
-            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": format!("Possible options; {user} can always answer with free text")},
+            "options": {"type": "array", "minItems": 2, "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": format!("Possible options; {user} can always answer with free text")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "Relevant PRs, commits or URLs"},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
             "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
             "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")}
         },
-        "required": ["title"]
+        "required": ["title", "detail", "options"]
     })
 }
 
@@ -53,7 +53,7 @@ fn report_schema(user: &str) -> Value {
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"}
         },
-        "required": ["title"]
+        "required": ["title", "body", "kind"]
     })
 }
 

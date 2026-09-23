@@ -139,6 +139,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         error_type: str_field(&p, "error_type").or_else(|| str_field(&p, "error")),
         cwd: str_field(&p, "cwd"),
         agent_id: str_field(&p, "agent_id"),
+        prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         eprintln!("alondrad: hook lost: {e}");
@@ -552,6 +553,12 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
 }
 
 async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
+    if b.title.trim().is_empty() || b.detail.as_deref().is_none_or(|d| d.trim().is_empty()) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("A question needs a one-line title and a detail with all the context {} needs to answer without asking you anything.", hub.config.name),
+        );
+    }
     let stamp = now_millis();
     let options: Vec<QuestionOption> = std::mem::take(&mut b.options).into_iter().map(Into::into).collect();
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
@@ -686,6 +693,12 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
+    if b.kind != Some(ReportKind::Progress) && (b.title.trim().is_empty() || b.body.as_deref().is_none_or(|t| t.trim().is_empty())) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("A report needs a title that states the result and a body with what {} should know: what changed, what was measured, what is left.", hub.config.name),
+        );
+    }
     if b.kind == Some(ReportKind::Final)
         && let Some(session) = hub.read(|v| resolve_caller(v, &b.caller).map(|(s, _)| s))
         && let Some(left) = crate::worktree::leftovers(&session).await

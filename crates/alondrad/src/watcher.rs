@@ -59,6 +59,9 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 obs.last_text = Some(text);
                 obs.last_text_at = at;
             }
+            if let Some(path) = transcript_path(&mut transcripts, &projects, &obs.session_id) {
+                obs.last_prompt = last_human_prompt(&path);
+            }
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs) || mtime - s.recorded >= HEARTBEAT_MS);
             let mut recorded = seen.get(&short).map_or(mtime, |s| s.recorded);
             if meaningful {
@@ -195,6 +198,25 @@ fn last_assistant_text(path: &Path) -> Option<(String, Option<i64>)> {
     Some((best.0, newest_at.or(best.1)))
 }
 
+fn last_human_prompt(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let line = text.lines().rev().find(|l| is_human_prompt(l))?;
+    let v: Value = serde_json::from_str(line).ok()?;
+    let prompt = match v.get("message").and_then(|m| m.get("content"))? {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+        _ => return None,
+    };
+    Some(prompt.chars().take(2000).collect())
+}
+
 fn is_human_prompt(line: &str) -> bool {
     if !line.contains("\"user\"") {
         return false;
@@ -314,6 +336,8 @@ fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
         updated_at: None,
         last_text: None,
         last_text_at: None,
+        last_prompt: None,
+        intent: s("intent"),
         tasks: in_flight.and_then(|f| f.get("tasks")).and_then(Value::as_u64).map(|n| n as u32),
         task_kinds: in_flight
             .and_then(|f| f.get("kinds"))

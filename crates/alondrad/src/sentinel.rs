@@ -161,7 +161,7 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 /// inbox. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn {
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || talking_with_user(v, node) {
         return false;
     }
     let key = key(node);
@@ -169,6 +169,21 @@ fn needs_attention(v: &View, node: &Node) -> bool {
         q.session_id == node.session_id
             && (q.status.is_open() || (q.tool_use_id.as_deref() == Some(key.as_str()) && q.status != QuestionStatus::Withdrawn))
     })
+}
+
+/// The user typed the node's last prompt in its own terminal: they are talking with it and
+/// have its answer on screen. Prompts Alondra typed, and the launch mission, do not count.
+fn talking_with_user(v: &View, node: &Node) -> bool {
+    let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let Some(prompt) = node.last_prompt.as_deref().map(squash).filter(|p| !p.is_empty()) else { return false };
+    if prompt.starts_with("[Alondra]") || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt) {
+        return false;
+    }
+    let typed_by_alondra = v.messages.values().filter(|m| m.session_id == node.session_id).any(|m| {
+        let head: String = squash(&m.text).chars().take(60).collect();
+        !head.is_empty() && prompt.contains(&head)
+    });
+    !typed_by_alondra
 }
 
 fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
@@ -353,6 +368,25 @@ mod tests {
         assert!(r.read);
         v.apply(4, 4000, &event);
         assert!(!needs_attention(&v, &v.nodes["s"]));
+    }
+
+    #[test]
+    fn a_node_the_user_is_talking_with_directly_is_left_alone() {
+        let mut v = waiting_view(ASKS);
+        v.nodes.get_mut("s").unwrap().last_prompt = Some("the TUI shift key does not work".into());
+        assert!(!needs_attention(&v, &v.nodes["s"]));
+        v.nodes.get_mut("s").unwrap().last_prompt = Some(nudge_text("Ana"));
+        v.apply(9, 9000, &Event::MessageQueued(Message {
+            id: 7,
+            session_id: "s".into(),
+            from: MessageFrom::Alondra,
+            text: nudge_text("Ana"),
+            answers_question: None,
+            created_at: 9000,
+            handed_at: None,
+            delivered_at: None,
+        }));
+        assert!(needs_attention(&v, &v.nodes["s"]));
     }
 
     #[test]

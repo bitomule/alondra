@@ -271,6 +271,9 @@ impl View {
                 node.tool = None;
             }
             "UserPromptSubmit" => {
+                if h.prompt.is_some() {
+                    node.last_prompt = h.prompt.clone();
+                }
                 node.busy = true;
                 node.turn += 1;
                 node.classified = None;
@@ -364,6 +367,12 @@ impl View {
         node.daemon_tempo = d.tempo.clone();
         node.daemon_tasks = d.tasks.unwrap_or(0);
         node.daemon_seen_at = Some(at);
+        if d.intent.is_some() {
+            node.mission = d.intent.clone();
+        }
+        if !node.has_plugin && d.last_prompt.is_some() {
+            node.last_prompt = d.last_prompt.clone();
+        }
         if !node.has_plugin && d.last_text.is_some() {
             node.last_message = d.last_text.clone();
             node.last_message_at = d.last_text_at.or(d.updated_at);
