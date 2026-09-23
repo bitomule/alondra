@@ -58,7 +58,7 @@ impl Store {
         tx.execute("DELETE FROM snapshots WHERE seq < ?1", params![view.seq as i64])?;
         let deleted = tx.execute("DELETE FROM events WHERE seq <= ?1 AND at < ?2", params![view.seq as i64, before])?;
         tx.commit()?;
-        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        self.conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(deleted)
     }
 
@@ -107,6 +107,25 @@ mod tests {
         let mut seen = vec![];
         s.replay(0, |q, at, e| seen.push((q, at, e))).unwrap();
         assert_eq!(seen, vec![(seq, 5, ev)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn compaction_leaves_the_write_ahead_log_empty() {
+        let dir = std::env::temp_dir().join(format!("alondra-wal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut s = Store::open(&path).unwrap();
+        let mut view = View::default();
+        for i in 0..2_000 {
+            let ev = Event::Hook(HookEvent { session_id: format!("s{i}"), event: "Stop".into(), last_message: Some("x".repeat(500)), ..Default::default() });
+            let seq = s.append(i, &ev).unwrap();
+            view.apply(seq, i, &ev);
+        }
+        s.compact(&view, 10_000, 5_000).unwrap();
+        let wal = std::fs::metadata(dir.join("t.db-wal")).map_or(0, |m| m.len());
+        assert_eq!(wal, 0, "WAL still holds {wal} bytes after compaction");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
