@@ -92,3 +92,31 @@ import Testing
         #expect(shapes == ["table 3", "table 2", "After"])
     }
 }
+
+@Suite struct MarkdownBlockCacheTests {
+    @Test func aCachedParseEqualsAFreshOne() {
+        let source = "# Title\n\n| a | b |\n|:-|-:|\n| 1 | 2 |\n\n- [x] done"
+        let cache = MarkdownBlockCache(capacity: 4)
+        let first = cache.blocks(for: source)
+        let again = cache.blocks(for: source)
+        #expect(first == again)
+        #expect(first == MarkdownParser.blocks(from: source))
+        #expect(cache.count == 1)
+    }
+
+    @Test func theCacheKeepsTheMostRecentlyUsedWithinItsCapacity() {
+        let cache = MarkdownBlockCache(capacity: 3)
+        for index in 0..<10 {
+            _ = cache.blocks(for: "Text \(index)")
+            #expect(cache.count == min(index + 1, 3))
+        }
+        #expect(cache.contains("Text 9") && !cache.contains("Text 6"))
+
+        let small = MarkdownBlockCache(capacity: 2)
+        _ = small.blocks(for: "a")
+        _ = small.blocks(for: "b")
+        _ = small.blocks(for: "a")
+        _ = small.blocks(for: "c")
+        #expect(small.contains("a") && small.contains("c") && !small.contains("b"))
+    }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public struct MarkdownBlock: Identifiable, Hashable, Sendable {
     public enum ListMarker: Hashable, Sendable {
@@ -84,7 +85,13 @@ public enum MarkdownSegment: Identifiable, Hashable, Sendable {
 }
 
 public enum MarkdownParser {
+    static let cache = MarkdownBlockCache(capacity: 256)
+
     public static func blocks(from source: String) -> [MarkdownBlock] {
+        cache.blocks(for: source)
+    }
+
+    static func parse(_ source: String) -> [MarkdownBlock] {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
         guard let document = try? AttributedString(markdown: source, options: options) else {
             var builder = Builder()
@@ -265,5 +272,50 @@ private extension PresentationIntent.IntentType {
         case .listItem, .blockQuote: true
         default: false
         }
+    }
+}
+
+public final class MarkdownBlockCache: Sendable {
+    private struct Entry {
+        let blocks: [MarkdownBlock]
+        var used: UInt64
+    }
+
+    private struct State {
+        var entries: [String: Entry] = [:]
+        var clock: UInt64 = 0
+    }
+
+    public let capacity: Int
+    private let state = Mutex(State())
+
+    public init(capacity: Int) {
+        self.capacity = max(capacity, 1)
+    }
+
+    public var count: Int {
+        state.withLock { $0.entries.count }
+    }
+
+    public func contains(_ source: String) -> Bool {
+        state.withLock { $0.entries[source] != nil }
+    }
+
+    public func blocks(for source: String) -> [MarkdownBlock] {
+        let cached = state.withLock { state -> [MarkdownBlock]? in
+            state.clock += 1
+            state.entries[source]?.used = state.clock
+            return state.entries[source]?.blocks
+        }
+        if let cached { return cached }
+        let blocks = MarkdownParser.parse(source)
+        state.withLock { state in
+            state.clock += 1
+            state.entries[source] = Entry(blocks: blocks, used: state.clock)
+            if state.entries.count > capacity, let oldest = state.entries.min(by: { $0.value.used < $1.value.used })?.key {
+                state.entries[oldest] = nil
+            }
+        }
+        return blocks
     }
 }
