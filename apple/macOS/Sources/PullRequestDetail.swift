@@ -5,17 +5,19 @@ import SwiftUI
 struct PullRequestDetail: View {
     let pr: PullRequest
     let store: FleetStore
+    let drafts: Drafts
+    @Bindable var draft: ReviewDraft
     @State private var method: String
-    @State private var note = ""
     @State private var confirmingMerge = false
     @State private var files: [DiffFile]?
     @State private var diffError: String?
-    @State private var comments: [String: String] = [:]
-    @State private var commenting: DiffLine?
+    @FocusState private var focus: DetailField?
 
-    init(pr: PullRequest, store: FleetStore) {
+    init(pr: PullRequest, store: FleetStore, drafts: Drafts, draft: ReviewDraft) {
         self.pr = pr
         self.store = store
+        self.drafts = drafts
+        self.draft = draft
         _method = State(initialValue: pr.methods.first ?? "merge")
     }
 
@@ -49,11 +51,14 @@ struct PullRequestDetail: View {
                 changes
             }
         } bar: {
+            VStack(alignment: .leading, spacing: 12) {
+            CommentsSummary(draft: draft)
             HStack(alignment: .center, spacing: 10) {
-                TextField("What should change?", text: $note, axis: .vertical)
+                TextField("What should change?", text: $draft.general, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
-                Button(comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(comments.count))")) { requestChanges() }
+                    .focused($focus, equals: .reply)
+                Button(draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")) { requestChanges() }
                     .disabled(review.isEmpty)
                     .controlSize(.large)
                 Picker("Method", selection: $method) {
@@ -71,12 +76,8 @@ struct PullRequestDetail: View {
                     .controlSize(.large)
                     .help("Take the card out of the inbox without merging")
             }
-        }
-        .sheet(item: $commenting) { line in
-            LineCommentSheet(line: line, initial: line.anchor.flatMap { comments[$0] } ?? "") { text in
-                guard let anchor = line.anchor else { return }
-                comments[anchor] = text.isEmpty ? nil : text
             }
+            .animation(.snappy(duration: 0.2), value: draft.comments.count)
         }
         .confirmationDialog("Merge PR #\(pr.number)?", isPresented: $confirmingMerge) {
             Button("Merge (\(PullRequest.methodLabel(method)))") { merge() }
@@ -96,10 +97,10 @@ struct PullRequestDetail: View {
             Text("Changes")
                 .font(.title3.weight(.semibold))
             if let files {
-                Text("Click a line to comment on it")
+                Text("Hover over a line to comment on it")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                DiffView(files: files, comments: comments) { commenting = $0 }
+                PRDiffReview(files: files, draft: draft, focus: $focus)
             } else if let diffError {
                 Label(diffError, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
@@ -112,7 +113,7 @@ struct PullRequestDetail: View {
     }
 
     private var review: String {
-        ReviewExport.text(comments: orderedComments(comments, in: files ?? []), general: note)
+        ReviewExport.text(comments: draft.comments.map { ($0.anchor, $0.text) }, general: draft.general)
     }
 
     private func loadDiff() async {
@@ -127,8 +128,7 @@ struct PullRequestDetail: View {
         let (id, text) = (pr.id, review)
         Task {
             if await store.resolve(.pullRequest(pr), { try await $0.requestChanges(onPullRequest: id, text: text) }) {
-                note = ""
-                comments = [:]
+                drafts.discard(InboxItem.pullRequest(pr).id)
             }
         }
     }

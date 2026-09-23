@@ -13,7 +13,7 @@ struct ItemDetail: View {
         case .report(let r):
             ReportDetail(report: r, store: store, drafts: drafts, draft: drafts.draft(for: item.id))
         case .pullRequest(let p):
-            PullRequestDetail(pr: p, store: store)
+            PullRequestDetail(pr: p, store: store, drafts: drafts, draft: drafts.draft(for: item.id))
         }
     }
 }

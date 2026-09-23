@@ -211,6 +211,16 @@
         }
       }
     },
+    "A note for the node (optional)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una nota para el nodo (opcional)"
+          }
+        }
+      }
+    },
     "Add comment": {
       "localizations": {
         "es": {
@@ -1011,6 +1021,16 @@
         }
       }
     },
+    "PR #%llu": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%llu"
+          }
+        }
+      }
+    },
     "Pair": {
       "localizations": {
         "es": {
@@ -1231,6 +1251,16 @@
         }
       }
     },
+    "Request Changes (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir cambios (%lld)"
+          }
+        }
+      }
+    },
     "Requests outside 127.0.0.1 are signed with a key that never leaves this iPhone.": {
       "localizations": {
         "es": {
@@ -1407,6 +1437,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Toca un bloque para comentarlo"
+          }
+        }
+      }
+    },
+    "Tap a line to comment on it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toca una línea para comentarla"
           }
         }
       }

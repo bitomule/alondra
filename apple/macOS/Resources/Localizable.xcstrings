@@ -351,6 +351,16 @@
         }
       }
     },
+    "Changes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cambios"
+          }
+        }
+      }
+    },
     "Close": {
       "localizations": {
         "es": {
@@ -397,6 +407,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Comentar este bloque"
+          }
+        }
+      }
+    },
+    "Comment on this line": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comentar esta línea"
           }
         }
       }
@@ -587,6 +607,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pasa el ratón por un bloque para comentarlo · L leído"
+          }
+        }
+      }
+    },
+    "Hover over a line to comment on it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pasa el ratón por una línea para comentarla"
           }
         }
       }
@@ -1087,6 +1117,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pedir cambios"
+          }
+        }
+      }
+    },
+    "Request Changes (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir cambios (%lld)"
           }
         }
       }
