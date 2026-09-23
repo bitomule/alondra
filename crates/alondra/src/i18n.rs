@@ -127,6 +127,15 @@ pub fn option_label(label: &str) -> &str {
     }
 }
 
+pub fn merge_method(m: alondra_core::pr::MergeMethod) -> &'static str {
+    use alondra_core::pr::MergeMethod;
+    match m {
+        MergeMethod::Merge => tr!("merge commit", "commit de merge"),
+        MergeMethod::Squash => tr!("squash", "squash"),
+        MergeMethod::Rebase => tr!("rebase", "rebase"),
+    }
+}
+
 pub fn comments(n: usize) -> String {
     match (lang(), n) {
         (Lang::En, 1) => "1 comment".into(),

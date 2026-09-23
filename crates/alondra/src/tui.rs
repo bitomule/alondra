@@ -34,11 +34,13 @@ const IDLE_POLL: Duration = Duration::from_millis(250);
 pub enum Key {
     Q(u64),
     R(u64),
+    P(u64),
 }
 
 pub enum Item<'a> {
     Q(&'a Question),
     R(&'a Report),
+    P(&'a crate::client::PrCard),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -234,6 +236,7 @@ impl Reader {
 }
 
 pub enum Target {
+    PrChanges { id: u64, title: String },
     Answer { id: u64, title: String, option: Option<String> },
     MoreContext { id: u64, title: String },
     ReplyReport { id: u64, session: String, name: String },
@@ -254,6 +257,7 @@ impl Target {
             Target::Answer { id, .. } => Some(format!("answer:{id}")),
             Target::MoreContext { id, .. } => Some(format!("context:{id}")),
             Target::ReplyReport { id, .. } => Some(format!("reply:{id}")),
+            Target::PrChanges { id, .. } => Some(format!("pr:{id}")),
             Target::Message { session, .. } => Some(format!("message:{session}")),
             Target::NewRequest => Some("new".into()),
             Target::Comment { .. } | Target::General { .. } => None,
@@ -319,6 +323,7 @@ pub struct App {
     pub fleet_detail_scroll: usize,
     pub show_sleeping: bool,
     pending_close: Option<(String, i64)>,
+    pending_merge: Option<(u64, alondra_core::pr::MergeMethod, i64)>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -498,6 +503,7 @@ impl App {
             fleet_detail_scroll: 0,
             show_sleeping: true,
             pending_close: None,
+            pending_merge: None,
             search: None,
             composer: None,
             reader: None,
@@ -522,14 +528,45 @@ impl App {
 
     pub fn inbox_keys(&self) -> Vec<Key> {
         let q = self.data.open_questions.iter().map(|q| Key::Q(q.id));
+        let p = self.data.prs.iter().map(|p| Key::P(p.pr.id));
         let r = self.data.news.iter().map(|r| Key::R(r.id));
-        q.chain(r).filter(|k| !self.hidden.contains_key(k)).collect()
+        q.chain(p).chain(r).filter(|k| !self.hidden.contains_key(k)).collect()
     }
 
     pub fn item(&self, key: Key) -> Option<Item<'_>> {
         match key {
             Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(Item::Q),
             Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(Item::R),
+            Key::P(id) => self.data.prs.iter().find(|p| p.pr.id == id).map(Item::P),
+        }
+    }
+
+    fn selected_pr(&self) -> Option<crate::client::PrCard> {
+        match self.sel.and_then(|k| self.item(k)) {
+            Some(Item::P(p)) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
+    /// Merging cannot be undone, so a method key takes a second press within a few seconds.
+    fn merge_pr(&mut self, pr: &crate::client::PrCard, i: usize) {
+        let methods = pr.methods();
+        let Some(&method) = methods.get(i) else {
+            let n = i + 1;
+            self.fail(trf!("This PR has no option {n}", "Este PR no tiene opción {n}"));
+            return;
+        };
+        let now = now_millis();
+        let label = i18n::merge_method(method);
+        let number = pr.pr.number;
+        if self.pending_merge.is_some_and(|(id, m, until)| id == pr.pr.id && m == method && now < until) {
+            self.pending_merge = None;
+            self.post(Some(Key::P(pr.pr.id)), vec![(format!("/v1/prs/{}/merge", pr.pr.id), json!({"method": method}))], trf!("PR #{number} merged ({label})", "PR #{number} fusionado ({label})"));
+            self.hide(Key::P(pr.pr.id));
+        } else {
+            self.pending_merge = Some((pr.pr.id, method, now + 4000));
+            let n = i + 1;
+            self.flash(trf!("Press {n} again to merge PR #{number} ({label})", "Pulsa {n} otra vez para fusionar el PR #{number} ({label})"));
         }
     }
 
@@ -618,7 +655,7 @@ impl App {
     fn reconcile(&mut self) {
         let now = now_millis();
         let present: HashSet<Key> =
-            self.data.open_questions.iter().map(|q| Key::Q(q.id)).chain(self.data.news.iter().map(|r| Key::R(r.id))).collect();
+            self.data.open_questions.iter().map(|q| Key::Q(q.id)).chain(self.data.news.iter().map(|r| Key::R(r.id))).chain(self.data.prs.iter().map(|p| Key::P(p.pr.id))).collect();
         self.hidden.retain(|k, at| present.contains(k) && now - *at < HIDE_GRACE_MS);
         let keys = self.inbox_keys();
         let prev = self.sel;
@@ -638,7 +675,7 @@ impl App {
         let paths: Vec<String> = match self.sel.and_then(|k| self.item(k)) {
             Some(Item::Q(q)) => attachment_paths(&q.attachments),
             Some(Item::R(r)) => attachment_paths(&r.attachments),
-            None => vec![],
+            Some(Item::P(_)) | None => vec![],
         };
         for p in paths.iter().take(2) {
             self.fetch(p);
@@ -962,6 +999,7 @@ impl App {
                 let session = match self.sel.and_then(|k| self.item(k)) {
                     Some(Item::Q(q)) => q.session_id.clone(),
                     Some(Item::R(r)) => r.session_id.clone(),
+                    Some(Item::P(p)) => p.pr.session_id.clone(),
                     None => return Flow::Go,
                 };
                 return self.attach_to(&session);
@@ -972,6 +1010,13 @@ impl App {
                 } else if let Some(r) = self.selected_report() {
                     let name = who(&r.node_name, &r.session_id);
                     self.compose(Target::ReplyReport { id: r.id, session: r.session_id, name }, "");
+                } else if let Some(p) = self.selected_pr() {
+                    self.compose(Target::PrChanges { id: p.pr.id, title: p.pr.title }, "");
+                }
+            }
+            KeyCode::Char('w') => {
+                if let Some(p) = self.selected_pr() {
+                    let _ = std::process::Command::new("open").arg(&p.pr.url).spawn();
                 }
             }
             KeyCode::Char('c') => {
@@ -987,6 +1032,10 @@ impl App {
                     self.pending_close = None;
                     let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
                     self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+                } else if let Some(p) = self.selected_pr() {
+                    let number = p.pr.number;
+                    self.post(Some(Key::P(p.pr.id)), vec![(format!("/v1/prs/{}/dismiss", p.pr.id), json!({}))], trf!("PR #{number} set aside", "PR #{number} apartado"));
+                    self.hide(Key::P(p.pr.id));
                 } else if let Some(r) = self.selected_report() {
                     let name = who(&r.node_name, &r.session_id);
                     self.mark_read(&r);
@@ -997,6 +1046,8 @@ impl App {
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(q) = self.selected_question() {
                     self.choose(&q, c as usize - '1' as usize);
+                } else if let Some(p) = self.selected_pr() {
+                    self.merge_pr(&p, c as usize - '1' as usize);
                 }
             }
             _ => {}
@@ -1063,12 +1114,15 @@ impl App {
     fn submit(&mut self) {
         let Some(c) = self.composer.take() else { return };
         let text = c.input.text().trim().to_string();
-        let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest);
+        let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest | Target::PrChanges { .. });
         if needs_text && text.is_empty() {
             self.composer = Some(c);
             return;
         }
         match c.target {
+            Target::PrChanges { id, .. } => {
+                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text}))], tr!("Changes requested", "Cambios pedidos").to_string());
+            }
             Target::Answer { id, option, .. } => {
                 self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], trf!("#{id} answered", "#{id} contestada"));
                 self.hide(Key::Q(id));
@@ -1138,6 +1192,13 @@ impl App {
                 parts.extend(r.attachments.iter().filter_map(|a| a.stored_path.clone().map(|path| Part::File { name: a.name.clone(), path })));
                 parts.extend(links_part(&r.links));
                 (new_reader(key, &r.session_id, &r.node_name, &r.title, draw::report_glyph(r), None, parts), attachment_paths(&r.attachments))
+            }
+            Some(Item::P(p)) => {
+                let mut parts = vec![Part::Text(format!("# {}\n\n{}", p.pr.title, draw::pr_summary(p)))];
+                parts.extend(p.pr.body.clone().map(Part::Text));
+                parts.push(Part::Text(p.pr.url.clone()));
+                let (glyph, _, color) = draw::pr_glyph();
+                (new_reader(key, &p.pr.session_id, &p.pr.node_name, &p.pr.title, (glyph, tr!("PR", "PR"), color), None, parts), vec![])
             }
             None => return,
         };
@@ -1296,6 +1357,9 @@ impl App {
                     ],
                     trf!("{count} sent to {node}; marked read", "{count} enviados a {node}; marcado leído"),
                 );
+            }
+            Key::P(id) => {
+                self.post(Some(key), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text}))], trf!("Changes requested from {node} ({count})", "Cambios pedidos a {node} ({count})"));
             }
         }
         self.reader = None;
@@ -1806,6 +1870,35 @@ pub(crate) mod tests {
         let Some(Composer { target: Target::Answer { id: 1, option, .. }, .. }) = &app.composer else { panic!("no composer") };
         assert_eq!(option.as_deref(), Some(alondra_core::answer_option::CANNOT));
         assert!(!needs_text(&card.options[0]));
+    }
+
+    fn pr_card(preferred: Option<alondra_core::pr::MergeMethod>) -> crate::client::PrCard {
+        use alondra_core::pr::{MergeMethod, PullRequest};
+        let mut pr = PullRequest::opened(4, "https://github.com/a/b/pull/12", "s1", Some("demo".into()), 0).unwrap();
+        pr.title = "Menus become cards".into();
+        pr.merge_methods = vec![MergeMethod::Merge, MergeMethod::Squash];
+        crate::client::PrCard { pr, preferred_method: preferred }
+    }
+
+    #[test]
+    fn a_pr_card_offers_the_repos_methods_with_the_last_used_first() {
+        use alondra_core::pr::MergeMethod;
+        assert_eq!(pr_card(None).methods(), [MergeMethod::Merge, MergeMethod::Squash]);
+        assert_eq!(pr_card(Some(MergeMethod::Squash)).methods(), [MergeMethod::Squash, MergeMethod::Merge]);
+        assert_eq!(pr_card(Some(MergeMethod::Rebase)).methods(), [MergeMethod::Merge, MergeMethod::Squash], "a method the repo no longer allows is not offered");
+    }
+
+    #[test]
+    fn merging_a_pr_takes_a_second_press() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.prs = vec![pr_card(None)];
+        app.reconcile();
+        app.settle_until = 0;
+        assert!(matches!(app.sel, Some(Key::P(4))));
+        press(&mut app, "2");
+        assert_eq!(app.pending_merge.map(|(id, m, _)| (id, m)), Some((4, alondra_core::pr::MergeMethod::Squash)));
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press 2 again to merge PR #12 (squash)")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        assert!(!app.hidden.contains_key(&Key::P(4)), "nothing merged yet");
     }
 
     #[test]

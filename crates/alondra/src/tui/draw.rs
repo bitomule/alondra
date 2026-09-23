@@ -174,7 +174,35 @@ fn item_glyph(item: &Item) -> (&'static str, &'static str, Color) {
     match item {
         Item::Q(q) => question_glyph(q),
         Item::R(r) => report_glyph(r),
+        Item::P(_) => pr_glyph(),
     }
+}
+
+pub(super) fn pr_glyph() -> (&'static str, &'static str, Color) {
+    ("⇄", "PR", Color::LightGreen)
+}
+
+/// `bitomule/alondra #12 · fase-1 ← menus · +120 −8 in 5 files · checks 2✓ 1✗ 1…`
+pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
+    use alondra_core::pr::CheckState;
+    let pr = &p.pr;
+    let mut s = format!("{} #{}", pr.repo, pr.number);
+    if let (Some(base), Some(head)) = (&pr.base, &pr.head) {
+        s.push_str(&format!(" · {base} ← {head}"));
+    }
+    if pr.fetched {
+        let (a, d, n) = (pr.additions, pr.deletions, pr.changed_files);
+        s.push_str(&trf!(" · +{a} −{d} in {n} files", " · +{a} −{d} en {n} ficheros"));
+    }
+    let count = |st: CheckState| pr.checks.iter().filter(|c| c.state == st).count();
+    if !pr.checks.is_empty() {
+        let (ok, bad, run) = (count(CheckState::Passed), count(CheckState::Failed), count(CheckState::Running));
+        s.push_str(&trf!(" · checks {ok}✓ {bad}✗ {run}…", " · checks {ok}✓ {bad}✗ {run}…"));
+    }
+    if pr.mergeable.as_deref() == Some("CONFLICTING") {
+        s.push_str(tr!(" · conflicts", " · conflictos"));
+    }
+    s
 }
 
 fn draw_head(f: &mut Frame, app: &App, area: Rect) {
@@ -291,6 +319,7 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
     let (title, node, at) = match &item {
         Item::Q(q) => (q.title.clone(), who(&q.node_name, &q.session_id), q.asked_at),
         Item::R(r) => (r.title.clone(), who(&r.node_name, &r.session_id), r.created_at),
+        Item::P(p) => (p.pr.title.clone(), who(&p.pr.node_name, &p.pr.session_id), p.pr.opened_at),
     };
     let first = fit(vec![bar.clone(), Span::styled(format!("{glyph} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(md::one_line(&title), title_style)], width);
     let mut meta = vec![bar, Span::styled(format!("  {node} · {}", ago(at)), Style::new().fg(DIM))];
@@ -308,6 +337,14 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
             let clips = r.attachments.len();
             if clips > 0 {
                 meta.push(Span::styled(format!(" · 📎{clips}"), Style::new().fg(DIM)));
+            }
+        }
+        Item::P(p) => {
+            let failed = p.pr.checks.iter().any(|c| c.state == alondra_core::pr::CheckState::Failed);
+            let (mark, color) = if failed { ("✗", Color::LightRed) } else if p.pr.checks.iter().any(|c| c.state == alondra_core::pr::CheckState::Running) { ("…", Color::Yellow) } else { ("✓", Color::LightGreen) };
+            meta.push(Span::styled(format!(" · {} #{} ", p.pr.repo, p.pr.number), Style::new().fg(DIM)));
+            if !p.pr.checks.is_empty() {
+                meta.push(Span::styled(mark, Style::new().fg(color)));
             }
         }
     }
@@ -376,13 +413,16 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
 fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let (glyph, kind, color) = item_glyph(item);
     let mut lines = vec![];
+    let (no_files, no_links) = (vec![], vec![]);
     let (title, node, at, body, attachments, links) = match item {
         Item::Q(q) => (&q.title, who(&q.node_name, &q.session_id), q.asked_at, &q.detail, &q.attachments, &q.links),
         Item::R(r) => (&r.title, who(&r.node_name, &r.session_id), r.created_at, &r.body, &r.attachments, &r.links),
+        Item::P(p) => (&p.pr.title, who(&p.pr.node_name, &p.pr.session_id), p.pr.opened_at, &p.pr.body, &no_files, &no_links),
     };
     let project = match item {
         Item::Q(q) => app.node(&q.session_id),
         Item::R(r) => app.node(&r.session_id),
+        Item::P(p) => app.node(&p.pr.session_id),
     }
     .and_then(|n| n.project.clone());
     let mut meta = vec![Span::styled(format!("{glyph} {kind}"), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(format!(" · {node}"), Style::new().fg(SOFT))];
@@ -394,6 +434,7 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let mission = match item {
         Item::Q(q) => q.mission.as_deref(),
         Item::R(r) => r.mission.as_deref(),
+        Item::P(_) => None,
     };
     if let Some(m) = mission.map(mission_excerpt).filter(|m| !m.is_empty()) {
         let label = Span::styled(tr!("Mission: ", "Misión: "), Style::new().fg(DIM).add_modifier(Modifier::BOLD));
@@ -401,6 +442,21 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     }
     lines.push(Line::default());
     lines.extend(wrap(vec![Span::styled(md::one_line(title), Style::new().add_modifier(Modifier::BOLD))], width, vec![], vec![]));
+    if let Item::P(p) = item {
+        use alondra_core::pr::CheckState;
+        lines.push(Line::default());
+        lines.extend(wrap(vec![Span::styled(pr_summary(p), Style::new().fg(SOFT))], width, vec![], vec![]));
+        for c in &p.pr.checks {
+            let (mark, color) = match c.state {
+                CheckState::Passed => ("✓", Color::LightGreen),
+                CheckState::Failed => ("✗", Color::LightRed),
+                CheckState::Running => ("…", Color::Yellow),
+                CheckState::Other => ("·", DIM),
+            };
+            lines.push(fit(vec![Span::styled(format!("  {mark} "), Style::new().fg(color)), Span::raw(c.name.clone())], width));
+        }
+        lines.push(fit(vec![Span::styled(p.pr.url.clone(), Style::new().fg(Color::LightBlue).underlined())], width));
+    }
     if let Item::Q(q) = item
         && !q.steps.is_empty()
     {
@@ -462,6 +518,30 @@ fn mission_excerpt(mission: &str) -> String {
 fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let hint = |spans: Vec<Span<'static>>| fit(spans, width);
     match item {
+        Item::P(p) => {
+            let mut out: Vec<Line> = p
+                .methods()
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let method = i18n::merge_method(m);
+                    let mut spans = vec![keycap(&(i + 1).to_string()), Span::styled(trf!(" merge: {method}", " fusionar: {method}"), Style::new().add_modifier(Modifier::BOLD))];
+                    if i == 0 && p.preferred_method == Some(m) {
+                        spans.push(Span::styled(tr!("  last used here", "  el último usado aquí"), Style::new().fg(DIM)));
+                    }
+                    fit(spans, width)
+                })
+                .collect();
+            out.push(hint(vec![
+                keycap("r"),
+                Span::styled(tr!(" request changes  ", " pedir cambios  "), Style::new().fg(SOFT)),
+                keycap("w"),
+                Span::styled(" GitHub  ", Style::new().fg(SOFT)),
+                keycap("x"),
+                Span::styled(tr!(" set aside", " apartar"), Style::new().fg(SOFT)),
+            ]));
+            out
+        }
         Item::Q(q) => {
             let mut out: Vec<Line> = q
                 .options
@@ -525,6 +605,7 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let id = match &item {
         Item::Q(q) => format!("#{}", q.id),
         Item::R(r) => format!("#{}", r.id),
+        Item::P(p) => format!("#{}", p.pr.number),
     };
     let mut block = panel(Line::from(vec![Span::raw(" "), Span::styled(kind, Style::new().fg(color).bold()), Span::styled(format!(" {id} "), Style::new().fg(DIM))]), app.focus == Pane::Detail);
     let inner = block.clone().inner(area);
@@ -796,6 +877,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     let still_open = match r.key {
         Key::Q(id) => app.data.open_questions.iter().any(|q| q.id == id),
         Key::R(id) => app.data.news.iter().any(|x| x.id == id),
+        Key::P(id) => app.data.prs.iter().any(|x| x.pr.id == id),
     };
     let mut title = vec![
         Span::raw(" "),
@@ -985,6 +1067,10 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
             let t = md::one_line(title);
             trf!("Reply to #{id} · {t}", "Responder a #{id} · {t}")
         }
+        Target::PrChanges { title, .. } => {
+            let t = md::one_line(title);
+            trf!("{t} · what should change?", "{t} · ¿qué hay que cambiar?")
+        }
         Target::MoreContext { id, title } => {
             let t = md::one_line(title);
             trf!("#{id} {t} · what do you need to know? (optional)", "#{id} {t} · ¿qué te falta saber? (opcional)")
@@ -1057,6 +1143,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 v.push(k("s", tr!("send to node", "enviar al nodo")));
                 v.push(k("x", tr!("mark read", "leído")));
             }
+            (None, Key::P(_)) => v.push(k("s", tr!("request changes", "pedir cambios"))),
         }
         v.push(k("Esc/o", tr!("back", "volver")));
         return v;
@@ -1099,6 +1186,12 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         }
         Some(Item::R(_)) => {
             let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído")), k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))];
+            v.extend(tail);
+            v
+        }
+        Some(Item::P(p)) => {
+            let n = p.methods().len();
+            let mut v = vec![pane, k(&format!("1-{n}"), tr!("merge", "fusionar")), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }

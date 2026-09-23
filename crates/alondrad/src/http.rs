@@ -56,6 +56,9 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
         .route("/v1/activity", post(activity))
+        .route("/v1/prs/{id}/merge", post(merge_pr))
+        .route("/v1/prs/{id}/changes", post(request_pr_changes))
+        .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/file", get(file))
         .layer(Extension(auth))
         .layer(Extension(push))
@@ -147,6 +150,11 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         eprintln!("alondrad: hook lost: {e}");
         return Json(json!({})).into_response();
+    }
+    if event == "PostToolUse"
+        && p.pointer("/tool_input/command").and_then(Value::as_str).is_some_and(|c| c.contains("gh pr create"))
+    {
+        note_prs(&hub, &session_id, &[p.get("tool_response").map(Value::to_string).unwrap_or_default()]);
     }
     if event == "Stop" {
         let user = hub.config.name.clone();
@@ -415,6 +423,99 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
     }
 }
 
+/// Every pull request a node mentions gets its card, once.
+fn note_prs(hub: &Hub, session_id: &str, texts: &[String]) {
+    for url in texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)) {
+        if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
+            eprintln!("alondrad: could not record a PR: {e}");
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MergeBody {
+    method: alondra_core::pr::MergeMethod,
+}
+
+async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MergeBody>) -> Response {
+    let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    if pr.state != alondra_core::pr::PrState::Open {
+        return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
+    }
+    if !pr.merge_methods.is_empty() && !pr.merge_methods.contains(&b.method) {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("{} does not allow {}", pr.repo, b.method.label()));
+    }
+    let merged = tokio::time::timeout(
+        Duration::from_secs(90),
+        tokio::process::Command::new("gh").args(["pr", "merge", &pr.url, b.method.flag()]).kill_on_drop(true).output(),
+    )
+    .await;
+    match merged {
+        Ok(Ok(out)) if out.status.success() => {}
+        Ok(Ok(out)) => return err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, e.to_string()),
+        Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr merge did not finish within 90 s"),
+    }
+    let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
+    eprintln!("alondrad: {} merged by {} from {who}", pr.url, hub.config.name);
+    if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
+        return internal(e);
+    }
+    let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
+    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra);
+    Json(json!({"id": id, "merged": true})).into_response()
+}
+
+#[derive(Deserialize)]
+struct ChangesBody {
+    text: String,
+}
+
+async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ChangesBody>) -> Response {
+    let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    if b.text.trim().is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to change");
+    }
+    let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
+    match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
+        Ok(to) => Json(json!({"id": id, "sent_to": to})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// A message about a PR goes to the node that opened it, or to the orchestrator once that node is gone.
+fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom) -> anyhow::Result<String> {
+    let res = hub.append_with(|v| {
+        let node = v.nodes.get(&pr.session_id).filter(|n| n.alive || n.in_daemon);
+        let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
+        Some(Event::MessageQueued(Message {
+            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            session_id: to.session_id.clone(),
+            from,
+            text: text.clone(),
+            answers_question: None,
+            created_at: now_millis(),
+            handed_at: None,
+            delivered_at: None,
+        }))
+    })?;
+    match res {
+        Some((_, Event::MessageQueued(m))) => Ok(m.session_id),
+        _ => anyhow::bail!("neither the node nor an orchestrator is there to receive it"),
+    }
+}
+
+async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+    match hub.append(Event::PrDismissed { id }) {
+        Ok(_) => Json(json!({"id": id})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
 #[derive(Deserialize)]
 struct ActivityBody {
     client: String,
@@ -461,6 +562,11 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
+            "prs": crate::prs::open(v).map(|p| {
+                let mut value = serde_json::to_value(p).unwrap_or(Value::Null);
+                value["preferred_method"] = serde_json::to_value(v.merge_methods.get(&p.repo)).unwrap_or(Value::Null);
+                value
+            }).collect::<Vec<Value>>(),
             "user": hub.config.name,
         })
     });
@@ -634,7 +740,12 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
         }))
     });
     match res {
-        Ok(Some((_, Event::QuestionAsked(q)))) => Json(json!({"id": q.id})).into_response(),
+        Ok(Some((_, Event::QuestionAsked(q)))) => {
+            let mut texts: Vec<String> = q.links.iter().map(|l| l.url.clone()).collect();
+            texts.push(q.detail.clone().unwrap_or_default());
+            note_prs(&hub, &q.session_id, &texts);
+            Json(json!({"id": q.id})).into_response()
+        }
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
         Err(e) => internal(e),
     }
@@ -867,7 +978,12 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         }))
     });
     match res {
-        Ok(Some((_, Event::ReportPosted(r)))) => Json(json!({"id": r.id})).into_response(),
+        Ok(Some((_, Event::ReportPosted(r)))) => {
+            let mut texts: Vec<String> = r.links.iter().map(|l| l.url.clone()).collect();
+            texts.extend([r.title.clone(), r.body.clone().unwrap_or_default()]);
+            note_prs(&hub, &r.session_id, &texts);
+            Json(json!({"id": r.id})).into_response()
+        }
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
         Err(e) => internal(e),
     }
