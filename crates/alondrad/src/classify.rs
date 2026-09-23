@@ -23,7 +23,7 @@ pub fn spawn_if_unclear(hub: &Arc<Hub>, session_id: &str) {
                     .join(". ");
                 (!joined.trim().is_empty() && joined.trim() != "stopped").then_some(joined)
             };
-            (n.state == NodeState::Unclear && n.classified.is_none()).then_some((n.turn, text))
+            (n.state == NodeState::Unclear && n.classified.is_none() && !n.is_orchestrator).then_some((n.turn, text))
         })
     });
     let Some((turn, Some(message))) = target else { return };

@@ -388,6 +388,9 @@ pub fn derive(node: &Node, open_blocking_question: bool) -> (NodeState, StateSou
         Some(TurnSignal::Asked) => return (NodeState::Working, hooks_or_daemon),
         None => {}
     }
+    if node.is_orchestrator {
+        return (NodeState::Delivered, hooks_or_daemon);
+    }
     if !node.has_plugin && node.daemon_needs.as_deref().is_some_and(|n| !n.trim().is_empty()) {
         return (NodeState::WaitingAnswer, StateSource::Daemon);
     }
@@ -768,5 +771,16 @@ mod tests {
         v.questions.insert(4, q(4, QuestionStatus::Delivered, 9000));
         v.apply(2, 10_000, &Event::Pruned { before: 5000 });
         assert_eq!(v.questions.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn the_orchestrator_only_waits_on_david_through_a_real_question() {
+        let mut n = Node::new("o", 0);
+        n.is_orchestrator = true;
+        n.has_plugin = true;
+        n.turn = 3;
+        n.classified = Some(crate::model::Classification { state: NodeState::WaitingAnswer, turn: 3, confidence: Some(0.95) });
+        assert_eq!(derive(&n, false).0, NodeState::Delivered);
+        assert_eq!(derive(&n, true).0, NodeState::WaitingAnswer);
     }
 }
