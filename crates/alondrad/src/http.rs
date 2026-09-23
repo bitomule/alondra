@@ -583,7 +583,18 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
     let body = hub.read(|v| {
         let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
         nodes.sort_by_key(|n| (!n.is_orchestrator, n.state, std::cmp::Reverse(n.last_seen)));
-        let open: Vec<&Question> = v.questions.values().filter(|q| q.status.is_open()).collect();
+        let open: Vec<Value> = v
+            .questions
+            .values()
+            .filter(|q| q.status.is_open())
+            .map(|q| {
+                let mut value = serde_json::to_value(q).unwrap_or(Value::Null);
+                if let Some(pr) = v.question_pr(q) {
+                    value["pr_id"] = json!(pr);
+                }
+                value
+            })
+            .collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
         let news: Vec<&Report> = v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress).collect();
@@ -736,41 +747,7 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
             format!("A question needs a one-line title and a detail with all the context {} needs to answer without asking you anything.", hub.config.name),
         );
     }
-    if let Some(urls) = merge_question_prs(&b) {
-        if let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) {
-            note_prs(&hub, &sid, &urls);
-        }
-        let user = &hub.config.name;
-        return err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!(
-                "{} has its own card in Alondra, where {user} merges it, requests changes or sets it aside, and what {user} does is typed into this session. Do not ask about merging it: end your turn. Ask only about something that card does not cover.",
-                urls.join(", ")
-            ),
-        );
-    }
     record_question(hub, b, false)
-}
-
-/// The PRs a question asks to merge: it names a PR (in links or detail) and talks about merging
-/// it in its title or options. The PR card already asks exactly that.
-fn merge_question_prs(b: &AskBody) -> Option<Vec<String>> {
-    if b.to_orchestrator {
-        return None;
-    }
-    let mut texts: Vec<&str> = b.links.iter().map(|l| l.url.as_str()).collect();
-    texts.extend(b.detail.as_deref());
-    let mut urls: Vec<String> = texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)).collect();
-    urls.dedup();
-    let labels = b.options.iter().map(|o| match o {
-        OptionIn::Label(l) => l.as_str(),
-        OptionIn::Full(o) => o.label.as_str(),
-    });
-    let about_merging = std::iter::once(b.title.as_str()).chain(labels).any(|t| {
-        let t = t.to_lowercase();
-        ["merge", "fusion", "fusión"].iter().any(|w| t.contains(w))
-    });
-    (about_merging && !urls.is_empty()).then_some(urls)
 }
 
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
@@ -791,6 +768,11 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
+    if let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) {
+        let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
+        texts.extend(b.detail.clone());
+        note_prs(&hub, &sid, &texts);
+    }
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         let ctx = v.nodes.get(&sid).and_then(|n| n.tool.as_ref().map(|t| format!("{} {}", t.name, t.summary.clone().unwrap_or_default())).or(n.last_message.clone()));
@@ -817,12 +799,7 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
         }))
     });
     match res {
-        Ok(Some((_, Event::QuestionAsked(q)))) => {
-            let mut texts: Vec<String> = q.links.iter().map(|l| l.url.clone()).collect();
-            texts.push(q.detail.clone().unwrap_or_default());
-            note_prs(&hub, &q.session_id, &texts);
-            Json(json!({"id": q.id})).into_response()
-        }
+        Ok(Some((_, Event::QuestionAsked(q)))) => Json(json!({"id": q.id})).into_response(),
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
         Err(e) => internal(e),
     }
@@ -1528,33 +1505,6 @@ mod tests {
         assert_eq!(withdraw_refusal(7, None, None).map(|r| r.0), Some(StatusCode::NOT_FOUND));
         open.status = QuestionStatus::Answered;
         assert_eq!(withdraw_refusal(7, Some(&open), Some(Some("mine"))).map(|r| r.0), Some(StatusCode::CONFLICT));
-    }
-
-    #[test]
-    fn asking_to_merge_a_pr_is_left_to_its_card() {
-        let body = |title: &str, options: &[&str], link: Option<&str>, detail: &str, to_orchestrator: bool| AskBody {
-            caller: Caller { session_id: Some("s".into()), pids: vec![] },
-            title: title.into(),
-            detail: Some(detail.into()),
-            options: options.iter().map(|o| OptionIn::Label(o.to_string())).collect(),
-            links: link.map(|u| vec![Link { url: u.into(), title: None }]).unwrap_or_default(),
-            attachments: vec![],
-            blocking: true,
-            to_orchestrator,
-            steps: vec![],
-        };
-        let pr = "https://github.com/a/b/pull/25";
-        let cases = [
-            ("merge in the title, PR linked", body("PR #25 ready: ¿lo fusiono y despliego?", &["Sí", "No"], Some(pr), "details", false), true),
-            ("merge in an option, PR in the detail", body("PR #25 ready", &["Fusiona tú y despliega", "Lo reviso"], None, &format!("See {pr}"), false), true),
-            ("English merge", body("Merge PR #25?", &[], Some(pr), "details", false), true),
-            ("about a PR, not about merging", body("Which approach for the cache?", &["A", "B"], Some(pr), "Context in the PR", false), false),
-            ("about merging, no PR named", body("¿Fusiono las dos ramas?", &["Sí"], None, "local branches", false), false),
-            ("to the orchestrator", body("Merge PR #25?", &[], Some(pr), "details", true), false),
-        ];
-        for (what, b, refused) in cases {
-            assert_eq!(merge_question_prs(&b).is_some(), refused, "{what}");
-        }
     }
 
     #[test]
