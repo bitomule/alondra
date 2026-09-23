@@ -189,7 +189,7 @@ impl View {
         node.has_plugin = true;
         node.alive = true;
         node.last_seen = at;
-        if h.cwd.is_some() {
+        if h.cwd.is_some() && (!node.in_daemon || node.cwd.is_none()) {
             node.cwd = h.cwd.clone();
         }
         match h.event.as_str() {
@@ -683,6 +683,24 @@ mod tests {
         n.cwd = None;
         n.name = Some("hive/servidor".into());
         assert_eq!(n.project(), "hive");
+        n.is_orchestrator = true;
+        n.cwd = Some("/Users/d/Projects/Lumo".into());
+        assert_eq!(n.project(), "orquestador");
+    }
+
+    #[test]
+    fn a_background_node_keeps_its_launch_folder_when_it_runs_commands_elsewhere() {
+        let mut v = View::default();
+        v.apply(1, 1000, &Event::DaemonSeen(DaemonObservation {
+            session_id: "s".into(),
+            short_id: "s".into(),
+            cwd: Some("/Users/d/Projects".into()),
+            ..Default::default()
+        }));
+        let mut h = HookEvent { session_id: "s".into(), event: "PreToolUse".into(), ..Default::default() };
+        h.cwd = Some("/Users/d/Projects/Lumo".into());
+        v.apply(2, 2000, &Event::Hook(h));
+        assert_eq!(v.nodes["s"].cwd.as_deref(), Some("/Users/d/Projects"));
     }
 
     #[test]

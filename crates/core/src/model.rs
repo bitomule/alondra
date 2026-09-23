@@ -126,6 +126,9 @@ impl Node {
     }
 
     pub fn project(&self) -> String {
+        if self.is_orchestrator {
+            return "orquestador".to_string();
+        }
         if let Some(cwd) = &self.cwd
             && let Some(rest) = cwd.split("/Projects/").nth(1)
             && let Some(first) = rest.split('/').next()
