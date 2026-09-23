@@ -1,4 +1,4 @@
-load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extension")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
@@ -51,6 +51,25 @@ ios_application(
     infoplists = ["iOS/Info.plist"],
     minimum_os_version = "26.0",
     version = ":Version",
+    extensions = [":AlondraNotificationService"],
     visibility = ["//visibility:public"],
     deps = [":AlondraiOSEntry"],
+)
+
+swift_library(
+    name = "AlondraNotificationServiceLib",
+    srcs = glob(["iOSNotificationService/Sources/**/*.swift"]),
+    module_name = "AlondraNotificationService",
+)
+
+ios_extension(
+    name = "AlondraNotificationService",
+    bundle_id = "com.bitomule.alondra.NotificationService",
+    bundle_name = "AlondraNotificationService",
+    families = ["iphone"],
+    infoplists = ["iOSNotificationService/Info.plist"],
+    minimum_os_version = "26.0",
+    provisioning_profile = "//signing:Alondra_NotificationService_Development.mobileprovision",
+    version = ":Version",
+    deps = [":AlondraNotificationServiceLib"],
 )

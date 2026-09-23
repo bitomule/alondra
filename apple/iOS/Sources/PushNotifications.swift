@@ -41,6 +41,8 @@ enum NotificationCategory {
     static let approve = "APPROVE"
     static let review = "REVIEW"
     static let markRead = "READ"
+    static let optionPrefix = "OPT:"
+    static let questionPrefix = "ALONDRA_Q_"
 
     static var all: Set<UNNotificationCategory> {
         [
@@ -268,6 +270,10 @@ final class PushCenter {
             await send(response) { try await $0.answer(item.id, text: "Aprobar", option: "Aprobar") }
         case NotificationCategory.markRead:
             await send(response) { try await $0.markRead(item.id) }
+        case let action where action.hasPrefix(NotificationCategory.optionPrefix):
+            let label = String(action.dropFirst(NotificationCategory.optionPrefix.count))
+            guard !label.isEmpty else { return }
+            await send(response) { try await $0.answer(item.id, text: label, option: label) }
         default:
             return
         }

@@ -2,7 +2,7 @@ BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 PLIST := $(HOME)/Library/LaunchAgents/com.bitomule.alondra.plist
 
-.PHONY: build test install run tui launchd unlaunchd status cargo-test mac
+.PHONY: build test install run tui launchd unlaunchd restart status cargo-test mac
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -28,6 +28,9 @@ tui:
 
 status:
 	$(BIN)/alondra status
+
+restart:
+	launchctl kickstart -k gui/$$(id -u)/com.bitomule.alondra
 
 launchd: install
 	sed -e 's|@BIN@|$(BIN)|g' -e 's|@HOME@|$(HOME)|g' -e 's|@PLUGIN@|$(PLUGIN)|g' launchd/com.bitomule.alondra.plist.in > $(PLIST)

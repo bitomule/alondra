@@ -28,7 +28,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let center = UNUserNotificationCenter.current()
         center.delegate = responder
-        center.setNotificationCategories(NotificationCategory.all)
+        Task {
+            let questions = await center.notificationCategories().filter { $0.identifier.hasPrefix(NotificationCategory.questionPrefix) }
+            center.setNotificationCategories(NotificationCategory.all.union(questions))
+        }
         return true
     }
 
