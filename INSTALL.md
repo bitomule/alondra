@@ -31,11 +31,12 @@ Run every command from the root of this repo unless a step says otherwise.
   jevi (step 2).
 - Claude Code with background sessions (`claude --bg`), logged in.
 - `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in, with access to
-  `bitomule/alondra` and `bitomule/jevi`), `jq`.
+  `bitomule/alondra` and `bitomule/jevi`), `jq`, and `tuicr` 0.26 or later (the TUI opens a
+  PR's diff in it; `alondra setup` installs it if it is missing).
 
 ```bash
 xcode-select --install 2>/dev/null; sudo xcodebuild -license accept
-brew install bazelisk tmux gh jq
+brew install bazelisk tmux gh jq tuicr
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # only for jevi
 . "$HOME/.cargo/env"
 ```
@@ -44,7 +45,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # only
 
 ```bash
 uname -m; sw_vers -productVersion; xcodebuild -version | head -1; xcode-select -p
-bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version
+bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version; tuicr --version
 claude --version; claude --help | grep -c -- '--bg'; cargo --version
 gh repo view bitomule/jevi --json name -q .name
 ```
@@ -145,7 +146,7 @@ alondra config; curl -s http://127.0.0.1:47800/v1/health | jq .config; alondra d
 
 **Success:** `alondra config` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
 answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`, `launchd`,
-`claude`, `plugin`, `tmux`, `jevi`, `jevi key`, `jevi ask`. Expected at this point: `!` for
+`claude`, `plugin`, `tmux`, `jevi`, `jevi key`, `jevi ask`, `tuicr`. Expected at this point: `!` for
 `apns` (step 5) and `pairing` (step 6). New Claude Code sessions pick up the plugin; already
 open ones do not.
 
