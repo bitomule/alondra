@@ -16,6 +16,8 @@ tools for the orchestrator to act.
 
 ## Trying it
 
+On a new Mac, follow [`INSTALL.md`](INSTALL.md) (written for an agent to execute).
+
 ```bash
 make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
 alondra setup       # config.toml, launchd service, plugin and iPhone pairing (--help, --dry-run)

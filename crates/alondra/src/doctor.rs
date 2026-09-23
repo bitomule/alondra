@@ -184,7 +184,7 @@ pub fn jevi_checks() -> Vec<Check> {
         return vec![check("jevi", Status::Fail, tr!("jevi is not on PATH", "jevi no está en el PATH"), install)];
     };
     let version = version.trim().to_string();
-    let set_key = tr!("jevi config set-key < file-with-your-OpenRouter-key", "jevi config set-key < fichero-con-tu-clave-de-OpenRouter");
+    let set_key = tr!("pbpaste | jevi config set-key openrouter", "pbpaste | jevi config set-key openrouter");
     let mut out = vec![check("jevi", Status::Pass, version, "")];
     match output("jevi", &["doctor"], Duration::from_secs(10)) {
         Some((_, text)) if jevi_doctor_has_key(&text) => out.push(check("jevi key", Status::Pass, tr!("jevi has a key", "jevi tiene clave"), "")),

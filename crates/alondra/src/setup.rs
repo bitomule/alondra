@@ -91,7 +91,7 @@ impl Paths {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Observed {
     pub config: Option<String>,
     pub apns: Option<String>,
@@ -172,7 +172,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
     } else {
         steps.push(Step::Write { path: paths.config(), contents: merged.render(), private: false });
     }
-    let config_changed = !matches!(steps.last(), Some(Step::Unchanged { .. }));
+    let mut restart = !matches!(steps.last(), Some(Step::Unchanged { .. }));
 
     match (apns, seen.apns.as_deref()) {
         (Some(a), existing) => {
@@ -188,6 +188,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 conflicts.push(format!("{}: {} (--force)", paths.apns().display(), tr!("already exists with other values", "ya existe con otros valores")));
             } else {
                 steps.push(Step::Write { path: paths.apns(), contents: text, private: true });
+                restart = true;
             }
         }
         (None, None) => steps.push(Step::Warn(
@@ -232,7 +233,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 steps.push(run(&["bootout", &target]));
             }
             steps.push(run(&["bootstrap", &domain, &plist_path.display().to_string()]));
-        } else if seen.binaries && config_changed {
+        } else if seen.binaries && restart {
             steps.push(run(&["kickstart", "-k", &target]));
         }
     }
@@ -676,6 +677,12 @@ mod tests {
             ..fresh()
         };
         let p = plan(&FileConfig { public_url: Some("https://x.example".into()), ..Default::default() }, None, &Args::default(), &paths(), &seen);
+        assert_eq!(runs(&p), vec!["launchctl kickstart -k gui/501/dev.alondra.alondrad"]);
+
+        let apns = Apns { key_path: "/k.p8".into(), key_id: "K".into(), team_id: "T".into(), topic: "a.b".into() };
+        let settled = Observed { config: Some(FileConfig { wake: Some(true), ..named("Ana") }.render()), apns_key_exists: true, ..seen.clone() };
+        assert!(runs(&plan(&FileConfig::default(), None, &Args::default(), &paths(), &settled)).is_empty());
+        let p = plan(&FileConfig::default(), Some(&apns), &Args::default(), &paths(), &settled);
         assert_eq!(runs(&p), vec!["launchctl kickstart -k gui/501/dev.alondra.alondrad"]);
 
         let seen = Observed { plist: Some("old".into()), ..seen };
