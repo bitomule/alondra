@@ -195,18 +195,21 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
     let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working && n.alive).count();
-    let gb = m.memory_available as f64 / 1_073_741_824.0;
-    let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{gb:.1} GB free", "{gb:.1} GB libres"));
-    let warn = if m.unreliable { " ⚠" } else { "" };
-    let cpu = m.cpu_usage.round();
-    let machine = trf!("{working} working · memory {mem} · CPU {cpu}%{warn} ", "{working} trabajando · memoria {mem} · CPU {cpu}%{warn} ");
-    let mut right = vec![];
-    if let Some(u) = &app.data.usage {
-        let style = if u.over_pace { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
-        right.push(Span::styled(usage_text(u), style));
-        right.push(Span::styled(" · ", Style::new().fg(DIM)));
+    let mut right = vec![Span::styled(trf!("{working} working ", "{working} trabajando "), Style::new().fg(DIM))];
+    for r in readings(m, app.data.usage.as_ref()) {
+        let color = match r.level {
+            Level::Calm => ACCENT,
+            Level::Warm => Color::Yellow,
+            Level::Hot => Color::LightRed,
+        };
+        let filled = ((r.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
+        right.push(Span::raw(" "));
+        right.push(Span::styled("▰".repeat(filled), Style::new().fg(color)));
+        right.push(Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)));
+        let label_style = if r.level == Level::Hot { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
+        right.push(Span::styled(format!(" {}", r.label), label_style));
     }
-    right.push(Span::styled(machine, Style::new().fg(DIM)));
+    right.push(Span::raw(" "));
     let lw: usize = left.iter().map(Span::width).sum();
     let rw: usize = right.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
@@ -215,15 +218,42 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-pub(super) fn usage_text(u: &alondra_core::usage::Usage) -> String {
-    let week = u.week_percent.round();
-    match u.today_spent.zip(u.today_share) {
-        Some((spent, share)) => {
-            let (spent, share) = (spent.round(), share.round());
-            trf!("week {week}% · today {spent}/{share}%", "semana {week}% · hoy {spent}/{share}%")
+const BAR_CELLS: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Level {
+    Calm,
+    Warm,
+    Hot,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct Reading {
+    pub value: f64,
+    pub label: String,
+    pub level: Level,
+}
+
+/// The header bars, always in this order: the week's Claude usage, today against its share of
+/// the week, memory in use and CPU in use. `?` explains them.
+pub(super) fn readings(m: &alondra_core::Machine, u: Option<&alondra_core::usage::Usage>) -> Vec<Reading> {
+    let mut out = vec![];
+    if let Some(u) = u {
+        out.push(Reading { value: u.week_percent / 100.0, label: format!("{}%", u.week_percent.round()), level: if u.week_percent >= 85.0 { Level::Hot } else { Level::Calm } });
+        if let Some((spent, share)) = u.today_spent.zip(u.today_share) {
+            let level = if u.over_pace { Level::Hot } else if spent >= share * 0.75 { Level::Warm } else { Level::Calm };
+            out.push(Reading { value: spent / share.max(0.1), label: format!("{}/{}%", spent.round(), share.round()), level });
         }
-        None => trf!("week {week}%", "semana {week}%"),
     }
+    if let Some(free) = m.memory_free_percent {
+        let used = 100 - free.min(100);
+        let level = if free < 15 { Level::Hot } else if free < 30 { Level::Warm } else { Level::Calm };
+        out.push(Reading { value: used as f64 / 100.0, label: format!("{used}%"), level });
+    }
+    let cpu = m.cpu_usage as f64;
+    let level = if m.unreliable { Level::Hot } else if cpu >= 85.0 { Level::Warm } else { Level::Calm };
+    out.push(Reading { value: cpu / 100.0, label: format!("{}%", cpu.round()), level });
+    out
 }
 
 fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1132,6 +1162,12 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("Esc", tr!("back: close, collapse or leave the detail pane", "volver: cerrar, plegar o salir del panel de detalle")),
         row(":", tr!("command line: :q  :help  :inbox  :fleet  :<number>", "línea de órdenes: :q  :help  :inbox  :fleet  :<número>")),
         Line::default(),
+        section(tr!("Bars in the header, left to right", "Barras de la cabecera, de izquierda a derecha")),
+        row(tr!("week", "semana"), tr!("Claude's weekly limit used; it turns red past 85%", "límite semanal de Claude usado; en rojo pasado el 85%")),
+        row(tr!("today", "hoy"), tr!("today's spend / today's share of the week; red when over it (no launches without asking)", "gastado hoy / lo que te toca hoy de la semana; en rojo si te pasas (no se lanzan nodos sin preguntarte)")),
+        row(tr!("memory", "memoria"), tr!("the Mac's memory in use", "memoria del Mac en uso")),
+        row("CPU", tr!("the Mac's CPU in use; red when the load is too high to trust the readings", "CPU del Mac en uso; en rojo si la carga es tan alta que las lecturas no son fiables")),
+        Line::default(),
         section(tr!("Inbox", "Bandeja")),
         row("1-9", tr!("choose one of the question's options", "elegir una opción de la pregunta")),
         row("r", tr!("reply in your own words", "responder con tus palabras")),
@@ -1227,14 +1263,18 @@ mod tests {
     }
 
     #[test]
-    fn the_header_shows_the_week_and_today_against_its_slice() {
+    fn the_header_shows_week_today_memory_and_cpu_as_bars() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
+        app.data.machine.memory_free_percent = Some(56);
+        app.data.machine.cpu_usage = 34.0;
         app.data.usage = Some(alondra_core::usage::Usage { week_percent: 53.0, today_spent: Some(41.0), today_share: Some(17.6), per_day_left: 9.0, over_pace: true, ..Default::default() });
         let s = screen(&mut app, 160, 20);
-        assert!(s.contains("week 53% · today 41/18%"), "{s}");
-        app.data.usage = Some(alondra_core::usage::Usage { week_percent: 53.0, ..Default::default() });
-        assert!(screen(&mut app, 160, 20).contains("week 53% ·"));
+        assert!(s.contains("▰▰▱▱ 53% ▰▰▰▰ 41/18% ▰▰▱▱ 44% ▰▱▱▱ 34%"), "{s}");
+        let r = readings(&app.data.machine, app.data.usage.as_ref());
+        assert_eq!(r.iter().map(|r| r.level).collect::<Vec<_>>(), [Level::Calm, Level::Hot, Level::Calm, Level::Calm]);
+        app.data.usage = None;
+        assert!(screen(&mut app, 160, 20).contains("▰▰▱▱ 44% ▰▱▱▱ 34%"));
     }
 
     #[test]

@@ -343,10 +343,16 @@ struct MachineBadge: View {
                 .shadow(color: dotColor.opacity(0.8), radius: 4)
             Image(systemName: "desktopcomputer")
                 .font(.footnote)
-            if let free = fleet.machine?.memoryFreePercent {
-                Text(verbatim: "\(free) %")
-                    .font(.footnote.monospacedDigit().weight(.medium))
-                    .contentTransition(.numericText())
+            if let machine = fleet.machine {
+                ForEach(StatusReadings.of(machine: machine, usage: fleet.usage)) { reading in
+                    HStack(spacing: 3) {
+                        ReadingBar(value: reading.value, tint: reading.level.tint)
+                        Text(verbatim: reading.label)
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(reading.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
+                            .contentTransition(.numericText())
+                    }
+                }
             }
         }
         .foregroundStyle(Palette.ink.opacity(0.65))
@@ -358,6 +364,32 @@ struct MachineBadge: View {
         case .online: fleet.machine?.unreliable == true ? Palette.dawn : Palette.sage
         case .connecting: Palette.slate
         case .offline, .unpaired: Palette.rose
+        }
+    }
+}
+
+private struct ReadingBar: View {
+    let value: Double
+    let tint: Color
+
+    var body: some View {
+        Capsule()
+            .fill(Palette.ink.opacity(0.15))
+            .frame(width: 22, height: 4)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(tint)
+                    .frame(width: 22 * max(0.06, min(value, 1)))
+            }
+    }
+}
+
+private extension StatusReading.Level {
+    var tint: Color {
+        switch self {
+        case .calm: Palette.sky
+        case .warm: Palette.dawn
+        case .hot: Palette.rose
         }
     }
 }
@@ -378,24 +410,15 @@ private struct MachineDetail: View {
                 Label("This device is not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
             case .online:
                 if let machine = fleet.machine {
-                    row(String(localized: "Free memory"), machine.memoryFreePercent.map { "\($0) %" } ?? "—")
-                    row(String(localized: "Available memory"), ByteCountFormatter.string(fromByteCount: Int64(machine.memoryAvailable), countStyle: .memory))
-                    if let cpu = machine.cpuUsage {
-                        row(String(localized: "CPU in use"), "\(Int(cpu.rounded())) %")
-                    }
-                    row(String(localized: "Load average"), (machine.load.first ?? 0).formatted(.number.precision(.fractionLength(1))) + (machine.cpus.map { " · " + String(localized: "\($0) cores") } ?? ""))
-                    row(String(localized: "Free disk"), ByteCountFormatter.string(fromByteCount: Int64(machine.diskAvailable), countStyle: .file))
-                    if machine.unreliable {
-                        Label("Unreliable readings", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(Palette.dawn)
-                    }
-                    if let usage = fleet.usage {
-                        row(String(localized: "Claude usage"), usage.summary)
-                        if usage.isOverPace {
-                            Label("Today is over its share of the week", systemImage: "gauge.with.dots.needle.100percent")
-                                .foregroundStyle(Palette.rose)
+                    ForEach(StatusReadings.of(machine: machine, usage: fleet.usage)) { reading in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            ReadingBar(value: reading.value, tint: reading.level.tint)
+                            Text(reading.help)
+                                .foregroundStyle(reading.level == .hot ? Palette.rose : Palette.ink)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    row(String(localized: "Free disk"), ByteCountFormatter.string(fromByteCount: Int64(machine.diskAvailable), countStyle: .file))
                 }
             }
         }
