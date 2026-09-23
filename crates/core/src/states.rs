@@ -31,6 +31,8 @@ pub const BACKGROUND_TASK_FRESH_MS: Millis = 120 * MINUTE;
 /// A declared wait for the machine lapses when nothing happens for this long and the machine
 /// is fine.
 pub const MACHINE_WAIT_QUIET_MS: Millis = 20 * MINUTE;
+/// After David types into a node's terminal, he counts as watching it for this long.
+pub const WATCH_WINDOW_MS: Millis = 10 * MINUTE;
 /// A usage limit (StopFailure) keeps the node waiting for this long at most.
 pub const USAGE_LIMIT_WAIT_MS: Millis = 5 * 60 * MINUTE;
 
@@ -181,7 +183,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         _ => {}
     }
 
-    let undeclared = node.watched() && node.has_plugin && node.turn_signal.is_none() && node.last_work_at.is_some() && !talking_with_user(view, node);
+    let undeclared = node.watched() && node.has_plugin && node.turn_signal.is_none() && node.last_work_at.is_some() && !watching(view, node, now);
     f.add(Signal::TurnEndedUndeclared, node.last_stop_at.filter(|stop| undeclared && *stop >= node.episode_since));
 
     f.add(Signal::NoProcess, (!node.alive).then_some(node.last_seen));
@@ -297,6 +299,12 @@ pub fn talking_with_user(v: &View, node: &Node) -> bool {
     !typed_by_alondra
 }
 
+/// David is handling the node himself: a terminal is attached to it, or he typed into it a
+/// moment ago. While that lasts the node raises nothing in Alondra.
+pub fn watching(v: &View, node: &Node, now: Millis) -> bool {
+    node.attached || (talking_with_user(v, node) && node.last_prompt_at.is_some_and(|at| now - at <= WATCH_WINDOW_MS))
+}
+
 pub const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
 const STALLED_PREFIX: &str = "[Alondra] Stalled node";
 
@@ -309,7 +317,7 @@ pub enum StallMove {
 }
 
 pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
-    if node.state != NodeState::Stalled {
+    if node.state != NodeState::Stalled || node.attached {
         return None;
     }
     let orchestrator = || view.nodes.values().find(|n| n.is_orchestrator && n.alive);
@@ -609,6 +617,50 @@ mod tests {
 
         let v = run(&background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), None);
         assert_eq!(stall_move(&v, &v.nodes["s"]), None, "not stalled");
+    }
+
+    fn typed(text: &str) -> Event {
+        Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(text.into()), ..Default::default() })
+    }
+
+    fn attach(on: bool) -> Event {
+        Event::AttachChanged { session_id: "s".into(), attached: on }
+    }
+
+    #[test]
+    fn the_user_watches_a_node_while_attached_or_right_after_typing_into_it() {
+        let min = 60_000;
+        let [queued, handed] = message(MessageFrom::Alondra);
+        let cases: Vec<(&str, Vec<Event>, Millis, bool)> = vec![
+            ("a terminal attached", background(&[attach(true)]), 60 * min, true),
+            ("the terminal left", background(&[attach(true), attach(false)]), 0, false),
+            ("typed a moment ago", background(&[typed("what is left?"), hook("Stop")]), 5 * min, true),
+            ("typed 11 minutes ago", background(&[typed("what is left?"), hook("Stop")]), 11 * min, false),
+            ("the prompt was Alondra's", background(&[queued, handed, typed("go on"), hook("Stop")]), min, false),
+            ("nothing", background(&[hook("UserPromptSubmit"), hook("Stop")]), 0, false),
+        ];
+        for (what, events, later, expected) in cases {
+            let v = run(&events, None);
+            let at = T0 + (events.len() as Millis - 1) * 1000 + later;
+            assert_eq!(watching(&v, &v.nodes["s"], at), expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_watched_node_is_never_stalled_nor_handed_on_until_the_user_leaves() {
+        let min = 60_000;
+        let v = run(&background(&[typed("what is left?"), hook("Stop")]), Some((5 * min, false)));
+        assert_ne!(v.nodes["s"].state, NodeState::Stalled, "typed 5 min ago");
+        let v = run(&background(&[typed("what is left?"), hook("Stop")]), Some((11 * min, false)));
+        assert_eq!(v.nodes["s"].state, NodeState::Stalled, "left 11 min ago: back to Alondra");
+
+        let mut v = run(&background(&[hook("UserPromptSubmit"), call("Bash")]), Some((50 * min, false)));
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        v.apply(52, T0 + 50 * min, &attach(true));
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "a stuck call the user is looking at");
+        v.apply(53, T0 + 51 * min, &attach(false));
+        assert!(stall_move(&v, &v.nodes["s"]).is_some(), "after the user leaves");
     }
 
     #[test]

@@ -166,6 +166,9 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
             "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
     let only_parent_may_ask = h.agent_id.is_some() && event != "PermissionRequest";
+    if hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| states::watching(v, n, now_millis()))) {
+        return Json(json!({})).into_response();
+    }
     if !hub.hold_enabled || only_parent_may_ask || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
         return Json(json!({})).into_response();
     }
@@ -849,7 +852,10 @@ async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Resp
     if !hub.config.wake {
         return err(StatusCode::CONFLICT, "this alondrad does not touch node sessions (wake is off)");
     }
-    match tokio::task::spawn_blocking(move || crate::wake::interrupt(&short)).await {
+    let own = hub.own_attach(&short);
+    let outcome = tokio::task::spawn_blocking(move || crate::wake::interrupt(&short)).await;
+    drop(own);
+    match outcome {
         Ok(Ok(())) => Json(json!({"interrupted": key})).into_response(),
         Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e),
         Err(e) => internal(e.into()),

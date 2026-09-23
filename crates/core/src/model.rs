@@ -171,6 +171,10 @@ pub struct Node {
     #[serde(default)]
     pub last_prompt: Option<String>,
     #[serde(default)]
+    pub last_prompt_at: Option<Millis>,
+    #[serde(default)]
+    pub attached: bool,
+    #[serde(default)]
     pub mission: Option<String>,
     pub daemon_detail: Option<String>,
     pub daemon_needs: Option<String>,
@@ -234,6 +238,8 @@ impl Node {
             last_message: None,
             last_message_at: None,
             last_prompt: None,
+            last_prompt_at: None,
+            attached: false,
             mission: None,
             daemon_detail: None,
             daemon_needs: None,

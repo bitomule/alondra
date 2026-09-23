@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
@@ -16,6 +16,7 @@ pub struct Hub {
     machine: RwLock<Machine>,
     tick: watch::Sender<u64>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
+    own_attaches: Mutex<HashSet<String>>,
     pub home: PathBuf,
     pub config: Config,
     pub hold_enabled: bool,
@@ -36,6 +37,7 @@ impl Hub {
             machine: RwLock::new(Machine::default()),
             tick,
             holds: Mutex::new(HashMap::new()),
+            own_attaches: Mutex::new(HashSet::new()),
             home,
             config,
             hold_enabled,
@@ -70,6 +72,17 @@ impl Hub {
 
     pub fn append(&self, event: Event) -> Result<u64> {
         Ok(self.append_with(|_| Some(event))?.map(|(s, _)| s).unwrap_or(0))
+    }
+
+    /// Marks that Alondra itself is attached to a node (to type into it or press Esc), so that
+    /// attach is not taken for the user watching.
+    pub fn own_attach(&self, short: &str) -> OwnAttach<'_> {
+        self.own_attaches.lock().expect("attaches lock poisoned").insert(short.to_string());
+        OwnAttach { hub: self, short: short.to_string() }
+    }
+
+    pub fn is_own_attach(&self, short: &str) -> bool {
+        self.own_attaches.lock().expect("attaches lock poisoned").contains(short)
     }
 
     pub fn read<T>(&self, f: impl FnOnce(&View) -> T) -> T {
@@ -133,4 +146,15 @@ impl Hub {
         self.holds.lock().expect("holds lock poisoned").len()
     }
 
+}
+
+pub struct OwnAttach<'a> {
+    hub: &'a Hub,
+    short: String,
+}
+
+impl Drop for OwnAttach<'_> {
+    fn drop(&mut self) {
+        self.hub.own_attaches.lock().expect("attaches lock poisoned").remove(&self.short);
+    }
 }

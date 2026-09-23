@@ -79,6 +79,8 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             seen.insert(short, Seen { mtime, obs, recorded });
         }
 
+        mark_attaches(&hub);
+
         while let Ok((session_id, pid)) = exit_rx.try_recv() {
             registered.remove(&session_id);
             let _ = hub.append(Event::ProcessExited { session_id, pid });
@@ -92,6 +94,37 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             }
         }
     }
+}
+
+/// A `claude attach <id>` running on this Mac that Alondra did not open is the user watching
+/// that node. An attach from inside `claude agents` leaves no process and is not seen.
+fn mark_attaches(hub: &Hub) {
+    let Ok(out) = std::process::Command::new("/bin/ps").args(["-Ao", "command"]).output() else { return };
+    let attached = attached_shorts(&String::from_utf8_lossy(&out.stdout));
+    let changes: Vec<Event> = hub.read(|v| {
+        v.nodes
+            .values()
+            .filter_map(|n| {
+                let now = attached.contains(n.short_id.as_str()) && !hub.is_own_attach(&n.short_id);
+                (now != n.attached).then(|| Event::AttachChanged { session_id: n.session_id.clone(), attached: now })
+            })
+            .collect()
+    });
+    for e in changes {
+        let _ = hub.append(e);
+    }
+}
+
+fn attached_shorts(ps: &str) -> std::collections::HashSet<String> {
+    ps.lines()
+        .filter_map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let at = words.iter().position(|w| *w == "attach")?;
+            let program = words.get(at.checked_sub(1)?)?;
+            let is_claude = program.rsplit('/').next().is_some_and(|p| p == "claude" || p == "claude.exe");
+            is_claude.then(|| words.get(at + 1).map(|s| s.to_string())).flatten()
+        })
+        .collect()
 }
 
 fn reap_dead_on_start(hub: &Hub) {
@@ -256,6 +289,15 @@ fn parse_rfc3339_millis(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_claude_attach_processes_count_as_watching() {
+        let ps = "COMMAND\n/Users/d/.claude/local/claude attach 0100014c\nclaude.exe attach 91933d17\nvim attach 12345678\nclaude agents\ntmux new-session -d -s alondra-aa claude attach aa\n";
+        let shorts = attached_shorts(ps);
+        assert!(shorts.contains("0100014c") && shorts.contains("91933d17") && shorts.contains("aa"));
+        assert!(!shorts.contains("12345678"));
+        assert_eq!(shorts.len(), 3);
+    }
 
     #[test]
     fn parses_claude_timestamps() {
