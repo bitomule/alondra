@@ -180,9 +180,9 @@ fn needs_attention(v: &View, node: &Node) -> bool {
 fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
     let said = what_it_said(node);
     let title = match (expects, said.as_deref()) {
-        (Expects::Act, Some(text)) => format!("Your turn: {}", cap(last_line(text))),
+        (Expects::Act, Some(text)) => cap(last_line(text)),
         (_, Some(text)) => cap(last_question(text).unwrap_or_else(|| last_line(text))),
-        (_, None) => "The node is waiting for something and did not say what".to_string(),
+        (_, None) => node.name.clone().unwrap_or_else(|| node.short_id.clone()),
     };
     Question {
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
@@ -197,7 +197,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         origin: QuestionOrigin::Classifier,
         tool_use_id: Some(key(node)),
         to_orchestrator: false,
-        node_context: Some("The node asked in its terminal, not with an Alondra question".into()),
+        node_context: None,
         status: QuestionStatus::Open,
         answer: None,
         asked_at: now_millis(),
@@ -210,7 +210,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone(),
-        title: format!("Looks finished: {}", cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no summary"))),
+        title: cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(node.name.as_deref().unwrap_or(&node.short_id))),
         body: Some(said),
         links: vec![],
         attachments: vec![],
@@ -271,7 +271,7 @@ mod tests {
         let event = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
         let Event::ReportPosted(r) = &event else { panic!() };
         assert_eq!(r.kind, ReportKind::Notice);
-        assert_eq!(r.title, "Looks finished: Task complete and reported to hive/corpus-router.");
+        assert_eq!(r.title, "Task complete and reported to hive/corpus-router.");
         v.apply(4, 4000, &event);
         assert!(!needs_attention(&v, &v.nodes["s"]));
     }
@@ -318,7 +318,7 @@ mod tests {
     fn something_to_do_is_marked_as_your_turn() {
         let v = waiting_view("PR merged. Remove the camera permission on a real iPhone and open the scanner.");
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Act) else { panic!() };
-        assert!(q.title.starts_with("Your turn: "));
+        assert_eq!(q.title, "PR merged. Remove the camera permission on a real iPhone and open the scanner.");
     }
 
     #[test]

@@ -176,7 +176,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         QuestionOrigin::AskUserQuestion => {
             let qs = input.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
             let first = qs.first().cloned().unwrap_or(Value::Null);
-            let title = str_field(&first, "question").unwrap_or_else(|| "Question".into());
+            let title = str_field(&first, "question").unwrap_or_else(|| "?".into());
             let options = first
                 .get("options")
                 .and_then(Value::as_array)
@@ -187,14 +187,14 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
                 })
                 .unwrap_or_default();
             let extra: Vec<String> = qs.iter().skip(1).filter_map(|q| str_field(q, "question")).collect();
-            let detail = (!extra.is_empty()).then(|| format!("Also asks:\n- {}", extra.join("\n- ")));
+            let detail = (!extra.is_empty()).then(|| format!("- {}", extra.join("\n- ")));
             (title, detail, options)
         }
         QuestionOrigin::Plan => (
             str_field(&input, "plan")
                 .and_then(|p| p.lines().map(|l| l.trim_start_matches('#').trim().to_string()).find(|l| !l.is_empty()))
-                .map(|t| format!("Plan: {}", t.chars().take(120).collect::<String>()))
-                .unwrap_or_else(|| "Approve the plan".to_string()),
+                .map(|t| t.chars().take(120).collect::<String>())
+                .unwrap_or_else(|| h.session_id.chars().take(8).collect()),
             str_field(&input, "plan"),
             vec![
                 QuestionOption { label: answer_option::APPROVE.into(), description: None },
@@ -202,7 +202,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
             ],
         ),
         _ => (
-            format!("Permission: {}", h.tool_name.clone().unwrap_or_default()),
+            h.tool_summary.clone().map(|t| t.chars().take(120).collect()).unwrap_or_else(|| h.tool_name.clone().unwrap_or_default()),
             Some(h.tool_summary.clone().unwrap_or_else(|| input.to_string())),
             vec![
                 QuestionOption { label: answer_option::ALLOW.into(), description: None },

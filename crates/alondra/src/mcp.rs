@@ -13,7 +13,14 @@ pub enum Role {
 }
 
 fn instructions(role: Role, user: &str) -> String {
-    let who = format!("The person who supervises the fleet is called {user}: wherever Alondra's tools and skill say \"the user\", that is {user}.");
+    let language = match crate::i18n::lang() {
+        crate::i18n::Lang::Es => "Spanish",
+        crate::i18n::Lang::En => "English",
+    };
+    let who = format!(
+        "The person who supervises the fleet is called {user}: wherever Alondra's tools and skill say \"the user\", that is {user}. \
+         Write every question, report and message for {user} in {language}, whatever language this conversation is in."
+    );
     match role {
         Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}: only these tools do. If you need {user} to decide something, use `ask` (one question per decision, a one-line title, all the context in `detail`, options, links); then end your turn, and Alondra will type the answer into this session. When you finish, use `report` with kind final. Use `report` otherwise only for a result or finding {user} must read now; never to say you are still working or do not need {user} (that is noise and Alondra rejects it). While you work on your own, including waiting for a build or an upload, send nothing. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
         Role::Orchestrator => format!("Alondra is your nervous system: reliable fleet state (`fleet`, `node`), machine capacity (`machine`), and hands (`launch`, `send`). The nodes' questions to {user} reach {user} directly; what is meant for you is typed into your session. Use `ask` to ask {user} something and `report` to inform {user}. {who}"),

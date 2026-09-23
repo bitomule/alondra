@@ -6,7 +6,7 @@ description: How to talk to the user and to the orchestrator through Alondra. Us
 # Alondra
 
 The user is the person who supervises the fleet. Their name comes in the instructions of the
-Alondra MCP server. Their answers are typed into your session as if they wrote them there.
+Alondra MCP server. Their answers are typed into your session as if they wrote them there. Write every question and report for them in the language the MCP instructions name, even if your conversation is in another language.
 
 You are connected to Alondra. You do not have to report your state: Alondra sees it on its own.
 What you write in your terminal does not reach the user; only Alondra's tools do.
