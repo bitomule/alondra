@@ -571,7 +571,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     }
     let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
     let provenance = match &signed {
-        Some(s) => format!("via {} (signed)", s.name),
+        Some(s) => format!("via {} (signature verified)", s.name),
         None => "via the Mac (local, unsigned)".to_string(),
     };
     let user = hub.config.name.clone();

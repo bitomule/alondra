@@ -175,7 +175,8 @@ fn unauthorized(reason: &str) -> Response {
 }
 
 pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request<Body>, next: Next) -> Response {
-    if is_local(&peer, req.headers()) || req.uri().path() == "/v1/pair" {
+    let presents_signature = req.headers().contains_key("x-alondra-signature");
+    if req.uri().path() == "/v1/pair" || (is_local(&peer, req.headers()) && !presents_signature) {
         return next.run(req).await;
     }
     let (parts, body) = req.into_parts();
