@@ -85,12 +85,13 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
     Ok(())
 }
 
-/// Nodes worth asking the Claude daemon about: in the background, nobody at their terminal,
-/// no card open, and something says they are stuck waiting.
+/// Nodes worth asking the Claude daemon about: in the background, nobody at their terminal, no
+/// card open, and not visibly working. The daemon's own `state.json` can still say "working"
+/// while its terminal waits on a menu, so it is not trusted for this.
 fn suspect(v: &View, n: &Node, now: i64) -> bool {
     let carded = v.questions.values().any(|q| q.session_id == n.session_id && q.status.is_open());
-    let stuck = n.daemon_state.as_deref() == Some("blocked") || n.waiting_permission || n.menu_waiting.is_some();
-    n.in_daemon && stuck && !carded && !states::watching(v, n, now)
+    let idle = n.state != alondra_core::NodeState::Working || n.daemon_state.as_deref() == Some("blocked");
+    n.in_daemon && n.alive && idle && !carded && !states::watching(v, n, now)
 }
 
 async fn agents_waiting() -> Option<Vec<(String, String)>> {
@@ -231,6 +232,42 @@ mod tests {
         let json = r#"[{"id":"aa","status":"waiting","waitingFor":"permission prompt"},{"id":"bb","status":"idle"},{"id":"cc","status":"busy","waitingFor":"dialog open"},{"id":"dd","status":"waiting","waitingFor":"dialog open"}]"#;
         assert_eq!(waiting_from(json), vec![("aa".to_string(), "permission prompt".to_string()), ("dd".to_string(), "dialog open".to_string())]);
         assert!(waiting_from("not json").is_empty());
+    }
+
+    fn seen(state: &str) -> Event {
+        Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(7), state: Some(state.into()), tempo: Some("idle".into()), ..Default::default() })
+    }
+
+    /// test/menu-probe, 23 Sep: parked on a permission while its state.json still said
+    /// "working", and the sentinel had already turned its needs into a notice.
+    #[test]
+    fn a_node_is_asked_about_whenever_it_is_not_visibly_working() {
+        let notice = Event::ReportPosted(alondra_core::Report {
+            id: 1,
+            session_id: "s".into(),
+            node_name: None,
+            title: "approve Bash".into(),
+            body: None,
+            links: vec![],
+            attachments: vec![],
+            kind: alondra_core::ReportKind::Notice,
+            created_at: 2,
+            read: true,
+            mission: None,
+        });
+        let hook = |e: &str| Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: e.into(), tool_name: Some("Bash".into()), ..Default::default() });
+        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
+            ("state.json says working but a notice was delivered", vec![seen("working"), notice], true),
+            ("the daemon says blocked", vec![seen("blocked")], true),
+            ("a tool in flight", vec![seen("working"), hook("UserPromptSubmit"), hook("PreToolUse")], false),
+        ];
+        for (what, events, expected) in cases {
+            let mut v = View::default();
+            for (i, e) in events.iter().enumerate() {
+                v.apply(i as u64 + 1, 1000 + i as i64, e);
+            }
+            assert_eq!(suspect(&v, &v.nodes["s"], 5000), expected, "{what}");
+        }
     }
 
     #[test]
