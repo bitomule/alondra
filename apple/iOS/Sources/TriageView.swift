@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TriageView: View {
     @Environment(FleetStore.self) private var fleet
+    @Environment(PushCenter.self) private var push
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var zoom
     @State private var reviewing: InboxItem?
@@ -55,6 +56,29 @@ struct TriageView: View {
         }
         .sensoryFeedback(.success, trigger: fleet.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: fleet.skippedCount)
+        .task(id: push.route) {
+            guard push.route != nil else { return }
+            await fleet.refresh()
+            open(push.route, giveUp: fleet.connected)
+        }
+        .onChange(of: fleet.inbox) { open(push.route, giveUp: false) }
+    }
+
+    private func open(_ route: NotificationRoute?, giveUp: Bool) {
+        guard let route else { return }
+        guard let item = fleet.inbox.first(where: { $0.id == route.itemID }) else {
+            if giveUp {
+                push.route = nil
+                fleet.notice = Notice("Eso ya no está pendiente")
+            }
+            return
+        }
+        push.route = nil
+        showSettings = false
+        showPairing = false
+        reviewing = nil
+        fleet.focus(item)
+        if route.opensDetail { reviewing = item }
     }
 
     private var header: some View {

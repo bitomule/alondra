@@ -19,6 +19,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 PairingSection(detent: $detent)
+                NotificationsSection()
                 Section {
                     TextField("http://127.0.0.1:47800", text: $draft)
                         .font(.mono(.body))
@@ -158,6 +159,67 @@ private struct PairingSection: View {
             } else {
                 Text("Sin vincular solo puedes hablar con alondrad en 127.0.0.1.")
             }
+        }
+    }
+}
+
+private struct NotificationsSection: View {
+    @Environment(PushCenter.self) private var push
+    @Environment(DevicePairing.self) private var pairing
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        @Bindable var push = push
+        Section {
+            LabeledContent("Avisos") {
+                switch push.authorization {
+                case .authorized:
+                    Text("\(Image(systemName: "bell.badge.fill")) Activados").foregroundStyle(Palette.sage)
+                case .denied:
+                    Button("Desactivados · Abrir Ajustes") {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                    }
+                    .foregroundStyle(Palette.rose)
+                case .notDetermined:
+                    Button("Activar") { Task { await push.activate() } }
+                case .unknown:
+                    ProgressView()
+                }
+            }
+            if push.authorization == .authorized, pairing.isPaired {
+                LabeledContent("En el Mac") { registrationStatus }
+            }
+            Toggle("Horas de silencio", isOn: $push.quietHours.enabled.animation())
+            if push.quietHours.enabled {
+                DatePicker("Desde", selection: time($push.quietHours.start), displayedComponents: .hourAndMinute)
+                DatePicker("Hasta", selection: time($push.quietHours.end), displayedComponents: .hourAndMinute)
+            }
+        } header: {
+            Text("Notificaciones")
+        } footer: {
+            Text(push.quietHours.enabled
+                ? "Entre las \(QuietHours.clock(push.quietHours.start)) y las \(QuietHours.clock(push.quietHours.end)) los avisos llegan sin sonido y sin encender la pantalla."
+                : "Puedes responder, permitir o aprobar desde la pantalla bloqueada.")
+        }
+        .task { await push.refreshAuthorization() }
+    }
+
+    @ViewBuilder
+    private var registrationStatus: some View {
+        switch push.registration {
+        case .idle: Text("Esperando token").foregroundStyle(.secondary)
+        case .sending: ProgressView()
+        case .registered: Text("\(Image(systemName: "checkmark.circle.fill")) Registrado").foregroundStyle(Palette.sage)
+        case .failed(let reason): Text(reason).foregroundStyle(Palette.rose).lineLimit(2)
+        }
+    }
+
+    private func time(_ minutes: Binding<Int>) -> Binding<Date> {
+        Binding {
+            Calendar.current.date(bySettingHour: minutes.wrappedValue / 60, minute: minutes.wrappedValue % 60, second: 0, of: .now) ?? .now
+        } set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            minutes.wrappedValue = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
         }
     }
 }

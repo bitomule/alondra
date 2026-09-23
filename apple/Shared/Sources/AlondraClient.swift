@@ -105,6 +105,10 @@ public struct AlondraClient: Sendable {
         try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david"])
     }
 
+    public func registerPush(_ registration: PushRegistration) async throws {
+        _ = try await perform("POST", "v1/push/register", body: try JSONEncoder().encode(registration), session: Self.session)
+    }
+
     public static func pair(at base: URL, code: String, deviceName: String, publicKey: Data) async throws -> String {
         struct Paired: Decodable { let deviceId: String }
         let body = try JSONSerialization.data(withJSONObject: [
@@ -148,6 +152,38 @@ public struct AlondraClient: Sendable {
         if http.statusCode == 401 { throw AlondraError.unauthorized }
         let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
         throw AlondraError.server(message ?? "El servidor respondió \(http.statusCode)")
+    }
+}
+
+public struct PushRegistration: Encodable, Hashable, Sendable {
+    public enum Environment: String, Encodable, Sendable {
+        case sandbox, production
+    }
+
+    public let token: String
+    public let environment: Environment
+    public let quietStart: String?
+    public let quietEnd: String?
+
+    public init(token: String, environment: Environment, quietStart: String?, quietEnd: String?) {
+        self.token = token
+        self.environment = environment
+        self.quietStart = quietStart
+        self.quietEnd = quietEnd
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case token, environment
+        case quietStart = "quiet_start"
+        case quietEnd = "quiet_end"
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(token, forKey: .token)
+        try container.encode(environment, forKey: .environment)
+        try container.encode(quietStart, forKey: .quietStart)
+        try container.encode(quietEnd, forKey: .quietEnd)
     }
 }
 
