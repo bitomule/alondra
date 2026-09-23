@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bitomule.alondra</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BIN@/alondrad</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>@BIN@:@HOME@/.claude/local:@HOME@/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>ALONDRA_PLUGIN_DIR</key>
+        <string>@PLUGIN@</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardErrorPath</key>
+    <string>@HOME@/.alondra/alondrad.log</string>
+    <key>StandardOutPath</key>
+    <string>@HOME@/.alondra/alondrad.log</string>
+</dict>
+</plist>

@@ -1,0 +1,17 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "alondrad",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core"],
+)
+
+rust_test(
+    name = "alondrad_test",
+    crate = ":alondrad",
+    edition = "2024",
+)

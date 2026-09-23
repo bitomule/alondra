@@ -41,6 +41,9 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     match cli.command {
         None => tui::run(),

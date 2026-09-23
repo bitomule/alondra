@@ -1,0 +1,7 @@
+startup --digest_function=blake3
+common --cache_computed_file_digests=500000
+common --noworker_sandboxing
+common --spawn_strategy=worker,local
+build --incompatible_strict_action_env
+build --macos_minimum_os=26.0
+build -c opt

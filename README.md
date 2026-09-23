@@ -4,14 +4,44 @@ El sistema nervioso del orquestador de la colmena: estado fiable de cada nodo de
 y de la máquina, preguntas estructuradas que llegan a David y vuelven a su nodo, y
 herramientas para que el orquestador actúe.
 
-Piezas, todas en este repo y todas con Bazel:
-
 | Carpeta | Qué es |
 |---|---|
 | `crates/core` | Modelo y reductor de estados (Rust, sin E/S) |
-| `crates/alondrad` | Demonio 24/7: ingesta de hooks, vigilante, SQLite, API |
-| `crates/alondra` | CLI y TUI |
-| `plugin/` | Plugin de Claude Code: hooks y herramientas para los nodos |
-| `apple/` | App de iOS y macOS (SwiftUI) |
+| `crates/alondrad` | Demonio 24/7: hooks, vigilante, SQLite, API |
+| `crates/alondra` | CLI, TUI, servidor MCP de los nodos y hook de bandeja |
+| `plugin/` | Plugin de Claude Code: hooks, herramientas `ask`/`report` y skill |
+| `launchd/` | Servicio de macOS para `alondrad` |
+| `docs/plan.md` | Diseño y plan por fases |
 
-Diseño y plan: `docs/plan.md`.
+## Probarlo
+
+```bash
+make install        # compila con Bazel e instala alondra y alondrad en ~/.local/bin
+make launchd        # alondrad arranca solo al iniciar sesión y se reinicia si cae
+alondra             # la TUI
+alondra status      # lo mismo en texto
+```
+
+Un nodo conectado a Alondra se lanza con el plugin:
+
+```bash
+claude --bg --name "prueba/alondra" --plugin-dir ~/Projects/alondra/plugin --permission-mode auto -- "<misión>"
+```
+
+o, desde el orquestador, con su herramienta `launch`. Al orquestador se le conecta
+arrancándolo con el mismo plugin y `ALONDRA_ROLE=orchestrator`.
+
+### La TUI
+
+- **Te esperan**: preguntas de los nodos (estructuradas, de menú, permisos y planes).
+  `Enter` las abre con todo su contexto, `1`–`4` elige opción y `r` responde con texto.
+- **Flota**: todo lo que lista `claude agents`, con su estado (trabajando, esperando respuesta,
+  entrega resultado, esperando máquina, terminado, no sé qué quiere). `~` = lo dice el demonio
+  de Claude Code, `*` = lo ha decidido jev, `💤` = dormido (sin proceso; se despierta con
+  `attach` al mandarle un mensaje).
+- `m` manda un mensaje al nodo seleccionado y `o`, al orquestador.
+
+## Desarrollo
+
+`make build` / `make test` con Bazel. `cargo build` / `cargo test` también funcionan, para
+iterar rápido y para rust-analyzer.
