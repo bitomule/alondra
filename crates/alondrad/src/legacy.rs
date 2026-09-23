@@ -100,7 +100,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
         let status = hub.read(|v| v.questions.get(&qid).map(|q| (q.status, q.answer.as_ref().map(|a| a.text.clone()))));
         match status {
             Some((s, _)) if s.is_open() && !still_open.contains(&n) => {
-                hub.append(Event::QuestionClosed { id: qid, status: QuestionStatus::Withdrawn })?;
+                hub.append(Event::QuestionClosed { id: qid, status: QuestionStatus::Withdrawn, note: None })?;
                 finished.push(n);
             }
             Some((s, answer)) if !s.is_open() && still_open.contains(&n) => {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{DaemonObservation, Event, HookEvent};
 use crate::model::{
-    Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
+    Answer, Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
     TurnSignal,
 };
 use crate::model::{Message, MessageFrom, Report};
@@ -129,8 +129,11 @@ impl View {
                     q.status = QuestionStatus::Delivered;
                 }
             }),
-            Event::QuestionClosed { id, status } => self.question_update(*id, |q| {
+            Event::QuestionClosed { id, status, note } => self.question_update(*id, |q| {
                 q.status = *status;
+                if let Some(note) = note {
+                    q.answer = Some(Answer { text: note.clone(), option: None, by: None, device: None, at });
+                }
             }),
             Event::ReportPosted(r) => {
                 let node = self.node_mut(&r.session_id, at);
@@ -588,6 +591,18 @@ mod tests {
         assert_ne!(v.nodes["s"].state, NodeState::WaitingAnswer);
     }
 
+    /// Closing a node withdraws its own open question instead of the close refusing over it
+    /// (91933d17, 23 Sep): the note explains why to anyone reading the question later.
+    #[test]
+    fn withdrawing_a_question_with_a_note_records_it_as_the_answer() {
+        let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask)), hook("s", "Stop")]);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
+        v.apply(9, 9000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: Some("the user closed the node".into()) });
+        assert_eq!(v.questions[&1].status, QuestionStatus::Withdrawn);
+        assert_eq!(v.questions[&1].answer.as_ref().map(|a| a.text.as_str()), Some("the user closed the node"));
+        assert_ne!(v.nodes["s"].state, NodeState::WaitingAnswer);
+    }
+
     #[test]
     fn turn_without_signal_is_unclear_not_frozen_working() {
         let v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
@@ -912,7 +927,7 @@ mod tests {
         v.apply(4, 4000, &Event::QuestionAsked(question(1, "o", QuestionOrigin::Ask)));
         assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::WaitingForYou));
         assert_eq!(v.nodes["o"].state, NodeState::WaitingAnswer);
-        v.apply(5, 5000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn });
+        v.apply(5, 5000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: None });
         v.apply(6, 6000, &Event::ProcessExited { session_id: "o".into(), pid: 0 });
         assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::Offline));
     }
@@ -928,7 +943,7 @@ mod tests {
     fn a_node_that_asked_and_then_stopped_is_not_working() {
         let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask))]);
         assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
-        v.apply(3, 3000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn });
+        v.apply(3, 3000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: None });
         assert_eq!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &hook("s", "Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);

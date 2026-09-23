@@ -56,7 +56,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             .collect()
     });
     for id in stale {
-        hub.append(Event::QuestionClosed { id, status: QuestionStatus::AnsweredInTerminal })?;
+        hub.append(Event::QuestionClosed { id, status: QuestionStatus::AnsweredInTerminal, note: None })?;
     }
 
     let pending: Vec<(String, String, bool)> =

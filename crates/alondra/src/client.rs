@@ -162,11 +162,26 @@ impl Client {
         let status = resp.status().as_u16();
         let body = resp.body_mut().read_to_string().unwrap_or_default();
         if status >= 400 {
-            let msg = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or(body);
-            return Err(anyhow!(trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}")));
+            let parsed = serde_json::from_str::<Value>(&body).ok();
+            let reasons: Vec<String> = parsed
+                .as_ref()
+                .and_then(|v| v.get("reasons"))
+                .and_then(Value::as_array)
+                .map(|rs| {
+                    rs.iter()
+                        .map(|r| crate::i18n::close_reason(r.get("kind").and_then(Value::as_str).unwrap_or_default(), r.get("detail").and_then(Value::as_str)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !reasons.is_empty() {
+                let text = match reasons.as_slice() {
+                    [one] => one.clone(),
+                    many => many.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n"),
+                };
+                return Err(anyhow!(text));
+            }
+            let msg = parsed.as_ref().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string)).unwrap_or(body);
+            return Err(anyhow!(trf!("alondrad answered: {msg}", "alondrad respondió: {msg}")));
         }
         Ok((status, body))
     }

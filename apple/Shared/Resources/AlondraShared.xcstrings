@@ -650,6 +650,36 @@
           }
         }
       }
+    },
+    "it is working; wait until it stops": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "está trabajando; espera a que termine"
+          }
+        }
+      }
+    },
+    "it has a permission pending on a tool call that is running": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tiene un permiso pendiente en una llamada a herramienta en marcha"
+          }
+        }
+      }
+    },
+    "it has changes not pushed in %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tiene cambios sin subir en %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

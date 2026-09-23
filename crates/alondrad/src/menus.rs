@@ -60,7 +60,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
             .collect()
     });
     for id in stale {
-        hub.append(Event::QuestionClosed { id, status: QuestionStatus::AnsweredInTerminal })?;
+        hub.append(Event::QuestionClosed { id, status: QuestionStatus::AnsweredInTerminal, note: None })?;
     }
 
     let parked: Vec<(String, String)> =

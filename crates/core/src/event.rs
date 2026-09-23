@@ -72,7 +72,7 @@ pub enum Event {
     QuestionAsked(Question),
     QuestionAnswered { id: u64, answer: Answer },
     QuestionDelivered { id: u64 },
-    QuestionClosed { id: u64, status: crate::model::QuestionStatus },
+    QuestionClosed { id: u64, status: crate::model::QuestionStatus, #[serde(default)] note: Option<String> },
     ReportPosted(Report),
     ReportRead { id: u64 },
     MessageQueued(Message),

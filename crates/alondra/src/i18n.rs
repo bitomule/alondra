@@ -136,6 +136,23 @@ pub fn merge_method(m: alondra_core::pr::MergeMethod) -> &'static str {
     }
 }
 
+/// Why `POST /v1/nodes/{key}/close` refused, in the user's language and without the server's
+/// status code or raw prose. `kind` is the reason alondrad sent; `detail`, when present, names
+/// the worktree or files at stake and is not itself translated.
+pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
+    match kind {
+        "busy" => tr!("it is working; wait until it stops", "está trabajando; espera a que termine").to_string(),
+        "permission" => {
+            tr!("it has a permission pending on a tool call that is running", "tiene un permiso pendiente en una llamada a herramienta en marcha").to_string()
+        }
+        "worktree" => {
+            let detail = detail.unwrap_or_default();
+            trf!("it has changes not pushed in {detail}", "tiene cambios sin subir en {detail}")
+        }
+        _ => detail.unwrap_or(kind).to_string(),
+    }
+}
+
 pub fn comments(n: usize) -> String {
     match (lang(), n) {
         (Lang::En, 1) => "1 comment".into(),
@@ -188,6 +205,19 @@ mod tests {
     fn system_language_beats_the_terminal_locale_but_not_the_override() {
         assert_eq!(detect(env(&[(SYSTEM_LANGUAGE, "es-ES"), ("LC_ALL", "en_US.UTF-8")])), Lang::Es);
         assert_eq!(detect(env(&[("ALONDRA_LANG", "en"), (SYSTEM_LANGUAGE, "es-ES")])), Lang::En);
+    }
+
+    #[test]
+    fn close_reasons_read_in_the_user_language_without_a_status_code() {
+        set_for_this_thread(Lang::Es);
+        assert_eq!(close_reason("busy", None), "está trabajando; espera a que termine");
+        assert_eq!(close_reason("permission", None), "tiene un permiso pendiente en una llamada a herramienta en marcha");
+        assert_eq!(close_reason("worktree", Some("2 commit(s) not pushed in /tmp/x")), "tiene cambios sin subir en 2 commit(s) not pushed in /tmp/x");
+        set_for_this_thread(Lang::En);
+        assert_eq!(close_reason("busy", None), "it is working; wait until it stops");
+        for kind in ["busy", "permission", "worktree"] {
+            assert!(!close_reason(kind, Some("x")).contains("40"), "{kind} must not leak a status code");
+        }
     }
 
     #[test]

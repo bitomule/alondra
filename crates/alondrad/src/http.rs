@@ -70,6 +70,19 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// A machine-readable reason a close was refused, so each client can show it in the user's
+/// language instead of the English `error` string (kept for logs and older clients).
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct CloseReason {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+fn err_reasons(msg: impl Into<String>, reasons: Vec<CloseReason>) -> Response {
+    (StatusCode::CONFLICT, Json(json!({ "error": msg.into(), "reasons": reasons }))).into_response()
+}
+
 fn internal(e: anyhow::Error) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
@@ -936,7 +949,7 @@ async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>, body: Option
     if let Some((status, why)) = withdraw_refusal(id, question.as_ref(), asker.as_ref().map(Option::as_deref)) {
         return err(status, why);
     }
-    match hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn }) {
+    match hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn, note: None }) {
         Ok(_) => Json(json!({"id": id})).into_response(),
         Err(e) => internal(e),
     }
@@ -1104,27 +1117,42 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     }
 }
 
+/// Real risks a close must not paper over: the node still doing something (busy or a live
+/// permission hold), or work left uncommitted or unpushed in its worktree. The node's own open
+/// questions and actions are not among them: the user's decision to close answers them.
+fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Option<String>) -> Vec<CloseReason> {
+    let mut reasons = vec![];
+    if busy {
+        reasons.push(CloseReason { kind: "busy", detail: None });
+        return reasons;
+    }
+    if waiting_permission {
+        reasons.push(CloseReason { kind: "permission", detail: None });
+    }
+    if let Some(left) = worktree_leftovers {
+        reasons.push(CloseReason { kind: "worktree", detail: Some(left) });
+    }
+    reasons
+}
+
 async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session, busy)) =
-        hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.state == alondra_core::NodeState::Working)))
+    let Some((short, session, busy, waiting_permission)) =
+        hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission)))
     else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
-    if busy {
-        return err(StatusCode::CONFLICT, format!("{short} is working; wait until it stops before closing it"));
+    let leftovers = crate::worktree::leftovers(&session).await;
+    let reasons = close_reasons(busy, waiting_permission, leftovers);
+    if !reasons.is_empty() {
+        let msg = reasons.iter().map(|r| r.detail.clone().unwrap_or_else(|| r.kind.to_string())).collect::<Vec<_>>().join("; ");
+        return err_reasons(format!("{short} still has something pending, so it was not closed: {msg}"), reasons);
     }
-    let mut pending: Vec<String> = hub.read(|v| {
-        v.questions
-            .values()
-            .filter(|q| q.session_id == session && q.status.is_open())
-            .map(|q| format!("question #{} \"{}\" is still open", q.id, q.title))
-            .collect()
-    });
-    if let Some(left) = crate::worktree::leftovers(&session).await {
-        pending.push(format!("its worktree has {left}"));
-    }
-    if !pending.is_empty() {
-        return err(StatusCode::CONFLICT, format!("{short} still has something pending, so it was not closed:\n- {}", pending.join("\n- ")));
+    // The node's own open questions and actions are moot once the user has decided to close it.
+    let own_open: Vec<u64> = hub.read(|v| v.questions.values().filter(|q| q.session_id == session && q.status.is_open()).map(|q| q.id).collect());
+    for id in own_open {
+        if let Err(e) = hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn, note: Some("the user closed the node".into()) }) {
+            return internal(e);
+        }
     }
     let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
         .ok()
@@ -1473,6 +1501,31 @@ mod tests {
         let a = answered("Pedir cambios en el paso 2", None);
         assert_eq!(a.text, "Pedir cambios en el paso 2");
         assert_eq!(decision(QuestionOrigin::Plan, &a)["hookSpecificOutput"]["permissionDecision"], "deny");
+    }
+
+    /// `close_node`'s only real risks: a node still busy or mid a live permission hold, or
+    /// uncommitted/unpushed work. Its own open questions never appear here — closing withdraws
+    /// them instead of refusing over them (91933d17, 23 Sep).
+    #[test]
+    fn close_only_refuses_for_real_risks() {
+        let cases: &[(&str, bool, bool, Option<&str>, &[&str])] = &[
+            ("only its own open question: nothing blocks", false, false, None, &[]),
+            ("busy wins even with other risks present", true, true, Some("x"), &["busy"]),
+            ("a live permission hold blocks", false, true, None, &["permission"]),
+            ("unpushed work blocks", false, false, Some("2 commit(s) not pushed in /tmp/x"), &["worktree"]),
+            ("permission and worktree both block", false, true, Some("x"), &["permission", "worktree"]),
+        ];
+        for (what, busy, waiting_permission, leftovers, expected_kinds) in cases {
+            let reasons = close_reasons(*busy, *waiting_permission, leftovers.map(str::to_string));
+            let kinds: Vec<&str> = reasons.iter().map(|r| r.kind).collect();
+            assert_eq!(kinds, *expected_kinds, "{what}");
+        }
+    }
+
+    #[test]
+    fn worktree_leftovers_are_carried_as_the_reasons_detail() {
+        let reasons = close_reasons(false, false, Some("2 commit(s) not pushed in /tmp/x".into()));
+        assert_eq!(reasons, vec![CloseReason { kind: "worktree", detail: Some("2 commit(s) not pushed in /tmp/x".into()) }]);
     }
 }
 

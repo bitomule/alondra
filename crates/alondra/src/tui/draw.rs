@@ -4,7 +4,7 @@ use alondra_core::{NodeState, Question, QuestionOrigin, Report, ReportKind, now_
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block as Panel, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 use super::md::{self, str_width, truncate, wrap};
@@ -1246,13 +1246,14 @@ fn draw_flash(f: &mut Frame, app: &App, body: Rect) {
     let Some(fl) = &app.flash else { return };
     let (mark, color) = if fl.error { ("✗ ", Color::LightRed) } else { ("✓ ", Color::LightGreen) };
     let width = body.width.saturating_sub(4).clamp(10, 100);
+    let inner_width = width.saturating_sub(4).max(1);
     let text = format!("{mark}{}", fl.text);
-    let lines = (text.chars().count() as u16).div_ceil(width.saturating_sub(4).max(1)).clamp(1, 6);
+    let lines = text.lines().map(|l| (l.chars().count() as u16).div_ceil(inner_width).max(1)).sum::<u16>().clamp(1, 10);
     let height = lines + 2;
     let area = Rect { x: body.x + (body.width.saturating_sub(width)) / 2, y: body.bottom().saturating_sub(height), width, height };
     f.render_widget(Clear, area);
     let panel = Panel::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(color));
-    f.render_widget(Paragraph::new(Span::styled(text, Style::new().fg(color).bold())).wrap(Wrap { trim: true }).block(panel), area);
+    f.render_widget(Paragraph::new(Text::styled(text, Style::new().fg(color).bold())).wrap(Wrap { trim: true }).block(panel), area);
 }
 
 fn draw_foot(f: &mut Frame, app: &App, area: Rect) {

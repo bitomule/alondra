@@ -202,10 +202,31 @@ public struct AlondraClient: Sendable {
     private static func check(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse, http.statusCode >= 400 else { return }
         if http.statusCode == 401 { throw AlondraError.unauthorized }
-        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+        let body = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        if let reasons = body?["reasons"] as? [[String: Any]], !reasons.isEmpty {
+            let lines = reasons.map { closeReasonMessage(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String) }
+            throw AlondraError.server(lines.count == 1 ? lines[0] : lines.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        let json = body?["error"] as? String
         let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let message = json ?? (text.isEmpty || text.hasPrefix("{") ? nil : text)
         throw AlondraError.server(message ?? String(localized: "The server responded \(http.statusCode)", table: "AlondraShared", bundle: #bundle))
+    }
+}
+
+/// Why `POST /v1/nodes/{key}/close` refused, in the user's language and without the server's
+/// status code or raw prose. `detail`, when present, names the worktree or files at stake and
+/// is not itself translated.
+func closeReasonMessage(kind: String, detail: String?) -> String {
+    switch kind {
+    case "busy":
+        return String(localized: "it is working; wait until it stops", table: "AlondraShared", bundle: #bundle)
+    case "permission":
+        return String(localized: "it has a permission pending on a tool call that is running", table: "AlondraShared", bundle: #bundle)
+    case "worktree":
+        return String(localized: "it has changes not pushed in \(detail ?? "")", table: "AlondraShared", bundle: #bundle)
+    default:
+        return detail ?? kind
     }
 }
 

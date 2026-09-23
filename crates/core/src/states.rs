@@ -798,7 +798,7 @@ mod tests {
         }
         let mut v = run(&[hook("UserPromptSubmit"), tool("PreToolUse", "plan"), q], None);
         assert!(v.nodes["s"].tool.is_some());
-        v.apply(9, T0 + 9000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn });
+        v.apply(9, T0 + 9000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn, note: None });
         assert!(v.nodes["s"].tool.is_none());
     }
 
