@@ -102,6 +102,9 @@ struct TriageCard: View {
         .padding(.top, 22)
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
+        .onTapGesture(perform: onReview)
+        .accessibilityAction(named: "Abrir", onReview)
     }
 
     private var cardBackground: some View {
@@ -180,6 +183,8 @@ struct TriageCard: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Palette.night.opacity(0.7), in: .rect(cornerRadius: 14, style: .continuous))
                             .textSelection(.enabled)
+                    } else if detail.count > 600 {
+                        excerpt(detail, cta: "Leer entero")
                     } else {
                         blocks(detail)
                     }

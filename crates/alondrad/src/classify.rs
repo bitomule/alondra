@@ -8,8 +8,7 @@ use tokio::process::Command;
 use crate::hub::Hub;
 
 const QUESTION: &str = "Es el último mensaje de un agente de programación que acaba de terminar su turno. ¿En qué estado queda, visto desde la persona que lo supervisa?";
-const OPTIONS: &str = "esperando_respuesta,entrega_resultado,esperando_maquina,trabajando,ninguna";
-const MIN_CONFIDENCE: f64 = 0.6;
+const OPTIONS: &str = "esperando_respuesta,entrega_resultado,esperando_maquina,trabajando,no_se_sabe";
 
 pub fn spawn_if_unclear(hub: &Arc<Hub>, session_id: &str) {
     let target = hub.read(|v| {
@@ -52,7 +51,6 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     let label = answer.get("label")?.as_str()?;
     let confidence = answer.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
     let state = match label {
-        _ if confidence < MIN_CONFIDENCE => NodeState::Unclear,
         "esperando_respuesta" => NodeState::WaitingAnswer,
         "entrega_resultado" => NodeState::Delivered,
         "esperando_maquina" => NodeState::WaitingMachine,
@@ -63,13 +61,12 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
 }
 
 const ASKS_QUESTION: &str = "Es un informe que un agente de programación manda a David para que lo lea. ¿Le pide a David que decida, apruebe, conteste o haga algo?";
-const ASKS_MIN_CONFIDENCE: f64 = 0.8;
 
 pub async fn report_asks_for_action(text: &str) -> bool {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer", "-s", text, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
+            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer,no_se_sabe", "-s", text, "--json", "--soft", "--timeout", "8000", "--max-chars", "4000"])
             .kill_on_drop(true)
             .output(),
     )
@@ -77,7 +74,7 @@ pub async fn report_asks_for_action(text: &str) -> bool {
     let Ok(Ok(out)) = out else { return false };
     let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return false };
     let answer = &v["answers"]["answer"];
-    answer["label"].as_str() == Some("pide_algo") && answer["confidence"].as_f64().unwrap_or(0.0) >= ASKS_MIN_CONFIDENCE
+    answer["label"].as_str() == Some("pide_algo")
 }
 
 const SEARCH_CONCURRENCY: usize = 8;

@@ -101,6 +101,10 @@ struct TriageView: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
             .lineLimit(1)
+            if fleet.queue.count > 1 {
+                PageDots(count: fleet.queue.count, current: fleet.position % fleet.queue.count)
+                    .padding(.top, 6)
+            }
         }
         .padding(.bottom, 14)
         .animation(.smooth, value: fleet.connection)
@@ -182,56 +186,68 @@ private struct CardStack: View {
                         .offset(y: CGFloat(depth) * -11)
                         .brightness(depth == 0 ? 0 : -0.04 * Double(depth))
                         .offset(x: depth == 0 ? drag : 0)
-                        .rotationEffect(.degrees(depth == 0 ? Double(drag) / 28 : 0), anchor: .bottom)
+                        .opacity(depth == 0 ? 1 - Double(min(abs(drag) / 900, 0.35)) : 1)
                         .zIndex(item.id == fleet.leaving ? 10 : Double(depthLimit - depth))
                         .allowsHitTesting(depth == 0)
                         .accessibilityHidden(depth != 0)
-                        .transition(reduceMotion ? AnyTransition.opacity : .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .top)), removal: AnyTransition(FileAway())))
+                        .transition(transition(for: item))
                 }
             }
             .padding(.top, CGFloat(min(visible.count, depthLimit) - 1) * 11)
-            .simultaneousGesture(swipe(visible.first))
+            .simultaneousGesture(swipe(visible.first, count: queue.count))
             .animation(.spring(duration: 0.5, bounce: 0.22), value: visible.map(\.id))
 
-            if queue.count > 1 {
-                PageDots(count: queue.count)
-            }
         }
     }
 
-    private func swipe(_ front: InboxItem?) -> some Gesture {
+    private func transition(for item: InboxItem) -> AnyTransition {
+        if reduceMotion { return .opacity }
+        let removal: AnyTransition = item.id == fleet.leaving ? AnyTransition(FileAway()) : .opacity
+        return .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: removal)
+    }
+
+    private func swipe(_ front: InboxItem?, count: Int) -> some Gesture {
         DragGesture(minimumDistance: 24)
             .onChanged { value in
-                guard front != nil, abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
+                guard front != nil, count > 1, abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
                 drag = value.translation.width
             }
             .onEnded { value in
-                guard let front else { return }
+                guard let front, count > 1 else { return }
                 let projected = value.predictedEndTranslation.width
-                if abs(drag) > 110 || (abs(projected) > 260 && abs(drag) > 30) {
-                    withAnimation(.easeIn(duration: 0.18)) { drag = drag > 0 ? 600 : -600 }
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(180))
-                        withAnimation(.spring(duration: 0.55, bounce: 0.2)) {
-                            drag = 0
-                            fleet.skip(front)
-                        }
-                    }
-                } else {
+                let committed = abs(drag) > 90 || (abs(projected) > 240 && abs(drag) > 30)
+                guard committed else {
                     withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
+                    return
                 }
+                if drag < 0 { next(front) } else { previous() }
             }
     }
 
-    private func skip(_ item: InboxItem) {
-        withAnimation(.easeIn(duration: 0.2)) { drag = -600 }
+    private func next(_ item: InboxItem) {
+        withAnimation(.easeIn(duration: 0.16)) { drag = -420 }
         Task {
-            try? await Task.sleep(for: .milliseconds(200))
-            withAnimation(.spring(duration: 0.55, bounce: 0.2)) {
-                drag = 0
-                fleet.skip(item)
-            }
+            try? await Task.sleep(for: .milliseconds(160))
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { drag = 0 }
+            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { fleet.skip(item) }
         }
+    }
+
+    private func previous() {
+        withAnimation(.easeIn(duration: 0.12)) { drag = 0 }
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            fleet.previous()
+            drag = -420
+        }
+        withAnimation(.spring(duration: 0.5, bounce: 0.2)) { drag = 0 }
+    }
+
+    private func skip(_ item: InboxItem) {
+        next(item)
     }
 }
 
@@ -248,22 +264,29 @@ private struct FileAway: Transition {
 
 private struct PageDots: View {
     let count: Int
+    let current: Int
 
     var body: some View {
-        HStack(spacing: 6) {
-            Capsule().fill(Palette.dawn).frame(width: 18, height: 6)
-            ForEach(1..<min(count, 8), id: \.self) { _ in
-                Circle().fill(Palette.slate.opacity(0.35)).frame(width: 6, height: 6)
-            }
-            if count > 8 {
-                Text("+\(count - 8)")
-                    .font(.caption2.weight(.semibold))
+        Group {
+            if count <= 8 {
+                HStack(spacing: 6) {
+                    ForEach(0..<count, id: \.self) { index in
+                        Capsule()
+                            .fill(index == current ? Palette.dawn : Palette.slate.opacity(0.35))
+                            .frame(width: index == current ? 18 : 6, height: 6)
+                    }
+                }
+            } else {
+                Text("\(current + 1) de \(count)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
             }
         }
+        .animation(.spring(duration: 0.35, bounce: 0.2), value: current)
         .animation(.spring(duration: 0.4), value: count)
         .accessibilityElement()
-        .accessibilityLabel("\(count) cosas pendientes")
+        .accessibilityLabel("\(current + 1) de \(count) pendientes")
     }
 }
 

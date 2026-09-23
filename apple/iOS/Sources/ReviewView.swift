@@ -157,12 +157,30 @@ struct ReviewView: View {
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
-            TextField("Comentario general (opcional)", text: $general, axis: .vertical)
-                .lineLimit(2...8)
-                .focused($generalFocused)
-                .padding(14)
-                .background(Palette.card, in: .rect(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Comentario general (opcional)", text: $general, axis: .vertical)
+                    .lineLimit(2...8)
+                    .focused($generalFocused)
+                if hasFeedback {
+                    Button {
+                        sendFeedback()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.body.weight(.bold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.circle)
+                    .tint(kind.tint)
+                    .disabled(sending)
+                    .accessibilityLabel(sendLabel)
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .animation(.spring(duration: 0.3, bounce: 0.3), value: hasFeedback)
+            .padding(14)
+            .background(Palette.card, in: .rect(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
         }
     }
 
@@ -172,15 +190,14 @@ struct ReviewView: View {
             HStack(spacing: 12) {
                 switch item {
                 case .question(let question):
-                    let change = changeOption(question)
                     Button {
-                        let text = feedbackText
-                        finish(change ?? "Respondido") { try await $0.answer(question.id, text: text, option: change) }
+                        sendFeedback()
                     } label: {
-                        Label(change ?? "Responder", systemImage: "text.bubble")
+                        Label(changeOption(question) ?? "Responder", systemImage: "text.bubble")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glass)
+                    .modifier(GlassEmphasis(prominent: hasFeedback))
+                    .tint(kind.tint)
                     .disabled(!hasFeedback || sending)
                     if let approve = approveOption(question) {
                         Button {
@@ -195,16 +212,13 @@ struct ReviewView: View {
                     }
                 case .report(let report):
                     Button {
-                        let text = feedbackText
-                        finish("Enviado") { client in
-                            try await client.send(to: report.sessionId, text: text)
-                            try await client.markRead(report.id)
-                        }
+                        sendFeedback()
                     } label: {
                         Label("Enviar comentarios", systemImage: "paperplane")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glass)
+                    .modifier(GlassEmphasis(prominent: hasFeedback))
+                    .tint(kind.tint)
                     .disabled(!hasFeedback || sending)
                     Button {
                         finish("Leído") { try await $0.markRead(report.id) }
@@ -225,6 +239,28 @@ struct ReviewView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
+    }
+
+    private var sendLabel: String {
+        switch item {
+        case .question(let question): changeOption(question) ?? "Responder"
+        case .report: "Enviar comentarios"
+        }
+    }
+
+    private func sendFeedback() {
+        guard hasFeedback, !sending else { return }
+        let text = feedbackText
+        switch item {
+        case .question(let question):
+            let change = changeOption(question)
+            finish(change ?? "Respondido") { try await $0.answer(question.id, text: text, option: change) }
+        case .report(let report):
+            finish("Enviado") { client in
+                try await client.send(to: report.sessionId, text: text)
+                try await client.markRead(report.id)
+            }
+        }
     }
 
     private var feedbackText: String {
@@ -401,6 +437,18 @@ private struct CommentSheet: View {
         .onAppear {
             text = initial
             focused = true
+        }
+    }
+}
+
+private struct GlassEmphasis: ViewModifier {
+    let prominent: Bool
+
+    func body(content: Content) -> some View {
+        if prominent {
+            content.buttonStyle(.glassProminent)
+        } else {
+            content.buttonStyle(.glass)
         }
     }
 }

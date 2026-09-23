@@ -187,11 +187,25 @@ public final class FleetStore {
         focusRequest += 1
     }
 
+    public private(set) var position = 0
+
     public func skip(_ item: InboxItem) {
+        let count = queue.count
         animate(.spring(duration: 0.5, bounce: 0.25)) {
             skipped.removeAll { $0 == item.id }
             skipped.append(item.id)
         }
+        position = count > 0 ? (position + 1) % count : 0
+        skippedCount += 1
+    }
+
+    public func previous() {
+        let current = queue
+        guard current.count > 1 else { return }
+        animate(.spring(duration: 0.5, bounce: 0.25)) {
+            skipped = current.dropLast().map(\.id)
+        }
+        position = (position - 1 + current.count) % current.count
         skippedCount += 1
     }
 

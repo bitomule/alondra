@@ -71,7 +71,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
                 session_id,
                 node_name,
                 title: title_of(&entry.q),
-                detail: Some(entry.q.clone()),
+                detail: Some(detail_of(&entry.q)),
                 options: vec![],
                 links: vec![],
                 attachments: vec![],
@@ -165,6 +165,13 @@ fn save(path: &Path, imported: &BTreeMap<u64, u64>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn detail_of(q: &str) -> String {
+    match q.split_once(". ") {
+        Some((first, rest)) if first.chars().count() <= TITLE_MAX && !rest.trim().is_empty() => rest.trim().to_string(),
+        _ => q.to_string(),
+    }
+}
+
 fn title_of(q: &str) -> String {
     let first = q.split(". ").next().unwrap_or(q).trim();
     if first.chars().count() <= TITLE_MAX {
@@ -182,6 +189,9 @@ mod tests {
     #[test]
     fn title_is_the_first_sentence_capped_on_a_word() {
         assert_eq!(title_of("Lumo: el arreglo está en la PR #150. Con pruebas."), "Lumo: el arreglo está en la PR #150");
+        assert_eq!(detail_of("Lumo: el arreglo está en la PR #150. Con pruebas."), "Con pruebas.");
+        let long = format!("{} fin. Resto.", "palabra ".repeat(40));
+        assert_eq!(detail_of(&long), long);
         let long = "palabra ".repeat(40);
         let t = title_of(&long);
         assert!(t.ends_with('…') && t.chars().count() <= TITLE_MAX + 1 && !t.contains("  "));
