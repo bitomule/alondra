@@ -3,3 +3,4 @@ target/
 bazel-*
 signing/*.mobileprovision
 signing/signing.bzl
+.claude/
