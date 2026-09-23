@@ -81,6 +81,16 @@
         }
       }
     },
+    "%lld cores": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld núcleos"
+          }
+        }
+      }
+    },
     "%lld nodes working": {
       "localizations": {
         "en": {
@@ -327,6 +337,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Entre las %1$@ y las %2$@ los avisos llegan sin sonido y sin encender la pantalla."
+          }
+        }
+      }
+    },
+    "CPU in use": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CPU en uso"
           }
         }
       }
@@ -647,6 +667,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Carga"
+          }
+        }
+      }
+    },
+    "Load average": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Carga media"
           }
         }
       }

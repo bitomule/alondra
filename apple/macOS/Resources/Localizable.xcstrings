@@ -331,12 +331,42 @@
         }
       }
     },
+    "CPU": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CPU"
+          }
+        }
+      }
+    },
+    "CPU in use: %lld%%. Load average %@ over %lld cores: how many processes want the CPU at once.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CPU en uso: %lld%%. Carga media %@ con %lld núcleos: cuántos procesos quieren la CPU a la vez."
+          }
+        }
+      }
+    },
     "Cancel": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Cancelar"
+          }
+        }
+      }
+    },
+    "Claude this week: %lld%% of the weekly limit used. It resets %@; from here that leaves about %lld%% per day.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude esta semana: %lld%% del límite semanal usado. Se reinicia %@; desde ahora quedan unos %lld%% por día."
           }
         }
       }
@@ -651,6 +681,26 @@
         }
       }
     },
+    "Memory": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memoria"
+          }
+        }
+      }
+    },
+    "Memory in use: %lld%% (%@ available). Below 15%% free, Alondra tells the orchestrator not to launch nodes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Memoria en uso: %lld%% (%@ disponibles). Con menos del 15%% libre, Alondra le dice al orquestador que no lance nodos."
+          }
+        }
+      }
+    },
     "Mission": {
       "localizations": {
         "es": {
@@ -797,6 +847,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Orquestador"
+          }
+        }
+      }
+    },
+    "Over pace: the orchestrator asks you before launching new nodes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vas por encima del ritmo: el orquestador te pregunta antes de lanzar nodos nuevos."
           }
         }
       }
@@ -1131,12 +1191,42 @@
         }
       }
     },
+    "The load is so high that these readings may be wrong.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carga es tan alta que estas lecturas pueden estar mal."
+          }
+        }
+      }
+    },
     "This node is gone": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Este nodo ya no está"
+          }
+        }
+      }
+    },
+    "Today": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoy"
+          }
+        }
+      }
+    },
+    "Today: %lld%% of the week spent, against the %lld%% that today's share allows.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hoy: gastado el %lld%% de la semana, frente al %lld%% que te toca hoy."
           }
         }
       }
@@ -1157,6 +1247,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Te espera"
+          }
+        }
+      }
+    },
+    "Week": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Semana"
           }
         }
       }
