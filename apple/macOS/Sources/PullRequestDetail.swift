@@ -8,6 +8,10 @@ struct PullRequestDetail: View {
     @State private var method: String
     @State private var note = ""
     @State private var confirmingMerge = false
+    @State private var files: [DiffFile]?
+    @State private var diffError: String?
+    @State private var comments: [String: String] = [:]
+    @State private var commenting: DiffLine?
 
     init(pr: PullRequest, store: FleetStore) {
         self.pr = pr
@@ -42,14 +46,15 @@ struct PullRequestDetail: View {
                         Label("Open on GitHub", systemImage: "arrow.up.right.square")
                     }
                 }
+                changes
             }
         } bar: {
             HStack(alignment: .center, spacing: 10) {
                 TextField("What should change?", text: $note, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
-                Button("Request Changes") { requestChanges() }
-                    .disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button(comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(comments.count))")) { requestChanges() }
+                    .disabled(review.isEmpty)
                     .controlSize(.large)
                 Picker("Method", selection: $method) {
                     ForEach(pr.methods, id: \.self) { m in
@@ -67,6 +72,12 @@ struct PullRequestDetail: View {
                     .help("Take the card out of the inbox without merging")
             }
         }
+        .sheet(item: $commenting) { line in
+            LineCommentSheet(line: line, initial: line.anchor.flatMap { comments[$0] } ?? "") { text in
+                guard let anchor = line.anchor else { return }
+                comments[anchor] = text.isEmpty ? nil : text
+            }
+        }
         .confirmationDialog("Merge PR #\(pr.number)?", isPresented: $confirmingMerge) {
             Button("Merge (\(PullRequest.methodLabel(method)))") { merge() }
         } message: {
@@ -79,11 +90,45 @@ struct PullRequestDetail: View {
         Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.mergePullRequest(id, method: method) } }
     }
 
+    @ViewBuilder
+    private var changes: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Changes")
+                .font(.title3.weight(.semibold))
+            if let files {
+                Text("Click a line to comment on it")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                DiffView(files: files, comments: comments) { commenting = $0 }
+            } else if let diffError {
+                Label(diffError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .task(id: pr.id) { await loadDiff() }
+    }
+
+    private var review: String {
+        ReviewExport.text(comments: orderedComments(comments, in: files ?? []), general: note)
+    }
+
+    private func loadDiff() async {
+        do {
+            files = UnifiedDiff.parse(try await store.client.pullRequestDiff(pr.id))
+        } catch {
+            diffError = error.localizedDescription
+        }
+    }
+
     private func requestChanges() {
-        let (id, text) = (pr.id, note.trimmingCharacters(in: .whitespacesAndNewlines))
+        let (id, text) = (pr.id, review)
         Task {
             if await store.resolve(.pullRequest(pr), { try await $0.requestChanges(onPullRequest: id, text: text) }) {
                 note = ""
+                comments = [:]
             }
         }
     }
