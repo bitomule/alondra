@@ -87,6 +87,35 @@ pub async fn report_asks_for_action(text: &str, user: &str) -> bool {
     answer["label"].as_str() == Some("pide_algo")
 }
 
+const EXPECTS_QUESTION: &str = "This is the last message of a coding agent that has just ended its turn. What does it expect from the person supervising it? decide = it asks them to decide or answer something; act = it asks them to do something outside (test on a device, get a key, review something); nothing = it is done and expects nothing from that person.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expects {
+    Decide,
+    Act,
+    Nothing,
+    Unsure,
+}
+
+pub async fn what_node_expects(text: &str) -> Expects {
+    let out = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("jevi")
+            .args(["ask", EXPECTS_QUESTION, "--options", "decide,act,nothing,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let Ok(Ok(out)) = out else { return Expects::Unsure };
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return Expects::Unsure };
+    match v["answers"]["answer"]["label"].as_str() {
+        Some("decide") => Expects::Decide,
+        Some("act") => Expects::Act,
+        Some("nothing") => Expects::Nothing,
+        _ => Expects::Unsure,
+    }
+}
+
 const SEARCH_CONCURRENCY: usize = 8;
 
 pub async fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {

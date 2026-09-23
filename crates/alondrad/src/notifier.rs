@@ -31,7 +31,7 @@ pub async fn run(hub: Arc<Hub>) {
             for q in v.questions.range(last_question + 1..).map(|(_, q)| q).filter(|q| q.to_orchestrator && q.status.is_open()) {
                 lines.push(format!("- Pregunta #{} para ti de {}: {}", q.id, q.node_name.clone().unwrap_or_default(), q.title));
             }
-            for n in v.nodes.values().filter(|n| n.state == NodeState::Unclear && !n.is_orchestrator && n.alive) {
+            for n in v.nodes.values().filter(|n| n.state == NodeState::Unclear && !n.is_orchestrator && n.in_daemon) {
                 if unclear_told.contains(&(n.session_id.clone(), n.state_since)) {
                     continue;
                 }

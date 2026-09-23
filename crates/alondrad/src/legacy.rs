@@ -134,7 +134,7 @@ fn resolve(v: &View, node: &str, orchestrator_short: Option<&str>) -> Option<Str
     }
     v.nodes
         .values()
-        .find(|n| n.is_orchestrator && n.alive)
+        .find(|n| n.is_orchestrator && n.in_daemon)
         .map(|n| n.session_id.clone())
         .or_else(|| orchestrator_short.and_then(by))
 }
