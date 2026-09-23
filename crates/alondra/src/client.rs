@@ -44,6 +44,65 @@ pub struct Overview {
 pub struct Client {
     base: String,
     agent: ureq::Agent,
+    signer: Option<Signer>,
+}
+
+struct Signer {
+    device: String,
+    key: p256::ecdsa::SigningKey,
+}
+
+const KEY_FILE: &str = "tui-key.pem";
+const DEVICE_FILE: &str = "tui-device";
+
+impl Signer {
+    fn sign(&self, method: &str, path: &str, body: &[u8]) -> [(&'static str, String); 3] {
+        use base64::Engine as _;
+        use p256::ecdsa::signature::Signer as _;
+        use sha2::Digest as _;
+        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()).to_string();
+        let digest: String = sha2::Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
+        let message = format!("{method}\n{path}\n{timestamp}\n{digest}");
+        let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
+        [
+            ("x-alondra-device", self.device.clone()),
+            ("x-alondra-timestamp", timestamp),
+            ("x-alondra-signature", base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())),
+        ]
+    }
+
+    /// The key this terminal signs the user's answers with, paired with alondrad on first use.
+    fn load_or_pair(unsigned: &Client) -> Result<Signer> {
+        use base64::Engine as _;
+        use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
+        let home = &config().home;
+        let key_path = home.join(KEY_FILE);
+        let device_path = home.join(DEVICE_FILE);
+        if let (Ok(pem), Ok(device)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&device_path)) {
+            let key = p256::ecdsa::SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow!("{KEY_FILE}: {e}"))?;
+            return Ok(Signer { device: device.trim().to_string(), key });
+        }
+        let mut seed = [0u8; 32];
+        std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
+        let key = p256::ecdsa::SigningKey::from_slice(&seed).map_err(|e| anyhow!("key: {e}"))?;
+        let code = unsigned.post("/v1/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
+        let public = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
+        let host = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "Mac".into());
+        let paired = unsigned.post("/v1/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
+        let device = paired.get("device_id").and_then(Value::as_str).context("no device id")?.to_string();
+        let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| anyhow!("key: {e}"))?;
+        std::fs::create_dir_all(home)?;
+        write_private(&key_path, pem.as_bytes())?;
+        write_private(&device_path, device.as_bytes())?;
+        Ok(Signer { device, key })
+    }
+}
+
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    std::io::Write::write_all(&mut f, bytes)?;
+    Ok(())
 }
 
 impl Client {
@@ -56,7 +115,25 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent }
+        Client { base: format!("http://{host}:{port}"), agent, signer: None }
+    }
+
+    /// A client whose requests are signed as the user: for the TUI and the commands the user
+    /// types. Falls back to unsigned (and says so on stderr) when pairing is impossible.
+    pub fn for_user(timeout: Duration) -> Self {
+        let mut client = Self::new(timeout);
+        match Signer::load_or_pair(&client) {
+            Ok(signer) => client.signer = Some(signer),
+            Err(e) => eprintln!("{}", trf!("alondra: answers will go unsigned ({e})", "alondra: las respuestas irán sin firmar ({e})")),
+        }
+        client
+    }
+
+    fn signed(&self, req: ureq::RequestBuilder<ureq::typestate::WithoutBody>, method: &str, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        match &self.signer {
+            Some(s) => s.sign(method, path, b"").into_iter().fold(req, |r, (k, v)| r.header(k, v)),
+            None => req,
+        }
     }
 
     fn check(mut resp: ureq::http::Response<ureq::Body>) -> Result<(u16, String)> {
@@ -73,7 +150,7 @@ impl Client {
     }
 
     pub fn get_text(&self, path: &str) -> Result<(u16, String)> {
-        let resp = self.agent.get(format!("{}{path}", self.base)).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        let resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp)
     }
 
@@ -83,17 +160,20 @@ impl Client {
     }
 
     pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
-        let resp = self
-            .agent
-            .post(format!("{}{path}", self.base))
-            .send_json(body)
-            .context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        let bytes = serde_json::to_vec(body)?;
+        let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/json");
+        if let Some(s) = &self.signer {
+            for (k, v) in s.sign("POST", path, &bytes) {
+                req = req.header(k, v);
+            }
+        }
+        let resp = req.send(&bytes[..]).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         let (_, text) = Self::check(resp)?;
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
-        let resp = self.agent.delete(format!("{}{path}", self.base)).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        let resp = self.signed(self.agent.delete(format!("{}{path}", self.base)), "DELETE", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp).map(|_| ())
     }
 

@@ -551,7 +551,7 @@ impl App {
 
     fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
         self.spawn(move |tx| {
-            let client = Client::new(Duration::from_secs(15));
+            let client = Client::for_user(Duration::from_secs(15));
             let mut result = Ok(ok);
             for (i, (path, body)) in calls.into_iter().enumerate() {
                 if let Err(e) = client.post(&path, &body)
@@ -571,7 +571,7 @@ impl App {
         }
         let path = path.to_string();
         self.spawn(move |tx| {
-            let result = Client::new(Duration::from_secs(10))
+            let result = Client::for_user(Duration::from_secs(10))
                 .get_text(&format!("/v1/file?path={}", urlencode(&path)))
                 .map(|(_, body)| body)
                 .map_err(|e| e.to_string());
@@ -689,7 +689,7 @@ impl App {
                 s.remote = Remote::Pending;
             }
             self.spawn(move |tx| {
-                let result = Client::new(Duration::from_secs(120))
+                let result = Client::for_user(Duration::from_secs(120))
                     .get::<Value>(&format!("/v1/search?q={}", urlencode(&q)))
                     .map(|v| {
                         let via = v["via"].as_str().unwrap_or("").to_string();

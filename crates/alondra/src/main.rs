@@ -90,12 +90,12 @@ fn main() -> Result<()> {
         None => tui::run(),
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, text }) => {
-            Client::new(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
+            Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
             println!("{}", trf!("Answered #{id}", "Contestada #{id}"));
             Ok(())
         }
         Some(Cmd::Send { node, text }) => {
-            let r = Client::new(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" ")}))?;
+            let r = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" ")}))?;
             let msg = r.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             println!("{}", trf!("Message {msg} is in {node}'s inbox", "Mensaje {msg} en la bandeja de {node}"));
             Ok(())

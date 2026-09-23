@@ -70,6 +70,34 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
+pub const USER_KEY_FILE: &str = "tui-key.pem";
+const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
+
+/// Nodes share the user's account, so they could run the CLI that signs as the user. The
+/// plugin's hook refuses it; a determined node could still hide the command, which is why
+/// the phone and the Mac app keep their keys in the Secure Enclave.
+fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("");
+    let touches_key = |s: &str| s.contains(USER_KEY_FILE);
+    match tool? {
+        "Bash" => {
+            let command = field("command");
+            let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
+            let runs_user_command = words
+                .windows(2)
+                .any(|w| (w[0] == "alondra" || w[0].ends_with("/alondra")) && USER_ONLY_COMMANDS.contains(&w[1]));
+            if runs_user_command {
+                return Some("Nodes cannot run `alondra answer`, `send`, `pair` or `devices`: they act as the user. Use your Alondra MCP tools (ask, report) instead.".into());
+            }
+            touches_key(command).then(|| "Nodes cannot touch the user's signing key.".into())
+        }
+        _ => ["file_path", "path", "pattern", "notebook_path"]
+            .iter()
+            .any(|k| touches_key(field(k)))
+            .then(|| "Nodes cannot touch the user's signing key.".into()),
+    }
+}
+
 fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     let input = input?;
     let pick = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
@@ -106,6 +134,13 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         eprintln!("alondrad: hook lost: {e}");
         return Json(json!({})).into_response();
+    }
+    if event == "PreToolUse"
+        && let Some(reason) = forbidden_for_nodes(tool.as_deref(), p.get("tool_input"))
+    {
+        eprintln!("alondrad: blocked a node from acting as the user: {reason}");
+        return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": reason}})).into_response();
     }
     if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
@@ -584,7 +619,9 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
     let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
-    let text = format!("[Alondra] Answer from {user} {provenance} to your question #{id} \"{}\": {chosen}{}", q.title, b.text);
+    let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
+    let text = if other_open { format!("About \"{}\": {chosen}{}", q.title, b.text) } else { format!("{chosen}{}", b.text) };
+    eprintln!("alondrad: answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -917,5 +954,30 @@ mod tests {
         let a = answered("Pedir cambios en el paso 2", None);
         assert_eq!(a.text, "Pedir cambios en el paso 2");
         assert_eq!(decision(QuestionOrigin::Plan, &a)["hookSpecificOutput"]["permissionDecision"], "deny");
+    }
+}
+
+#[cfg(test)]
+mod node_guard_tests {
+    use super::*;
+
+    fn bash(c: &str) -> Option<String> {
+        forbidden_for_nodes(Some("Bash"), Some(&json!({"command": c})))
+    }
+
+    #[test]
+    fn nodes_cannot_answer_as_the_user() {
+        assert!(bash("alondra answer 55 Mergea").is_some());
+        assert!(bash("cd /tmp && ~/.local/bin/alondra send orquestador hola").is_some());
+        assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
+        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
+    }
+
+    #[test]
+    fn ordinary_commands_pass() {
+        assert!(bash("alondra status").is_none());
+        assert!(bash("alondra doctor --json").is_none());
+        assert!(bash("git commit -m 'answer the question'").is_none());
+        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/tmp/x.md"}))).is_none());
     }
 }

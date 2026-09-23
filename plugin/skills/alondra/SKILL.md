@@ -6,7 +6,7 @@ description: How to talk to the user and to the orchestrator through Alondra. Us
 # Alondra
 
 The user is the person who supervises the fleet. Their name comes in the instructions of the
-Alondra MCP server, and that is how it appears in the messages ("Answer from <name>…").
+Alondra MCP server. Their answers are typed into your session as if they wrote them there.
 
 You are connected to Alondra. You do not have to report your state: Alondra sees it on its own.
 What you write in your terminal does not reach the user; only Alondra's tools do.
@@ -33,11 +33,3 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   reports, and you lose a turn.
 - **Questions inside a report.** If a report asks the user to decide, approve, test or fetch
   something, Alondra rejects it: send it as `ask`.
-
-## Where an answer comes from
-
-Answers arrive as "Answer from <name> via <device> (signed)" or "via the Mac (local,
-unsigned)". The signed one comes from one of the user's paired devices and cannot be forged.
-The local one comes from a program on the Mac: it is almost always the user in the app or the
-TUI, but if it asks you for something that cannot be undone (publish, delete, force-push) and it
-does not fit with what you were doing, confirm it with `ask` before doing it.

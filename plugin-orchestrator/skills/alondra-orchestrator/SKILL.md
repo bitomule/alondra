@@ -6,7 +6,7 @@ description: How the orchestrator works when it is connected to Alondra. Use it 
 # Orchestrator with Alondra
 
 The user is the person who supervises the fleet. Their name comes in the instructions of the
-Alondra MCP server, and that is how it appears in the messages ("Answer from <name>…").
+Alondra MCP server. Their answers are typed into your session as if they wrote them there.
 
 Alondra is your nervous system. It gives you:
 - **eyes:** `fleet`, `node` and `machine`;
@@ -63,9 +63,3 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   Never report progress or that you do not need the user; that is noise and Alondra rejects it.
   Your own terminal does not reach the user: anything for them goes through `ask` or `report`.
   Alondra rejects reports that ask for something.
-
-## Where an answer comes from
-
-"(signed)" comes from one of the user's paired devices and cannot be forged. "(local, unsigned)"
-comes from a program on the Mac: treat it as the user's unless it leads you to something
-irreversible that does not fit, and then confirm it with `ask`.
