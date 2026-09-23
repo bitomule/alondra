@@ -117,7 +117,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
             "permissionDecisionReason": "Herramienta de Alondra"}})).into_response();
     }
     let in_subagent = h.agent_id.is_some();
-    if !hub.hold_enabled || in_subagent {
+    if !hub.hold_enabled || in_subagent || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
         return Json(json!({})).into_response();
     }
     match (event.as_str(), tool.as_deref()) {

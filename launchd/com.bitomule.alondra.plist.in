@@ -16,6 +16,8 @@
         <string>https://alondra.davidcollado.dev</string>
         <key>ALONDRA_LISTEN</key>
         <string>0.0.0.0</string>
+        <key>ALONDRA_WAKE</key>
+        <string>1</string>
         <key>ALONDRA_PLUGIN_DIR</key>
         <string>@PLUGIN@</string>
     </dict>

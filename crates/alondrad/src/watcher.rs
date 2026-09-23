@@ -250,6 +250,20 @@ fn mtime_millis(p: &Path) -> Option<i64> {
     Some(m.duration_since(UNIX_EPOCH).ok()?.as_millis() as i64)
 }
 
+pub fn claude_home() -> PathBuf {
+    std::env::var("CLAUDE_HOME").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
+    })
+}
+
+pub fn is_background_session(claude_home: &Path, session_id: &str) -> bool {
+    let Some(short) = session_id.get(..8) else { return false };
+    std::fs::read_to_string(claude_home.join("jobs").join(short).join("state.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v.get("sessionId").and_then(|s| s.as_str()) == Some(session_id))
+}
+
 fn read_roster(p: &Path) -> HashMap<String, i32> {
     let Ok(text) = std::fs::read_to_string(p) else { return HashMap::new() };
     let Ok(v) = serde_json::from_str::<Value>(&text) else { return HashMap::new() };
@@ -336,5 +350,23 @@ fn kqueue_loop(rx: std::sync::mpsc::Receiver<(String, i32)>, exits: mpsc::Sender
                 let _ = exits.blocking_send((session_id, pid));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    #[test]
+    fn only_sessions_with_a_matching_job_are_background() {
+        let home = std::env::temp_dir().join(format!("alondra-bg-{}", std::process::id()));
+        let job = home.join("jobs/abcd1234");
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(job.join("state.json"), r#"{"sessionId":"abcd1234-0000-0000-0000-000000000000"}"#).unwrap();
+        assert!(is_background_session(&home, "abcd1234-0000-0000-0000-000000000000"));
+        assert!(!is_background_session(&home, "abcd1234-ffff-0000-0000-000000000000"));
+        assert!(!is_background_session(&home, "99999999-0000-0000-0000-000000000000"));
+        assert!(!is_background_session(&home, "corto"));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }
