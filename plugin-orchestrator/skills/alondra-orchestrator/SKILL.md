@@ -35,6 +35,9 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
 
 1. **New requests from the user.** They arrive as "[Alondra] New request from <name>: …".
    - Check `machine` before launching. If it does not fit, tell the user with `report` and wait.
+     It also carries the subscription's `usage`. When today is `over_pace` (it has spent more
+     than its slice of the week), `launch` refuses: ask the user with `ask` whether to launch
+     anyway or wait, and pass `over_pace_ok` only if they say to launch.
    - Write the complete mission: what to build, what evidence to leave, what has already been
      ruled out and whom to report to.
    - Launch with `launch`, giving the name its hierarchy (`lumo/phase-c`).

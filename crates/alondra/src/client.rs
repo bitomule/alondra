@@ -39,6 +39,8 @@ pub struct Overview {
     #[serde(default)]
     pub news: Vec<Report>,
     pub machine: Machine,
+    #[serde(default)]
+    pub usage: Option<alondra_core::usage::Usage>,
 }
 
 pub struct Client {

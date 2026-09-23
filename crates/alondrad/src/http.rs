@@ -435,6 +435,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
 
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
     let machine = hub.machine();
+    let usage = crate::usage::current(&crate::watcher::claude_home());
     let body = hub.read(|v| {
         let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
         nodes.sort_by_key(|n| (!n.is_orchestrator, n.state, std::cmp::Reverse(n.last_seen)));
@@ -459,7 +460,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         json!({
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
-            "recent_questions": recent_answered, "reports": reports, "machine": machine,
+            "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
             "user": hub.config.name,
         })
     });
@@ -726,6 +727,18 @@ fn action_reply(answer: &Answer, user: &str) -> String {
         _ if said.eq_ignore_ascii_case(answer_option::DONE) => format!("{user} has done it."),
         _ => said.to_string(),
     }
+}
+
+/// Over today's slice of the week, new nodes wait unless the user said to launch anyway.
+fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool) -> Option<String> {
+    let u = usage.filter(|u| u.over_pace && !over_pace_ok)?;
+    Some(format!(
+        "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left). Do not launch: tell the user, and launch with over_pace_ok only if they say so.",
+        u.today_spent.unwrap_or(0.0),
+        u.today_share.unwrap_or(0.0),
+        u.week_percent,
+        u.per_day_left
+    ))
 }
 
 /// A menu card is answered by pressing the option's number in the node's terminal.
@@ -1155,9 +1168,14 @@ struct LaunchBody {
     prompt: String,
     model: Option<String>,
     permission_mode: Option<String>,
+    #[serde(default)]
+    over_pace_ok: bool,
 }
 
 async fn launch(Json(b): Json<LaunchBody>) -> Response {
+    if let Some(reason) = launch_blocked(crate::usage::current(&crate::watcher::claude_home()).as_ref(), b.over_pace_ok) {
+        return err(StatusCode::CONFLICT, reason);
+    }
     if !std::path::Path::new(&b.cwd).is_dir() {
         return err(StatusCode::BAD_REQUEST, format!("directory {} does not exist", b.cwd));
     }
@@ -1234,6 +1252,22 @@ mod tests {
         for (a, expected) in cases {
             assert_eq!(action_reply(&a, "Ana"), expected, "{a:?}");
         }
+    }
+
+    #[test]
+    fn launching_over_todays_slice_needs_the_users_word() {
+        let over = alondra_core::usage::Usage { today_spent: Some(41.0), today_share: Some(18.0), week_percent: 53.0, per_day_left: 9.0, over_pace: true, ..Default::default() };
+        let within = alondra_core::usage::Usage { over_pace: false, ..over.clone() };
+        let cases = [
+            ("over pace", Some(&over), false, true),
+            ("over pace, the user said go", Some(&over), true, false),
+            ("within today's slice", Some(&within), false, false),
+            ("no usage known on this Mac", None, false, false),
+        ];
+        for (what, usage, ok, blocked) in cases {
+            assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
+        }
+        assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
     }
 
     #[test]

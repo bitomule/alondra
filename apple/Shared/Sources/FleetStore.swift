@@ -63,6 +63,7 @@ public final class FleetStore {
     public var news: [Report] { overview?.news ?? [] }
     public var nodes: [Node] { overview?.nodes ?? [] }
     public var machine: Machine? { overview?.machine }
+    public var usage: Usage? { overview?.usage }
     public var userName: String { overview?.user ?? "" }
     public var orchestrator: Node? { nodes.filter(\.isOrchestrator).max { !$0.alive && $1.alive } }
     public var sentToOrchestrator: [SentMessage] {

@@ -10,6 +10,7 @@ mod notifier;
 mod push;
 mod sentinel;
 mod store;
+mod usage;
 mod wake;
 mod watcher;
 mod worktree;
