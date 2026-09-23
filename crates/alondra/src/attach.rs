@@ -20,7 +20,17 @@ impl RawMode {
 impl Drop for RawMode {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+        reset_terminal_modes();
     }
+}
+
+const RESET_MODES: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[?1049l\x1b[?25h";
+
+pub fn reset_terminal_modes() {
+    let mut out = std::io::stdout();
+    let _ = out.write_all(RESET_MODES);
+    let _ = out.flush();
 }
 
 struct Fd(RawFd);

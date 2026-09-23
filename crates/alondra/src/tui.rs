@@ -249,6 +249,7 @@ pub fn run() -> Result<()> {
     let res = main_loop(&mut terminal, App::new(tx), rx);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
+    crate::attach::reset_terminal_modes();
     res
 }
 
