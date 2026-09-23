@@ -168,9 +168,13 @@ pub fn urlencode(s: &str) -> String {
 
 pub fn serve(role: Role) -> Result<()> {
     let client = Client::new(Duration::from_secs(30));
-    if role == Role::Orchestrator {
-        let _ = client.post("/v1/orchestrator", &caller());
-    }
+    let mut registered = role != Role::Orchestrator;
+    let mut register = |client: &Client| {
+        if !registered {
+            registered = client.post("/v1/orchestrator", &caller()).is_ok();
+        }
+    };
+    register(&client);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -192,6 +196,7 @@ pub fn serve(role: Role) -> Result<()> {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tools(role)})),
             "tools/call" => {
+                register(&client);
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match call(&client, role, name, &args) {
