@@ -119,13 +119,13 @@ struct ListMarkerView: View {
     var body: some View {
         switch marker {
         case .bullet:
-            Text("•").foregroundStyle(.secondary)
+            Text(verbatim: "•").foregroundStyle(.secondary)
         case .number(let n):
-            Text("\(n).").monospacedDigit().foregroundStyle(.secondary)
+            Text(verbatim: "\(n).").monospacedDigit().foregroundStyle(.secondary)
         case .task(let done):
             Image(systemName: done ? "checkmark.square.fill" : "square")
                 .foregroundStyle(done ? Color.accentColor : .secondary)
-                .accessibilityLabel(done ? "Hecho" : "Pendiente")
+                .accessibilityLabel(done ? String(localized: "Done") : String(localized: "Pending"))
         }
     }
 }

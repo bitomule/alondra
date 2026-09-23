@@ -165,7 +165,7 @@ public struct AlondraClient: Sendable {
         guard let http = response as? HTTPURLResponse, http.statusCode >= 400 else { return }
         if http.statusCode == 401 { throw AlondraError.unauthorized }
         let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
-        throw AlondraError.server(message ?? "El servidor respondió \(http.statusCode)")
+        throw AlondraError.server(message ?? String(localized: "The server responded \(http.statusCode)", table: "AlondraShared", bundle: #bundle))
     }
 }
 
@@ -227,7 +227,7 @@ public enum AlondraError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .server(let message): message
-        case .unauthorized: "Este dispositivo no está vinculado"
+        case .unauthorized: String(localized: "This device is not paired", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
@@ -241,9 +241,9 @@ extension Error {
     public var friendlyDescription: String {
         guard let urlError = self as? URLError else { return localizedDescription }
         switch urlError.code {
-        case .cannotConnectToHost, .cannotFindHost: return "No encuentro el servidor de Alondra"
-        case .notConnectedToInternet, .networkConnectionLost: return "Sin conexión"
-        case .timedOut: return "El servidor no contesta"
+        case .cannotConnectToHost, .cannotFindHost: return String(localized: "Can’t find the Alondra server", table: "AlondraShared", bundle: #bundle)
+        case .notConnectedToInternet, .networkConnectionLost: return String(localized: "No connection", table: "AlondraShared", bundle: #bundle)
+        case .timedOut: return String(localized: "The server isn’t responding", table: "AlondraShared", bundle: #bundle)
         default: return urlError.localizedDescription
         }
     }

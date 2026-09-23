@@ -76,13 +76,13 @@ struct ReviewView: View {
                 if let name = item.nodeName {
                     Text(name).font(.mono(.footnote, weight: .medium))
                 }
-                Text("·")
+                Text(verbatim: "·")
                 Text(relative(item.date))
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
             if loaded, loadError == nil, !blocks.isEmpty {
-                Label("Toca un bloque para comentarlo", systemImage: "hand.tap")
+                Label("Tap a block to comment on it", systemImage: "hand.tap")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(kind.tint)
                     .padding(.top, 4)
@@ -94,11 +94,11 @@ struct ReviewView: View {
     private var content: some View {
         if let loadError {
             ContentUnavailableView {
-                Label("No se pudo abrir", systemImage: "doc.questionmark")
+                Label("Couldn’t open it", systemImage: "doc.questionmark")
             } description: {
                 Text(loadError)
             } actions: {
-                Button("Reintentar") { Task { await load() } }
+                Button("Try Again") { Task { await load() } }
                     .buttonStyle(.glass)
             }
             .frame(maxWidth: .infinity)
@@ -127,24 +127,24 @@ struct ReviewView: View {
     private var commentsSummary: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Tus comentarios")
+                Text("Your comments")
                     .font(.display(.title3))
                 Spacer()
                 if !comments.isEmpty {
-                    Text("\(comments.count)")
+                    Text(comments.count, format: .number)
                         .font(.subheadline.monospacedDigit().weight(.bold))
                         .foregroundStyle(kind.tint)
                         .contentTransition(.numericText())
                 }
             }
             if feedbackComments.isEmpty {
-                Text("Todavía no has comentado ningún bloque.")
+                Text("You haven’t commented on any block yet.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             ForEach(commentedBlocks) { block in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("\(number(of: block)). «\(ReviewFeedback.quote(block.plainText))»")
+                    Text("\(number(of: block)). “\(ReviewFeedback.quote(block.plainText))”")
                         .font(.footnote.italic())
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
@@ -157,7 +157,7 @@ struct ReviewView: View {
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
-            TextField("Comentario general (opcional)", text: $general, axis: .vertical)
+            TextField("General comment (optional)", text: $general, axis: .vertical)
                 .lineLimit(2...8)
                 .focused($generalFocused)
                 .padding(14)
@@ -175,7 +175,7 @@ struct ReviewView: View {
                     Button {
                         sendFeedback()
                     } label: {
-                        Label(changeOption(question) ?? "Responder", systemImage: "text.bubble")
+                        Label(changeOption(question).map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
                             .frame(maxWidth: .infinity)
                     }
                     .modifier(GlassEmphasis(prominent: hasFeedback))
@@ -185,7 +185,7 @@ struct ReviewView: View {
                         Button {
                             finish(approve) { try await $0.answer(question.id, text: approve, option: approve) }
                         } label: {
-                            Label(approve, systemImage: "checkmark")
+                            Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.glassProminent)
@@ -196,16 +196,16 @@ struct ReviewView: View {
                     Button {
                         sendFeedback()
                     } label: {
-                        Label("Enviar comentarios", systemImage: "paperplane")
+                        Label("Send Comments", systemImage: "paperplane")
                             .frame(maxWidth: .infinity)
                     }
                     .modifier(GlassEmphasis(prominent: hasFeedback))
                     .tint(kind.tint)
                     .disabled(!hasFeedback || sending)
                     Button {
-                        finish("Leído") { try await $0.markRead(report.id) }
+                        finish(HandoffLabel.read) { try await $0.markRead(report.id) }
                     } label: {
-                        Label("Leído", systemImage: "checkmark")
+                        Label("Mark as Read", systemImage: "checkmark")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glassProminent)
@@ -229,9 +229,9 @@ struct ReviewView: View {
         switch item {
         case .question(let question):
             let change = changeOption(question)
-            finish(change ?? "Respondido") { try await $0.answer(question.id, text: text, option: change) }
+            finish(change ?? HandoffLabel.answered) { try await $0.answer(question.id, text: text, option: change) }
         case .report(let report):
-            finish("Enviado") { client in
+            finish(HandoffLabel.sent) { client in
                 try await client.send(to: report.sessionId, text: text)
                 try await client.markRead(report.id)
             }
@@ -243,13 +243,13 @@ struct ReviewView: View {
     }
 
     private func approveOption(_ question: Question) -> String? {
-        if question.origin == "plan" { return "Aprobar" }
-        return question.options.map(\.label).first { $0.hasPrefix("Aprobar") || $0 == "Permitir" }
+        if question.origin == "plan" { return AnswerOption.approve }
+        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.approve) || $0 == AnswerOption.allow }
     }
 
     private func changeOption(_ question: Question) -> String? {
-        if question.origin == "plan" { return "Pedir cambios" }
-        return question.options.map(\.label).first { $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == "Denegar" }
+        if question.origin == "plan" { return AnswerOption.requestChanges }
+        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
     }
 
     private func finish(_ label: String, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
@@ -338,7 +338,7 @@ private struct BlockRow: View {
             .buttonStyle(BlockButtonStyle(tint: tint))
             .foregroundStyle(Palette.ink)
             .padding(.horizontal, -12)
-            .accessibilityHint(comment == nil ? "Añadir comentario" : "Editar comentario")
+            .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
         } else {
             MarkdownBlockView(block: block)
         }
@@ -377,29 +377,29 @@ private struct CommentSheet: View {
                             .lineLimit(6)
                     }
                     .fixedSize(horizontal: false, vertical: true)
-                    TextField("¿Qué cambiarías aquí?", text: $text, axis: .vertical)
+                    TextField("What would you change here?", text: $text, axis: .vertical)
                         .font(.body)
                         .lineLimit(4...12)
                         .focused($focused)
                 }
                 .padding(20)
             }
-            .navigationTitle(initial.isEmpty ? "Comentar" : "Editar comentario")
+            .navigationTitle(initial.isEmpty ? String(localized: "Comment") : String(localized: "Edit Comment"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancelar", systemImage: "xmark") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
                 }
                 if !initial.isEmpty {
                     ToolbarItem(placement: .destructiveAction) {
-                        Button("Borrar", systemImage: "trash", role: .destructive) {
+                        Button("Delete", systemImage: "trash", role: .destructive) {
                             onSave("")
                             dismiss()
                         }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Guardar", systemImage: "checkmark") {
+                    Button("Save", systemImage: "checkmark") {
                         onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
                         dismiss()
                     }

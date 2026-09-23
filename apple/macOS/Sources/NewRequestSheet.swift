@@ -13,9 +13,9 @@ struct NewRequestSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("¿Qué quieres que se haga?")
+                Text("What do you want done?")
                     .font(.title3.weight(.semibold))
-                Text("Se lo paso al orquestador: prepara la misión y lanza el nodo.")
+                Text("I’ll pass it to the orchestrator: it prepares the mission and launches the node.")
                     .foregroundStyle(.secondary)
             }
             TextEditor(text: $text)
@@ -27,7 +27,7 @@ struct NewRequestSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty {
-                        Text("Por ejemplo: «Revisa por qué Redraft tarda en abrir y propón un arreglo»")
+                        Text("For example: “Find out why Redraft is slow to open and propose a fix”")
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 13)
                             .padding(.vertical, 8)
@@ -36,9 +36,9 @@ struct NewRequestSheet: View {
                 }
                 .focused($focused)
             HStack {
-                Hint(text: "⌘↩ envía · esc cancela")
+                Hint(text: String(localized: "⌘↩ sends · esc cancels"))
                 Spacer()
-                Button("Cancelar", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button {
                     send()
@@ -46,7 +46,7 @@ struct NewRequestSheet: View {
                     if sending {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text("Enviar")
+                        Text("Send")
                     }
                 }
                 .buttonStyle(.borderedProminent)

@@ -21,7 +21,7 @@ struct SettingsView: View {
                 PairingSection(detent: $detent)
                 NotificationsSection()
                 Section {
-                    TextField("http://127.0.0.1:47800", text: $draft)
+                    TextField(ServerSetting.defaultURL, text: $draft)
                         .font(.mono(.body))
                         .keyboardType(.URL)
                         .textContentType(.URL)
@@ -32,30 +32,30 @@ struct SettingsView: View {
                         Task { await test() }
                     } label: {
                         HStack {
-                            Text("Probar conexión")
+                            Text("Test Connection")
                             Spacer()
                             checkBadge
                         }
                     }
                     .disabled(candidate == nil || check == .checking)
                 } header: {
-                    Text("Servidor")
+                    Text("Server")
                 } footer: {
-                    Text(candidate == nil && !draft.isEmpty ? "Escribe una dirección http:// o https:// completa." : "Donde escucha alondrad. En el simulador, el Mac es 127.0.0.1.")
+                    Text(candidate == nil && !draft.isEmpty ? String(localized: "Enter a full http:// or https:// address.") : String(localized: "Where alondrad listens. In the simulator, the Mac is 127.0.0.1."))
                 }
                 Section {
-                    Button("Volver a la dirección local") { draft = ServerSetting.defaultURL }
+                    Button("Use the Local Address") { draft = ServerSetting.defaultURL }
                         .disabled(draft == ServerSetting.defaultURL)
                 }
             }
-            .navigationTitle("Ajustes")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cerrar", systemImage: "xmark") { dismiss() }
+                    Button("Close", systemImage: "xmark") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Guardar", systemImage: "checkmark") {
+                    Button("Save", systemImage: "checkmark") {
                         if let candidate { serverURL = candidate.base.absoluteString }
                         dismiss()
                     }
@@ -79,7 +79,7 @@ struct SettingsView: View {
         switch check {
         case .idle: EmptyView()
         case .checking: ProgressView()
-        case .ok: Label("Conectado", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.sage)
+        case .ok: Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.sage)
         case .failed(let reason): Text(reason).foregroundStyle(Palette.rose).lineLimit(1)
         }
     }
@@ -114,7 +114,7 @@ private struct PairingSection: View {
                         .font(.mono(.subheadline))
                         .foregroundStyle(Palette.ink)
                 }
-                LabeledContent("Dispositivo") {
+                LabeledContent("Device") {
                     Text(device)
                         .font(.mono(.caption))
                         .lineLimit(1)
@@ -125,13 +125,13 @@ private struct PairingSection: View {
                     PairingView()
                         .onAppear { detent = .large }
                 } label: {
-                    Label("Vincular de nuevo", systemImage: "qrcode.viewfinder")
+                    Label("Pair Again", systemImage: "qrcode.viewfinder")
                 }
-                Button("Desvincular", systemImage: "link.badge.minus", role: .destructive) { confirmUnpair = true }
-                    .confirmationDialog("¿Desvincular este iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
-                        Button("Desvincular", role: .destructive) { pairing.unpair() }
+                Button("Unpair", systemImage: "link.badge.minus", role: .destructive) { confirmUnpair = true }
+                    .confirmationDialog("Unpair this iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
+                        Button("Unpair", role: .destructive) { pairing.unpair() }
                     } message: {
-                        Text("Se borra la clave de este iPhone. Para volver a conectarte fuera de este Mac tendrás que vincularlo otra vez.")
+                        Text("This iPhone’s key will be deleted. To connect again from outside this Mac, you’ll have to pair it again.")
                     }
             } else {
                 NavigationLink {
@@ -140,8 +140,8 @@ private struct PairingSection: View {
                 } label: {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Vincular con el Mac")
-                            Text("Escanea el código de alondra pair")
+                            Text("Pair with the Mac")
+                            Text("Scan the code from alondra pair")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -152,12 +152,12 @@ private struct PairingSection: View {
                 }
             }
         } header: {
-            Text("Este iPhone")
+            Text("This iPhone")
         } footer: {
             if pairing.isPaired {
-                Text("Las peticiones fuera de 127.0.0.1 van firmadas con una clave que no sale de este iPhone.")
+                Text("Requests outside 127.0.0.1 are signed with a key that never leaves this iPhone.")
             } else {
-                Text("Sin vincular solo puedes hablar con alondrad en 127.0.0.1.")
+                Text("Without pairing, you can only talk to alondrad at 127.0.0.1.")
             }
         }
     }
@@ -171,35 +171,35 @@ private struct NotificationsSection: View {
     var body: some View {
         @Bindable var push = push
         Section {
-            LabeledContent("Avisos") {
+            LabeledContent("Alerts") {
                 switch push.authorization {
                 case .authorized:
-                    Text("\(Image(systemName: "bell.badge.fill")) Activados").foregroundStyle(Palette.sage)
+                    Text("\(Image(systemName: "bell.badge.fill")) On").foregroundStyle(Palette.sage)
                 case .denied:
-                    Button("Desactivados · Abrir Ajustes") {
+                    Button("Off · Open Settings") {
                         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
                     }
                     .foregroundStyle(Palette.rose)
                 case .notDetermined:
-                    Button("Activar") { Task { await push.activate() } }
+                    Button("Turn On") { Task { await push.activate() } }
                 case .unknown:
                     ProgressView()
                 }
             }
             if push.authorization == .authorized, pairing.isPaired {
-                LabeledContent("En el Mac") { registrationStatus }
+                LabeledContent("On the Mac") { registrationStatus }
             }
-            Toggle("Horas de silencio", isOn: $push.quietHours.enabled.animation())
+            Toggle("Quiet Hours", isOn: $push.quietHours.enabled.animation())
             if push.quietHours.enabled {
-                DatePicker("Desde", selection: time($push.quietHours.start), displayedComponents: .hourAndMinute)
-                DatePicker("Hasta", selection: time($push.quietHours.end), displayedComponents: .hourAndMinute)
+                DatePicker("From", selection: time($push.quietHours.start), displayedComponents: .hourAndMinute)
+                DatePicker("To", selection: time($push.quietHours.end), displayedComponents: .hourAndMinute)
             }
         } header: {
-            Text("Notificaciones")
+            Text("Notifications")
         } footer: {
             Text(push.quietHours.enabled
-                ? "Entre las \(QuietHours.clock(push.quietHours.start)) y las \(QuietHours.clock(push.quietHours.end)) los avisos llegan sin sonido y sin encender la pantalla."
-                : "Puedes responder, permitir o aprobar desde la pantalla bloqueada.")
+                ? String(localized: "Between \(QuietHours.clock(push.quietHours.start)) and \(QuietHours.clock(push.quietHours.end)), alerts arrive without sound and without waking the screen.")
+                : String(localized: "You can reply, allow or approve from the Lock Screen."))
         }
         .task { await push.refreshAuthorization() }
     }
@@ -207,9 +207,9 @@ private struct NotificationsSection: View {
     @ViewBuilder
     private var registrationStatus: some View {
         switch push.registration {
-        case .idle: Text("Esperando token").foregroundStyle(.secondary)
+        case .idle: Text("Waiting for token").foregroundStyle(.secondary)
         case .sending: ProgressView()
-        case .registered: Text("\(Image(systemName: "checkmark.circle.fill")) Registrado").foregroundStyle(Palette.sage)
+        case .registered: Text("\(Image(systemName: "checkmark.circle.fill")) Registered").foregroundStyle(Palette.sage)
         case .failed(let reason): Text(reason).foregroundStyle(Palette.rose).lineLimit(2)
         }
     }

@@ -15,7 +15,7 @@ struct NodeDetail: View {
             VStack(alignment: .leading, spacing: 22) {
                 header
                 if !items.isEmpty {
-                    section("Te espera") {
+                    section(String(localized: "Waiting for You")) {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(items) { item in
                                 Button { open(item.id) } label: {
@@ -37,27 +37,27 @@ struct NodeDetail: View {
                     }
                 }
                 if let tool = node.tool {
-                    section("Ahora mismo") {
+                    section(String(localized: "Right now")) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: "hammer")
                                 .foregroundStyle(.secondary)
-                            Text("\(tool.name) \(tool.summary ?? "")")
+                            Text(verbatim: "\(tool.name) \(tool.summary ?? "")")
                                 .font(.system(.callout, design: .monospaced))
                                 .textSelection(.enabled)
                             Spacer()
-                            Text("hace \(ago(tool.since))")
+                            Text("\(ago(tool.since)) ago")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
                 if let needs = node.daemonNeeds, !needs.isEmpty {
-                    section("Qué necesita") {
+                    section(String(localized: "What it needs")) {
                         Text(needs).textSelection(.enabled)
                     }
                 }
                 if let last = node.lastMessage ?? node.daemonDetail, !last.isEmpty {
-                    section(node.lastMessageAt.map { "Lo último que dijo · hace \(ago($0))" } ?? "Lo último que dijo") {
+                    section(node.lastMessageAt.map { String(localized: "What it said last · \(ago($0)) ago") } ?? String(localized: "What it said last")) {
                         MarkdownText(text: last)
                     }
                 }
@@ -76,11 +76,11 @@ struct NodeDetail: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Label(node.project ?? "sin proyecto", systemImage: "folder")
+                Label(node.project ?? String(localized: "no project"), systemImage: "folder")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if node.isOrchestrator {
-                    Label("Orquestador", systemImage: "sparkle")
+                    Label("Orchestrator", systemImage: "sparkle")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -91,10 +91,10 @@ struct NodeDetail: View {
             HStack(spacing: 8) {
                 StatusDot(state: node.state, alive: node.alive, size: 9)
                 Text(node.state.label.capitalizedFirst)
-                Text("· hace \(ago(node.stateSince))")
+                Text("· \(ago(node.stateSince)) ago")
                     .foregroundStyle(.secondary)
                 if !node.alive {
-                    Label("Dormido", systemImage: "moon.zzz")
+                    Label("Asleep", systemImage: "moon.zzz")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -120,10 +120,10 @@ private struct NodeComposer: View {
 
     var body: some View {
         Composer(
-            placeholder: node.alive ? "Escribe a \(shortName(node.displayName))…" : "Escribe a \(shortName(node.displayName)) (lo despierta)…",
+            placeholder: node.alive ? String(localized: "Write to \(shortName(node.displayName))…") : String(localized: "Write to \(shortName(node.displayName)) (wakes it up)…"),
             text: $draft.general,
             focus: focus,
-            sendTitle: "Enviar",
+            sendTitle: String(localized: "Send"),
             canSend: !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             send: send
         )

@@ -42,14 +42,14 @@ struct TriageCard: View {
             .overlay { stampOverlay }
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
-            .alert("¿Qué te falta para decidir?", isPresented: $askingContext) {
-                TextField("Opcional", text: $contextNote)
-                Button("Cancelar", role: .cancel) {}
-                Button("Pedir contexto") { requestContext() }
+            .alert("What do you need to decide?", isPresented: $askingContext) {
+                TextField("Optional", text: $contextNote)
+                Button("Cancel", role: .cancel) {}
+                Button("Ask for Context") { requestContext() }
             } message: {
-                Text("El nodo te lo explicará y volverá a preguntar.")
+                Text("The node will explain and ask again.")
             }
-            .accessibilityAction(named: "Dejar para después", onSkip)
+            .accessibilityAction(named: "Leave for Later", onSkip)
             .onChange(of: fleet.handoff?.id, initial: true) {
                 guard let handoff = fleet.handoff, handoff.itemID == item.id else { return }
                 fleet.handoff = nil
@@ -104,7 +104,7 @@ struct TriageCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
         .onTapGesture(perform: onReview)
-        .accessibilityAction(named: "Abrir", onReview)
+        .accessibilityAction(named: "Open", onReview)
     }
 
     private var cardBackground: some View {
@@ -138,7 +138,7 @@ struct TriageCard: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .accessibilityLabel("Dejar para después")
+            .accessibilityLabel("Leave for Later")
         }
     }
 
@@ -152,7 +152,7 @@ struct TriageCard: View {
                     .frame(width: 22, height: 22)
                     .background(node.state.tint.opacity(0.15), in: .circle)
             }
-            Text(item.nodeName ?? node?.displayName ?? "nodo")
+            Text(item.nodeName ?? node?.displayName ?? String(localized: "node"))
                 .font(.mono(.subheadline, weight: .medium))
                 .foregroundStyle(Palette.ink.opacity(0.85))
             if let project = node?.project {
@@ -172,7 +172,7 @@ struct TriageCard: View {
         switch item {
         case .question(let question):
             if question.origin == "plan", let plan = question.detail {
-                excerpt(plan, cta: "Revisar el plan")
+                excerpt(plan, cta: String(localized: "Review the plan"))
             } else {
                 if let detail = question.detail, !detail.isEmpty {
                     if question.origin == "permission" {
@@ -184,13 +184,13 @@ struct TriageCard: View {
                             .background(Palette.night.opacity(0.7), in: .rect(cornerRadius: 14, style: .continuous))
                             .textSelection(.enabled)
                     } else if detail.count > 600 {
-                        excerpt(detail, cta: "Leer entero")
+                        excerpt(detail, cta: String(localized: "Read it all"))
                     } else {
                         blocks(detail)
                     }
                 }
                 ForEach(question.attachments.filter { $0.storedPath != nil }, id: \.sourcePath) { attachment in
-                    reviewButton("Revisar el adjunto", detail: attachment.name, symbol: "doc.text.magnifyingglass")
+                    reviewButton(String(localized: "Review the attachment"), detail: attachment.name, symbol: "doc.text.magnifyingglass")
                 }
             }
             links(question.links)
@@ -200,13 +200,13 @@ struct TriageCard: View {
         case .report(let report):
             if let body = report.body, !body.isEmpty {
                 if report.attachments.isEmpty && body.count > 600 {
-                    excerpt(body, cta: "Leer entero")
+                    excerpt(body, cta: String(localized: "Read it all"))
                 } else {
                     blocks(body)
                 }
             }
             ForEach(report.attachments.filter { $0.storedPath != nil }, id: \.sourcePath) { attachment in
-                reviewButton("Leer el documento", detail: attachment.name, symbol: "doc.richtext")
+                reviewButton(String(localized: "Read the document"), detail: attachment.name, symbol: "doc.richtext")
             }
             links(report.links)
         }
@@ -246,7 +246,7 @@ struct TriageCard: View {
                         Text(cta)
                             .font(.headline)
                             .foregroundStyle(Palette.ink)
-                        Text("\(blocks.count) bloques · toca uno para comentarlo")
+                        Text("\(blocks.count) blocks · tap one to comment on it")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -319,7 +319,7 @@ struct TriageCard: View {
                 withAnimation(.spring(duration: 0.35)) { showNodeContext.toggle() }
             } label: {
                 HStack {
-                    Label("Lo último que dijo el nodo", systemImage: "text.quote")
+                    Label("What the node said last", systemImage: "text.quote")
                     Spacer()
                     Image(systemName: "chevron.down")
                         .rotationEffect(.degrees(showNodeContext ? 180 : 0))
@@ -348,14 +348,14 @@ struct TriageCard: View {
                 OptionGrid(options: question.options, picked: pickedOption) { option in
                     choose(option, in: question)
                 }
-                replyField(placeholder: pickedOption?.description ?? "Responde con tus palabras…") {
+                replyField(placeholder: pickedOption?.displayDescription ?? String(localized: "Answer in your own words…")) {
                     send(answerTo: question)
                 }
                 Button {
                     contextNote = ""
                     askingContext = true
                 } label: {
-                    Label("Necesito más contexto", systemImage: "questionmark.bubble")
+                    Label("I need more context", systemImage: "questionmark.bubble")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                         .frame(minHeight: 30)
@@ -364,17 +364,17 @@ struct TriageCard: View {
             }
         case .report(let report):
             VStack(spacing: 10) {
-                replyField(placeholder: "Contesta a \(item.nodeName ?? "este nodo")…") {
+                replyField(placeholder: String(localized: "Reply to \(item.nodeName ?? String(localized: "this node"))…")) {
                     let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                    resolve(Stamp(label: "Enviado", symbol: "paperplane.fill", tint: Palette.sky)) { client in
+                    resolve(Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)) { client in
                         try await client.send(to: report.sessionId, text: text)
                         try await client.markRead(report.id)
                     }
                 }
                 Button {
-                    resolve(Stamp(label: "Leído", symbol: "checkmark", tint: actionTint)) { try await $0.markRead(report.id) }
+                    resolve(Stamp(label: String(localized: "Read"), symbol: "checkmark", tint: actionTint)) { try await $0.markRead(report.id) }
                 } label: {
-                    Label("Leído", systemImage: "checkmark")
+                    Label("Mark as Read", systemImage: "checkmark")
                         .font(.headline)
                         .frame(maxWidth: .infinity, minHeight: 50)
                 }
@@ -387,7 +387,7 @@ struct TriageCard: View {
         VStack(alignment: .leading, spacing: 8) {
             if let pickedOption {
                 HStack(spacing: 6) {
-                    Text(pickedOption.label)
+                    Text(pickedOption.displayLabel)
                         .font(.caption.weight(.bold))
                     Button {
                         withAnimation(.spring(duration: 0.3)) { self.pickedOption = nil }
@@ -395,7 +395,7 @@ struct TriageCard: View {
                         Image(systemName: "xmark.circle.fill")
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Quitar opción")
+                    .accessibilityLabel("Remove Option")
                 }
                 .foregroundStyle(kind.tint)
                 .padding(.horizontal, 10)
@@ -420,7 +420,7 @@ struct TriageCard: View {
                 .buttonStyle(PressStyle())
                 .disabled(empty)
                 .padding(4)
-                .accessibilityLabel("Enviar")
+                .accessibilityLabel("Send")
                 .animation(.spring(duration: 0.3), value: empty)
             }
             .background(Palette.cardRaised, in: .rect(cornerRadius: 22, style: .continuous))
@@ -464,7 +464,7 @@ struct TriageCard: View {
     private func send(answerTo question: Question) {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         let option = pickedOption?.label
-        resolve(option.map(stamp(for:)) ?? Stamp(label: "Respondido", symbol: "paperplane.fill", tint: Palette.sky)) {
+        resolve(option.map(stamp(for:)) ?? Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky)) {
             try await $0.answer(question.id, text: text, option: option)
         }
     }
@@ -472,17 +472,23 @@ struct TriageCard: View {
     private func requestContext() {
         guard case .question(let question) = item else { return }
         let note = contextNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        resolve(Stamp(label: "Pedido contexto", symbol: "questionmark", tint: Palette.slate)) {
+        resolve(Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate)) {
             try await $0.moreContext(question.id, note: note)
         }
     }
 
     private func stamp(for label: String) -> Stamp {
-        if label == "Leído" { return Stamp(label: label, symbol: "checkmark", tint: actionTint) }
+        switch label {
+        case HandoffLabel.read: return Stamp(label: String(localized: "Read"), symbol: "checkmark", tint: actionTint)
+        case HandoffLabel.answered: return Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: kind.tint)
+        case HandoffLabel.sent: return Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: kind.tint)
+        default: break
+        }
+        let shown = AnswerOption.displayLabel(label)
         return switch OptionTone(label) {
-        case .positive: Stamp(label: label, symbol: "checkmark", tint: Palette.sage)
-        case .negative: Stamp(label: label, symbol: "xmark", tint: Palette.rose)
-        case .neutral: Stamp(label: label, symbol: "paperplane.fill", tint: kind.tint)
+        case .positive: Stamp(label: shown, symbol: "checkmark", tint: Palette.sage)
+        case .negative: Stamp(label: shown, symbol: "xmark", tint: Palette.rose)
+        case .neutral: Stamp(label: shown, symbol: "paperplane.fill", tint: kind.tint)
         }
     }
 
@@ -504,8 +510,15 @@ struct TriageCard: View {
 
     static func needsText(_ option: QuestionOption) -> Bool {
         if let description = option.description, description.lowercased().hasPrefix("escribe") { return true }
-        return ["Pedir cambios", "Denegar"].contains(option.label)
+        return [AnswerOption.requestChanges, AnswerOption.deny].contains(option.label)
     }
+}
+
+/// Outcomes handed over from ReviewView that are not answer options.
+enum HandoffLabel {
+    static let read = "alondra.read"
+    static let answered = "alondra.answered"
+    static let sent = "alondra.sent"
 }
 
 enum OptionTone {
@@ -513,9 +526,9 @@ enum OptionTone {
 
     init(_ label: String) {
         let lower = label.lowercased()
-        if ["aprobar", "permitir", "sí", "si", "vale", "adelante", "ok"].contains(where: { lower.hasPrefix($0) }) {
+        if ["aprobar", "permitir", "sí", "si", "vale", "adelante", "ok", "approve", "allow", "yes"].contains(where: { lower.hasPrefix($0) }) {
             self = .positive
-        } else if ["denegar", "no", "cancelar", "rechazar"].contains(where: { lower == $0 || lower.hasPrefix("\($0) ") }) {
+        } else if ["denegar", "no", "cancelar", "rechazar", "deny", "reject", "cancel"].contains(where: { lower == $0 || lower.hasPrefix("\($0) ") }) {
             self = .negative
         } else {
             self = .neutral
@@ -531,7 +544,7 @@ private struct OptionGrid: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var compact: Bool {
-        options.count == 2 && options.allSatisfy { $0.label.count <= 16 && (TriageCard.needsText($0) || $0.description == nil) } && !typeSize.isAccessibilitySize
+        options.count == 2 && options.allSatisfy { $0.displayLabel.count <= 16 && (TriageCard.needsText($0) || $0.description == nil) } && !typeSize.isAccessibilitySize
     }
 
     var body: some View {
@@ -540,9 +553,9 @@ private struct OptionGrid: View {
             ForEach(options, id: \.label) { option in
                 Button { onPick(option) } label: {
                     VStack(alignment: compact ? .center : .leading, spacing: 2) {
-                        Text(option.label)
+                        Text(option.displayLabel)
                             .font(.headline)
-                        if let description = option.description, !compact, !TriageCard.needsText(option) {
+                        if let description = option.displayDescription, !compact, !TriageCard.needsText(option) {
                             Text(description)
                                 .font(.caption)
                                 .opacity(0.8)

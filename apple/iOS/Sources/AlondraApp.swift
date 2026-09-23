@@ -65,14 +65,14 @@ private struct RootView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            Tab("Te espera", systemImage: "tray.full", value: .triage) {
+            Tab("Waiting for You", systemImage: "tray.full", value: .triage) {
                 TriageView()
             }
             .badge(fleet.connection == .unpaired ? 0 : fleet.queue.count)
-            Tab("Flota", systemImage: "circle.hexagongrid", value: .fleet) {
+            Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
                 FleetTab()
             }
-            Tab("Nuevo", systemImage: "plus.bubble", value: .new) {
+            Tab("New", systemImage: "plus.bubble", value: .new) {
                 NewRequestView()
             }
         }

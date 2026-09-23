@@ -9,9 +9,14 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleDisplayName</key>
-    <string>Alondra Notificaciones</string>
+    <string>Alondra Notifications</string>
     <key>CFBundleDevelopmentRegion</key>
-    <string>es</string>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>es</string>
+    </array>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>

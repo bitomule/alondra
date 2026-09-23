@@ -42,12 +42,12 @@ struct PairingView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .background(DawnBackground(glow: phase == .paired ? Palette.sage : Palette.dawn))
-        .navigationTitle("Vincular con el Mac")
+        .navigationTitle("Pair with the Mac")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if showsClose, phase != .pairing {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cerrar", systemImage: "xmark") { dismiss() }
+                    Button("Close", systemImage: "xmark") { dismiss() }
                 }
             }
         }
@@ -70,10 +70,10 @@ struct PairingView: View {
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tu iPhone, de confianza")
+            Text("Your iPhone, trusted")
                 .font(.display(.title, weight: .bold))
                 .foregroundStyle(Palette.ink)
-            Text("En el Mac, ejecuta \(Text("alondra pair").font(.mono(.subheadline, weight: .semibold)).foregroundStyle(Palette.dawn)) y apunta la cámara al código. El código sirve una vez y caduca en diez minutos.")
+            Text("On the Mac, run \(Text(verbatim: "alondra pair").font(.mono(.subheadline, weight: .semibold)).foregroundStyle(Palette.dawn)) and point the camera at the code. The code works once and expires in ten minutes.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -136,7 +136,7 @@ struct PairingView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if camera == .denied {
-                Button("Abrir Ajustes", systemImage: "gearshape") {
+                Button("Open Settings", systemImage: "gearshape") {
                     if let settings = URL(string: UIApplication.openSettingsURLString) { openURL(settings) }
                 }
                 .buttonStyle(.glass)
@@ -148,9 +148,9 @@ struct PairingView: View {
 
     private var placeholderText: String {
         switch camera {
-        case .unknown: "Preparando la cámara…"
-        case .denied: "Alondra no tiene permiso para usar la cámara."
-        case .unsupported: "Este dispositivo no puede escanear códigos. Escribe los datos abajo."
+        case .unknown: String(localized: "Getting the camera ready…")
+        case .denied: String(localized: "Alondra doesn’t have permission to use the camera.")
+        case .unsupported: String(localized: "This device can’t scan codes. Enter the details below.")
         case .ready: ""
         }
     }
@@ -162,13 +162,13 @@ struct PairingView: View {
                     .font(.system(size: 56, weight: .semibold))
                     .foregroundStyle(Palette.sage)
                     .symbolEffect(.bounce, value: phase)
-                Text("Vinculado")
+                Text("Paired")
                     .font(.display(.title3, weight: .bold))
             } else {
                 ProgressView()
                     .controlSize(.large)
                     .tint(Palette.dawn)
-                Text("Vinculando…")
+                Text("Pairing…")
                     .font(.headline)
             }
         }
@@ -179,17 +179,17 @@ struct PairingView: View {
 
     private var manualEntry: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("O escríbelo a mano")
+            Text("Or enter it by hand")
                 .font(.headline)
                 .foregroundStyle(Palette.ink)
             VStack(spacing: 0) {
-                field("Dirección", text: $url, prompt: "http://192.168.1.20:47800", field: .url)
+                field(String(localized: "Address"), text: $url, prompt: "http://192.168.1.20:47800", field: .url)
                     .keyboardType(.URL)
                     .textContentType(.URL)
                     .submitLabel(.next)
                     .onSubmit { focused = .code }
                 Divider().padding(.leading, 16)
-                field("Código", text: $code, prompt: "Código de vinculación", field: .code)
+                field(String(localized: "Code"), text: $code, prompt: String(localized: "Pairing code"), field: .code)
                     .submitLabel(.go)
                     .onSubmit { submitManual() }
             }
@@ -205,7 +205,7 @@ struct PairingView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             Button(action: submitManual) {
-                Text("Vincular")
+                Text("Pair")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
@@ -222,7 +222,7 @@ struct PairingView: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 84, alignment: .leading)
-            TextField(label, text: text, prompt: Text(prompt))
+            TextField(label, text: text, prompt: Text(verbatim: prompt))
                 .font(.mono(.body))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -247,7 +247,7 @@ struct PairingView: View {
             try? await Task.sleep(for: .seconds(1.1))
             dismiss()
         } catch AlondraError.unauthorized {
-            phase = .failed("El Mac no aceptó el código. Pide uno nuevo con alondra pair.")
+            phase = .failed(String(localized: "The Mac didn’t accept the code. Get a new one with alondra pair."))
         } catch {
             phase = .failed(error.friendlyDescription)
         }

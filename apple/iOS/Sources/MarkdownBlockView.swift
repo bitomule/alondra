@@ -22,7 +22,7 @@ struct MarkdownBlockView: View {
             }
         case .listItem(.number(let marker), let depth):
             listRow(indent: depth) {
-                Text("\(marker).")
+                Text(verbatim: "\(marker).")
                     .font(.body.monospacedDigit().weight(.semibold))
                     .foregroundStyle(Palette.dawn)
             }

@@ -10,12 +10,12 @@ public enum NodeState: String, Codable, Sendable {
 
     public var label: String {
         switch self {
-        case .working: "trabajando"
-        case .waitingAnswer: "esperando respuesta"
-        case .delivered: "entrega resultado"
-        case .waitingMachine: "esperando máquina"
-        case .done: "terminado"
-        case .unclear: "no sé qué quiere"
+        case .working: String(localized: "working", table: "AlondraShared", bundle: #bundle)
+        case .waitingAnswer: String(localized: "waiting for an answer", table: "AlondraShared", bundle: #bundle)
+        case .delivered: String(localized: "delivering results", table: "AlondraShared", bundle: #bundle)
+        case .waitingMachine: String(localized: "waiting for the machine", table: "AlondraShared", bundle: #bundle)
+        case .done: String(localized: "done", table: "AlondraShared", bundle: #bundle)
+        case .unclear: String(localized: "unclear what it wants", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
@@ -85,9 +85,9 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
 
     public var kindLabel: String? {
         switch origin {
-        case "permission": "Permiso"
-        case "plan": "Plan"
-        case "ask_user_question": "Menú"
+        case "permission": String(localized: "Permission", table: "AlondraShared", bundle: #bundle)
+        case "plan": String(localized: "Plan", table: "AlondraShared", bundle: #bundle)
+        case "ask_user_question": String(localized: "Menu", table: "AlondraShared", bundle: #bundle)
         default: nil
         }
     }
@@ -115,10 +115,10 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
 
     public var kindLabel: String {
         switch kind {
-        case "notice": "Aviso"
-        case "document": "Documento"
-        case "final": "Terminado"
-        default: "Progreso"
+        case "notice": String(localized: "Notice", table: "AlondraShared", bundle: #bundle)
+        case "document": String(localized: "Document", table: "AlondraShared", bundle: #bundle)
+        case "final": String(localized: "Finished", table: "AlondraShared", bundle: #bundle)
+        default: String(localized: "Progress", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
@@ -144,10 +144,10 @@ public struct Overview: Codable, Sendable {
 public func ago(_ millis: Int64) -> String {
     let seconds = max(0, Int64(Date().timeIntervalSince1970 * 1000) - millis) / 1000
     switch seconds {
-    case ..<60: return "\(seconds) s"
-    case ..<3600: return "\(seconds / 60) min"
-    case ..<86400: return "\(seconds / 3600) h"
-    default: return "\(seconds / 86400) d"
+    case ..<60: return String(localized: "\(seconds) s", table: "AlondraShared", bundle: #bundle)
+    case ..<3600: return String(localized: "\(seconds / 60) min", table: "AlondraShared", bundle: #bundle)
+    case ..<86400: return String(localized: "\(seconds / 3600) h", table: "AlondraShared", bundle: #bundle)
+    default: return String(localized: "\(seconds / 86400) d", table: "AlondraShared", bundle: #bundle)
     }
 }
 

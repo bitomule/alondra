@@ -61,22 +61,22 @@ struct PairingView: View {
 
     private var instructions: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(justPaired == nil ? "Vincula tu iPhone" : "iPhone vinculado").font(.title2.bold())
+            Text(justPaired == nil ? String(localized: "Pair your iPhone") : String(localized: "iPhone paired")).font(.title2.bold())
             if justPaired == nil {
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("Abre Alondra en el iPhone", systemImage: "1.circle")
-                    Label("Ajustes → Vincular con el Mac", systemImage: "2.circle")
-                    Label("Apunta la cámara a este código", systemImage: "3.circle")
+                    Label("Open Alondra on the iPhone", systemImage: "1.circle")
+                    Label("Settings → Pair with the Mac", systemImage: "2.circle")
+                    Label("Point the camera at this code", systemImage: "3.circle")
                 }
                 .foregroundStyle(.secondary)
                 if let invite {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         let left = max(0, invite.expiresIn - Int(context.date.timeIntervalSince(issuedAt)))
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(left > 0 ? "Caduca en \(left / 60):\(String(format: "%02d", left % 60)) · sirve una vez" : "Caducado")
+                            Text(left > 0 ? String(localized: "Expires in \(left / 60):\(String(format: "%02d", left % 60)) · works once") : String(localized: "Expired"))
                                 .font(.callout)
                                 .foregroundStyle(left > 0 ? Color.secondary : Color.orange)
-                            DisclosureGroup("¿Sin cámara?") {
+                            DisclosureGroup("No camera?") {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(invite.url ?? fallbackURL).textSelection(.enabled)
                                     Text(invite.code).font(.body.monospaced()).textSelection(.enabled)
@@ -89,11 +89,11 @@ struct PairingView: View {
                     }
                 }
             } else {
-                Text("Ya puedes contestar desde el iPhone, también fuera de casa.").foregroundStyle(.secondary)
+                Text("You can now answer from the iPhone, even away from home.").foregroundStyle(.secondary)
             }
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
             Spacer(minLength: 0)
-            Button(justPaired == nil ? "Generar otro código" : "Vincular otro") {
+            Button(justPaired == nil ? String(localized: "Generate Another Code") : String(localized: "Pair Another")) {
                 Task { await newInvite() }
             }
         }
@@ -102,20 +102,20 @@ struct PairingView: View {
 
     private var devicesPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Dispositivos vinculados").font(.headline)
+            Text("Paired devices").font(.headline)
             if devices.isEmpty {
-                Text("Ninguno todavía.").foregroundStyle(.secondary)
+                Text("None yet.").foregroundStyle(.secondary)
             }
             ForEach(devices) { device in
                 HStack {
                     Image(systemName: "iphone")
                     VStack(alignment: .leading) {
                         Text(device.name)
-                        Text(device.lastSeen.map { "Visto hace \(ago($0))" } ?? "Sin uso todavía")
+                        Text(device.lastSeen.map { String(localized: "Seen \(ago($0)) ago") } ?? String(localized: "Not used yet"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Desvincular", role: .destructive) {
+                    Button("Unpair", role: .destructive) {
                         Task { await revoke(device) }
                     }
                 }
@@ -140,7 +140,7 @@ struct PairingView: View {
             issuedAt = Date()
             error = nil
         } catch {
-            self.error = "No pude pedir un código: \(error.localizedDescription)"
+            self.error = String(localized: "Couldn’t get a code: \(error.localizedDescription)")
         }
     }
 

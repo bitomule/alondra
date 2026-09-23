@@ -6,6 +6,7 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 swift_library(
     name = "AlondraShared",
     srcs = glob(["Shared/Sources/**/*.swift"]),
+    data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
 )
@@ -23,6 +24,7 @@ macos_application(
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"],
     minimum_os_version = "26.0",
+    resources = glob(["macOS/Resources/*.xcstrings"]),
     version = ":Version",
     visibility = ["//visibility:public"],
     deps = [":AlondraMacEntry"],
@@ -50,6 +52,7 @@ ios_application(
     families = ["iphone"],
     infoplists = ["iOS/Info.plist"],
     minimum_os_version = "26.0",
+    resources = glob(["iOS/Resources/*.xcstrings"]),
     version = ":Version",
     extensions = [":AlondraNotificationService"],
     visibility = ["//visibility:public"],
@@ -69,6 +72,7 @@ ios_extension(
     families = ["iphone"],
     infoplists = ["iOSNotificationService/Info.plist"],
     minimum_os_version = "26.0",
+    resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
     provisioning_profile = "//signing:Alondra_NotificationService_Development.mobileprovision",
     version = ":Version",
     deps = [":AlondraNotificationServiceLib"],
