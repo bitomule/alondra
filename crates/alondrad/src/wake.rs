@@ -13,8 +13,30 @@ const RETRY_AFTER: Duration = Duration::from_secs(120);
 const PAINT_TIMEOUT: Duration = Duration::from_secs(25);
 const MENU_MARKERS: &[&str] = &["Enter to select", "to navigate", "Do you want to proceed", "❯ 1.", "trust this folder", "Enter to confirm"];
 
+/// A node whose last delivery failed is left alone for a while; one that took its messages gets
+/// the next ones as soon as they are queued, since Claude Code queues what is typed mid-turn.
+#[derive(Default)]
+struct Backoff {
+    failed: HashMap<String, Instant>,
+}
+
+impl Backoff {
+    fn ready(&mut self, session_id: &str) -> bool {
+        self.failed.retain(|_, t| t.elapsed() < RETRY_AFTER);
+        !self.failed.contains_key(session_id)
+    }
+
+    fn outcome(&mut self, session_id: &str, delivered: bool) {
+        if delivered {
+            self.failed.remove(session_id);
+        } else {
+            self.failed.insert(session_id.to_string(), Instant::now());
+        }
+    }
+}
+
 pub async fn run(hub: Arc<Hub>) {
-    let mut last_try: HashMap<String, Instant> = HashMap::new();
+    let mut backoff = Backoff::default();
     loop {
         hub.wait_event(Duration::from_secs(10)).await;
         let due: Vec<(String, String, Pending)> = hub.read(|v| {
@@ -30,17 +52,16 @@ pub async fn run(hub: Arc<Hub>) {
                 })
                 .collect()
         });
-        last_try.retain(|_, t| t.elapsed() < RETRY_AFTER);
         for (session_id, short, msgs) in due {
-            if last_try.contains_key(&session_id) {
+            if !backoff.ready(&session_id) {
                 continue;
             }
-            last_try.insert(session_id.clone(), Instant::now());
             let text = msgs.iter().map(|(_, t, _)| t.replace('\n', " ")).collect::<Vec<_>>().join(" · ");
             let short_for_task = short.clone();
             let own = hub.own_attach(&short);
             let outcome = tokio::task::spawn_blocking(move || type_into(&short_for_task, &text)).await;
             drop(own);
+            backoff.outcome(&session_id, matches!(outcome, Ok(Ok(()))));
             match outcome {
                 Ok(Ok(())) => {
                     for (id, _, question) in msgs {
@@ -137,4 +158,25 @@ fn type_into(short: &str, text: &str) -> Result<(), String> {
     tmux(&["send-keys", "-t", &session.0, "Enter"])?;
     std::thread::sleep(Duration::from_secs(2));
     Ok(())
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_failed_delivery_holds_back_the_next_one() {
+        let cases = [("delivered", true, true), ("failed", false, false)];
+        for (what, delivered, ready_again) in cases {
+            let mut b = Backoff::default();
+            assert!(b.ready("s"), "{what}: nothing tried yet");
+            b.outcome("s", delivered);
+            assert_eq!(b.ready("s"), ready_again, "{what}");
+            assert!(b.ready("other"), "{what}: other nodes are not held back");
+        }
+        let mut b = Backoff::default();
+        b.outcome("s", false);
+        b.outcome("s", true);
+        assert!(b.ready("s"), "a delivery clears an earlier failure");
+    }
 }
