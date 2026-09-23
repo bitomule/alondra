@@ -2,7 +2,7 @@ BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 
-.PHONY: build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -34,10 +34,16 @@ doctor:
 setup: install
 	$(BIN)/alondra setup --bin $(BIN) --repo $(CURDIR)
 
-restart:
+no-holds:
+	@holds=$$(curl -s --max-time 3 http://127.0.0.1:47800/v1/health | sed -n 's/.*"holds":\([0-9]*\).*/\1/p'); \
+	if [ -n "$$holds" ] && [ "$$holds" != "0" ] && [ -z "$(FORCE)" ]; then \
+		echo "alondrad is holding $$holds question(s) or permission(s) for nodes; restarting would cut them. Answer them first or run with FORCE=1."; exit 1; \
+	fi
+
+restart: no-holds
 	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
 
-launchd: install
+launchd: no-holds install
 	$(BIN)/alondra setup --bin $(BIN) --skip-plugin --skip-pair
 
 unlaunchd:
