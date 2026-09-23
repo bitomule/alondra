@@ -52,6 +52,7 @@ unlaunchd:
 
 mac:
 	bazelisk build //apple:AlondraMac
+	-osascript -e 'if application "$(HOME)/Applications/Alondra.app" is running then tell application "$(HOME)/Applications/Alondra.app" to quit'
 	rm -rf $(HOME)/Applications/Alondra.app
 	mkdir -p $(HOME)/Applications
 	unzip -q -o $$(bazelisk cquery --output=files //apple:AlondraMac 2>/dev/null | grep '\.zip$$' | head -1) -d $(HOME)/Applications
