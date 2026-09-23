@@ -68,6 +68,8 @@ struct Kind {
 
     init(_ item: InboxItem) {
         switch item {
+        case .question(let q) where q.isAction:
+            self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
         case .question(let q):
             switch q.origin {
             case "plan": self.init(String(localized: "Plan"), "list.bullet.clipboard", Palette.ember)

@@ -15,6 +15,11 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   one-line title (it is what they see in the notification), all the context in `detail`,
   options, PRs in `links` and files in `attachments`. Then end your turn: Alondra types the
   answer into this session. Do not leave the question loose in your last message.
+- **The user has to do something outside Alondra** (test on the iPhone, get a key, check App
+  Store Connect) → the `request_action` tool: a one-line title, the steps in order and the links
+  where to do it. They get a "Your turn" card and answer "Done" or explain why they cannot;
+  end your turn and Alondra types that into this session. Never leave it written in your
+  terminal: nobody reads it there.
 - **Menu questions** (`AskUserQuestion`) also reach the user; use them for short choices.
 - **You are done** and nothing is pending → `report` with `kind: "final"`. This is the normal
   way to end a task.
@@ -32,4 +37,4 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   (including waiting for a build, an upload or a review), send nothing. Alondra rejects these
   reports, and you lose a turn.
 - **Questions inside a report.** If a report asks the user to decide, approve, test or fetch
-  something, Alondra rejects it: send it as `ask`.
+  something, Alondra rejects it: send it as `ask` (or `request_action` if it is something to do).

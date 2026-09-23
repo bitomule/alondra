@@ -35,7 +35,7 @@ struct QuestionDetail: View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.question(question).style, node: question.nodeName, date: question.askedAt, title: question.title)
-                if let detail = question.detail, !detail.isEmpty {
+                if let detail = question.readableDetail, !detail.isEmpty {
                     if question.isPlan {
                         ReviewableDocument(text: detail, anchorPrefix: "plan", draft: draft, focus: $focus)
                     } else if question.origin == "permission" {

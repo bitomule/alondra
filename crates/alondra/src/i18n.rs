@@ -109,6 +109,23 @@ pub fn report_kind(k: ReportKind) -> &'static str {
     }
 }
 
+/// Option labels and hints the server writes in English; free labels pass through.
+pub fn option_label(label: &str) -> &str {
+    use alondra_core::answer_option as o;
+    match label {
+        o::APPROVE => tr!("Approve", "Aprobar"),
+        o::REQUEST_CHANGES => tr!("Request changes", "Pedir cambios"),
+        o::ALLOW => tr!("Allow", "Permitir"),
+        o::DENY => tr!("Deny", "Denegar"),
+        o::MORE_CONTEXT => tr!("I need more context", "Necesito más contexto"),
+        o::DONE => tr!("Done", "Hecho"),
+        o::CANNOT => tr!("I can't / explain", "No puedo / explícamelo"),
+        o::WRITE_THE_REASON => tr!("Write the reason", "Escribe el motivo"),
+        "Write what to change" => tr!("Write what to change", "Escribe qué cambiar"),
+        other => other,
+    }
+}
+
 pub fn comments(n: usize) -> String {
     match (lang(), n) {
         (Lang::En, 1) => "1 comment".into(),
@@ -121,6 +138,16 @@ pub fn comments(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_options_read_in_the_user_language() {
+        set_for_this_thread(Lang::Es);
+        assert_eq!(option_label(alondra_core::answer_option::DONE), "Hecho");
+        assert_eq!(option_label(alondra_core::answer_option::CANNOT), "No puedo / explícamelo");
+        assert_eq!(option_label("Merge #150"), "Merge #150");
+        set_for_this_thread(Lang::En);
+        assert_eq!(option_label(alondra_core::answer_option::CANNOT), "I can't / explain");
+    }
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let pairs: Vec<(String, String)> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();

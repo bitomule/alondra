@@ -10,6 +10,8 @@ struct KindStyle {
 extension InboxItem {
     var style: KindStyle {
         switch self {
+        case .question(let q) where q.isAction:
+            KindStyle(label: String(localized: "Your turn"), symbol: "hand.point.right.fill", tint: .pink)
         case .question(let q):
             switch q.origin {
             case "plan": KindStyle(label: String(localized: "Plan"), symbol: "list.bullet.clipboard.fill", tint: .purple)

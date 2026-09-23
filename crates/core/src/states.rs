@@ -317,6 +317,7 @@ mod tests {
             answer: None,
             asked_at: T0,
             action,
+            steps: vec![],
         })
     }
 

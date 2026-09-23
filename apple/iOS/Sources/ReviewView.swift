@@ -321,7 +321,7 @@ struct ReviewView: View {
             if let path = question.attachments.compactMap(\.storedPath).first {
                 return try await fleet.client.fileText(path)
             }
-            return question.detail ?? ""
+            return question.readableDetail ?? ""
         case .report(let report):
             if let path = report.attachments.compactMap(\.storedPath).first {
                 return try await fleet.client.fileText(path)

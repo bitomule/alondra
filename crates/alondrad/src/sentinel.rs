@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alondra_core::states;
 use alondra_core::{
-    Event, Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, now_millis,
+    Event, Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
 };
 
 use crate::classify::{Expects, what_node_expects};
@@ -38,7 +38,8 @@ fn nudge_text(user: &str) -> String {
     format!(
         "[Alondra] Your turn ended without telling {user} anything through Alondra, so they cannot tell whether you are \
          waiting on them. What you write in your terminal does not reach them. Declare your state with an Alondra tool: \
-         `ask` if you need a decision (one question per decision, with options), `report` with kind final if you are \
+         `ask` if you need a decision (one question per decision, with options), `request_action` if {user} has to do \
+         something outside Alondra, `report` with kind final if you are \
          done, or `wait_for_machine` if you are waiting for resources. If you are still working on your own (a build, an \
          upload, a review, a long command), send nothing: do not report that you do not need {user}, that is noise. \
          If you have not done any of this in 3 minutes, Alondra will turn your last message into an item in {user}'s \
@@ -199,7 +200,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
         title,
         detail,
-        options: vec![],
+        options: if expects == Expects::Act { answer_option::for_action() } else { vec![] },
         links: vec![],
         attachments: vec![],
         blocking: true,
@@ -211,6 +212,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         answer: None,
         asked_at: now_millis(),
         action: expects == Expects::Act,
+        steps: vec![],
     }
 }
 
@@ -396,6 +398,7 @@ mod tests {
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Act) else { panic!() };
         assert_eq!(q.title, "PR merged. Remove the camera permission on a real iPhone and open the scanner.");
         assert!(q.action);
+        assert_eq!(q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), [answer_option::DONE, answer_option::CANNOT]);
         v.apply(4, 4000, &Event::QuestionAsked(q));
         assert_eq!(v.nodes["s"].state, NodeState::YourTurn);
     }

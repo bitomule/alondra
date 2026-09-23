@@ -8,7 +8,7 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
-use alondra_core::{Node, NodeState, Question, QuestionOrigin, Report, now_millis};
+use alondra_core::{Node, NodeState, Question, QuestionOption, QuestionOrigin, Report, now_millis};
 use anyhow::Result;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -234,7 +234,7 @@ impl Reader {
 }
 
 pub enum Target {
-    Answer { id: u64, title: String },
+    Answer { id: u64, title: String, option: Option<String> },
     MoreContext { id: u64, title: String },
     ReplyReport { id: u64, session: String, name: String },
     Message { session: String, name: String, ack: bool },
@@ -451,6 +451,11 @@ fn approval_of(q: &Question) -> Option<Approval> {
         approve: approve.or_else(|| q.options.first().map(|o| o.label.clone())),
         changes: changes.or_else(|| q.options.get(1).map(|o| o.label.clone())),
     })
+}
+
+/// Options whose description asks for a reason open the composer instead of answering at once.
+fn needs_text(o: &QuestionOption) -> bool {
+    o.description.as_deref().is_some_and(|d| d.trim_start().to_lowercase().starts_with("write"))
 }
 
 fn answer_body(text: &str, option: Option<&str>) -> Value {
@@ -935,7 +940,7 @@ impl App {
             }
             KeyCode::Char('r') => {
                 if let Some(q) = self.selected_question() {
-                    self.compose(Target::Answer { id: q.id, title: q.title }, "");
+                    self.compose(Target::Answer { id: q.id, title: q.title, option: None }, "");
                 } else if let Some(r) = self.selected_report() {
                     let name = who(&r.node_name, &r.session_id);
                     self.compose(Target::ReplyReport { id: r.id, session: r.session_id, name }, "");
@@ -981,6 +986,10 @@ impl App {
             self.fail(trf!("This question has no option {n}", "Esta pregunta no tiene opción {n}"));
             return;
         };
+        if needs_text(opt) {
+            self.compose(Target::Answer { id: q.id, title: q.title.clone(), option: Some(opt.label.clone()) }, "");
+            return;
+        }
         let who = who(&q.node_name, &q.session_id);
         self.post(
             Some(Key::Q(q.id)),
@@ -1032,8 +1041,8 @@ impl App {
             return;
         }
         match c.target {
-            Target::Answer { id, .. } => {
-                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, None))], trf!("#{id} answered", "#{id} contestada"));
+            Target::Answer { id, option, .. } => {
+                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], trf!("#{id} answered", "#{id} contestada"));
                 self.hide(Key::Q(id));
             }
             Target::MoreContext { id, .. } => {
@@ -1511,6 +1520,7 @@ pub(crate) mod tests {
             answer: None,
             asked_at: 0,
             action: false,
+            steps: vec![],
         }
     }
 
@@ -1570,11 +1580,11 @@ pub(crate) mod tests {
     #[test]
     fn a_cancelled_reply_comes_back_as_a_draft() {
         let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
-        app.compose(Target::Answer { id: 1, title: "t".into() }, "");
+        app.compose(Target::Answer { id: 1, title: "t".into(), option: None }, "");
         app.composer.as_mut().unwrap().input.insert_str("half written");
         app.cancel_composer();
         assert!(app.composer.is_none());
-        app.compose(Target::Answer { id: 1, title: "t".into() }, "");
+        app.compose(Target::Answer { id: 1, title: "t".into(), option: None }, "");
         assert_eq!(app.composer.as_ref().unwrap().input.text(), "half written");
     }
 
@@ -1754,6 +1764,19 @@ pub(crate) mod tests {
         assert!(app.flash.as_ref().is_some_and(|f| f.error));
         press(&mut app, ":q");
         assert!(matches!(code(&mut app, KeyCode::Enter), Flow::Quit));
+    }
+
+    #[test]
+    fn an_action_card_asks_why_when_it_cannot_be_done() {
+        let mut card = question(1, QuestionOrigin::Ask, &[]);
+        card.action = true;
+        card.options = alondra_core::answer_option::for_action();
+        let (mut app, _rx) = app_with(vec![card.clone(), question(2, QuestionOrigin::Ask, &[])]);
+        app.settle_until = 0;
+        press(&mut app, "2");
+        let Some(Composer { target: Target::Answer { id: 1, option, .. }, .. }) = &app.composer else { panic!("no composer") };
+        assert_eq!(option.as_deref(), Some(alondra_core::answer_option::CANNOT));
+        assert!(!needs_text(&card.options[0]));
     }
 
     #[test]

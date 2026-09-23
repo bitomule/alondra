@@ -121,6 +121,18 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let nodeContext: String?
     public let status: String
     public let askedAt: Int64
+    public let action: Bool?
+    public let steps: [String]?
+
+    /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
+    public var isAction: Bool { action == true }
+
+    /// The steps numbered ahead of the detail, so every client reads an action the same way.
+    public var readableDetail: String? {
+        let numbered = (steps ?? []).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        let parts = [numbered, detail ?? ""].filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
 
     public var kindLabel: String? {
         switch origin {
