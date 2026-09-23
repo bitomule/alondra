@@ -47,6 +47,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/questions/{id}/more-context", post(more_context))
         .route("/v1/reports", post(report))
         .route("/v1/reports/{id}/read", post(report_read))
+        .route("/v1/waiting-machine", post(waiting_machine))
         .route("/v1/inbox/{session}", get(inbox))
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
@@ -566,7 +567,7 @@ async fn answer(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
-    let chosen = b.option.clone().map(|o| format!("{o}. ")).unwrap_or_default();
+    let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
     let text = format!("[Alondra] Respuesta de David a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
@@ -640,6 +641,25 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => Json(json!({"id": r.id})).into_response(),
         Ok(_) => err(StatusCode::BAD_REQUEST, "no sé qué nodo informa"),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct WaitingMachineBody {
+    #[serde(flatten)]
+    caller: Caller,
+    reason: String,
+}
+
+async fn waiting_machine(State(hub): State<AppState>, Json(b): Json<WaitingMachineBody>) -> Response {
+    let res = hub.append_with(|v| {
+        let (session_id, _) = resolve_caller(v, &b.caller)?;
+        Some(Event::WaitingMachine { session_id, reason: b.reason.clone() })
+    });
+    match res {
+        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(None) => err(StatusCode::BAD_REQUEST, "no sé qué nodo espera máquina"),
         Err(e) => internal(e),
     }
 }
@@ -815,6 +835,9 @@ struct LaunchBody {
 }
 
 async fn launch(State(hub): State<AppState>, Json(b): Json<LaunchBody>) -> Response {
+    if !std::path::Path::new(&b.cwd).is_dir() {
+        return err(StatusCode::BAD_REQUEST, format!("no existe el directorio {}", b.cwd));
+    }
     let plugin = std::env::var("ALONDRA_PLUGIN_DIR").map(PathBuf::from).unwrap_or_else(|_| hub.home.join("plugin"));
     let mut cmd = tokio::process::Command::new("claude");
     cmd.current_dir(&b.cwd)

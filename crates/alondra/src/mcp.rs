@@ -53,7 +53,7 @@ fn tools(role: Role) -> Value {
     ];
     if role == Role::Orchestrator {
         list.extend([
-            json!({"name": "fleet", "description": "Estado de todos los nodos, preguntas abiertas y máquina.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "fleet", "description": "Resumen de la flota: nodos no terminados con su estado, preguntas abiertas, informes sin leer y máquina. Para el detalle de uno, `node`.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "node", "description": "Detalle de un nodo: estado, herramienta en curso, último mensaje, preguntas, informes y línea de tiempo.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Nombre, id corto o session_id"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Capacidad de la máquina: memoria, carga, CPU y disco.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Manda un mensaje a un nodo; le llega en cuanto termine su turno (o al momento si está parado).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
@@ -112,11 +112,10 @@ fn call(client: &Client, role: Role, name: &str, args: &Value) -> Result<String>
         }
         "wait_for_machine" => {
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
-            let body = merge(json!({"title": format!("Esperando máquina: {reason}"), "kind": "progress"}), &who);
-            client.post("/v1/reports", &body)?;
+            client.post("/v1/waiting-machine", &merge(json!({"reason": reason}), &who))?;
             "Anotado: estás esperando máquina.".to_string()
         }
-        "fleet" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.get::<Value>("/v1/overview")?)?,
+        "fleet" if role == Role::Orchestrator => serde_json::to_string_pretty(&fleet_summary(&client.get::<Value>("/v1/overview")?))?,
         "machine" if role == Role::Orchestrator => {
             let v: Value = client.get("/v1/overview")?;
             serde_json::to_string_pretty(v.get("machine").unwrap_or(&Value::Null))?
@@ -134,6 +133,28 @@ fn call(client: &Client, role: Role, name: &str, args: &Value) -> Result<String>
         "launch" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/launch", args)?)?,
         other => anyhow::bail!("herramienta desconocida: {other}"),
     })
+}
+
+fn fleet_summary(o: &Value) -> Value {
+    let list = |k: &str| o.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    let pick = |v: &Value, keys: &[&str]| {
+        Value::Object(keys.iter().filter_map(|k| v.get(*k).filter(|x| !x.is_null()).map(|x| (k.to_string(), x.clone()))).collect())
+    };
+    let nodes = list("nodes");
+    let done = nodes.iter().filter(|n| n.get("state").and_then(Value::as_str) == Some("done")).count();
+    let active: Vec<Value> = nodes
+        .iter()
+        .filter(|n| n.get("state").and_then(Value::as_str) != Some("done"))
+        .map(|n| pick(n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive"]))
+        .collect();
+    let questions: Vec<Value> = list("open_questions").iter().map(|q| pick(q, &["id", "title", "node_name", "origin", "to_orchestrator", "asked_at"])).collect();
+    let unread: Vec<Value> = list("reports")
+        .iter()
+        .filter(|r| r.get("read") == Some(&Value::Bool(false)))
+        .map(|r| pick(r, &["id", "title", "kind", "node_name"]))
+        .collect();
+    json!({"nodes": active, "done_nodes": done, "open_questions": questions, "unread_reports": unread,
+           "orchestrator_messages": o.get("orchestrator_messages"), "machine": o.get("machine")})
 }
 
 pub fn urlencode(s: &str) -> String {
