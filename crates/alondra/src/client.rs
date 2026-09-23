@@ -80,6 +80,11 @@ impl Client {
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
+    pub fn delete(&self, path: &str) -> Result<()> {
+        let resp = self.agent.delete(format!("{}{path}", self.base)).call().context("alondrad no responde (¿está arrancado?)")?;
+        Self::check(resp).map(|_| ())
+    }
+
     pub fn overview(&self) -> Result<Overview> {
         self.get("/v1/overview")
     }

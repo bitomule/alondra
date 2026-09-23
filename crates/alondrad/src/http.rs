@@ -6,7 +6,9 @@ use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, View, now_millis,
 };
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::Extension;
+use std::net::SocketAddr;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -14,6 +16,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::auth::{Auth, is_local};
 use crate::classify;
 use crate::hub::Hub;
 
@@ -22,8 +25,12 @@ const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
 
 type AppState = Arc<Hub>;
 
-pub fn router(hub: Arc<Hub>) -> Router {
+pub fn router(hub: Arc<Hub>, auth: Arc<Auth>) -> Router {
     Router::new()
+        .route("/v1/pairing", post(new_pairing))
+        .route("/v1/pair", post(pair))
+        .route("/v1/devices", get(devices))
+        .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
         .route("/hook", post(hook))
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
@@ -44,6 +51,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
         .route("/v1/file", get(file))
+        .layer(Extension(auth))
         .with_state(hub)
 }
 
@@ -251,6 +259,50 @@ async fn file(State(hub): State<AppState>, Query(q): Query<FileQuery>) -> Respon
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response(),
         Err(e) => err(StatusCode::NOT_FOUND, e.to_string()),
     }
+}
+
+fn local_only(peer: &SocketAddr, headers: &axum::http::HeaderMap) -> Option<Response> {
+    (!is_local(peer, headers)).then(|| err(StatusCode::FORBIDDEN, "solo desde el propio Mac"))
+}
+
+async fn new_pairing(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(r) = local_only(&peer, &headers) {
+        return r;
+    }
+    Json(json!({"code": auth.new_pairing_code(), "expires_in": 600})).into_response()
+}
+
+#[derive(Deserialize)]
+struct PairBody {
+    code: String,
+    device_name: String,
+    public_key: String,
+}
+
+async fn pair(Extension(auth): Extension<Arc<Auth>>, Json(b): Json<PairBody>) -> Response {
+    match auth.pair(&b.code, &b.device_name, &b.public_key) {
+        Ok(d) => Json(json!({"device_id": d.id})).into_response(),
+        Err(e) => err(StatusCode::UNAUTHORIZED, e),
+    }
+}
+
+async fn devices(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(r) = local_only(&peer, &headers) {
+        return r;
+    }
+    let list: Vec<Value> = auth
+        .list()
+        .into_iter()
+        .map(|d| json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen}))
+        .collect();
+    Json(json!({"devices": list})).into_response()
+}
+
+async fn revoke_device(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap, Path(id): Path<String>) -> Response {
+    if let Some(r) = local_only(&peer, &headers) {
+        return r;
+    }
+    if auth.revoke(&id) { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "no existe") }
 }
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {

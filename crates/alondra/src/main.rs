@@ -30,6 +30,17 @@ enum Cmd {
     Send { node: String, text: Vec<String> },
     /// Abre el terminal de un nodo (← con la línea vacía vuelve)
     Attach { node: String },
+    /// Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso
+    Pair {
+        /// URL pública por la que el dispositivo llega al Mac (p. ej. https://alondra.tudominio.com)
+        #[arg(long, env = "ALONDRA_PUBLIC_URL")]
+        url: String,
+    },
+    /// Dispositivos vinculados; con --revoke <id> quita uno
+    Devices {
+        #[arg(long)]
+        revoke: Option<String>,
+    },
     /// Comprueba que alondrad responde
     Doctor,
     /// Servidor MCP para los nodos (lo arranca el plugin)
@@ -66,6 +77,8 @@ fn main() -> Result<()> {
             let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
             attach::attach(&short)
         }
+        Some(Cmd::Pair { url }) => pair(&url),
+        Some(Cmd::Devices { revoke }) => devices(revoke),
         Some(Cmd::Doctor) => {
             let v: serde_json::Value = Client::new(Duration::from_secs(5)).get("/v1/health")?;
             println!("{v}");
@@ -95,6 +108,39 @@ fn status() -> Result<()> {
     for n in &o.nodes {
         let mins = (now_millis() - n.state_since) / 60_000;
         println!("  {:<20} {:<34} {:>5}m", n.state.label(), n.display_name(), mins);
+    }
+    Ok(())
+}
+
+fn pair(url: &str) -> Result<()> {
+    let client = Client::new(Duration::from_secs(10));
+    let r = client.post("/v1/pairing", &json!({}))?;
+    let code = r.get("code").and_then(|c| c.as_str()).unwrap_or_default();
+    let payload = json!({"url": url.trim_end_matches('/'), "code": code}).to_string();
+    let qr = qrcode::QrCode::new(payload.as_bytes())?;
+    let art = qr.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build();
+    println!("{art}");
+    println!("Escanéalo desde Alondra en el iPhone (Ajustes → Vincular con el Mac).");
+    println!("O a mano: URL {url}  ·  código {code}  ·  caduca en 10 minutos y sirve una vez.");
+    Ok(())
+}
+
+fn devices(revoke: Option<String>) -> Result<()> {
+    let client = Client::new(Duration::from_secs(10));
+    if let Some(id) = revoke {
+        let path = format!("/v1/devices/{}", mcp::urlencode(&id));
+        client.delete(&path)?;
+        println!("Dispositivo {id} desvinculado.");
+        return Ok(());
+    }
+    let v: serde_json::Value = client.get("/v1/devices")?;
+    let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>");
+    }
+    for d in list {
+        let last = d.get("last_seen").and_then(|x| x.as_i64()).map(|t| format!("visto hace {} min", (now_millis() - t) / 60_000)).unwrap_or_else(|| "sin uso".into());
+        println!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or(""));
     }
     Ok(())
 }
