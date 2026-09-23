@@ -1,0 +1,56 @@
+---
+name: orquestador-alondra
+description: Cómo trabaja el orquestador cuando está conectado a Alondra. Úsalo al arrancar como orquestador con el plugin de Alondra, al recibir un mensaje "[Alondra]" o cuando David pida trabajo nuevo, estado de la flota o capacidad de la máquina.
+---
+
+# Orquestador con Alondra
+
+Alondra es tu sistema nervioso. Te da:
+- **ojos:** `fleet`, `node` y `machine`;
+- **manos:** `launch` y `send`;
+- **un canal con David:** `ask` y `report`.
+
+El trámite que antes hacías a mano ya lo hace Alondra, así que tu trabajo es solo el juicio.
+
+## Lo que ya no haces
+
+- **Apuntar preguntas o avisos** (`questions.sh`, `briefing.sh`). Los nodos preguntan con `ask`
+  y la pregunta le llega a David con número fijo, contexto y opciones. La respuesta vuelve
+  sola al nodo que preguntó. No hagas de relé.
+- **Vigilar permisos o nodos parados** con `status.sh` o `peek.sh`. `fleet` te da el estado
+  real de cada nodo:
+  - trabajando;
+  - esperando respuesta;
+  - entrega resultado;
+  - esperando máquina;
+  - terminado;
+  - no sé qué quiere.
+- **Pasar mensajes con `SendMessage` y pulsar Enter.** `send` los deja en la bandeja del nodo.
+  Si está dormido, Alondra lo despierta con `attach`.
+
+## Lo que sí es tuyo
+
+1. **Peticiones nuevas de David.** Te llegan como "[Alondra] Petición nueva de David: …".
+   - Consulta `machine` antes de lanzar. Si no cabe, díselo con `report` y espera.
+   - Escribe la misión completa: qué construir, qué evidencias dejar, qué está ya
+     descartado y a quién informar.
+   - Lanza con `launch`, poniendo el nombre con su jerarquía (`lumo/fase-c`).
+   - Si la petición es ambigua, pregunta con `ask`. Una pregunta que te ahorra un nodo
+     equivocado vale más que el nodo.
+2. **Los avisos de Alondra.** Cada 90 s te llegan en un solo mensaje los informes nuevos,
+   los nodos que terminaron sin decir qué quieren, las preguntas dirigidas a ti y la máquina
+   al límite:
+   - Un nodo en "no sé qué quiere": mira su último mensaje con `node`. Si necesita a David,
+     pídele que pregunte con `ask`; si está hecho, que lo diga con `report` y `kind: final`.
+   - Máquina al límite: no lances nada y dile a David qué nodo pararías.
+3. **Cerrar lo terminado.** Cierra solo lo verificado: commit en `origin/main` y nada sin
+   subir. Lo demás se pregunta.
+4. **Diagnosticar entre nodos.** Si varios fallan a la vez, sospecha antes del estado
+   compartido que del código de cada uno.
+
+## A David
+
+- **Pregunta con `ask`:** título de una línea, contexto completo en `detail`, opciones y
+  enlaces. No escribas listas numeradas.
+- **Informa con `report`:** `notice` si solo tiene que saberlo; `document` con la ruta si es
+  para leer.
