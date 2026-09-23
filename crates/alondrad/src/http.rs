@@ -148,7 +148,10 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
             (title, detail, options)
         }
         QuestionOrigin::Plan => (
-            "Aprobar el plan".to_string(),
+            str_field(&input, "plan")
+                .and_then(|p| p.lines().map(|l| l.trim_start_matches('#').trim().to_string()).find(|l| !l.is_empty()))
+                .map(|t| format!("Plan: {}", t.chars().take(120).collect::<String>()))
+                .unwrap_or_else(|| "Aprobar el plan".to_string()),
             str_field(&input, "plan"),
             vec![
                 QuestionOption { label: "Aprobar".into(), description: None },

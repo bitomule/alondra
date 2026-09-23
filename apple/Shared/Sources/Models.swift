@@ -181,3 +181,31 @@ public struct SearchResult: Codable, Sendable {
     public let via: String
     public let sessions: [String]
 }
+
+extension Attachment {
+    public var isText: Bool {
+        guard storedPath != nil else { return false }
+        let ext = (name as NSString).pathExtension.lowercased()
+        return ["md", "markdown", "txt", "text", ""].contains(ext)
+    }
+}
+
+extension Question {
+    public var isPlan: Bool { origin == "plan" }
+}
+
+extension InboxItem {
+    public var title: String {
+        switch self {
+        case .question(let q): q.title
+        case .report(let r): r.title
+        }
+    }
+
+    public var nodeName: String? {
+        switch self {
+        case .question(let q): q.nodeName
+        case .report(let r): r.nodeName
+        }
+    }
+}

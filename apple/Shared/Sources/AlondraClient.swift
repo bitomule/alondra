@@ -25,7 +25,10 @@ public struct AlondraClient: Sendable {
     public func waitForChange(after tick: UInt64) async throws {
         var components = URLComponents(url: base.appending(path: "v1/changes"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "after", value: String(tick)), URLQueryItem(name: "wait", value: "50")]
-        _ = try await Self.longSession.data(from: components.url!)
+        let (_, response) = try await Self.longSession.data(from: components.url!)
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw AlondraError.server("HTTP \(http.statusCode)")
+        }
     }
 
     public func answer(_ question: UInt64, text: String, option: String?) async throws {
@@ -47,6 +50,17 @@ public struct AlondraClient: Sendable {
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         let (data, _) = try await URLSession.shared.data(from: components.url!)
         return try Self.decoder.decode(SearchResult.self, from: data)
+    }
+
+    public func fileText(_ path: String) async throws -> String {
+        var components = URLComponents(url: base.appending(path: "v1/file"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            throw AlondraError.server(message ?? "HTTP \(http.statusCode)")
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     public func markRead(_ report: UInt64) async throws {
