@@ -101,10 +101,21 @@ struct Machine: Codable, Hashable, Sendable {
     let unreliable: Bool
 }
 
+struct SentMessage: Codable, Identifiable, Hashable, Sendable {
+    let id: UInt64
+    let from: String
+    let text: String
+    let createdAt: Int64
+    let handedAt: Int64?
+    let deliveredAt: Int64?
+}
+
 struct Overview: Codable, Sendable {
     let tick: UInt64
     let nodes: [Node]
     let openQuestions: [Question]
+    let news: [Node]
+    let orchestratorMessages: [SentMessage]
     let machine: Machine
 }
 

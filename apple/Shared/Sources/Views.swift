@@ -1,19 +1,23 @@
 import SwiftUI
 
 enum Selection: Hashable {
+    case orchestrator
     case question(UInt64)
+    case news(String)
     case node(String)
 }
 
 public struct FleetView: View {
     @State private var store = FleetStore()
-    @State private var selection: Selection?
+    @State private var selection: Selection? = .orchestrator
+    @State private var fleetExpanded = false
 
     public init() {}
 
     public var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                Label("Orquestador", systemImage: "star.fill").tag(Selection.orchestrator)
                 Section("Te esperan (\(store.questions.count))") {
                     if store.questions.isEmpty {
                         Text("Nada pendiente").foregroundStyle(.secondary)
@@ -22,12 +26,21 @@ public struct FleetView: View {
                         QuestionRow(question: question).tag(Selection.question(question.id))
                     }
                 }
-                Section("Flota (\(store.nodes.count))") {
+                Section("Novedades (\(store.news.count))") {
+                    if store.news.isEmpty {
+                        Text("Nada nuevo").foregroundStyle(.secondary)
+                    }
+                    ForEach(store.news) { node in
+                        NewsRow(node: node).tag(Selection.news(node.sessionId))
+                    }
+                }
+                Section("Flota (\(store.nodes.count))", isExpanded: $fleetExpanded) {
                     ForEach(store.nodes) { node in
                         NodeRow(node: node).tag(Selection.node(node.sessionId))
                     }
                 }
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 300, ideal: 380)
             .safeAreaInset(edge: .bottom) { MachineBar(store: store) }
         } detail: {
@@ -38,13 +51,13 @@ public struct FleetView: View {
                 } else {
                     ContentUnavailableView("Contestada", systemImage: "checkmark.circle", description: Text("Esta pregunta ya no está abierta."))
                 }
-            case .node(let id):
+            case .news(let id), .node(let id):
                 if let node = store.nodes.first(where: { $0.sessionId == id }) {
-                    NodeDetail(node: node, store: store)
+                    NodeDetail(node: node, store: store, isNews: store.news.contains { $0.sessionId == id })
                 } else {
                     ContentUnavailableView("Sin nodo", systemImage: "questionmark.circle")
                 }
-            case nil:
+            case .orchestrator, nil:
                 OrchestratorPane(store: store)
             }
         }
@@ -70,6 +83,21 @@ struct QuestionRow: View {
                 Text(question.title).lineLimit(2)
             }
             Text("\(question.nodeName ?? "") · hace \(ago(question.askedAt))").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct NewsRow: View {
+    let node: Node
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Circle().fill(node.state.color).frame(width: 7, height: 7)
+                Text(node.displayName).fontWeight(.medium).lineLimit(1)
+                Text("· \(ago(node.lastMessageAt ?? node.stateSince))").font(.caption).foregroundStyle(.secondary)
+            }
+            Text(node.summary).font(.callout).foregroundStyle(.secondary).lineLimit(2)
         }
     }
 }
@@ -201,6 +229,7 @@ struct QuestionDetail: View {
 struct NodeDetail: View {
     let node: Node
     let store: FleetStore
+    var isNews = false
     @State private var message = ""
 
     var body: some View {
@@ -234,10 +263,13 @@ struct NodeDetail: View {
                     }
                 }
                 HStack {
-                    TextField(node.alive ? "Mensaje al nodo…" : "Mensaje (lo despierta con attach)…", text: $message, axis: .vertical)
+                    TextField(node.alive ? "Responder a \(node.displayName)…" : "Responder (lo despierta con attach)…", text: $message, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(send)
                     Button("Enviar", action: send).disabled(message.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if isNews {
+                        Button("Leído") { Task { await store.acknowledge(node) } }
+                    }
                 }
             }
             .padding(24)
@@ -257,7 +289,7 @@ struct NodeDetail: View {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         message = ""
-        Task { await store.send(to: node, text: text) }
+        Task { await store.send(to: node, text: text, acknowledge: isNews) }
     }
 }
 
@@ -266,7 +298,24 @@ struct OrchestratorPane: View {
 
     var body: some View {
         if let orchestrator = store.orchestrator {
-            NodeDetail(node: orchestrator, store: store)
+            VStack(alignment: .leading, spacing: 0) {
+                NodeDetail(node: orchestrator, store: store)
+                if !store.sentToOrchestrator.isEmpty {
+                    GroupBox("Le has escrito") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(store.sentToOrchestrator.prefix(5)) { m in
+                                HStack(alignment: .top) {
+                                    Image(systemName: m.deliveredAt != nil ? "checkmark.circle.fill" : m.handedAt != nil ? "arrow.right.circle" : "clock")
+                                    Text(m.text).lineLimit(3)
+                                }
+                                .font(.callout)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(24)
+                }
+            }
         } else {
             ContentUnavailableView(
                 "Elige una pregunta o un nodo",
