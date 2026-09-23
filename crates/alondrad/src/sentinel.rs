@@ -23,8 +23,10 @@ struct Memory {
 
 pub async fn run(hub: Arc<Hub>) {
     let mut memory = Memory::default();
+    let mut every = tokio::time::interval(EVERY);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        hub.wait_event(EVERY).await;
+        every.tick().await;
         if let Err(e) = sweep(&hub, &mut memory).await {
             eprintln!("alondrad: sentinel: {e}");
         }

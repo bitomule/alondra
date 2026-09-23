@@ -62,7 +62,6 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
                     eprintln!("alondrad: could not save the observation of {short}");
                 }
-                crate::classify::spawn_if_unclear(&hub, &obs.session_id);
             }
             if let Some(p) = pid
                 && registered.get(&obs.session_id) != Some(&p)

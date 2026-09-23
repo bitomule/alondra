@@ -25,8 +25,9 @@ pub fn run() -> Result<i32> {
                 return Ok(2);
             }
             Ok((_, text)) if text.trim() == "superseded" => return Ok(0),
-            Ok(_) => continue,
-            Err(_) => std::thread::sleep(Duration::from_secs(15)),
+            Ok((204, _)) => continue,
+            Ok((status, _)) if (400..500).contains(&status) => return Ok(0),
+            Ok(_) | Err(_) => std::thread::sleep(Duration::from_secs(15)),
         }
     }
 }

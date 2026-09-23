@@ -18,7 +18,6 @@ use serde_json::{Value, json};
 
 use crate::auth::{Auth, is_local};
 use crate::push::{Push, Registration};
-use crate::classify;
 use crate::hub::Hub;
 
 const MAX_WAIT: Duration = Duration::from_secs(55);
@@ -108,9 +107,6 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         eprintln!("alondrad: hook lost: {e}");
         return Json(json!({})).into_response();
-    }
-    if event == "Stop" {
-        classify::spawn_if_unclear(&hub, &session_id);
     }
     if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
