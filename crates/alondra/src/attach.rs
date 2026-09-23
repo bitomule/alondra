@@ -113,7 +113,7 @@ pub fn attach(short_id: &str) -> Result<()> {
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
     let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
     if r != 0 {
-        bail!("no pude abrir un pseudoterminal");
+        bail!(tr!("could not open a pseudoterminal", "no pude abrir un pseudoterminal"));
     }
     let master = Fd(master);
     let slave_fd = slave;
@@ -129,7 +129,7 @@ pub fn attach(short_id: &str) -> Result<()> {
                 Ok(())
             });
     }
-    let mut child = cmd.spawn().context("no pude lanzar claude attach")?;
+    let mut child = cmd.spawn().context(tr!("could not launch claude attach", "no pude lanzar claude attach"))?;
     unsafe { libc::close(slave_fd) };
 
     let raw = RawMode::enter()?;
@@ -196,7 +196,7 @@ pub fn attach(short_id: &str) -> Result<()> {
     match status {
         Ok(st) if !left_to_alondra && !st.success() => match last_words(&tail) {
             Some(words) => bail!("{words}"),
-            None => bail!("claude attach terminó con {st}"),
+            None => bail!(trf!("claude attach ended with {st}", "claude attach terminó con {st}")),
         },
         _ => Ok(()),
     }

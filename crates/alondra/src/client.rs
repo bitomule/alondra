@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+
 #[derive(Deserialize, Clone)]
 pub struct FleetNode {
     #[serde(flatten)]
@@ -55,13 +56,13 @@ impl Client {
                 .ok()
                 .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or(body);
-            return Err(anyhow!("alondrad respondió {status}: {msg}"));
+            return Err(anyhow!(trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}")));
         }
         Ok((status, body))
     }
 
     pub fn get_text(&self, path: &str) -> Result<(u16, String)> {
-        let resp = self.agent.get(format!("{}{path}", self.base)).call().context("alondrad no responde (¿está arrancado?)")?;
+        let resp = self.agent.get(format!("{}{path}", self.base)).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp)
     }
 
@@ -75,13 +76,13 @@ impl Client {
             .agent
             .post(format!("{}{path}", self.base))
             .send_json(body)
-            .context("alondrad no responde (¿está arrancado?)")?;
+            .context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         let (_, text) = Self::check(resp)?;
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
-        let resp = self.agent.delete(format!("{}{path}", self.base)).call().context("alondrad no responde (¿está arrancado?)")?;
+        let resp = self.agent.delete(format!("{}{path}", self.base)).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp).map(|_| ())
     }
 

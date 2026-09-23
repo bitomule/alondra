@@ -8,8 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as Panel, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 use super::md::{self, str_width, truncate, wrap};
-use super::{App, FleetRow, Item, Key, Remote, Screen, Target, said, who};
+use super::{App, FleetRow, Item, Key, Pane, Remote, Screen, Target, View, said, who};
 use crate::client::FleetNode;
+use crate::i18n;
 
 const ACCENT: Color = Color::LightYellow;
 const DIM: Color = Color::DarkGray;
@@ -39,14 +40,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_foot(f, app, foot);
     if app.help {
-        draw_help(f);
+        draw_help(f, app);
     }
 }
 
 pub fn ago(ms: i64) -> String {
     let s = ((now_millis() - ms) / 1000).max(0);
     match s {
-        0..=59 => "ahora".into(),
+        0..=59 => tr!("now", "ahora").into(),
         60..=3599 => format!("{}m", s / 60),
         3600..=86399 => format!("{}h", s / 3600),
         _ => format!("{}d", s / 86400),
@@ -101,15 +102,39 @@ fn scrollbar(f: &mut Frame, area: Rect, total: usize, pos: usize) {
     );
 }
 
+/// Bottom-border hint that there is more to read below (or that the end is reached).
+fn more_hint(scroll: usize, h: usize, total: usize) -> Option<Line<'static>> {
+    if total <= h {
+        return None;
+    }
+    let rest = total.saturating_sub(scroll + h);
+    let text = if rest == 0 { tr!(" ↑ end ", " ↑ fin ").to_string() } else { trf!(" ↓ {rest} more lines ", " ↓ {rest} líneas más ") };
+    Some(Line::from(Span::styled(text, Style::new().fg(if rest == 0 { DIM } else { ACCENT }))).right_aligned())
+}
+
 fn keep_visible(scroll: &mut usize, range: (usize, usize), height: usize, total: usize) {
     let (s, e) = range;
-    if s < *scroll {
+    if e.saturating_sub(s) >= height {
+        *scroll = (*scroll).clamp(s.saturating_sub(1), e.saturating_sub(height).max(s.saturating_sub(1)));
+    } else if s < *scroll {
         *scroll = s.saturating_sub(1);
-    }
-    if e > *scroll + height {
+    } else if e > *scroll + height {
         *scroll = e.saturating_sub(height).min(s);
     }
     *scroll = (*scroll).min(total.saturating_sub(height));
+}
+
+fn since_phrase(ms: i64) -> String {
+    let t = ago(ms);
+    if now_millis() - ms < 60_000 { tr!("since just now", "desde ahora mismo").into() } else { trf!("for {t}", "desde hace {t}") }
+}
+
+fn ago_phrase(ms: i64) -> String {
+    if now_millis() - ms < 60_000 {
+        return tr!("just now", "ahora mismo").into();
+    }
+    let t = ago(ms);
+    trf!("{t} ago", "hace {t}")
 }
 
 fn state_color(s: NodeState) -> Color {
@@ -123,19 +148,19 @@ fn state_color(s: NodeState) -> Color {
     }
 }
 
-fn question_glyph(q: &Question) -> (&'static str, &'static str, Color) {
+pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color) {
     match q.origin {
-        QuestionOrigin::Plan => ("◆", "plan", Color::LightMagenta),
-        QuestionOrigin::Permission => ("!", "permiso", Color::LightRed),
-        _ => ("?", "pregunta", ACCENT),
+        QuestionOrigin::Plan => ("◆", tr!("plan", "plan"), Color::LightMagenta),
+        QuestionOrigin::Permission => ("!", tr!("permission", "permiso"), Color::LightRed),
+        _ => ("?", tr!("question", "pregunta"), ACCENT),
     }
 }
 
-fn report_glyph(r: &Report) -> (&'static str, &'static str, Color) {
+pub(super) fn report_glyph(r: &Report) -> (&'static str, &'static str, Color) {
     match r.kind {
-        ReportKind::Document => ("▤", "documento", Color::Cyan),
-        ReportKind::Final => ("✓", "terminado", Color::LightGreen),
-        _ => ("•", "aviso", Color::LightBlue),
+        ReportKind::Document => ("▤", i18n::report_kind(r.kind), Color::Cyan),
+        ReportKind::Final => ("✓", i18n::report_kind(r.kind), Color::LightGreen),
+        _ => ("•", i18n::report_kind(r.kind), Color::LightBlue),
     }
 }
 
@@ -156,16 +181,19 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let mut left = vec![Span::styled(" Alondra ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
-    left.push(tab(format!("Bandeja {}", app.inbox_keys().len()), app.screen == Screen::Inbox));
-    left.push(tab(format!("Flota {}", app.data.nodes.len()), app.screen == Screen::Fleet));
+    let (inbox, fleet) = (app.inbox_keys().len(), app.data.nodes.len());
+    left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
+    left.push(tab(trf!("Fleet {fleet}", "Flota {fleet}"), app.screen == Screen::Fleet));
     if app.offline {
         left.push(Span::raw(" "));
-        left.push(Span::styled(" sin conexión con alondrad ", Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
+        left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
     let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working && n.alive).count();
-    let mem = m.memory_free_percent.map(|p| format!("{p}% libre")).unwrap_or_else(|| format!("{:.1} GB libres", m.memory_available as f64 / 1_073_741_824.0));
+    let gb = m.memory_available as f64 / 1_073_741_824.0;
+    let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{gb:.1} GB free", "{gb:.1} GB libres"));
     let warn = if m.unreliable { " ⚠" } else { "" };
-    let right = format!("{working} trabajando · memoria {mem} · carga {:.1}{warn} ", m.load[0]);
+    let load = m.load[0];
+    let right = trf!("{working} working · memory {mem} · load {load:.1}{warn} ", "{working} trabajando · memoria {mem} · carga {load:.1}{warn} ");
     let lw: usize = left.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
     if app.loaded && lw + str_width(&right) + 2 <= area.width as usize {
@@ -175,6 +203,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
     let w = area.width;
+    app.detail_view.shown = w >= 84;
     if w >= 170 {
         let [list, detail, fleet] = Layout::horizontal([Constraint::Length(50), Constraint::Min(40), Constraint::Length(40)]).areas(area);
         draw_inbox_list(f, app, list);
@@ -233,11 +262,12 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
 fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let keys = app.inbox_keys();
     let nq = keys.iter().filter(|k| matches!(k, Key::Q(_))).count();
-    let block = panel(Line::from(" Bandeja ".bold()), true);
+    let focused = app.focus == Pane::List || !app.detail_view.shown;
+    let block = panel(Line::from(tr!(" Inbox ", " Bandeja ").bold()), focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if !app.loaded {
-        let msg = if app.offline { "alondrad no responde · reintentando…" } else { "Conectando con alondrad…" };
+        let msg = if app.offline { tr!("alondrad is not responding · retrying…", "alondrad no responde · reintentando…") } else { tr!("Connecting to alondrad…", "Conectando con alondrad…") };
         centered_lines(f, inner, vec![Line::from(msg.fg(DIM))]);
         return;
     }
@@ -246,11 +276,11 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
             f,
             inner,
             vec![
-                Line::from("✓ Todo al día".fg(Color::LightGreen).bold()),
-                Line::from("Nadie te espera y no hay nada por leer.".fg(DIM)),
+                Line::from(tr!("✓ All caught up", "✓ Todo al día").fg(Color::LightGreen).bold()),
+                Line::from(tr!("Nobody is waiting for you and there is nothing to read.", "Nadie te espera y no hay nada por leer.").fg(DIM)),
                 Line::default(),
-                Line::from(vec![Span::styled("n", Style::new().fg(ACCENT).bold()), " encarga trabajo nuevo".fg(DIM)]),
-                Line::from(vec![Span::styled("Tab", Style::new().fg(ACCENT).bold()), " mira la flota".fg(DIM)]),
+                Line::from(vec![Span::styled("n", Style::new().fg(ACCENT).bold()), tr!(" order new work", " encarga trabajo nuevo").fg(DIM)]),
+                Line::from(vec![Span::styled("Tab", Style::new().fg(ACCENT).bold()), tr!(" see the fleet", " mira la flota").fg(DIM)]),
             ],
         );
         return;
@@ -258,7 +288,7 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = vec![];
     let mut sel_range = None;
-    let sections = [(true, "TE ESPERAN", ACCENT, nq), (false, "PARA LEER", Color::Cyan, keys.len() - nq)];
+    let sections = [(true, tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT, nq), (false, tr!("TO READ", "PARA LEER"), Color::Cyan, keys.len() - nq)];
     for (questions, label, color, count) in sections {
         if count == 0 {
             continue;
@@ -304,7 +334,7 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     if let Some(p) = project.filter(|p| !node.starts_with(p.as_str())) {
         meta.push(Span::styled(format!(" · {p}"), Style::new().fg(DIM)));
     }
-    meta.push(Span::styled(format!(" · hace {}", ago(at)).replace("hace ahora", "ahora mismo"), Style::new().fg(DIM)));
+    meta.push(Span::styled(format!(" · {}", ago_phrase(at)), Style::new().fg(DIM)));
     lines.push(fit(meta, width));
     lines.push(Line::default());
     lines.extend(wrap(vec![Span::styled(md::one_line(title), Style::new().add_modifier(Modifier::BOLD))], width, vec![], vec![]));
@@ -320,9 +350,12 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 lines.push(Line::default());
                 lines.extend(md::render(&md::parse(text), width).lines);
             }
-            Some(Err(e)) => lines.push(Line::from(format!("No he podido cargarlo: {e}").fg(Color::LightRed))),
-            None if a.stored_path.is_some() => lines.push(Line::from("Cargando…".fg(DIM))),
-            None => lines.push(Line::from(format!("No se guardó copia: {}", a.source_path).fg(DIM))),
+            Some(Err(e)) => lines.push(Line::from(trf!("Could not load it: {e}", "No he podido cargarlo: {e}").fg(Color::LightRed))),
+            None if a.stored_path.is_some() => lines.push(Line::from(tr!("Loading…", "Cargando…").fg(DIM))),
+            None => {
+                let src = &a.source_path;
+                lines.push(Line::from(trf!("No copy was kept: {src}", "No se guardó copia: {src}").fg(DIM)));
+            }
         }
     }
     if !links.is_empty() {
@@ -336,7 +369,7 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         && let Some(c) = q.node_context.as_ref().filter(|c| c.trim().contains(char::is_whitespace))
     {
         lines.push(Line::default());
-        lines.push(Line::from("Lo que hacía el nodo".fg(DIM).bold()));
+        lines.push(Line::from(tr!("What the node was doing", "Lo que hacía el nodo").fg(DIM).bold()));
         for l in c.lines() {
             lines.extend(wrap(vec![Span::styled(l.to_string(), Style::new().fg(DIM))], width, vec![], vec![]));
         }
@@ -362,20 +395,32 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 })
                 .collect();
             let review = super::approval_of(q).is_some() || q.attachments.iter().any(|a| a.stored_path.is_some());
-            let mut tail = vec![keycap("⏎"), Span::styled(if review { " revisar y comentar  " } else { " leer  " }, Style::new().fg(SOFT))];
-            tail.extend([keycap("r"), Span::styled(" responder  ", Style::new().fg(SOFT)), keycap("c"), Span::styled(" más contexto", Style::new().fg(SOFT))]);
+            let open = if review { tr!(" review and comment  ", " revisar y comentar  ") } else { tr!(" read all  ", " leer entero  ") };
+            let mut tail = vec![keycap("o"), Span::styled(open, Style::new().fg(SOFT))];
+            tail.extend([keycap("r"), Span::styled(tr!(" reply  ", " responder  "), Style::new().fg(SOFT)), keycap("c"), Span::styled(tr!(" more context", " más contexto"), Style::new().fg(SOFT))]);
             if q.options.is_empty() {
-                out.push(Line::from("Sin opciones: contesta con tus palabras.".fg(DIM)));
+                out.push(Line::from(tr!("No options: answer in your own words.", "Sin opciones: contesta con tus palabras.").fg(DIM)));
             }
             out.push(hint(tail));
             out
         }
         Item::R(r) => {
             let pending = app.reviews.get(&super::Key::R(r.id)).map(|rv| rv.count()).unwrap_or(0);
-            let read = if r.kind == ReportKind::Document || r.attachments.iter().any(|a| a.stored_path.is_some()) { " leer y comentar  " } else { " leer  " };
-            let mut spans = vec![keycap("⏎"), Span::styled(read, Style::new().fg(SOFT)), keycap("x"), Span::styled(" leído  ", Style::new().fg(SOFT)), keycap("r"), Span::styled(" responder", Style::new().fg(SOFT))];
+            let read = if r.kind == ReportKind::Document || r.attachments.iter().any(|a| a.stored_path.is_some()) {
+                tr!(" read and comment  ", " leer y comentar  ")
+            } else {
+                tr!(" read all  ", " leer entero  ")
+            };
+            let mut spans = vec![
+                keycap("o"),
+                Span::styled(read, Style::new().fg(SOFT)),
+                keycap("x"),
+                Span::styled(tr!(" mark read  ", " leído  "), Style::new().fg(SOFT)),
+                keycap("r"),
+                Span::styled(tr!(" reply", " responder"), Style::new().fg(SOFT)),
+            ];
             if pending > 0 {
-                spans.push(Span::styled(format!("  ✎{pending} sin enviar"), Style::new().fg(COMMENT)));
+                spans.push(Span::styled(trf!("  ✎{pending} unsent", "  ✎{pending} sin enviar"), Style::new().fg(COMMENT)));
             }
             vec![hint(spans)]
         }
@@ -385,7 +430,8 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
 fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let item = app.sel.and_then(|k| app.item(k));
     let Some(item) = item else {
-        let block = panel(Line::from(" Detalle ".fg(DIM)), false);
+        app.detail_view.total = 0;
+        let block = panel(Line::from(tr!(" Detail ", " Detalle ").fg(DIM)), false);
         let inner = block.inner(area);
         f.render_widget(block, area);
         if app.loaded {
@@ -398,9 +444,8 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
         Item::Q(q) => format!("#{}", q.id),
         Item::R(r) => format!("#{}", r.id),
     };
-    let block = panel(Line::from(vec![Span::raw(" "), Span::styled(kind, Style::new().fg(color).bold()), Span::styled(format!(" {id} "), Style::new().fg(DIM))]), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let mut block = panel(Line::from(vec![Span::raw(" "), Span::styled(kind, Style::new().fg(color).bold()), Span::styled(format!(" {id} "), Style::new().fg(DIM))]), app.focus == Pane::Detail);
+    let inner = block.clone().inner(area);
     let width = inner.width.saturating_sub(2) as usize;
     let actions = action_lines(app, &item, width);
     let ah = (actions.len() as u16 + 1).min(inner.height / 2);
@@ -409,6 +454,11 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let total = lines.len();
     let h = content.height as usize;
     app.detail_scroll = app.detail_scroll.min(total.saturating_sub(h));
+    app.detail_view = View { h, total, shown: true };
+    if let Some(hint) = more_hint(app.detail_scroll, h, total) {
+        block = block.title_bottom(hint);
+    }
+    f.render_widget(block, area);
     let text_area = Rect { x: content.x + 1, width: content.width.saturating_sub(2), ..content };
     f.render_widget(Paragraph::new(lines).scroll((app.detail_scroll as u16, 0)), text_area);
     scrollbar(f, content, total, app.detail_scroll);
@@ -430,12 +480,12 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
             None => counts.push((n.state, 1)),
         }
     }
-    let mut lines = vec![Line::from("La flota ahora".fg(DIM).bold()), Line::default()];
+    let mut lines = vec![Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()), Line::default()];
     if counts.is_empty() {
-        lines.push(Line::from("Ningún nodo despierto.".fg(DIM)));
+        lines.push(Line::from(tr!("No node is awake.", "Ningún nodo despierto.").fg(DIM)));
     }
     for (s, c) in counts {
-        lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(state_color(s))), Span::raw(format!("{c} {}", s.label()))]));
+        lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(state_color(s))), Span::raw(format!("{c} {}", i18n::state(s)))]));
     }
     lines
 }
@@ -452,13 +502,18 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let name_style = if n.alive { Style::new() } else { Style::new().fg(SOFT) };
     let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style), Span::raw(" ".repeat(pad))];
     if state_w > 0 {
-        spans.push(Span::styled(format!(" {:<19}", truncate(n.state.label(), 19)), Style::new().fg(state_color(n.state))));
+        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::state(n.state), 19)), Style::new().fg(state_color(n.state))));
     }
     spans.push(Span::styled(format!("{since:>5}"), Style::new().fg(DIM)));
     fit(spans, width)
 }
 
 fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.fleet_zoom && app.selected_node().is_some() {
+        draw_node_detail(f, app, area);
+        return;
+    }
+    app.fleet_view.shown = area.width >= 100;
     let (list, detail) = if area.width >= 100 {
         let lw = (area.width * 11 / 20).clamp(56, 90);
         let [l, d] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(30)]).areas(area);
@@ -467,11 +522,12 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
         (area, None)
     };
     let hidden = app.sleeping_hidden();
-    let mut block = panel(Line::from(" Flota por proyecto ".bold()), true);
+    let focused = app.focus == Pane::List || !app.fleet_view.shown;
+    let mut block = panel(Line::from(tr!(" Fleet by project ", " Flota por proyecto ").bold()), focused);
     if hidden > 0 {
-        block = block.title_bottom(Line::from(format!(" {hidden} dormidos ocultos · d los muestra ").fg(DIM)));
+        block = block.title_bottom(Line::from(trf!(" {hidden} sleeping hidden · d shows them ", " {hidden} dormidos ocultos · d los muestra ").fg(DIM)));
     } else if app.show_sleeping && app.search.is_none() {
-        block = block.title_bottom(Line::from(" d oculta los dormidos ".fg(DIM)));
+        block = block.title_bottom(Line::from(tr!(" d hides the sleeping ", " d oculta los dormidos ").fg(DIM)));
     }
     let inner = block.inner(list);
     f.render_widget(block, list);
@@ -483,12 +539,21 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
         let filter = app.fleet_filter();
         let status = match (&s.remote, filter.as_ref()) {
             (_, None) => String::new(),
-            (_, Some((idx, None))) if !idx.is_empty() => format!("{} por texto", idx.len()),
-            (_, Some((idx, Some(_)))) if idx.is_empty() => "nada por texto ni según jev".into(),
-            (_, Some((idx, Some(via)))) => format!("{} según {via}", idx.len()),
-            (Remote::Pending, _) => "nada por texto · preguntando a jev…".into(),
-            (Remote::Failed(e), _) => format!("jev falló: {}", md::one_line(e)),
-            (Remote::Idle, _) if !q.is_empty() => "nada por texto".into(),
+            (_, Some((idx, None))) if !idx.is_empty() => {
+                let n = idx.len();
+                trf!("{n} by text", "{n} por texto")
+            }
+            (_, Some((idx, Some(_)))) if idx.is_empty() => tr!("nothing by text nor according to jev", "nada por texto ni según jev").into(),
+            (_, Some((idx, Some(via)))) => {
+                let n = idx.len();
+                trf!("{n} according to {via}", "{n} según {via}")
+            }
+            (Remote::Pending, _) => tr!("nothing by text · asking jev…", "nada por texto · preguntando a jev…").into(),
+            (Remote::Failed(e), _) => {
+                let e = md::one_line(e);
+                trf!("jev failed: {e}", "jev falló: {e}")
+            }
+            (Remote::Idle, _) if !q.is_empty() => tr!("nothing by text", "nada por texto").into(),
             _ => String::new(),
         };
         let text = s.input.text();
@@ -505,14 +570,14 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sel = None;
     for (i, r) in rows.iter().enumerate() {
         match r {
-            FleetRow::Group { name, alive, total } => {
+            FleetRow::Group { name, orchestrator, alive, total } => {
                 if i > 0 {
                     lines.push(Line::default());
                 }
-                let label = if name == "orquestador" { "★ orquestador".to_string() } else { name.clone() };
+                let label = if *orchestrator { format!("★ {name}") } else { name.clone() };
                 lines.push(Line::from(vec![
                     Span::styled(format!(" {label}"), Style::new().add_modifier(Modifier::BOLD)),
-                    Span::styled(format!("  {alive} despiertos de {total}"), Style::new().fg(DIM)),
+                    Span::styled(trf!("  {alive} awake of {total}", "  {alive} despiertos de {total}"), Style::new().fg(DIM)),
                 ]));
             }
             FleetRow::Node(idx) => {
@@ -527,9 +592,9 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     }
     if lines.is_empty() {
         let msg = match app.search.as_ref().map(|s| &s.remote) {
-            Some(Remote::Pending) => "Preguntando a jev…",
-            Some(_) => "Nada coincide con la búsqueda.",
-            None => "No hay nodos despiertos. d muestra los dormidos.",
+            Some(Remote::Pending) => tr!("Asking jev…", "Preguntando a jev…"),
+            Some(_) => tr!("Nothing matches the search.", "Nada coincide con la búsqueda."),
+            None => tr!("No node is awake. d shows the sleeping ones.", "No hay nodos despiertos. d muestra los dormidos."),
         };
         centered_lines(f, body, vec![Line::from(msg.fg(DIM))]);
     } else {
@@ -551,24 +616,26 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(n) = app.selected_node().cloned() else {
-        f.render_widget(panel(Line::from(" Nodo ".fg(DIM)), false), area);
+        app.fleet_view.total = 0;
+        f.render_widget(panel(Line::from(tr!(" Node ", " Nodo ").fg(DIM)), false), area);
         return;
     };
-    let block = panel(Line::from(vec![Span::raw(" "), Span::styled(md::one_line(n.display_name()), Style::new().bold()), Span::raw(" ")]), false);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let focused = app.fleet_zoom || app.focus == Pane::Detail;
+    let mut block = panel(Line::from(vec![Span::raw(" "), Span::styled(md::one_line(n.display_name()), Style::new().bold()), Span::raw(" ")]), focused);
+    let inner = block.clone().inner(area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let width = text.width as usize;
     let mut lines = vec![fit(
         vec![
-            Span::styled(format!("● {}", n.state.label()), Style::new().fg(state_color(n.state)).bold()),
-            Span::styled(format!(" · desde hace {}", ago(n.state_since)), Style::new().fg(DIM)),
-            Span::styled(if n.alive { " · despierto" } else { " · dormido" }, Style::new().fg(DIM)),
+            Span::styled(format!("● {}", i18n::state(n.state)), Style::new().fg(state_color(n.state)).bold()),
+            Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
+            Span::styled(if n.alive { tr!(" · awake", " · despierto") } else { tr!(" · asleep", " · dormido") }, Style::new().fg(DIM)),
         ],
         width,
     )];
     if let Some(p) = &n.project {
-        lines.push(Line::from(format!("proyecto {p} · {}", n.short_id).fg(DIM)));
+        let id = &n.short_id;
+        lines.push(Line::from(trf!("project {p} · {id}", "proyecto {p} · {id}").fg(DIM)));
     }
     if let Some(cwd) = &n.cwd {
         lines.push(fit(vec![Span::styled(cwd.clone(), Style::new().fg(DIM))], width));
@@ -578,39 +645,46 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
         lines.extend(wrap(
             vec![Span::styled(format!("{} ", t.name), Style::new().fg(ACCENT)), Span::raw(t.summary.clone().unwrap_or_default()), Span::styled(format!(" · {}", ago(t.since)), Style::new().fg(DIM))],
             width,
-            vec![Span::styled("Ahora: ", Style::new().fg(DIM))],
+            vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))],
             vec![],
         ));
     }
     if let Some(needs) = &n.daemon_needs {
         lines.push(Line::default());
-        lines.extend(wrap(vec![Span::styled(needs.clone(), Style::new().fg(Color::Yellow))], width, vec![Span::styled("Necesita: ", Style::new().fg(DIM))], vec![]));
+        lines.extend(wrap(vec![Span::styled(needs.clone(), Style::new().fg(Color::Yellow))], width, vec![Span::styled(tr!("Needs: ", "Necesita: "), Style::new().fg(DIM))], vec![]));
     }
     let said = said(&n);
     if !said.trim().is_empty() {
         lines.push(Line::default());
-        lines.push(Line::from("Lo último que dijo".fg(DIM).bold()));
+        lines.push(Line::from(tr!("The last thing it said", "Lo último que dijo").fg(DIM).bold()));
         lines.extend(md::render(&md::parse(&said), width).lines);
     }
     let total = lines.len();
-    app.fleet_detail_scroll = app.fleet_detail_scroll.min(total.saturating_sub(inner.height as usize));
+    let h = inner.height as usize;
+    app.fleet_detail_scroll = app.fleet_detail_scroll.min(total.saturating_sub(h));
+    app.fleet_view.h = h;
+    app.fleet_view.total = total;
+    if let Some(hint) = more_hint(app.fleet_detail_scroll, h, total) {
+        block = block.title_bottom(hint);
+    }
+    f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines).scroll((app.fleet_detail_scroll as u16, 0)), text);
     scrollbar(f, inner, total, app.fleet_detail_scroll);
 }
 
 fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel(Line::from(" Flota despierta ".fg(SOFT)), false);
+    let block = panel(Line::from(tr!(" Awake fleet ", " Flota despierta ").fg(SOFT)), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines = vec![];
     for r in app.fleet_rows() {
         match r {
-            FleetRow::Group { name, alive, .. } => {
+            FleetRow::Group { name, orchestrator, alive, .. } => {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
-                let label = if name == "orquestador" { "★ orquestador".to_string() } else { name };
+                let label = if orchestrator { format!("★ {name}") } else { name };
                 lines.push(fit(vec![Span::styled(format!(" {label}"), Style::new().bold()), Span::styled(format!(" {alive}"), Style::new().fg(DIM))], width));
             }
             FleetRow::Node(i) => {
@@ -620,7 +694,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
                     vec![
                         Span::styled(if n.alive { "  ● " } else { "  ○ " }, Style::new().fg(state_color(n.state))),
                         Span::raw(md::one_line(&name)),
-                        Span::styled(format!(" {}", n.state.label()), Style::new().fg(DIM)),
+                        Span::styled(format!(" {}", i18n::state(n.state)), Style::new().fg(DIM)),
                     ],
                     width,
                 ));
@@ -628,7 +702,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     if lines.is_empty() {
-        lines.push(Line::from(" Ningún nodo despierto.".fg(DIM)));
+        lines.push(Line::from(tr!(" No node is awake.", " Ningún nodo despierto.").fg(DIM)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -636,14 +710,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
 fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(r) = app.reader.as_mut() else { return };
     let review = app.reviews.get(&r.key);
-    let (glyph, color) = match r.kind {
-        "plan" => ("◆", Color::LightMagenta),
-        "permiso" => ("!", Color::LightRed),
-        "pregunta" => ("?", ACCENT),
-        "documento" => ("▤", Color::Cyan),
-        "terminado" => ("✓", Color::LightGreen),
-        _ => ("•", Color::LightBlue),
-    };
+    let (glyph, color) = (r.glyph, r.color);
     let still_open = match r.key {
         Key::Q(id) => app.data.open_questions.iter().any(|q| q.id == id),
         Key::R(id) => app.data.news.iter().any(|x| x.id == id),
@@ -656,17 +723,17 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw(" "),
     ];
     if !still_open && app.loaded {
-        title.push(Span::styled(" ya no está pendiente ", Style::new().fg(Color::Black).bg(Color::LightRed)));
+        title.push(Span::styled(tr!(" no longer pending ", " ya no está pendiente "), Style::new().fg(Color::Black).bg(Color::LightRed)));
     }
     let n_comments = review.map(|rv| rv.count()).unwrap_or(0);
     let status = if n_comments == 0 {
-        " sin comentarios ".to_string()
+        tr!(" no comments ", " sin comentarios ").to_string()
     } else {
-        format!(" {n_comments} {} sin enviar ", if n_comments == 1 { "comentario" } else { "comentarios" })
+        let c = i18n::comments(n_comments);
+        trf!(" {c} unsent ", " {c} sin enviar ")
     };
-    let block = panel(Line::from(title), true).title_bottom(Line::from(Span::styled(status, Style::new().fg(if n_comments > 0 { COMMENT } else { DIM }))).right_aligned());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let mut block = panel(Line::from(title), true).title_bottom(Line::from(Span::styled(status, Style::new().fg(if n_comments > 0 { COMMENT } else { DIM }))).right_aligned());
+    let inner = block.clone().inner(area);
     let has_comments = n_comments > 0;
     let (doc, side) = if inner.width >= 110 {
         let [d, s] = Layout::horizontal([Constraint::Min(60), Constraint::Length(42)]).areas(inner);
@@ -677,15 +744,46 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         (inner, None)
     };
+    let doc = match r.find.as_ref() {
+        Some(find) => {
+            let [bar, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(doc);
+            let hits = r.matches();
+            let status = match (find.query().is_empty(), hits.iter().position(|&i| i == r.cursor)) {
+                (true, _) => String::new(),
+                (false, _) if hits.is_empty() => tr!("no matches", "sin coincidencias").into(),
+                (false, Some(i)) => {
+                    let (i, n) = (i + 1, hits.len());
+                    trf!("{i}/{n} · n next · N previous", "{i}/{n} · n siguiente · N anterior")
+                }
+                (false, None) => {
+                    let n = hits.len();
+                    trf!("{n} matches · n next", "{n} coincidencias · n siguiente")
+                }
+            };
+            let line = Line::from(vec![Span::styled(" / ", Style::new().fg(ACCENT).bold()), Span::raw(find.input.text()), Span::styled(format!("   {status}"), Style::new().fg(DIM))]);
+            f.render_widget(Paragraph::new(line), bar);
+            if find.editing && app.composer.is_none() && app.cmdline.is_none() {
+                let (_, (_, col)) = find.input.layout(usize::MAX / 2);
+                f.set_cursor_position(Position { x: bar.x + 3 + col as u16, y: bar.y });
+            }
+            rest
+        }
+        None => doc,
+    };
     let width = doc.width.saturating_sub(4) as usize;
     let rendered = md::render(&r.blocks, width);
     let h = doc.height as usize;
     r.view_h = h;
     let total = rendered.lines.len();
+    r.total = total;
     if let Some(&range) = rendered.ranges.get(r.cursor) {
         keep_visible(&mut r.scroll, range, h, total);
     }
     r.ranges = rendered.ranges;
+    if let Some(hint) = more_hint(r.scroll, h, total) {
+        block = block.title_bottom(hint.left_aligned());
+    }
+    f.render_widget(block, area);
     let numbers: HashMap<usize, usize> = review.map(|rv| rv.comments.iter().enumerate().map(|(i, c)| (c.block, i + 1)).collect()).unwrap_or_default();
     let mut owner = vec![None; total];
     for (b, &(s, e)) in r.ranges.iter().enumerate() {
@@ -732,33 +830,35 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize, approval: 
     let block = Panel::new()
         .borders(ratatui::widgets::Borders::LEFT)
         .border_style(Style::new().fg(DIM))
-        .title(Line::from(vec![Span::styled(" Comentarios ", Style::new().bold()), Span::styled(n.to_string(), Style::new().fg(DIM))]));
+        .title(Line::from(vec![Span::styled(tr!(" Comments ", " Comentarios "), Style::new().bold()), Span::styled(n.to_string(), Style::new().fg(DIM))]));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let width = text.width as usize;
     let mut lines: Vec<Line> = vec![];
-    let key = |k: &str, d: &str| Line::from(vec![Span::styled(format!("{k:<4}"), Style::new().fg(ACCENT).bold()), Span::styled(d.to_string(), Style::new().fg(DIM))]);
+    let key = |k: &str, d: &str| Line::from(vec![Span::styled(format!("{k:<6}"), Style::new().fg(ACCENT).bold()), Span::styled(d.to_string(), Style::new().fg(DIM))]);
     match review.filter(|rv| !rv.is_empty()) {
         None => {
-            lines.push(Line::from("Todavía ninguno.".fg(DIM)));
+            lines.push(Line::from(tr!("None yet.", "Todavía ninguno.").fg(DIM)));
             lines.push(Line::default());
-            lines.push(key("j/k", "mueve el cursor por bloques"));
-            lines.push(key("c", "comenta el bloque marcado"));
-            lines.push(key("C", "comentario general"));
+            lines.push(key("j/k", tr!("move the cursor by blocks", "mueve el cursor por bloques")));
+            lines.push(key("^d ^u", tr!("half a page down / up", "media página abajo / arriba")));
+            lines.push(key("/", tr!("search the text; n/N next/prev", "busca en el texto; n/N sig./ant.")));
+            lines.push(key("c", tr!("comment on the marked block", "comenta el bloque marcado")));
+            lines.push(key("C", tr!("general comment", "comentario general")));
             if approval {
-                lines.push(key("a", "aprueba tal cual"));
-                lines.push(key("p", "pide cambios con tus notas"));
+                lines.push(key("a", tr!("approve as is", "aprueba tal cual")));
+                lines.push(key("p", tr!("request changes with your notes", "pide cambios con tus notas")));
             } else {
-                lines.push(key("s", "envía tus comentarios"));
+                lines.push(key("s", tr!("send your comments", "envía tus comentarios")));
             }
             if let Key::Q(id) = r.key
                 && let Some(q) = app.data.open_questions.iter().find(|q| q.id == id).filter(|q| !q.options.is_empty())
             {
                 lines.push(Line::default());
-                lines.push(Line::from("O elige directamente".fg(DIM)));
+                lines.push(Line::from(tr!("Or choose directly", "O elige directamente").fg(DIM)));
                 for (i, o) in q.options.iter().enumerate().take(9) {
-                    lines.push(fit(vec![Span::styled(format!("{:<4}", i + 1), Style::new().fg(ACCENT).bold()), Span::raw(md::one_line(&o.label))], width));
+                    lines.push(fit(vec![Span::styled(format!("{:<6}", i + 1), Style::new().fg(ACCENT).bold()), Span::raw(md::one_line(&o.label))], width));
                 }
             }
         }
@@ -794,19 +894,28 @@ fn composer_height(input: &super::input::TextInput, width: u16) -> u16 {
 fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
     let Some(c) = app.composer.as_ref() else { return };
     let title = match &c.target {
-        Target::Answer { id, title } => format!("Responder a #{id} · {}", md::one_line(title)),
-        Target::MoreContext { id, title } => format!("#{id} {} · ¿qué te falta saber? (opcional)", md::one_line(title)),
-        Target::ReplyReport { name, .. } => format!("Responder a {name} (se marca leído)"),
-        Target::Message { name, .. } => format!("Mensaje a {name}"),
-        Target::NewRequest => "Trabajo nuevo: el orquestador prepara la misión y lanza el nodo".into(),
-        Target::Comment { quote, .. } => format!("Comentario sobre «{}»", md::one_line(quote)),
-        Target::General { send: true } if app.reader.as_ref().is_some_and(|r| r.approval.is_some()) => "¿Qué cambios pides? (⏎ los envía)".into(),
-        Target::General { send: true } => "Tus comentarios (⏎ los envía)".into(),
-        Target::General { send: false } => "Comentario general".into(),
+        Target::Answer { id, title } => {
+            let t = md::one_line(title);
+            trf!("Reply to #{id} · {t}", "Responder a #{id} · {t}")
+        }
+        Target::MoreContext { id, title } => {
+            let t = md::one_line(title);
+            trf!("#{id} {t} · what do you need to know? (optional)", "#{id} {t} · ¿qué te falta saber? (opcional)")
+        }
+        Target::ReplyReport { name, .. } => trf!("Reply to {name} (marks it read)", "Responder a {name} (se marca leído)"),
+        Target::Message { name, .. } => trf!("Message to {name}", "Mensaje a {name}"),
+        Target::NewRequest => tr!("New work: the orchestrator prepares the mission and launches the node", "Trabajo nuevo: el orquestador prepara la misión y lanza el nodo").into(),
+        Target::Comment { quote, .. } => {
+            let q = md::one_line(quote);
+            trf!("Comment on «{q}»", "Comentario sobre «{q}»")
+        }
+        Target::General { send: true } if app.reader.as_ref().is_some_and(|r| r.approval.is_some()) => tr!("What changes do you want? (⏎ sends them)", "¿Qué cambios pides? (⏎ los envía)").into(),
+        Target::General { send: true } => tr!("Your comments (⏎ sends them)", "Tus comentarios (⏎ los envía)").into(),
+        Target::General { send: false } => tr!("General comment", "Comentario general").into(),
     };
     let action = composer_action(&c.target);
     let title = truncate(&title, (area.width as usize).saturating_sub(6));
-    let hint = format!(" ⏎ {action} · Alt+⏎ nueva línea · Esc cancela ");
+    let hint = trf!(" ⏎ {action} · Alt+⏎ new line · Esc cancels ", " ⏎ {action} · Alt+⏎ nueva línea · Esc cancela ");
     let block = panel(Line::from(Span::styled(format!(" {title} "), Style::new().fg(ACCENT).bold())), true).title_bottom(Line::from(hint.fg(DIM)).right_aligned());
     let inner = block.inner(area);
     f.render_widget(Clear, area);
@@ -815,7 +924,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
     let (lines, (row, col)) = c.input.layout(text.width as usize);
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
     if c.input.text().is_empty() {
-        f.render_widget(Paragraph::new(Line::from("Escribe aquí…".fg(DIM))), text);
+        f.render_widget(Paragraph::new(Line::from(tr!("Type here…", "Escribe aquí…").fg(DIM))), text);
     } else {
         f.render_widget(Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>()).scroll((scroll as u16, 0)), text);
     }
@@ -824,68 +933,107 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
 
 fn composer_action(t: &Target) -> &'static str {
     match t {
-        Target::MoreContext { .. } => "la devuelve",
-        Target::Comment { .. } | Target::General { send: false } => "guarda",
-        _ => "envía",
+        Target::MoreContext { .. } => tr!("sends it back", "la devuelve"),
+        Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
+        _ => tr!("sends", "envía"),
     }
 }
 
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
     if let Some(c) = app.composer.as_ref() {
-        return vec![k("⏎", composer_action(&c.target)), k("Alt+⏎", "nueva línea"), k("Ctrl+W", "borra palabra"), k("Ctrl+U", "borra línea"), k("Esc", "cancela")];
+        return vec![
+            k("⏎", composer_action(&c.target)),
+            k("Alt+⏎", tr!("new line", "nueva línea")),
+            k("Ctrl+W", tr!("delete word", "borra palabra")),
+            k("Ctrl+U", tr!("delete line", "borra línea")),
+            k("Esc", tr!("cancel", "cancela")),
+        ];
     }
     if let Some(r) = app.reader.as_ref() {
-        let mut v = vec![k("j/k", "bloque"), k("c", "comentar"), k("C", "general"), k("d", "borrar")];
+        if r.find.as_ref().is_some_and(|f| f.editing) {
+            return vec![k("⏎", tr!("find", "buscar")), k("Esc", tr!("cancel", "cancela"))];
+        }
+        let mut v = vec![k("j/k", tr!("block", "bloque")), k("^d/^u", tr!("half page", "media página")), k("/", tr!("search", "buscar"))];
+        if r.find.is_some() {
+            v.push(k("n/N", tr!("next/prev", "sig./ant.")));
+        }
+        v.extend([k("c", tr!("comment", "comentar")), k("C", tr!("general", "general")), k("d", tr!("delete", "borrar"))]);
         match (&r.approval, r.key) {
             (Some(a), _) => {
-                v.push(k("a", &format!("aprobar{}", a.approve.as_ref().map(|l| format!(" («{l}»)")).unwrap_or_default())));
-                v.push(k("p", "pedir cambios"));
+                let label = a.approve.as_ref().map(|l| format!(" («{l}»)")).unwrap_or_default();
+                v.push(k("a", &trf!("approve{label}", "aprobar{label}")));
+                v.push(k("p", tr!("request changes", "pedir cambios")));
             }
-            (None, Key::Q(_)) => v.push(k("s", "enviar como respuesta")),
+            (None, Key::Q(_)) => v.push(k("s", tr!("send as answer", "enviar como respuesta"))),
             (None, Key::R(_)) => {
-                v.push(k("s", "enviar al nodo"));
-                v.push(k("x", "leído"));
+                v.push(k("s", tr!("send to node", "enviar al nodo")));
+                v.push(k("x", tr!("mark read", "leído")));
             }
         }
-        v.push(k("Esc", "volver"));
+        v.push(k("Esc/o", tr!("back", "volver")));
         return v;
     }
     if app.screen == Screen::Fleet {
         if app.search.as_ref().is_some_and(|s| s.editing) {
-            return vec![k("⏎", "fijar filtro"), k("Esc", "quitar búsqueda")];
+            return vec![k("⏎", tr!("keep filter", "fijar filtro")), k("Esc", tr!("clear search", "quitar búsqueda"))];
         }
-        let mut v = vec![k("j/k", "mover"), k("/", "buscar")];
+        if app.fleet_zoom {
+            return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("a", tr!("its terminal", "su terminal"))];
+        }
+        let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel")), k("/", tr!("search", "buscar"))];
         if app.search.is_some() {
-            v.push(k("Esc", "quitar búsqueda"));
+            v.push(k("Esc", tr!("clear search", "quitar búsqueda")));
         }
-        v.extend([k("r", "mensaje"), k("⏎", "su terminal (← vuelve)"), k("d", "dormidos"), k("n", "nuevo"), k("Tab", "bandeja"), k("q", "salir")]);
+        v.extend([
+            k("o", tr!("expand", "expandir")),
+            k("r", tr!("message", "mensaje")),
+            k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
+            k("d", tr!("sleeping", "dormidos")),
+            k("n", tr!("new", "nuevo")),
+            k("Tab", tr!("inbox", "bandeja")),
+            k("q", tr!("quit", "salir")),
+        ]);
         return v;
     }
+    let pane = if app.focus == Pane::Detail { k("j/k", tr!("scroll", "desplazar")) } else { k("j/k", tr!("move", "mover")) };
+    let tail = [k("^d/^u", tr!("scroll detail", "desplazar detalle")), k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))];
     match app.sel.and_then(|s| app.item(s)) {
         Some(Item::Q(q)) => {
             let mut v = vec![];
             match q.options.len() {
                 0 => {}
-                1 => v.push(k("1", "elegir")),
-                n => v.push(k(&format!("1-{}", n.min(9)), "elegir")),
+                1 => v.push(k("1", tr!("choose", "elegir"))),
+                n => v.push(k(&format!("1-{}", n.min(9)), tr!("choose", "elegir"))),
             }
-            v.extend([k("⏎", "leer"), k("r", "responder"), k("c", "más contexto"), k("a", "su terminal"), k("Tab", "flota"), k("n", "nuevo"), k("q", "salir")]);
+            v.extend([pane, k("o", tr!("expand", "expandir")), k("r", tr!("reply", "responder")), k("c", tr!("more context", "más contexto")), k("a", tr!("its terminal", "su terminal"))]);
+            v.extend(tail);
             v
         }
-        Some(Item::R(_)) => vec![k("⏎", "leer"), k("x", "leído"), k("r", "responder"), k("a", "su terminal"), k("Tab", "flota"), k("n", "nuevo"), k("q", "salir")],
-        None => vec![k("n", "trabajo nuevo"), k("o", "orquestador"), k("Tab", "flota"), k("q", "salir")],
+        Some(Item::R(_)) => {
+            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído")), k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))];
+            v.extend(tail);
+            v
+        }
+        None => vec![k("n", tr!("new work", "trabajo nuevo")), k("M", tr!("orchestrator", "orquestador")), k("Tab", tr!("fleet", "flota")), k("q", tr!("quit", "salir"))],
     }
 }
 
 fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(input) = app.cmdline.as_ref() {
+        let text = input.text();
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled(":", Style::new().fg(ACCENT).bold()), Span::raw(text)])), area);
+        let (_, (_, col)) = input.layout(usize::MAX / 2);
+        f.set_cursor_position(Position { x: area.x + 1 + col as u16, y: area.y });
+        return;
+    }
     if let Some(fl) = &app.flash {
         let (mark, color) = if fl.error { ("✗ ", Color::LightRed) } else { ("✓ ", Color::LightGreen) };
         f.render_widget(Paragraph::new(fit(vec![Span::styled(format!(" {mark}{}", fl.text), Style::new().fg(color).bold())], area.width as usize)), area);
         return;
     }
     let width = area.width as usize;
-    let help = vec![Span::styled("?", Style::new().fg(ACCENT).bold()), Span::styled(" ayuda", Style::new().fg(DIM))];
+    let help = vec![Span::styled("?", Style::new().fg(ACCENT).bold()), Span::styled(tr!(" help", " ayuda"), Style::new().fg(DIM))];
     let help_w: usize = help.iter().map(Span::width).sum();
     let mut spans = vec![Span::raw(" ")];
     let mut w = 1;
@@ -904,42 +1052,65 @@ fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_help(f: &mut Frame) {
+pub(super) fn help_lines() -> Vec<Line<'static>> {
     let section = |t: &str| Line::from(Span::styled(format!(" {t}"), Style::new().fg(ACCENT).bold()));
-    let row = |k: &str, d: &str| Line::from(vec![Span::styled(format!("  {k:<10}"), Style::new().bold()), Span::styled(d.to_string(), Style::new().fg(SOFT))]);
-    let lines = vec![
-        section("Bandeja"),
-        row("j/k ↑↓", "moverte; al contestar pasas solo a la siguiente"),
-        row("1-9", "elegir una opción de la pregunta"),
-        row("⏎", "leer entero: plan o documento con comentarios por bloque"),
-        row("r", "responder con tus palabras"),
-        row("c", "devolver la pregunta pidiendo más contexto"),
-        row("x", "marcar como leído"),
-        row("J/K", "desplazar el detalle"),
-        row("a", "abrir el terminal del nodo (← con la línea vacía vuelve)"),
+    let row = |k: &str, d: &str| Line::from(vec![Span::styled(format!("  {k:<16}"), Style::new().bold()), Span::styled(d.to_string(), Style::new().fg(SOFT))]);
+    vec![
+        section(tr!("Moving (vim style; arrows work too)", "Moverse (estilo vim; las flechas también valen)")),
+        row("j/k  ↓↑", tr!("down / up; after answering you move to the next one", "abajo / arriba; al contestar pasas solo a la siguiente")),
+        row("gg  G", tr!("first / last", "primero / último")),
+        row("Ctrl-d  Ctrl-u", tr!("half a page down / up (scrolls the detail)", "media página abajo / arriba (desplaza el detalle)")),
+        row("Ctrl-f  Ctrl-b", tr!("a full page down / up; also Space, PgDn, PgUp", "página entera abajo / arriba; también Espacio, AvPág, RePág")),
+        row("h/l  ←→", tr!("focus the list / the detail pane", "enfocar la lista / el panel de detalle")),
+        row("o  ⏎", tr!("expand: open the whole question, plan or report", "expandir: abrir entera la pregunta, plan o informe")),
+        row("Esc", tr!("back: close, collapse or leave the detail pane", "volver: cerrar, plegar o salir del panel de detalle")),
+        row(":", tr!("command line: :q  :help  :inbox  :fleet  :<number>", "línea de órdenes: :q  :help  :inbox  :fleet  :<número>")),
         Line::default(),
-        section("Lectura"),
-        row("j/k", "bloque siguiente / anterior; espacio pasa página"),
-        row("c · C · d", "comentar bloque · comentario general · borrar"),
-        row("a · p", "aprobar · pedir cambios (planes)"),
-        row("s · x", "enviar comentarios · leído (documentos)"),
+        section(tr!("Inbox", "Bandeja")),
+        row("1-9", tr!("choose one of the question's options", "elegir una opción de la pregunta")),
+        row("r", tr!("reply in your own words", "responder con tus palabras")),
+        row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
+        row("x", tr!("mark as read", "marcar como leído")),
+        row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
+        row("a", tr!("open the node's terminal (← on an empty line returns)", "abrir el terminal del nodo (← con la línea vacía vuelve)")),
         Line::default(),
-        section("Flota"),
-        row("/", "buscar; si el texto no encuentra nada, pregunta a jev"),
-        row("r · ⏎", "mensaje al nodo · su terminal"),
-        row("d", "mostrar u ocultar los dormidos"),
+        section(tr!("Reading (after o)", "Lectura (tras o)")),
+        row("j/k", tr!("next / previous block; long blocks scroll line by line", "bloque siguiente / anterior; los bloques largos avanzan línea a línea")),
+        row("/  n  N", tr!("search the text · next match · previous match", "buscar en el texto · siguiente · anterior")),
+        row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
+        row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
+        row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
+        row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
-        section("Siempre"),
-        row("Tab", "bandeja ⇄ flota"),
-        row("n · o", "trabajo nuevo · mensaje al orquestador"),
-        row("q", "salir"),
-    ];
+        section(tr!("Fleet", "Flota")),
+        row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),
+        row("r · ⏎", tr!("message the node · its terminal", "mensaje al nodo · su terminal")),
+        row("o", tr!("expand the node's detail to full screen", "expandir el detalle del nodo a pantalla completa")),
+        row("d", tr!("show or hide sleeping nodes", "mostrar u ocultar los dormidos")),
+        Line::default(),
+        section(tr!("Always", "Siempre")),
+        row("Tab", tr!("inbox ⇄ fleet", "bandeja ⇄ flota")),
+        row("n · M", tr!("new work · message the orchestrator", "trabajo nuevo · mensaje al orquestador")),
+        row("q  Ctrl-c", tr!("quit", "salir")),
+        row(tr!("typing", "al escribir"), tr!("letters go to the text box; Esc leaves it", "las letras van al cuadro de texto; Esc sale")),
+    ]
+}
+
+fn draw_help(f: &mut Frame, app: &mut App) {
+    let lines = help_lines();
     let area = f.area();
-    let w = 76.min(area.width.saturating_sub(2));
+    let w = 96.min(area.width.saturating_sub(2));
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
+    let view_h = h.saturating_sub(2) as usize;
+    app.help_view = View { h: view_h, total: lines.len(), shown: true };
+    app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(view_h));
+    let mut block = panel(Line::from(tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ").bold()), true);
+    if let Some(hint) = more_hint(app.help_scroll, view_h, lines.len()) {
+        block = block.title_bottom(hint);
+    }
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(panel(Line::from(" Teclas · cualquier tecla cierra ".bold()), true)), r);
+    f.render_widget(Paragraph::new(lines).scroll((app.help_scroll as u16, 0)).block(block), r);
 }
 
 #[cfg(test)]
@@ -947,7 +1118,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::tests::{app_with, question};
+    use super::super::tests::{app_with, ctrl, press, question};
     use super::*;
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -975,5 +1146,72 @@ mod tests {
             assert!(s.contains("1 Aprobar"), "{w}x{h}\n{s}");
             assert!(s.contains("? ayuda"), "{w}x{h}\n{s}");
         }
+    }
+
+    #[test]
+    fn english_is_the_base_language() {
+        let (mut app, _rx) = app_with(vec![]);
+        i18n::set_for_this_thread(i18n::Lang::En);
+        app.loaded = true;
+        let s = screen(&mut app, 100, 24);
+        assert!(s.contains("All caught up"), "{s}");
+        assert!(s.contains("Inbox 0"), "{s}");
+        assert!(s.contains("? help"), "{s}");
+    }
+
+    #[test]
+    fn a_long_question_shows_there_is_more_and_scrolls_to_its_end() {
+        let mut q = question(1, QuestionOrigin::Ask, &["Sí"]);
+        q.detail = Some((1..=60).map(|i| format!("Línea {i}.")).collect::<Vec<_>>().join("\n\n"));
+        let (mut app, _rx) = app_with(vec![q]);
+        app.loaded = true;
+        let s = screen(&mut app, 110, 30);
+        assert!(s.contains("líneas más"), "{s}");
+        assert!(!s.contains("Línea 60."), "{s}");
+        press(&mut app, "l");
+        press(&mut app, "G");
+        let s = screen(&mut app, 110, 30);
+        assert!(s.contains("Línea 60."), "{s}");
+        assert!(s.contains("↑ fin"), "{s}");
+        press(&mut app, "gg");
+        ctrl(&mut app, 'd');
+        assert!(app.detail_scroll > 0);
+    }
+
+    #[test]
+    fn the_reader_shows_the_end_of_a_single_huge_paragraph() {
+        let mut q = question(1, QuestionOrigin::Ask, &[]);
+        q.detail = Some(format!("{} FINAL", "palabra ".repeat(1500)));
+        let (mut app, _rx) = app_with(vec![q]);
+        app.loaded = true;
+        press(&mut app, "o");
+        let s = screen(&mut app, 80, 24);
+        assert!(!s.contains("FINAL"), "{s}");
+        press(&mut app, "G");
+        let s = screen(&mut app, 80, 24);
+        assert!(s.contains("FINAL"), "{s}");
+        for _ in 0..200 {
+            press(&mut app, "k");
+            screen(&mut app, 80, 24);
+        }
+        let s = screen(&mut app, 80, 24);
+        assert!(s.contains("Pregunta 1"), "{s}");
+        for _ in 0..200 {
+            press(&mut app, "j");
+            screen(&mut app, 80, 24);
+        }
+        let s = screen(&mut app, 80, 24);
+        assert!(s.contains("FINAL"), "{s}");
+    }
+
+    #[test]
+    fn help_fits_short_terminals_by_scrolling() {
+        let (mut app, _rx) = app_with(vec![]);
+        press(&mut app, "?");
+        let s = screen(&mut app, 100, 20);
+        assert!(s.contains("líneas más"), "{s}");
+        press(&mut app, "G");
+        let s = screen(&mut app, 100, 20);
+        assert!(s.contains("Siempre"), "{s}");
     }
 }

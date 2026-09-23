@@ -1,5 +1,6 @@
 mod draw;
 mod input;
+mod keys;
 mod md;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -17,7 +18,9 @@ use serde_json::{Value, json};
 
 use crate::client::{Client, FleetNode, Overview};
 use crate::mcp::urlencode;
+use crate::i18n;
 use input::TextInput;
+use keys::{Cmd, Keymap, Motion};
 use md::Block;
 
 const SETTLE_MS: i64 = 700;
@@ -42,6 +45,20 @@ pub enum Item<'a> {
 pub enum Screen {
     Inbox,
     Fleet,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Pane {
+    List,
+    Detail,
+}
+
+/// What the last frame drew for a scrollable pane: rows visible, rows of content, and whether it was on screen.
+#[derive(Clone, Copy, Default)]
+pub struct View {
+    pub h: usize,
+    pub total: usize,
+    pub shown: bool,
 }
 
 pub struct Flash {
@@ -87,12 +104,25 @@ pub struct Approval {
     pub changes: Option<String>,
 }
 
+pub struct Find {
+    pub input: TextInput,
+    pub editing: bool,
+}
+
+impl Find {
+    pub fn query(&self) -> String {
+        self.input.text().trim().to_lowercase()
+    }
+}
+
 pub struct Reader {
     pub key: Key,
     pub session: String,
     pub node: String,
     pub title: String,
     pub kind: &'static str,
+    pub glyph: &'static str,
+    pub color: ratatui::style::Color,
     pub approval: Option<Approval>,
     parts: Vec<Part>,
     pub blocks: Vec<Block>,
@@ -100,6 +130,8 @@ pub struct Reader {
     pub scroll: usize,
     pub ranges: Vec<(usize, usize)>,
     pub view_h: usize,
+    pub total: usize,
+    pub find: Option<Find>,
 }
 
 impl Reader {
@@ -117,21 +149,79 @@ impl Reader {
         }
     }
 
-    fn page(&mut self, d: isize) {
-        let Some(&(start, _)) = self.ranges.get(self.cursor) else { return };
-        let jump = self.view_h.saturating_sub(2).max(1);
-        let target = if d > 0 { start + jump } else { start.saturating_sub(jump) };
-        let found = if d > 0 {
-            self.ranges.iter().position(|&(s, _)| s >= target).unwrap_or(self.blocks.len().saturating_sub(1))
-        } else {
-            self.ranges.iter().rposition(|&(s, _)| s <= target).unwrap_or(0)
-        };
-        self.cursor = found;
-        if !self.blocks.get(found).is_some_and(Block::commentable) {
-            self.step(if d > 0 { -1 } else { 1 });
+    fn down(&mut self) {
+        match self.ranges.get(self.cursor) {
+            Some(&(_, e)) if e > self.scroll + self.view_h => self.scroll += 1,
+            _ => self.step(1),
         }
-        if let Some(&(s, _)) = self.ranges.get(self.cursor) {
-            self.scroll = s.saturating_sub(1);
+    }
+
+    fn up(&mut self) {
+        match self.ranges.get(self.cursor) {
+            Some(&(s, _)) if s < self.scroll => self.scroll -= 1,
+            _ => self.step(-1),
+        }
+    }
+
+    fn top(&mut self) {
+        self.cursor = 0;
+        self.scroll = 0;
+        self.settle_cursor();
+    }
+
+    fn bottom(&mut self) {
+        self.cursor = self.blocks.len().saturating_sub(1);
+        if !self.blocks.get(self.cursor).is_some_and(Block::commentable) {
+            self.step(-1);
+        }
+        self.scroll = self.total.saturating_sub(self.view_h);
+    }
+
+    /// Scrolls by lines, and moves the block cursor only when its block leaves the screen.
+    fn scroll_by(&mut self, d: isize) {
+        if self.ranges.is_empty() {
+            return self.step(d.signum());
+        }
+        let (h, max) = (self.view_h.max(1), self.total.saturating_sub(self.view_h));
+        self.scroll = (self.scroll as isize + d).clamp(0, max as isize) as usize;
+        let (top, bottom) = (self.scroll, self.scroll + h);
+        let fits = |&(s, e): &(usize, usize)| s >= top && e <= bottom;
+        let covers = |&(s, e): &(usize, usize)| s <= top && e >= bottom;
+        if self.ranges.get(self.cursor).is_some_and(|r| fits(r) || covers(r)) {
+            return;
+        }
+        let ok = |i: &usize| self.blocks.get(*i).is_some_and(Block::commentable) && self.ranges.get(*i).is_some_and(|r| fits(r) || covers(r));
+        let n = self.ranges.len();
+        let found = if d > 0 { (0..n).find(ok) } else { (0..n).rev().find(ok) };
+        if let Some(i) = found {
+            self.cursor = i;
+        } else if let Some(i) = (0..n).find(|&i| self.blocks.get(i).is_some_and(Block::commentable) && self.ranges[i].0 >= top) {
+            self.cursor = i;
+        }
+    }
+
+    fn matches(&self) -> Vec<usize> {
+        let Some(q) = self.find.as_ref().map(Find::query).filter(|q| !q.is_empty()) else { return vec![] };
+        (0..self.blocks.len()).filter(|&i| self.blocks[i].commentable() && self.blocks[i].plain().to_lowercase().contains(&q)).collect()
+    }
+
+    fn jump(&mut self, forward: bool, include_current: bool) -> bool {
+        let hits = self.matches();
+        let c = self.cursor;
+        let next = if forward {
+            hits.iter().find(|&&i| i > c || (include_current && i == c)).or(hits.first())
+        } else {
+            hits.iter().rev().find(|&&i| i < c).or(hits.last())
+        };
+        match next {
+            Some(&i) => {
+                self.cursor = i;
+                if let Some(&(s, _)) = self.ranges.get(i) {
+                    self.scroll = s.saturating_sub(1);
+                }
+                true
+            }
+            None => false,
         }
     }
 
@@ -192,7 +282,7 @@ impl Search {
 }
 
 pub enum FleetRow {
-    Group { name: String, alive: usize, total: usize },
+    Group { name: String, orchestrator: bool, alive: usize, total: usize },
     Node(usize),
 }
 
@@ -236,6 +326,14 @@ pub struct App {
     loading: HashSet<String>,
     pub flash: Option<Flash>,
     pub help: bool,
+    pub help_scroll: usize,
+    pub help_view: View,
+    pub focus: Pane,
+    pub detail_view: View,
+    pub fleet_view: View,
+    pub fleet_zoom: bool,
+    pub cmdline: Option<TextInput>,
+    keymap: Keymap,
     last_clock: i64,
     tx: SyncSender<Msg>,
 }
@@ -311,7 +409,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             let _ = execute!(stdout(), EnableBracketedPaste);
                             terminal.clear()?;
                             if let Err(e) = res {
-                                app.fail(format!("No pude abrir su terminal: {e}"));
+                                app.fail(trf!("Could not open its terminal: {e}", "No pude abrir su terminal: {e}"));
                             }
                             dirty = true;
                             break;
@@ -345,8 +443,8 @@ pub fn said(n: &Node) -> String {
 
 fn approval_of(q: &Question) -> Option<Approval> {
     let find = |pred: &dyn Fn(&str) -> bool| q.options.iter().find(|o| pred(&o.label.to_lowercase())).map(|o| o.label.clone());
-    let approve = find(&|l| l.starts_with("aprob") || l.starts_with("acept"));
-    let changes = find(&|l| l.contains("cambi") || l.contains("pedir") || l.contains("rechaz"));
+    let approve = find(&|l| l.starts_with("aprob") || l.starts_with("acept") || l.starts_with("approv") || l.starts_with("accept"));
+    let changes = find(&|l| ["cambi", "pedir", "rechaz", "change", "reject"].iter().any(|w| l.contains(w)));
     (q.origin == QuestionOrigin::Plan || (approve.is_some() && changes.is_some())).then(|| Approval {
         approve: approve.or_else(|| q.options.first().map(|o| o.label.clone())),
         changes: changes.or_else(|| q.options.get(1).map(|o| o.label.clone())),
@@ -385,6 +483,14 @@ impl App {
             loading: HashSet::new(),
             flash: None,
             help: false,
+            help_scroll: 0,
+            help_view: View::default(),
+            focus: Pane::List,
+            detail_view: View::default(),
+            fleet_view: View::default(),
+            fleet_zoom: false,
+            cmdline: None,
+            keymap: Keymap::default(),
             last_clock: now_millis(),
             tx,
         }
@@ -537,7 +643,7 @@ impl App {
                 if let Some(k) = key {
                     self.hidden.remove(&k);
                 }
-                self.fail(format!("No se envió: {e}"));
+                self.fail(trf!("Not sent: {e}", "No se envió: {e}"));
             }
             Msg::File { path, result } => {
                 self.loading.remove(&path);
@@ -613,41 +719,142 @@ impl App {
             return Flow::Quit;
         }
         if self.help {
-            self.help = false;
+            self.help_key(k);
             return Flow::Go;
         }
         if self.composer.is_some() {
             self.composer_key(k);
             return Flow::Go;
         }
-        if self.reader.is_some() {
-            self.reader_key(k);
+        if self.cmdline.is_some() {
+            return self.cmdline_key(k);
+        }
+        if self.reader.as_ref().is_some_and(|r| r.find.as_ref().is_some_and(|f| f.editing)) {
+            self.find_key(k);
             return Flow::Go;
         }
-        if self.screen == Screen::Fleet && self.search.as_ref().is_some_and(|s| s.editing) {
+        if self.screen == Screen::Fleet && self.reader.is_none() && self.search.as_ref().is_some_and(|s| s.editing) {
             self.search_key(k);
             return Flow::Go;
         }
-        match k.code {
-            KeyCode::Char('q') => return Flow::Quit,
-            KeyCode::Char('?') => self.help = true,
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('f') => {
-                self.screen = if self.screen == Screen::Inbox { Screen::Fleet } else { Screen::Inbox };
-            }
-            KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
-            KeyCode::Char('o') => match self.orchestrator() {
-                Some(n) => {
-                    let session = n.session_id.clone();
-                    self.compose(Target::Message { session, name: "el orquestador".into(), ack: false }, "");
+        let cmd = self.keymap.read(k);
+        if let Cmd::Other(k) = cmd
+            && k.modifiers.is_empty()
+        {
+            match k.code {
+                KeyCode::Char('?') => {
+                    self.help = true;
+                    self.help_scroll = 0;
+                    return Flow::Go;
                 }
-                None => self.fail("El orquestador todavía no está conectado a Alondra"),
-            },
-            _ => {
-                return match self.screen {
-                    Screen::Inbox => self.inbox_key(k),
-                    Screen::Fleet => self.fleet_key(k),
-                };
+                KeyCode::Char(':') => {
+                    self.cmdline = Some(TextInput::default());
+                    return Flow::Go;
+                }
+                _ => {}
             }
+        }
+        if self.reader.is_some() {
+            self.reader_cmd(cmd);
+            return Flow::Go;
+        }
+        match cmd {
+            Cmd::Pending => {}
+            Cmd::Other(k) => match k.code {
+                KeyCode::Char('q') => return Flow::Quit,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('f') => self.switch_screen(),
+                KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
+                KeyCode::Char('M') => self.message_orchestrator(),
+                _ => {
+                    return match self.screen {
+                        Screen::Inbox => self.inbox_key(k),
+                        Screen::Fleet => self.fleet_key(k),
+                    };
+                }
+            },
+            _ => match self.screen {
+                Screen::Inbox => self.inbox_cmd(cmd),
+                Screen::Fleet => self.fleet_cmd(cmd),
+            },
+        }
+        Flow::Go
+    }
+
+    fn switch_screen(&mut self) {
+        self.screen = if self.screen == Screen::Inbox { Screen::Fleet } else { Screen::Inbox };
+        self.focus = Pane::List;
+        self.fleet_zoom = false;
+    }
+
+    fn message_orchestrator(&mut self) {
+        match self.orchestrator() {
+            Some(n) => {
+                let session = n.session_id.clone();
+                self.compose(Target::Message { session, name: tr!("the orchestrator", "el orquestador").into(), ack: false }, "");
+            }
+            None => self.fail(tr!("The orchestrator is not connected to Alondra yet", "El orquestador todavía no está conectado a Alondra")),
+        }
+    }
+
+    fn help_key(&mut self, k: KeyEvent) {
+        match self.keymap.read(k) {
+            Cmd::Move(m) => self.help_scroll = keys::scroll(self.help_scroll, m, self.help_view.h, self.help_view.total),
+            Cmd::Pending => {}
+            _ => self.help = false,
+        }
+    }
+
+    fn cmdline_key(&mut self, k: KeyEvent) -> Flow {
+        let Some(input) = self.cmdline.as_mut() else { return Flow::Go };
+        match k.code {
+            KeyCode::Esc => self.cmdline = None,
+            KeyCode::Backspace if input.text().is_empty() => self.cmdline = None,
+            KeyCode::Enter => {
+                let line = input.text();
+                self.cmdline = None;
+                return self.run_command(line.trim());
+            }
+            _ => {
+                input.handle(k);
+            }
+        }
+        Flow::Go
+    }
+
+    fn run_command(&mut self, line: &str) -> Flow {
+        match line {
+            "" => {}
+            "q" | "q!" | "qa" | "qa!" | "quit" | "wq" | "x" => {
+                if self.reader.is_some() && matches!(line, "q" | "q!" | "quit") {
+                    self.reader = None;
+                } else {
+                    return Flow::Quit;
+                }
+            }
+            "h" | "help" => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
+            "inbox" | "i" => {
+                self.reader = None;
+                if self.screen != Screen::Inbox {
+                    self.switch_screen();
+                }
+            }
+            "fleet" | "f" => {
+                self.reader = None;
+                if self.screen != Screen::Fleet {
+                    self.switch_screen();
+                }
+            }
+            n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
+                let i = n.parse::<isize>().unwrap_or(1) - 1;
+                match self.screen {
+                    Screen::Inbox => self.move_inbox(i),
+                    Screen::Fleet => self.move_fleet(i),
+                }
+            }
+            other => self.fail(trf!("Not a command: {other}  (try :q, :help, :inbox, :fleet, :<number>)", "No es un comando: {other}  (prueba :q, :help, :inbox, :fleet, :<número>)")),
         }
         Flow::Go
     }
@@ -665,7 +872,7 @@ impl App {
             && !text.trim().is_empty()
         {
             self.drafts.insert(k, text);
-            self.flash("Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste");
+            self.flash(tr!("Draft saved: open it again to pick up where you left off", "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"));
         }
     }
 
@@ -687,22 +894,34 @@ impl App {
         match self.node(session) {
             Some(n) => Flow::Attach(n.short_id.clone()),
             None => {
-                self.fail("Ese nodo ya no está en la flota");
+                self.fail(tr!("That node is no longer in the fleet", "Ese nodo ya no está en la flota"));
                 Flow::Go
             }
         }
     }
 
-    fn inbox_key(&mut self, k: KeyEvent) -> Flow {
+    fn inbox_cmd(&mut self, cmd: Cmd) {
         let i = self.sel_idx as isize;
+        let detail = self.focus == Pane::Detail && self.detail_view.shown;
+        match cmd {
+            Cmd::Move(m) if detail => self.detail_scroll = keys::scroll(self.detail_scroll, m, self.detail_view.h, self.detail_view.total),
+            Cmd::Move(Motion::Down) => self.move_inbox(i + 1),
+            Cmd::Move(Motion::Up) => self.move_inbox(i - 1),
+            Cmd::Move(Motion::Top) => self.move_inbox(0),
+            Cmd::Move(Motion::Bottom) => self.move_inbox(isize::MAX),
+            Cmd::Move(m) => self.detail_scroll = keys::scroll(self.detail_scroll, m, self.detail_view.h, self.detail_view.total),
+            Cmd::Right if self.detail_view.shown && self.sel.is_some() => self.focus = Pane::Detail,
+            Cmd::Right | Cmd::Expand => self.open_reader(),
+            Cmd::Left | Cmd::Back => self.focus = Pane::List,
+            Cmd::Pending | Cmd::Other(_) => {}
+        }
+    }
+
+    fn inbox_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
-            KeyCode::Down | KeyCode::Char('j') => self.move_inbox(i + 1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_inbox(i - 1),
-            KeyCode::Home | KeyCode::Char('g') => self.move_inbox(0),
-            KeyCode::End | KeyCode::Char('G') => self.move_inbox(isize::MAX),
-            KeyCode::PageDown | KeyCode::Char('J') | KeyCode::Char(' ') => self.detail_scroll += 5,
-            KeyCode::PageUp | KeyCode::Char('K') => self.detail_scroll = self.detail_scroll.saturating_sub(5),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_reader(),
+            KeyCode::Char('J') => self.detail_scroll = keys::by(self.detail_scroll, 5, self.detail_view.h, self.detail_view.total),
+            KeyCode::Char('K') => self.detail_scroll = keys::by(self.detail_scroll, -5, self.detail_view.h, self.detail_view.total),
+            KeyCode::Enter => self.open_reader(),
             KeyCode::Char('a') => {
                 let session = match self.sel.and_then(|k| self.item(k)) {
                     Some(Item::Q(q)) => q.session_id.clone(),
@@ -741,11 +960,12 @@ impl App {
 
     fn choose(&mut self, q: &Question, i: usize) {
         if now_millis() < self.settle_until {
-            self.fail("La selección acaba de cambiar: mira cuál es y vuelve a pulsar");
+            self.fail(tr!("The selection just changed: check which one it is and press again", "La selección acaba de cambiar: mira cuál es y vuelve a pulsar"));
             return;
         }
         let Some(opt) = q.options.get(i) else {
-            self.fail(format!("Esta pregunta no tiene opción {}", i + 1));
+            let n = i + 1;
+            self.fail(trf!("This question has no option {n}", "Esta pregunta no tiene opción {n}"));
             return;
         };
         let who = who(&q.node_name, &q.session_id);
@@ -759,7 +979,7 @@ impl App {
     }
 
     fn mark_read(&mut self, r: &Report) {
-        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], format!("Leído: {}", md::truncate(&r.title, 60)));
+        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], { let t = md::truncate(&r.title, 60); trf!("Read: {t}", "Leído: {t}") });
         self.reader = None;
         self.hide(Key::R(r.id));
     }
@@ -788,14 +1008,14 @@ impl App {
         }
         match c.target {
             Target::Answer { id, .. } => {
-                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, None))], format!("#{id} contestada"));
+                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, None))], trf!("#{id} answered", "#{id} contestada"));
                 self.hide(Key::Q(id));
             }
             Target::MoreContext { id, .. } => {
                 self.post(
                     Some(Key::Q(id)),
                     vec![(format!("/v1/questions/{id}/more-context"), json!({"note": text}))],
-                    format!("#{id} devuelta: te la volverá a preguntar con más contexto"),
+                    trf!("#{id} sent back: it will ask you again with more context", "#{id} devuelta: te la volverá a preguntar con más contexto"),
                 );
                 self.hide(Key::Q(id));
             }
@@ -806,7 +1026,7 @@ impl App {
                         (format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david"})),
                         (format!("/v1/reports/{id}/read"), json!({})),
                     ],
-                    format!("Enviado a {name} y marcado leído"),
+                    trf!("Sent to {name} and marked read", "Enviado a {name} y marcado leído"),
                 );
                 self.hide(Key::R(id));
             }
@@ -815,10 +1035,10 @@ impl App {
                 if ack {
                     calls.push((format!("/v1/nodes/{}/ack", urlencode(&session)), json!({})));
                 }
-                self.post(None, calls, format!("Enviado a {name}"));
+                self.post(None, calls, trf!("Sent to {name}", "Enviado a {name}"));
             }
             Target::NewRequest => {
-                self.post(None, vec![("/v1/requests".into(), json!({"text": text}))], "Enviado al orquestador: preparará la misión y lanzará el nodo".into())
+                self.post(None, vec![("/v1/requests".into(), json!({"text": text}))], tr!("Sent to the orchestrator: it will prepare the mission and launch the node", "Enviado al orquestador: preparará la misión y lanzará el nodo").into())
             }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
@@ -847,19 +1067,15 @@ impl App {
                 parts.extend(q.detail.clone().map(Part::Text));
                 parts.extend(q.attachments.iter().filter_map(|a| a.stored_path.clone().map(|path| Part::File { name: a.name.clone(), path })));
                 parts.extend(links_part(&q.links));
-                let kind = match q.origin {
-                    QuestionOrigin::Plan => "plan",
-                    QuestionOrigin::Permission => "permiso",
-                    _ => "pregunta",
-                };
-                (new_reader(key, &q.session_id, &q.node_name, &q.title, kind, approval_of(q), parts), attachment_paths(&q.attachments))
+                let look = draw::question_glyph(q);
+                (new_reader(key, &q.session_id, &q.node_name, &q.title, look, approval_of(q), parts), attachment_paths(&q.attachments))
             }
             Some(Item::R(r)) => {
                 let mut parts = vec![Part::Text(format!("# {}", r.title))];
                 parts.extend(r.body.clone().map(Part::Text));
                 parts.extend(r.attachments.iter().filter_map(|a| a.stored_path.clone().map(|path| Part::File { name: a.name.clone(), path })));
                 parts.extend(links_part(&r.links));
-                (new_reader(key, &r.session_id, &r.node_name, &r.title, r.kind.label(), None, parts), attachment_paths(&r.attachments))
+                (new_reader(key, &r.session_id, &r.node_name, &r.title, draw::report_glyph(r), None, parts), attachment_paths(&r.attachments))
             }
             None => return,
         };
@@ -880,8 +1096,8 @@ impl App {
                     blocks.push(Block::label(&format!("📎 {name}")));
                     match self.files.get(path) {
                         Some(Ok(text)) => blocks.extend(md::parse(text)),
-                        Some(Err(e)) => blocks.push(Block::para(&format!("No he podido cargar el fichero: {e}"))),
-                        None => blocks.push(Block::para("Cargando…")),
+                        Some(Err(e)) => blocks.push(Block::para(&trf!("Could not load the file: {e}", "No he podido cargar el fichero: {e}"))),
+                        None => blocks.push(Block::para(tr!("Loading…", "Cargando…"))),
                     }
                 }
             }
@@ -890,25 +1106,53 @@ impl App {
         r.settle_cursor();
     }
 
+    fn reader_cmd(&mut self, cmd: Cmd) {
+        let Some(r) = self.reader.as_mut() else { return };
+        match cmd {
+            Cmd::Move(Motion::Down) => r.down(),
+            Cmd::Move(Motion::Up) => r.up(),
+            Cmd::Move(Motion::Top) => r.top(),
+            Cmd::Move(Motion::Bottom) => r.bottom(),
+            Cmd::Move(m) => {
+                let d = keys::lines(m, r.view_h).unwrap_or(0);
+                r.scroll_by(d);
+            }
+            Cmd::Back if r.find.is_some() => r.find = None,
+            Cmd::Left | Cmd::Back | Cmd::Expand => self.reader = None,
+            Cmd::Right | Cmd::Pending => {}
+            Cmd::Other(k) => self.reader_key(k),
+        }
+    }
+
+    fn find_key(&mut self, k: KeyEvent) {
+        let Some(r) = self.reader.as_mut() else { return };
+        let Some(f) = r.find.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => r.find = None,
+            KeyCode::Enter => {
+                f.editing = false;
+                let q = f.input.text();
+                if q.trim().is_empty() {
+                    r.find = None;
+                } else if !r.jump(true, true) {
+                    self.fail(trf!("Not found: {q}", "No aparece: {q}"));
+                }
+            }
+            _ => {
+                f.input.handle(k);
+            }
+        }
+    }
+
     fn reader_key(&mut self, k: KeyEvent) {
         let Some(r) = self.reader.as_mut() else { return };
         let key = r.key;
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left | KeyCode::Char('h') => self.reader = None,
-            KeyCode::Down | KeyCode::Char('j') => r.step(1),
-            KeyCode::Up | KeyCode::Char('k') => r.step(-1),
-            KeyCode::Home | KeyCode::Char('g') => {
-                r.cursor = 0;
-                r.settle_cursor();
+            KeyCode::Char('q') => self.reader = None,
+            KeyCode::Char('/') => r.find = Some(Find { input: TextInput::default(), editing: true }),
+            KeyCode::Char(c @ ('n' | 'N')) if r.find.is_some() => {
+                r.jump(c == 'n', false);
             }
-            KeyCode::End | KeyCode::Char('G') => {
-                r.cursor = r.blocks.len().saturating_sub(1);
-                if !r.blocks.get(r.cursor).is_some_and(Block::commentable) {
-                    r.step(-1);
-                }
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('J') => r.page(1),
-            KeyCode::PageUp | KeyCode::Char('K') => r.page(-1),
             KeyCode::Char('c') | KeyCode::Enter => {
                 let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else { return };
                 let (block, quote) = (r.cursor, b.quote());
@@ -925,7 +1169,7 @@ impl App {
                     let before = rv.comments.len();
                     rv.comments.retain(|c| c.block != block);
                     if rv.comments.len() < before {
-                        self.flash("Comentario borrado");
+                        self.flash(tr!("Comment deleted", "Comentario borrado"));
                     }
                 }
             }
@@ -956,7 +1200,7 @@ impl App {
             None => label.clone().unwrap_or_else(|| "Aprobado".into()),
         };
         let node = r.node.clone();
-        self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref()))], format!("Aprobado → {node}"));
+        self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref()))], trf!("Approved → {node}", "Aprobado → {node}"));
         self.reader = None;
         self.hide(Key::Q(id));
     }
@@ -971,12 +1215,15 @@ impl App {
         let text = review.feedback();
         let n = review.count();
         let node = r.node.clone();
-        let plural = if n == 1 { "comentario" } else { "comentarios" };
+        let count = i18n::comments(n);
         match key {
             Key::Q(id) => {
                 let option = r.approval.as_ref().and_then(|a| a.changes.clone());
-                let what = if option.is_some() { "Cambios pedidos" } else { "Respuesta enviada" };
-                self.post(Some(key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], format!("{what} a {node} ({n} {plural})"));
+                let done = match option {
+                    Some(_) => trf!("Changes requested from {node} ({count})", "Cambios pedidos a {node} ({count})"),
+                    None => trf!("Answer sent to {node} ({count})", "Respuesta enviada a {node} ({count})"),
+                };
+                self.post(Some(key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], done);
             }
             Key::R(id) => {
                 self.post(
@@ -985,7 +1232,7 @@ impl App {
                         (format!("/v1/nodes/{}/messages", urlencode(&r.session)), json!({"text": text, "from": "david"})),
                         (format!("/v1/reports/{id}/read"), json!({})),
                     ],
-                    format!("{n} {plural} enviados a {node}; marcado leído"),
+                    trf!("{count} sent to {node}; marked read", "{count} enviados a {node}; marcado leído"),
                 );
             }
         }
@@ -995,11 +1242,12 @@ impl App {
 
     pub fn node_matches(&self, n: &FleetNode, q: &str) -> bool {
         let hay = format!(
-            "{} {} {} {} {} {}",
+            "{} {} {} {} {} {} {}",
             n.display_name(),
             n.short_id,
             n.project.clone().unwrap_or_default(),
             n.state.label(),
+            i18n::state(n.state),
             said(n),
             n.cwd.clone().unwrap_or_default()
         )
@@ -1049,19 +1297,19 @@ impl App {
             if n.is_orchestrator {
                 orchestrator.push(i);
             } else {
-                groups.entry(n.project.clone().unwrap_or_else(|| "otros".into())).or_default().push(i);
+                groups.entry(n.project.clone().unwrap_or_else(|| tr!("others", "otros").into())).or_default().push(i);
             }
         }
-        let mut sorted: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
-        sorted.sort_by_key(|(p, v)| (!v.iter().any(|&i| self.data.nodes[i].alive), p.to_lowercase()));
+        let mut sorted: Vec<(String, bool, Vec<usize>)> = groups.into_iter().map(|(p, v)| (p, false, v)).collect();
+        sorted.sort_by_key(|(p, _, v)| (!v.iter().any(|&i| self.data.nodes[i].alive), p.to_lowercase()));
         if !orchestrator.is_empty() {
-            sorted.insert(0, ("orquestador".into(), orchestrator));
+            sorted.insert(0, (tr!("orchestrator", "orquestador").into(), true, orchestrator));
         }
         let mut rows = vec![];
-        for (name, nodes) in sorted {
+        for (name, is_orchestrator, nodes) in sorted {
             let alive = nodes.iter().filter(|&&i| self.data.nodes[i].alive).count();
             let total = self.data.nodes.iter().filter(|n| !n.is_orchestrator && n.project.as_deref() == Some(name.as_str())).count().max(nodes.len());
-            rows.push(FleetRow::Group { name, alive, total });
+            rows.push(FleetRow::Group { name, orchestrator: is_orchestrator, alive, total });
             rows.extend(nodes.into_iter().map(FleetRow::Node));
         }
         rows
@@ -1094,23 +1342,41 @@ impl App {
         self.fleet_sel = Some(sessions[idx].clone());
     }
 
-    fn fleet_key(&mut self, k: KeyEvent) -> Flow {
+    fn fleet_cmd(&mut self, cmd: Cmd) {
         let i = self.fleet_idx as isize;
+        let detail = self.fleet_zoom || (self.focus == Pane::Detail && self.fleet_view.shown);
+        match cmd {
+            Cmd::Move(m) if detail => self.fleet_detail_scroll = keys::scroll(self.fleet_detail_scroll, m, self.fleet_view.h, self.fleet_view.total),
+            Cmd::Move(Motion::Down) => self.move_fleet(i + 1),
+            Cmd::Move(Motion::Up) => self.move_fleet(i - 1),
+            Cmd::Move(Motion::Top) => self.move_fleet(0),
+            Cmd::Move(Motion::Bottom) => self.move_fleet(isize::MAX),
+            Cmd::Move(m) => self.fleet_detail_scroll = keys::scroll(self.fleet_detail_scroll, m, self.fleet_view.h, self.fleet_view.total),
+            Cmd::Right if self.fleet_view.shown && !self.fleet_zoom => self.focus = Pane::Detail,
+            Cmd::Right => self.fleet_zoom = self.fleet_sel.is_some(),
+            Cmd::Expand => self.fleet_zoom = !self.fleet_zoom && self.fleet_sel.is_some(),
+            Cmd::Left | Cmd::Back if self.fleet_zoom => self.fleet_zoom = false,
+            Cmd::Left | Cmd::Back if self.focus == Pane::Detail => self.focus = Pane::List,
+            Cmd::Back if self.search.is_some() => self.search = None,
+            Cmd::Left | Cmd::Back | Cmd::Pending | Cmd::Other(_) => {}
+        }
+    }
+
+    fn fleet_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
-            KeyCode::Down | KeyCode::Char('j') => self.move_fleet(i + 1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_fleet(i - 1),
-            KeyCode::Home | KeyCode::Char('g') => self.move_fleet(0),
-            KeyCode::End | KeyCode::Char('G') => self.move_fleet(isize::MAX),
-            KeyCode::PageDown | KeyCode::Char('J') | KeyCode::Char(' ') => self.fleet_detail_scroll += 5,
-            KeyCode::PageUp | KeyCode::Char('K') => self.fleet_detail_scroll = self.fleet_detail_scroll.saturating_sub(5),
+            KeyCode::Char('J') => self.fleet_detail_scroll = keys::by(self.fleet_detail_scroll, 5, self.fleet_view.h, self.fleet_view.total),
+            KeyCode::Char('K') => self.fleet_detail_scroll = keys::by(self.fleet_detail_scroll, -5, self.fleet_view.h, self.fleet_view.total),
             KeyCode::Char('/') => match self.search.as_mut() {
                 Some(s) => s.editing = true,
                 None => self.search = Some(Search { input: TextInput::default(), editing: true, typed_at: now_millis(), remote: Remote::Idle }),
             },
-            KeyCode::Esc if self.search.is_some() => self.search = None,
             KeyCode::Char('d') => {
                 self.show_sleeping = !self.show_sleeping;
-                self.flash(if self.show_sleeping { "Muestro también los nodos dormidos" } else { "Oculto los nodos dormidos" });
+                self.flash(if self.show_sleeping {
+                    tr!("Showing sleeping nodes too", "Muestro también los nodos dormidos")
+                } else {
+                    tr!("Hiding sleeping nodes", "Oculto los nodos dormidos")
+                });
             }
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_node() {
@@ -1163,17 +1429,27 @@ fn attachment_paths(a: &[alondra_core::Attachment]) -> Vec<String> {
 fn links_part(links: &[alondra_core::Link]) -> Option<Part> {
     (!links.is_empty()).then(|| {
         let items: Vec<String> = links.iter().map(|l| format!("- {} {}", l.title.clone().unwrap_or_default(), l.url)).collect();
-        Part::Text(format!("## Enlaces\n\n{}", items.join("\n")))
+        Part::Text(format!("## {}\n\n{}", tr!("Links", "Enlaces"), items.join("\n")))
     })
 }
 
-fn new_reader(key: Key, session: &str, node: &Option<String>, title: &str, kind: &'static str, approval: Option<Approval>, parts: Vec<Part>) -> Reader {
+fn new_reader(
+    key: Key,
+    session: &str,
+    node: &Option<String>,
+    title: &str,
+    (glyph, kind, color): (&'static str, &'static str, ratatui::style::Color),
+    approval: Option<Approval>,
+    parts: Vec<Part>,
+) -> Reader {
     Reader {
         key,
         session: session.to_string(),
         node: who(node, session),
         title: title.to_string(),
         kind,
+        glyph,
+        color,
         approval,
         parts,
         blocks: vec![],
@@ -1181,6 +1457,8 @@ fn new_reader(key: Key, session: &str, node: &Option<String>, title: &str, kind:
         scroll: 0,
         ranges: vec![],
         view_h: 0,
+        total: 0,
+        find: None,
     }
 }
 
@@ -1211,6 +1489,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
+        i18n::set_for_this_thread(i18n::Lang::Es);
         let (tx, rx) = mpsc::sync_channel(8);
         let mut app = App::new(tx);
         app.data.open_questions = questions;
@@ -1280,5 +1559,172 @@ pub(crate) mod tests {
         rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
         rv.comments.sort_by_key(|c| c.block);
         assert!(rv.feedback().starts_with("Comentarios de David:\n\n1. Sobre «b»:"));
+    }
+
+    pub(super) fn press(app: &mut App, keys: &str) -> Flow {
+        let mut flow = Flow::Go;
+        for c in keys.chars() {
+            flow = app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        flow
+    }
+
+    pub(super) fn code(app: &mut App, c: KeyCode) -> Flow {
+        app.on_key(KeyEvent::new(c, KeyModifiers::NONE))
+    }
+
+    pub(super) fn ctrl(app: &mut App, c: char) -> Flow {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn long_question(id: u64) -> Question {
+        let mut q = question(id, QuestionOrigin::Ask, &["Sí", "No"]);
+        q.detail = Some((1..=80).map(|i| format!("Párrafo {i}.")).collect::<Vec<_>>().join("\n\n"));
+        q
+    }
+
+    #[test]
+    fn gg_and_g_jump_to_the_ends_of_the_list() {
+        let (mut app, _rx) = app_with((1..=4).map(|i| question(i, QuestionOrigin::Ask, &[])).collect());
+        press(&mut app, "G");
+        assert_eq!(app.sel, Some(Key::Q(4)));
+        press(&mut app, "g");
+        assert_eq!(app.sel, Some(Key::Q(4)));
+        press(&mut app, "g");
+        assert_eq!(app.sel, Some(Key::Q(1)));
+        press(&mut app, "jj");
+        code(&mut app, KeyCode::Up);
+        assert_eq!(app.sel, Some(Key::Q(2)));
+    }
+
+    #[test]
+    fn ctrl_d_scrolls_the_detail_from_the_list_and_j_scrolls_it_once_focused() {
+        let (mut app, _rx) = app_with(vec![long_question(1), question(2, QuestionOrigin::Ask, &[])]);
+        app.detail_view = View { h: 20, total: 200, shown: true };
+        ctrl(&mut app, 'd');
+        assert_eq!(app.detail_scroll, 10);
+        ctrl(&mut app, 'f');
+        assert_eq!(app.detail_scroll, 28);
+        ctrl(&mut app, 'u');
+        assert_eq!(app.detail_scroll, 18);
+        assert_eq!(app.sel, Some(Key::Q(1)));
+        press(&mut app, "l");
+        assert_eq!(app.focus, Pane::Detail);
+        press(&mut app, "jjj");
+        assert_eq!(app.detail_scroll, 21);
+        assert_eq!(app.sel, Some(Key::Q(1)));
+        press(&mut app, "G");
+        assert_eq!(app.detail_scroll, 180);
+        press(&mut app, "gg");
+        assert_eq!(app.detail_scroll, 0);
+        code(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Pane::List);
+        press(&mut app, "j");
+        assert_eq!(app.sel, Some(Key::Q(2)));
+    }
+
+    #[test]
+    fn o_expands_the_item_and_o_again_collapses_it() {
+        let (mut app, _rx) = app_with(vec![long_question(1)]);
+        press(&mut app, "o");
+        assert!(app.reader.as_ref().is_some_and(|r| r.key == Key::Q(1)));
+        press(&mut app, "o");
+        assert!(app.reader.is_none());
+        code(&mut app, KeyCode::Enter);
+        assert!(app.reader.is_some());
+        code(&mut app, KeyCode::Esc);
+        assert!(app.reader.is_none());
+    }
+
+    #[test]
+    fn the_reader_scrolls_through_a_block_taller_than_the_screen() {
+        let mut q = question(1, QuestionOrigin::Ask, &[]);
+        q.detail = Some("palabra ".repeat(2000));
+        let (mut app, _rx) = app_with(vec![q]);
+        press(&mut app, "o");
+        let r = app.reader.as_mut().unwrap();
+        r.view_h = 10;
+        r.total = 60;
+        r.ranges = vec![(0, 2), (3, 60)];
+        r.cursor = 1;
+        r.scroll = 2;
+        press(&mut app, "jjjj");
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!((r.cursor, r.scroll), (1, 6));
+        ctrl(&mut app, 'd');
+        assert_eq!(app.reader.as_ref().unwrap().scroll, 11);
+        press(&mut app, "G");
+        assert_eq!(app.reader.as_ref().unwrap().scroll, 50);
+        press(&mut app, "gg");
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!(r.scroll, 0);
+    }
+
+    #[test]
+    fn slash_searches_the_reading_and_n_cycles_through_matches() {
+        let mut q = question(1, QuestionOrigin::Ask, &[]);
+        q.detail = Some("uno\n\ndos gato\n\ntres\n\ncuatro gato\n\ncinco".into());
+        let (mut app, _rx) = app_with(vec![q]);
+        press(&mut app, "o/gato");
+        assert!(app.reader.as_ref().unwrap().find.as_ref().is_some_and(|f| f.editing && f.input.text() == "gato"));
+        code(&mut app, KeyCode::Enter);
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!(r.blocks[r.cursor].plain(), "dos gato");
+        press(&mut app, "n");
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!(r.blocks[r.cursor].plain(), "cuatro gato");
+        press(&mut app, "n");
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!(r.blocks[r.cursor].plain(), "dos gato");
+        press(&mut app, "N");
+        let r = app.reader.as_ref().unwrap();
+        assert_eq!(r.blocks[r.cursor].plain(), "cuatro gato");
+        code(&mut app, KeyCode::Esc);
+        assert!(app.reader.as_ref().is_some_and(|r| r.find.is_none()));
+        code(&mut app, KeyCode::Esc);
+        assert!(app.reader.is_none());
+    }
+
+    #[test]
+    fn typing_in_the_reply_box_never_triggers_normal_mode_keys() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"])]);
+        press(&mut app, "r");
+        assert!(app.composer.is_some());
+        assert!(matches!(press(&mut app, "q:ggjko1?/nG"), Flow::Go));
+        ctrl(&mut app, 'd');
+        assert_eq!(app.composer.as_ref().unwrap().input.text(), "q:ggjko1?/nG");
+        assert!(app.reader.is_none() && !app.help && app.cmdline.is_none());
+        code(&mut app, KeyCode::Esc);
+        assert!(app.composer.is_none());
+        assert!(matches!(press(&mut app, "q"), Flow::Quit));
+    }
+
+    #[test]
+    fn the_command_line_quits_and_navigates() {
+        let (mut app, _rx) = app_with((1..=3).map(|i| question(i, QuestionOrigin::Ask, &[])).collect());
+        press(&mut app, ":3");
+        code(&mut app, KeyCode::Enter);
+        assert_eq!(app.sel, Some(Key::Q(3)));
+        press(&mut app, ":fleet");
+        code(&mut app, KeyCode::Enter);
+        assert!(app.screen == Screen::Fleet);
+        press(&mut app, ":nope");
+        code(&mut app, KeyCode::Enter);
+        assert!(app.flash.as_ref().is_some_and(|f| f.error));
+        press(&mut app, ":q");
+        assert!(matches!(code(&mut app, KeyCode::Enter), Flow::Quit));
+    }
+
+    #[test]
+    fn help_scrolls_with_j_and_closes_with_anything_else() {
+        let (mut app, _rx) = app_with(vec![]);
+        press(&mut app, "?");
+        assert!(app.help);
+        app.help_view = View { h: 10, total: 40, shown: true };
+        press(&mut app, "jj");
+        assert!(app.help);
+        assert_eq!(app.help_scroll, 2);
+        press(&mut app, "x");
+        assert!(!app.help);
     }
 }

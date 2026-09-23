@@ -1,3 +1,5 @@
+#[macro_use]
+mod i18n;
 mod attach;
 mod client;
 mod inbox;
@@ -14,7 +16,7 @@ use serde_json::json;
 use crate::client::Client;
 
 #[derive(Parser)]
-#[command(name = "alondra", about = "La colmena desde la terminal. Sin argumentos abre la TUI.")]
+#[command(name = "alondra", about = tr!("The hive from the terminal. With no arguments it opens the TUI.", "La colmena desde la terminal. Sin argumentos abre la TUI."))]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -22,26 +24,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Resumen en texto: preguntas abiertas, flota y máquina
+    #[command(about = tr!("Text summary: open questions, fleet and machine", "Resumen en texto: preguntas abiertas, flota y máquina"))]
     Status,
-    /// Contesta una pregunta por su número
+    #[command(about = tr!("Answer a question by its number", "Contesta una pregunta por su número"))]
     Answer { id: u64, text: Vec<String> },
-    /// Manda un mensaje a un nodo (nombre, id corto o session_id)
+    #[command(about = tr!("Send a message to a node (name, short id or session_id)", "Manda un mensaje a un nodo (nombre, id corto o session_id)"))]
     Send { node: String, text: Vec<String> },
-    /// Abre el terminal de un nodo (← con la línea vacía vuelve)
+    #[command(about = tr!("Open a node's terminal (← on an empty line returns)", "Abre el terminal de un nodo (← con la línea vacía vuelve)"))]
     Attach { node: String },
-    /// Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso
+    #[command(about = tr!(
+        "Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code",
+        "Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso"
+    ))]
     Pair {
-        /// URL pública por la que el dispositivo llega al Mac (p. ej. https://alondra.tudominio.com)
-        #[arg(long, env = "ALONDRA_PUBLIC_URL")]
+        #[arg(long, env = "ALONDRA_PUBLIC_URL", help = tr!(
+            "Public URL the device uses to reach the Mac (e.g. https://alondra.yourdomain.com)",
+            "URL pública por la que el dispositivo llega al Mac (p. ej. https://alondra.tudominio.com)"
+        ))]
         url: String,
     },
-    /// Dispositivos vinculados; con --revoke <id> quita uno
+    #[command(about = tr!("Paired devices; --revoke <id> removes one", "Dispositivos vinculados; con --revoke <id> quita uno"))]
     Devices {
-        #[arg(long)]
+        #[arg(long, help = tr!("Id of the device to unpair", "Id del dispositivo que se desvincula"))]
         revoke: Option<String>,
     },
-    /// Comprueba que alondrad responde
+    #[command(about = tr!("Check that alondrad responds", "Comprueba que alondrad responde"))]
     Doctor,
     /// Servidor MCP para los nodos (lo arranca el plugin)
     #[command(hide = true)]
@@ -64,12 +71,13 @@ fn main() -> Result<()> {
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, text }) => {
             Client::new(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "by": "David", "device": "cli"}))?;
-            println!("Contestada #{id}");
+            println!("{}", trf!("Answered #{id}", "Contestada #{id}"));
             Ok(())
         }
         Some(Cmd::Send { node, text }) => {
             let r = Client::new(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" "), "from": "david"}))?;
-            println!("Mensaje {} en la bandeja de {node}", r.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+            let msg = r.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            println!("{}", trf!("Message {msg} is in {node}'s inbox", "Mensaje {msg} en la bandeja de {node}"));
             Ok(())
         }
         Some(Cmd::Attach { node }) => {
@@ -92,22 +100,21 @@ fn main() -> Result<()> {
 fn status() -> Result<()> {
     let o = Client::new(Duration::from_secs(10)).overview()?;
     let m = &o.machine;
-    println!(
-        "Máquina: memoria {} · carga {:.1} {:.1} {:.1}{}",
-        m.memory_free_percent.map(|p| format!("{p}% libre")).unwrap_or_else(|| format!("{} MB disponibles", m.memory_available / 1_048_576)),
-        m.load[0],
-        m.load[1],
-        m.load[2],
-        if m.unreliable { " (medidas poco fiables)" } else { "" }
-    );
-    println!("\nTe esperan ({}):", o.open_questions.len());
+    let mb = m.memory_available / 1_048_576;
+    let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{mb} MB available", "{mb} MB disponibles"));
+    let (l1, l5, l15) = (m.load[0], m.load[1], m.load[2]);
+    let shaky = if m.unreliable { tr!(" (unreliable readings)", " (medidas poco fiables)") } else { "" };
+    println!("{}", trf!("Machine: memory {mem} · load {l1:.1} {l5:.1} {l15:.1}{shaky}", "Máquina: memoria {mem} · carga {l1:.1} {l5:.1} {l15:.1}{shaky}"));
+    let waiting = o.open_questions.len();
+    println!("\n{}", trf!("Waiting for you ({waiting}):", "Te esperan ({waiting}):"));
     for q in &o.open_questions {
         println!("  #{:<4} {}  · {}", q.id, q.title, q.node_name.clone().unwrap_or_default());
     }
-    println!("\nFlota ({}):", o.nodes.len());
+    let fleet = o.nodes.len();
+    println!("\n{}", trf!("Fleet ({fleet}):", "Flota ({fleet}):"));
     for n in &o.nodes {
         let mins = (now_millis() - n.state_since) / 60_000;
-        println!("  {:<20} {:<34} {:>5}m", n.state.label(), n.display_name(), mins);
+        println!("  {:<24} {:<34} {:>5}m", i18n::state(n.state), n.display_name(), mins);
     }
     Ok(())
 }
@@ -120,8 +127,8 @@ fn pair(url: &str) -> Result<()> {
     let qr = qrcode::QrCode::new(payload.as_bytes())?;
     let art = qr.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build();
     println!("{art}");
-    println!("Escanéalo desde Alondra en el iPhone (Ajustes → Vincular con el Mac).");
-    println!("O a mano: URL {url}  ·  código {code}  ·  caduca en 10 minutos y sirve una vez.");
+    println!("{}", tr!("Scan it from Alondra on the iPhone (Settings → Pair with Mac).", "Escanéalo desde Alondra en el iPhone (Ajustes → Vincular con el Mac)."));
+    println!("{}", trf!("Or by hand: URL {url}  ·  code {code}  ·  expires in 10 minutes and works once.", "O a mano: URL {url}  ·  código {code}  ·  caduca en 10 minutos y sirve una vez."));
     Ok(())
 }
 
@@ -130,16 +137,20 @@ fn devices(revoke: Option<String>) -> Result<()> {
     if let Some(id) = revoke {
         let path = format!("/v1/devices/{}", mcp::urlencode(&id));
         client.delete(&path)?;
-        println!("Dispositivo {id} desvinculado.");
+        println!("{}", trf!("Device {id} unpaired.", "Dispositivo {id} desvinculado."));
         return Ok(());
     }
     let v: serde_json::Value = client.get("/v1/devices")?;
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     if list.is_empty() {
-        println!("No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>");
+        println!("{}", tr!("No paired devices. Use: alondra pair --url <public URL>", "No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>"));
     }
     for d in list {
-        let last = d.get("last_seen").and_then(|x| x.as_i64()).map(|t| format!("visto hace {} min", (now_millis() - t) / 60_000)).unwrap_or_else(|| "sin uso".into());
+        let last = d.get("last_seen").and_then(|x| x.as_i64()).map(|t| {
+                let mins = (now_millis() - t) / 60_000;
+                trf!("seen {mins} min ago", "visto hace {mins} min")
+            })
+            .unwrap_or_else(|| tr!("never used", "sin uso").into());
         println!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or(""));
     }
     Ok(())
