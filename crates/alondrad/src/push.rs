@@ -94,14 +94,14 @@ impl Push {
         apns.send(&"0".repeat(64), "sandbox", &json!({"aps": {"alert": "comprobación"}}), 10).await
     }
 
-    pub async fn broadcast(&self, payload: &Value, time_sensitive: bool) {
+    pub async fn broadcast(&self, payload: &Value, with_sound: bool) {
         let Some(apns) = &self.apns else { return };
         for reg in self.registrations() {
             let mut body = payload.clone();
             let quiet = in_quiet_hours(reg.quiet_start.as_deref(), reg.quiet_end.as_deref(), local_minutes());
-            let level = if quiet { "passive" } else if time_sensitive { "time-sensitive" } else { "active" };
+            let level = if quiet { "passive" } else { "active" };
             body["aps"]["interruption-level"] = json!(level);
-            if (quiet || !time_sensitive)
+            if (quiet || !with_sound)
                 && let Some(aps) = body["aps"].as_object_mut()
             {
                 aps.remove("sound");
