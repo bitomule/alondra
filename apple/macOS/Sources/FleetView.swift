@@ -65,6 +65,7 @@ public struct FleetView: View {
                 ToolbarItem(placement: .status) {
                     StatusGauges(machine: overview.machine, usage: overview.usage)
                 }
+                .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
