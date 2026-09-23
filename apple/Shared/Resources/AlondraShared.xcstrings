@@ -361,6 +361,36 @@
         }
       }
     },
+    "handling a request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "atendiendo una petición"
+          }
+        }
+      }
+    },
+    "offline": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "desconectado"
+          }
+        }
+      }
+    },
+    "on duty": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "de guardia"
+          }
+        }
+      }
+    },
     "others": {
       "localizations": {
         "es": {
@@ -377,6 +407,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "no sé qué quiere"
+          }
+        }
+      }
+    },
+    "unknown": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "desconocido"
           }
         }
       }
@@ -401,12 +441,32 @@
         }
       }
     },
+    "waiting for you": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "esperándote"
+          }
+        }
+      }
+    },
     "working": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "trabajando"
+          }
+        }
+      }
+    },
+    "your turn": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "te toca"
           }
         }
       }

@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
-use alondra_core::{NodeState, ReportKind};
+use alondra_core::{Node, NodeState, OrchestratorState, ReportKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
@@ -77,11 +77,27 @@ pub fn state(s: NodeState) -> &'static str {
     match s {
         NodeState::Working => tr!("working", "trabajando"),
         NodeState::WaitingAnswer => tr!("waiting for an answer", "esperando respuesta"),
+        NodeState::YourTurn => tr!("your turn", "te toca"),
         NodeState::Delivered => tr!("delivering a result", "entrega resultado"),
         NodeState::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
         NodeState::Done => tr!("done", "terminado"),
         NodeState::Unclear => tr!("unclear what it wants", "no sé qué quiere"),
     }
+}
+
+pub fn orchestrator(s: OrchestratorState) -> &'static str {
+    match s {
+        OrchestratorState::OnDuty => tr!("on duty", "de guardia"),
+        OrchestratorState::Handling => tr!("handling a request", "atendiendo una petición"),
+        OrchestratorState::WaitingForYou => tr!("waiting for you", "esperándote"),
+        OrchestratorState::Offline => tr!("offline", "desconectado"),
+        OrchestratorState::Unknown => tr!("unknown", "desconocido"),
+    }
+}
+
+/// The orchestrator is shown with its own states, every other node with the node states.
+pub fn node_state(n: &Node) -> &'static str {
+    n.orchestrator_state.map_or_else(|| state(n.state), orchestrator)
 }
 
 pub fn report_kind(k: ReportKind) -> &'static str {

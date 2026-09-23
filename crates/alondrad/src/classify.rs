@@ -45,14 +45,13 @@ pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
     }
 }
 
-const EXPECTS_QUESTION: &str = "This is the last message of a coding agent that has just ended its turn. What does it expect from the person supervising it? decide = it asks them to decide or answer something; act = it asks them to do something outside (test on a device, get a key, review something); working = it is still busy on its own (a build, an upload, a review, a long command running) and needs nothing yet; nothing = it is done and expects nothing from that person.";
+const EXPECTS_QUESTION: &str = "This is the last message of a coding agent that has ended its turn and has nothing running. What does it expect from the person supervising it? decide = it asks them to decide or answer something; act = it asks them to do something outside (test on a device, get a key, review something); finished = it looks finished and expects nothing from that person.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expects {
     Decide,
     Act,
-    Working,
-    Nothing,
+    Finished,
     Unsure,
 }
 
@@ -60,7 +59,7 @@ pub async fn what_node_expects(text: &str) -> Expects {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", EXPECTS_QUESTION, "--options", "decide,act,working,nothing,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
+            .args(["ask", EXPECTS_QUESTION, "--options", "decide,act,finished,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )
@@ -70,8 +69,7 @@ pub async fn what_node_expects(text: &str) -> Expects {
     match v["answers"]["answer"]["label"].as_str() {
         Some("decide") => Expects::Decide,
         Some("act") => Expects::Act,
-        Some("working") => Expects::Working,
-        Some("nothing") => Expects::Nothing,
+        Some("finished") => Expects::Finished,
         _ => Expects::Unsure,
     }
 }

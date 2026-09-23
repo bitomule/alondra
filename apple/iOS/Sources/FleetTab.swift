@@ -19,7 +19,7 @@ struct FleetTab: View {
     }
 
     private func matches(_ node: Node, _ project: String, _ needle: String) -> Bool {
-        [node.displayName, project, node.summary, node.cwd ?? "", node.state.label]
+        [node.displayName, project, node.summary, node.cwd ?? "", node.stateLabel]
             .contains { $0.localizedStandardContains(needle) }
     }
 
@@ -103,7 +103,7 @@ private struct ProjectHeader: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.sky)
             }
-            let waiting = nodes.filter { $0.alive && $0.state == .waitingAnswer }.count
+            let waiting = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .yourTurn) }.count
             if waiting > 0 {
                 Label(String(waiting), systemImage: "hand.raised.fill")
                     .font(.caption.weight(.semibold))
@@ -135,7 +135,7 @@ struct NodeRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(node.alive ? node.state.label : String(localized: "asleep · \(node.state.label)"))
+                    Text(node.alive ? node.stateLabel : String(localized: "asleep · \(node.stateLabel)"))
                         .foregroundStyle(node.alive ? node.state.tint : .secondary)
                     Text(verbatim: "· \(relative(node.stateSince))")
                         .foregroundStyle(.tertiary)
@@ -232,7 +232,7 @@ struct NodeDetail: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         StateGlyph(node: node)
-                        Text(node.alive ? node.state.label.prefix(1).uppercased() + node.state.label.dropFirst() : String(localized: "Asleep"))
+                        Text(node.alive ? node.stateLabel.prefix(1).uppercased() + node.stateLabel.dropFirst() : String(localized: "Asleep"))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(node.state.tint)
                         Text("since \(relative(node.stateSince))")

@@ -48,6 +48,10 @@ pub struct DaemonObservation {
     pub last_text: Option<String>,
     #[serde(default)]
     pub last_text_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_kinds: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -70,6 +74,10 @@ pub enum Event {
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
     WaitingMachine { session_id: String, reason: String },
     Pruned { before: Millis },
+    Clock {
+        #[serde(default)]
+        machine_strained: bool,
+    },
 }
 
 impl Event {
@@ -109,6 +117,7 @@ impl Event {
             Event::Classified { .. } => "classified",
             Event::WaitingMachine { .. } => "waiting_machine",
             Event::Pruned { .. } => "pruned",
+            Event::Clock { .. } => "clock",
         }
     }
 }

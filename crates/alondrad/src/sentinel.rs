@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use alondra_core::view::derive;
+use alondra_core::states;
 use alondra_core::{
     Event, Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, now_millis,
 };
@@ -18,13 +18,9 @@ const GRACE: Duration = Duration::from_secs(180);
 const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
 const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
 
-const WORKING_RECHECK: Duration = Duration::from_secs(15 * 60);
-const WORKING_VERDICTS_BEFORE_ASKING: u32 = 3;
-
 #[derive(Default)]
 struct Memory {
     settled: HashSet<String>,
-    working: HashMap<String, (u32, Instant)>,
 }
 
 pub async fn run(hub: Arc<Hub>) {
@@ -51,11 +47,16 @@ fn nudge_text(user: &str) -> String {
 }
 
 async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
+    let strained = hub.machine().strained();
+    if hub.read(|v| v.due(now_millis(), strained)) {
+        hub.append(Event::Clock { machine_strained: strained })?;
+    }
+    let now = now_millis();
     let stale: Vec<u64> = hub.read(|v| {
         v.questions
             .values()
             .filter(|q| q.status.is_open() && is_sentinel(q))
-            .filter(|q| v.nodes.get(&q.session_id).is_none_or(|n| moved_on(n, q)))
+            .filter(|q| v.nodes.get(&q.session_id).is_none_or(|n| moved_on(v, n, q, now)))
             .map(|q| q.id)
             .collect()
     });
@@ -66,7 +67,6 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     let pending: Vec<(String, String, bool)> =
         hub.read(|v| v.nodes.values().filter(|n| needs_attention(v, n)).map(|n| (n.session_id.clone(), key(n), n.has_plugin)).collect());
     memory.settled.retain(|k| pending.iter().any(|(_, key, _)| key == k));
-    memory.working.retain(|k, _| pending.iter().any(|(_, key, _)| key == k));
 
     let mut due = vec![];
     for (session, key, has_plugin) in pending {
@@ -100,24 +100,11 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     }
 
     for (session, due_key) in due {
-        if let Some((verdicts, at)) = memory.working.get(&due_key)
-            && at.elapsed() < WORKING_RECHECK * 2u32.pow(verdicts.saturating_sub(1))
-        {
-            continue;
-        }
         let Some(said) = hub.read(|v| v.nodes.get(&session).map(what_it_said)) else { continue };
-        let mut expects = match &said {
+        let expects = match &said {
             Some(text) => what_node_expects(text).await,
             None => Expects::Unsure,
         };
-        if expects == Expects::Working {
-            let verdicts = memory.working.get(&due_key).map_or(0, |(n, _)| *n) + 1;
-            if verdicts < WORKING_VERDICTS_BEFORE_ASKING {
-                memory.working.insert(due_key, (verdicts, Instant::now()));
-                continue;
-            }
-            expects = Expects::Unsure;
-        }
         hub.append_with(|v| {
             let node = v.nodes.get(&session)?;
             if needs_attention(v, node) && key(node) == due_key { settle(v, node, expects) } else { None }
@@ -143,8 +130,7 @@ fn what_it_said(node: &Node) -> Option<String> {
 
 fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
     match expects {
-        Expects::Working => None,
-        Expects::Nothing => {
+        Expects::Finished => {
             let report = finished_report(v, node);
             let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
             (!repeated).then_some(Event::ReportPosted(report))
@@ -161,13 +147,14 @@ fn key(node: &Node) -> String {
     format!("{MARK}{}:{}:{}", node.session_id, node.turn, node.daemon_needs.as_deref().unwrap_or("").trim())
 }
 
-fn moved_on(node: &Node, q: &Question) -> bool {
-    !node.in_daemon || derive(node, false).0 == NodeState::Working || q.tool_use_id.as_deref() != Some(key(node).as_str())
+fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
+    !node.in_daemon || states::works(v, node, now) || q.tool_use_id.as_deref() != Some(key(node).as_str())
 }
 
+/// Only nodes the state machine handed over: idle, with no work in sight and nothing in the
+/// inbox. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node) -> bool {
-    let waiting = matches!(node.state, NodeState::WaitingAnswer | NodeState::Unclear);
-    if !node.in_daemon || node.is_orchestrator || !waiting || node.waiting_permission {
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission {
         return false;
     }
     let key = key(node);
@@ -201,6 +188,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         status: QuestionStatus::Open,
         answer: None,
         asked_at: now_millis(),
+        action: expects == Expects::Act,
     }
 }
 
@@ -250,8 +238,6 @@ mod tests {
         v.apply(0, 500, &Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(42), ..Default::default() }));
         v.apply(1, 1000, &hook("UserPromptSubmit", None));
         v.apply(2, 2000, &hook("Stop", Some(last)));
-        let turn = v.nodes["s"].turn;
-        v.apply(3, 3000, &Event::Classified { session_id: "s".into(), turn, state: NodeState::WaitingAnswer, confidence: None });
         v
     }
 
@@ -268,7 +254,7 @@ mod tests {
     #[test]
     fn a_node_that_is_done_gets_a_final_report_not_a_question() {
         let mut v = waiting_view("Task complete and reported to hive/corpus-router.\nEverything committed locally.");
-        let event = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
+        let event = settle(&v, &v.nodes["s"], Expects::Finished).unwrap();
         let Event::ReportPosted(r) = &event else { panic!() };
         assert_eq!(r.kind, ReportKind::Notice);
         assert_eq!(r.title, "Task complete and reported to hive/corpus-router.");
@@ -284,17 +270,28 @@ mod tests {
     }
 
     #[test]
-    fn a_node_still_working_on_its_own_gets_nothing() {
-        let v = waiting_view("Build 188 uploaded to TestFlight, processing. I will send it to beta review once Apple is done.");
-        assert!(settle(&v, &v.nodes["s"], Expects::Working).is_none());
+    fn a_node_with_a_task_still_running_never_reaches_jev() {
+        let mut v = waiting_view("Release build running in the background; I will upload it when it finishes.");
+        v.apply(3, 3000, &Event::DaemonSeen(DaemonObservation {
+            session_id: "s".into(),
+            short_id: "s".into(),
+            pid: Some(42),
+            state: Some("working".into()),
+            tempo: Some("idle".into()),
+            tasks: Some(1),
+            task_kinds: vec!["local_bash".into()],
+            ..Default::default()
+        }));
+        assert_eq!(v.nodes["s"].state, NodeState::Working);
+        assert!(!needs_attention(&v, &v.nodes["s"]));
     }
 
     #[test]
     fn the_same_finished_report_is_not_posted_twice() {
         let mut v = waiting_view("Task complete.");
-        let first = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
+        let first = settle(&v, &v.nodes["s"], Expects::Finished).unwrap();
         v.apply(4, 4000, &first);
-        assert!(settle(&v, &v.nodes["s"], Expects::Nothing).is_none());
+        assert!(settle(&v, &v.nodes["s"], Expects::Finished).is_none());
     }
 
     #[test]
@@ -317,8 +314,12 @@ mod tests {
     #[test]
     fn something_to_do_is_marked_as_your_turn() {
         let v = waiting_view("PR merged. Remove the camera permission on a real iPhone and open the scanner.");
+        let mut v = v;
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Act) else { panic!() };
         assert_eq!(q.title, "PR merged. Remove the camera permission on a real iPhone and open the scanner.");
+        assert!(q.action);
+        v.apply(4, 4000, &Event::QuestionAsked(q));
+        assert_eq!(v.nodes["s"].state, NodeState::YourTurn);
     }
 
     #[test]
@@ -327,8 +328,47 @@ mod tests {
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         v.apply(4, 4000, &Event::QuestionAsked(q.clone()));
         assert!(!needs_attention(&v, &v.nodes["s"]));
-        assert!(!moved_on(&v.nodes["s"], &q));
+        assert!(!moved_on(&v, &v.nodes["s"], &q, 4000));
         v.apply(5, 5000, &Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
-        assert!(moved_on(&v.nodes["s"], &q));
+        assert!(moved_on(&v, &v.nodes["s"], &q, 5000));
+    }
+
+    fn replay(fixture: &str, mut each: impl FnMut(u64, &View)) {
+        let mut v = View::default();
+        for line in fixture.lines() {
+            let r: serde_json::Value = serde_json::from_str(line).unwrap();
+            let seq = r["seq"].as_u64().unwrap();
+            v.apply(seq, r["at"].as_i64().unwrap(), &serde_json::from_value(r["event"].clone()).unwrap());
+            each(seq, &v);
+        }
+    }
+
+    /// hive/corpus-router/ctrl-trivial~2, recorded on 23 Sep: the sentinel posted the same
+    /// "Finished" report five times, once after each daemon restart.
+    #[test]
+    fn recorded_ctrl_trivial_is_settled_by_its_first_report() {
+        let sid = "128f3fa5-71f3-4376-8948-6ee1cf147c22";
+        let mut wanted = vec![];
+        replay(include_str!("../../core/fixtures/ctrl_trivial_2.jsonl"), |seq, v| {
+            if let Some(n) = v.nodes.get(sid) {
+                wanted.push((seq, needs_attention(v, n)));
+            }
+        });
+        assert!(wanted.iter().filter(|(seq, _)| *seq < 2966).all(|(_, w)| *w));
+        assert!(wanted.iter().filter(|(seq, _)| *seq >= 2966).all(|(_, w)| !*w));
+    }
+
+    /// ios27/quill, recorded on 23 Sep: after declaring wait_for_machine it was nudged four
+    /// times in 40 s.
+    #[test]
+    fn recorded_quill_waiting_for_the_machine_is_not_nudged() {
+        let sid = "11f98ac0-771f-4725-88f5-7e5176ffff92";
+        let mut nudged = vec![];
+        replay(include_str!("../../core/fixtures/quill.jsonl"), |seq, v| {
+            if [3429, 3436, 3442, 3455].contains(&seq) && needs_attention(v, &v.nodes[sid]) {
+                nudged.push(seq);
+            }
+        });
+        assert!(nudged.is_empty(), "handed to the sentinel after {nudged:?}");
     }
 }

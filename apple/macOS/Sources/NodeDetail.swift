@@ -106,7 +106,7 @@ struct NodeDetail: View {
                 .textSelection(.enabled)
             HStack(spacing: 8) {
                 StatusDot(state: node.state, alive: node.alive, size: 9)
-                Text(node.state.label.capitalizedFirst)
+                Text(node.stateLabel.capitalizedFirst)
                 Text("· \(ago(node.stateSince)) ago")
                     .foregroundStyle(.secondary)
                 if !node.alive {

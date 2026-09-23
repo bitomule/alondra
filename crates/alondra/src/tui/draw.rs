@@ -140,6 +140,7 @@ fn ago_phrase(ms: i64) -> String {
 fn state_color(s: NodeState) -> Color {
     match s {
         NodeState::WaitingAnswer => Color::Yellow,
+        NodeState::YourTurn => Color::LightYellow,
         NodeState::Unclear => Color::Magenta,
         NodeState::Delivered => Color::Cyan,
         NodeState::WaitingMachine => Color::LightRed,
@@ -502,7 +503,7 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let name_style = if n.alive { Style::new() } else { Style::new().fg(SOFT) };
     let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style), Span::raw(" ".repeat(pad))];
     if state_w > 0 {
-        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::state(n.state), 19)), Style::new().fg(state_color(n.state))));
+        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::node_state(n), 19)), Style::new().fg(state_color(n.state))));
     }
     spans.push(Span::styled(format!("{since:>5}"), Style::new().fg(DIM)));
     fit(spans, width)
@@ -627,7 +628,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let width = text.width as usize;
     let mut lines = vec![fit(
         vec![
-            Span::styled(format!("● {}", i18n::state(n.state)), Style::new().fg(state_color(n.state)).bold()),
+            Span::styled(format!("● {}", i18n::node_state(&n)), Style::new().fg(state_color(n.state)).bold()),
             Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
             Span::styled(if n.alive { tr!(" · awake", " · despierto") } else { tr!(" · asleep", " · dormido") }, Style::new().fg(DIM)),
         ],
@@ -694,7 +695,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
                     vec![
                         Span::styled(if n.alive { "  ● " } else { "  ○ " }, Style::new().fg(state_color(n.state))),
                         Span::raw(md::one_line(&name)),
-                        Span::styled(format!(" {}", i18n::state(n.state)), Style::new().fg(DIM)),
+                        Span::styled(format!(" {}", i18n::node_state(n)), Style::new().fg(DIM)),
                     ],
                     width,
                 ));

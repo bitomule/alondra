@@ -335,7 +335,7 @@ private struct EmptyTriage: View {
         let alive = fleet.nodes.filter(\.alive)
         return [
             (String(localized: "working"), alive.filter { $0.state == .working }.count, Palette.sky),
-            (String(localized: "waiting"), alive.filter { $0.state == .waitingAnswer || $0.state == .waitingMachine }.count, Palette.dawn),
+            (String(localized: "waiting"), alive.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMachine }.count, Palette.dawn),
             (String(localized: "alive"), alive.count, Palette.sage),
         ]
     }

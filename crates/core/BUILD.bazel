@@ -11,8 +11,11 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+exports_files(glob(["fixtures/*.jsonl"]))
+
 rust_test(
     name = "alondra_core_test",
+    compile_data = glob(["fixtures/*.jsonl"]),
     crate = ":alondra_core",
     edition = "2024",
 )

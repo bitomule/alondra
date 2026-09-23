@@ -3,6 +3,7 @@ import Foundation
 public enum NodeState: String, Codable, Sendable {
     case working
     case waitingAnswer = "waiting_answer"
+    case yourTurn = "your_turn"
     case delivered
     case waitingMachine = "waiting_machine"
     case done
@@ -12,11 +13,40 @@ public enum NodeState: String, Codable, Sendable {
         switch self {
         case .working: String(localized: "working", table: "AlondraShared", bundle: #bundle)
         case .waitingAnswer: String(localized: "waiting for an answer", table: "AlondraShared", bundle: #bundle)
+        case .yourTurn: String(localized: "your turn", table: "AlondraShared", bundle: #bundle)
         case .delivered: String(localized: "delivering results", table: "AlondraShared", bundle: #bundle)
         case .waitingMachine: String(localized: "waiting for the machine", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "done", table: "AlondraShared", bundle: #bundle)
         case .unclear: String(localized: "unclear what it wants", table: "AlondraShared", bundle: #bundle)
         }
+    }
+
+    /// A state this build does not know yet reads as `unclear`, so the fleet keeps decoding when
+    /// the daemon learns a new one.
+    public init(from decoder: Decoder) throws {
+        self = NodeState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unclear
+    }
+}
+
+public enum OrchestratorState: String, Codable, Sendable {
+    case onDuty = "on_duty"
+    case handling
+    case waitingForYou = "waiting_for_you"
+    case offline
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .onDuty: String(localized: "on duty", table: "AlondraShared", bundle: #bundle)
+        case .handling: String(localized: "handling a request", table: "AlondraShared", bundle: #bundle)
+        case .waitingForYou: String(localized: "waiting for you", table: "AlondraShared", bundle: #bundle)
+        case .offline: String(localized: "offline", table: "AlondraShared", bundle: #bundle)
+        case .unknown: String(localized: "unknown", table: "AlondraShared", bundle: #bundle)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self = OrchestratorState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
     }
 }
 
@@ -36,6 +66,7 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let isOrchestrator: Bool
     public let hasPlugin: Bool
     public let state: NodeState
+    public let orchestratorState: OrchestratorState?
     public let stateSince: Int64
     public let stateSource: String
     public let tool: ToolInFlight?
@@ -46,6 +77,8 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let project: String?
 
     public var displayName: String { name ?? shortId }
+
+    public var stateLabel: String { orchestratorState?.label ?? state.label }
 
     public var projectName: String? {
         if isOrchestrator { return String(localized: "Orchestrator", table: "AlondraShared", bundle: #bundle) }

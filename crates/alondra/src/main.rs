@@ -162,7 +162,7 @@ fn status() -> Result<()> {
     println!("\n{}", trf!("Fleet ({fleet}):", "Flota ({fleet}):"));
     for n in &o.nodes {
         let mins = (now_millis() - n.state_since) / 60_000;
-        println!("  {:<24} {:<34} {:>5}m", i18n::state(n.state), n.display_name(), mins);
+        println!("  {:<24} {:<34} {:>5}m", i18n::node_state(n), n.display_name(), mins);
     }
     Ok(())
 }
