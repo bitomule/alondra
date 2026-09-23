@@ -36,8 +36,9 @@ fn nudge_text(user: &str) -> String {
         "[Alondra] Your turn ended without telling {user} anything through Alondra, so they cannot tell whether you are \
          waiting on them. What you write in your terminal does not reach them. Declare your state with an Alondra tool: \
          `ask` if you need a decision (one question per decision, with options), `report` with kind final if you are \
-         done, or `wait_for_machine` if you are waiting for resources. If you have not done it in 3 minutes, Alondra will \
-         pass your last message on to {user}."
+         done, or `wait_for_machine` if you are waiting for resources. If you are still working on your own (a build, an \
+         upload, a review, a long command), send nothing: do not report that you do not need {user}, that is noise. \
+         If you have not done any of this in 3 minutes, Alondra will read your last message and act on it."
     )
 }
 
@@ -98,7 +99,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         };
         hub.append_with(|v| {
             let node = v.nodes.get(&session)?;
-            (needs_attention(v, node) && key(node) == due_key).then(|| settle(v, node, expects))
+            if needs_attention(v, node) && key(node) == due_key { settle(v, node, expects) } else { None }
         })?;
         memory.settled.insert(due_key);
     }
@@ -111,10 +112,11 @@ fn what_it_said(node: &Node) -> Option<String> {
     message.or(needs).map(str::to_string)
 }
 
-fn settle(v: &View, node: &Node, expects: Expects) -> Event {
+fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
     match expects {
-        Expects::Nothing => Event::ReportPosted(finished_report(v, node)),
-        other => Event::QuestionAsked(question_for(v, node, other)),
+        Expects::Working => None,
+        Expects::Nothing => Some(Event::ReportPosted(finished_report(v, node))),
+        other => Some(Event::QuestionAsked(question_for(v, node, other))),
     }
 }
 
@@ -226,14 +228,14 @@ mod tests {
     fn a_decision_becomes_a_question_with_its_real_question() {
         let v = waiting_view(ASKS);
         assert!(needs_attention(&v, &v.nodes["s"]));
-        let Event::QuestionAsked(q) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
+        let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         assert_eq!(q.title, "Should I ship 4.5.0 now or merge #256 first?");
     }
 
     #[test]
     fn a_node_that_is_done_gets_a_final_report_not_a_question() {
         let mut v = waiting_view("Task complete and reported to hive/corpus-router.\nEverything committed locally.");
-        let event = settle(&v, &v.nodes["s"], Expects::Nothing);
+        let event = settle(&v, &v.nodes["s"], Expects::Nothing).unwrap();
         let Event::ReportPosted(r) = &event else { panic!() };
         assert_eq!(r.kind, ReportKind::Final);
         assert_eq!(r.title, "Finished: Task complete and reported to hive/corpus-router.");
@@ -249,16 +251,22 @@ mod tests {
     }
 
     #[test]
+    fn a_node_still_working_on_its_own_gets_nothing() {
+        let v = waiting_view("Build 188 uploaded to TestFlight, processing. I will send it to beta review once Apple is done.");
+        assert!(settle(&v, &v.nodes["s"], Expects::Working).is_none());
+    }
+
+    #[test]
     fn something_to_do_is_marked_as_your_turn() {
         let v = waiting_view("PR merged. Remove the camera permission on a real iPhone and open the scanner.");
-        let Event::QuestionAsked(q) = settle(&v, &v.nodes["s"], Expects::Act) else { panic!() };
+        let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Act) else { panic!() };
         assert!(q.title.starts_with("Your turn: "));
     }
 
     #[test]
     fn it_is_asked_once_and_withdrawn_when_the_node_carries_on() {
         let mut v = waiting_view(ASKS);
-        let Event::QuestionAsked(q) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
+        let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         v.apply(4, 4000, &Event::QuestionAsked(q.clone()));
         assert!(!needs_attention(&v, &v.nodes["s"]));
         assert!(!moved_on(&v.nodes["s"], &q));

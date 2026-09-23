@@ -206,21 +206,23 @@ fn devices(revoke: Option<String>) -> Result<()> {
 }
 
 fn keys_probe() -> anyhow::Result<()> {
-    use crossterm::event::{Event, KeyCode, read};
-    println!("Press keys; q quits.\r");
+    use std::io::Read;
+    println!("Press keys; q quits. Shows the raw bytes the terminal sends.\r");
     crossterm::terminal::enable_raw_mode()?;
-    let result = (|| -> anyhow::Result<()> {
-        loop {
-            if let Event::Key(k) = read()? {
-                print!("{:?} {:?} {:?} {:?}\r\n", k.code, k.modifiers, k.kind, k.state);
-                if k.code == KeyCode::Char('q') {
-                    return Ok(());
-                }
-            } else {
-                print!("other event\r\n");
-            }
+    let mut stdin = std::io::stdin();
+    let mut buf = [0u8; 64];
+    let result = loop {
+        let n = match stdin.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => break Err(e.into()),
+        };
+        let bytes = &buf[..n];
+        let shown: String = bytes.iter().map(|&b| if b == 0x1b { "ESC".to_string() } else if b.is_ascii_graphic() { (b as char).to_string() } else { format!("\\x{b:02x}") }).collect();
+        print!("{shown}\r\n");
+        if bytes == b"q" {
+            break Ok(());
         }
-    })();
+    };
     crossterm::terminal::disable_raw_mode()?;
     result
 }

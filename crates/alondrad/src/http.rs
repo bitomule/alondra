@@ -639,6 +639,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         let user = &hub.config.name;
         match crate::classify::judge_report(&text, user).await {
             crate::classify::ReportVerdict::Asks => {
+                eprintln!("alondrad: report gate: rejected a report that asks for something: {}", b.title);
                 return err(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     format!(
@@ -649,6 +650,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
                 );
             }
             crate::classify::ReportVerdict::Progress => {
+                eprintln!("alondrad: report gate: rejected a progress-only report: {}", b.title);
                 return err(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     format!(
