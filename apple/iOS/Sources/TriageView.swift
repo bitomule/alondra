@@ -380,7 +380,10 @@ private struct MachineDetail: View {
                 if let machine = fleet.machine {
                     row(String(localized: "Free memory"), machine.memoryFreePercent.map { "\($0) %" } ?? "—")
                     row(String(localized: "Available memory"), ByteCountFormatter.string(fromByteCount: Int64(machine.memoryAvailable), countStyle: .memory))
-                    row(String(localized: "Load"), machine.load.prefix(3).map { $0.formatted(.number.precision(.fractionLength(1))) }.joined(separator: " · "))
+                    if let cpu = machine.cpuUsage {
+                        row(String(localized: "CPU in use"), "\(Int(cpu.rounded())) %")
+                    }
+                    row(String(localized: "Load average"), (machine.load.first ?? 0).formatted(.number.precision(.fractionLength(1))) + (machine.cpus.map { " · " + String(localized: "\($0) cores") } ?? ""))
                     row(String(localized: "Free disk"), ByteCountFormatter.string(fromByteCount: Int64(machine.diskAvailable), countStyle: .file))
                     if machine.unreliable {
                         Label("Unreliable readings", systemImage: "exclamationmark.triangle")

@@ -152,6 +152,8 @@ public struct Machine: Codable, Hashable, Sendable {
     public let memoryAvailable: UInt64
     public let memoryFreePercent: UInt32?
     public let load: [Double]
+    public let cpus: Int?
+    public let cpuUsage: Double?
     public let diskAvailable: UInt64
     public let unreliable: Bool
 }

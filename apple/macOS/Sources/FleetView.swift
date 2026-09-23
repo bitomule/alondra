@@ -61,6 +61,11 @@ public struct FleetView: View {
         .navigationTitle("Alondra")
         .navigationSubtitle(subtitle)
         .toolbar {
+            if store.connected, let overview = store.overview {
+                ToolbarItem(placement: .status) {
+                    StatusGauges(machine: overview.machine, usage: overview.usage)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showingNew = true
@@ -112,13 +117,8 @@ public struct FleetView: View {
         guard store.connected, let overview = store.overview else { return String(localized: "No connection to alondrad") }
         let count = store.inbox.count
         let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
-        let machine = overview.machine
-        let memory = machine.memoryFreePercent.map { String(localized: "memory \(Int($0))% free") }
-            ?? String(localized: "\(Int(machine.memoryAvailable / 1_073_741_824)) GB free")
-        let load = String(localized: "load \(Int((machine.load.first ?? 0).rounded()))")
         let alive = store.nodes.filter(\.alive).count
-        let usage = overview.usage.map { $0.summary + ($0.isOverPace ? " ⚠︎" : "") }
-        return ([pending, String(localized: "\(alive) active nodes")] + [usage].compactMap { $0 } + [memory, load + (machine.unreliable ? " ⚠︎" : "")]).joined(separator: " · ")
+        return [pending, String(localized: "\(alive) active nodes")].joined(separator: " · ")
     }
 
     private var sidebar: some View {

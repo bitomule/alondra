@@ -198,8 +198,8 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let gb = m.memory_available as f64 / 1_073_741_824.0;
     let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{gb:.1} GB free", "{gb:.1} GB libres"));
     let warn = if m.unreliable { " ⚠" } else { "" };
-    let load = m.load[0];
-    let machine = trf!("{working} working · memory {mem} · load {load:.1}{warn} ", "{working} trabajando · memoria {mem} · carga {load:.1}{warn} ");
+    let cpu = m.cpu_usage.round();
+    let machine = trf!("{working} working · memory {mem} · CPU {cpu}%{warn} ", "{working} trabajando · memoria {mem} · CPU {cpu}%{warn} ");
     let mut right = vec![];
     if let Some(u) = &app.data.usage {
         let style = if u.over_pace { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
