@@ -241,7 +241,7 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
                 .filter(|q| q.status.is_open() && !q.to_orchestrator && awake(&q.session_id))
                 .collect();
             let rs: Vec<Report> =
-                v.reports.range(last_r + 1..).map(|(_, r)| r.clone()).filter(|r| r.kind != ReportKind::Progress && awake(&r.session_id)).collect();
+                v.reports.range(last_r + 1..).map(|(_, r)| r.clone()).filter(|r| r.kind != ReportKind::Progress && !r.read && awake(&r.session_id)).collect();
             (qs, rs, pending, v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0))
         });
         last_q = last_q.max(max_q);

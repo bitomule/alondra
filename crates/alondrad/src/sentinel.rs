@@ -135,6 +135,12 @@ fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
             let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
             (!repeated).then_some(Event::ReportPosted(report))
         }
+        Expects::HandedOff => {
+            let mut report = finished_report(v, node);
+            report.read = true;
+            let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
+            (!repeated).then_some(Event::ReportPosted(report))
+        }
         other => Some(Event::QuestionAsked(question_for(v, node, other))),
     }
 }
@@ -337,6 +343,16 @@ mod tests {
         let Event::ReportPosted(r) = settle(&v, &v.nodes["s"], Expects::Finished).unwrap() else { panic!() };
         assert_eq!(r.title, "Ya no.");
         assert_eq!(r.body.as_deref(), Some("`d0b8007a` **es exactamente el fix**. Main ya lo tiene."));
+    }
+
+    #[test]
+    fn a_result_handed_to_another_agent_stays_out_of_the_users_inbox() {
+        let mut v = waiting_view("Informe enviado al orchestrator. 4 de las 5 ramas ya están en main.");
+        let event = settle(&v, &v.nodes["s"], Expects::HandedOff).unwrap();
+        let Event::ReportPosted(r) = &event else { panic!() };
+        assert!(r.read);
+        v.apply(4, 4000, &event);
+        assert!(!needs_attention(&v, &v.nodes["s"]));
     }
 
     #[test]

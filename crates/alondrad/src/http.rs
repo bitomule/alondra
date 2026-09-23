@@ -805,6 +805,19 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
     if busy {
         return err(StatusCode::CONFLICT, format!("{short} is working; wait until it stops before closing it"));
     }
+    let mut pending: Vec<String> = hub.read(|v| {
+        v.questions
+            .values()
+            .filter(|q| q.session_id == session && q.status.is_open())
+            .map(|q| format!("question #{} \"{}\" is still open", q.id, q.title))
+            .collect()
+    });
+    if let Some(left) = crate::worktree::leftovers(&session).await {
+        pending.push(format!("its worktree has {left}"));
+    }
+    if !pending.is_empty() {
+        return err(StatusCode::CONFLICT, format!("{short} still has something pending, so it was not closed:\n- {}", pending.join("\n- ")));
+    }
     let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
