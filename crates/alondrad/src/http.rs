@@ -154,8 +154,8 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
             "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
-    let in_subagent = h.agent_id.is_some();
-    if !hub.hold_enabled || in_subagent || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
+    let only_parent_may_ask = h.agent_id.is_some() && event != "PermissionRequest";
+    if !hub.hold_enabled || only_parent_may_ask || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
         return Json(json!({})).into_response();
     }
     match (event.as_str(), tool.as_deref()) {
