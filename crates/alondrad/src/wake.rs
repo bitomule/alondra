@@ -17,11 +17,10 @@ pub async fn run(hub: Arc<Hub>) {
     let mut last_try: HashMap<String, Instant> = HashMap::new();
     loop {
         hub.wait_event(Duration::from_secs(10)).await;
-        let listening = hub.inbox_listening();
         let due: Vec<(String, String, Pending)> = hub.read(|v| {
             v.nodes
                 .values()
-                .filter(|n| n.in_daemon && (!n.alive || !n.has_plugin) && !listening.contains(&n.session_id))
+                .filter(|n| n.in_daemon)
                 .filter_map(|n| {
                     let msgs: Pending = v
                         .pending_messages(&n.session_id)

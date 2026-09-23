@@ -15,8 +15,8 @@ pub enum Role {
 fn instructions(role: Role, user: &str) -> String {
     let who = format!("The person who supervises the fleet is called {user}: wherever Alondra's tools and skill say \"the user\", that is {user}.");
     match role {
-        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. If you need {user} to decide something, use `ask` with a one-line title and all the context in `detail`, links to PRs and attached files; then end your turn: the answer will reach you on its own as a message. When you deliver something (a PR, a report, a document) use `report`. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
-        Role::Orchestrator => format!("Alondra is your nervous system: reliable fleet state (`fleet`, `node`), machine capacity (`machine`), and hands (`launch`, `send`). The nodes' questions to {user} reach {user} directly; your inbox gets what is meant for you. Use `ask` to ask {user} something and `report` to inform {user}. {who}"),
+        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}: only these tools do. If you need {user} to decide something, use `ask` (one question per decision, a one-line title, all the context in `detail`, options, links); then end your turn, and Alondra will type the answer into this session. When you finish, use `report` with kind final. Use `report` otherwise only for a result or finding {user} must read now; never to say you are still working or do not need {user} (that is noise and Alondra rejects it). While you work on your own, including waiting for a build or an upload, send nothing. If you are stopped for lack of machine resources, use `wait_for_machine`. {who}"),
+        Role::Orchestrator => format!("Alondra is your nervous system: reliable fleet state (`fleet`, `node`), machine capacity (`machine`), and hands (`launch`, `send`). The nodes' questions to {user} reach {user} directly; what is meant for you is typed into your session. Use `ask` to ask {user} something and `report` to inform {user}. {who}"),
     }
 }
 
@@ -40,9 +40,9 @@ fn report_schema(user: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "What you deliver, in one line"},
+            "title": {"type": "string", "description": "The result or finding itself, in one line (not 'update' or 'status')"},
             "body": {"type": "string", "description": "The report (markdown), short: what was measured, what changes and what is left"},
-            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("notice = something {user} needs to know (short). document = a document for {user} to read (plan, long report): attach its path in attachments. final = you are done and nothing is pending. If you need {user} to APPROVE something, do not use report: use ask with the document attached.")},
+            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("final = you are done and nothing is pending (the usual kind). notice = a result or finding {user} must know now, short. document = a document for {user} to read (plan, long report): attach its path in attachments. Never report progress or that you do not need {user}. If you need {user} to decide, approve or do something, do not use report: use ask.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"}
         },
@@ -52,8 +52,8 @@ fn report_schema(user: &str) -> Value {
 
 fn tools(role: Role, user: &str) -> Value {
     let mut list = vec![
-        json!({"name": "ask", "description": format!("Structured question to {user} (or to the orchestrator). Returns right away with the number; the answer arrives as a message when you end your turn."), "inputSchema": ask_schema(user)}),
-        json!({"name": "report", "description": format!("Something for {user} to read, with no decision pending: a short notice, a long document (plan, report) or that you are done. It lands in {user}'s inbox; any comment comes back to you as a message."), "inputSchema": report_schema(user)}),
+        json!({"name": "ask", "description": format!("Structured question to {user} (or to the orchestrator). Returns right away with the number; end your turn and Alondra types the answer into this session."), "inputSchema": ask_schema(user)}),
+        json!({"name": "report", "description": format!("Tell {user} you are done (kind final) or give {user} a result, finding or document to read. Not for progress, not for asking: those are noise here, and questions go through ask. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
         json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {
@@ -61,7 +61,7 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "fleet", "description": "Fleet summary: unfinished nodes with their state, open questions, unread reports and the machine. For one node's detail, `node`.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "node", "description": "A node's detail: state, tool in progress, last message, questions, reports and timeline.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity: memory, load, CPU and disk.", "inputSchema": {"type": "object", "properties": {}}}),
-            json!({"name": "send", "description": "Send a message to a node; it arrives as soon as its turn ends (or right away if it is stopped).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
+            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
             json!({"name": "launch", "description": "Launch a new node with the Alondra plugin.", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}}, "required": ["name", "cwd", "prompt"]}}),
         ]);
     }
@@ -109,7 +109,7 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "ask" => {
             let r = client.post("/v1/questions", &merge(args.clone(), &who))?;
             let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
-            format!("Question #{id} recorded and sent to {user}. End your turn when you have nothing else to do: the answer will reach you on its own as a message.")
+            format!("Question #{id} recorded and sent to {user}. End your turn when you have nothing else to do: Alondra will type the answer into this session.")
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
@@ -133,7 +133,7 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
             client.post(&format!("/v1/nodes/{}/messages", urlencode(key)), &json!({"text": text, "from": "orchestrator"}))?;
-            format!("Message in the inbox of {key}.")
+            format!("Message queued for {key}; Alondra will type it into its session.")
         }
         "launch" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/launch", args)?)?,
         other => anyhow::bail!("unknown tool: {other}"),

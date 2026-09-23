@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
@@ -47,7 +47,6 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/reports", post(report))
         .route("/v1/reports/{id}/read", post(report_read))
         .route("/v1/waiting-machine", post(waiting_machine))
-        .route("/v1/inbox/{session}", get(inbox))
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
         .route("/v1/requests", post(new_request))
@@ -365,7 +364,6 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
 
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
     let machine = hub.machine();
-    let listening = hub.inbox_listening();
     let body = hub.read(|v| {
         let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
         nodes.sort_by_key(|n| (!n.is_orchestrator, n.state, std::cmp::Reverse(n.last_seen)));
@@ -391,7 +389,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine,
-            "inbox_listening": listening, "user": hub.config.name,
+            "user": hub.config.name,
         })
     });
     Json(body)
@@ -765,39 +763,6 @@ async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
         Ok(None) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
         Err(e) => internal(e),
-    }
-}
-
-#[derive(Deserialize)]
-struct InboxQuery {
-    wait: Option<u64>,
-}
-
-async fn inbox(State(hub): State<AppState>, Path(session): Path<String>, Query(q): Query<InboxQuery>) -> Response {
-    let generation = hub.claim_inbox(&session);
-    let deadline = Instant::now() + Duration::from_secs(q.wait.unwrap_or(3600).min(24 * 3600));
-    loop {
-        if !hub.inbox_current(&session, generation) {
-            return (StatusCode::NO_CONTENT, "superseded").into_response();
-        }
-        let pending: Vec<Message> = hub.read(|v| v.pending_messages(&session).cloned().collect());
-        if !pending.is_empty() {
-            for m in &pending {
-                let _ = hub.append(Event::MessageHanded { id: m.id });
-                if let Some(qid) = m.answers_question {
-                    let _ = hub.append(Event::QuestionDelivered { id: qid });
-                }
-            }
-            hub.release_inbox(&session, generation);
-            let text = pending.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n\n");
-            return (StatusCode::OK, text).into_response();
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            hub.release_inbox(&session, generation);
-            return StatusCode::NO_CONTENT.into_response();
-        }
-        hub.wait_event((deadline - now).min(Duration::from_secs(30))).await;
     }
 }
 

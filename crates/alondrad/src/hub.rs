@@ -16,7 +16,6 @@ pub struct Hub {
     machine: RwLock<Machine>,
     tick: watch::Sender<u64>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
-    inbox_waiters: Mutex<HashMap<String, u64>>,
     pub home: PathBuf,
     pub config: Config,
     pub hold_enabled: bool,
@@ -37,7 +36,6 @@ impl Hub {
             machine: RwLock::new(Machine::default()),
             tick,
             holds: Mutex::new(HashMap::new()),
-            inbox_waiters: Mutex::new(HashMap::new()),
             home,
             config,
             hold_enabled,
@@ -135,27 +133,4 @@ impl Hub {
         self.holds.lock().expect("holds lock poisoned").len()
     }
 
-    pub fn claim_inbox(&self, session: &str) -> u64 {
-        let mut w = self.inbox_waiters.lock().expect("inbox lock poisoned");
-        let generation = w.get(session).copied().unwrap_or(0) + 1;
-        w.insert(session.to_string(), generation);
-        drop(w);
-        self.bump();
-        generation
-    }
-
-    pub fn inbox_current(&self, session: &str, generation: u64) -> bool {
-        self.inbox_waiters.lock().expect("inbox lock poisoned").get(session).copied() == Some(generation)
-    }
-
-    pub fn release_inbox(&self, session: &str, generation: u64) {
-        let mut w = self.inbox_waiters.lock().expect("inbox lock poisoned");
-        if w.get(session).copied() == Some(generation) {
-            w.remove(session);
-        }
-    }
-
-    pub fn inbox_listening(&self) -> Vec<String> {
-        self.inbox_waiters.lock().expect("inbox lock poisoned").keys().cloned().collect()
-    }
 }

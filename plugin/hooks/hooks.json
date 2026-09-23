@@ -1,18 +1,129 @@
 {
   "hooks": {
-    "SessionStart": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "PreToolUse": [{"matcher": "*", "hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 2592000}]}],
-    "PermissionRequest": [{"matcher": "*", "hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 2592000}]}],
-    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "PostToolUseFailure": [{"matcher": "*", "hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "Notification": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "SubagentStart": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "SubagentStop": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "StopFailure": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5}]}],
-    "Stop": [{"hooks": [
-      {"type": "http", "url": "http://127.0.0.1:47800/hook", "timeout": 5},
-      {"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra inbox", "asyncRewake": true, "timeout": 2592000}
-    ]}]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 2592000
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 2592000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }

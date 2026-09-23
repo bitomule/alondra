@@ -28,8 +28,8 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   - waiting for the machine;
   - done;
   - unclear what it wants.
-- **Pass messages with `SendMessage` and press Enter.** `send` drops them in the node's inbox.
-  If the node is asleep, Alondra wakes it up with `attach`.
+- **Pass messages with `SendMessage` and press Enter.** `send` queues them and Alondra types
+  them into the node's session, waking it with `attach` if it is dormant.
 
 ## What is yours
 
@@ -60,6 +60,8 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   if it is for reading. A report is **for reading only**: if you ask the user for something
   (decide, approve, test), that is a question with `ask`, one per decision. Never summarize in a
   report the questions that are already open: the user already has them in their inbox.
+  Never report progress or that you do not need the user; that is noise and Alondra rejects it.
+  Your own terminal does not reach the user: anything for them goes through `ask` or `report`.
   Alondra rejects reports that ask for something.
 
 ## Where an answer comes from

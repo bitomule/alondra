@@ -3,7 +3,6 @@ mod i18n;
 mod attach;
 mod client;
 mod doctor;
-mod inbox;
 mod mcp;
 mod setup;
 mod tui;
@@ -74,7 +73,7 @@ enum Cmd {
         #[arg(long, env = "ALONDRA_ROLE", default_value = "node")]
         role: String,
     },
-    /// Stop hook: waits for messages for this session (started by the plugin)
+    /// Retired: sessions started with an older plugin still call it from their Stop hook
     #[command(hide = true)]
     Inbox,
     /// Prints the raw bytes and the parsed key of every key pressed, to debug terminal input
@@ -118,7 +117,7 @@ fn main() -> Result<()> {
         Some(Cmd::Setup(args)) => setup::run(*args),
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
         Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
-        Some(Cmd::Inbox) => std::process::exit(inbox::run()?),
+        Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
     }
 }
