@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::{Event, Message, MessageFrom, now_millis};
+use alondra_core::{Event, Message, MessageFrom, NodeState, now_millis};
 
 use crate::hub::Hub;
 
@@ -17,6 +17,7 @@ pub async fn run(hub: Arc<Hub>) {
         )
     });
     let mut machine_alarm = false;
+    let mut leftovers_told: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
     loop {
         tokio::time::sleep(DIGEST_EVERY).await;
         let machine = hub.machine();
@@ -34,6 +35,22 @@ pub async fn run(hub: Arc<Hub>) {
         let low_memory = machine.memory_free_percent.is_some_and(|p| p < LOW_MEMORY_PERCENT);
         let overloaded = machine.load[0] > HIGH_LOAD;
         let Some((orchestrator, mut lines, max_report, max_question)) = digest else { continue };
+        let finished: Vec<(String, String, i64)> = hub.read(|v| {
+            v.nodes
+                .values()
+                .filter(|n| n.in_daemon && !n.is_orchestrator && matches!(n.state, NodeState::Done | NodeState::Delivered))
+                .map(|n| (n.session_id.clone(), n.display_name().to_string(), n.state_since))
+                .collect()
+        });
+        for (session, name, since) in finished {
+            if leftovers_told.contains(&(session.clone(), since)) {
+                continue;
+            }
+            leftovers_told.insert((session.clone(), since));
+            if let Some(left) = crate::worktree::leftovers(&session).await {
+                lines.push(format!("- {name} looks finished but its worktree has {left}: send it back to commit and push, or ask the user."));
+            }
+        }
         last_report = max_report;
         last_question = max_question;
         if (low_memory || overloaded) && !machine_alarm {

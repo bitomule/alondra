@@ -10,6 +10,7 @@ mod sentinel;
 mod store;
 mod wake;
 mod watcher;
+mod worktree;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -686,6 +686,20 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
+    if b.kind == Some(ReportKind::Final)
+        && let Some(session) = hub.read(|v| resolve_caller(v, &b.caller).map(|(s, _)| s))
+        && let Some(left) = crate::worktree::leftovers(&session).await
+    {
+        eprintln!("alondrad: final report refused, worktree not clean: {left}");
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "You are not done: your worktree has {left}. Commit and push your work (open a PR if that is the \
+                 mission) and then report final. If some of it should be thrown away, ask {} with ask before discarding anything.",
+                hub.config.name
+            ),
+        );
+    }
     if b.kind != Some(ReportKind::Progress) {
         let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
         let user = &hub.config.name;

@@ -63,3 +63,12 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   Never report progress or that you do not need the user; that is noise and Alondra rejects it.
   Your own terminal does not reach the user: anything for them goes through `ask` or `report`, written in the language the MCP instructions name.
   Alondra rejects reports that ask for something.
+
+## A finished node leaves a clean worktree
+
+When a node looks finished, its worktree must be clean: everything committed and pushed, a PR
+open if that was the mission. Alondra refuses a node's final report while its worktree has
+uncommitted files or unpushed commits, and your digest lists finished nodes that still leave
+something behind. Send those nodes back to commit and push; if something should be thrown
+away, ask the user first. Never close a node with work left in its worktree.
+
