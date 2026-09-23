@@ -55,6 +55,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/requests", post(new_request))
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
+        .route("/v1/activity", post(activity))
         .route("/v1/file", get(file))
         .layer(Extension(auth))
         .layer(Extension(push))
@@ -412,6 +413,16 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
         Ok((status, body)) => Json(json!({"status": status, "body": body})).into_response(),
         Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     }
+}
+
+#[derive(Deserialize)]
+struct ActivityBody {
+    client: String,
+}
+
+async fn activity(State(hub): State<AppState>, Json(b): Json<ActivityBody>) -> Json<Value> {
+    hub.touch(&b.client);
+    Json(json!({"ok": true}))
 }
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {
@@ -941,13 +952,20 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
     err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
 }
 
+/// A private index per call: two closes in the same millisecond must not share one.
+fn scratch_index() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("alondra-index-{}-{}-{n}", std::process::id(), now_millis()))
+}
+
 /// A worktree whose git link is broken can only be deleted by hand. It is deleted only when
 /// its files are exactly its branch, it has no new files and the branch is fully pushed.
 async fn discard_if_identical(dir: &std::path::Path, branch: &str) -> Result<(), String> {
     let link = std::fs::read_to_string(dir.join(".git")).map_err(|e| format!("no .git link: {e}"))?;
     let gitdir = link.trim().strip_prefix("gitdir: ").ok_or("unexpected .git link")?;
     let repo_git = PathBuf::from(gitdir).parent().and_then(|p| p.parent()).map(PathBuf::from).ok_or("unexpected gitdir")?;
-    let index = std::env::temp_dir().join(format!("alondra-index-{}-{}", std::process::id(), now_millis()));
+    let index = scratch_index();
     let git = |args: Vec<String>| {
         let repo_git = repo_git.clone();
         let index = index.clone();
@@ -1233,6 +1251,12 @@ mod broken_worktree_tests {
         sh(&root.join("repo"), "git worktree add -q -b wt ../wt && cd ../wt && echo x > f && git add f && git commit -q -m f && git push -q origin wt");
         sh(&root.join("repo"), "rm -rf .git/worktrees/wt");
         (root.clone(), root.join("wt"))
+    }
+
+    #[test]
+    fn two_closes_at_once_never_share_an_index() {
+        let names: std::collections::HashSet<PathBuf> = (0..100).map(|_| scratch_index()).collect();
+        assert_eq!(names.len(), 100);
     }
 
     #[tokio::test]

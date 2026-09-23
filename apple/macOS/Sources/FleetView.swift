@@ -1,4 +1,5 @@
 import AlondraShared
+import AppKit
 import SwiftUI
 
 enum Selection: Hashable {
@@ -25,6 +26,23 @@ public struct FleetView: View {
     @AppStorage("collapsedProjects") private var collapsedRaw = ""
 
     public init() {}
+
+    /// While the user clicks, types or scrolls here, alondrad holds back iPhone pushes.
+    private func reportActivity() async {
+        let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { event in
+            continuation.yield()
+            return event
+        }
+        defer {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+        var told = Date.distantPast
+        for await _ in events where Date().timeIntervalSince(told) >= 60 {
+            told = Date()
+            try? await store.client.activity(client: "mac")
+        }
+    }
 
     public var body: some View {
         NavigationSplitView {
@@ -65,6 +83,7 @@ public struct FleetView: View {
             store.use(device.client)
             await store.run()
         }
+        .task { await reportActivity() }
         .onChange(of: device.client.identity) { store.use(device.client) }
         .task(id: store.connection) { await pairIfNeeded() }
         .onChange(of: inboxIDs, initial: true) { old, new in

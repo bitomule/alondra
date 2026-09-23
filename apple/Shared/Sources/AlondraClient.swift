@@ -81,6 +81,10 @@ public struct AlondraClient: Sendable {
         try await post("v1/questions/\(question)/more-context", ["note": note])
     }
 
+    public func activity(client: String) async throws {
+        try await post("v1/activity", ["client": client])
+    }
+
     public func newRequest(_ text: String) async throws {
         try await post("v1/requests", ["text": text])
     }
