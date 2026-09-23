@@ -41,6 +41,16 @@
         }
       }
     },
+    "+%llu −%llu in %llu files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+%llu −%llu en %llu ficheros"
+          }
+        }
+      }
+    },
     "Allow": {
       "localizations": {
         "es": {
@@ -241,6 +251,16 @@
         }
       }
     },
+    "Merge commit": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commit de merge"
+          }
+        }
+      }
+    },
     "No connection": {
       "localizations": {
         "es": {
@@ -331,6 +351,16 @@
         }
       }
     },
+    "Rebase": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebase"
+          }
+        }
+      }
+    },
     "Request changes": {
       "localizations": {
         "es": {
@@ -347,6 +377,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ejecuta claude rm. Nunca descarta trabajo: si el nodo tiene cambios sin commit o sin push, o su worktree sigue ahí, el servidor se niega y te dice por qué."
+          }
+        }
+      }
+    },
+    "Squash": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Squash"
           }
         }
       }

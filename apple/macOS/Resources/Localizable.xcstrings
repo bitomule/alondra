@@ -591,12 +591,32 @@
         }
       }
     },
+    "How to merge it; the method last used in this repo comes first": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cómo fusionarlo; primero va el método usado la última vez en este repo"
+          }
+        }
+      }
+    },
     "I need more context": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Necesito más contexto"
+          }
+        }
+      }
+    },
+    "It has conflicts with its base branch": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiene conflictos con su rama base"
           }
         }
       }
@@ -667,6 +687,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Memoria"
+          }
+        }
+      }
+    },
+    "Merge (%@)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusionar (%@)"
+          }
+        }
+      }
+    },
+    "Merge PR #%llu?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Fusionar el PR #%llu?"
+          }
+        }
+      }
+    },
+    "Merge…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusionar…"
+          }
+        }
+      }
+    },
+    "Method": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Método"
           }
         }
       }
@@ -787,6 +847,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Abre Alondra en el iPhone"
+          }
+        }
+      }
+    },
+    "Open on GitHub": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir en GitHub"
           }
         }
       }
@@ -921,6 +991,16 @@
         }
       }
     },
+    "Pull request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pull request"
+          }
+        }
+      }
+    },
     "Question": {
       "localizations": {
         "es": {
@@ -997,6 +1077,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Responder al nodo (opcional)…"
+          }
+        }
+      }
+    },
+    "Request Changes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pedir cambios"
           }
         }
       }
@@ -1131,6 +1221,16 @@
         }
       }
     },
+    "Set Aside": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apartar"
+          }
+        }
+      }
+    },
     "Settings → Pair with the Mac": {
       "localizations": {
         "es": {
@@ -1147,6 +1247,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Empezar"
+          }
+        }
+      }
+    },
+    "Take the card out of the inbox without merging": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quita la tarjeta de la bandeja sin fusionar"
           }
         }
       }
@@ -1247,6 +1357,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Lo último que dijo · hace %@"
+          }
+        }
+      }
+    },
+    "What should change?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué hay que cambiar?"
           }
         }
       }

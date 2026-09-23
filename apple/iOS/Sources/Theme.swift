@@ -76,6 +76,8 @@ struct Kind {
             case "permission": self.init(String(localized: "Permission"), "lock.shield", Palette.rose)
             default: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
             }
+        case .pullRequest:
+            self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
         case .report(let r):
             switch r.kind {
             case "document": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)

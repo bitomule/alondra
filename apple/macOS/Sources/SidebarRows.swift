@@ -18,6 +18,8 @@ extension InboxItem {
             case "permission": KindStyle(label: String(localized: "Permission"), symbol: "lock.shield.fill", tint: .red)
             default: KindStyle(label: String(localized: "Question"), symbol: "questionmark.bubble.fill", tint: .orange)
             }
+        case .pullRequest:
+            KindStyle(label: String(localized: "Pull request"), symbol: "arrow.triangle.pull", tint: .green)
         case .report(let r):
             switch r.kind {
             case "document": KindStyle(label: String(localized: "Document"), symbol: "doc.text.fill", tint: .blue)

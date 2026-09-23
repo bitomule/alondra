@@ -81,6 +81,18 @@ public struct AlondraClient: Sendable {
         try await post("v1/questions/\(question)/more-context", ["note": note])
     }
 
+    public func mergePullRequest(_ id: UInt64, method: String) async throws {
+        try await post("v1/prs/\(id)/merge", ["method": method])
+    }
+
+    public func requestChanges(onPullRequest id: UInt64, text: String) async throws {
+        try await post("v1/prs/\(id)/changes", ["text": text])
+    }
+
+    public func dismissPullRequest(_ id: UInt64) async throws {
+        try await post("v1/prs/\(id)/dismiss", [:])
+    }
+
     public func activity(client: String) async throws {
         try await post("v1/activity", ["client": client])
     }
