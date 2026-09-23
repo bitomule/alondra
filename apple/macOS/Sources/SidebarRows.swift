@@ -12,23 +12,23 @@ extension InboxItem {
         switch self {
         case .question(let q):
             switch q.origin {
-            case "plan": KindStyle(label: "Plan", symbol: "list.bullet.clipboard.fill", tint: .purple)
-            case "permission": KindStyle(label: "Permiso", symbol: "lock.shield.fill", tint: .red)
-            default: KindStyle(label: "Pregunta", symbol: "questionmark.bubble.fill", tint: .orange)
+            case "plan": KindStyle(label: String(localized: "Plan"), symbol: "list.bullet.clipboard.fill", tint: .purple)
+            case "permission": KindStyle(label: String(localized: "Permission"), symbol: "lock.shield.fill", tint: .red)
+            default: KindStyle(label: String(localized: "Question"), symbol: "questionmark.bubble.fill", tint: .orange)
             }
         case .report(let r):
             switch r.kind {
-            case "document": KindStyle(label: "Documento", symbol: "doc.text.fill", tint: .blue)
-            case "notice": KindStyle(label: "Aviso", symbol: "bell.fill", tint: .teal)
-            case "final": KindStyle(label: "Terminado", symbol: "checkmark.seal.fill", tint: .green)
-            default: KindStyle(label: "Progreso", symbol: "arrow.triangle.2.circlepath", tint: .gray)
+            case "document": KindStyle(label: String(localized: "Document"), symbol: "doc.text.fill", tint: .blue)
+            case "notice": KindStyle(label: String(localized: "Notice"), symbol: "bell.fill", tint: .teal)
+            case "final": KindStyle(label: String(localized: "Finished"), symbol: "checkmark.seal.fill", tint: .green)
+            default: KindStyle(label: String(localized: "Progress"), symbol: "arrow.triangle.2.circlepath", tint: .gray)
             }
         }
     }
 }
 
 func shortName(_ name: String?) -> String {
-    guard let name, !name.isEmpty else { return "sin nombre" }
+    guard let name, !name.isEmpty else { return String(localized: "unnamed") }
     return name.split(separator: "/").last.map(String.init) ?? name
 }
 
@@ -45,7 +45,7 @@ struct InboxRow: View {
                 Text(item.title)
                     .fontWeight(.medium)
                     .lineLimit(2)
-                Text("\(style.label) · \(shortName(item.nodeName)) · \(ago(item.date))")
+                Text(verbatim: "\(style.label) · \(shortName(item.nodeName)) · \(ago(item.date))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -69,18 +69,18 @@ struct NodeRow: View {
                 Image(systemName: "sparkle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("Orquestador")
+                    .help("Orchestrator")
             }
             if !node.alive {
                 Image(systemName: "moon.zzz")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
-                    .help("Dormido")
+                    .help("Asleep")
             }
         }
         .help(tooltip)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(node.alive ? node.state.label : "\(node.state.label), dormido")
+        .accessibilityValue(node.alive ? node.state.label : String(localized: "\(node.state.label), asleep"))
     }
 }
 
@@ -117,7 +117,7 @@ struct ProjectHeader: View {
             let urgent = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .unclear) }.count
             if urgent > 0 {
                 Circle().fill(NodeState.waitingAnswer.color).frame(width: 6, height: 6)
-                    .help(urgent == 1 ? "1 nodo espera" : "\(urgent) nodos esperan")
+                    .help("\(urgent) nodes waiting")
             }
         }
     }

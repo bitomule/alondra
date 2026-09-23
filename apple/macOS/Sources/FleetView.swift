@@ -45,10 +45,10 @@ public struct FleetView: View {
                 Button {
                     showingNew = true
                 } label: {
-                    Label("Nuevo", systemImage: "square.and.pencil")
+                    Label("New", systemImage: "square.and.pencil")
                 }
                 .keyboardShortcut("n")
-                .help("Pedir trabajo nuevo (⌘N)")
+                .help("Ask for new work (⌘N)")
             }
         }
         .sheet(isPresented: $showingNew) {
@@ -63,17 +63,15 @@ public struct FleetView: View {
     private var inboxIDs: [String] { store.inbox.map(\.id) }
 
     private var subtitle: String {
-        guard store.connected, let overview = store.overview else { return "Sin conexión con alondrad" }
-        let pending = switch store.inbox.count {
-        case 0: "Todo al día"
-        case 1: "1 pendiente"
-        case let count: "\(count) pendientes"
-        }
+        guard store.connected, let overview = store.overview else { return String(localized: "No connection to alondrad") }
+        let count = store.inbox.count
+        let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
         let machine = overview.machine
-        let memory = machine.memoryFreePercent.map { "memoria \($0) % libre" } ?? "\(machine.memoryAvailable / 1_073_741_824) GB libres"
-        let load = "carga \(Int((machine.load.first ?? 0).rounded()))"
+        let memory = machine.memoryFreePercent.map { String(localized: "memory \(Int($0))% free") }
+            ?? String(localized: "\(Int(machine.memoryAvailable / 1_073_741_824)) GB free")
+        let load = String(localized: "load \(Int((machine.load.first ?? 0).rounded()))")
         let alive = store.nodes.filter(\.alive).count
-        return [pending, "\(alive) nodos activos", memory, load + (machine.unreliable ? " ⚠︎" : "")].joined(separator: " · ")
+        return [pending, String(localized: "\(alive) active nodes"), memory, load + (machine.unreliable ? " ⚠︎" : "")].joined(separator: " · ")
     }
 
     private var sidebar: some View {
@@ -85,7 +83,7 @@ public struct FleetView: View {
             }
             Section {
                 if visibleInbox.isEmpty {
-                    Label(query.isEmpty ? "Todo al día" : "Nada coincide", systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")
+                    Label(query.isEmpty ? String(localized: "All caught up") : String(localized: "Nothing matches"), systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(visibleInbox) { item in
@@ -94,9 +92,9 @@ public struct FleetView: View {
                 }
             } header: {
                 HStack(spacing: 6) {
-                    Text("Te espera")
+                    Text("Waiting for You")
                     if !store.inbox.isEmpty {
-                        Text("\(store.inbox.count)")
+                        Text(store.inbox.count, format: .number)
                             .monospacedDigit()
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6)
@@ -117,7 +115,7 @@ public struct FleetView: View {
             }
         }
         .animation(.snappy, value: inboxIDs)
-        .searchable(text: $query, placement: .sidebar, prompt: "Buscar")
+        .searchable(text: $query, placement: .sidebar, prompt: "Search")
         .searchFocused($searchFocused)
         .task(id: query) { await runSmartSearch() }
     }
@@ -135,7 +133,7 @@ public struct FleetView: View {
             if let node = store.node(id) {
                 NodeDetail(node: node, store: store, drafts: drafts, open: { selection = .item($0) })
             } else {
-                ContentUnavailableView("Este nodo ya no está", systemImage: "questionmark.circle")
+                ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
         case nil:
             HomeView(store: store, start: startTriage, newRequest: { showingNew = true })
@@ -207,12 +205,12 @@ public struct FleetView: View {
         guard q.count >= 3 else { return }
         try? await Task.sleep(for: .milliseconds(1200))
         guard !Task.isCancelled, filteredProjects.isEmpty, visibleInbox.isEmpty else { return }
-        smartStatus = "Buscando en las conversaciones…"
+        smartStatus = String(localized: "Searching the conversations…")
         let result = await store.smartSearch(q)
         guard !Task.isCancelled else { return }
         if let result {
             smartMatches = Set(result.sessions)
-            smartStatus = result.sessions.isEmpty ? "Tampoco aparece en las conversaciones" : "Encontrado en las conversaciones"
+            smartStatus = result.sessions.isEmpty ? String(localized: "Not in the conversations either") : String(localized: "Found in the conversations")
         } else {
             smartStatus = ""
         }
@@ -239,28 +237,28 @@ struct HomeView: View {
                 ProgressView()
             } else {
                 ContentUnavailableView {
-                    Label("Sin conexión con alondrad", systemImage: "bolt.horizontal.circle")
+                    Label("No connection to alondrad", systemImage: "bolt.horizontal.circle")
                 } description: {
-                    Text("Reintento cada pocos segundos.")
+                    Text("Retrying every few seconds.")
                 } actions: {
                     ProgressView().controlSize(.small)
                 }
             }
         } else if store.inbox.isEmpty {
             ContentUnavailableView {
-                Label("Todo al día", systemImage: "checkmark.circle")
+                Label("All caught up", systemImage: "checkmark.circle")
             } description: {
-                Text("Ningún nodo te necesita ahora mismo. Lo que llegue aparecerá en «Te espera».")
+                Text("No node needs you right now. Anything new will show up in Waiting for You.")
             } actions: {
-                Button("Pedir algo nuevo…", action: newRequest)
+                Button("Ask for Something New…", action: newRequest)
             }
         } else {
             ContentUnavailableView {
-                Label(store.inbox.count == 1 ? "1 cosa te espera" : "\(store.inbox.count) cosas te esperan", systemImage: "tray.full")
+                Label("\(store.inbox.count) things waiting for you", systemImage: "tray.full")
             } description: {
-                Text("Respondes, y pasa sola a la siguiente.")
+                Text("Answer, and it moves on to the next one by itself.")
             } actions: {
-                Button("Empezar", action: start)
+                Button("Start", action: start)
                     .keyboardShortcut(.defaultAction)
                     .controlSize(.large)
             }
@@ -283,7 +281,7 @@ struct ErrorBanner: View {
                         Image(systemName: "xmark").font(.caption.weight(.bold))
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel("Cerrar")
+                    .accessibilityLabel("Close")
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)

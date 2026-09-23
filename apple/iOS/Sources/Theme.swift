@@ -70,16 +70,16 @@ struct Kind {
         switch item {
         case .question(let q):
             switch q.origin {
-            case "plan": self.init("Plan", "list.bullet.clipboard", Palette.ember)
-            case "permission": self.init("Permiso", "lock.shield", Palette.rose)
-            default: self.init("Pregunta", "questionmark.bubble", Palette.dawn)
+            case "plan": self.init(String(localized: "Plan"), "list.bullet.clipboard", Palette.ember)
+            case "permission": self.init(String(localized: "Permission"), "lock.shield", Palette.rose)
+            default: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
             }
         case .report(let r):
             switch r.kind {
-            case "document": self.init("Documento", "doc.richtext", Palette.sky)
-            case "final": self.init("Terminado", "flag.checkered", Palette.sage)
-            case "notice": self.init("Aviso", "bell", Palette.slate)
-            default: self.init("Progreso", "chart.line.uptrend.xyaxis", Palette.slate)
+            case "document": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
+            case "final": self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
+            case "notice": self.init(String(localized: "Notice"), "bell", Palette.slate)
+            default: self.init(String(localized: "Progress"), "chart.line.uptrend.xyaxis", Palette.slate)
             }
         }
     }
@@ -138,6 +138,6 @@ extension Date {
 
 func relative(_ millis: Int64) -> String {
     let date = Date(millis: millis)
-    if abs(date.timeIntervalSinceNow) < 45 { return "ahora" }
+    if abs(date.timeIntervalSinceNow) < 45 { return String(localized: "now") }
     return date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
 }

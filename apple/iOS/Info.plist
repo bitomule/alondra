@@ -5,16 +5,21 @@
     <key>CFBundleDisplayName</key>
     <string>Alondra</string>
     <key>CFBundleDevelopmentRegion</key>
-    <string>es</string>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>es</string>
+    </array>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
     <key>NSCameraUsageDescription</key>
-    <string>Alondra usa la cámara para leer el código QR con el que vinculas este iPhone a tu Mac.</string>
+    <string>Alondra uses the camera to read the QR code that pairs this iPhone with your Mac.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Alondra se conecta al servidor de tu Mac para mostrarte la flota.</string>
+    <string>Alondra connects to the server on your Mac to show you the fleet.</string>
     <key>UILaunchScreen</key>
     <dict>
         <key>UIColorName</key>

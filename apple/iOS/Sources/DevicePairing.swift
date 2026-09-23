@@ -98,7 +98,7 @@ enum KeyStore {
         var errorDescription: String? {
             switch self {
             case .keychain(let status):
-                "No pude guardar la clave en el llavero (\(SecCopyErrorMessageString(status, nil) as String? ?? String(status)))"
+                String(localized: "Couldn’t save the key to the keychain (\(SecCopyErrorMessageString(status, nil) as String? ?? String(status)))")
             }
         }
     }

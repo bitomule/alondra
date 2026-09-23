@@ -38,7 +38,7 @@ struct DetailHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 KindChip(style: style)
-                Text("\(node ?? "nodo desconocido") · hace \(ago(date))")
+                Text("\(node ?? String(localized: "unknown node")) · \(ago(date)) ago")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -133,7 +133,7 @@ struct OptionButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                KeyCap(key: "\(index + 1)", onAccent: prominent)
+                KeyCap(key: String(index + 1), onAccent: prominent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
                         .font(.body.weight(.semibold))
@@ -148,7 +148,7 @@ struct OptionButton: View {
             }
         }
         .buttonStyle(OptionButtonStyle(prominent: prominent, selected: selected))
-        .help("Tecla \(index + 1)")
+        .help("Key \(index + 1)")
     }
 }
 
@@ -188,7 +188,7 @@ struct Composer: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .keyboardShortcut(.return, modifiers: .command)
-                .help("\(sendTitle) (⌘↩)")
+                .help(Text(verbatim: "\(sendTitle) (⌘↩)"))
                 .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
             }
         }

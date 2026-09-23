@@ -49,24 +49,24 @@ enum NotificationCategory {
             UNNotificationCategory(identifier: question, actions: [
                 UNTextInputNotificationAction(
                     identifier: reply,
-                    title: "Responder",
+                    title: String(localized: "Reply"),
                     options: [.authenticationRequired],
                     icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
-                    textInputButtonTitle: "Enviar",
-                    textInputPlaceholder: "Tu respuesta"
+                    textInputButtonTitle: String(localized: "Send"),
+                    textInputPlaceholder: String(localized: "Your answer")
                 ),
-                UNNotificationAction(identifier: moreContext, title: "Necesito más contexto", icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
+                UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
             ], intentIdentifiers: []),
             UNNotificationCategory(identifier: permission, actions: [
-                UNNotificationAction(identifier: allow, title: "Permitir", options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: deny, title: "Denegar", options: [.destructive], icon: UNNotificationActionIcon(systemImageName: "xmark")),
+                UNNotificationAction(identifier: allow, title: String(localized: "Allow"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+                UNNotificationAction(identifier: deny, title: String(localized: "Deny"), options: [.destructive], icon: UNNotificationActionIcon(systemImageName: "xmark")),
             ], intentIdentifiers: []),
             UNNotificationCategory(identifier: plan, actions: [
-                UNNotificationAction(identifier: approve, title: "Aprobar", options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: review, title: "Revisar", options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "doc.text.magnifyingglass")),
+                UNNotificationAction(identifier: approve, title: String(localized: "Approve"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+                UNNotificationAction(identifier: review, title: String(localized: "Review"), options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "doc.text.magnifyingglass")),
             ], intentIdentifiers: []),
             UNNotificationCategory(identifier: read, actions: [
-                UNNotificationAction(identifier: markRead, title: "Leído", icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+                UNNotificationAction(identifier: markRead, title: String(localized: "Mark as Read"), icon: UNNotificationActionIcon(systemImageName: "checkmark")),
             ], intentIdentifiers: []),
         ]
     }
@@ -263,11 +263,11 @@ final class PushCenter {
         case NotificationCategory.moreContext:
             await send(response) { try await $0.moreContext(item.id, note: "") }
         case NotificationCategory.allow:
-            await send(response) { try await $0.answer(item.id, text: "Permitir", option: "Permitir") }
+            await send(response) { try await $0.answer(item.id, text: AnswerOption.allow, option: AnswerOption.allow) }
         case NotificationCategory.deny:
-            await send(response) { try await $0.answer(item.id, text: "Denegar", option: "Denegar") }
+            await send(response) { try await $0.answer(item.id, text: AnswerOption.deny, option: AnswerOption.deny) }
         case NotificationCategory.approve:
-            await send(response) { try await $0.answer(item.id, text: "Aprobar", option: "Aprobar") }
+            await send(response) { try await $0.answer(item.id, text: AnswerOption.approve, option: AnswerOption.approve) }
         case NotificationCategory.markRead:
             await send(response) { try await $0.markRead(item.id) }
         case let action where action.hasPrefix(NotificationCategory.optionPrefix):
@@ -281,7 +281,7 @@ final class PushCenter {
 
     private func send(_ response: NotificationResponse, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async {
         guard let client = currentClient() else {
-            await reportFailure(response, reason: "No hay servidor configurado")
+            await reportFailure(response, reason: String(localized: "No server configured"))
             return
         }
         let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action")
@@ -296,7 +296,7 @@ final class PushCenter {
 
     private func reportFailure(_ response: NotificationResponse, reason: String) async {
         let content = UNMutableNotificationContent()
-        content.title = "No se pudo enviar"
+        content.title = String(localized: "Couldn’t send")
         content.body = response.title.isEmpty ? reason : "\(response.title) — \(reason)"
         content.sound = .default
         content.categoryIdentifier = response.category

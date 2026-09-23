@@ -46,16 +46,16 @@ struct FleetTab: View {
                 }
             }
             .animation(.smooth, value: sections.map(\.name))
-            .navigationTitle("Flota")
-            .searchable(text: $query, prompt: "Nodo, proyecto o lo que está haciendo")
+            .navigationTitle("Fleet")
+            .searchable(text: $query, prompt: "Node, project or what it’s doing")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Toggle(isOn: $showSleeping.animation(.smooth)) {
-                            Label("Mostrar nodos dormidos", systemImage: "moon.zzz")
+                            Label("Show Sleeping Nodes", systemImage: "moon.zzz")
                         }
                     } label: {
-                        Label("Filtro", systemImage: showSleeping ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                        Label("Filter", systemImage: showSleeping ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
                     }
                 }
             }
@@ -80,13 +80,13 @@ private struct ProjectHeader: View {
             Spacer()
             let working = nodes.filter { $0.alive && $0.state == .working }.count
             if working > 0 {
-                Label("\(working)", systemImage: "hammer.fill")
+                Label(String(working), systemImage: "hammer.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.sky)
             }
             let waiting = nodes.filter { $0.alive && $0.state == .waitingAnswer }.count
             if waiting > 0 {
-                Label("\(waiting)", systemImage: "hand.raised.fill")
+                Label(String(waiting), systemImage: "hand.raised.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.dawn)
             }
@@ -112,13 +112,13 @@ struct NodeRow: View {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(Palette.ember)
-                            .accessibilityLabel("orquestador")
+                            .accessibilityLabel("Orchestrator")
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(node.alive ? node.state.label : "dormido · \(node.state.label)")
+                    Text(node.alive ? node.state.label : String(localized: "asleep · \(node.state.label)"))
                         .foregroundStyle(node.alive ? node.state.tint : .secondary)
-                    Text("· \(relative(node.stateSince))")
+                    Text(verbatim: "· \(relative(node.stateSince))")
                         .foregroundStyle(.tertiary)
                 }
                 .font(.caption.weight(.semibold))
@@ -131,7 +131,7 @@ struct NodeRow: View {
                 }
             }
             if pending > 0 {
-                Text("\(pending)")
+                Text(pending, format: .number)
                     .font(.caption.weight(.bold).monospacedDigit())
                     .foregroundStyle(Palette.onAccent)
                     .frame(minWidth: 22, minHeight: 22)
@@ -176,7 +176,7 @@ struct NodeDetail: View {
             if let node = fleet.node(session) {
                 content(node)
             } else {
-                ContentUnavailableView("Este nodo ya no está", systemImage: "questionmark.circle")
+                ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
         }
         .background(DawnBackground(glow: fleet.node(session)?.state.tint ?? Palette.dawn))
@@ -191,10 +191,10 @@ struct NodeDetail: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         StateGlyph(node: node)
-                        Text(node.alive ? node.state.label.prefix(1).uppercased() + node.state.label.dropFirst() : "Dormido")
+                        Text(node.alive ? node.state.label.prefix(1).uppercased() + node.state.label.dropFirst() : String(localized: "Asleep"))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(node.state.tint)
-                        Text("desde \(relative(node.stateSince))")
+                        Text("since \(relative(node.stateSince))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -208,7 +208,7 @@ struct NodeDetail: View {
                             .lineLimit(2)
                     }
                     if let tool = node.tool {
-                        Label("\(tool.name) \(tool.summary ?? "")", systemImage: "wrench.and.screwdriver")
+                        Label("\(tool.name) \(tool.summary ?? "")" as String, systemImage: "wrench.and.screwdriver")
                             .font(.mono(.footnote))
                             .foregroundStyle(Palette.sky)
                             .lineLimit(2)
@@ -216,14 +216,14 @@ struct NodeDetail: View {
                 }
 
                 if let needs = node.daemonNeeds {
-                    section("Necesita", symbol: "hand.raised") {
+                    section(String(localized: "Needs"), symbol: "hand.raised") {
                         Text(needs).font(.body)
                     }
                 }
 
                 let pending = fleet.pending(for: session)
                 if !pending.isEmpty {
-                    section("Te espera", symbol: "tray.full") {
+                    section(String(localized: "Waiting for You"), symbol: "tray.full") {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(pending) { item in
                                 Button { fleet.focus(item) } label: {
@@ -242,14 +242,14 @@ struct NodeDetail: View {
                                     .contentShape(.rect)
                                 }
                                 .buttonStyle(PressStyle())
-                                .accessibilityHint("Abrir en «Te espera»")
+                                .accessibilityHint("Opens in Waiting for You")
                             }
                         }
                     }
                 }
 
                 if let last = node.lastMessage, !last.isEmpty {
-                    section("Lo último que dijo", symbol: "text.quote", trailing: node.lastMessageAt.map(relative)) {
+                    section(String(localized: "What it said last"), symbol: "text.quote", trailing: node.lastMessageAt.map(relative)) {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(MarkdownParser.blocks(from: last)) { block in
                                 MarkdownBlockView(block: block)
@@ -287,7 +287,7 @@ struct NodeDetail: View {
 
     private func composer(_ node: Node) -> some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Escribe a \(node.displayName)…", text: $message, axis: .vertical)
+            TextField("Write to \(node.displayName)…", text: $message, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($focused)
                 .padding(.horizontal, 16)
@@ -305,7 +305,7 @@ struct NodeDetail: View {
             .buttonBorderShape(.circle)
             .tint(Palette.dawn)
             .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
-            .accessibilityLabel("Enviar")
+            .accessibilityLabel("Send")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -322,7 +322,7 @@ struct NodeDetail: View {
                 message = ""
                 focused = false
                 sentCount += 1
-                fleet.notice = Notice("Mensaje enviado a \(node.displayName)")
+                fleet.notice = Notice(String(localized: "Message sent to \(node.displayName)"))
             }
         }
     }
@@ -330,7 +330,7 @@ struct NodeDetail: View {
 
 extension FleetStore {
     var projectsByRecency: [(name: String, nodes: [Node])] {
-        Dictionary(grouping: nodes) { $0.project ?? "Sin proyecto" }
+        Dictionary(grouping: nodes) { $0.project ?? String(localized: "No project") }
             .map { (name: $0.key, nodes: $0.value.sorted(by: Self.recencyOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }

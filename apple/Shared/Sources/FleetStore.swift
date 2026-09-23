@@ -99,7 +99,7 @@ public final class FleetStore {
         let visible = (questions + reports).filter { !hidden.contains($0.id) }
         inbox = visible
         pendingBySession = visible.reduce(into: [:]) { $0[$1.sessionId, default: 0] += 1 }
-        projects = Dictionary(grouping: nodes) { $0.project ?? "otros" }
+        projects = Dictionary(grouping: nodes) { $0.project ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }
             .map { (name: $0.key, nodes: $0.value.sorted(by: Self.attentionOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -223,7 +223,7 @@ public final class FleetStore {
             animate(.spring(duration: 0.5, bounce: 0.2)) {
                 _ = hidden.remove(item.id)
             }
-            notice = Notice("No se pudo enviar: \(error.friendlyDescription)", failure: true)
+            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
             return false
         }
     }
@@ -233,7 +233,7 @@ public final class FleetStore {
             try await action(client)
             return true
         } catch {
-            notice = Notice("No se pudo enviar: \(error.friendlyDescription)", failure: true)
+            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
             return false
         }
     }

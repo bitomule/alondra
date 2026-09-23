@@ -15,7 +15,7 @@ struct NewRequestView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Nuevo")
+                        Text("New")
                             .font(.display(.largeTitle, weight: .bold))
                         orchestratorStatus
                     }
@@ -38,14 +38,14 @@ struct NewRequestView: View {
         Group {
             if let orchestrator = fleet.orchestrator {
                 if orchestrator.alive {
-                    Label("Lo recibe \(orchestrator.displayName), que prepara la misión y lanza el nodo.", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label("\(orchestrator.displayName) receives it, prepares the mission and launches the node.", systemImage: "point.3.connected.trianglepath.dotted")
                         .foregroundStyle(.secondary)
                 } else {
-                    Label("El orquestador está dormido: lo leerá en cuanto despierte.", systemImage: "moon.zzz")
+                    Label("The orchestrator is asleep: it will read this as soon as it wakes up.", systemImage: "moon.zzz")
                         .foregroundStyle(Palette.dawn)
                 }
             } else if fleet.overview != nil {
-                Label("Ningún orquestador está conectado a Alondra, así que ahora no se puede enviar.", systemImage: "exclamationmark.triangle")
+                Label("No orchestrator is connected to Alondra, so nothing can be sent right now.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Palette.rose)
             }
         }
@@ -55,7 +55,7 @@ struct NewRequestView: View {
     private var editor: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
-                Text("¿Qué quieres que se haga? Cuéntalo como se lo contarías a alguien del equipo.")
+                Text("What do you want done? Describe it as you would to someone on the team.")
                     .font(.display(.title3, weight: .regular))
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 5)
@@ -77,7 +77,7 @@ struct NewRequestView: View {
 
     private var history: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Enviado")
+            Text("Sent")
                 .font(.footnote.weight(.bold))
                 .textCase(.uppercase)
                 .kerning(0.6)
@@ -89,8 +89,8 @@ struct NewRequestView: View {
                         .lineLimit(4)
                     HStack(spacing: 6) {
                         Image(systemName: message.deliveredAt != nil ? "checkmark.circle.fill" : message.handedAt != nil ? "arrow.right.circle" : "clock")
-                        Text(message.deliveredAt != nil ? "Entregado" : message.handedAt != nil ? "En camino" : "En cola")
-                        Text("·")
+                        Text(message.deliveredAt != nil ? String(localized: "Delivered") : message.handedAt != nil ? String(localized: "On its way") : String(localized: "Queued"))
+                        Text(verbatim: "·")
                         Text(relative(message.createdAt))
                     }
                     .font(.caption.weight(.medium))
@@ -114,7 +114,7 @@ struct NewRequestView: View {
         Button {
             send()
         } label: {
-            Label(sending ? "Enviando…" : "Pedírselo al orquestador", systemImage: "paperplane.fill")
+            Label(sending ? String(localized: "Sending…") : String(localized: "Ask the Orchestrator"), systemImage: "paperplane.fill")
                 .font(.headline)
                 .frame(maxWidth: .infinity)
         }
@@ -137,7 +137,7 @@ struct NewRequestView: View {
                 withAnimation(.spring(duration: 0.4)) { text = "" }
                 focused = false
                 sentCount += 1
-                fleet.notice = Notice("Enviado al orquestador")
+                fleet.notice = Notice(String(localized: "Sent to the orchestrator"))
             }
         }
     }

@@ -148,16 +148,16 @@ struct CommentableBlock: View {
                     .foregroundStyle(Color.accentColor)
                     .opacity(hovering && !editing ? 1 : 0)
                     .offset(x: -28, y: 1)
-                    .help("Comentar este bloque")
+                    .help("Comment on this block")
                     .accessibilityHidden(true)
                 }
                 .contextMenu {
-                    Button(comment == nil ? "Comentar…" : "Editar comentario…", action: startEditing)
+                    Button(comment == nil ? String(localized: "Comment…") : String(localized: "Edit Comment…"), action: startEditing)
                     if let comment {
-                        Button("Quitar comentario", role: .destructive) { draft.remove(comment) }
+                        Button("Remove Comment", role: .destructive) { draft.remove(comment) }
                     }
                 }
-                .accessibilityAction(named: comment == nil ? "Comentar" : "Editar comentario", startEditing)
+                .accessibilityAction(named: comment == nil ? String(localized: "Comment") : String(localized: "Edit Comment"), startEditing)
 
             if editing {
                 CommentEditor(draft: draft, anchor: anchor, quote: block.plainText, focus: focus)
@@ -190,20 +190,20 @@ struct CommentEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("¿Qué quieres decir sobre esto?", text: $draft.editorText, axis: .vertical)
+            TextField("What do you want to say about this?", text: $draft.editorText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(2...10)
                 .focused(focus, equals: .comment)
                 .onSubmit(save)
                 .onExitCommand(perform: cancel)
             HStack(spacing: 8) {
-                Text("↩ guarda · ⌥↩ salto de línea · esc cancela")
+                Text("↩ saves · ⌥↩ new line · esc cancels")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Spacer()
-                Button("Cancelar", action: cancel)
+                Button("Cancel", action: cancel)
                     .controlSize(.small)
-                Button("Guardar", action: save)
+                Button("Save", action: save)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
@@ -240,7 +240,7 @@ struct CommentCallout: View {
                 .font(.callout)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-            Button("Editar", action: edit)
+            Button("Edit", action: edit)
                 .buttonStyle(.link)
                 .font(.caption)
             Button(action: remove) {
@@ -249,8 +249,8 @@ struct CommentCallout: View {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
-            .help("Quitar comentario")
-            .accessibilityLabel("Quitar comentario")
+            .help("Remove comment")
+            .accessibilityLabel("Remove Comment")
         }
         .padding(.leading, 20)
         .padding(.trailing, 6)
@@ -263,18 +263,18 @@ struct CommentsSummary: View {
     var body: some View {
         if !draft.comments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Text(draft.comments.count == 1 ? "1 comentario" : "\(draft.comments.count) comentarios")
+                Text("\(draft.comments.count) comments")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(draft.comments.enumerated()), id: \.element.id) { index, comment in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text("\(index + 1).")
+                                Text(verbatim: "\(index + 1).")
                                     .monospacedDigit()
                                     .foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text("«\(ReviewFeedback.quote(comment.quote))»")
+                                    Text("“\(ReviewFeedback.quote(comment.quote))”")
                                         .italic()
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
@@ -289,8 +289,8 @@ struct CommentsSummary: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .foregroundStyle(.tertiary)
-                                .help("Quitar comentario")
-                                .accessibilityLabel("Quitar comentario \(index + 1)")
+                                .help("Remove comment")
+                                .accessibilityLabel("Remove comment \(index + 1)")
                             }
                             .font(.callout)
                         }
@@ -322,12 +322,12 @@ struct AttachmentDocument: View {
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Abrir") {
+                Button("Open") {
                     NSWorkspace.shared.open(URL(fileURLWithPath: attachment.storedPath ?? attachment.sourcePath))
                 }
                 .buttonStyle(.link)
                 .font(.callout)
-                .help("Abrir con la app por defecto")
+                .help("Open with the default app")
             }
             .padding(.horizontal, 10)
             Divider()
@@ -335,7 +335,7 @@ struct AttachmentDocument: View {
             case .success(let text):
                 ReviewableDocument(text: text, anchorPrefix: anchorPrefix, draft: draft, focus: focus)
             case .failure(let error):
-                Label("No he podido leerlo: \(error.localizedDescription)", systemImage: "exclamationmark.triangle")
+                Label("Couldn’t read it: \(error.localizedDescription)", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
             case nil:

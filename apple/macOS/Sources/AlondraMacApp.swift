@@ -16,7 +16,7 @@ struct AlondraMacApp: App {
             }
         }
 
-        Window("Vincular un iPhone", id: "pairing") {
+        Window("Pair an iPhone", id: "pairing") {
             PairingView()
         }
         .windowResizability(.contentSize)
@@ -27,7 +27,7 @@ struct PairingCommand: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Vincular un iPhone…") { openWindow(id: "pairing") }
+        Button("Pair an iPhone…") { openWindow(id: "pairing") }
             .keyboardShortcut("p", modifiers: [.command, .shift])
     }
 }

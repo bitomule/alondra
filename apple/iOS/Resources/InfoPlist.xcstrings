@@ -1,0 +1,38 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSCameraUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra uses the camera to read the QR code that pairs this iPhone with your Mac."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra usa la cámara para leer el código QR con el que vinculas este iPhone a tu Mac."
+          }
+        }
+      }
+    },
+    "NSLocalNetworkUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra connects to the server on your Mac to show you the fleet."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra se conecta al servidor de tu Mac para mostrarte la flota."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

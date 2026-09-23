@@ -69,7 +69,7 @@ struct TriageView: View {
         guard let item = fleet.inbox.first(where: { $0.id == route.itemID }) else {
             if giveUp {
                 push.route = nil
-                fleet.notice = Notice("Eso ya no está pendiente")
+                fleet.notice = Notice(String(localized: "That’s no longer pending"))
             }
             return
         }
@@ -83,7 +83,7 @@ struct TriageView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Te espera")
+            Text("Waiting for You")
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             HStack(spacing: 8) {
@@ -91,7 +91,7 @@ struct TriageView: View {
                     Label(reason, systemImage: "wifi.slash")
                         .foregroundStyle(Palette.rose)
                 } else if fleet.connection == .unpaired {
-                    Label("Sin vincular", systemImage: "lock.slash")
+                    Label("Not paired", systemImage: "lock.slash")
                         .foregroundStyle(Palette.rose)
                 } else {
                     Text(summary)
@@ -115,10 +115,10 @@ struct TriageView: View {
         let questions = queue.filter { if case .question = $0 { true } else { false } }.count
         let reads = queue.count - questions
         var parts: [String] = []
-        if questions > 0 { parts.append(questions == 1 ? "1 pregunta" : "\(questions) preguntas") }
-        if reads > 0 { parts.append(reads == 1 ? "1 para leer" : "\(reads) para leer") }
+        if questions > 0 { parts.append(String(localized: "\(questions) questions")) }
+        if reads > 0 { parts.append(String(localized: "\(reads) to read")) }
         let working = fleet.nodes.filter { $0.alive && $0.state == .working }.count
-        parts.append(working == 1 ? "1 nodo trabajando" : "\(working) nodos trabajando")
+        parts.append(String(localized: "\(working) nodes working"))
         return parts.joined(separator: " · ")
     }
 
@@ -127,11 +127,11 @@ struct TriageView: View {
             ProgressView()
                 .controlSize(.large)
                 .tint(Palette.dawn)
-            Text(fleet.connection == .connecting ? "Conectando con la flota…" : "Reintentando cada pocos segundos…")
+            Text(fleet.connection == .connecting ? String(localized: "Connecting to the fleet…") : String(localized: "Retrying every few seconds…"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             if case .offline = fleet.connection {
-                Button("Revisar el servidor", systemImage: "gearshape") { showSettings = true }
+                Button("Check the Server", systemImage: "gearshape") { showSettings = true }
                     .buttonStyle(.glass)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -151,10 +151,10 @@ struct TriageView: View {
                 MachineDetail()
                     .presentationCompactAdaptation(.popover)
             }
-            .accessibilityLabel("Estado del Mac")
+            .accessibilityLabel("Mac Status")
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Button("Ajustes", systemImage: "gearshape") { showSettings = true }
+            Button("Settings", systemImage: "gearshape") { showSettings = true }
         }
     }
 }
@@ -277,7 +277,7 @@ private struct PageDots: View {
                     }
                 }
             } else {
-                Text("\(current + 1) de \(count)")
+                Text("\(current + 1) of \(count)")
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.secondary)
                     .contentTransition(.numericText())
@@ -286,7 +286,7 @@ private struct PageDots: View {
         .animation(.spring(duration: 0.35, bounce: 0.2), value: current)
         .animation(.spring(duration: 0.4), value: count)
         .accessibilityElement()
-        .accessibilityLabel("\(current + 1) de \(count) pendientes")
+        .accessibilityLabel("\(current + 1) of \(count) pending")
     }
 }
 
@@ -300,9 +300,9 @@ private struct EmptyTriage: View {
                 .font(.system(size: 64, weight: .light))
                 .foregroundStyle(LinearGradient(colors: [Palette.dawn, Palette.ember], startPoint: .top, endPoint: .bottom))
                 .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
-            Text("Nada te espera")
+            Text("Nothing is waiting for you")
                 .font(.display(.title, weight: .bold))
-            Text("La flota sigue sola. Cuando un nodo te necesite, aparecerá aquí.")
+            Text("The fleet carries on by itself. When a node needs you, it will show up here.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -310,7 +310,7 @@ private struct EmptyTriage: View {
             HStack(spacing: 10) {
                 ForEach(stats, id: \.label) { stat in
                     VStack(spacing: 2) {
-                        Text("\(stat.count)")
+                        Text(stat.count, format: .number)
                             .font(.display(.title2, weight: .bold))
                             .foregroundStyle(stat.tint)
                             .contentTransition(.numericText())
@@ -334,9 +334,9 @@ private struct EmptyTriage: View {
     private var stats: [(label: String, count: Int, tint: Color)] {
         let alive = fleet.nodes.filter(\.alive)
         return [
-            ("trabajando", alive.filter { $0.state == .working }.count, Palette.sky),
-            ("esperando", alive.filter { $0.state == .waitingAnswer || $0.state == .waitingMachine }.count, Palette.dawn),
-            ("vivos", alive.count, Palette.sage),
+            (String(localized: "working"), alive.filter { $0.state == .working }.count, Palette.sky),
+            (String(localized: "waiting"), alive.filter { $0.state == .waitingAnswer || $0.state == .waitingMachine }.count, Palette.dawn),
+            (String(localized: "alive"), alive.count, Palette.sage),
         ]
     }
 }
@@ -353,7 +353,7 @@ struct MachineBadge: View {
             Image(systemName: "desktopcomputer")
                 .font(.footnote)
             if let free = fleet.machine?.memoryFreePercent {
-                Text("\(free) %")
+                Text(verbatim: "\(free) %")
                     .font(.footnote.monospacedDigit().weight(.medium))
                     .contentTransition(.numericText())
             }
@@ -382,17 +382,17 @@ private struct MachineDetail: View {
             case .offline(let reason):
                 Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
             case .connecting:
-                Label("Conectando…", systemImage: "antenna.radiowaves.left.and.right")
+                Label("Connecting…", systemImage: "antenna.radiowaves.left.and.right")
             case .unpaired:
-                Label("Este dispositivo no está vinculado", systemImage: "lock.slash").foregroundStyle(Palette.rose)
+                Label("This device is not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
             case .online:
                 if let machine = fleet.machine {
-                    row("Memoria libre", machine.memoryFreePercent.map { "\($0) %" } ?? "—")
-                    row("Memoria disponible", ByteCountFormatter.string(fromByteCount: Int64(machine.memoryAvailable), countStyle: .memory))
-                    row("Carga", machine.load.prefix(3).map { $0.formatted(.number.precision(.fractionLength(1))) }.joined(separator: " · "))
-                    row("Disco libre", ByteCountFormatter.string(fromByteCount: Int64(machine.diskAvailable), countStyle: .file))
+                    row(String(localized: "Free memory"), machine.memoryFreePercent.map { "\($0) %" } ?? "—")
+                    row(String(localized: "Available memory"), ByteCountFormatter.string(fromByteCount: Int64(machine.memoryAvailable), countStyle: .memory))
+                    row(String(localized: "Load"), machine.load.prefix(3).map { $0.formatted(.number.precision(.fractionLength(1))) }.joined(separator: " · "))
+                    row(String(localized: "Free disk"), ByteCountFormatter.string(fromByteCount: Int64(machine.diskAvailable), countStyle: .file))
                     if machine.unreliable {
-                        Label("Medidas poco fiables", systemImage: "exclamationmark.triangle")
+                        Label("Unreliable readings", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(Palette.dawn)
                     }
                 }
@@ -423,16 +423,16 @@ private struct UnpairedNotice: View {
                 .foregroundStyle(Palette.rose)
                 .symbolEffect(.pulse, options: .repeating)
             VStack(spacing: 8) {
-                Text("Este dispositivo no está vinculado")
+                Text("This device is not paired")
                     .font(.display(.title2, weight: .bold))
                     .foregroundStyle(Palette.ink)
                     .multilineTextAlignment(.center)
-                Text("El Mac ya no acepta a este iPhone. Vincúlalo de nuevo con el código que muestra alondra pair.")
+                Text("The Mac no longer accepts this iPhone. Pair it again with the code shown by alondra pair.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            Button("Vincular de nuevo", systemImage: "qrcode.viewfinder", action: pair)
+            Button("Pair Again", systemImage: "qrcode.viewfinder", action: pair)
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .padding(.top, 6)

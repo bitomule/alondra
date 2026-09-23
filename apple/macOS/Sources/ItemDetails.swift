@@ -49,7 +49,7 @@ struct QuestionDetail: View {
                 }
                 LinksRow(links: question.links, attachments: otherAttachments)
                 if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty {
-                    DisclosureGroup("Lo último que dijo el nodo") {
+                    DisclosureGroup("What the node said last") {
                         MarkdownText(text: context)
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -78,10 +78,10 @@ struct QuestionDetail: View {
                         let note = feedback
                         resolve { await store.moreContext(question, note: note) }
                     } label: {
-                        Label("Necesito más contexto", systemImage: "questionmark.bubble")
+                        Label("I need more context", systemImage: "questionmark.bubble")
                     }
                     .buttonStyle(.link)
-                    .help("Devuelve la pregunta al nodo para que la explique mejor. Lo que hayas escrito va como lo que te falta.")
+                    .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
                     Spacer()
                     Hint(text: hint)
                 }
@@ -108,7 +108,7 @@ struct QuestionDetail: View {
         ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
             OptionButton(
                 index: index,
-                label: option.label,
+                label: option.displayLabel,
                 detail: optionDetail(option),
                 prominent: isProminent(option, index: index),
                 selected: pendingOption == option.label,
@@ -123,11 +123,11 @@ struct QuestionDetail: View {
 
     private func optionDetail(_ option: QuestionOption) -> String? {
         let comments = draft.comments.count
-        guard comments > 0 else { return option.description }
+        guard comments > 0 else { return option.displayDescription }
         if needsText(option) || !question.isPlan {
-            return comments == 1 ? "Envía tu comentario" : "Envía tus \(comments) comentarios"
+            return String(localized: "Sends your \(comments) comments")
         }
-        return "Sin tus comentarios"
+        return String(localized: "Without your comments")
     }
 
     private func isProminent(_ option: QuestionOption, index: Int) -> Bool {
@@ -136,24 +136,24 @@ struct QuestionDetail: View {
     }
 
     private var placeholder: String {
-        if let pendingOption { return "\(pendingOption): escribe por qué…" }
-        if question.isPlan { return "Comentario general sobre el plan (opcional)…" }
-        return question.options.isEmpty ? "Tu respuesta…" : "O responde con tus palabras…"
+        if let pendingOption { return String(localized: "\(AnswerOption.displayLabel(pendingOption)): write why…") }
+        if question.isPlan { return String(localized: "General comment on the plan (optional)…") }
+        return question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…")
     }
 
     private var sendTitle: String? {
-        if let pendingOption { return pendingOption }
-        return question.isPlan ? nil : "Responder"
+        if let pendingOption { return AnswerOption.displayLabel(pendingOption) }
+        return question.isPlan ? nil : String(localized: "Reply")
     }
 
     private var hint: String {
-        if focus == .reply { return "↩ envía · ⌥↩ nueva línea · esc sale" }
-        if question.isPlan { return "Pasa el ratón por un bloque para comentarlo · 1–2 decide" }
+        if focus == .reply { return String(localized: "↩ sends · ⌥↩ new line · esc leaves") }
+        if question.isPlan { return String(localized: "Hover over a block to comment on it · 1–2 decides") }
         let count = question.options.count
         switch count {
-        case 0: return "R escribe · ↩ envía"
-        case 1: return "1 elige · R escribe"
-        default: return "1–\(min(count, 9)) elige · R escribe"
+        case 0: return String(localized: "R writes · ↩ sends")
+        case 1: return String(localized: "1 picks · R writes")
+        default: return String(localized: "1–\(min(count, 9)) picks · R writes")
         }
     }
 
@@ -240,10 +240,10 @@ struct ReportDetail: View {
                 CommentsSummary(draft: draft)
                 HStack(alignment: .bottom, spacing: 8) {
                     Composer(
-                        placeholder: isDocument ? "Comentario general (opcional)…" : "Responder al nodo (opcional)…",
+                        placeholder: isDocument ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…"),
                         text: $draft.general,
                         focus: $focus,
-                        sendTitle: isDocument ? "Enviar comentarios" : "Responder",
+                        sendTitle: isDocument ? String(localized: "Send Comments") : String(localized: "Reply"),
                         canSend: !feedback.isEmpty,
                         send: sendFeedback
                     )
@@ -275,9 +275,9 @@ struct ReportDetail: View {
     }
 
     private var hint: String {
-        if focus == .reply { return "↩ envía · ⌥↩ nueva línea · esc sale" }
-        if isDocument { return "Pasa el ratón por un bloque para comentarlo · L leído" }
-        return "L leído · R escribe"
+        if focus == .reply { return String(localized: "↩ sends · ⌥↩ new line · esc leaves") }
+        if isDocument { return String(localized: "Hover over a block to comment on it · L marks as read") }
+        return String(localized: "L marks as read · R writes")
     }
 
     private func sendFeedback() {
@@ -313,13 +313,13 @@ struct ReadButton: View {
             }
         }
         .controlSize(.large)
-        .help("Marcar como leído (L)")
+        .help("Mark as read (L)")
     }
 
     private var button: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Text("Leído")
+                Text("Mark as Read")
                 KeyCap(key: "L", onAccent: prominent)
             }
             .padding(.horizontal, 2)

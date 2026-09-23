@@ -121,13 +121,13 @@ enum QuestionCategories {
         return UNNotificationCategory(identifier: identifier, actions: options + [
             UNTextInputNotificationAction(
                 identifier: reply,
-                title: "Responder",
+                title: String(localized: "Reply"),
                 options: [.authenticationRequired],
                 icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
-                textInputButtonTitle: "Enviar",
-                textInputPlaceholder: "Tu respuesta"
+                textInputButtonTitle: String(localized: "Send"),
+                textInputPlaceholder: String(localized: "Your answer")
             ),
-            UNNotificationAction(identifier: moreContext, title: "Necesito más contexto", icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
+            UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
         ], intentIdentifiers: [])
     }
 }
