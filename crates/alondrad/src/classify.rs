@@ -68,13 +68,15 @@ async fn classify(message: &str) -> Option<(NodeState, f64)> {
     Some((state, confidence))
 }
 
-const ASKS_QUESTION: &str = "Es un informe que un agente de programación manda a David para que lo lea. ¿Le pide a David que decida, apruebe, conteste o haga algo?";
+fn asks_question(user: &str) -> String {
+    format!("Es un informe que un agente de programación manda a {user} para que lo lea. ¿Le pide a {user} que decida, apruebe, conteste o haga algo?")
+}
 
-pub async fn report_asks_for_action(text: &str) -> bool {
+pub async fn report_asks_for_action(text: &str, user: &str) -> bool {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
         Command::new("jevi")
-            .args(["ask", ASKS_QUESTION, "--options", "pide_algo,solo_leer,no_se_sabe", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
+            .args(["ask", &asks_question(user), "--options", "pide_algo,solo_leer,no_se_sabe", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
             .kill_on_drop(true)
             .output(),
     )

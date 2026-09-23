@@ -1,11 +1,20 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use alondra_core::config::Config;
 use alondra_core::{Machine, Node, Question, Report};
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+static CONFIG: OnceLock<Config> = OnceLock::new();
+
+/// The effective configuration; a broken `config.toml` falls back to defaults here and is
+/// reported by `alondra doctor`.
+pub fn config() -> &'static Config {
+    CONFIG.get_or_init(|| Config::load().unwrap_or_else(|_| Config::defaults()))
+}
 
 #[derive(Deserialize, Clone)]
 pub struct FleetNode {
@@ -39,13 +48,15 @@ pub struct Client {
 
 impl Client {
     pub fn new(timeout: Duration) -> Self {
-        let port = std::env::var("ALONDRA_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(alondra_core::DEFAULT_PORT);
+        let c = config();
+        let host = if c.listen.is_unspecified() || c.listen.is_loopback() { "127.0.0.1".to_string() } else { c.listen.to_string() };
+        let port = c.port;
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(timeout))
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://127.0.0.1:{port}"), agent }
+        Client { base: format!("http://{host}:{port}"), agent }
     }
 
     fn check(mut resp: ureq::http::Response<ureq::Body>) -> Result<(u16, String)> {

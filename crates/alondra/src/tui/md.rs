@@ -508,8 +508,8 @@ fn render_block(b: &Block, width: usize, table: &[usize]) -> Vec<Line<'static>> 
     }
 }
 
-pub fn feedback(comments: &[(String, String)], general: &str) -> String {
-    let mut out = String::from("Comentarios de David:");
+pub fn feedback(comments: &[(String, String)], general: &str, author: &str) -> String {
+    let mut out = format!("Comentarios de {author}:");
     for (i, (quote, text)) in comments.iter().enumerate() {
         let body = text.trim().lines().map(|l| format!("   {l}")).collect::<Vec<_>>().join("\n");
         out.push_str(&format!("\n\n{}. Sobre «{}»:\n{body}", i + 1, clip(quote, QUOTE_MAX)));
@@ -573,12 +573,12 @@ mod tests {
 
     #[test]
     fn feedback_has_the_exact_format_the_nodes_expect() {
-        let f = feedback(&[("El paso 2".into(), "Hazlo antes\ndel paso 1".into()), ("Tabla".into(), "Sobra".into())], "Por lo demás, bien.");
+        let f = feedback(&[("El paso 2".into(), "Hazlo antes\ndel paso 1".into()), ("Tabla".into(), "Sobra".into())], "Por lo demás, bien.", "Ana");
         assert_eq!(
             f,
-            "Comentarios de David:\n\n1. Sobre «El paso 2»:\n   Hazlo antes\n   del paso 1\n\n2. Sobre «Tabla»:\n   Sobra\n\nPor lo demás, bien."
+            "Comentarios de Ana:\n\n1. Sobre «El paso 2»:\n   Hazlo antes\n   del paso 1\n\n2. Sobre «Tabla»:\n   Sobra\n\nPor lo demás, bien."
         );
-        assert_eq!(feedback(&[], "  Solo esto  "), "Comentarios de David:\n\nSolo esto");
+        assert_eq!(feedback(&[], "  Solo esto  ", "Ana"), "Comentarios de Ana:\n\nSolo esto");
     }
 
     #[test]

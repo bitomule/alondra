@@ -291,7 +291,8 @@ pub struct Report {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageFrom {
-    David,
+    #[serde(rename = "david", alias = "user")]
+    User,
     Orchestrator,
     Alondra,
 }

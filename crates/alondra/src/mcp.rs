@@ -12,32 +12,37 @@ pub enum Role {
     Orchestrator,
 }
 
-const INSTRUCTIONS_NODE: &str = "Alondra conecta este nodo con David y con el orquestador. Si necesitas que David decida algo, usa `ask` con un título de una línea y todo el contexto en `detail`, enlaces a PRs y ficheros adjuntos; después termina tu turno: la respuesta te llegará sola como mensaje. Cuando entregues algo (una PR, un informe, un documento) usa `report`. Si estás parado por falta de máquina, usa `wait_for_machine`.";
-const INSTRUCTIONS_ORCHESTRATOR: &str = "Alondra es tu sistema nervioso: estado fiable de la flota (`fleet`, `node`), capacidad de la máquina (`machine`), y manos (`launch`, `send`). Las preguntas de los nodos a David le llegan a él directamente; tú recibes en tu bandeja lo que es para ti. Usa `ask` para preguntarle algo a David y `report` para informarle.";
+fn instructions(role: Role, user: &str) -> String {
+    let who = format!("La persona que supervisa la flota se llama {user}: donde las herramientas y el skill de Alondra dicen «el usuario», es {user}.");
+    match role {
+        Role::Node => format!("Alondra conecta este nodo con {user} y con el orquestador. Si necesitas que {user} decida algo, usa `ask` con un título de una línea y todo el contexto en `detail`, enlaces a PRs y ficheros adjuntos; después termina tu turno: la respuesta te llegará sola como mensaje. Cuando entregues algo (una PR, un informe, un documento) usa `report`. Si estás parado por falta de máquina, usa `wait_for_machine`. {who}"),
+        Role::Orchestrator => format!("Alondra es tu sistema nervioso: estado fiable de la flota (`fleet`, `node`), capacidad de la máquina (`machine`), y manos (`launch`, `send`). Las preguntas de los nodos a {user} le llegan directamente; tú recibes en tu bandeja lo que es para ti. Usa `ask` para preguntarle algo a {user} y `report` para informarle. {who}"),
+    }
+}
 
-fn ask_schema() -> Value {
+fn ask_schema(user: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "La pregunta en una línea: es lo que David ve en la notificación"},
-            "detail": {"type": "string", "description": "Todo el contexto que David necesita para contestar sin preguntarte nada (markdown)"},
-            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": "Opciones posibles; David siempre puede contestar con texto libre"},
+            "title": {"type": "string", "description": format!("La pregunta en una línea: es lo que {user} ve en la notificación")},
+            "detail": {"type": "string", "description": format!("Todo el contexto que {user} necesita para contestar sin preguntarte nada (markdown)")},
+            "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}, "description": format!("Opciones posibles; {user} siempre puede contestar con texto libre")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "PRs, commits o URLs relevantes"},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de ficheros que David debe ver (p. ej. el plan que debe aprobar)"},
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Rutas absolutas de ficheros que {user} debe ver (p. ej. el plan que debe aprobar)")},
             "blocking": {"type": "boolean", "description": "true si no puedes seguir sin la respuesta (por defecto true)"},
-            "to_orchestrator": {"type": "boolean", "description": "true si la pregunta es para el orquestador y no para David"}
+            "to_orchestrator": {"type": "boolean", "description": format!("true si la pregunta es para el orquestador y no para {user}")}
         },
         "required": ["title"]
     })
 }
 
-fn report_schema() -> Value {
+fn report_schema(user: &str) -> Value {
     json!({
         "type": "object",
         "properties": {
             "title": {"type": "string", "description": "Qué entregas, en una línea"},
             "body": {"type": "string", "description": "El informe (markdown), breve: lo medido, lo que cambia y lo que queda"},
-            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": "notice = algo que David tiene que saber (breve). document = un documento para que lo lea (plan, informe largo): adjunta la ruta en attachments. final = has terminado y no queda nada pendiente. Si necesitas que David APRUEBE algo, no uses report: usa ask con el documento adjunto."},
+            "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("notice = algo que {user} tiene que saber (breve). document = un documento para que lo lea (plan, informe largo): adjunta la ruta en attachments. final = has terminado y no queda nada pendiente. Si necesitas que {user} APRUEBE algo, no uses report: usa ask con el documento adjunto.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Rutas absolutas de documentos que entregas"}
         },
@@ -45,10 +50,10 @@ fn report_schema() -> Value {
     })
 }
 
-fn tools(role: Role) -> Value {
+fn tools(role: Role, user: &str) -> Value {
     let mut list = vec![
-        json!({"name": "ask", "description": "Pregunta estructurada a David (o al orquestador). Vuelve al momento con el número; la respuesta llega como mensaje cuando termines el turno.", "inputSchema": ask_schema()}),
-        json!({"name": "report", "description": "Algo para que David lo lea, sin decisión pendiente: un aviso breve, un documento largo (plan, informe) o que has terminado. Le llega a su bandeja; si comenta algo, te llega como mensaje.", "inputSchema": report_schema()}),
+        json!({"name": "ask", "description": format!("Pregunta estructurada a {user} (o al orquestador). Vuelve al momento con el número; la respuesta llega como mensaje cuando termines el turno."), "inputSchema": ask_schema(user)}),
+        json!({"name": "report", "description": format!("Algo para que {user} lo lea, sin decisión pendiente: un aviso breve, un documento largo (plan, informe) o que has terminado. Le llega a su bandeja; si comenta algo, te llega como mensaje."), "inputSchema": report_schema(user)}),
         json!({"name": "wait_for_machine", "description": "Declara que estás parado esperando recursos de la máquina (RAM, compilación, límite de uso).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {
@@ -98,17 +103,17 @@ fn merge(mut a: Value, b: &Value) -> Value {
     a
 }
 
-fn call(client: &Client, role: Role, name: &str, args: &Value) -> Result<String> {
+fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Result<String> {
     let who = caller();
     Ok(match name {
         "ask" => {
             let r = client.post("/v1/questions", &merge(args.clone(), &who))?;
             let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
-            format!("Pregunta #{id} registrada y enviada a David. Termina tu turno cuando no tengas nada más que hacer: la respuesta te llegará sola como mensaje.")
+            format!("Pregunta #{id} registrada y enviada a {user}. Termina tu turno cuando no tengas nada más que hacer: la respuesta te llegará sola como mensaje.")
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
-            format!("Informe #{} entregado a David.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
+            format!("Informe #{} entregado a {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
         }
         "wait_for_machine" => {
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
@@ -167,6 +172,7 @@ pub fn urlencode(s: &str) -> String {
 }
 
 pub fn serve(role: Role) -> Result<()> {
+    let user = crate::client::config().name.clone();
     let client = Client::new(Duration::from_secs(30));
     let mut registered = role != Role::Orchestrator;
     let mut register = |client: &Client| {
@@ -191,15 +197,15 @@ pub fn serve(role: Role) -> Result<()> {
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or(json!("2025-06-18")),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "alondra", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": if role == Role::Orchestrator { INSTRUCTIONS_ORCHESTRATOR } else { INSTRUCTIONS_NODE },
+                "instructions": instructions(role, &user),
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tools(role)})),
+            "tools/list" => Ok(json!({"tools": tools(role, &user)})),
             "tools/call" => {
                 register(&client);
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(match call(&client, role, name, &args) {
+                Ok(match call(&client, role, &user, name, &args) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("Error de Alondra: {e}")}], "isError": true}),
                 })
@@ -214,4 +220,17 @@ pub fn serve(role: Role) -> Result<()> {
         stdout.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_configured_name_reaches_every_text_a_node_reads() {
+        for role in [Role::Node, Role::Orchestrator] {
+            let text = format!("{} {}", instructions(role, "Mostafa"), tools(role, "Mostafa"));
+            assert!(text.contains("Mostafa") && !text.contains("David"), "{text}");
+        }
+    }
 }

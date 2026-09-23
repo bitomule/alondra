@@ -14,9 +14,6 @@ const PAINT_TIMEOUT: Duration = Duration::from_secs(25);
 const MENU_MARKERS: &[&str] = &["Enter to select", "to navigate", "Do you want to proceed", "❯ 1.", "trust this folder", "Enter to confirm"];
 
 pub async fn run(hub: Arc<Hub>) {
-    if std::env::var("ALONDRA_WAKE").map_or(true, |v| v != "1") {
-        return;
-    }
     let mut last_try: HashMap<String, Instant> = HashMap::new();
     loop {
         hub.wait_event(Duration::from_secs(10)).await;

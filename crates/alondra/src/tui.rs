@@ -90,7 +90,7 @@ impl Review {
 
     fn feedback(&self) -> String {
         let pairs: Vec<(String, String)> = self.comments.iter().map(|c| (c.quote.clone(), c.text.clone())).collect();
-        md::feedback(&pairs, &self.general)
+        md::feedback(&pairs, &self.general, &crate::client::config().name)
     }
 }
 
@@ -452,7 +452,7 @@ fn approval_of(q: &Question) -> Option<Approval> {
 }
 
 fn answer_body(text: &str, option: Option<&str>) -> Value {
-    json!({"text": text, "option": option, "by": "David", "device": "tui"})
+    json!({"text": text, "option": option, "device": "tui"})
 }
 
 impl App {
@@ -1558,7 +1558,7 @@ pub(crate) mod tests {
         rv.comments.push(Comment { block: 1, quote: "a".into(), text: "x".into() });
         rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
         rv.comments.sort_by_key(|c| c.block);
-        assert!(rv.feedback().starts_with("Comentarios de David:\n\n1. Sobre «b»:"));
+        assert!(rv.feedback().starts_with(&format!("Comentarios de {}:\n\n1. Sobre «b»:", crate::client::config().name)));
     }
 
     pub(super) fn press(app: &mut App, keys: &str) -> Flow {

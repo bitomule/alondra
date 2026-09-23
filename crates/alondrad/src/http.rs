@@ -219,6 +219,7 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         Some(o) => o.to_string(),
     };
     let wants_context = answer.option.as_deref() == Some("Necesito más contexto");
+    let user = &hub.config.name;
     let approves = |yes: &str| answer.option.as_deref() == Some(yes) || answer.text.trim().eq_ignore_ascii_case(yes);
     let body = match origin {
         QuestionOrigin::AskUserQuestion => {
@@ -235,11 +236,11 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         QuestionOrigin::Plan if approves("Aprobar") => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
         QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("David pide cambios en el plan: {}", answer.text) }}}),
+            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("{user} pide cambios en el plan: {}", answer.text) }}}),
         _ if approves("Permitir") => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"}}}),
         _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("David lo deniega: {}", answer.text) }}}}),
+            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} lo deniega: {}", answer.text) }}}}),
     };
     Json(body).into_response()
 }
@@ -270,11 +271,11 @@ fn local_only(peer: &SocketAddr, headers: &axum::http::HeaderMap) -> Option<Resp
     (!is_local(peer, headers)).then(|| err(StatusCode::FORBIDDEN, "solo desde el propio Mac"))
 }
 
-async fn new_pairing(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
+async fn new_pairing(State(hub): State<AppState>, Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
     if let Some(r) = local_only(&peer, &headers) {
         return r;
     }
-    let url = std::env::var("ALONDRA_PUBLIC_URL").ok().filter(|u| !u.is_empty());
+    let url = hub.config.public_url.clone();
     Json(json!({"code": auth.new_pairing_code(), "expires_in": 600, "url": url})).into_response()
 }
 
@@ -357,7 +358,11 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
 }
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {
-    Json(json!({"ok": true, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION")}))
+    let c = &hub.config;
+    Json(json!({"ok": true, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
+                "config": {"name": c.name, "port": c.port, "listen": c.listen.to_string(), "public_url": c.public_url,
+                           "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
+                           "home": c.home.display().to_string()}}))
 }
 
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
@@ -388,7 +393,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine,
-            "inbox_listening": listening,
+            "inbox_listening": listening, "user": hub.config.name,
         })
     });
     Json(body)
@@ -565,7 +570,9 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         Some(s) => format!("desde {} (firmada)", s.name),
         None => "desde el Mac (local, sin firma)".to_string(),
     };
-    let answer = Answer { text: b.text.clone(), option: b.option.clone(), by: b.by.clone(), device: Some(device), at: now_millis() };
+    let user = hub.config.name.clone();
+    let by = b.by.clone().or_else(|| Some(user.clone()));
+    let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
     }
@@ -573,12 +580,12 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
     let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
-    let text = format!("[Alondra] Respuesta de David {provenance} a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
+    let text = format!("[Alondra] Respuesta de {user} {provenance} a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: q.session_id.clone(),
-            from: MessageFrom::David,
+            from: MessageFrom::User,
             text: text.clone(),
             answers_question: Some(id),
             created_at: now_millis(),
@@ -599,10 +606,11 @@ struct MoreContextBody {
 
 async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
     let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" Lo que le falta: {n}.")).unwrap_or_default();
+    let user = hub.config.name.clone();
     let text = format!(
-        "David necesita más contexto antes de decidir.{note} Explica lo que está en juego, las opciones con sus consecuencias y tu recomendación, y vuelve a preguntar."
+        "{user} necesita más contexto antes de decidir.{note} Explica lo que está en juego, las opciones con sus consecuencias y tu recomendación, y vuelve a preguntar."
     );
-    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), by: Some("David".into()) })).await
+    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), by: None })).await
 }
 
 async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
@@ -628,12 +636,15 @@ struct ReportBody {
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
     if b.kind != Some(ReportKind::Progress) {
         let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
-        if crate::classify::report_asks_for_action(&text).await {
+        let user = &hub.config.name;
+        if crate::classify::report_asks_for_action(&text, user).await {
             return err(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "Este informe le pide a David que decida o haga algo, y un informe es solo para leer. \
-                 Manda cada decisión como su propia pregunta con ask (título de una línea, contexto en detail, opciones) \
-                 y deja en report solo lo informativo. Si la pregunta ya está abierta en Alondra, no la repitas.",
+                format!(
+                    "Este informe le pide a {user} que decida o haga algo, y un informe es solo para leer. \
+                     Manda cada decisión como su propia pregunta con ask (título de una línea, contexto en detail, opciones) \
+                     y deja en report solo lo informativo. Si la pregunta ya está abierta en Alondra, no la repitas."
+                ),
             );
         }
     }
@@ -699,7 +710,7 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: node.session_id.clone(),
-            from: b.from.unwrap_or(MessageFrom::David),
+            from: b.from.unwrap_or(MessageFrom::User),
             text: b.text.clone(),
             answers_question: None,
             created_at: now_millis(),
@@ -783,13 +794,13 @@ struct RequestBody {
 }
 
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
-    let text = format!("[Alondra] Petición nueva de David: {}\n\nPrepara la misión y lanza el nodo con la herramienta launch de Alondra, o pregúntale con ask si falta algo.", b.text);
+    let text = format!("[Alondra] Petición nueva de {}: {}\n\nPrepara la misión y lanza el nodo con la herramienta launch de Alondra, o pregúntale con ask si falta algo.", hub.config.name, b.text);
     let res = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator)?;
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: o.session_id.clone(),
-            from: MessageFrom::David,
+            from: MessageFrom::User,
             text: text.clone(),
             answers_question: None,
             created_at: now_millis(),

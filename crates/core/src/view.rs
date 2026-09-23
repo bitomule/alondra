@@ -600,7 +600,7 @@ mod tests {
         v.apply(3, 3000, &Event::MessageQueued(Message {
             id: 1,
             session_id: "s".into(),
-            from: crate::model::MessageFrom::David,
+            from: crate::model::MessageFrom::User,
             text: "sigue".into(),
             answers_question: None,
             created_at: 3000,

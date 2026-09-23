@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
+use alondra_core::config::Config;
 use alondra_core::{Answer, Event, Machine, View, now_millis};
 use anyhow::Result;
 use tokio::sync::{oneshot, watch};
@@ -17,11 +18,13 @@ pub struct Hub {
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     inbox_waiters: Mutex<HashMap<String, u64>>,
     pub home: PathBuf,
+    pub config: Config,
     pub hold_enabled: bool,
 }
 
 impl Hub {
-    pub fn open(home: PathBuf, hold_enabled: bool) -> Result<Self> {
+    pub fn open(config: Config, hold_enabled: bool) -> Result<Self> {
+        let home = config.home.clone();
         std::fs::create_dir_all(home.join("files"))?;
         let store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
@@ -36,6 +39,7 @@ impl Hub {
             holds: Mutex::new(HashMap::new()),
             inbox_waiters: Mutex::new(HashMap::new()),
             home,
+            config,
             hold_enabled,
         })
     }
