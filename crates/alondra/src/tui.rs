@@ -302,6 +302,7 @@ pub enum Flow {
     Go,
     Quit,
     Attach(String),
+    Review { id: u64, number: u64, dir: std::path::PathBuf },
 }
 
 pub struct App {
@@ -436,6 +437,15 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             repaint(terminal, &mut app)?;
                             break;
                         }
+                        Flow::Review { id, number, dir } => {
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            let res = crate::attach::run_tool("tuicr", &["--stdout", "--no-update-check", "pr", &number.to_string()], &dir, crate::attach::Over::Tui);
+                            crossterm::terminal::enable_raw_mode()?;
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            app.reviewed(id, number, res);
+                            repaint(terminal, &mut app)?;
+                            break;
+                        }
                         Flow::Go => {}
                     },
                     Event::Paste(s) => app.on_paste(&s),
@@ -476,6 +486,25 @@ fn approval_of(q: &Question) -> Option<Approval> {
 /// Options whose description asks for a reason open the composer instead of answering at once.
 fn needs_text(o: &QuestionOption) -> bool {
     o.description.as_deref().is_some_and(|d| d.trim_start().to_lowercase().starts_with("write"))
+}
+
+/// A tuicr export carries numbered comments anchored to files (`1. \`src/a.rs:42\` - …`).
+fn has_comments(export: &str) -> bool {
+    export.lines().any(|l| {
+        let t = l.trim_start();
+        t.split_once(". ").is_some_and(|(n, rest)| n.parse::<u32>().is_ok() && rest.starts_with('`'))
+    })
+}
+
+/// Where to open a PR's repo: the node's own checkout, else `~/Projects/<name>`.
+fn clone_of(node_cwd: Option<&str>, repo: &str) -> Option<std::path::PathBuf> {
+    let is_repo = |p: &std::path::Path| p.join(".git").exists();
+    if let Some(cwd) = node_cwd.map(std::path::PathBuf::from).filter(|p| is_repo(p)) {
+        return Some(cwd);
+    }
+    let name = repo.rsplit('/').next()?;
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::Path::new(&home).join("Projects").join(name)).filter(|p| is_repo(p))
 }
 
 fn answer_body(text: &str, option: Option<&str>) -> Value {
@@ -538,6 +567,21 @@ impl App {
             Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(Item::Q),
             Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(Item::R),
             Key::P(id) => self.data.prs.iter().find(|p| p.pr.id == id).map(Item::P),
+        }
+    }
+
+    /// What tuicr left on stdout when David quit it: his comments go to the node as a change
+    /// request; without comments nothing is sent.
+    fn reviewed(&mut self, id: u64, number: u64, res: Result<String>) {
+        match res {
+            Ok(text) if has_comments(&text) => {
+                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text.trim()}))], trf!("Review of PR #{number} sent to the node", "Revisión del PR #{number} enviada al nodo"));
+            }
+            Ok(_) => self.flash(trf!("PR #{number} reviewed without comments", "PR #{number} revisado sin comentarios")),
+            Err(e) if e.to_string().contains("No such file") || e.to_string().contains("could not launch") || e.to_string().contains("no pude lanzar") => {
+                self.fail(tr!("tuicr is not installed: brew install tuicr", "tuicr no está instalado: brew install tuicr"));
+            }
+            Err(e) => self.fail(trf!("tuicr: {e}", "tuicr: {e}")),
         }
     }
 
@@ -1017,6 +1061,18 @@ impl App {
             KeyCode::Char('w') => {
                 if let Some(p) = self.selected_pr() {
                     let _ = std::process::Command::new("open").arg(&p.pr.url).spawn();
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(p) = self.selected_pr() {
+                    let cwd = self.node(&p.pr.session_id).and_then(|n| n.cwd.clone());
+                    match clone_of(cwd.as_deref(), &p.pr.repo) {
+                        Some(dir) => return Flow::Review { id: p.pr.id, number: p.pr.number, dir },
+                        None => {
+                            let repo = p.pr.repo.clone();
+                            self.fail(trf!("No local copy of {repo} to review it in", "No hay copia local de {repo} donde revisarlo"));
+                        }
+                    }
                 }
             }
             KeyCode::Char('c') => {
@@ -1886,6 +1942,14 @@ pub(crate) mod tests {
         assert_eq!(pr_card(None).methods(), [MergeMethod::Merge, MergeMethod::Squash]);
         assert_eq!(pr_card(Some(MergeMethod::Squash)).methods(), [MergeMethod::Squash, MergeMethod::Merge]);
         assert_eq!(pr_card(Some(MergeMethod::Rebase)).methods(), [MergeMethod::Merge, MergeMethod::Squash], "a method the repo no longer allows is not offered");
+    }
+
+    #[test]
+    fn only_a_tuicr_export_with_comments_is_sent_back() {
+        let export = "I reviewed your code and have the following comments. Please address them.\n\n1. `src/auth.rs` - Consider adding unit tests\n2. `src/auth.rs:42` - Magic number should be a named constant\n";
+        assert!(has_comments(export));
+        assert!(!has_comments(""));
+        assert!(!has_comments("I reviewed your code.\n"));
     }
 
     #[test]
