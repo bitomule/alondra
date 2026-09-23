@@ -151,7 +151,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         *slot = Some(slot.map_or(q.asked_at, |at: Millis| at.max(q.asked_at)));
     }
     f.add(Signal::OpenQuestion, question);
-    f.add(Signal::PermissionPrompt, node.waiting_permission.then_some(node.last_seen));
+    f.add(Signal::PermissionPrompt, (node.waiting_permission || node.menu_waiting.is_some()).then_some(node.last_seen));
     f.add(Signal::ActionRequested, action);
 
     f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
@@ -266,7 +266,7 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
         };
         let missing = match node.state {
             NodeState::Working => !works(view, node, now),
-            NodeState::WaitingAnswer => !open(false) && !node.waiting_permission,
+            NodeState::WaitingAnswer => !open(false) && !node.waiting_permission && node.menu_waiting.is_none(),
             NodeState::YourTurn => !open(true),
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
             NodeState::Done => !reported(&[ReportKind::Final]),
@@ -303,6 +303,14 @@ pub fn talking_with_user(v: &View, node: &Node) -> bool {
 /// moment ago. While that lasts the node raises nothing in Alondra.
 pub fn watching(v: &View, node: &Node, now: Millis) -> bool {
     node.attached || (talking_with_user(v, node) && node.last_prompt_at.is_some_and(|at| now - at <= WATCH_WINDOW_MS))
+}
+
+/// The node's terminal is parked on a menu (a permission, a question, a dialog) that no Alondra
+/// question stands for, and nobody is at that terminal: it has to reach the clients as a card.
+pub fn unseen_menu(v: &View, node: &Node, now: Millis) -> bool {
+    let on_menu = node.waiting_permission || node.menu_waiting.is_some();
+    let carded = v.questions.values().any(|q| q.session_id == node.session_id && q.status.is_open() && !q.to_orchestrator);
+    node.in_daemon && on_menu && !carded && !watching(v, node, now)
 }
 
 pub const NUDGE_PREFIX: &str = "[Alondra] Your turn ended without telling";
@@ -661,6 +669,29 @@ mod tests {
         assert_eq!(stall_move(&v, &v.nodes["s"]), None, "a stuck call the user is looking at");
         v.apply(53, T0 + 51 * min, &attach(false));
         assert!(stall_move(&v, &v.nodes["s"]).is_some(), "after the user leaves");
+    }
+
+    fn menu(waiting: Option<&str>) -> Event {
+        Event::MenuSeen { session_id: "s".into(), waiting_for: waiting.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_menu_nobody_is_looking_at_must_reach_the_clients() {
+        let cases: Vec<(&str, Vec<Event>, bool, NodeState)> = vec![
+            ("the daemon says it waits on a permission", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt"))]), true, NodeState::WaitingAnswer),
+            ("a permission request Alondra did not hold", background(&[hook("UserPromptSubmit"), hook("PermissionRequest")]), true, NodeState::WaitingAnswer),
+            ("the menu is already a card", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), question(false, QuestionOrigin::Permission)]), false, NodeState::WaitingAnswer),
+            ("the user is at the terminal", background(&[hook("UserPromptSubmit"), attach(true), menu(Some("dialog open"))]), false, NodeState::WaitingAnswer),
+            ("the menu was answered and work goes on", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), tool("PreToolUse", "t")]), false, NodeState::Working),
+            ("the daemon says nothing is pending", background(&[hook("UserPromptSubmit"), menu(Some("permission prompt")), menu(None)]), false, NodeState::Working),
+            ("a foreground session", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], false, NodeState::WaitingAnswer),
+        ];
+        for (what, events, expected, state) in cases {
+            let v = run(&events, None);
+            let at = T0 + events.len() as Millis * 1000;
+            assert_eq!(unseen_menu(&v, &v.nodes["s"], at), expected, "{what}");
+            assert_eq!(v.nodes["s"].state, state, "{what}");
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod keeper;
 mod hub;
 mod legacy;
 mod machine;
+mod menus;
 mod notifier;
 mod push;
 mod sentinel;
@@ -36,6 +37,7 @@ async fn main() -> Result<()> {
     if config.wake {
         tokio::spawn(wake::run(hub.clone()));
         tokio::spawn(keeper::run(hub.clone(), claude_home.clone()));
+        tokio::spawn(menus::run(hub.clone()));
     }
     tokio::spawn(notifier::run(hub.clone()));
     tokio::spawn(retention(hub.clone(), config.retention_hours));
