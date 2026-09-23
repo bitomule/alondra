@@ -125,7 +125,7 @@ impl Auth {
         changed
     }
 
-    fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<(), &'static str> {
+    fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
         let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
         let device_id = h("x-alondra-device").ok_or("falta X-Alondra-Device")?;
         let timestamp = h("x-alondra-timestamp").ok_or("falta X-Alondra-Timestamp")?;
@@ -153,11 +153,16 @@ impl Auth {
             seen.pop_front();
         }
         drop(seen);
-        if let Some(d) = self.devices.lock().expect("devices envenenado").iter_mut().find(|d| d.id == device_id) {
-            d.last_seen = Some(now_millis());
-        }
-        Ok(())
+        let mut devices = self.devices.lock().expect("devices envenenado");
+        let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("dispositivo no vinculado")?;
+        device.last_seen = Some(now_millis());
+        Ok(Signed { name: device.name.clone() })
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Signed {
+    pub name: String,
 }
 
 pub fn is_local(peer: &SocketAddr, headers: &HeaderMap) -> bool {
@@ -178,10 +183,13 @@ pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo
         return unauthorized("cuerpo demasiado grande");
     };
     let path_and_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    if let Err(reason) = auth.verify(&parts.headers, parts.method.as_str(), path_and_query, &bytes) {
-        return unauthorized(reason);
-    }
-    next.run(Request::from_parts(parts, Body::from(bytes))).await
+    let signed = match auth.verify(&parts.headers, parts.method.as_str(), path_and_query, &bytes) {
+        Ok(signed) => signed,
+        Err(reason) => return unauthorized(reason),
+    };
+    let mut req = Request::from_parts(parts, Body::from(bytes));
+    req.extensions_mut().insert(signed);
+    next.run(req).await
 }
 
 #[cfg(test)]
@@ -216,8 +224,8 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"si\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}").is_ok());
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}"), Err("petición repetida"));
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}").unwrap().name, "iPhone");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}").unwrap_err(), "petición repetida");
     }
 
     #[test]
@@ -227,8 +235,8 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"si\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}"), Err("firma incorrecta"));
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"si\"}"), Err("firma incorrecta"));
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}").unwrap_err(), "firma incorrecta");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"si\"}").unwrap_err(), "firma incorrecta");
     }
 
     #[test]
@@ -237,11 +245,11 @@ mod tests {
         let ts = now_millis() - 10 * 60_000;
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b""), Err("marca de tiempo fuera de plazo"));
+        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "marca de tiempo fuera de plazo");
         let ts = now_millis();
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers("otro", ts, &sig), "GET", "/v1/overview", b""), Err("dispositivo no vinculado"));
+        assert_eq!(auth.verify(&headers("otro", ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "dispositivo no vinculado");
     }
 
     #[test]

@@ -57,3 +57,9 @@ El trámite que antes hacías a mano ya lo hace Alondra, así que tu trabajo es 
   probar), eso es una pregunta con `ask`, una por decisión. Nunca resumas en un informe las
   preguntas que ya están abiertas: David ya las tiene en su bandeja. Alondra rechaza los
   informes que piden algo.
+
+## De dónde viene una respuesta
+
+«(firmada)» es de un dispositivo vinculado de David y no se puede imitar. «(local, sin firma)»
+viene de un programa del Mac: trátala como de David salvo que te lleve a algo irreversible
+que no cuadre, y entonces confírmalo con `ask`.

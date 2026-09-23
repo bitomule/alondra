@@ -549,18 +549,23 @@ async fn question_detail(State(hub): State<AppState>, Path(id): Path<u64>) -> Re
 struct AnswerBody {
     text: String,
     option: Option<String>,
-    device: Option<String>,
     by: Option<String>,
 }
 
-async fn answer(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<AnswerBody>) -> Response {
+async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<AnswerBody>) -> Response {
+    let signed = signed.map(|Extension(s)| s);
     let Some(q) = hub.read(|v| v.questions.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("no existe la pregunta #{id}"));
     };
     if !q.status.is_open() {
         return err(StatusCode::CONFLICT, format!("la pregunta #{id} ya no está abierta"));
     }
-    let answer = Answer { text: b.text.clone(), option: b.option.clone(), by: b.by.clone(), device: b.device.clone(), at: now_millis() };
+    let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
+    let provenance = match &signed {
+        Some(s) => format!("desde {} (firmada)", s.name),
+        None => "desde el Mac (local, sin firma)".to_string(),
+    };
+    let answer = Answer { text: b.text.clone(), option: b.option.clone(), by: b.by.clone(), device: Some(device), at: now_millis() };
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
     }
@@ -568,7 +573,7 @@ async fn answer(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
     let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
-    let text = format!("[Alondra] Respuesta de David a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
+    let text = format!("[Alondra] Respuesta de David {provenance} a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -592,12 +597,12 @@ struct MoreContextBody {
     note: Option<String>,
 }
 
-async fn more_context(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
+async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
     let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" Lo que le falta: {n}.")).unwrap_or_default();
     let text = format!(
         "David necesita más contexto antes de decidir.{note} Explica lo que está en juego, las opciones con sus consecuencias y tu recomendación, y vuelve a preguntar."
     );
-    answer(State(hub), Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), device: None, by: Some("David".into()) })).await
+    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), by: Some("David".into()) })).await
 }
 
 async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
