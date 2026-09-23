@@ -198,6 +198,10 @@ impl View {
                 self.prune(*before);
                 None
             }
+            Event::MenuSeen { session_id, waiting_for } => {
+                self.node_mut(session_id, at).menu_waiting = waiting_for.clone();
+                Some((session_id.clone(), Trigger::Daemon))
+            }
             Event::AttachChanged { session_id, attached } => {
                 self.node_mut(session_id, at).attached = *attached;
                 Some((session_id.clone(), Trigger::Other))
@@ -266,6 +270,9 @@ impl View {
             }
         }
         let node = self.node_mut(&h.session_id, at);
+        if starts_work || h.event == "PostToolUse" {
+            node.menu_waiting = None;
+        }
         node.has_plugin = true;
         node.alive = true;
         node.last_seen = at;

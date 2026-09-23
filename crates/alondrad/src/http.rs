@@ -669,6 +669,9 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     if !q.status.is_open() {
         return err(StatusCode::CONFLICT, format!("question #{id} is no longer open"));
     }
+    if crate::menus::is_menu_card(&q) {
+        return answer_menu(hub, q, b.option.as_deref(), signed.map(|s| s.name)).await;
+    }
     let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
     let provenance = match &signed {
         Some(s) => format!("via {} (signature verified)", s.name),
@@ -723,6 +726,39 @@ fn action_reply(answer: &Answer, user: &str) -> String {
         _ if said.eq_ignore_ascii_case(answer_option::DONE) => format!("{user} has done it."),
         _ => said.to_string(),
     }
+}
+
+/// A menu card is answered by pressing the option's number in the node's terminal.
+async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: Option<String>) -> Response {
+    let Some(key) = option.and_then(|o| crate::menus::key_for(&q, o)) else {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "This card is a menu in the node's terminal: pick one of its options, or open the session to answer it there.");
+    };
+    let Some(short) = hub.read(|v| v.nodes.get(&q.session_id).map(|n| n.short_id.clone())) else {
+        return err(StatusCode::NOT_FOUND, "the node is gone");
+    };
+    let own = hub.own_attach(&short);
+    let pressed = {
+        let (short, key) = (short.clone(), key.clone());
+        tokio::task::spawn_blocking(move || crate::wake::press(&short, &key)).await
+    };
+    drop(own);
+    match pressed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, format!("could not answer {short}'s menu: {e}")),
+        Err(e) => return internal(e.into()),
+    }
+    let label = option.unwrap_or_default().to_string();
+    let answer = Answer { text: label.clone(), option: Some(label), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
+    for event in [
+        Event::QuestionAnswered { id: q.id, answer },
+        Event::QuestionDelivered { id: q.id },
+        Event::MenuSeen { session_id: q.session_id.clone(), waiting_for: None },
+    ] {
+        if let Err(e) = hub.append(event) {
+            return internal(e);
+        }
+    }
+    Json(json!({"id": q.id, "delivered": "terminal"})).into_response()
 }
 
 #[derive(Deserialize)]

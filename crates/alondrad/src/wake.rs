@@ -82,6 +82,31 @@ pub fn interrupt(short: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What the node's terminal shows right now.
+pub fn read_screen(short: &str) -> Result<String, String> {
+    let session = attach(short)?;
+    std::thread::sleep(Duration::from_secs(2));
+    tmux(&["capture-pane", "-p", "-t", &session.0])
+}
+
+/// Presses one key in the node's terminal, as picking a menu option does, and fails if the
+/// menu is still on screen afterwards.
+pub fn press(short: &str, key: &str) -> Result<(), String> {
+    let session = attach(short)?;
+    std::thread::sleep(Duration::from_secs(2));
+    let before = tmux(&["capture-pane", "-p", "-t", &session.0])?;
+    if crate::menus::parse_menu(&before).is_none() {
+        return Err("the node is no longer on a menu".into());
+    }
+    tmux(&["send-keys", "-t", &session.0, "-l", key])?;
+    std::thread::sleep(Duration::from_secs(2));
+    let after = tmux(&["capture-pane", "-p", "-t", &session.0])?;
+    if crate::menus::parse_menu(&after) == crate::menus::parse_menu(&before) {
+        return Err("the menu did not take the key".into());
+    }
+    Ok(())
+}
+
 fn attach(short: &str) -> Result<TmuxSession, String> {
     let name = format!("alondra-{short}");
     let _ = tmux(&["kill-session", "-t", &name]);
