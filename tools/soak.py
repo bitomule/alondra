@@ -1,8 +1,8 @@
-"""Carga sintética para medir la memoria de alondrad durante horas.
+"""Synthetic load to measure alondrad's memory over hours.
 
-Arranca una instancia aparte (otro puerto y otro directorio de datos), le manda hooks de
-nodos que nacen y mueren, preguntas que se contestan, informes que se leen y clientes que
-esperan cambios, y apunta la memoria residente del proceso cada 5 minutos en un CSV.
+Starts a separate instance (another port and another data directory), sends it hooks from
+nodes that are born and die, questions that get answered, reports that get read and clients
+that wait for changes, and records the process's resident memory every 5 minutes in a CSV.
 
     python3 tools/soak.py --hours 72 --out soak.csv
 """
@@ -39,7 +39,7 @@ def hooks(stop):
         call("POST", "/hook", {"session_id": s, "hook_event_name": event, "tool_name": "Bash",
                                "tool_use_id": f"t{random.randint(0, 10**9)}",
                                "tool_input": {"command": "echo " + "x" * random.randint(1, 400)},
-                               "last_assistant_message": "fin de turno " + "y" * random.randint(1, 800)})
+                               "last_assistant_message": "end of turn " + "y" * random.randint(1, 800)})
         if random.random() < 0.01:
             i = random.randint(0, 19)
             sessions[i] = f"soak-{i}-{random.randint(0, 10**6)}"
@@ -49,12 +49,12 @@ def hooks(stop):
 def questions(stop):
     while not stop.is_set():
         s = f"soak-{random.randint(0, 19)}"
-        q = call("POST", "/v1/questions", {"session_id": s, "title": "¿Seguimos?", "detail": "z" * 2000,
-                                           "options": ["Sí", "No"]})
-        r = call("POST", "/v1/reports", {"session_id": s, "title": "Informe", "body": "w" * 3000, "kind": "notice"})
+        q = call("POST", "/v1/questions", {"session_id": s, "title": "Shall we continue?", "detail": "z" * 2000,
+                                           "options": ["Yes", "No"]})
+        r = call("POST", "/v1/reports", {"session_id": s, "title": "Report", "body": "w" * 3000, "kind": "notice"})
         time.sleep(1)
         if q and "id" in q:
-            call("POST", f"/v1/questions/{q['id']}/answer", {"text": "Sí", "option": "Sí"})
+            call("POST", f"/v1/questions/{q['id']}/answer", {"text": "Yes", "option": "Yes"})
         if r and "id" in r:
             call("POST", f"/v1/reports/{r['id']}/read", {})
         time.sleep(1)

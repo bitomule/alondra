@@ -1,62 +1,62 @@
 # Alondra
 
-El sistema nervioso del orquestador de la colmena: estado fiable de cada nodo de Claude Code
-y de la máquina, preguntas estructuradas que llegan al usuario y vuelven a su nodo, y
-herramientas para que el orquestador actúe.
+The nervous system of the hive's orchestrator: reliable state for every Claude Code node and
+for the machine, structured questions that reach the user and come back to their node, and
+tools for the orchestrator to act.
 
-| Carpeta | Qué es |
+| Folder | What it is |
 |---|---|
-| `crates/core` | Modelo y reductor de estados (Rust, sin E/S) |
-| `crates/alondrad` | Demonio 24/7: hooks, vigilante, SQLite, API |
-| `crates/alondra` | CLI, TUI, servidor MCP de los nodos y hook de bandeja |
-| `plugin/` | Plugin de Claude Code: hooks, herramientas `ask`/`report` y skill |
-| `launchd/` | Plantilla del servicio de macOS para `alondrad` (la instala `alondra setup`) |
-| `signing/` | Firma de las apps: `signing.example.bzl` → copia local `signing.bzl` y perfiles |
-| `docs/plan.md` | Diseño y plan por fases |
+| `crates/core` | State model and reducer (Rust, no I/O) |
+| `crates/alondrad` | 24/7 daemon: hooks, sentinel, SQLite, API |
+| `crates/alondra` | CLI, TUI, the nodes' MCP server and inbox hook |
+| `plugin/` | Claude Code plugin: hooks, `ask`/`report` tools and skill |
+| `launchd/` | macOS service template for `alondrad` (installed by `alondra setup`) |
+| `signing/` | App signing: `signing.example.bzl` → local copy `signing.bzl` and profiles |
+| `docs/plan.md` | Design and phased plan |
 
-## Probarlo
-
-```bash
-make install        # compila con Bazel e instala alondra y alondrad en ~/.local/bin
-alondra setup       # config.toml, servicio de launchd, plugin y vinculación del iPhone (--help, --dry-run)
-alondra doctor      # qué funciona y qué falta, con cómo arreglarlo
-alondra             # la TUI
-alondra status      # lo mismo en texto
-```
-
-Un nodo conectado a Alondra se lanza con el plugin:
+## Trying it
 
 ```bash
-claude --bg --name "prueba/alondra" --plugin-dir ~/Projects/alondra/plugin --permission-mode auto -- "<misión>"
+make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
+alondra setup       # config.toml, launchd service, plugin and iPhone pairing (--help, --dry-run)
+alondra doctor      # what works and what is missing, with how to fix it
+alondra             # the TUI
+alondra status      # the same as text
 ```
 
-o, desde el orquestador, con su herramienta `launch`.
+A node connected to Alondra is launched with the plugin:
 
-Los ajustes viven en `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
-`legacy_bridge`, `wake`, `retention_hours`, `service_label`). Una variable de entorno
-`ALONDRA_*` manda sobre el fichero; `alondra config` enseña los valores en vigor.
+```bash
+claude --bg --name "test/alondra" --plugin-dir ~/Projects/alondra/plugin --permission-mode auto -- "<mission>"
+```
 
-**El orquestador** se arranca con `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: los
-mismos hooks más las herramientas `fleet`, `node`, `machine`, `send` y `launch`. Alondra le
-avisa sola, cada 90 s y en un único mensaje, de:
-- los informes nuevos de los nodos;
-- las preguntas dirigidas a él;
-- los nodos que terminan sin decir qué quieren;
-- la máquina, cuando se queda sin memoria o se satura.
+or, from the orchestrator, with its `launch` tool.
 
-(`claude --bg` no hereda variables de entorno, así que el rol va en su propio plugin.)
+Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
+`legacy_bridge`, `wake`, `retention_hours`, `service_label`). An `ALONDRA_*` environment
+variable overrides the file; `alondra config` shows the values in effect.
 
-### La TUI
+**The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: the
+same hooks plus the `fleet`, `node`, `machine`, `send` and `launch` tools. Alondra notifies it
+on its own, every 90 s and in a single message, of:
+- new reports from the nodes;
+- questions addressed to it;
+- nodes that finish without saying what they want;
+- the machine, when it runs out of memory or gets saturated.
 
-- **Te esperan**: preguntas de los nodos (estructuradas, de menú, permisos y planes).
-  `Enter` las abre con todo su contexto, `1`–`4` elige opción y `r` responde con texto.
-- **Flota**: todo lo que lista `claude agents`, con su estado (trabajando, esperando respuesta,
-  entrega resultado, esperando máquina, terminado, no sé qué quiere). `~` = lo dice el demonio
-  de Claude Code, `*` = lo ha decidido jev, `💤` = dormido (sin proceso; se despierta con
-  `attach` al mandarle un mensaje).
-- `m` manda un mensaje al nodo seleccionado y `o`, al orquestador.
+(`claude --bg` does not inherit environment variables, so the role goes in its own plugin.)
 
-## Desarrollo
+### The TUI
 
-`make build` / `make test` con Bazel. `cargo build` / `cargo test` también funcionan, para
-iterar rápido y para rust-analyzer.
+- **Waiting for you**: questions from the nodes (structured, menu, permissions and plans).
+  `Enter` opens them with all their context, `1`–`4` picks an option and `r` answers with text.
+- **Fleet**: everything `claude agents` lists, with its state (working, waiting for an answer,
+  delivering a result, waiting for the machine, done, unclear what it wants). `~` = reported by
+  the Claude Code daemon, `*` = decided by jevi, `💤` = asleep (no process; it wakes up with
+  `attach` when you send it a message).
+- `m` sends a message to the selected node and `o`, to the orchestrator.
+
+## Development
+
+`make build` / `make test` with Bazel. `cargo build` / `cargo test` also work, for fast
+iteration and for rust-analyzer.

@@ -17,7 +17,7 @@ install: build
 	mkdir -p $(BIN) $(PLUGIN)/bin $(HOME)/.alondra
 	install -m 755 $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(BIN)/alondrad
 	install -m 755 $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) $(BIN)/alondra
-	@echo "Instalado en $(BIN). Plugin: $(PLUGIN)"
+	@echo "Installed in $(BIN). Plugin: $(PLUGIN)"
 
 run: install
 	$(BIN)/alondrad
