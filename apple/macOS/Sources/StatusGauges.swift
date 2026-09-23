@@ -8,11 +8,11 @@ struct StatusGauges: View {
     let usage: Usage?
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             if let usage {
                 StatusGauge(
                     value: usage.weekPercent / 100,
-                    label: "\(Int(usage.weekPercent.rounded()))",
+                    label: "\(Int(usage.weekPercent.rounded()))%",
                     caption: String(localized: "Week"),
                     tint: usage.weekPercent >= 85 ? .red : .blue,
                     help: weekHelp(usage)
@@ -20,7 +20,7 @@ struct StatusGauges: View {
                 if let spent = usage.todaySpent, let share = usage.todayShare {
                     StatusGauge(
                         value: min(1, spent / max(share, 0.1)),
-                        label: "\(Int(spent.rounded()))",
+                        label: "\(Int(spent.rounded()))/\(Int(share.rounded()))%",
                         caption: String(localized: "Today"),
                         tint: usage.isOverPace ? .red : spent >= share * 0.75 ? .orange : .green,
                         help: todayHelp(spent: spent, share: share, overPace: usage.isOverPace)
@@ -30,7 +30,7 @@ struct StatusGauges: View {
             if let free = machine.memoryFreePercent {
                 StatusGauge(
                     value: Double(100 - min(free, 100)) / 100,
-                    label: "\(100 - min(free, 100))",
+                    label: "\(100 - min(free, 100))%",
                     caption: String(localized: "Memory"),
                     tint: free < 15 ? .red : free < 30 ? .orange : .teal,
                     help: memoryHelp(free: free)
@@ -39,7 +39,7 @@ struct StatusGauges: View {
             if let cpu = machine.cpuUsage {
                 StatusGauge(
                     value: min(cpu, 100) / 100,
-                    label: "\(Int(cpu.rounded()))",
+                    label: "\(Int(cpu.rounded()))%",
                     caption: String(localized: "CPU"),
                     tint: machine.unreliable ? .red : cpu >= 85 ? .orange : .purple,
                     help: cpuHelp(cpu: cpu)
@@ -86,21 +86,21 @@ private struct StatusGauge: View {
     let help: String
 
     var body: some View {
-        VStack(spacing: 1) {
-            Gauge(value: value) {
-                EmptyView()
-            } currentValueLabel: {
-                Text(verbatim: label)
-                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
-            }
-            .gaugeStyle(.accessoryCircularCapacity)
-            .tint(tint)
-            .scaleEffect(0.55)
-            .frame(width: 30, height: 30)
+        HStack(spacing: 5) {
             Text(caption)
-                .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
+            Capsule()
+                .fill(.quaternary)
+                .frame(width: 28, height: 4)
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: 28 * max(0.06, min(value, 1)))
+                }
+            Text(verbatim: label)
+                .monospacedDigit()
         }
+        .font(.caption)
         .help(help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(caption)
