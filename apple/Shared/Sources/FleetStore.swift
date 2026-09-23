@@ -44,8 +44,7 @@ public final class FleetStore {
     private var hidden: Set<String> = [] {
         didSet { rebuild() }
     }
-    private var cursor: String?
-    private var cursorIndex = 0
+    private var ring = InboxRing()
 
     public private(set) var client: AlondraClient
     private let animated: Bool
@@ -72,31 +71,16 @@ public final class FleetStore {
 
     private var ordered: [InboxItem] {
         guard let overview else { return [] }
-        let questions = overview.openQuestions.sorted { $0.askedAt < $1.askedAt }.map(InboxItem.question)
-        let reports = overview.news.sorted { $0.createdAt < $1.createdAt }.map(InboxItem.report)
-        return (questions + reports).filter { !hidden.contains($0.id) }
+        let items = overview.openQuestions.map(InboxItem.question) + overview.news.map(InboxItem.report)
+        return InboxRing.ordered(items.filter { !hidden.contains($0.id) })
     }
 
-    /// The inbox is a fixed ring in arrival order; `cursor` is the card in front. Resolving the
-    /// front card moves the cursor to the next one, so the queue never jumps back.
     public var queue: [InboxItem] {
-        let ring = ordered
-        guard !ring.isEmpty else { return [] }
-        let start = ring.firstIndex { $0.id == cursor } ?? min(cursorIndex, ring.count - 1)
-        return Array(ring[start...] + ring[..<start])
+        ring.arranged(ordered)
     }
 
     public var position: Int {
-        let ring = ordered
-        return ring.firstIndex { $0.id == cursor } ?? min(cursorIndex, max(ring.count - 1, 0))
-    }
-
-    private func moveCursor(by step: Int) {
-        let ring = ordered
-        guard !ring.isEmpty else { return }
-        let next = (position + step % ring.count + ring.count) % ring.count
-        cursor = ring[next].id
-        cursorIndex = next
+        ring.frontIndex(in: ordered)
     }
 
     public func pending(for session: String) -> [InboxItem] {
@@ -147,8 +131,7 @@ public final class FleetStore {
         guard !sameServer else { return }
         overview = nil
         hidden = []
-        cursor = nil
-        cursorIndex = 0
+        ring = InboxRing()
         documents = [:]
         connection = .connecting
     }
@@ -203,15 +186,13 @@ public final class FleetStore {
     }
 
     public func focus(_ item: InboxItem) {
-        cursor = item.id
-        cursorIndex = ordered.firstIndex { $0.id == item.id } ?? cursorIndex
+        ring.focus(item)
         focusRequest += 1
     }
 
     public func skip(_ item: InboxItem) {
         animate(.spring(duration: 0.5, bounce: 0.25)) {
-            cursor = item.id
-            moveCursor(by: 1)
+            ring.move(from: item, by: 1, in: ordered)
         }
         skippedCount += 1
     }
@@ -219,7 +200,7 @@ public final class FleetStore {
     public func previous() {
         guard ordered.count > 1 else { return }
         animate(.spring(duration: 0.5, bounce: 0.25)) {
-            moveCursor(by: -1)
+            ring.move(by: -1, in: ordered)
         }
         skippedCount += 1
     }
@@ -228,11 +209,7 @@ public final class FleetStore {
     public func resolve(_ item: InboxItem, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
         let client = client
         animate(.spring(duration: 0.55, bounce: 0.2)) {
-            let ring = ordered
-            if let index = ring.firstIndex(where: { $0.id == item.id }), item.id == queue.first?.id {
-                cursor = ring.count > 1 ? ring[(index + 1) % ring.count].id : nil
-                cursorIndex = index
-            }
+            ring.resolve(item, in: ordered)
             _ = hidden.insert(item.id)
         }
         resolvedCount += 1

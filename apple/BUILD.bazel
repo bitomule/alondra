@@ -1,7 +1,7 @@
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extension")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 
 swift_library(
@@ -10,6 +10,12 @@ swift_library(
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "AlondraSharedTests",
+    srcs = glob(["Shared/Tests/**/*.swift"]),
+    deps = [":AlondraShared"],
 )
 
 swift_library(
