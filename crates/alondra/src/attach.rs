@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -158,36 +158,39 @@ impl LineTracker {
     }
 }
 
-pub fn attach(short_id: &str, over: Over) -> Result<()> {
+fn open_pty() -> Result<(Fd, RawFd, libc::winsize)> {
     let mut ws = window_size();
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
     let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
     if r != 0 {
         bail!(tr!("could not open a pseudoterminal", "no pude abrir un pseudoterminal"));
     }
-    let master = Fd(master);
-    let slave_fd = slave;
-    let mut cmd = Command::new("claude");
-    cmd.arg("attach").arg(short_id).current_dir("/tmp");
+    Ok((Fd(master), slave, ws))
+}
+
+/// Makes the pseudoterminal the child's controlling terminal, so what it draws on `/dev/tty`
+/// comes through it too.
+fn in_pty(cmd: &mut Command, slave: RawFd, stdout: Stdio) {
     unsafe {
-        cmd.stdin(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
-            .stdout(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
-            .stderr(Stdio::from_raw_fd_owned(libc::dup(slave_fd)))
+        cmd.stdin(Stdio::from_raw_fd_owned(libc::dup(slave)))
+            .stdout(stdout)
+            .stderr(Stdio::from_raw_fd_owned(libc::dup(slave)))
             .pre_exec(|| {
                 libc::setsid();
                 libc::ioctl(0, libc::TIOCSCTTY as _, 0);
                 Ok(())
             });
     }
-    let mut child = cmd.spawn().context(tr!("could not launch claude attach", "no pude lanzar claude attach"))?;
-    unsafe { libc::close(slave_fd) };
+}
 
-    let raw = RawMode::enter(over)?;
+/// Copies the child's screen to ours and our keys to it until it exits, or until ← on an empty
+/// prompt when `detach_on_left`. Returns whether it was left that way, and the last bytes it
+/// printed.
+fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, detach_on_left: bool) -> Result<(bool, Vec<u8>)> {
     let mut screen = (over == Over::Tui).then(AltScreenFilter::default);
     let mut stdout = std::io::stdout();
     let mut line = LineTracker::default();
     let mut buf = [0u8; 16 * 1024];
-    let mut left_to_alondra = false;
     let mut tail: Vec<u8> = Vec::new();
     let mut log = std::env::var("ALONDRA_ATTACH_LOG").ok().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     loop {
@@ -231,9 +234,8 @@ pub fn attach(short_id: &str, over: Over) -> Result<()> {
             if let Some(f) = log.as_mut() {
                 let _ = writeln!(f, "typed={} input={:?}", line.typed, input);
             }
-            if line.typed == 0 && LEFT_ARROWS.contains(&input) {
-                left_to_alondra = true;
-                break;
+            if detach_on_left && line.typed == 0 && LEFT_ARROWS.contains(&input) {
+                return Ok((true, tail));
             }
             line.feed(input);
             unsafe { libc::write(master.0, input.as_ptr().cast(), input.len()) };
@@ -242,18 +244,60 @@ pub fn attach(short_id: &str, over: Over) -> Result<()> {
             break;
         }
     }
+    Ok((false, tail))
+}
+
+pub fn attach(short_id: &str, over: Over) -> Result<()> {
+    let (master, slave, ws) = open_pty()?;
+    let mut cmd = Command::new("claude");
+    cmd.arg("attach").arg(short_id).current_dir("/tmp");
+    in_pty(&mut cmd, slave, unsafe { Stdio::from_raw_fd_owned(libc::dup(slave)) });
+    let mut child = cmd.spawn().context(tr!("could not launch claude attach", "no pude lanzar claude attach"))?;
+    unsafe { libc::close(slave) };
+
+    let raw = RawMode::enter(over)?;
+    let (left_to_alondra, tail) = relay(&master, ws, &mut child, over, true)?;
     drop(raw);
     if left_to_alondra || child.try_wait().ok().flatten().is_none() {
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     }
-    let status = child.wait();
-    match status {
+    match child.wait() {
         Ok(st) if !left_to_alondra && !st.success() => match last_words(&tail) {
             Some(words) => bail!("{words}"),
             None => bail!(trf!("claude attach ended with {st}", "claude attach terminó con {st}")),
         },
         _ => Ok(()),
     }
+}
+
+/// Runs a full-screen tool (tuicr) over the TUI the way `attach` runs a session, and returns
+/// what it printed on stdout when it quit.
+pub fn run_tool(program: &str, args: &[&str], dir: &std::path::Path, over: Over) -> Result<String> {
+    let (master, slave, ws) = open_pty()?;
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(dir);
+    in_pty(&mut cmd, slave, Stdio::piped());
+    let mut child = cmd.spawn().with_context(|| trf!("could not launch {program}", "no pude lanzar {program}"))?;
+    unsafe { libc::close(slave) };
+    let mut out = child.stdout.take().context("no stdout")?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        text
+    });
+
+    let raw = RawMode::enter(over)?;
+    let (_, tail) = relay(&master, ws, &mut child, over, false)?;
+    drop(raw);
+    let status = child.wait()?;
+    let printed = reader.join().unwrap_or_default();
+    if !status.success() {
+        match last_words(&tail) {
+            Some(words) => bail!("{words}"),
+            None => bail!(trf!("{program} ended with {status}", "{program} terminó con {status}")),
+        }
+    }
+    Ok(printed)
 }
 
 /// The last line of visible text a failing `claude attach` printed, without escape sequences.

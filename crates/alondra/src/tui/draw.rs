@@ -533,6 +533,8 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 })
                 .collect();
             out.push(hint(vec![
+                keycap("d"),
+                Span::styled(tr!(" diff and comment (tuicr)  ", " diff y comentarios (tuicr)  "), Style::new().fg(SOFT)),
                 keycap("r"),
                 Span::styled(tr!(" request changes  ", " pedir cambios  "), Style::new().fg(SOFT)),
                 keycap("w"),
@@ -1191,7 +1193,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         }
         Some(Item::P(p)) => {
             let n = p.methods().len();
-            let mut v = vec![pane, k(&format!("1-{n}"), tr!("merge", "fusionar")), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
+            let mut v = vec![pane, k(&format!("1-{n}"), tr!("merge", "fusionar")), k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }

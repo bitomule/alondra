@@ -262,6 +262,21 @@ pub fn tmux_check(out: Option<&str>, wake: bool) -> Check {
     }
 }
 
+/// The oldest tuicr whose `--stdout pr <n>` Alondra relies on.
+pub const TUICR_MIN: (u32, u32) = (0, 26);
+
+pub fn tuicr_check(out: Option<&str>) -> Check {
+    let fix = "brew install tuicr";
+    let Some(version) = out.map(str::trim).filter(|v| !v.is_empty()) else {
+        return check("tuicr", Status::Warn, tr!("tuicr is missing: PR cards have no diff in the TUI", "falta tuicr: las tarjetas de PR no tienen diff en la TUI"), fix);
+    };
+    let numbers: Vec<u32> = version.rsplit(' ').next().unwrap_or("").split('.').filter_map(|n| n.parse().ok()).collect();
+    match numbers.as_slice() {
+        [major, minor, ..] if (*major, *minor) >= TUICR_MIN => check("tuicr", Status::Pass, version.to_string(), ""),
+        _ => check("tuicr", Status::Warn, trf!("{version} is older than Alondra needs (0.26)", "{version} es más antiguo de lo que Alondra necesita (0.26)"), "brew upgrade tuicr"),
+    }
+}
+
 pub fn run(json_out: bool) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok();
     let home = config::alondra_home(&env);
@@ -288,6 +303,8 @@ pub fn run(json_out: bool) -> Result<()> {
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
     checks.extend(jevi_checks());
+    let tuicr = output("tuicr", &["--version"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
+    checks.push(tuicr_check(tuicr.as_deref()));
 
     let apns_text = std::fs::read_to_string(home.join("apns.json")).ok();
     let apns = apns_file_check(apns_text.as_deref(), |p| p.is_file());
@@ -334,6 +351,14 @@ pub fn run(json_out: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tuicr_is_checked_for_presence_and_version() {
+        assert_eq!(tuicr_check(Some("tuicr 0.26.0")).status, Status::Pass);
+        assert_eq!(tuicr_check(Some("tuicr 1.2.0\n")).status, Status::Pass);
+        assert_eq!(tuicr_check(Some("tuicr 0.18.3")).status, Status::Warn);
+        assert_eq!(tuicr_check(None).fix, "brew install tuicr");
+    }
 
     fn local() -> Config {
         Config::resolve("/h".into(), &FileConfig { name: Some("Ana".into()), wake: Some(true), ..Default::default() }, |_| None, || None)

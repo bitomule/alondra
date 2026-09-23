@@ -103,6 +103,8 @@ pub struct Observed {
     pub claude: bool,
     pub marketplace: bool,
     pub plugin: bool,
+    pub tuicr: bool,
+    pub brew: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -254,6 +256,18 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
             if !seen.plugin {
                 steps.push(claude(&["plugin", "install", PLUGIN_ID]));
             }
+        }
+    }
+    if !seen.tuicr {
+        match seen.brew {
+            true => steps.push(Step::Run { program: "brew".into(), args: vec!["install".into(), "tuicr".into()] }),
+            false => steps.push(Step::Warn(
+                tr!(
+                    "tuicr is missing, so PR cards have no diff in the TUI: cargo install tuicr",
+                    "Falta tuicr, así que las tarjetas de PR no tienen diff en la TUI: cargo install tuicr"
+                )
+                .into(),
+            )),
         }
     }
     Plan { steps, config: merged, conflicts }
@@ -429,6 +443,8 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
         claude: args.skip_plugin || command_ok("claude", &["--version"]).is_some(),
         marketplace: !args.skip_plugin && has_marketplace(),
         plugin: plugins.as_ref().is_some_and(|l| has_plugin(l, PLUGIN_ID)),
+        tuicr: command_ok("tuicr", &["--version"]).is_some(),
+        brew: command_ok("brew", &["--version"]).is_some(),
     }
 }
 
@@ -606,7 +622,7 @@ mod tests {
     }
 
     fn fresh() -> Observed {
-        Observed { binaries: true, claude: true, ..Default::default() }
+        Observed { binaries: true, claude: true, tuicr: true, ..Default::default() }
     }
 
     fn named(n: &str) -> FileConfig {
