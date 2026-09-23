@@ -154,7 +154,8 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 /// Only nodes the state machine handed over: idle, with no work in sight and nothing in the
 /// inbox. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node) -> bool {
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission {
+    let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn {
         return false;
     }
     let key = key(node);
@@ -166,17 +167,17 @@ fn needs_attention(v: &View, node: &Node) -> bool {
 
 fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
     let said = what_it_said(node);
-    let title = match (expects, said.as_deref()) {
-        (Expects::Act, Some(text)) => cap(last_line(text)),
-        (_, Some(text)) => cap(last_question(text).unwrap_or_else(|| last_line(text))),
-        (_, None) => node.name.clone().unwrap_or_else(|| node.short_id.clone()),
+    let (title, detail) = match (expects, said.as_deref()) {
+        (Expects::Act, Some(text)) => headline(text, last_line(text)),
+        (_, Some(text)) => headline(text, last_question(text).unwrap_or_else(|| last_line(text))),
+        (_, None) => (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None),
     };
     Question {
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
         title,
-        detail: said,
+        detail,
         options: vec![],
         links: vec![],
         attachments: vec![],
@@ -194,18 +195,37 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
 
 fn finished_report(v: &View, node: &Node) -> Report {
     let said = what_it_said(node).unwrap_or_default();
+    let first = said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let first_sentence = first.split_inclusive(". ").next().unwrap_or(first).trim();
+    let (title, body) = if first_sentence.is_empty() {
+        (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None)
+    } else {
+        headline(&said, first_sentence)
+    };
     Report {
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
-        title: cap(said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(node.name.as_deref().unwrap_or(&node.short_id))),
-        body: Some(said),
+        title,
+        body,
         links: vec![],
         attachments: vec![],
         kind: ReportKind::Notice,
         created_at: now_millis(),
         read: false,
     }
+}
+
+/// The chosen line becomes a plain-text title and leaves the body, so nothing is said twice.
+fn headline(message: &str, chosen: &str) -> (String, Option<String>) {
+    let title = cap(&plain(chosen));
+    let rest = message.replacen(chosen, "", 1);
+    let rest = rest.trim();
+    (title, (!rest.is_empty()).then(|| rest.to_string()))
+}
+
+fn plain(text: &str) -> String {
+    text.replace("**", "").replace("__", "").replace('`', "").trim_start_matches(['#', '-', '*', '>', ' ']).trim().to_string()
 }
 
 fn last_question(message: &str) -> Option<&str> {
@@ -309,6 +329,14 @@ mod tests {
             delivered_at: None,
         }));
         assert_eq!(last_nudge_at(&v, "s"), Some(4000));
+    }
+
+    #[test]
+    fn the_title_is_not_repeated_in_the_body_and_has_no_markdown() {
+        let v = waiting_view("Ya no. `d0b8007a` **es exactamente el fix**. Main ya lo tiene.");
+        let Event::ReportPosted(r) = settle(&v, &v.nodes["s"], Expects::Finished).unwrap() else { panic!() };
+        assert_eq!(r.title, "Ya no.");
+        assert_eq!(r.body.as_deref(), Some("`d0b8007a` **es exactamente el fix**. Main ya lo tiene."));
     }
 
     #[test]
