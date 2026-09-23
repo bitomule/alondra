@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
     let claude_home = watcher::claude_home();
     let hold = std::env::var("ALONDRA_HOLD").map(|v| v != "0").unwrap_or(true);
     let addr = SocketAddr::new(config.listen, config.port);
-    let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("no puedo escuchar en {addr}"))?;
+    let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
 
     let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
     tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
@@ -42,11 +42,11 @@ async fn main() -> Result<()> {
     let push = Arc::new(push::Push::open(&config.home)?);
     tokio::spawn(push::run(hub.clone(), push.clone()));
     eprintln!(
-        "alondrad: escuchando en http://{addr}, datos en {}, para {} (puente viejo {}, despertar nodos {})",
+        "alondrad: listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
         config.home.display(),
         config.name,
-        if config.legacy_bridge { "sí" } else { "no" },
-        if config.wake { "sí" } else { "no" },
+        if config.legacy_bridge { "yes" } else { "no" },
+        if config.wake { "yes" } else { "no" },
     );
     let app = http::router(hub, auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -61,9 +61,9 @@ async fn retention(hub: Arc<hub::Hub>, retention_hours: f64) {
         tokio::time::sleep(every).await;
         let hub = hub.clone();
         match tokio::task::spawn_blocking(move || hub.compact(keep)).await {
-            Ok(Ok(deleted)) => eprintln!("alondrad: compactado, {deleted} eventos antiguos borrados"),
-            Ok(Err(e)) => eprintln!("alondrad: no pude compactar: {e}"),
-            Err(e) => eprintln!("alondrad: la compactación se cayó: {e}"),
+            Ok(Ok(deleted)) => eprintln!("alondrad: compacted, {deleted} old events deleted"),
+            Ok(Err(e)) => eprintln!("alondrad: could not compact: {e}"),
+            Err(e) => eprintln!("alondrad: compaction crashed: {e}"),
         }
     }
 }

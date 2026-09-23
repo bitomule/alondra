@@ -81,7 +81,7 @@ impl Auth {
 
     pub fn new_pairing_code(&self) -> String {
         let code = random_hex(10);
-        let mut p = self.pairing.lock().expect("pairing envenenado");
+        let mut p = self.pairing.lock().expect("pairing lock poisoned");
         p.retain(|_, t| t.elapsed() < PAIRING_TTL);
         p.insert(code.clone(), Instant::now());
         code
@@ -89,14 +89,14 @@ impl Auth {
 
     pub fn pair(&self, code: &str, name: &str, public_key_b64: &str) -> Result<Device, String> {
         let valid = {
-            let mut p = self.pairing.lock().expect("pairing envenenado");
+            let mut p = self.pairing.lock().expect("pairing lock poisoned");
             p.remove(code).is_some_and(|t| t.elapsed() < PAIRING_TTL)
         };
         if !valid {
-            return Err("código de vinculación caducado o desconocido".into());
+            return Err("pairing code expired or unknown".into());
         }
-        let raw = B64.decode(public_key_b64).map_err(|_| "clave pública mal codificada".to_string())?;
-        VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "clave pública no válida".to_string())?;
+        let raw = B64.decode(public_key_b64).map_err(|_| "public key badly encoded".to_string())?;
+        VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "invalid public key".to_string())?;
         let device = Device {
             id: random_hex(8),
             name: name.chars().take(80).collect(),
@@ -104,18 +104,18 @@ impl Auth {
             created_at: now_millis(),
             last_seen: None,
         };
-        let mut devices = self.devices.lock().expect("devices envenenado");
+        let mut devices = self.devices.lock().expect("devices lock poisoned");
         devices.push(device.clone());
         self.save(&devices).map_err(|e| e.to_string())?;
         Ok(device)
     }
 
     pub fn list(&self) -> Vec<Device> {
-        self.devices.lock().expect("devices envenenado").clone()
+        self.devices.lock().expect("devices lock poisoned").clone()
     }
 
     pub fn revoke(&self, id: &str) -> bool {
-        let mut devices = self.devices.lock().expect("devices envenenado");
+        let mut devices = self.devices.lock().expect("devices lock poisoned");
         let before = devices.len();
         devices.retain(|d| d.id != id);
         let changed = devices.len() != before;
@@ -127,34 +127,34 @@ impl Auth {
 
     fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
         let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
-        let device_id = h("x-alondra-device").ok_or("falta X-Alondra-Device")?;
-        let timestamp = h("x-alondra-timestamp").ok_or("falta X-Alondra-Timestamp")?;
-        let signature_b64 = h("x-alondra-signature").ok_or("falta X-Alondra-Signature")?;
-        let ts: i64 = timestamp.parse().map_err(|_| "marca de tiempo inválida")?;
+        let device_id = h("x-alondra-device").ok_or("missing X-Alondra-Device")?;
+        let timestamp = h("x-alondra-timestamp").ok_or("missing X-Alondra-Timestamp")?;
+        let signature_b64 = h("x-alondra-signature").ok_or("missing X-Alondra-Signature")?;
+        let ts: i64 = timestamp.parse().map_err(|_| "invalid timestamp")?;
         if (now_millis() - ts).abs() > MAX_SKEW_MS {
-            return Err("marca de tiempo fuera de plazo");
+            return Err("timestamp out of range");
         }
         let key_b64 = {
-            let devices = self.devices.lock().expect("devices envenenado");
+            let devices = self.devices.lock().expect("devices lock poisoned");
             devices.iter().find(|d| d.id == device_id).map(|d| d.public_key.clone())
         }
-        .ok_or("dispositivo no vinculado")?;
-        let key = B64.decode(key_b64).ok().and_then(|raw| VerifyingKey::from_sec1_bytes(&raw).ok()).ok_or("clave guardada corrupta")?;
-        let der = B64.decode(signature_b64).map_err(|_| "firma mal codificada")?;
-        let signature = Signature::from_der(&der).map_err(|_| "firma mal formada")?;
+        .ok_or("device not paired")?;
+        let key = B64.decode(key_b64).ok().and_then(|raw| VerifyingKey::from_sec1_bytes(&raw).ok()).ok_or("stored key is corrupt")?;
+        let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
+        let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
         let message = signed_message(method, path_and_query, timestamp, body);
-        key.verify(message.as_bytes(), &signature).map_err(|_| "firma incorrecta")?;
-        let mut seen = self.seen.lock().expect("seen envenenado");
+        key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
+        let mut seen = self.seen.lock().expect("seen lock poisoned");
         if seen.iter().any(|s| s == signature_b64) {
-            return Err("petición repetida");
+            return Err("replayed request");
         }
         seen.push_back(signature_b64.to_string());
         if seen.len() > REPLAY_MEMORY {
             seen.pop_front();
         }
         drop(seen);
-        let mut devices = self.devices.lock().expect("devices envenenado");
-        let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("dispositivo no vinculado")?;
+        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("device not paired")?;
         device.last_seen = Some(now_millis());
         Ok(Signed { name: device.name.clone() })
     }
@@ -221,22 +221,22 @@ mod tests {
     fn valid_signature_passes_and_replay_is_rejected() {
         let (auth, key, id) = auth_with_device();
         let ts = now_millis();
-        let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"si\"}");
+        let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}").unwrap().name, "iPhone");
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"si\"}").unwrap_err(), "petición repetida");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap().name, "iPhone");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap_err(), "replayed request");
     }
 
     #[test]
     fn tampered_body_or_path_fails() {
         let (auth, key, id) = auth_with_device();
         let ts = now_millis();
-        let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"si\"}");
+        let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}").unwrap_err(), "firma incorrecta");
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"si\"}").unwrap_err(), "firma incorrecta");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}").unwrap_err(), "wrong signature");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"yes\"}").unwrap_err(), "wrong signature");
     }
 
     #[test]
@@ -245,11 +245,11 @@ mod tests {
         let ts = now_millis() - 10 * 60_000;
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "marca de tiempo fuera de plazo");
+        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "timestamp out of range");
         let ts = now_millis();
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers("otro", ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "dispositivo no vinculado");
+        assert_eq!(auth.verify(&headers("other", ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "device not paired");
     }
 
     #[test]

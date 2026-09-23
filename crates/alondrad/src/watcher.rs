@@ -60,7 +60,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs));
             if meaningful {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
-                    eprintln!("alondrad: no se pudo guardar la observación de {short}");
+                    eprintln!("alondrad: could not save the observation of {short}");
                 }
                 crate::classify::spawn_if_unclear(&hub, &obs.session_id);
             }
@@ -304,14 +304,14 @@ fn spawn_pid_watcher(exits: mpsc::Sender<(String, i32)>) -> std::sync::mpsc::Sen
     std::thread::Builder::new()
         .name("alondra-pids".into())
         .spawn(move || kqueue_loop(rx, exits))
-        .expect("no se pudo arrancar el vigilante de procesos");
+        .expect("could not start the process watcher");
     tx
 }
 
 fn kqueue_loop(rx: std::sync::mpsc::Receiver<(String, i32)>, exits: mpsc::Sender<(String, i32)>) {
     let kq = unsafe { libc::kqueue() };
     if kq < 0 {
-        eprintln!("alondrad: kqueue no disponible");
+        eprintln!("alondrad: kqueue not available");
         return;
     }
     let mut watched: HashMap<i32, String> = HashMap::new();

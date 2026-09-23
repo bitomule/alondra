@@ -61,13 +61,13 @@ impl Push {
             Err(_) => None,
         };
         if apns.is_none() {
-            eprintln!("alondrad: sin ~/.alondra/apns.json, no se envían notificaciones");
+            eprintln!("alondrad: no ~/.alondra/apns.json, notifications are not sent");
         }
         Ok(Push { path, registrations: Mutex::new(registrations), apns })
     }
 
     pub fn register(&self, device: &str, reg: Registration) -> Result<()> {
-        let mut regs = self.registrations.lock().expect("push envenenado");
+        let mut regs = self.registrations.lock().expect("push lock poisoned");
         regs.retain(|d, r| d == device || r.token != reg.token);
         regs.insert(device.to_string(), reg);
         let tmp = self.path.with_extension("json.tmp");
@@ -81,17 +81,17 @@ impl Push {
     }
 
     fn registrations(&self) -> Vec<Registration> {
-        self.registrations.lock().expect("push envenenado").values().cloned().collect()
+        self.registrations.lock().expect("push lock poisoned").values().cloned().collect()
     }
 
     fn forget_token(&self, token: &str) {
-        let mut regs = self.registrations.lock().expect("push envenenado");
+        let mut regs = self.registrations.lock().expect("push lock poisoned");
         regs.retain(|_, r| r.token != token);
     }
 
     pub async fn check(&self) -> Result<(u16, String)> {
-        let apns = self.apns.as_ref().context("APNs no configurado")?;
-        apns.send(&"0".repeat(64), "sandbox", &json!({"aps": {"alert": "comprobación"}}), 10).await
+        let apns = self.apns.as_ref().context("APNs not configured")?;
+        apns.send(&"0".repeat(64), "sandbox", &json!({"aps": {"alert": "check"}}), 10).await
     }
 
     pub async fn broadcast(&self, payload: &Value, with_sound: bool) {
@@ -110,11 +110,11 @@ impl Push {
             match apns.send(&reg.token, &reg.environment, &body, priority).await {
                 Ok((200, _)) => {}
                 Ok((410, _)) | Ok((400, _)) => {
-                    eprintln!("alondrad: APNs rechaza un token, lo olvido");
+                    eprintln!("alondrad: APNs rejects a token, forgetting it");
                     self.forget_token(&reg.token);
                 }
                 Ok((status, text)) => eprintln!("alondrad: APNs {status}: {text}"),
-                Err(e) => eprintln!("alondrad: APNs no responde: {e}"),
+                Err(e) => eprintln!("alondrad: APNs does not respond: {e}"),
             }
         }
     }
@@ -122,14 +122,14 @@ impl Push {
 
 impl Apns {
     fn load(cfg: ApnsConfig) -> Result<Self> {
-        let pem = std::fs::read_to_string(&cfg.key_path).with_context(|| format!("no puedo leer {}", cfg.key_path.display()))?;
-        let key = SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow::anyhow!("clave .p8 no válida: {e}"))?;
+        let pem = std::fs::read_to_string(&cfg.key_path).with_context(|| format!("cannot read {}", cfg.key_path.display()))?;
+        let key = SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow::anyhow!("invalid .p8 key: {e}"))?;
         let client = reqwest::Client::builder().http2_prior_knowledge().timeout(Duration::from_secs(15)).build()?;
         Ok(Apns { key, key_id: cfg.key_id, team_id: cfg.team_id, topic: cfg.topic, client, jwt: Mutex::new(None) })
     }
 
     fn jwt(&self) -> String {
-        let mut cached = self.jwt.lock().expect("jwt envenenado");
+        let mut cached = self.jwt.lock().expect("jwt lock poisoned");
         if let Some((token, at)) = cached.as_ref()
             && now_millis() - at < JWT_LIFETIME_MS
         {
@@ -191,7 +191,7 @@ fn question_payload(q: &Question, badge: usize) -> Value {
         QuestionOrigin::Plan => "plan",
         QuestionOrigin::Classifier => "classifier",
     };
-    let who = q.node_name.clone().unwrap_or_else(|| "un nodo".into());
+    let who = q.node_name.clone().unwrap_or_else(|| "a node".into());
     let options = q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" · ");
     let body = if options.is_empty() { who.clone() } else { format!("{who} · {options}") };
     json!({
@@ -204,7 +204,7 @@ fn question_payload(q: &Question, badge: usize) -> Value {
 
 fn report_payload(r: &Report, badge: usize) -> Value {
     let kind = r.kind.label();
-    let who = r.node_name.clone().unwrap_or_else(|| "un nodo".into());
+    let who = r.node_name.clone().unwrap_or_else(|| "a node".into());
     json!({
         "aps": {"alert": {"title": r.title, "body": format!("{kind} · {who}")}, "category": "ALONDRA_READ",
                 "thread-id": r.session_id, "badge": badge},

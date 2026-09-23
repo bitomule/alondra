@@ -112,7 +112,7 @@ impl Config {
             name: var("ALONDRA_NAME")
                 .or_else(|| file.name.clone().filter(|n| !n.trim().is_empty()))
                 .or_else(fallback_name)
-                .unwrap_or_else(|| "el usuario".into()),
+                .unwrap_or_else(|| "the user".into()),
             port: port_from_env.or(file.port).unwrap_or(crate::DEFAULT_PORT),
             listen: var("ALONDRA_LISTEN").and_then(|v| v.parse().ok()).or(file.listen).unwrap_or([127, 0, 0, 1].into()),
             public_url: var("ALONDRA_PUBLIC_URL").or_else(|| file.public_url.clone()).filter(|u| !u.trim().is_empty()),
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(c.retention_hours, DEFAULT_RETENTION_HOURS);
         assert_eq!(c.service_label, DEFAULT_LABEL);
         let nameless = Config::resolve(PathBuf::new(), &FileConfig::default(), env(&[]), || None);
-        assert_eq!(nameless.name, "el usuario");
+        assert_eq!(nameless.name, "the user");
     }
 
     #[test]

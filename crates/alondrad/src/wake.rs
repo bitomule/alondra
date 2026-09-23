@@ -48,10 +48,10 @@ pub async fn run(hub: Arc<Hub>) {
                             let _ = hub.append(Event::QuestionDelivered { id: q });
                         }
                     }
-                    eprintln!("alondrad: mensaje entregado a {short} por su terminal");
+                    eprintln!("alondrad: message delivered to {short} through its terminal");
                 }
-                Ok(Err(e)) => eprintln!("alondrad: no pude entregar a {short}: {e}"),
-                Err(e) => eprintln!("alondrad: tarea de entrega rota para {short}: {e}"),
+                Ok(Err(e)) => eprintln!("alondrad: could not deliver to {short}: {e}"),
+                Err(e) => eprintln!("alondrad: delivery task broken for {short}: {e}"),
             }
         }
     }
@@ -87,11 +87,11 @@ fn type_into(short: &str, text: &str) -> Result<(), String> {
             break tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or(screen);
         }
         if start.elapsed() > PAINT_TIMEOUT {
-            return Err("la sesión no pintó a tiempo".into());
+            return Err("the session did not render in time".into());
         }
     };
     if MENU_MARKERS.iter().any(|m| screen.contains(m)) {
-        return Err("el nodo está en un menú; no escribo encima".into());
+        return Err("the node is in a menu; not typing over it".into());
     }
     tmux(&["send-keys", "-t", &session.0, "-l", text])?;
     std::thread::sleep(Duration::from_millis(600));

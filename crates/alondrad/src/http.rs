@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
-    QuestionOrigin, QuestionStatus, Report, ReportKind, View, now_millis,
+    QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::Extension;
@@ -106,7 +106,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         agent_id: str_field(&p, "agent_id"),
     };
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
-        eprintln!("alondrad: hook perdido: {e}");
+        eprintln!("alondrad: hook lost: {e}");
         return Json(json!({})).into_response();
     }
     if event == "Stop" {
@@ -114,7 +114,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     }
     if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "permissionDecisionReason": "Herramienta de Alondra"}})).into_response();
+            "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
     let in_subagent = h.agent_id.is_some();
     if !hub.hold_enabled || in_subagent || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
@@ -146,7 +146,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         QuestionOrigin::AskUserQuestion => {
             let qs = input.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
             let first = qs.first().cloned().unwrap_or(Value::Null);
-            let title = str_field(&first, "question").unwrap_or_else(|| "Pregunta".into());
+            let title = str_field(&first, "question").unwrap_or_else(|| "Question".into());
             let options = first
                 .get("options")
                 .and_then(Value::as_array)
@@ -157,26 +157,26 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
                 })
                 .unwrap_or_default();
             let extra: Vec<String> = qs.iter().skip(1).filter_map(|q| str_field(q, "question")).collect();
-            let detail = (!extra.is_empty()).then(|| format!("También pregunta:\n- {}", extra.join("\n- ")));
+            let detail = (!extra.is_empty()).then(|| format!("Also asks:\n- {}", extra.join("\n- ")));
             (title, detail, options)
         }
         QuestionOrigin::Plan => (
             str_field(&input, "plan")
                 .and_then(|p| p.lines().map(|l| l.trim_start_matches('#').trim().to_string()).find(|l| !l.is_empty()))
                 .map(|t| format!("Plan: {}", t.chars().take(120).collect::<String>()))
-                .unwrap_or_else(|| "Aprobar el plan".to_string()),
+                .unwrap_or_else(|| "Approve the plan".to_string()),
             str_field(&input, "plan"),
             vec![
-                QuestionOption { label: "Aprobar".into(), description: None },
-                QuestionOption { label: "Pedir cambios".into(), description: Some("Escribe qué cambiar".into()) },
+                QuestionOption { label: answer_option::APPROVE.into(), description: None },
+                QuestionOption { label: answer_option::REQUEST_CHANGES.into(), description: Some("Write what to change".into()) },
             ],
         ),
         _ => (
-            format!("Permiso: {}", h.tool_name.clone().unwrap_or_default()),
+            format!("Permission: {}", h.tool_name.clone().unwrap_or_default()),
             Some(h.tool_summary.clone().unwrap_or_else(|| input.to_string())),
             vec![
-                QuestionOption { label: "Permitir".into(), description: None },
-                QuestionOption { label: "Denegar".into(), description: Some("Escribe el motivo".into()) },
+                QuestionOption { label: answer_option::ALLOW.into(), description: None },
+                QuestionOption { label: answer_option::DENY.into(), description: Some("Write the reason".into()) },
             ],
         ),
     };
@@ -214,14 +214,17 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
     };
     let _ = hub.append(Event::QuestionDelivered { id });
     let input = p.get("tool_input").cloned().unwrap_or(Value::Null);
+    Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response()
+}
+
+fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &str) -> Value {
     let text = match answer.option.as_deref() {
-        Some("Necesito más contexto") | None => answer.text.clone(),
+        Some(answer_option::MORE_CONTEXT) | None => answer.text.clone(),
         Some(o) => o.to_string(),
     };
-    let wants_context = answer.option.as_deref() == Some("Necesito más contexto");
-    let user = &hub.config.name;
+    let wants_context = answer.option.as_deref() == Some(answer_option::MORE_CONTEXT);
     let approves = |yes: &str| answer.option.as_deref() == Some(yes) || answer.text.trim().eq_ignore_ascii_case(yes);
-    let body = match origin {
+    match origin {
         QuestionOrigin::AskUserQuestion => {
             let qs = input.get("questions").cloned().unwrap_or(json!([]));
             let mut answers = serde_json::Map::new();
@@ -233,16 +236,15 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
             json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
                    "updatedInput": {"questions": qs, "answers": answers}}})
         }
-        QuestionOrigin::Plan if approves("Aprobar") => json!({"hookSpecificOutput": {
+        QuestionOrigin::Plan if approves(answer_option::APPROVE) => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
         QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("{user} pide cambios en el plan: {}", answer.text) }}}),
-        _ if approves("Permitir") => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("{user} requests changes to the plan: {}", answer.text) }}}),
+        _ if approves(answer_option::ALLOW) => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"}}}),
         _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} lo deniega: {}", answer.text) }}}}),
-    };
-    Json(body).into_response()
+            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} denies it: {}", answer.text) }}}}),
+    }
 }
 
 #[derive(Deserialize)]
@@ -253,13 +255,13 @@ struct FileQuery {
 async fn file(State(hub): State<AppState>, Query(q): Query<FileQuery>) -> Response {
     let root = hub.home.join("files");
     let Ok(path) = std::fs::canonicalize(&q.path) else {
-        return err(StatusCode::NOT_FOUND, "no existe");
+        return err(StatusCode::NOT_FOUND, "not found");
     };
     let Ok(root) = std::fs::canonicalize(&root) else {
-        return err(StatusCode::NOT_FOUND, "no existe");
+        return err(StatusCode::NOT_FOUND, "not found");
     };
     if !path.starts_with(&root) {
-        return err(StatusCode::FORBIDDEN, "solo sirvo copias guardadas por Alondra");
+        return err(StatusCode::FORBIDDEN, "only copies stored by Alondra are served");
     }
     match tokio::fs::read(&path).await {
         Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response(),
@@ -268,7 +270,7 @@ async fn file(State(hub): State<AppState>, Query(q): Query<FileQuery>) -> Respon
 }
 
 fn local_only(peer: &SocketAddr, headers: &axum::http::HeaderMap) -> Option<Response> {
-    (!is_local(peer, headers)).then(|| err(StatusCode::FORBIDDEN, "solo desde el propio Mac"))
+    (!is_local(peer, headers)).then(|| err(StatusCode::FORBIDDEN, "only from this Mac"))
 }
 
 async fn new_pairing(State(hub): State<AppState>, Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
@@ -309,7 +311,7 @@ async fn revoke_device(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer):
     if let Some(r) = local_only(&peer, &headers) {
         return r;
     }
-    if auth.revoke(&id) { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "no existe") }
+    if auth.revoke(&id) { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "not found") }
 }
 
 #[derive(Deserialize)]
@@ -332,7 +334,7 @@ async fn push_register(
         headers.get("x-alondra-device").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string()
     };
     if b.token.is_empty() || !b.token.chars().all(|c| c.is_ascii_hexdigit()) {
-        return err(StatusCode::BAD_REQUEST, "token no válido");
+        return err(StatusCode::BAD_REQUEST, "invalid token");
     }
     let reg = Registration {
         token: b.token.to_lowercase(),
@@ -421,7 +423,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         Some((n, questions, reports, messages))
     });
     let Some((node, questions, reports, messages)) = found else {
-        return err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}"));
+        return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
         .timeline(&node.session_id, 40)
@@ -538,7 +540,7 @@ async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Respons
     });
     match res {
         Ok(Some((_, Event::QuestionAsked(q)))) => Json(json!({"id": q.id})).into_response(),
-        Ok(_) => err(StatusCode::BAD_REQUEST, "no sé qué nodo pregunta: falta session_id y ningún pid coincide"),
+        Ok(_) => err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
         Err(e) => internal(e),
     }
 }
@@ -546,7 +548,7 @@ async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Respons
 async fn question_detail(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     match hub.read(|v| v.questions.get(&id).cloned().map(|q| (q.clone(), v.nodes.get(&q.session_id).cloned()))) {
         Some((q, node)) => Json(json!({"question": q, "node": node})).into_response(),
-        None => err(StatusCode::NOT_FOUND, format!("no existe la pregunta #{id}")),
+        None => err(StatusCode::NOT_FOUND, format!("question #{id} does not exist")),
     }
 }
 
@@ -557,18 +559,26 @@ struct AnswerBody {
     by: Option<String>,
 }
 
-async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<AnswerBody>) -> Response {
+impl AnswerBody {
+    fn canonicalize(&mut self) {
+        self.option = self.option.as_deref().map(|o| answer_option::canonical(o).to_string());
+        self.text = answer_option::canonical(&self.text).to_string();
+    }
+}
+
+async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(mut b): Json<AnswerBody>) -> Response {
     let signed = signed.map(|Extension(s)| s);
+    b.canonicalize();
     let Some(q) = hub.read(|v| v.questions.get(&id).cloned()) else {
-        return err(StatusCode::NOT_FOUND, format!("no existe la pregunta #{id}"));
+        return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
-        return err(StatusCode::CONFLICT, format!("la pregunta #{id} ya no está abierta"));
+        return err(StatusCode::CONFLICT, format!("question #{id} is no longer open"));
     }
     let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
     let provenance = match &signed {
-        Some(s) => format!("desde {} (firmada)", s.name),
-        None => "desde el Mac (local, sin firma)".to_string(),
+        Some(s) => format!("via {} (signed)", s.name),
+        None => "via the Mac (local, unsigned)".to_string(),
     };
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
@@ -580,7 +590,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
     let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
-    let text = format!("[Alondra] Respuesta de {user} {provenance} a tu pregunta #{id} «{}»: {chosen}{}", q.title, b.text);
+    let text = format!("[Alondra] Answer from {user} {provenance} to your question #{id} \"{}\": {chosen}{}", q.title, b.text);
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -605,12 +615,12 @@ struct MoreContextBody {
 }
 
 async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
-    let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" Lo que le falta: {n}.")).unwrap_or_default();
+    let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" What is missing: {n}.")).unwrap_or_default();
     let user = hub.config.name.clone();
     let text = format!(
-        "{user} necesita más contexto antes de decidir.{note} Explica lo que está en juego, las opciones con sus consecuencias y tu recomendación, y vuelve a preguntar."
+        "{user} needs more context before deciding.{note} Explain what is at stake, the options with their consequences and your recommendation, and ask again."
     );
-    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some("Necesito más contexto".into()), by: None })).await
+    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some(answer_option::MORE_CONTEXT.into()), by: None })).await
 }
 
 async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
@@ -667,7 +677,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     });
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => Json(json!({"id": r.id})).into_response(),
-        Ok(_) => err(StatusCode::BAD_REQUEST, "no sé qué nodo informa"),
+        Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
         Err(e) => internal(e),
     }
 }
@@ -686,7 +696,7 @@ async fn waiting_machine(State(hub): State<AppState>, Json(b): Json<WaitingMachi
     });
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::BAD_REQUEST, "no sé qué nodo espera máquina"),
+        Ok(None) => err(StatusCode::BAD_REQUEST, "unknown node waiting for the machine"),
         Err(e) => internal(e),
     }
 }
@@ -720,7 +730,7 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     });
     match res {
         Ok(Some((_, Event::MessageQueued(m)))) => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
-        Ok(_) => err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}")),
+        Ok(_) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
         Err(e) => internal(e),
     }
 }
@@ -732,7 +742,7 @@ async fn forget_node(State(hub): State<AppState>, Path(key): Path<String>) -> Re
     });
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::CONFLICT, format!("{key} no existe o sigue vivo en claude agents: ciérralo con claude rm")),
+        Ok(None) => err(StatusCode::CONFLICT, format!("{key} does not exist or is still alive in claude agents: close it with claude rm")),
         Err(e) => internal(e),
     }
 }
@@ -741,7 +751,7 @@ async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Re
     let res = hub.append_with(|v| v.resolve_node(&key).map(|n| Event::Acknowledged { session_id: n.session_id.clone() }));
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}")),
+        Ok(None) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
         Err(e) => internal(e),
     }
 }
@@ -783,7 +793,7 @@ async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -
     let res = hub.append_with(|v| resolve_caller(v, &c).map(|(sid, _)| Event::MarkedOrchestrator { session_id: sid }));
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::BAD_REQUEST, "no sé qué sesión es el orquestador"),
+        Ok(None) => err(StatusCode::BAD_REQUEST, "unknown orchestrator session"),
         Err(e) => internal(e),
     }
 }
@@ -794,7 +804,7 @@ struct RequestBody {
 }
 
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
-    let text = format!("[Alondra] Petición nueva de {}: {}\n\nPrepara la misión y lanza el nodo con la herramienta launch de Alondra, o pregúntale con ask si falta algo.", hub.config.name, b.text);
+    let text = format!("[Alondra] New request from {}: {}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.", hub.config.name, b.text);
     let res = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator)?;
         Some(Event::MessageQueued(Message {
@@ -810,7 +820,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
     });
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::CONFLICT, "el orquestador no está conectado a Alondra"),
+        Ok(None) => err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra"),
         Err(e) => internal(e),
     }
 }
@@ -830,7 +840,7 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
             .values()
             .map(|n| {
                 let text = format!(
-                    "Nodo {} del proyecto {}. Estado: {}. {}",
+                    "Node {} of project {}. State: {}. {}",
                     n.display_name(),
                     n.project(),
                     n.state.label(),
@@ -846,7 +856,7 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
         .map(|(s, _)| s)
         .collect();
     if !literal.is_empty() {
-        return Json(json!({"via": "texto", "sessions": literal}));
+        return Json(json!({"via": "text", "sessions": literal}));
     }
     let matches = crate::classify::search(&sq.q, candidates).await;
     Json(json!({"via": "jev", "sessions": matches}))
@@ -863,7 +873,7 @@ struct LaunchBody {
 
 async fn launch(Json(b): Json<LaunchBody>) -> Response {
     if !std::path::Path::new(&b.cwd).is_dir() {
-        return err(StatusCode::BAD_REQUEST, format!("no existe el directorio {}", b.cwd));
+        return err(StatusCode::BAD_REQUEST, format!("directory {} does not exist", b.cwd));
     }
     let mut cmd = tokio::process::Command::new("claude");
     cmd.current_dir(&b.cwd)
@@ -880,6 +890,55 @@ async fn launch(Json(b): Json<LaunchBody>) -> Response {
         }
         Ok(Ok(out)) => err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).to_string()),
         Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
-        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "claude --bg no respondió en 60 s"),
+        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "claude --bg did not respond within 60 s"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn answered(text: &str, option: Option<&str>) -> Answer {
+        let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None };
+        b.canonicalize();
+        Answer { text: b.text, option: b.option, by: None, device: None, at: 0 }
+    }
+
+    fn decision(origin: QuestionOrigin, a: &Answer) -> Value {
+        hold_decision(origin, a, json!({"plan": "p"}), "Ana")
+    }
+
+    #[test]
+    fn the_installed_app_still_approves_and_allows_with_the_spanish_labels() {
+        for a in [answered("Aprobar", Some("Aprobar")), answered("Approve", Some("Approve"))] {
+            assert_eq!(decision(QuestionOrigin::Plan, &a)["hookSpecificOutput"]["permissionDecision"], "allow");
+        }
+        for a in [answered("Permitir", Some("Permitir")), answered("Allow", Some("Allow"))] {
+            assert_eq!(decision(QuestionOrigin::Permission, &a)["hookSpecificOutput"]["decision"]["behavior"], "allow");
+        }
+    }
+
+    #[test]
+    fn spanish_labels_are_stored_as_the_english_ones() {
+        let a = answered("Denegar", Some("Denegar"));
+        assert_eq!((a.text.as_str(), a.option.as_deref()), ("Deny", Some(answer_option::DENY)));
+        let out = decision(QuestionOrigin::Permission, &a);
+        assert_eq!(out["hookSpecificOutput"]["decision"]["behavior"], "deny");
+        assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it: Deny");
+    }
+
+    #[test]
+    fn the_legacy_more_context_option_passes_the_request_through_untouched() {
+        let a = answered("Explain the risk", Some("Necesito más contexto"));
+        let out = decision(QuestionOrigin::Plan, &a);
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(out["hookSpecificOutput"]["permissionDecisionReason"], "Explain the risk");
+    }
+
+    #[test]
+    fn free_text_is_not_mistaken_for_an_option() {
+        let a = answered("Pedir cambios en el paso 2", None);
+        assert_eq!(a.text, "Pedir cambios en el paso 2");
+        assert_eq!(decision(QuestionOrigin::Plan, &a)["hookSpecificOutput"]["permissionDecision"], "deny");
     }
 }
