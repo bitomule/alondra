@@ -126,6 +126,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let action: Bool?
     public let steps: [String]?
     public let mission: String?
+    /// The open PR card this question belongs to; it is shown inside that card.
+    public let prId: UInt64?
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }

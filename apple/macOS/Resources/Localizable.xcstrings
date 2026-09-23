@@ -1311,6 +1311,26 @@
         }
       }
     },
+    "The node asks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo pregunta"
+          }
+        }
+      }
+    },
+    "The node asks something": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo pregunta algo"
+          }
+        }
+      }
+    },
     "This node is gone": {
       "localizations": {
         "es": {

@@ -39,6 +39,7 @@ public final class FleetStore {
     public private(set) var focusRequest = 0
 
     public private(set) var inbox: [InboxItem] = []
+    private var grouping = InboxGrouping.empty
     public private(set) var projects: [(name: String, nodes: [Node])] = []
     private var pendingBySession: [String: Int] = [:]
     private var hidden: Set<String> = [] {
@@ -72,7 +73,7 @@ public final class FleetStore {
 
     private var ordered: [InboxItem] {
         guard let overview else { return [] }
-        let items = overview.openQuestions.map(InboxItem.question) + (overview.prs ?? []).map(InboxItem.pullRequest) + overview.news.map(InboxItem.report)
+        let items = grouping.loose.map(InboxItem.question) + (overview.prs ?? []).map(InboxItem.pullRequest) + overview.news.map(InboxItem.report)
         return InboxRing.ordered(items.filter { !hidden.contains($0.id) })
     }
 
@@ -92,6 +93,16 @@ public final class FleetStore {
         inbox.filter { $0.sessionId == session }
     }
 
+    /// The open questions shown inside a PR card, oldest first.
+    public func questions(forPullRequest id: UInt64) -> [Question] {
+        (grouping.byPullRequest[id] ?? []).filter { !hidden.contains("q\($0.id)") }.sorted { $0.askedAt < $1.askedAt }
+    }
+
+    public func questions(for item: InboxItem) -> [Question] {
+        guard case .pullRequest(let pr) = item else { return [] }
+        return questions(forPullRequest: pr.id)
+    }
+
     public func pendingCount(for session: String) -> Int {
         pendingBySession[session, default: 0]
     }
@@ -101,7 +112,8 @@ public final class FleetStore {
     }
 
     private func rebuild() {
-        let questions = questions.map(InboxItem.question).sorted { $0.date > $1.date }
+        grouping = InboxGrouping(questions: questions, pullRequests: overview?.prs ?? [])
+        let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
         let reports = news.map(InboxItem.report).sorted { $0.date > $1.date }
         let prs = (overview?.prs ?? []).map(InboxItem.pullRequest).sorted { $0.date > $1.date }
         let visible = (questions + prs + reports).filter { !hidden.contains($0.id) }

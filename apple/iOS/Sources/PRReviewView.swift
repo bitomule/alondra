@@ -24,6 +24,9 @@ struct PRReviewView: View {
                 Text(pr.summary)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
+                ForEach(fleet.questions(forPullRequest: pr.id)) { question in
+                    AttachedQuestion(question: question, showsDetail: true)
+                }
                 if let files {
                     Text("Tap a line to comment on it")
                         .font(.caption)
