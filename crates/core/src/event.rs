@@ -80,6 +80,8 @@ pub enum Event {
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
     WaitingMachine { session_id: String, reason: String },
     Pruned { before: Millis },
+    /// alondrad tried to launch an orchestrator because none was running.
+    OrchestratorLaunched { ok: bool },
     Clock {
         #[serde(default)]
         machine_strained: bool,
@@ -123,6 +125,7 @@ impl Event {
             Event::Classified { .. } => "classified",
             Event::WaitingMachine { .. } => "waiting_machine",
             Event::Pruned { .. } => "pruned",
+            Event::OrchestratorLaunched { .. } => "orchestrator_launched",
             Event::Clock { .. } => "clock",
         }
     }

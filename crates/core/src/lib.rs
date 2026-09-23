@@ -1,5 +1,6 @@
 pub mod config;
 pub mod event;
+pub mod keeper;
 pub mod model;
 #[cfg(test)]
 mod recorded;

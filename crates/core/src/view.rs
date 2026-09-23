@@ -21,6 +21,8 @@ pub struct View {
     pub removed: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub machine_strained: bool,
+    #[serde(default)]
+    pub orchestrator_launched_at: Option<Millis>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -194,6 +196,10 @@ impl View {
             }
             Event::Pruned { before } => {
                 self.prune(*before);
+                None
+            }
+            Event::OrchestratorLaunched { .. } => {
+                self.orchestrator_launched_at = Some(at);
                 None
             }
             Event::Clock { machine_strained } => {
