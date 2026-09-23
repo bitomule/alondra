@@ -929,11 +929,26 @@ async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crat
     answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some(answer_option::MORE_CONTEXT.into()), by: None })).await
 }
 
-async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+/// With a caller (a node's `withdraw` tool), only that node's own open questions can be withdrawn.
+async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>, body: Option<Json<Caller>>) -> Response {
+    let (question, caller) = hub.read(|v| (v.questions.get(&id).cloned(), body.as_ref().and_then(|Json(c)| resolve_caller(v, c))));
+    let asker = body.is_some().then(|| caller.map(|(sid, _)| sid));
+    if let Some((status, why)) = withdraw_refusal(id, question.as_ref(), asker.as_ref().map(Option::as_deref)) {
+        return err(status, why);
+    }
     match hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn }) {
         Ok(_) => Json(json!({"id": id})).into_response(),
         Err(e) => internal(e),
     }
+}
+
+/// `asker` is `None` for a client acting as the user, `Some(None)` for a node Alondra cannot place.
+fn withdraw_refusal(id: u64, question: Option<&Question>, asker: Option<Option<&str>>) -> Option<(StatusCode, String)> {
+    let Some(q) = question else { return Some((StatusCode::NOT_FOUND, format!("question #{id} does not exist"))) };
+    if asker.is_some_and(|sid| sid != Some(q.session_id.as_str())) {
+        return Some((StatusCode::FORBIDDEN, format!("question #{id} is not yours")));
+    }
+    (q.status != QuestionStatus::Open).then(|| (StatusCode::CONFLICT, format!("question #{id} is no longer open")))
 }
 
 #[derive(Deserialize)]
@@ -1414,6 +1429,43 @@ mod tests {
             assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
         }
         assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
+    }
+
+    #[test]
+    fn a_node_withdraws_only_its_own_open_questions() {
+        let mut open = alondra_core::model::Question {
+            id: 7,
+            session_id: "mine".into(),
+            node_name: None,
+            title: "t".into(),
+            detail: None,
+            options: vec![],
+            links: vec![],
+            attachments: vec![],
+            blocking: true,
+            origin: QuestionOrigin::Ask,
+            tool_use_id: None,
+            to_orchestrator: false,
+            node_context: None,
+            status: QuestionStatus::Open,
+            answer: None,
+            asked_at: 0,
+            action: false,
+            steps: vec![],
+            mission: None,
+        };
+        let cases = [
+            ("its own", Some(Some("mine")), None),
+            ("the user from a client", None, None),
+            ("another node's", Some(Some("other")), Some(StatusCode::FORBIDDEN)),
+            ("a caller Alondra cannot place", Some(None), Some(StatusCode::FORBIDDEN)),
+        ];
+        for (what, asker, refused) in cases {
+            assert_eq!(withdraw_refusal(7, Some(&open), asker).map(|r| r.0), refused, "{what}");
+        }
+        assert_eq!(withdraw_refusal(7, None, None).map(|r| r.0), Some(StatusCode::NOT_FOUND));
+        open.status = QuestionStatus::Answered;
+        assert_eq!(withdraw_refusal(7, Some(&open), Some(Some("mine"))).map(|r| r.0), Some(StatusCode::CONFLICT));
     }
 
     #[test]

@@ -232,6 +232,9 @@ impl View {
                         known.state = crate::pr::PrState::Dismissed;
                     }
                 }
+                if matches!(pr.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed) {
+                    self.withdraw_questions_about(pr.id);
+                }
                 None
             }
             Event::PrMerged { id, method } => {
@@ -239,6 +242,7 @@ impl View {
                     pr.state = crate::pr::PrState::Merged;
                     self.merge_methods.insert(pr.repo.clone(), *method);
                 }
+                self.withdraw_questions_about(*id);
                 None
             }
             Event::PrDismissed { id } => {
@@ -279,6 +283,17 @@ impl View {
             let o = states::evaluate_with(self, n, now, Trigger::Clock, machine_strained);
             o.state != n.state || o.orchestrator != n.orchestrator_state || o.drop_tool
         })
+    }
+
+    /// Once a PR is merged or closed, the open questions that link to it have nothing left to decide.
+    fn withdraw_questions_about(&mut self, pr_id: u64) {
+        let Some(pr) = self.prs.get(&pr_id) else { return };
+        let target = (pr.repo.clone(), pr.number);
+        for q in self.questions.values_mut() {
+            if q.status == QuestionStatus::Open && q.links.iter().any(|l| crate::pr::parse_url(&l.url).as_ref() == Some(&target)) {
+                q.status = QuestionStatus::Withdrawn;
+            }
+        }
     }
 
     fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<(String, Trigger)> {
@@ -855,6 +870,35 @@ mod tests {
         v.apply(6, 6000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("something else".into()), ..Default::default() }));
         v.apply(7, 7000, &report(2, "s", ReportKind::Notice, 7000));
         assert_eq!(v.news(9000).len(), 1);
+    }
+
+    #[test]
+    fn a_merged_or_closed_pr_withdraws_the_open_questions_that_link_to_it() {
+        use crate::model::Link;
+        use crate::pr::{MergeMethod, PrState};
+        let closed = |state: PrState| move |v: &View| {
+            let mut pr = v.prs[&1].clone();
+            pr.state = state;
+            Event::PrUpdated(pr)
+        };
+        let cases: Vec<(&str, &str, Box<dyn Fn(&View) -> Event>, QuestionStatus)> = vec![
+            ("merged from a card", "https://github.com/a/b/pull/24", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Withdrawn),
+            ("merged on GitHub", "https://github.com/a/b/pull/24/files", Box::new(closed(PrState::Merged)), QuestionStatus::Withdrawn),
+            ("closed on GitHub", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Closed)), QuestionStatus::Withdrawn),
+            ("still open", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Open)), QuestionStatus::Open),
+            ("set aside is not settled", "https://github.com/a/b/pull/24", Box::new(|_| Event::PrDismissed { id: 1 }), QuestionStatus::Open),
+            ("another PR", "https://github.com/a/b/pull/25", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Open),
+        ];
+        for (name, link, event, expected) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit")]);
+            v.apply(2, 2000, &Event::PrOpened { url: "https://github.com/a/b/pull/24".into(), session_id: "s".into() });
+            let mut q = question(1, "s", QuestionOrigin::Ask);
+            q.links = vec![Link { url: link.into(), title: None }];
+            v.apply(3, 3000, &Event::QuestionAsked(q));
+            let e = event(&v);
+            v.apply(4, 4000, &e);
+            assert_eq!(v.questions[&1].status, expected, "{name}");
+        }
     }
 
     #[test]
