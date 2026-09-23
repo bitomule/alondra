@@ -57,6 +57,13 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 obs.last_text = Some(text);
                 obs.last_text_at = at;
             }
+            if obs.state.as_deref() == Some("stopped") {
+                let session = obs.session_id.clone();
+                if !hub.read(|v| v.removed.contains(&session)) {
+                    let _ = hub.append(Event::NodeRemoved { session_id: session });
+                }
+                continue;
+            }
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs));
             if meaningful {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
