@@ -1,19 +1,18 @@
 import AlondraShared
 import SwiftUI
 
-func inlineMarkdown(_ text: String) -> AttributedString {
-    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
-}
-
 struct MarkdownText: View {
     let text: String
 
     var body: some View {
-        let blocks = MarkdownParser.blocks(from: text)
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(blocks) { block in
-                BlockView(block: block)
+            ForEach(MarkdownParser.segments(from: text)) { segment in
+                switch segment {
+                case .block(let block):
+                    BlockView(block: block)
+                case .table(let rows):
+                    TableGrid(rows: rows)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -27,32 +26,32 @@ struct BlockView: View {
         content
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, CGFloat(block.depth) * 20)
     }
 
     @ViewBuilder
     private var content: some View {
         switch block.kind {
         case .heading(let level):
-            Text(inlineMarkdown(block.text))
+            Text(block.content)
                 .font(headingFont(level))
                 .padding(.top, level <= 2 ? 12 : 6)
                 .padding(.bottom, 2)
                 .accessibilityAddTraits(.isHeader)
         case .paragraph:
-            Text(inlineMarkdown(block.text))
+            Text(block.content)
                 .lineSpacing(3)
                 .padding(.vertical, 2)
-        case .listItem(let marker, let depth):
+        case .listItem(let marker):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 ListMarkerView(marker: marker)
                     .frame(minWidth: 16, alignment: .trailing)
-                Text(inlineMarkdown(block.text))
+                Text(block.content)
                     .lineSpacing(3)
             }
-            .padding(.leading, CGFloat(depth) * 20)
         case .code(let language):
             ScrollView(.horizontal) {
-                Text(block.text)
+                Text(block.plainText)
                     .font(.system(.callout, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(12)
@@ -72,34 +71,13 @@ struct BlockView: View {
         case .quote:
             HStack(alignment: .top, spacing: 10) {
                 Capsule().fill(.quaternary).frame(width: 3)
-                Text(inlineMarkdown(block.text))
+                Text(block.content)
                     .foregroundStyle(.secondary)
                     .lineSpacing(3)
             }
             .fixedSize(horizontal: false, vertical: true)
-        case .table(let header, let rows):
-            ScrollView(.horizontal) {
-                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
-                    GridRow {
-                        ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
-                            Text(inlineMarkdown(cell)).fontWeight(.semibold)
-                                .frame(maxWidth: 320, alignment: .leading)
-                        }
-                    }
-                    Divider()
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        GridRow {
-                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                Text(inlineMarkdown(cell))
-                                    .frame(maxWidth: 320, alignment: .leading)
-                            }
-                        }
-                    }
-                }
-                .font(.callout)
-                .padding(.vertical, 4)
-            }
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        case .tableRow:
+            TableGrid(rows: [block])
         case .rule:
             Divider().padding(.vertical, 8)
         }
@@ -112,6 +90,80 @@ struct BlockView: View {
         case 3: .headline
         default: .subheadline.weight(.semibold)
         }
+    }
+}
+
+struct TableGrid<Cell: View, Below: View>: View {
+    let rows: [MarkdownBlock]
+    @ViewBuilder let cell: (MarkdownBlock, Int, TableCell) -> Cell
+    @ViewBuilder let below: (MarkdownBlock) -> Below
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(rows) { block in
+                    if let row = block.tableRow {
+                        GridRow {
+                            ForEach(row.cells.indices, id: \.self) { column in
+                                cell(block, column, TableCell(text: row.cells[column], alignment: row.alignment(of: column), isHeader: row.isHeader))
+                            }
+                        }
+                        if row.isHeader {
+                            Divider().gridCellUnsizedAxes(.horizontal)
+                        }
+                        below(block)
+                    }
+                }
+            }
+            .font(.callout)
+            .padding(.vertical, 4)
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .textSelection(.enabled)
+        .padding(.horizontal, -9)
+        .padding(.leading, CGFloat(rows.first?.depth ?? 0) * 20)
+    }
+}
+
+extension TableGrid where Cell == TableCell, Below == EmptyView {
+    init(rows: [MarkdownBlock]) {
+        self.init(rows: rows, cell: { _, _, cell in cell }, below: { _ in EmptyView() })
+    }
+}
+
+struct TableCell: View {
+    let text: AttributedString
+    let alignment: MarkdownBlock.ColumnAlignment
+    let isHeader: Bool
+
+    var body: some View {
+        Text(text)
+            .fontWeight(isHeader ? .semibold : nil)
+            .multilineTextAlignment(textAlignment)
+            .frame(maxWidth: 320, alignment: frameAlignment)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 3)
+            .gridColumnAlignment(horizontalAlignment)
+    }
+
+    private var textAlignment: TextAlignment {
+        switch alignment {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private var horizontalAlignment: HorizontalAlignment {
+        switch alignment {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private var frameAlignment: Alignment {
+        Alignment(horizontal: horizontalAlignment, vertical: .top)
     }
 }
 

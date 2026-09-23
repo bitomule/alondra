@@ -246,8 +246,8 @@ struct TriageCard: View {
 
     private func blocks(_ markdown: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(MarkdownParser.blocks(from: markdown)) { block in
-                MarkdownBlockView(block: block)
+            ForEach(MarkdownParser.segments(from: markdown)) { segment in
+                MarkdownSegmentView(segment: segment)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -256,11 +256,12 @@ struct TriageCard: View {
 
     private func excerpt(_ markdown: String, cta: String) -> some View {
         let blocks = MarkdownParser.blocks(from: markdown)
+        let segments = MarkdownParser.segments(blocks.prefix(5))
         return Button(action: onReview) {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(blocks.prefix(5)) { block in
-                        MarkdownBlockView(block: block)
+                    ForEach(segments) { segment in
+                        MarkdownSegmentView(segment: segment)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }

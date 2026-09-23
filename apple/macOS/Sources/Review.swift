@@ -9,6 +9,7 @@ final class ReviewDraft {
     var general = ""
     var editing: String?
     var editorText = ""
+    @ObservationIgnored private var positions: [String: String] = [:]
 
     func feedback(author: String) -> String {
         ReviewFeedback.format(comments, general: general, author: author)
@@ -27,7 +28,8 @@ final class ReviewDraft {
         editing = anchor
     }
 
-    func commit(anchor: String, quote: String) {
+    func commit(anchor: String, quote: String, position: String? = nil) {
+        if let position { positions[anchor] = position }
         let text = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
         if let index = comments.firstIndex(where: { $0.anchor == anchor }) {
             if text.isEmpty {
@@ -37,7 +39,7 @@ final class ReviewDraft {
             }
         } else if !text.isEmpty {
             comments.append(ReviewComment(anchor: anchor, quote: quote, text: text))
-            comments.sort { Self.order($0.anchor, $1.anchor) }
+            comments.sort { Self.order(positions[$0.anchor] ?? $0.anchor, positions[$1.anchor] ?? $1.anchor) }
         }
         cancelEditing()
     }
@@ -101,29 +103,41 @@ struct ReviewableDocument: View {
     var focus: FocusState<DetailField?>.Binding
 
     var body: some View {
-        let blocks = MarkdownParser.blocks(from: text)
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(blocks) { block in
-                if block.isCommentable {
-                    CommentableBlock(block: block, anchor: "\(anchorPrefix)-\(block.id)", draft: draft, focus: focus)
-                } else {
+            ForEach(MarkdownParser.segments(from: text)) { segment in
+                switch segment {
+                case .block(let block) where block.isCommentable:
+                    CommentableBlock(block: block, target: CommentTarget(block: block, prefix: anchorPrefix), draft: draft, focus: focus)
+                case .block(let block):
                     BlockView(block: block).padding(.horizontal, 10)
+                case .table(let rows):
+                    CommentableTable(rows: rows, anchorPrefix: anchorPrefix, draft: draft, focus: focus)
                 }
             }
         }
     }
 }
 
+struct CommentTarget {
+    let anchor: String
+    let position: String
+
+    init(block: MarkdownBlock, prefix: String) {
+        anchor = "\(prefix)-\(block.draftKey)"
+        position = "\(prefix)-\(block.id)"
+    }
+}
+
 struct CommentableBlock: View {
     let block: MarkdownBlock
-    let anchor: String
+    let target: CommentTarget
     let draft: ReviewDraft
     var focus: FocusState<DetailField?>.Binding
     @State private var hovering = false
 
     var body: some View {
-        let comment = draft.comment(for: anchor)
-        let editing = draft.editing == anchor
+        let comment = draft.comment(for: target.anchor)
+        let editing = draft.editing == target.anchor
         VStack(alignment: .leading, spacing: 6) {
             BlockView(block: block)
                 .padding(.horizontal, 10)
@@ -136,31 +150,14 @@ struct CommentableBlock: View {
                     }
                 }
                 .overlay(alignment: .topLeading) {
-                    Button {
-                        startEditing()
-                    } label: {
-                        Image(systemName: comment == nil ? "plus.bubble" : "text.bubble.fill")
-                            .font(.system(size: 13))
-                            .frame(width: 22, height: 22)
-                            .contentShape(.rect)
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(hovering && !editing ? 1 : 0)
-                    .offset(x: -28, y: 1)
-                    .help("Comment on this block")
-                    .accessibilityHidden(true)
+                    CommentButton(commented: comment != nil, action: startEditing)
+                        .opacity(hovering && !editing ? 1 : 0)
+                        .offset(x: -28, y: 1)
                 }
-                .contextMenu {
-                    Button(comment == nil ? String(localized: "Comment…") : String(localized: "Edit Comment…"), action: startEditing)
-                    if let comment {
-                        Button("Remove Comment", role: .destructive) { draft.remove(comment) }
-                    }
-                }
-                .accessibilityAction(named: comment == nil ? String(localized: "Comment") : String(localized: "Edit Comment"), startEditing)
+                .commentActions(comment: comment, draft: draft, start: startEditing)
 
             if editing {
-                CommentEditor(draft: draft, anchor: anchor, quote: block.plainText, focus: focus)
+                CommentEditor(draft: draft, anchor: target.anchor, quote: block.plainText, position: target.position, focus: focus)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             } else if let comment {
                 CommentCallout(comment: comment, edit: startEditing, remove: { draft.remove(comment) })
@@ -178,7 +175,90 @@ struct CommentableBlock: View {
     }
 
     private func startEditing() {
-        draft.beginEditing(anchor)
+        draft.beginEditing(target.anchor)
+    }
+}
+
+struct CommentableTable: View {
+    let rows: [MarkdownBlock]
+    let anchorPrefix: String
+    let draft: ReviewDraft
+    var focus: FocusState<DetailField?>.Binding
+    @State private var hovered: Int?
+
+    var body: some View {
+        TableGrid(rows: rows) { block, column, cell in
+            let target = CommentTarget(block: block, prefix: anchorPrefix)
+            let comment = draft.comment(for: target.anchor)
+            let editing = draft.editing == target.anchor
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if column == 0 {
+                    CommentButton(commented: comment != nil) { draft.beginEditing(target.anchor) }
+                        .opacity(hovered == block.id && !editing ? 1 : 0)
+                }
+                cell
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(highlight(block, commented: comment != nil || editing))
+            .onHover { inside in
+                if inside {
+                    hovered = block.id
+                } else if hovered == block.id {
+                    hovered = nil
+                }
+            }
+            .commentActions(comment: comment, draft: draft) { draft.beginEditing(target.anchor) }
+        } below: { block in
+            let target = CommentTarget(block: block, prefix: anchorPrefix)
+            if draft.editing == target.anchor {
+                CommentEditor(draft: draft, anchor: target.anchor, quote: block.plainText, position: target.position, focus: focus)
+                    .padding(.vertical, 4)
+                    .gridCellUnsizedAxes(.horizontal)
+            } else if let comment = draft.comment(for: target.anchor) {
+                CommentCallout(comment: comment, edit: { draft.beginEditing(target.anchor) }, remove: { draft.remove(comment) })
+                    .padding(.vertical, 4)
+                    .gridCellUnsizedAxes(.horizontal)
+            }
+        }
+        .padding(.leading, -18)
+        .padding(.trailing, 10)
+        .animation(.snappy(duration: 0.18), value: draft.editing)
+        .animation(.snappy(duration: 0.18), value: draft.comments)
+    }
+
+    private func highlight(_ block: MarkdownBlock, commented: Bool) -> Color {
+        if commented { return Color.accentColor.opacity(0.09) }
+        return hovered == block.id ? Color.primary.opacity(0.04) : .clear
+    }
+}
+
+struct CommentButton: View {
+    let commented: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: commented ? "text.bubble.fill" : "plus.bubble")
+                .font(.system(size: 13))
+                .frame(width: 22, height: 22)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(Color.accentColor)
+        .help("Comment on this block")
+        .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    func commentActions(comment: ReviewComment?, draft: ReviewDraft, start: @escaping () -> Void) -> some View {
+        contextMenu {
+            Button(comment == nil ? String(localized: "Comment…") : String(localized: "Edit Comment…"), action: start)
+            if let comment {
+                Button("Remove Comment", role: .destructive) { draft.remove(comment) }
+            }
+        }
+        .accessibilityAction(named: comment == nil ? String(localized: "Comment") : String(localized: "Edit Comment"), start)
     }
 }
 
@@ -186,6 +266,7 @@ struct CommentEditor: View {
     @Bindable var draft: ReviewDraft
     let anchor: String
     let quote: String
+    var position: String?
     var focus: FocusState<DetailField?>.Binding
 
     var body: some View {
@@ -216,7 +297,7 @@ struct CommentEditor: View {
     }
 
     private func save() {
-        draft.commit(anchor: anchor, quote: quote)
+        draft.commit(anchor: anchor, quote: quote, position: position)
         focus.wrappedValue = .pane
     }
 

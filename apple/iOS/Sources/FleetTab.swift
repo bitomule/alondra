@@ -292,8 +292,8 @@ struct NodeDetail: View {
                 if let last = node.lastMessage, !last.isEmpty {
                     section(String(localized: "What it said last"), symbol: "text.quote", trailing: node.lastMessageAt.map(relative)) {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach(MarkdownParser.blocks(from: last)) { block in
-                                MarkdownBlockView(block: block)
+                            ForEach(MarkdownParser.segments(from: last)) { segment in
+                                MarkdownSegmentView(segment: segment)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }

@@ -10,7 +10,7 @@ struct ReviewView: View {
     @State private var blocks: [MarkdownBlock] = []
     @State private var loadError: String?
     @State private var loaded = false
-    @State private var comments: [Int: String] = [:]
+    @State private var comments: [String: String] = [:]
     @State private var general = ""
     @State private var composing: MarkdownBlock?
     @State private var sending = false
@@ -20,11 +20,11 @@ struct ReviewView: View {
     private var kind: Kind { Kind(item) }
 
     private var commentedBlocks: [MarkdownBlock] {
-        blocks.filter { comments[$0.id] != nil }
+        blocks.filter { comments[$0.draftKey] != nil }
     }
 
     private var feedbackComments: [ReviewComment] {
-        commentedBlocks.map { ReviewComment(anchor: String($0.id), quote: $0.plainText, text: comments[$0.id] ?? "") }
+        commentedBlocks.map { ReviewComment(anchor: $0.draftKey, quote: $0.plainText, text: comments[$0.draftKey] ?? "") }
     }
 
     private func number(of block: MarkdownBlock) -> Int {
@@ -32,7 +32,7 @@ struct ReviewView: View {
     }
 
     private var hasFeedback: Bool {
-        !comments.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !commentedBlocks.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -81,9 +81,9 @@ struct ReviewView: View {
             finish(HandoffLabel.readAndClosed) { try await $0.readAndClose(report) }
         }
         .sheet(item: $composing) { block in
-            CommentSheet(block: block, initial: comments[block.id] ?? "") { text in
+            CommentSheet(block: block, initial: comments[block.draftKey] ?? "") { text in
                 withAnimation(.spring(duration: 0.4, bounce: 0.25)) {
-                    comments[block.id] = text.isEmpty ? nil : text
+                    comments[block.draftKey] = text.isEmpty ? nil : text
                 }
             }
         }
@@ -142,9 +142,14 @@ struct ReviewView: View {
             .phaseAnimator([0.45, 1]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
         } else {
             LazyVStack(alignment: .leading, spacing: 6) {
-                ForEach(blocks) { block in
-                    BlockRow(block: block, comment: comments[block.id], tint: kind.tint) {
-                        composing = block
+                ForEach(MarkdownParser.segments(blocks)) { segment in
+                    switch segment {
+                    case .block(let block):
+                        BlockRow(block: block, comment: comments[block.draftKey], tint: kind.tint) {
+                            composing = block
+                        }
+                    case .table(let rows):
+                        TableRows(rows: rows, comments: comments, tint: kind.tint) { composing = $0 }
                     }
                 }
             }
@@ -157,8 +162,8 @@ struct ReviewView: View {
                 Text("Your comments")
                     .font(.display(.title3))
                 Spacer()
-                if !comments.isEmpty {
-                    Text(comments.count, format: .number)
+                if !commentedBlocks.isEmpty {
+                    Text(commentedBlocks.count, format: .number)
                         .font(.subheadline.monospacedDigit().weight(.bold))
                         .foregroundStyle(kind.tint)
                         .contentTransition(.numericText())
@@ -175,7 +180,7 @@ struct ReviewView: View {
                         .font(.footnote.italic())
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
-                    Text(comments[block.id] ?? "")
+                    Text(comments[block.draftKey] ?? "")
                         .font(.subheadline)
                 }
                 .onTapGesture { composing = block }
@@ -392,6 +397,43 @@ private struct BlockRow: View {
         } else {
             MarkdownBlockView(block: block)
         }
+    }
+}
+
+private struct TableRows: View {
+    let rows: [MarkdownBlock]
+    let comments: [String: String]
+    let tint: Color
+    let onTap: (MarkdownBlock) -> Void
+
+    var body: some View {
+        TableBlock(rows: rows) { block, cell in
+            let comment = comments[block.draftKey]
+            Button { onTap(block) } label: {
+                cell
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .background(comment == nil ? .clear : tint.opacity(0.14))
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
+        } below: { block in
+            if let comment = comments[block.draftKey] {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "text.bubble.fill")
+                        .foregroundStyle(tint)
+                    Text(comment)
+                        .font(.subheadline)
+                        .foregroundStyle(Palette.ink)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(tint.opacity(0.14), in: .rect(cornerRadius: 10))
+                .padding(.vertical, 4)
+                .gridCellUnsizedAxes(.horizontal)
+                .onTapGesture { onTap(block) }
+            }
+        }
+        .foregroundStyle(Palette.ink)
     }
 }
 

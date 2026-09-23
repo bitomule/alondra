@@ -7,32 +7,41 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         case task(done: Bool)
     }
 
+    public enum ColumnAlignment: Hashable, Sendable {
+        case leading
+        case center
+        case trailing
+    }
+
+    public struct TableRow: Hashable, Sendable {
+        public let index: Int
+        public let cells: [AttributedString]
+        public let header: [AttributedString]
+        public let alignments: [ColumnAlignment]
+
+        public var isHeader: Bool { index == 0 }
+
+        public func alignment(of column: Int) -> ColumnAlignment {
+            alignments.indices.contains(column) ? alignments[column] : .leading
+        }
+    }
+
     public enum Kind: Hashable, Sendable {
         case heading(level: Int)
         case paragraph
-        case listItem(marker: ListMarker, depth: Int)
+        case listItem(marker: ListMarker)
         case code(language: String?)
         case quote
-        case table(header: [String], rows: [[String]])
+        case tableRow(TableRow)
         case rule
     }
 
     public let id: Int
     public let kind: Kind
-    public let text: String
-
-    public var plainText: String {
-        switch kind {
-        case .code: return text
-        case .rule: return ""
-        case .table(let header, let rows):
-            return ([header] + rows).map { $0.joined(separator: " | ") }.joined(separator: "\n")
-        default:
-            let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            guard let attributed = try? AttributedString(markdown: text, options: options) else { return text }
-            return String(attributed.characters)
-        }
-    }
+    public let depth: Int
+    public let content: AttributedString
+    public let plainText: String
+    public let draftKey: String
 
     public static func inline(_ source: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
@@ -43,183 +52,218 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         if case .rule = kind { return false }
         return true
     }
+
+    public var tableRow: TableRow? {
+        if case .tableRow(let row) = kind { return row }
+        return nil
+    }
+
+    static func name(of kind: Kind) -> String {
+        switch kind {
+        case .heading: "heading"
+        case .paragraph: "paragraph"
+        case .listItem: "item"
+        case .code: "code"
+        case .quote: "quote"
+        case .tableRow: "row"
+        case .rule: "rule"
+        }
+    }
+}
+
+public enum MarkdownSegment: Identifiable, Hashable, Sendable {
+    case block(MarkdownBlock)
+    case table([MarkdownBlock])
+
+    public var id: Int {
+        switch self {
+        case .block(let block): block.id
+        case .table(let rows): rows.first?.id ?? -1
+        }
+    }
 }
 
 public enum MarkdownParser {
     public static func blocks(from source: String) -> [MarkdownBlock] {
-        var parser = Parser(lines: source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n"))
-        return parser.run()
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
+        guard let document = try? AttributedString(markdown: source, options: options) else {
+            var builder = Builder()
+            builder.append(.paragraph, depth: 0, content: AttributedString(source))
+            return builder.blocks
+        }
+        var builder = Builder()
+        for (intent, range) in document.runs[\.presentationIntent] {
+            var content = AttributedString(document[range])
+            content.presentationIntent = nil
+            builder.add(content, intent: intent?.components ?? [])
+        }
+        builder.flushRow()
+        return builder.blocks
     }
 
-    private struct Parser {
-        let lines: [String]
-        var index = 0
-        var blocks: [MarkdownBlock] = []
-        var paragraph: [String] = []
-
-        init(lines: [String]) {
-            self.lines = lines
-        }
-
-        mutating func run() -> [MarkdownBlock] {
-            while index < lines.count {
-                let line = lines[index]
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-                if trimmed.isEmpty {
-                    flushParagraph()
-                    index += 1
-                } else if let fence = fenceMarker(trimmed) {
-                    flushParagraph()
-                    readCode(fence: fence, info: String(trimmed.dropFirst(fence.count)))
-                } else if let heading = heading(trimmed) {
-                    flushParagraph()
-                    append(.heading(level: heading.level), heading.text)
-                    index += 1
-                } else if isRule(trimmed) {
-                    flushParagraph()
-                    append(.rule, "")
-                    index += 1
-                } else if trimmed.hasPrefix("|") {
-                    flushParagraph()
-                    readTable()
-                } else if trimmed.hasPrefix(">") {
-                    flushParagraph()
-                    readQuote()
-                } else if let item = listItem(line) {
-                    flushParagraph()
-                    readListItem(item)
-                } else {
-                    paragraph.append(trimmed)
-                    index += 1
-                }
+    public static func segments(_ blocks: some Sequence<MarkdownBlock>) -> [MarkdownSegment] {
+        var segments: [MarkdownSegment] = []
+        for block in blocks {
+            guard let row = block.tableRow else {
+                segments.append(.block(block))
+                continue
             }
-            flushParagraph()
-            return blocks
-        }
-
-        mutating func append(_ kind: MarkdownBlock.Kind, _ text: String) {
-            blocks.append(MarkdownBlock(id: blocks.count, kind: kind, text: text))
-        }
-
-        mutating func flushParagraph() {
-            guard !paragraph.isEmpty else { return }
-            append(.paragraph, paragraph.joined(separator: "\n"))
-            paragraph = []
-        }
-
-        func fenceMarker(_ trimmed: String) -> String? {
-            if trimmed.hasPrefix("```") { return "```" }
-            if trimmed.hasPrefix("~~~") { return "~~~" }
-            return nil
-        }
-
-        mutating func readCode(fence: String, info: String) {
-            index += 1
-            var body: [String] = []
-            while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
-                body.append(lines[index])
-                index += 1
-            }
-            index += 1
-            let language = info.trimmingCharacters(in: .whitespaces)
-            append(.code(language: language.isEmpty ? nil : language), body.joined(separator: "\n"))
-        }
-
-        func heading(_ trimmed: String) -> (level: Int, text: String)? {
-            let hashes = trimmed.prefix { $0 == "#" }.count
-            guard (1...6).contains(hashes) else { return nil }
-            let rest = trimmed.dropFirst(hashes)
-            guard rest.isEmpty || rest.first == " " else { return nil }
-            let text = rest.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "#")).trimmingCharacters(in: .whitespaces)
-            return (hashes, text)
-        }
-
-        func isRule(_ trimmed: String) -> Bool {
-            let compact = trimmed.replacingOccurrences(of: " ", with: "")
-            guard compact.count >= 3, let first = compact.first, "-*_".contains(first) else { return false }
-            return compact.allSatisfy { $0 == first }
-        }
-
-        mutating func readTable() {
-            var rows: [[String]] = []
-            while index < lines.count {
-                let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("|") else { break }
-                let cells = cellsOf(trimmed)
-                let isSeparator = cells.allSatisfy { cell in
-                    !cell.isEmpty && cell.allSatisfy { "-:".contains($0) }
-                }
-                if !isSeparator { rows.append(cells) }
-                index += 1
-            }
-            guard let header = rows.first else { return }
-            let width = rows.map(\.count).max() ?? header.count
-            let padded = rows.map { $0 + Array(repeating: "", count: width - $0.count) }
-            append(.table(header: padded[0], rows: Array(padded.dropFirst())), "")
-        }
-
-        func cellsOf(_ row: String) -> [String] {
-            var body = Substring(row)
-            if body.hasPrefix("|") { body = body.dropFirst() }
-            if body.hasSuffix("|") { body = body.dropLast() }
-            return body.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-        }
-
-        mutating func readQuote() {
-            var body: [String] = []
-            while index < lines.count {
-                let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix(">") else { break }
-                body.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces))
-                index += 1
-            }
-            append(.quote, body.joined(separator: "\n"))
-        }
-
-        struct Item {
-            let marker: MarkdownBlock.ListMarker
-            let indent: Int
-            let text: String
-        }
-
-        func listItem(_ line: String) -> Item? {
-            let indent = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
-            let rest = line.drop { $0 == " " || $0 == "\t" }
-            let marker: MarkdownBlock.ListMarker
-            let text: Substring
-            if let first = rest.first, "-*+".contains(first), rest.dropFirst().first == " " {
-                marker = .bullet
-                text = rest.dropFirst(2)
+            if !row.isHeader, case .table(let rows) = segments.last {
+                segments[segments.count - 1] = .table(rows + [block])
             } else {
-                let digits = rest.prefix { $0.isNumber }
-                let after = rest.dropFirst(digits.count)
-                guard !digits.isEmpty, digits.count < 10, let dot = after.first, dot == "." || dot == ")", after.dropFirst().first == " " else { return nil }
-                marker = .number(String(digits))
-                text = after.dropFirst(2)
+                segments.append(.table([block]))
             }
-            let body = text.trimmingCharacters(in: .whitespaces)
-            if case .bullet = marker, body.count >= 3, body.hasPrefix("[") {
-                let state = body.dropFirst().first
-                if body.dropFirst(2).first == "]", state == " " || state == "x" || state == "X" {
-                    return Item(marker: .task(done: state != " "), indent: indent, text: String(body.dropFirst(3)).trimmingCharacters(in: .whitespaces))
-                }
-            }
-            return Item(marker: marker, indent: indent, text: body)
+        }
+        return segments
+    }
+
+    public static func segments(from source: String) -> [MarkdownSegment] {
+        segments(blocks(from: source))
+    }
+
+    static func task(_ content: AttributedString) -> (done: Bool, rest: AttributedString)? {
+        let prefix = String(content.characters.prefix(4))
+        let done: Bool
+        switch prefix {
+        case "[ ] ": done = false
+        case "[x] ", "[X] ": done = true
+        default: return nil
+        }
+        var rest = content
+        rest.removeSubrange(rest.startIndex..<rest.index(rest.startIndex, offsetByCharacters: 4))
+        return (done, rest)
+    }
+
+    static func hash(_ text: String) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(hash, radix: 16)
+    }
+
+    private struct PendingRow {
+        let identity: Int
+        let index: Int
+        let depth: Int
+        let alignments: [MarkdownBlock.ColumnAlignment]
+        var cells: [AttributedString]
+    }
+
+    private struct Builder {
+        var blocks: [MarkdownBlock] = []
+        var seenItems: Set<Int> = []
+        var occurrences: [String: Int] = [:]
+        var header: [AttributedString] = []
+        var row: PendingRow?
+
+        mutating func append(_ kind: MarkdownBlock.Kind, depth: Int, content: AttributedString) {
+            let plainText = String(content.characters)
+            let base = "\(MarkdownBlock.name(of: kind)):\(MarkdownParser.hash(plainText))"
+            let occurrence = occurrences[base, default: 0]
+            occurrences[base] = occurrence + 1
+            blocks.append(MarkdownBlock(id: blocks.count, kind: kind, depth: depth, content: content, plainText: plainText, draftKey: "\(base):\(occurrence)"))
         }
 
-        mutating func readListItem(_ item: Item) {
-            var text = [item.text]
-            index += 1
-            while index < lines.count {
-                let line = lines[index]
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                let indent = line.prefix { $0 == " " || $0 == "\t" }.count
-                guard !trimmed.isEmpty, indent > item.indent, listItem(line) == nil, fenceMarker(trimmed) == nil else { break }
-                text.append(trimmed)
-                index += 1
+        mutating func add(_ content: AttributedString, intent components: [PresentationIntent.IntentType]) {
+            guard let leaf = components.first else {
+                flushRow()
+                if !content.characters.isEmpty { append(.paragraph, depth: 0, content: content) }
+                return
             }
-            append(.listItem(marker: item.marker, depth: min(item.indent / 2, 4)), text.joined(separator: "\n"))
+            let containers = components.dropFirst().filter(\.isContainer)
+            let depth = containers.count
+
+            if case .tableCell(let column) = leaf.kind {
+                addCell(content, column: column, components: components, depth: depth)
+                return
+            }
+            flushRow()
+
+            switch leaf.kind {
+            case .paragraph:
+                let innermost = containers.first
+                if let innermost, case .listItem(let ordinal) = innermost.kind, seenItems.insert(innermost.identity).inserted {
+                    let list = components.firstIndex(of: innermost).map { components.index(after: $0) }
+                    let ordered = list.map { components.indices.contains($0) && components[$0].kind == .orderedList } ?? false
+                    var marker: MarkdownBlock.ListMarker = ordered ? .number(String(ordinal)) : .bullet
+                    var text = content
+                    if let task = MarkdownParser.task(content) {
+                        marker = .task(done: task.done)
+                        text = task.rest
+                    }
+                    append(.listItem(marker: marker), depth: depth - 1, content: text)
+                } else if let innermost, innermost.kind == .blockQuote {
+                    append(.quote, depth: depth - 1, content: content)
+                } else {
+                    markItemSeen(containers.first)
+                    append(.paragraph, depth: depth, content: content)
+                }
+            case .header(let level):
+                markItemSeen(containers.first)
+                append(.heading(level: level), depth: depth, content: content)
+            case .codeBlock(let hint):
+                markItemSeen(containers.first)
+                var code = content
+                if code.characters.last == "\n" {
+                    code.removeSubrange(code.index(beforeCharacter: code.endIndex)..<code.endIndex)
+                }
+                let language = hint?.trimmingCharacters(in: .whitespaces)
+                append(.code(language: language?.isEmpty == false ? language : nil), depth: depth, content: code)
+            case .thematicBreak:
+                append(.rule, depth: depth, content: AttributedString())
+            default:
+                append(.paragraph, depth: depth, content: content)
+            }
+        }
+
+        mutating func markItemSeen(_ container: PresentationIntent.IntentType?) {
+            guard let container, case .listItem = container.kind else { return }
+            seenItems.insert(container.identity)
+        }
+
+        mutating func addCell(_ content: AttributedString, column: Int, components: [PresentationIntent.IntentType], depth: Int) {
+            guard let rowIntent = components.dropFirst().first,
+                  let table = components.first(where: { if case .table = $0.kind { true } else { false } }),
+                  case .table(let columns) = table.kind
+            else { return }
+            if row?.identity != rowIntent.identity {
+                flushRow()
+                let index = if case .tableRow(let index) = rowIntent.kind { index } else { 0 }
+                let alignments = columns.map { column -> MarkdownBlock.ColumnAlignment in
+                    switch column.alignment {
+                    case .center: .center
+                    case .right: .trailing
+                    default: .leading
+                    }
+                }
+                row = PendingRow(identity: rowIntent.identity, index: index, depth: depth, alignments: alignments, cells: Array(repeating: AttributedString(), count: columns.count))
+            }
+            guard var pending = row else { return }
+            if column >= pending.cells.count {
+                pending.cells += Array(repeating: AttributedString(), count: column - pending.cells.count + 1)
+            }
+            pending.cells[column] = content
+            row = pending
+        }
+
+        mutating func flushRow() {
+            guard let pending = row else { return }
+            row = nil
+            if pending.index == 0 { header = pending.cells }
+            let tableRow = MarkdownBlock.TableRow(index: pending.index, cells: pending.cells, header: header, alignments: pending.alignments)
+            let content = pending.cells.dropFirst().reduce(into: pending.cells.first ?? AttributedString()) { $0 += AttributedString(" | ") + $1 }
+            append(.tableRow(tableRow), depth: pending.depth, content: content)
+        }
+    }
+}
+
+private extension PresentationIntent.IntentType {
+    var isContainer: Bool {
+        switch kind {
+        case .listItem, .blockQuote: true
+        default: false
         }
     }
 }
