@@ -2,13 +2,13 @@ import AlondraShared
 import SwiftUI
 
 struct FleetTab: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @State private var query = ""
     @State private var showSleeping = false
 
     private var sections: [(name: String, nodes: [Node])] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        return fleet.projects.compactMap { project in
+        return fleet.projectsByRecency.compactMap { project in
             let nodes = project.nodes.filter { node in
                 (showSleeping || node.alive || !fleet.pending(for: node.sessionId).isEmpty)
                     && (needle.isEmpty || matches(node, project.name, needle))
@@ -165,7 +165,7 @@ struct StateGlyph: View {
 struct NodeDetail: View {
     let session: String
 
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @State private var message = ""
     @State private var sending = false
     @State private var sentCount = 0
@@ -251,7 +251,7 @@ struct NodeDetail: View {
                 if let last = node.lastMessage, !last.isEmpty {
                     section("Lo último que dijo", symbol: "text.quote", trailing: node.lastMessageAt.map(relative)) {
                         VStack(alignment: .leading, spacing: 10) {
-                            ForEach(MarkdownBlock.parse(last)) { block in
+                            ForEach(MarkdownParser.blocks(from: last)) { block in
                                 MarkdownBlockView(block: block)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -325,5 +325,18 @@ struct NodeDetail: View {
                 fleet.notice = Notice("Mensaje enviado a \(node.displayName)")
             }
         }
+    }
+}
+
+extension FleetStore {
+    var projectsByRecency: [(name: String, nodes: [Node])] {
+        Dictionary(grouping: nodes) { $0.project ?? "Sin proyecto" }
+            .map { (name: $0.key, nodes: $0.value.sorted(by: Self.recencyOrder)) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static func recencyOrder(_ a: Node, _ b: Node) -> Bool {
+        if a.alive != b.alive { return a.alive }
+        return a.stateSince > b.stateSince
     }
 }

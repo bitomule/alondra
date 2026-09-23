@@ -1,14 +1,41 @@
 import Foundation
 import Observation
+import SwiftUI
 
 @MainActor
 @Observable
 public final class FleetStore {
+    public enum Connection: Equatable, Sendable {
+        case connecting
+        case online
+        case offline(String)
+        case unpaired
+    }
+
+    public struct Handoff: Sendable {
+        public let id = UUID()
+        public let itemID: String
+        public let label: String
+        public let action: @Sendable (AlondraClient) async throws -> Void
+
+        public init(itemID: String, label: String, action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+            self.itemID = itemID
+            self.label = label
+            self.action = action
+        }
+    }
+
     public private(set) var overview: Overview? {
         didSet { rebuild() }
     }
-    public private(set) var connected = false
+    public private(set) var connection = Connection.connecting
     public var lastError: String?
+    public var notice: Notice?
+    public var handoff: Handoff?
+    public var leaving: String?
+    public private(set) var resolvedCount = 0
+    public private(set) var skippedCount = 0
+    public private(set) var focusRequest = 0
 
     public private(set) var inbox: [InboxItem] = []
     public private(set) var projects: [(name: String, nodes: [Node])] = []
@@ -16,20 +43,43 @@ public final class FleetStore {
     private var hidden: Set<String> = [] {
         didSet { rebuild() }
     }
+    private var skipped: [String] = []
 
-    private let client: AlondraClient
+    public private(set) var client: AlondraClient
+    private let animated: Bool
+    private let retryDelay: Duration
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
 
-    public init(client: AlondraClient = .local) {
+    public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2)) {
         self.client = client
+        self.animated = animated
+        self.retryDelay = retryDelay
     }
 
+    public var connected: Bool { connection == .online }
     public var questions: [Question] { overview?.openQuestions ?? [] }
     public var news: [Report] { overview?.news ?? [] }
-    public var sentToOrchestrator: [SentMessage] { (overview?.orchestratorMessages ?? []).filter { $0.from == "david" } }
     public var nodes: [Node] { overview?.nodes ?? [] }
-    public var orchestrator: Node? { nodes.first { $0.isOrchestrator && $0.alive } }
+    public var machine: Machine? { overview?.machine }
+    public var orchestrator: Node? { nodes.filter(\.isOrchestrator).max { !$0.alive && $1.alive } }
+    public var sentToOrchestrator: [SentMessage] {
+        (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public var queue: [InboxItem] {
+        guard let overview else { return [] }
+        let questions = overview.openQuestions.sorted { $0.askedAt < $1.askedAt }.map(InboxItem.question)
+        let reports = overview.news.sorted { $0.createdAt < $1.createdAt }.map(InboxItem.report)
+        let open = (questions + reports).filter { !hidden.contains($0.id) }
+        let fresh = open.filter { !skipped.contains($0.id) }
+        let later = skipped.compactMap { id in open.first { $0.id == id } }
+        return fresh + later
+    }
+
+    public func pending(for session: String) -> [InboxItem] {
+        queue.filter { $0.sessionId == session }
+    }
 
     public func items(for session: String) -> [InboxItem] {
         inbox.filter { $0.sessionId == session }
@@ -60,6 +110,26 @@ public final class FleetStore {
         return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
     }
 
+    private func animate(_ animation: Animation, _ changes: () -> Void) {
+        if animated {
+            withAnimation(animation, changes)
+        } else {
+            changes()
+        }
+    }
+
+    public func use(_ client: AlondraClient) {
+        guard client.identity != self.client.identity else { return }
+        let sameServer = client.base == self.client.base
+        self.client = client
+        guard !sameServer else { return }
+        overview = nil
+        hidden = []
+        skipped = []
+        documents = [:]
+        connection = .connecting
+    }
+
     public func start() {
         guard syncTask == nil else { return }
         syncTask = Task { [weak self] in
@@ -74,24 +144,83 @@ public final class FleetStore {
 
     public func run() async {
         while !Task.isCancelled {
-            await syncOnce()
+            do {
+                let fresh = try await client.overview()
+                apply(fresh)
+                try await client.waitForChange(after: fresh.tick)
+            } catch where error.isCancellation {
+                return
+            } catch let error as URLError where error.code == .timedOut && connection == .online {
+                continue
+            } catch {
+                if Task.isCancelled { return }
+                connection = (error as? AlondraError) == .unauthorized ? .unpaired : .offline(error.friendlyDescription)
+                try? await Task.sleep(for: retryDelay)
+            }
         }
     }
 
-    private func syncOnce() async {
+    public func refresh() async {
         do {
-            let fresh = try await client.overview()
-            let present = Set(fresh.openQuestions.map { "q\($0.id)" } + fresh.news.map { "r\($0.id)" })
+            apply(try await client.overview())
+        } catch AlondraError.unauthorized {
+            connection = .unpaired
+        } catch where !error.isCancellation {
+            connection = .offline(error.friendlyDescription)
+        } catch {}
+    }
+
+    private func apply(_ fresh: Overview) {
+        let live = Set(fresh.openQuestions.map { "q\($0.id)" } + fresh.news.map { "r\($0.id)" })
+        animate(.smooth(duration: 0.45)) {
             overview = fresh
-            if !hidden.isSubset(of: present) { hidden.formIntersection(present) }
-            connected = true
-            try await client.waitForChange(after: fresh.tick)
-        } catch is CancellationError {
-            return
+            if !hidden.isSubset(of: live) { hidden.formIntersection(live) }
+            skipped.removeAll { !live.contains($0) }
+            connection = .online
+        }
+    }
+
+    public func focus(_ item: InboxItem) {
+        skipped.removeAll { $0 == item.id }
+        let ahead = queue.prefix { $0.id != item.id }.map(\.id)
+        skipped.append(contentsOf: ahead)
+        focusRequest += 1
+    }
+
+    public func skip(_ item: InboxItem) {
+        animate(.spring(duration: 0.5, bounce: 0.25)) {
+            skipped.removeAll { $0 == item.id }
+            skipped.append(item.id)
+        }
+        skippedCount += 1
+    }
+
+    @discardableResult
+    public func resolve(_ item: InboxItem, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        let client = client
+        animate(.spring(duration: 0.55, bounce: 0.2)) {
+            _ = hidden.insert(item.id)
+        }
+        resolvedCount += 1
+        do {
+            try await action(client)
+            return true
         } catch {
-            if Task.isCancelled { return }
-            connected = false
-            try? await Task.sleep(for: .seconds(2))
+            animate(.spring(duration: 0.5, bounce: 0.2)) {
+                _ = hidden.remove(item.id)
+            }
+            notice = Notice("No se pudo enviar: \(error.friendlyDescription)", failure: true)
+            return false
+        }
+    }
+
+    public func perform(_ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        do {
+            try await action(client)
+            return true
+        } catch {
+            notice = Notice("No se pudo enviar: \(error.friendlyDescription)", failure: true)
+            return false
         }
     }
 
@@ -172,6 +301,17 @@ public final class FleetStore {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+}
+
+public struct Notice: Equatable, Sendable {
+    public let id = UUID()
+    public let text: String
+    public let failure: Bool
+
+    public init(_ text: String, failure: Bool = false) {
+        self.text = text
+        self.failure = failure
     }
 }
 

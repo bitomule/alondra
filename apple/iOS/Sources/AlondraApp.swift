@@ -1,14 +1,17 @@
+import AlondraShared
 import SwiftUI
 
 @main
 struct AlondraApp: App {
-    @AppStorage(ServerSetting.key) private var serverURL = FleetClient.defaultURL
-    @State private var fleet = Fleet(client: FleetClient(string: FleetClient.defaultURL)!)
+    @AppStorage(ServerSetting.key) private var serverURL = ServerSetting.defaultURL
+    @State private var fleet = FleetStore(client: AlondraClient(base: AlondraClient.defaultURL, device: "iphone"), animated: true, retryDelay: .seconds(3))
+    @State private var pairing = DevicePairing()
 
     var body: some Scene {
         WindowGroup {
             RootView(serverURL: serverURL)
                 .environment(fleet)
+                .environment(pairing)
                 .tint(Palette.dawn)
         }
     }
@@ -17,7 +20,8 @@ struct AlondraApp: App {
 private struct RootView: View {
     let serverURL: String
 
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
+    @Environment(DevicePairing.self) private var pairing
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = AppTab.triage
 
@@ -27,6 +31,7 @@ private struct RootView: View {
 
     private struct SyncKey: Hashable {
         let url: String
+        let device: String?
         let active: Bool
     }
 
@@ -35,7 +40,7 @@ private struct RootView: View {
             Tab("Te espera", systemImage: "tray.full", value: .triage) {
                 TriageView()
             }
-            .badge(fleet.queue.count)
+            .badge(fleet.connection == .unpaired ? 0 : fleet.queue.count)
             Tab("Flota", systemImage: "circle.hexagongrid", value: .fleet) {
                 FleetTab()
             }
@@ -46,16 +51,16 @@ private struct RootView: View {
         .tabBarMinimizeBehavior(.onScrollDown)
         .onChange(of: fleet.focusRequest) { tab = .triage }
         .overlay(alignment: .top) { NoticeToast() }
-        .task(id: SyncKey(url: serverURL, active: scenePhase != .background)) {
+        .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
             guard scenePhase != .background else { return }
-            if let client = FleetClient(string: serverURL) { fleet.use(client) }
-            await fleet.sync()
+            if let client = AlondraClient(string: serverURL, device: "iphone", signer: pairing.signer) { fleet.use(client) }
+            await fleet.run()
         }
     }
 }
 
 private struct NoticeToast: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
 
     var body: some View {
         ZStack {

@@ -1,40 +1,10 @@
 import AlondraShared
 import SwiftUI
 
-struct ReviewFeedback {
-    struct Comment: Equatable {
-        let quote: String
-        let text: String
-    }
-
-    static let quoteLimit = 200
-
-    static func text(comments: [Comment], general: String) -> String {
-        var parts = ["Comentarios de David:"]
-        for (index, comment) in comments.enumerated() {
-            let body = comment.text
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .components(separatedBy: .newlines)
-                .map { "   \($0)" }
-                .joined(separator: "\n")
-            parts.append("\(index + 1). Sobre «\(quote(comment.quote))»:\n\(body)")
-        }
-        let general = general.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !general.isEmpty { parts.append(general) }
-        return parts.joined(separator: "\n\n")
-    }
-
-    static func quote(_ source: String) -> String {
-        let collapsed = source.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        guard collapsed.count > quoteLimit else { return collapsed }
-        return String(collapsed.prefix(quoteLimit - 1)).trimmingCharacters(in: .whitespaces) + "…"
-    }
-}
-
 struct ReviewView: View {
     let item: InboxItem
 
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @Environment(\.dismiss) private var dismiss
 
     @State private var blocks: [MarkdownBlock] = []
@@ -52,8 +22,8 @@ struct ReviewView: View {
         blocks.filter { comments[$0.id] != nil }
     }
 
-    private var feedbackComments: [ReviewFeedback.Comment] {
-        commentedBlocks.map { ReviewFeedback.Comment(quote: $0.plainText, text: comments[$0.id] ?? "") }
+    private var feedbackComments: [ReviewComment] {
+        commentedBlocks.map { ReviewComment(anchor: String($0.id), quote: $0.plainText, text: comments[$0.id] ?? "") }
     }
 
     private func number(of block: MarkdownBlock) -> Int {
@@ -258,7 +228,7 @@ struct ReviewView: View {
     }
 
     private var feedbackText: String {
-        ReviewFeedback.text(comments: feedbackComments, general: general)
+        ReviewFeedback.format(feedbackComments, general: general)
     }
 
     private func approveOption(_ question: Question) -> String? {
@@ -271,9 +241,9 @@ struct ReviewView: View {
         return question.options.map(\.label).first { $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == "Denegar" }
     }
 
-    private func finish(_ label: String, _ action: @escaping @Sendable (FleetClient) async throws -> Void) {
+    private func finish(_ label: String, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         sending = true
-        let handoff = Fleet.Handoff(itemID: item.id, label: label, action: action)
+        let handoff = FleetStore.Handoff(itemID: item.id, label: label, action: action)
         let fleet = fleet
         dismiss()
         Task {
@@ -286,7 +256,7 @@ struct ReviewView: View {
         loadError = nil
         do {
             let source = try await markdownSource()
-            let parsed = MarkdownBlock.parse(source)
+            let parsed = MarkdownParser.blocks(from: source)
             withAnimation(.smooth(duration: 0.35)) {
                 blocks = parsed
                 loaded = true
@@ -302,12 +272,12 @@ struct ReviewView: View {
         case .question(let question):
             if question.origin == "plan", let detail = question.detail { return detail }
             if let path = question.attachments.compactMap(\.storedPath).first {
-                return try await fleet.client.file(path)
+                return try await fleet.client.fileText(path)
             }
             return question.detail ?? ""
         case .report(let report):
             if let path = report.attachments.compactMap(\.storedPath).first {
-                return try await fleet.client.file(path)
+                return try await fleet.client.fileText(path)
             }
             return report.body ?? ""
         }

@@ -11,6 +11,8 @@
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Alondra usa la cámara para leer el código QR con el que vinculas este iPhone a tu Mac.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Alondra se conecta al servidor de tu Mac para mostrarte la flota.</string>
     <key>UILaunchScreen</key>

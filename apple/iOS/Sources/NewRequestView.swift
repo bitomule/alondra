@@ -2,7 +2,7 @@ import AlondraShared
 import SwiftUI
 
 struct NewRequestView: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @State private var text = ""
     @State private var sending = false
     @State private var sentCount = 0

@@ -2,11 +2,12 @@ import AlondraShared
 import SwiftUI
 
 struct TriageView: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var zoom
     @State private var reviewing: InboxItem?
     @State private var showSettings = false
+    @State private var showPairing = false
     @State private var showMachine = false
     @State private var keyboardVisible = false
 
@@ -18,7 +19,10 @@ struct TriageView: View {
                         .padding(.horizontal, 20)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                if fleet.overview == nil {
+                if fleet.connection == .unpaired {
+                    UnpairedNotice { showPairing = true }
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                } else if fleet.overview == nil {
                     loading
                 } else if fleet.queue.isEmpty {
                     EmptyTriage()
@@ -39,6 +43,9 @@ struct TriageView: View {
                     .navigationTransition(.zoom(sourceID: item.id, in: zoom))
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showPairing) {
+                NavigationStack { PairingView(showsClose: true) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             withAnimation(.smooth(duration: 0.3)) { keyboardVisible = true }
@@ -58,6 +65,9 @@ struct TriageView: View {
             HStack(spacing: 8) {
                 if case .offline(let reason) = fleet.connection {
                     Label(reason, systemImage: "wifi.slash")
+                        .foregroundStyle(Palette.rose)
+                } else if fleet.connection == .unpaired {
+                    Label("Sin vincular", systemImage: "lock.slash")
                         .foregroundStyle(Palette.rose)
                 } else {
                     Text(summary)
@@ -125,7 +135,7 @@ private struct CardStack: View {
     let zoom: Namespace.ID
     let onReview: (InboxItem) -> Void
 
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: CGFloat = 0
     @State private var frontHeight: CGFloat?
@@ -234,7 +244,7 @@ private struct PageDots: View {
 }
 
 private struct EmptyTriage: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
 
     var body: some View {
         VStack(spacing: 18) {
@@ -285,7 +295,7 @@ private struct EmptyTriage: View {
 }
 
 struct MachineBadge: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
 
     var body: some View {
         HStack(spacing: 6) {
@@ -309,13 +319,13 @@ struct MachineBadge: View {
         switch fleet.connection {
         case .online: fleet.machine?.unreliable == true ? Palette.dawn : Palette.sage
         case .connecting: Palette.slate
-        case .offline: Palette.rose
+        case .offline, .unpaired: Palette.rose
         }
     }
 }
 
 private struct MachineDetail: View {
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -326,6 +336,8 @@ private struct MachineDetail: View {
                 Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
             case .connecting:
                 Label("Conectando…", systemImage: "antenna.radiowaves.left.and.right")
+            case .unpaired:
+                Label("Este dispositivo no está vinculado", systemImage: "lock.slash").foregroundStyle(Palette.rose)
             case .online:
                 if let machine = fleet.machine {
                     row("Memoria libre", machine.memoryFreePercent.map { "\($0) %" } ?? "—")
@@ -350,5 +362,37 @@ private struct MachineDetail: View {
             Spacer(minLength: 24)
             Text(value).monospacedDigit().fontWeight(.medium)
         }
+    }
+}
+
+private struct UnpairedNotice: View {
+    let pair: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Spacer()
+            Image(systemName: "lock.iphone")
+                .font(.system(size: 54, weight: .light))
+                .foregroundStyle(Palette.rose)
+                .symbolEffect(.pulse, options: .repeating)
+            VStack(spacing: 8) {
+                Text("Este dispositivo no está vinculado")
+                    .font(.display(.title2, weight: .bold))
+                    .foregroundStyle(Palette.ink)
+                    .multilineTextAlignment(.center)
+                Text("El Mac ya no acepta a este iPhone. Vincúlalo de nuevo con el código que muestra alondra pair.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button("Vincular de nuevo", systemImage: "qrcode.viewfinder", action: pair)
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .padding(.top, 6)
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity)
     }
 }

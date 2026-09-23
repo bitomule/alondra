@@ -8,7 +8,7 @@ struct TriageCard: View {
     let onReview: () -> Void
     let onSkip: () -> Void
 
-    @Environment(Fleet.self) private var fleet
+    @Environment(FleetStore.self) private var fleet
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var reply = ""
     @State private var pickedOption: QuestionOption?
@@ -209,7 +209,7 @@ struct TriageCard: View {
 
     private func blocks(_ markdown: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(MarkdownBlock.parse(markdown)) { block in
+            ForEach(MarkdownParser.blocks(from: markdown)) { block in
                 MarkdownBlockView(block: block)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -218,7 +218,7 @@ struct TriageCard: View {
     }
 
     private func excerpt(_ markdown: String, cta: String) -> some View {
-        let blocks = MarkdownBlock.parse(markdown)
+        let blocks = MarkdownParser.blocks(from: markdown)
         return Button(action: onReview) {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -481,7 +481,7 @@ struct TriageCard: View {
         }
     }
 
-    private func resolve(_ stamp: Stamp, _ action: @escaping @Sendable (FleetClient) async throws -> Void) {
+    private func resolve(_ stamp: Stamp, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         guard self.stamp == nil else { return }
         replyFocused = false
         withAnimation(.spring(duration: 0.35, bounce: 0.4)) { self.stamp = stamp }

@@ -34,6 +34,11 @@ public struct MarkdownBlock: Identifiable, Hashable, Sendable {
         }
     }
 
+    public static func inline(_ source: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible)
+        return (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
+    }
+
     public var isCommentable: Bool {
         if case .rule = kind { return false }
         return true
