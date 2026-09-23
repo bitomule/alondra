@@ -385,7 +385,8 @@ pub fn derive(node: &Node, open_blocking_question: bool) -> (NodeState, StateSou
         Some(TurnSignal::Finished) => return (NodeState::Done, hooks_or_daemon),
         Some(TurnSignal::Delivered) => return (NodeState::Delivered, hooks_or_daemon),
         Some(TurnSignal::WaitingMachine) => return (NodeState::WaitingMachine, hooks_or_daemon),
-        Some(TurnSignal::Asked) => return (NodeState::Working, hooks_or_daemon),
+        Some(TurnSignal::Asked) if node.busy => return (NodeState::Working, hooks_or_daemon),
+        Some(TurnSignal::Asked) => {}
         None => {}
     }
     if node.is_orchestrator {
@@ -782,5 +783,18 @@ mod tests {
         n.classified = Some(crate::model::Classification { state: NodeState::WaitingAnswer, turn: 3, confidence: Some(0.95) });
         assert_eq!(derive(&n, false).0, NodeState::Delivered);
         assert_eq!(derive(&n, true).0, NodeState::WaitingAnswer);
+    }
+
+    #[test]
+    fn a_node_that_asked_and_then_stopped_is_not_working() {
+        let mut n = Node::new("s", 0);
+        n.has_plugin = true;
+        n.turn = 2;
+        n.last_message = Some("done".into());
+        n.turn_signal = Some(TurnSignal::Asked);
+        n.busy = true;
+        assert_eq!(derive(&n, false).0, NodeState::Working);
+        n.busy = false;
+        assert_ne!(derive(&n, false).0, NodeState::Working);
     }
 }
