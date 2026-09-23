@@ -172,9 +172,7 @@ private struct CardStack: View {
 
     var body: some View {
         let queue = fleet.queue
-        let visible = drag > 0 && queue.count > 2
-            ? Array(([queue[0], queue[queue.count - 1]] + queue.dropFirst().dropLast()).prefix(depthLimit))
-            : Array(queue.prefix(depthLimit))
+        let visible = Array(queue.prefix(depthLimit))
         VStack(spacing: 10) {
             ZStack(alignment: .top) {
                 ForEach(visible.reversed()) { item in
@@ -222,12 +220,14 @@ private struct CardStack: View {
                     withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
                     return
                 }
-                if drag < 0 { next(front) } else { previous() }
+                next(front)
             }
     }
 
+    /// Swiping either way moves on to the next card; the card leaves in the direction it was pushed.
     private func next(_ item: InboxItem) {
-        withAnimation(.easeIn(duration: 0.16)) { drag = -420 }
+        let away: CGFloat = drag > 0 ? 420 : -420
+        withAnimation(.easeIn(duration: 0.16)) { drag = away }
         Task {
             try? await Task.sleep(for: .milliseconds(160))
             var instant = Transaction()
@@ -235,17 +235,6 @@ private struct CardStack: View {
             withTransaction(instant) { drag = 0 }
             withAnimation(.spring(duration: 0.5, bounce: 0.2)) { fleet.skip(item) }
         }
-    }
-
-    private func previous() {
-        withAnimation(.easeIn(duration: 0.12)) { drag = 0 }
-        var instant = Transaction()
-        instant.disablesAnimations = true
-        withTransaction(instant) {
-            fleet.previous()
-            drag = -420
-        }
-        withAnimation(.spring(duration: 0.5, bounce: 0.2)) { drag = 0 }
     }
 
     private func skip(_ item: InboxItem) {
