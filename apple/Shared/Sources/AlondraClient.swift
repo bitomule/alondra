@@ -1,9 +1,9 @@
 import Foundation
 
-struct AlondraClient: Sendable {
-    let base: URL
+public struct AlondraClient: Sendable {
+    public let base: URL
 
-    static let local = AlondraClient(base: URL(string: "http://127.0.0.1:47800")!)
+    public static let local = AlondraClient(base: URL(string: "http://127.0.0.1:47800")!)
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -17,47 +17,47 @@ struct AlondraClient: Sendable {
         return URLSession(configuration: config)
     }()
 
-    func overview() async throws -> Overview {
+    public func overview() async throws -> Overview {
         let (data, _) = try await URLSession.shared.data(from: base.appending(path: "v1/overview"))
         return try Self.decoder.decode(Overview.self, from: data)
     }
 
-    func waitForChange(after tick: UInt64) async throws {
+    public func waitForChange(after tick: UInt64) async throws {
         var components = URLComponents(url: base.appending(path: "v1/changes"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "after", value: String(tick)), URLQueryItem(name: "wait", value: "50")]
         _ = try await Self.longSession.data(from: components.url!)
     }
 
-    func answer(_ question: UInt64, text: String, option: String?) async throws {
+    public func answer(_ question: UInt64, text: String, option: String?) async throws {
         var body: [String: String] = ["text": text, "by": "David", "device": "mac"]
         if let option { body["option"] = option }
         try await post("v1/questions/\(question)/answer", body)
     }
 
-    func moreContext(_ question: UInt64, note: String) async throws {
+    public func moreContext(_ question: UInt64, note: String) async throws {
         try await post("v1/questions/\(question)/more-context", ["note": note])
     }
 
-    func newRequest(_ text: String) async throws {
+    public func newRequest(_ text: String) async throws {
         try await post("v1/requests", ["text": text])
     }
 
-    func search(_ query: String) async throws -> SearchResult {
+    public func search(_ query: String) async throws -> SearchResult {
         var components = URLComponents(url: base.appending(path: "v1/search"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         let (data, _) = try await URLSession.shared.data(from: components.url!)
         return try Self.decoder.decode(SearchResult.self, from: data)
     }
 
-    func markRead(_ report: UInt64) async throws {
+    public func markRead(_ report: UInt64) async throws {
         try await post("v1/reports/\(report)/read", [:])
     }
 
-    func acknowledge(_ session: String) async throws {
+    public func acknowledge(_ session: String) async throws {
         try await post("v1/nodes/\(session)/ack", [:])
     }
 
-    func send(to session: String, text: String) async throws {
+    public func send(to session: String, text: String) async throws {
         try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david"])
     }
 
@@ -74,10 +74,10 @@ struct AlondraClient: Sendable {
     }
 }
 
-enum AlondraError: LocalizedError {
+public enum AlondraError: LocalizedError {
     case server(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .server(let message): message
         }

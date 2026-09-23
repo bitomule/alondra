@@ -1,3 +1,4 @@
+import AlondraShared
 import SwiftUI
 
 enum Selection: Hashable {
@@ -275,7 +276,7 @@ struct Markdown: View {
 }
 
 struct Links: View {
-    let links: [Link]
+    let links: [LinkRef]
     let attachments: [Attachment]
 
     var body: some View {

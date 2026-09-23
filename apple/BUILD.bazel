@@ -11,7 +11,7 @@ swift_library(
 
 swift_library(
     name = "AlondraMacEntry",
-    srcs = ["macOS/AlondraMacApp.swift"],
+    srcs = glob(["macOS/Sources/**/*.swift"]),
     module_name = "AlondraMac",
     deps = [":AlondraShared"],
 )

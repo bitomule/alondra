@@ -43,6 +43,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/v1/requests", post(new_request))
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
+        .route("/v1/file", get(file))
         .with_state(hub)
 }
 
@@ -97,6 +98,10 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     }
     if event == "Stop" {
         classify::spawn_if_unclear(&hub, &session_id);
+    }
+    if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
+        return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+            "permissionDecisionReason": "Herramienta de Alondra"}})).into_response();
     }
     let in_subagent = h.agent_id.is_some();
     if !hub.hold_enabled || in_subagent {
@@ -221,6 +226,28 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
             "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("David lo deniega: {}", answer.text) }}}}),
     };
     Json(body).into_response()
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    path: String,
+}
+
+async fn file(State(hub): State<AppState>, Query(q): Query<FileQuery>) -> Response {
+    let root = hub.home.join("files");
+    let Ok(path) = std::fs::canonicalize(&q.path) else {
+        return err(StatusCode::NOT_FOUND, "no existe");
+    };
+    let Ok(root) = std::fs::canonicalize(&root) else {
+        return err(StatusCode::NOT_FOUND, "no existe");
+    };
+    if !path.starts_with(&root) {
+        return err(StatusCode::FORBIDDEN, "solo sirvo copias guardadas por Alondra");
+    }
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response(),
+        Err(e) => err(StatusCode::NOT_FOUND, e.to_string()),
+    }
 }
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {

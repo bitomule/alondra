@@ -1,6 +1,6 @@
 import Foundation
 
-enum NodeState: String, Codable, Sendable {
+public enum NodeState: String, Codable, Sendable {
     case working
     case waitingAnswer = "waiting_answer"
     case delivered
@@ -8,7 +8,7 @@ enum NodeState: String, Codable, Sendable {
     case done
     case unclear
 
-    var label: String {
+    public var label: String {
         switch self {
         case .working: "trabajando"
         case .waitingAnswer: "esperando respuesta"
@@ -20,70 +20,70 @@ enum NodeState: String, Codable, Sendable {
     }
 }
 
-struct ToolInFlight: Codable, Hashable, Sendable {
-    let name: String
-    let summary: String?
-    let since: Int64
+public struct ToolInFlight: Codable, Hashable, Sendable {
+    public let name: String
+    public let summary: String?
+    public let since: Int64
 }
 
-struct Node: Codable, Identifiable, Hashable, Sendable {
-    var id: String { sessionId }
-    let sessionId: String
-    let shortId: String
-    let name: String?
-    let cwd: String?
-    let alive: Bool
-    let isOrchestrator: Bool
-    let hasPlugin: Bool
-    let state: NodeState
-    let stateSince: Int64
-    let stateSource: String
-    let tool: ToolInFlight?
-    let lastMessage: String?
-    let lastMessageAt: Int64?
-    let daemonDetail: String?
-    let daemonNeeds: String?
-    let project: String?
+public struct Node: Codable, Identifiable, Hashable, Sendable {
+    public var id: String { sessionId }
+    public let sessionId: String
+    public let shortId: String
+    public let name: String?
+    public let cwd: String?
+    public let alive: Bool
+    public let isOrchestrator: Bool
+    public let hasPlugin: Bool
+    public let state: NodeState
+    public let stateSince: Int64
+    public let stateSource: String
+    public let tool: ToolInFlight?
+    public let lastMessage: String?
+    public let lastMessageAt: Int64?
+    public let daemonDetail: String?
+    public let daemonNeeds: String?
+    public let project: String?
 
-    var displayName: String { name ?? shortId }
+    public var displayName: String { name ?? shortId }
 
-    var summary: String {
+    public var summary: String {
         if let tool { return "\(tool.name) \(tool.summary ?? "")" }
         return lastMessage ?? daemonNeeds ?? daemonDetail ?? ""
     }
 }
 
-struct QuestionOption: Codable, Hashable, Sendable {
-    let label: String
-    let description: String?
+public struct QuestionOption: Codable, Hashable, Sendable {
+    public let label: String
+    public let description: String?
 }
 
-struct Link: Codable, Hashable, Sendable {
-    let url: String
-    let title: String?
+public struct LinkRef: Codable, Hashable, Sendable {
+    public let url: String
+    public let title: String?
 }
 
-struct Attachment: Codable, Hashable, Sendable {
-    let name: String
-    let sourcePath: String
-    let storedPath: String?
+public struct Attachment: Codable, Hashable, Sendable {
+    public let name: String
+    public let sourcePath: String
+    public let storedPath: String?
 }
 
-struct Question: Codable, Identifiable, Hashable, Sendable {
-    let id: UInt64
-    let sessionId: String
-    let nodeName: String?
-    let title: String
-    let detail: String?
-    let options: [QuestionOption]
-    let links: [Link]
-    let attachments: [Attachment]
-    let origin: String
-    let nodeContext: String?
-    let status: String
-    let askedAt: Int64
+public struct Question: Codable, Identifiable, Hashable, Sendable {
+    public let id: UInt64
+    public let sessionId: String
+    public let nodeName: String?
+    public let title: String
+    public let detail: String?
+    public let options: [QuestionOption]
+    public let links: [LinkRef]
+    public let attachments: [Attachment]
+    public let origin: String
+    public let nodeContext: String?
+    public let status: String
+    public let askedAt: Int64
 
-    var kindLabel: String? {
+    public var kindLabel: String? {
         switch origin {
         case "permission": "Permiso"
         case "plan": "Plan"
@@ -93,27 +93,27 @@ struct Question: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct Machine: Codable, Hashable, Sendable {
-    let memoryTotal: UInt64
-    let memoryAvailable: UInt64
-    let memoryFreePercent: UInt32?
-    let load: [Double]
-    let diskAvailable: UInt64
-    let unreliable: Bool
+public struct Machine: Codable, Hashable, Sendable {
+    public let memoryTotal: UInt64
+    public let memoryAvailable: UInt64
+    public let memoryFreePercent: UInt32?
+    public let load: [Double]
+    public let diskAvailable: UInt64
+    public let unreliable: Bool
 }
 
-struct Report: Codable, Identifiable, Hashable, Sendable {
-    let id: UInt64
-    let sessionId: String
-    let nodeName: String?
-    let title: String
-    let body: String?
-    let links: [Link]
-    let attachments: [Attachment]
-    let kind: String
-    let createdAt: Int64
+public struct Report: Codable, Identifiable, Hashable, Sendable {
+    public let id: UInt64
+    public let sessionId: String
+    public let nodeName: String?
+    public let title: String
+    public let body: String?
+    public let links: [LinkRef]
+    public let attachments: [Attachment]
+    public let kind: String
+    public let createdAt: Int64
 
-    var kindLabel: String {
+    public var kindLabel: String {
         switch kind {
         case "notice": "Aviso"
         case "document": "Documento"
@@ -123,25 +123,25 @@ struct Report: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct SentMessage: Codable, Identifiable, Hashable, Sendable {
-    let id: UInt64
-    let from: String
-    let text: String
-    let createdAt: Int64
-    let handedAt: Int64?
-    let deliveredAt: Int64?
+public struct SentMessage: Codable, Identifiable, Hashable, Sendable {
+    public let id: UInt64
+    public let from: String
+    public let text: String
+    public let createdAt: Int64
+    public let handedAt: Int64?
+    public let deliveredAt: Int64?
 }
 
-struct Overview: Codable, Sendable {
-    let tick: UInt64
-    let nodes: [Node]
-    let openQuestions: [Question]
-    let news: [Report]
-    let orchestratorMessages: [SentMessage]
-    let machine: Machine
+public struct Overview: Codable, Sendable {
+    public let tick: UInt64
+    public let nodes: [Node]
+    public let openQuestions: [Question]
+    public let news: [Report]
+    public let orchestratorMessages: [SentMessage]
+    public let machine: Machine
 }
 
-func ago(_ millis: Int64) -> String {
+public func ago(_ millis: Int64) -> String {
     let seconds = max(0, Int64(Date().timeIntervalSince1970 * 1000) - millis) / 1000
     switch seconds {
     case ..<60: return "\(seconds) s"
@@ -151,25 +151,25 @@ func ago(_ millis: Int64) -> String {
     }
 }
 
-enum InboxItem: Identifiable, Hashable {
+public enum InboxItem: Identifiable, Hashable {
     case question(Question)
     case report(Report)
 
-    var id: String {
+    public var id: String {
         switch self {
         case .question(let q): "q\(q.id)"
         case .report(let r): "r\(r.id)"
         }
     }
 
-    var date: Int64 {
+    public var date: Int64 {
         switch self {
         case .question(let q): q.askedAt
         case .report(let r): r.createdAt
         }
     }
 
-    var sessionId: String {
+    public var sessionId: String {
         switch self {
         case .question(let q): q.sessionId
         case .report(let r): r.sessionId
@@ -177,7 +177,7 @@ enum InboxItem: Identifiable, Hashable {
     }
 }
 
-struct SearchResult: Codable, Sendable {
-    let via: String
-    let sessions: [String]
+public struct SearchResult: Codable, Sendable {
+    public let via: String
+    public let sessions: [String]
 }

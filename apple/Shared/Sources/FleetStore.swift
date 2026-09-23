@@ -3,40 +3,40 @@ import Observation
 
 @MainActor
 @Observable
-final class FleetStore {
-    private(set) var overview: Overview?
-    private(set) var connected = false
-    var lastError: String?
+public final class FleetStore {
+    public private(set) var overview: Overview?
+    public private(set) var connected = false
+    public var lastError: String?
 
     private let client: AlondraClient
     private var syncTask: Task<Void, Never>?
 
-    init(client: AlondraClient = .local) {
+    public init(client: AlondraClient = .local) {
         self.client = client
     }
 
-    var questions: [Question] { overview?.openQuestions ?? [] }
-    var news: [Report] { overview?.news ?? [] }
-    var sentToOrchestrator: [SentMessage] { (overview?.orchestratorMessages ?? []).filter { $0.from == "david" } }
-    var nodes: [Node] { overview?.nodes ?? [] }
+    public var questions: [Question] { overview?.openQuestions ?? [] }
+    public var news: [Report] { overview?.news ?? [] }
+    public var sentToOrchestrator: [SentMessage] { (overview?.orchestratorMessages ?? []).filter { $0.from == "david" } }
+    public var nodes: [Node] { overview?.nodes ?? [] }
 
-    var inbox: [InboxItem] {
+    public var inbox: [InboxItem] {
         let questions = questions.map(InboxItem.question).sorted { $0.date > $1.date }
         let reports = news.map(InboxItem.report).sorted { $0.date > $1.date }
         return questions + reports
     }
 
-    func items(for session: String) -> [InboxItem] {
+    public func items(for session: String) -> [InboxItem] {
         inbox.filter { $0.sessionId == session }
     }
 
-    var projects: [(name: String, nodes: [Node])] {
+    public var projects: [(name: String, nodes: [Node])] {
         Dictionary(grouping: nodes) { $0.project ?? "otros" }
             .map { (name: $0.key, nodes: $0.value) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    func moreContext(_ question: Question, note: String) async {
+    public func moreContext(_ question: Question, note: String) async {
         do {
             try await client.moreContext(question.id, note: note)
         } catch {
@@ -44,7 +44,7 @@ final class FleetStore {
         }
     }
 
-    func newRequest(_ text: String) async -> Bool {
+    public func newRequest(_ text: String) async -> Bool {
         do {
             try await client.newRequest(text)
             return true
@@ -54,12 +54,12 @@ final class FleetStore {
         }
     }
 
-    func smartSearch(_ query: String) async -> SearchResult? {
+    public func smartSearch(_ query: String) async -> SearchResult? {
         try? await client.search(query)
     }
-    var orchestrator: Node? { nodes.first { $0.isOrchestrator && $0.alive } }
+    public var orchestrator: Node? { nodes.first { $0.isOrchestrator && $0.alive } }
 
-    func start() {
+    public func start() {
         guard syncTask == nil else { return }
         syncTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -69,7 +69,7 @@ final class FleetStore {
         }
     }
 
-    func stop() {
+    public func stop() {
         syncTask?.cancel()
         syncTask = nil
     }
@@ -88,7 +88,7 @@ final class FleetStore {
         }
     }
 
-    func answer(_ question: Question, text: String, option: String? = nil) async {
+    public func answer(_ question: Question, text: String, option: String? = nil) async {
         do {
             try await client.answer(question.id, text: text, option: option)
         } catch {
@@ -96,7 +96,7 @@ final class FleetStore {
         }
     }
 
-    func send(to node: Node, text: String, acknowledge: Bool = false) async {
+    public func send(to node: Node, text: String, acknowledge: Bool = false) async {
         do {
             try await client.send(to: node.sessionId, text: text)
             if acknowledge { try await client.acknowledge(node.sessionId) }
@@ -105,7 +105,7 @@ final class FleetStore {
         }
     }
 
-    func reply(to report: Report, text: String) async {
+    public func reply(to report: Report, text: String) async {
         do {
             try await client.send(to: report.sessionId, text: text)
             try await client.markRead(report.id)
@@ -114,7 +114,7 @@ final class FleetStore {
         }
     }
 
-    func markRead(_ report: Report) async {
+    public func markRead(_ report: Report) async {
         do {
             try await client.markRead(report.id)
         } catch {
@@ -122,7 +122,7 @@ final class FleetStore {
         }
     }
 
-    func acknowledge(_ node: Node) async {
+    public func acknowledge(_ node: Node) async {
         do {
             try await client.acknowledge(node.sessionId)
         } catch {
