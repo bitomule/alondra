@@ -273,7 +273,8 @@ async fn new_pairing(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): C
     if let Some(r) = local_only(&peer, &headers) {
         return r;
     }
-    Json(json!({"code": auth.new_pairing_code(), "expires_in": 600})).into_response()
+    let url = std::env::var("ALONDRA_PUBLIC_URL").ok().filter(|u| !u.is_empty());
+    Json(json!({"code": auth.new_pairing_code(), "expires_in": 600, "url": url})).into_response()
 }
 
 #[derive(Deserialize)]

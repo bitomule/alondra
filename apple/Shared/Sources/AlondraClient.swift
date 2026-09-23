@@ -120,6 +120,20 @@ public struct AlondraClient: Sendable {
         return try decoder.decode(Paired.self, from: data).deviceId
     }
 
+    public func createPairing() async throws -> PairingInvite {
+        let data = try await perform("POST", "v1/pairing", body: Data("{}".utf8), session: Self.session)
+        return try Self.decoder.decode(PairingInvite.self, from: data)
+    }
+
+    public func pairedDevices() async throws -> [PairedDevice] {
+        struct List: Decodable { let devices: [PairedDevice] }
+        return try Self.decoder.decode(List.self, from: try await get("v1/devices")).devices
+    }
+
+    public func revokeDevice(_ id: String) async throws {
+        _ = try await perform("DELETE", "v1/devices/\(id)", session: Self.session)
+    }
+
     private func get(_ path: String, query: [(String, String)] = [], session: URLSession = session) async throws -> Data {
         try await perform("GET", path, query: query, session: session)
     }
@@ -153,6 +167,25 @@ public struct AlondraClient: Sendable {
         let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
         throw AlondraError.server(message ?? "El servidor respondió \(http.statusCode)")
     }
+}
+
+public struct PairingInvite: Decodable, Sendable {
+    public let code: String
+    public let expiresIn: Int
+    public let url: String?
+
+    public func payload(fallbackURL: String) -> String {
+        let object = ["url": url ?? fallbackURL, "code": code]
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+public struct PairedDevice: Decodable, Identifiable, Hashable, Sendable {
+    public let id: String
+    public let name: String
+    public let createdAt: Int64
+    public let lastSeen: Int64?
 }
 
 public struct PushRegistration: Encodable, Hashable, Sendable {

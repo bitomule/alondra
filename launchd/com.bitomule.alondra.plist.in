@@ -12,6 +12,8 @@
     <dict>
         <key>PATH</key>
         <string>@BIN@:@HOME@/.claude/local:@HOME@/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>ALONDRA_PUBLIC_URL</key>
+        <string>https://alondra.davidcollado.dev</string>
         <key>ALONDRA_LISTEN</key>
         <string>0.0.0.0</string>
         <key>ALONDRA_PLUGIN_DIR</key>
