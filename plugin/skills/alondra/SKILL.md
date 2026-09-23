@@ -29,6 +29,9 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   path in `attachments`. If you also need them to **approve** it, it is not a report: it is an
   `ask` with the document attached.
 - **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
+- **You opened a PR** → put its URL in your `report` or `links`: Alondra gives it its own card,
+  where the user merges, requests changes or sets it aside. Never `ask` whether to merge it;
+  Alondra rejects that question.
 - **A question of yours no longer needs an answer** (settled in the terminal, the PR it was
   about got merged, you moved on) → `withdraw` it with its number, so its card does not stay.
   Alondra already withdraws questions that link to a PR once that PR is merged or closed.
