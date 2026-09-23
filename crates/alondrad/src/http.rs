@@ -27,7 +27,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
         .route("/hook", post(hook))
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
-        .route("/v1/nodes/{key}", get(node_detail))
+        .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
         .route("/v1/nodes/{key}/messages", post(send_message))
         .route("/v1/nodes/{key}/ack", post(acknowledge))
         .route("/v1/questions", post(ask))
@@ -332,8 +332,8 @@ fn resolve_caller(view: &View, c: &Caller) -> Option<(String, Option<String>)> {
     if let Some(sid) = &c.session_id
         && !sid.is_empty()
     {
-        let name = view.nodes.get(sid).and_then(|n| n.name.clone());
-        return Some((sid.clone(), name));
+        let node = view.nodes.get(sid)?;
+        return Some((sid.clone(), node.name.clone()));
     }
     view.nodes
         .values()
@@ -569,6 +569,18 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     match res {
         Ok(Some((_, Event::MessageQueued(m)))) => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
         Ok(_) => err(StatusCode::NOT_FOUND, format!("no conozco el nodo {key}")),
+        Err(e) => internal(e),
+    }
+}
+
+async fn forget_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    let res = hub.append_with(|v| {
+        let n = v.resolve_node(&key)?;
+        (!n.in_daemon || !n.alive).then(|| Event::NodeRemoved { session_id: n.session_id.clone() })
+    });
+    match res {
+        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(None) => err(StatusCode::CONFLICT, format!("{key} no existe o sigue vivo en claude agents: ciérralo con claude rm")),
         Err(e) => internal(e),
     }
 }

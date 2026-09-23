@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 const LEFT_ARROWS: [&[u8]; 2] = [b"\x1b[D", b"\x1bOD"];
+const TAIL_BYTES: usize = 2048;
 
 struct RawMode;
 
@@ -126,6 +127,7 @@ pub fn attach(short_id: &str) -> Result<()> {
     let mut line = LineTracker::default();
     let mut buf = [0u8; 16 * 1024];
     let mut left_to_alondra = false;
+    let mut tail: Vec<u8> = Vec::new();
     let mut log = std::env::var("ALONDRA_ATTACH_LOG").ok().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     loop {
         let current = window_size();
@@ -151,6 +153,10 @@ pub fn attach(short_id: &str) -> Result<()> {
             }
             stdout.write_all(&buf[..got as usize])?;
             stdout.flush()?;
+            tail.extend_from_slice(&buf[..got as usize]);
+            if tail.len() > TAIL_BYTES {
+                tail.drain(..tail.len() - TAIL_BYTES);
+            }
         }
         if fds[0].revents & libc::POLLIN != 0 {
             let got = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
@@ -176,8 +182,30 @@ pub fn attach(short_id: &str) -> Result<()> {
     if left_to_alondra || child.try_wait().ok().flatten().is_none() {
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     }
-    let _ = child.wait();
-    Ok(())
+    let status = child.wait();
+    match status {
+        Ok(st) if !left_to_alondra && !st.success() => match last_words(&tail) {
+            Some(words) => bail!("{words}"),
+            None => bail!("claude attach terminó con {st}"),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// The last line of visible text a failing `claude attach` printed, without escape sequences.
+fn last_words(output: &[u8]) -> Option<String> {
+    let mut plain = String::new();
+    let mut esc = false;
+    for c in String::from_utf8_lossy(output).chars() {
+        match (esc, c) {
+            (false, '\x1b') => esc = true,
+            (true, c) if c.is_ascii_alphabetic() || c == '\x07' => esc = false,
+            (true, _) => {}
+            (false, c) if c == '\n' || !c.is_control() => plain.push(c),
+            _ => {}
+        }
+    }
+    plain.lines().map(str::trim).rfind(|l| !l.is_empty()).map(|l| l.chars().take(160).collect())
 }
 
 trait FromRawFdOwned {
@@ -208,6 +236,13 @@ mod tests {
         assert_eq!(t.typed, 0);
         t.feed("ñ".as_bytes());
         assert_eq!(t.typed, 1);
+    }
+
+    #[test]
+    fn last_words_skip_escape_sequences() {
+        let out = b"\x1b[2J\x1b[1;31mError:\x1b[0m no session tui-poli\r\n\x1b[?25h";
+        assert_eq!(last_words(out).as_deref(), Some("Error: no session tui-poli"));
+        assert_eq!(last_words(b"\x1b[2J"), None);
     }
 
     #[test]

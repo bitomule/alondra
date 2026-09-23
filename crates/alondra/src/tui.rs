@@ -1,669 +1,1283 @@
-use std::sync::mpsc;
+mod draw;
+mod input;
+mod md;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::stdout;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
-use alondra_core::{Node, NodeState, Question, QuestionOrigin, Report, ReportKind, StateSource, now_millis};
+use alondra_core::{Node, NodeState, Question, QuestionOrigin, Report, now_millis};
 use anyhow::Result;
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap};
-use ratatui::{DefaultTerminal, Frame};
-use serde_json::json;
+use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use ratatui::DefaultTerminal;
+use serde_json::{Value, json};
 
-use crate::client::{Client, Overview};
+use crate::client::{Client, FleetNode, Overview};
 use crate::mcp::urlencode;
+use input::TextInput;
+use md::Block;
 
-#[derive(PartialEq, Clone, Copy)]
-enum Focus {
-    Questions,
-    News,
+const SETTLE_MS: i64 = 700;
+const FLASH_MS: i64 = 4500;
+const SEARCH_DEBOUNCE_MS: i64 = 1200;
+const HIDE_GRACE_MS: i64 = 15_000;
+const CLOCK_MS: i64 = 20_000;
+const IDLE_POLL: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Key {
+    Q(u64),
+    R(u64),
+}
+
+pub enum Item<'a> {
+    Q(&'a Question),
+    R(&'a Report),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Screen {
+    Inbox,
     Fleet,
 }
 
-enum Mode {
-    Normal,
-    Input { target: Target, buffer: String },
-    Detail { title: String, body: Text<'static>, scroll: u16 },
+pub struct Flash {
+    pub text: String,
+    pub error: bool,
+    pub at: i64,
 }
 
-#[derive(Clone)]
-enum Target {
-    Answer(u64, String),
+pub struct Comment {
+    pub block: usize,
+    pub quote: String,
+    pub text: String,
+}
+
+#[derive(Default)]
+pub struct Review {
+    pub comments: Vec<Comment>,
+    pub general: String,
+}
+
+impl Review {
+    pub fn is_empty(&self) -> bool {
+        self.comments.is_empty() && self.general.trim().is_empty()
+    }
+
+    pub fn count(&self) -> usize {
+        self.comments.len() + usize::from(!self.general.trim().is_empty())
+    }
+
+    fn feedback(&self) -> String {
+        let pairs: Vec<(String, String)> = self.comments.iter().map(|c| (c.quote.clone(), c.text.clone())).collect();
+        md::feedback(&pairs, &self.general)
+    }
+}
+
+enum Part {
+    Text(String),
+    File { name: String, path: String },
+}
+
+pub struct Approval {
+    pub approve: Option<String>,
+    pub changes: Option<String>,
+}
+
+pub struct Reader {
+    pub key: Key,
+    pub session: String,
+    pub node: String,
+    pub title: String,
+    pub kind: &'static str,
+    pub approval: Option<Approval>,
+    parts: Vec<Part>,
+    pub blocks: Vec<Block>,
+    pub cursor: usize,
+    pub scroll: usize,
+    pub ranges: Vec<(usize, usize)>,
+    pub view_h: usize,
+}
+
+impl Reader {
+    fn step(&mut self, d: isize) {
+        let mut i = self.cursor as isize;
+        loop {
+            i += d;
+            if i < 0 || i >= self.blocks.len() as isize {
+                return;
+            }
+            if self.blocks[i as usize].commentable() {
+                self.cursor = i as usize;
+                return;
+            }
+        }
+    }
+
+    fn page(&mut self, d: isize) {
+        let Some(&(start, _)) = self.ranges.get(self.cursor) else { return };
+        let jump = self.view_h.saturating_sub(2).max(1);
+        let target = if d > 0 { start + jump } else { start.saturating_sub(jump) };
+        let found = if d > 0 {
+            self.ranges.iter().position(|&(s, _)| s >= target).unwrap_or(self.blocks.len().saturating_sub(1))
+        } else {
+            self.ranges.iter().rposition(|&(s, _)| s <= target).unwrap_or(0)
+        };
+        self.cursor = found;
+        if !self.blocks.get(found).is_some_and(Block::commentable) {
+            self.step(if d > 0 { -1 } else { 1 });
+        }
+        if let Some(&(s, _)) = self.ranges.get(self.cursor) {
+            self.scroll = s.saturating_sub(1);
+        }
+    }
+
+    fn settle_cursor(&mut self) {
+        self.cursor = self.cursor.min(self.blocks.len().saturating_sub(1));
+        if !self.blocks.get(self.cursor).is_some_and(Block::commentable) {
+            self.step(1);
+        }
+    }
+}
+
+pub enum Target {
+    Answer { id: u64, title: String },
+    MoreContext { id: u64, title: String },
+    ReplyReport { id: u64, session: String, name: String },
     Message { session: String, name: String, ack: bool },
-    ReplyReport { report: u64, session: String, name: String },
     NewRequest,
-    MoreContext(u64, String),
+    Comment { block: usize, quote: String },
+    General { send: bool },
 }
 
-struct App {
-    data: Overview,
-    connected: bool,
-    focus: Focus,
-    fleet_view: bool,
-    questions: ListState,
-    news: ListState,
-    fleet: TableState,
-    mode: Mode,
-    status: Option<(String, i64)>,
-    pinned_question: Option<u64>,
-    pinned_news: Option<u64>,
-    pinned_fleet: Option<String>,
+pub struct Composer {
+    pub target: Target,
+    pub input: TextInput,
 }
 
-enum Update {
+impl Target {
+    fn draft_key(&self) -> Option<String> {
+        match self {
+            Target::Answer { id, .. } => Some(format!("answer:{id}")),
+            Target::MoreContext { id, .. } => Some(format!("context:{id}")),
+            Target::ReplyReport { id, .. } => Some(format!("reply:{id}")),
+            Target::Message { session, .. } => Some(format!("message:{session}")),
+            Target::NewRequest => Some("new".into()),
+            Target::Comment { .. } | Target::General { .. } => None,
+        }
+    }
+}
+
+pub enum Remote {
+    Idle,
+    Pending,
+    Done { query: String, via: String, sessions: Vec<String> },
+    Failed(String),
+}
+
+pub struct Search {
+    pub input: TextInput,
+    pub editing: bool,
+    pub typed_at: i64,
+    pub remote: Remote,
+}
+
+impl Search {
+    pub fn query(&self) -> String {
+        self.input.text().trim().to_lowercase()
+    }
+}
+
+pub enum FleetRow {
+    Group { name: String, alive: usize, total: usize },
+    Node(usize),
+}
+
+enum Msg {
     Data(Box<Overview>),
     Offline,
+    Posted { key: Option<Key>, result: Result<String, String> },
+    File { path: String, result: Result<String, String> },
+    Found { query: String, result: Result<(String, Vec<String>), String> },
+}
+
+pub enum Flow {
+    Go,
+    Quit,
+    Attach(String),
+}
+
+pub struct App {
+    pub data: Overview,
+    pub connected: bool,
+    pub loaded: bool,
+    pub offline: bool,
+    pub screen: Screen,
+    pub sel: Option<Key>,
+    sel_idx: usize,
+    pub list_scroll: usize,
+    pub detail_scroll: usize,
+    settle_until: i64,
+    hidden: HashMap<Key, i64>,
+    pub fleet_sel: Option<String>,
+    fleet_idx: usize,
+    pub fleet_scroll: usize,
+    pub fleet_detail_scroll: usize,
+    pub show_sleeping: bool,
+    pub search: Option<Search>,
+    pub composer: Option<Composer>,
+    pub reader: Option<Reader>,
+    pub reviews: HashMap<Key, Review>,
+    drafts: HashMap<String, String>,
+    pub files: HashMap<String, Result<String, String>>,
+    loading: HashSet<String>,
+    pub flash: Option<Flash>,
+    pub help: bool,
+    last_clock: i64,
+    tx: SyncSender<Msg>,
 }
 
 pub fn run() -> Result<()> {
-    let (tx, rx) = mpsc::sync_channel::<Update>(4);
-    std::thread::Builder::new().name("alondra-sync".into()).spawn(move || sync_loop(tx))?;
+    let (tx, rx) = mpsc::sync_channel::<Msg>(64);
+    let sync_tx = tx.clone();
+    std::thread::Builder::new().name("alondra-sync".into()).spawn(move || sync_loop(sync_tx))?;
     let mut terminal = ratatui::init();
-    let res = main_loop(&mut terminal, rx);
+    let _ = execute!(stdout(), EnableBracketedPaste);
+    let res = main_loop(&mut terminal, App::new(tx), rx);
+    let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     res
 }
 
-fn sync_loop(tx: mpsc::SyncSender<Update>) {
+fn sync_loop(tx: SyncSender<Msg>) {
     let quick = Client::new(Duration::from_secs(5));
     let waiter = Client::new(Duration::from_secs(70));
+    let mut was_online = true;
     loop {
-        let tick;
-        match quick.overview() {
+        let tick = match quick.overview() {
             Ok(o) => {
-                tick = o.tick;
-                if tx.send(Update::Data(Box::new(o))).is_err() {
+                was_online = true;
+                let tick = o.tick;
+                if tx.send(Msg::Data(Box::new(o))).is_err() {
                     return;
                 }
+                tick
             }
             Err(_) => {
-                if tx.send(Update::Offline).is_err() {
+                if was_online && tx.send(Msg::Offline).is_err() {
                     return;
                 }
+                was_online = false;
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
-        }
-        if waiter.get::<serde_json::Value>(&format!("/v1/changes?after={tick}&wait=50")).is_err() {
+        };
+        if waiter.get::<Value>(&format!("/v1/changes?after={tick}&wait=50")).is_err() {
             std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
 
-fn main_loop(terminal: &mut DefaultTerminal, rx: mpsc::Receiver<Update>) -> Result<()> {
-    let mut app = App {
-        data: Overview::default(),
-        connected: false,
-        focus: Focus::Questions,
-        fleet_view: false,
-        questions: ListState::default(),
-        news: ListState::default(),
-        fleet: TableState::default(),
-        mode: Mode::Normal,
-        status: None,
-        pinned_question: None,
-        pinned_news: None,
-        pinned_fleet: None,
-    };
-    let client = Client::new(Duration::from_secs(10));
+fn draw(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    execute!(stdout(), BeginSynchronizedUpdate)?;
+    let res = terminal.draw(|f| draw::draw(f, app));
+    execute!(stdout(), EndSynchronizedUpdate)?;
+    res?;
+    Ok(())
+}
+
+fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> Result<()> {
+    let mut dirty = true;
     loop {
-        while let Ok(u) = rx.try_recv() {
-            match u {
-                Update::Data(o) => {
-                    app.data = *o;
-                    app.connected = true;
-                    repin(&mut app);
-                }
-                Update::Offline => app.connected = false,
-            }
+        if dirty {
+            app.reconcile();
+            draw(terminal, &mut app)?;
+            dirty = false;
         }
-        clamp(&mut app);
-        pin(&mut app);
-        terminal.draw(|f| draw(f, &mut app))?;
-        if event::poll(Duration::from_millis(150))?
-            && let TermEvent::Key(k) = event::read()?
-            && k.kind == KeyEventKind::Press
-        {
-            if matches!(app.mode, Mode::Normal) && k.code == KeyCode::Char('a') {
-                if let Some(short) = attach_target(&app) {
-                    ratatui::restore();
-                    if let Err(e) = crate::attach::attach(&short) {
-                        flash(&mut app, format!("Error: {e}"));
-                    }
-                    *terminal = ratatui::init();
-                    terminal.clear()?;
+        if event::poll(IDLE_POLL)? {
+            loop {
+                match event::read()? {
+                    Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
+                        Flow::Quit => return Ok(()),
+                        Flow::Attach(short) => {
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            ratatui::restore();
+                            let res = crate::attach::attach(&short);
+                            *terminal = ratatui::init();
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            terminal.clear()?;
+                            if let Err(e) = res {
+                                app.fail(format!("No pude abrir su terminal: {e}"));
+                            }
+                            dirty = true;
+                            break;
+                        }
+                        Flow::Go => {}
+                    },
+                    Event::Paste(s) => app.on_paste(&s),
+                    _ => {}
                 }
-                continue;
-            }
-            if !handle_key(&mut app, &client, k) {
-                return Ok(());
-            }
-        }
-    }
-}
-
-fn clamp_list(state: &mut ListState, len: usize) {
-    match state.selected() {
-        _ if len == 0 => state.select(None),
-        None => state.select(Some(0)),
-        Some(i) if i >= len => state.select(Some(len - 1)),
-        _ => {}
-    }
-}
-
-fn clamp(app: &mut App) {
-    clamp_list(&mut app.questions, app.data.open_questions.len());
-    clamp_list(&mut app.news, app.data.news.len());
-    let nn = app.data.nodes.len();
-    match app.fleet.selected() {
-        _ if nn == 0 => app.fleet.select(None),
-        None => app.fleet.select(Some(0)),
-        Some(i) if i >= nn => app.fleet.select(Some(nn - 1)),
-        _ => {}
-    }
-    if !app.fleet_view && app.focus == Focus::Fleet {
-        app.focus = Focus::Questions;
-    }
-    if app.focus == Focus::Questions && app.data.open_questions.is_empty() && !app.data.news.is_empty() {
-        app.focus = Focus::News;
-    }
-}
-
-fn repin(app: &mut App) {
-    if let Some(id) = app.pinned_question
-        && let Some(i) = app.data.open_questions.iter().position(|q| q.id == id)
-    {
-        app.questions.select(Some(i));
-    }
-    if let Some(id) = app.pinned_news
-        && let Some(i) = app.data.news.iter().position(|r| r.id == id)
-    {
-        app.news.select(Some(i));
-    }
-    if let Some(sid) = &app.pinned_fleet
-        && let Some(i) = app.data.nodes.iter().position(|n| &n.session_id == sid)
-    {
-        app.fleet.select(Some(i));
-    }
-}
-
-fn pin(app: &mut App) {
-    app.pinned_question = selected_question(app).map(|q| q.id);
-    app.pinned_news = selected_news(app).map(|r| r.id);
-    app.pinned_fleet = selected_fleet(app).map(|n| n.session_id);
-}
-
-fn flash(app: &mut App, msg: impl Into<String>) {
-    app.status = Some((msg.into(), now_millis()));
-}
-
-fn selected_question(app: &App) -> Option<Question> {
-    app.questions.selected().and_then(|i| app.data.open_questions.get(i).cloned())
-}
-
-fn selected_news(app: &App) -> Option<Report> {
-    app.news.selected().and_then(|i| app.data.news.get(i).cloned())
-}
-
-fn selected_fleet(app: &App) -> Option<Node> {
-    app.fleet.selected().and_then(|i| app.data.nodes.get(i).map(|n| n.node.clone()))
-}
-
-fn orchestrator(app: &App) -> Option<Node> {
-    app.data.nodes.iter().find(|n| n.is_orchestrator).map(|n| n.node.clone())
-}
-
-fn node_of(app: &App, session: &str) -> Option<Node> {
-    app.data.nodes.iter().find(|n| n.session_id == session).map(|n| n.node.clone())
-}
-
-fn attach_target(app: &App) -> Option<String> {
-    match app.focus {
-        Focus::Fleet => selected_fleet(app).map(|n| n.short_id),
-        Focus::News => selected_news(app).and_then(|r| node_of(app, &r.session_id)).map(|n| n.short_id),
-        Focus::Questions => selected_question(app).and_then(|q| node_of(app, &q.session_id)).map(|n| n.short_id),
-    }
-}
-
-fn input(target: Target) -> Mode {
-    Mode::Input { target, buffer: String::new() }
-}
-
-fn handle_key(app: &mut App, client: &Client, k: KeyEvent) -> bool {
-    if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
-        return false;
-    }
-    match &mut app.mode {
-        Mode::Input { target, buffer } => {
-            match k.code {
-                KeyCode::Esc => app.mode = Mode::Normal,
-                KeyCode::Enter if k.modifiers.contains(KeyModifiers::ALT) => buffer.push('\n'),
-                KeyCode::Enter => {
-                    let (target, text) = (target.clone(), buffer.trim().to_string());
-                    app.mode = Mode::Normal;
-                    if !text.is_empty() || matches!(target, Target::MoreContext(..)) {
-                        submit(app, client, target, text, None);
-                    }
-                }
-                KeyCode::Backspace => {
-                    buffer.pop();
-                }
-                KeyCode::Char(c) => buffer.push(c),
-                _ => {}
-            }
-            return true;
-        }
-        Mode::Detail { scroll, .. } => {
-            match k.code {
-                KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => *scroll = scroll.saturating_add(10),
-                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                KeyCode::Char('r') => {
-                    app.mode = Mode::Normal;
-                    return handle_key(app, client, k);
-                }
-                _ => app.mode = Mode::Normal,
-            }
-            return true;
-        }
-        Mode::Normal => {}
-    }
-    match k.code {
-        KeyCode::Char('q') | KeyCode::Esc => return false,
-        KeyCode::Char('f') => {
-            app.fleet_view = !app.fleet_view;
-            app.focus = if app.fleet_view { Focus::Fleet } else { Focus::Questions };
-        }
-        KeyCode::Tab | KeyCode::BackTab if !app.fleet_view => {
-            app.focus = if app.focus == Focus::Questions { Focus::News } else { Focus::Questions };
-        }
-        KeyCode::Down | KeyCode::Char('j') => move_sel(app, 1),
-        KeyCode::Up | KeyCode::Char('k') => move_sel(app, -1),
-        KeyCode::Enter => open_detail(app),
-        KeyCode::Char('n') => app.mode = input(Target::NewRequest),
-        KeyCode::Char('c') if app.focus == Focus::Questions => {
-            if let Some(q) = selected_question(app) {
-                app.mode = input(Target::MoreContext(q.id, q.title));
-            }
-        }
-        KeyCode::Char('o') => match orchestrator(app) {
-            Some(n) => app.mode = input(Target::Message { session: n.session_id, name: "el orquestador".into(), ack: false }),
-            None => flash(app, "El orquestador todavía no está conectado a Alondra"),
-        },
-        KeyCode::Char('r') | KeyCode::Char('m') => match app.focus {
-            Focus::Questions => {
-                if let Some(q) = selected_question(app) {
-                    app.mode = input(Target::Answer(q.id, q.title));
-                }
-            }
-            Focus::News => {
-                if let Some(r) = selected_news(app) {
-                    let name = r.node_name.clone().unwrap_or_else(|| r.session_id.chars().take(8).collect());
-                    app.mode = input(Target::ReplyReport { report: r.id, session: r.session_id, name });
-                }
-            }
-            Focus::Fleet => {
-                if let Some(n) = selected_fleet(app) {
-                    app.mode = input(Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: true });
-                }
-            }
-        },
-        KeyCode::Char('x') | KeyCode::Char(' ') if app.focus == Focus::News => {
-            if let Some(r) = selected_news(app) {
-                match client.post(&format!("/v1/reports/{}/read", r.id), &json!({})) {
-                    Ok(_) => flash(app, format!("Leído: {}", r.title)),
-                    Err(e) => flash(app, format!("Error: {e}")),
+                dirty = true;
+                if !event::poll(Duration::ZERO)? {
+                    break;
                 }
             }
         }
-        KeyCode::Char(c @ '1'..='9') if app.focus == Focus::Questions => {
-            if let Some(q) = selected_question(app) {
-                let i = c.to_digit(10).unwrap_or(1) as usize - 1;
-                if let Some(opt) = q.options.get(i) {
-                    submit(app, client, Target::Answer(q.id, q.title.clone()), opt.label.clone(), Some(opt.label.clone()));
-                }
-            }
+        while let Ok(m) = rx.try_recv() {
+            app.on_msg(m);
+            dirty = true;
         }
-        _ => {}
-    }
-    true
-}
-
-fn move_sel(app: &mut App, d: i32) {
-    fn step(len: usize, sel: Option<usize>, d: i32) -> Option<usize> {
-        (len > 0).then(|| (sel.unwrap_or(0) as i32 + d).clamp(0, len as i32 - 1) as usize)
-    }
-    match app.focus {
-        Focus::Questions => app.questions.select(step(app.data.open_questions.len(), app.questions.selected(), d)),
-        Focus::News => app.news.select(step(app.data.news.len(), app.news.selected(), d)),
-        Focus::Fleet => app.fleet.select(step(app.data.nodes.len(), app.fleet.selected(), d)),
+        dirty |= app.on_timers();
     }
 }
 
-fn submit(app: &mut App, client: &Client, target: Target, text: String, option: Option<String>) {
-    let res = match &target {
-        Target::Answer(id, _) => client.post(&format!("/v1/questions/{id}/answer"), &json!({"text": text, "option": option, "by": "David", "device": "tui"})),
-        Target::Message { session, ack, .. } => {
-            let r = client.post(&format!("/v1/nodes/{}/messages", urlencode(session)), &json!({"text": text, "from": "david"}));
-            if r.is_ok() && *ack {
-                let _ = client.post(&format!("/v1/nodes/{}/ack", urlencode(session)), &json!({}));
-            }
-            r
-        }
-        Target::NewRequest => client.post("/v1/requests", &json!({"text": text})),
-        Target::MoreContext(id, _) => client.post(&format!("/v1/questions/{id}/more-context"), &json!({"note": text})),
-        Target::ReplyReport { report, session, .. } => {
-            let r = client.post(&format!("/v1/nodes/{}/messages", urlencode(session)), &json!({"text": text, "from": "david"}));
-            if r.is_ok() {
-                let _ = client.post(&format!("/v1/reports/{report}/read"), &json!({}));
-            }
-            r
-        }
-    };
-    match (res, target) {
-        (Ok(_), Target::Answer(id, _)) => flash(app, format!("Contestada #{id}: le llega al nodo que preguntó")),
-        (Ok(_), Target::Message { name, .. }) | (Ok(_), Target::ReplyReport { name, .. }) => flash(app, format!("Enviado a {name}")),
-        (Ok(_), Target::MoreContext(id, _)) => flash(app, format!("#{id} devuelta al nodo: te la volverá a preguntar con más contexto")),
-        (Ok(_), Target::NewRequest) => flash(app, "Enviado al orquestador: preparará la misión y lanzará el nodo"),
-        (Err(e), _) => flash(app, format!("Error: {e}")),
-    }
+pub fn who(name: &Option<String>, session: &str) -> String {
+    name.clone().unwrap_or_else(|| session.chars().take(8).collect())
 }
 
-fn ago(ms: i64) -> String {
-    let s = ((now_millis() - ms) / 1000).max(0);
-    match s {
-        0..=59 => format!("{s}s"),
-        60..=3599 => format!("{}m", s / 60),
-        3600..=86399 => format!("{}h{:02}", s / 3600, (s % 3600) / 60),
-        _ => format!("{}d", s / 86400),
-    }
-}
-
-fn state_color(s: NodeState) -> Color {
-    match s {
-        NodeState::WaitingAnswer => Color::Yellow,
-        NodeState::Unclear => Color::Magenta,
-        NodeState::Delivered => Color::Cyan,
-        NodeState::WaitingMachine => Color::LightRed,
-        NodeState::Working => Color::Green,
-        NodeState::Done => Color::DarkGray,
-    }
-}
-
-fn one_line(s: &str, max: usize) -> String {
-    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > max { format!("{}…", flat.chars().take(max).collect::<String>()) } else { flat }
-}
-
-fn said(n: &Node) -> String {
+pub fn said(n: &Node) -> String {
     n.last_message.clone().or(n.daemon_needs.clone()).or(n.daemon_detail.clone()).unwrap_or_default()
 }
 
-fn block(title: &str, focused: bool) -> Block<'static> {
-    let b = Block::new().borders(Borders::ALL).border_type(BorderType::Rounded).title(format!(" {title} "));
-    if focused { b.border_style(Style::new().fg(Color::LightYellow)) } else { b.border_style(Style::new().fg(Color::DarkGray)) }
+fn approval_of(q: &Question) -> Option<Approval> {
+    let find = |pred: &dyn Fn(&str) -> bool| q.options.iter().find(|o| pred(&o.label.to_lowercase())).map(|o| o.label.clone());
+    let approve = find(&|l| l.starts_with("aprob") || l.starts_with("acept"));
+    let changes = find(&|l| l.contains("cambi") || l.contains("pedir") || l.contains("rechaz"));
+    (q.origin == QuestionOrigin::Plan || (approve.is_some() && changes.is_some())).then(|| Approval {
+        approve: approve.or_else(|| q.options.first().map(|o| o.label.clone())),
+        changes: changes.or_else(|| q.options.get(1).map(|o| o.label.clone())),
+    })
 }
 
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
-    let w = width.min(area.width.saturating_sub(2));
-    let h = height.min(area.height.saturating_sub(2)).max(3);
-    Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
+fn answer_body(text: &str, option: Option<&str>) -> Value {
+    json!({"text": text, "option": option, "by": "David", "device": "tui"})
 }
 
-fn draw(f: &mut Frame, app: &mut App) {
-    let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(8), Constraint::Length(2)]).areas(f.area());
-    draw_head(f, app, head);
-    if app.fleet_view {
-        draw_fleet(f, app, body);
-    } else {
-        let [left, right] = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(body);
-        let nq = app.data.open_questions.len();
-        let q_height = if nq == 0 { 3 } else { ((nq * 2) as u16 + 2).min(left.height / 2) };
-        let [questions, news] = Layout::vertical([Constraint::Length(q_height), Constraint::Min(4)]).areas(left);
-        draw_questions(f, app, questions);
-        draw_news(f, app, news);
-        draw_compact_fleet(f, app, right);
-    }
-    draw_foot(f, app, foot);
-    draw_overlay(f, app);
-}
-
-fn draw_head(f: &mut Frame, app: &App, area: Rect) {
-    let m = &app.data.machine;
-    let gb = |b: u64| b as f64 / 1_073_741_824.0;
-    let conn = if app.connected { Span::raw("") } else { " SIN CONEXIÓN CON alondrad ".on_red().bold() };
-    let mem = m.memory_free_percent.map(|p| format!("{p}% libre")).unwrap_or_else(|| format!("{:.1} GB libres", gb(m.memory_available)));
-    let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working).count();
-    let warn = if m.unreliable { " ⚠ medidas poco fiables" } else { "" };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            " Alondra ".bold().black().on_light_yellow(),
-            conn,
-            format!("  {working} trabajando · {} nodos · memoria {mem} · carga {:.0}{warn}", app.data.nodes.len(), m.load[0]).dark_gray(),
-        ])),
-        area,
-    );
-}
-
-fn draw_questions(f: &mut Frame, app: &mut App, area: Rect) {
-    let nq = app.data.open_questions.len();
-    let b = block(&format!("Te esperan ({nq})"), app.focus == Focus::Questions);
-    if nq == 0 {
-        f.render_widget(Paragraph::new("  Nada pendiente.".dark_gray()).block(b), area);
-        return;
-    }
-    let width = area.width.saturating_sub(10) as usize;
-    let items: Vec<ListItem> = app
-        .data
-        .open_questions
-        .iter()
-        .map(|q| {
-            let who = q.node_name.clone().unwrap_or_else(|| q.session_id.chars().take(8).collect());
-            let kind = match q.origin {
-                QuestionOrigin::Permission => "permiso · ",
-                QuestionOrigin::Plan => "plan · ",
-                _ => "",
-            };
-            let opts = q.options.iter().enumerate().map(|(i, o)| format!("{} {}", i + 1, o.label)).collect::<Vec<_>>().join("  ");
-            ListItem::new(vec![
-                Line::from(vec![format!("#{} ", q.id).bold(), format!("{kind}{}", one_line(&q.title, width)).into()]),
-                Line::from(vec![format!("   {who} · {}", ago(q.asked_at)).dark_gray(), format!("   {opts}").yellow()]),
-            ])
-        })
-        .collect();
-    f.render_stateful_widget(List::new(items).block(b).highlight_style(Style::new().add_modifier(Modifier::REVERSED)), area, &mut app.questions);
-}
-
-fn report_kind(k: ReportKind) -> &'static str {
-    k.label()
-}
-
-fn draw_news(f: &mut Frame, app: &mut App, area: Rect) {
-    let n = app.data.news.len();
-    let b = block(&format!("Para leer ({n})"), app.focus == Focus::News);
-    if n == 0 {
-        f.render_widget(Paragraph::new("  Ningún nodo te ha enviado nada para leer.".dark_gray()).block(b), area);
-        return;
-    }
-    let width = area.width.saturating_sub(6) as usize;
-    let items: Vec<ListItem> = app
-        .data
-        .news
-        .iter()
-        .map(|r| {
-            let who = r.node_name.clone().unwrap_or_else(|| r.session_id.chars().take(8).collect());
-            let extras = r.links.len() + r.attachments.len();
-            let clip = if extras > 0 { format!(" · 📎{extras}") } else { String::new() };
-            ListItem::new(vec![
-                Line::from(vec![format!("{} ", report_kind(r.kind)).cyan(), one_line(&r.title, width.saturating_sub(12)).bold()]),
-                Line::from(format!("  {who} · {}{clip}", ago(r.created_at)).dark_gray()),
-            ])
-        })
-        .collect();
-    f.render_stateful_widget(List::new(items).block(b).highlight_style(Style::new().add_modifier(Modifier::REVERSED)), area, &mut app.news);
-}
-
-fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
-    let mut projects: std::collections::BTreeMap<String, Vec<&crate::client::FleetNode>> = std::collections::BTreeMap::new();
-    for n in &app.data.nodes {
-        projects.entry(n.project.clone().unwrap_or_else(|| "otros".into())).or_default().push(n);
-    }
-    let mut lines: Vec<Line> = vec![];
-    if let Some(o) = orchestrator(app) {
-        lines.push(Line::from(vec!["★ orquestador ".bold(), Span::styled(o.state.label(), Style::new().fg(state_color(o.state)))]));
-        lines.push(Line::default());
-    }
-    for (project, nodes) in projects {
-        let busy = nodes.iter().filter(|n| n.alive).count();
-        lines.push(Line::from(format!("{project} ({busy}/{})", nodes.len()).bold()));
-        for n in nodes.iter().filter(|n| n.alive || n.state == NodeState::WaitingAnswer) {
-            let name = n.display_name().rsplit('/').next().unwrap_or(n.display_name()).to_string();
-            lines.push(Line::from(vec![
-                Span::styled("  ● ", Style::new().fg(state_color(n.state))),
-                Span::raw(one_line(&name, 26)),
-                format!(" {}", n.state.label()).dark_gray(),
-            ]));
+impl App {
+    fn new(tx: SyncSender<Msg>) -> Self {
+        App {
+            data: Overview::default(),
+            connected: false,
+            loaded: false,
+            offline: false,
+            screen: Screen::Inbox,
+            sel: None,
+            sel_idx: 0,
+            list_scroll: 0,
+            detail_scroll: 0,
+            settle_until: 0,
+            hidden: HashMap::new(),
+            fleet_sel: None,
+            fleet_idx: 0,
+            fleet_scroll: 0,
+            fleet_detail_scroll: 0,
+            show_sleeping: false,
+            search: None,
+            composer: None,
+            reader: None,
+            reviews: HashMap::new(),
+            drafts: HashMap::new(),
+            files: HashMap::new(),
+            loading: HashSet::new(),
+            flash: None,
+            help: false,
+            last_clock: now_millis(),
+            tx,
         }
     }
-    f.render_widget(Paragraph::new(lines).block(block("Flota por proyecto  (f para verla entera)", false)), area);
-}
 
-fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows: Vec<Row> = app
-        .data
-        .nodes
-        .iter()
-        .map(|n| {
-            let star = if n.is_orchestrator { "★ " } else { "" };
-            let sleep = if n.alive { "" } else { " 💤" };
-            let src = match n.state_source {
-                StateSource::Classifier => "*",
-                StateSource::Daemon => "~",
-                _ => "",
-            };
-            let doing = match &n.tool {
-                Some(t) => format!("{} {}", t.name, one_line(t.summary.as_deref().unwrap_or(""), 60)),
-                None => one_line(&said(n), 90),
-            };
-            Row::new(vec![
-                Span::styled(format!("{}{src}", n.state.label()), Style::new().fg(state_color(n.state))),
-                Span::raw(one_line(&format!("{star}{}{sleep}", n.display_name()), 36)),
-                Span::raw(ago(n.state_since)).dark_gray(),
-                Span::raw(doing),
-            ])
-        })
-        .collect();
-    let table = Table::new(rows, [Constraint::Length(21), Constraint::Length(36), Constraint::Length(6), Constraint::Min(20)])
-        .header(Row::new(vec!["estado", "nodo", "desde", "qué hace / qué dijo"]).dark_gray())
-        .block(block(&format!("Flota ({})", app.data.nodes.len()), true))
-        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(table, area, &mut app.fleet);
-}
+    pub fn inbox_keys(&self) -> Vec<Key> {
+        let q = self.data.open_questions.iter().map(|q| Key::Q(q.id));
+        let r = self.data.news.iter().map(|r| Key::R(r.id));
+        q.chain(r).filter(|k| !self.hidden.contains_key(k)).collect()
+    }
 
-fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
-    let help = match app.focus {
-        Focus::Questions => "1-4 elegir · r responder · c necesito más contexto · Enter ver · a su terminal (← vuelve) · n nuevo · Tab para leer · f flota · q salir",
-        Focus::News => "Enter leer · r responder al nodo · x leído · a su terminal (← vuelve) · n nuevo · Tab preguntas · f flota · q salir",
-        Focus::Fleet => "r mensaje · Enter ver · a su terminal (← vuelve) · n nuevo · f volver · q salir   ~ demonio · * jev · 💤 dormido",
-    };
-    let status = app
-        .status
-        .as_ref()
-        .filter(|(_, at)| now_millis() - at < 5000)
-        .map(|(s, _)| Line::from(s.clone().yellow()))
-        .unwrap_or_default();
-    f.render_widget(Paragraph::new(vec![status, Line::from(help.dark_gray())]), area);
-}
-
-fn draw_overlay(f: &mut Frame, app: &App) {
-    match &app.mode {
-        Mode::Input { target, buffer } => {
-            let title = match target {
-                Target::Answer(id, t) => format!("Responder #{id}: {}   (Enter envía · Alt+Enter salto · Esc cancela)", one_line(t, 50)),
-                Target::Message { name, .. } | Target::ReplyReport { name, .. } => format!("Mensaje a {name}   (Enter envía · Esc cancela)"),
-                Target::MoreContext(id, t) => format!("#{id} {}: ¿qué te falta saber? (opcional)   (Enter envía · Esc cancela)", one_line(t, 40)),
-                Target::NewRequest => "¿Qué quieres? El orquestador preparará la misión y lanzará el nodo   (Enter envía · Esc cancela)".to_string(),
-            };
-            let area = centered(f.area(), 100, 8);
-            f.render_widget(Clear, area);
-            f.render_widget(Paragraph::new(format!("{buffer}▏")).wrap(Wrap { trim: false }).block(block(&title, true)), area);
+    pub fn item(&self, key: Key) -> Option<Item<'_>> {
+        match key {
+            Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(Item::Q),
+            Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(Item::R),
         }
-        Mode::Detail { title, body, scroll } => {
-            let area = centered(f.area(), 110, f.area().height.saturating_sub(4));
-            f.render_widget(Clear, area);
-            f.render_widget(
-                Paragraph::new(body.clone()).wrap(Wrap { trim: false }).scroll((*scroll, 0)).block(block(&format!("{title}   (r responder · Esc cerrar)"), true)),
-                area,
-            );
+    }
+
+    fn selected_question(&self) -> Option<Question> {
+        match self.sel.and_then(|k| self.item(k)) {
+            Some(Item::Q(q)) => Some(q.clone()),
+            _ => None,
         }
-        Mode::Normal => {}
+    }
+
+    fn selected_report(&self) -> Option<Report> {
+        match self.sel.and_then(|k| self.item(k)) {
+            Some(Item::R(r)) => Some(r.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn node(&self, session: &str) -> Option<&FleetNode> {
+        self.data.nodes.iter().find(|n| n.session_id == session)
+    }
+
+    pub fn orchestrator(&self) -> Option<&FleetNode> {
+        self.data.nodes.iter().find(|n| n.is_orchestrator)
+    }
+
+    pub fn flash(&mut self, text: impl Into<String>) {
+        self.flash = Some(Flash { text: text.into(), error: false, at: now_millis() });
+    }
+
+    pub fn fail(&mut self, text: impl Into<String>) {
+        self.flash = Some(Flash { text: text.into(), error: true, at: now_millis() });
+    }
+
+    fn hide(&mut self, key: Key) {
+        self.hidden.insert(key, now_millis());
+        self.reconcile();
+    }
+
+    fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>) + Send + 'static) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || job(&tx));
+    }
+
+    fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
+        self.spawn(move |tx| {
+            let client = Client::new(Duration::from_secs(15));
+            let mut result = Ok(ok);
+            for (i, (path, body)) in calls.into_iter().enumerate() {
+                if let Err(e) = client.post(&path, &body)
+                    && i == 0
+                {
+                    result = Err(e.to_string());
+                    break;
+                }
+            }
+            let _ = tx.send(Msg::Posted { key, result });
+        });
+    }
+
+    fn fetch(&mut self, path: &str) {
+        if self.files.contains_key(path) || !self.loading.insert(path.to_string()) {
+            return;
+        }
+        let path = path.to_string();
+        self.spawn(move |tx| {
+            let result = Client::new(Duration::from_secs(10))
+                .get_text(&format!("/v1/file?path={}", urlencode(&path)))
+                .map(|(_, body)| body)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::File { path, result });
+        });
+    }
+
+    fn reconcile(&mut self) {
+        let now = now_millis();
+        let present: HashSet<Key> =
+            self.data.open_questions.iter().map(|q| Key::Q(q.id)).chain(self.data.news.iter().map(|r| Key::R(r.id))).collect();
+        self.hidden.retain(|k, at| present.contains(k) && now - *at < HIDE_GRACE_MS);
+        let keys = self.inbox_keys();
+        let prev = self.sel;
+        match self.sel.and_then(|s| keys.iter().position(|k| *k == s)) {
+            Some(i) => self.sel_idx = i,
+            None => {
+                self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
+                self.sel = keys.get(self.sel_idx).copied();
+            }
+        }
+        if self.sel != prev {
+            self.detail_scroll = 0;
+            if prev.is_some() {
+                self.settle_until = now + SETTLE_MS;
+            }
+        }
+        let paths: Vec<String> = match self.sel.and_then(|k| self.item(k)) {
+            Some(Item::Q(q)) => attachment_paths(&q.attachments),
+            Some(Item::R(r)) => attachment_paths(&r.attachments),
+            None => vec![],
+        };
+        for p in paths.iter().take(2) {
+            self.fetch(p);
+        }
+        let sessions = self.fleet_sessions();
+        match self.fleet_sel.as_ref().and_then(|s| sessions.iter().position(|x| x == s)) {
+            Some(i) => self.fleet_idx = i,
+            None => {
+                self.fleet_idx = self.fleet_idx.min(sessions.len().saturating_sub(1));
+                let next = sessions.get(self.fleet_idx).cloned();
+                if next != self.fleet_sel {
+                    self.fleet_detail_scroll = 0;
+                }
+                self.fleet_sel = next;
+            }
+        }
+    }
+
+    fn on_msg(&mut self, m: Msg) {
+        match m {
+            Msg::Data(o) => {
+                self.data = *o;
+                self.connected = true;
+                self.loaded = true;
+                self.offline = false;
+            }
+            Msg::Offline => {
+                self.connected = false;
+                self.offline = true;
+            }
+            Msg::Posted { key, result: Ok(text) } => {
+                if let Some(k) = key {
+                    self.reviews.remove(&k);
+                }
+                self.flash(text);
+            }
+            Msg::Posted { key, result: Err(e) } => {
+                if let Some(k) = key {
+                    self.hidden.remove(&k);
+                }
+                self.fail(format!("No se envió: {e}"));
+            }
+            Msg::File { path, result } => {
+                self.loading.remove(&path);
+                self.files.insert(path.clone(), result);
+                if self.reader.as_ref().is_some_and(|r| r.parts.iter().any(|p| matches!(p, Part::File { path: fp, .. } if *fp == path))) {
+                    self.rebuild_reader();
+                }
+            }
+            Msg::Found { query, result } => {
+                if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
+                    s.remote = match result {
+                        Ok((via, sessions)) => Remote::Done { query, via, sessions },
+                        Err(e) => Remote::Failed(e),
+                    };
+                }
+            }
+        }
+    }
+
+    fn on_timers(&mut self) -> bool {
+        let now = now_millis();
+        let mut dirty = false;
+        if self.flash.as_ref().is_some_and(|f| now - f.at > FLASH_MS) {
+            self.flash = None;
+            dirty = true;
+        }
+        if now - self.last_clock >= CLOCK_MS {
+            self.last_clock = now;
+            dirty = true;
+        }
+        if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
+            dirty = true;
+        }
+        let wants_remote = self.search.as_ref().and_then(|s| {
+            let q = s.query();
+            let idle = matches!(&s.remote, Remote::Idle);
+            (idle && !q.is_empty() && now - s.typed_at >= SEARCH_DEBOUNCE_MS).then_some(q)
+        });
+        if let Some(q) = wants_remote
+            && self.local_matches(&q).is_empty()
+        {
+            if let Some(s) = self.search.as_mut() {
+                s.remote = Remote::Pending;
+            }
+            self.spawn(move |tx| {
+                let result = Client::new(Duration::from_secs(120))
+                    .get::<Value>(&format!("/v1/search?q={}", urlencode(&q)))
+                    .map(|v| {
+                        let via = v["via"].as_str().unwrap_or("").to_string();
+                        let sessions = v["sessions"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                        (via, sessions)
+                    })
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(Msg::Found { query: q, result });
+            });
+            dirty = true;
+        }
+        dirty
+    }
+
+    fn on_paste(&mut self, s: &str) {
+        if let Some(c) = self.composer.as_mut() {
+            c.input.insert_str(s);
+        } else if let Some(search) = self.search.as_mut().filter(|s| s.editing) {
+            search.input.insert_str(&md::one_line(s));
+            search.typed_at = now_millis();
+            search.remote = Remote::Idle;
+        }
+    }
+
+    fn on_key(&mut self, k: KeyEvent) -> Flow {
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+            return Flow::Quit;
+        }
+        if self.help {
+            self.help = false;
+            return Flow::Go;
+        }
+        if self.composer.is_some() {
+            self.composer_key(k);
+            return Flow::Go;
+        }
+        if self.reader.is_some() {
+            self.reader_key(k);
+            return Flow::Go;
+        }
+        if self.screen == Screen::Fleet && self.search.as_ref().is_some_and(|s| s.editing) {
+            self.search_key(k);
+            return Flow::Go;
+        }
+        match k.code {
+            KeyCode::Char('q') => return Flow::Quit,
+            KeyCode::Char('?') => self.help = true,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('f') => {
+                self.screen = if self.screen == Screen::Inbox { Screen::Fleet } else { Screen::Inbox };
+            }
+            KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
+            KeyCode::Char('o') => match self.orchestrator() {
+                Some(n) => {
+                    let session = n.session_id.clone();
+                    self.compose(Target::Message { session, name: "el orquestador".into(), ack: false }, "");
+                }
+                None => self.fail("El orquestador todavía no está conectado a Alondra"),
+            },
+            _ => {
+                return match self.screen {
+                    Screen::Inbox => self.inbox_key(k),
+                    Screen::Fleet => self.fleet_key(k),
+                };
+            }
+        }
+        Flow::Go
+    }
+
+    fn compose(&mut self, target: Target, prefill: &str) {
+        let draft = target.draft_key().and_then(|k| self.drafts.remove(&k));
+        let text = draft.as_deref().unwrap_or(prefill);
+        self.composer = Some(Composer { target, input: TextInput::with(text) });
+    }
+
+    fn cancel_composer(&mut self) {
+        let Some(c) = self.composer.take() else { return };
+        let text = c.input.text();
+        if let Some(k) = c.target.draft_key()
+            && !text.trim().is_empty()
+        {
+            self.drafts.insert(k, text);
+            self.flash("Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste");
+        }
+    }
+
+    fn move_inbox(&mut self, to: isize) {
+        let keys = self.inbox_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let idx = to.clamp(0, keys.len() as isize - 1) as usize;
+        if self.sel != Some(keys[idx]) {
+            self.detail_scroll = 0;
+        }
+        self.sel_idx = idx;
+        self.sel = Some(keys[idx]);
+        self.settle_until = 0;
+    }
+
+    fn attach_to(&mut self, session: &str) -> Flow {
+        match self.node(session) {
+            Some(n) => Flow::Attach(n.short_id.clone()),
+            None => {
+                self.fail("Ese nodo ya no está en la flota");
+                Flow::Go
+            }
+        }
+    }
+
+    fn inbox_key(&mut self, k: KeyEvent) -> Flow {
+        let i = self.sel_idx as isize;
+        match k.code {
+            KeyCode::Down | KeyCode::Char('j') => self.move_inbox(i + 1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_inbox(i - 1),
+            KeyCode::Home | KeyCode::Char('g') => self.move_inbox(0),
+            KeyCode::End | KeyCode::Char('G') => self.move_inbox(isize::MAX),
+            KeyCode::PageDown | KeyCode::Char('J') | KeyCode::Char(' ') => self.detail_scroll += 5,
+            KeyCode::PageUp | KeyCode::Char('K') => self.detail_scroll = self.detail_scroll.saturating_sub(5),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open_reader(),
+            KeyCode::Char('a') => {
+                let session = match self.sel.and_then(|k| self.item(k)) {
+                    Some(Item::Q(q)) => q.session_id.clone(),
+                    Some(Item::R(r)) => r.session_id.clone(),
+                    None => return Flow::Go,
+                };
+                return self.attach_to(&session);
+            }
+            KeyCode::Char('r') => {
+                if let Some(q) = self.selected_question() {
+                    self.compose(Target::Answer { id: q.id, title: q.title }, "");
+                } else if let Some(r) = self.selected_report() {
+                    let name = who(&r.node_name, &r.session_id);
+                    self.compose(Target::ReplyReport { id: r.id, session: r.session_id, name }, "");
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(q) = self.selected_question() {
+                    self.compose(Target::MoreContext { id: q.id, title: q.title }, "");
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(r) = self.selected_report() {
+                    self.mark_read(&r);
+                }
+            }
+            KeyCode::Char(c @ '1'..='9') => {
+                if let Some(q) = self.selected_question() {
+                    self.choose(&q, c as usize - '1' as usize);
+                }
+            }
+            _ => {}
+        }
+        Flow::Go
+    }
+
+    fn choose(&mut self, q: &Question, i: usize) {
+        if now_millis() < self.settle_until {
+            self.fail("La selección acaba de cambiar: mira cuál es y vuelve a pulsar");
+            return;
+        }
+        let Some(opt) = q.options.get(i) else {
+            self.fail(format!("Esta pregunta no tiene opción {}", i + 1));
+            return;
+        };
+        let who = who(&q.node_name, &q.session_id);
+        self.post(
+            Some(Key::Q(q.id)),
+            vec![(format!("/v1/questions/{}/answer", q.id), answer_body(&opt.label, Some(&opt.label)))],
+            format!("«{}» → {who}", opt.label),
+        );
+        self.reader = None;
+        self.hide(Key::Q(q.id));
+    }
+
+    fn mark_read(&mut self, r: &Report) {
+        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], format!("Leído: {}", md::truncate(&r.title, 60)));
+        self.reader = None;
+        self.hide(Key::R(r.id));
+    }
+
+    fn composer_key(&mut self, k: KeyEvent) {
+        let Some(c) = self.composer.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => self.cancel_composer(),
+            KeyCode::Enter if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => {
+                c.input.handle(k);
+            }
+            KeyCode::Enter => self.submit(),
+            _ => {
+                c.input.handle(k);
+            }
+        }
+    }
+
+    fn submit(&mut self) {
+        let Some(c) = self.composer.take() else { return };
+        let text = c.input.text().trim().to_string();
+        let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest);
+        if needs_text && text.is_empty() {
+            self.composer = Some(c);
+            return;
+        }
+        match c.target {
+            Target::Answer { id, .. } => {
+                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, None))], format!("#{id} contestada"));
+                self.hide(Key::Q(id));
+            }
+            Target::MoreContext { id, .. } => {
+                self.post(
+                    Some(Key::Q(id)),
+                    vec![(format!("/v1/questions/{id}/more-context"), json!({"note": text}))],
+                    format!("#{id} devuelta: te la volverá a preguntar con más contexto"),
+                );
+                self.hide(Key::Q(id));
+            }
+            Target::ReplyReport { id, session, name } => {
+                self.post(
+                    Some(Key::R(id)),
+                    vec![
+                        (format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david"})),
+                        (format!("/v1/reports/{id}/read"), json!({})),
+                    ],
+                    format!("Enviado a {name} y marcado leído"),
+                );
+                self.hide(Key::R(id));
+            }
+            Target::Message { session, name, ack } => {
+                let mut calls = vec![(format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david"}))];
+                if ack {
+                    calls.push((format!("/v1/nodes/{}/ack", urlencode(&session)), json!({})));
+                }
+                self.post(None, calls, format!("Enviado a {name}"));
+            }
+            Target::NewRequest => {
+                self.post(None, vec![("/v1/requests".into(), json!({"text": text}))], "Enviado al orquestador: preparará la misión y lanzará el nodo".into())
+            }
+            Target::Comment { block, quote } => {
+                let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
+                let review = self.reviews.entry(key).or_default();
+                review.comments.retain(|c| c.block != block);
+                if !text.is_empty() {
+                    review.comments.push(Comment { block, quote, text });
+                    review.comments.sort_by_key(|c| c.block);
+                }
+            }
+            Target::General { send } => {
+                let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
+                self.reviews.entry(key).or_default().general = text;
+                if send {
+                    self.send_feedback();
+                }
+            }
+        }
+    }
+
+    fn open_reader(&mut self) {
+        let Some(key) = self.sel else { return };
+        let (reader, paths) = match self.item(key) {
+            Some(Item::Q(q)) => {
+                let mut parts = vec![Part::Text(format!("# {}", q.title))];
+                parts.extend(q.detail.clone().map(Part::Text));
+                parts.extend(q.attachments.iter().filter_map(|a| a.stored_path.clone().map(|path| Part::File { name: a.name.clone(), path })));
+                parts.extend(links_part(&q.links));
+                let kind = match q.origin {
+                    QuestionOrigin::Plan => "plan",
+                    QuestionOrigin::Permission => "permiso",
+                    _ => "pregunta",
+                };
+                (new_reader(key, &q.session_id, &q.node_name, &q.title, kind, approval_of(q), parts), attachment_paths(&q.attachments))
+            }
+            Some(Item::R(r)) => {
+                let mut parts = vec![Part::Text(format!("# {}", r.title))];
+                parts.extend(r.body.clone().map(Part::Text));
+                parts.extend(r.attachments.iter().filter_map(|a| a.stored_path.clone().map(|path| Part::File { name: a.name.clone(), path })));
+                parts.extend(links_part(&r.links));
+                (new_reader(key, &r.session_id, &r.node_name, &r.title, r.kind.label(), None, parts), attachment_paths(&r.attachments))
+            }
+            None => return,
+        };
+        self.reader = Some(reader);
+        for p in paths {
+            self.fetch(&p);
+        }
+        self.rebuild_reader();
+    }
+
+    fn rebuild_reader(&mut self) {
+        let Some(r) = self.reader.as_mut() else { return };
+        let mut blocks = vec![];
+        for part in &r.parts {
+            match part {
+                Part::Text(t) => blocks.extend(md::parse(t)),
+                Part::File { name, path } => {
+                    blocks.push(Block::label(&format!("📎 {name}")));
+                    match self.files.get(path) {
+                        Some(Ok(text)) => blocks.extend(md::parse(text)),
+                        Some(Err(e)) => blocks.push(Block::para(&format!("No he podido cargar el fichero: {e}"))),
+                        None => blocks.push(Block::para("Cargando…")),
+                    }
+                }
+            }
+        }
+        r.blocks = blocks;
+        r.settle_cursor();
+    }
+
+    fn reader_key(&mut self, k: KeyEvent) {
+        let Some(r) = self.reader.as_mut() else { return };
+        let key = r.key;
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left | KeyCode::Char('h') => self.reader = None,
+            KeyCode::Down | KeyCode::Char('j') => r.step(1),
+            KeyCode::Up | KeyCode::Char('k') => r.step(-1),
+            KeyCode::Home | KeyCode::Char('g') => {
+                r.cursor = 0;
+                r.settle_cursor();
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                r.cursor = r.blocks.len().saturating_sub(1);
+                if !r.blocks.get(r.cursor).is_some_and(Block::commentable) {
+                    r.step(-1);
+                }
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('J') => r.page(1),
+            KeyCode::PageUp | KeyCode::Char('K') => r.page(-1),
+            KeyCode::Char('c') | KeyCode::Enter => {
+                let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else { return };
+                let (block, quote) = (r.cursor, b.quote());
+                let prefill = self.reviews.get(&key).and_then(|rv| rv.comments.iter().find(|c| c.block == block)).map(|c| c.text.clone()).unwrap_or_default();
+                self.compose(Target::Comment { block, quote }, &prefill);
+            }
+            KeyCode::Char('C') => {
+                let prefill = self.reviews.get(&key).map(|rv| rv.general.clone()).unwrap_or_default();
+                self.compose(Target::General { send: false }, &prefill);
+            }
+            KeyCode::Char('d') => {
+                let block = r.cursor;
+                if let Some(rv) = self.reviews.get_mut(&key) {
+                    let before = rv.comments.len();
+                    rv.comments.retain(|c| c.block != block);
+                    if rv.comments.len() < before {
+                        self.flash("Comentario borrado");
+                    }
+                }
+            }
+            KeyCode::Char('a') if r.approval.is_some() => self.approve(),
+            KeyCode::Char('p') if r.approval.is_some() => self.send_feedback(),
+            KeyCode::Char('s') if r.approval.is_none() => self.send_feedback(),
+            KeyCode::Char('x') if matches!(key, Key::R(_)) => {
+                if let Some(rep) = self.selected_report().filter(|rep| Key::R(rep.id) == key) {
+                    self.mark_read(&rep);
+                }
+            }
+            KeyCode::Char(c @ '1'..='9') if matches!(key, Key::Q(_)) => {
+                if let Some(q) = self.data.open_questions.iter().find(|q| Key::Q(q.id) == key).cloned() {
+                    self.settle_until = 0;
+                    self.choose(&q, c as usize - '1' as usize);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn approve(&mut self) {
+        let Some(r) = self.reader.as_ref() else { return };
+        let Key::Q(id) = r.key else { return };
+        let label = r.approval.as_ref().and_then(|a| a.approve.clone());
+        let text = match self.reviews.get(&r.key).filter(|rv| !rv.is_empty()) {
+            Some(rv) => rv.feedback(),
+            None => label.clone().unwrap_or_else(|| "Aprobado".into()),
+        };
+        let node = r.node.clone();
+        self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref()))], format!("Aprobado → {node}"));
+        self.reader = None;
+        self.hide(Key::Q(id));
+    }
+
+    fn send_feedback(&mut self) {
+        let Some(r) = self.reader.as_ref() else { return };
+        let key = r.key;
+        let Some(review) = self.reviews.get(&key).filter(|rv| !rv.is_empty()) else {
+            self.compose(Target::General { send: true }, "");
+            return;
+        };
+        let text = review.feedback();
+        let n = review.count();
+        let node = r.node.clone();
+        let plural = if n == 1 { "comentario" } else { "comentarios" };
+        match key {
+            Key::Q(id) => {
+                let option = r.approval.as_ref().and_then(|a| a.changes.clone());
+                let what = if option.is_some() { "Cambios pedidos" } else { "Respuesta enviada" };
+                self.post(Some(key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], format!("{what} a {node} ({n} {plural})"));
+            }
+            Key::R(id) => {
+                self.post(
+                    Some(key),
+                    vec![
+                        (format!("/v1/nodes/{}/messages", urlencode(&r.session)), json!({"text": text, "from": "david"})),
+                        (format!("/v1/reports/{id}/read"), json!({})),
+                    ],
+                    format!("{n} {plural} enviados a {node}; marcado leído"),
+                );
+            }
+        }
+        self.reader = None;
+        self.hide(key);
+    }
+
+    pub fn node_matches(&self, n: &FleetNode, q: &str) -> bool {
+        let hay = format!(
+            "{} {} {} {} {} {}",
+            n.display_name(),
+            n.short_id,
+            n.project.clone().unwrap_or_default(),
+            n.state.label(),
+            said(n),
+            n.cwd.clone().unwrap_or_default()
+        )
+            .to_lowercase();
+        q.split_whitespace().all(|w| hay.contains(w))
+    }
+
+    fn local_matches(&self, q: &str) -> Vec<usize> {
+        (0..self.data.nodes.len()).filter(|&i| self.node_matches(&self.data.nodes[i], q)).collect()
+    }
+
+    pub fn fleet_filter(&self) -> Option<(Vec<usize>, Option<String>)> {
+        let s = self.search.as_ref()?;
+        let q = s.query();
+        if q.is_empty() {
+            return None;
+        }
+        let local = self.local_matches(&q);
+        if !local.is_empty() {
+            return Some((local, None));
+        }
+        match &s.remote {
+            Remote::Done { query, via, sessions } if *query == q => {
+                let idx = (0..self.data.nodes.len()).filter(|&i| sessions.contains(&self.data.nodes[i].session_id)).collect();
+                Some((idx, Some(via.clone())))
+            }
+            _ => Some((vec![], None)),
+        }
+    }
+
+    pub fn sleeping_hidden(&self) -> usize {
+        if self.show_sleeping || self.fleet_filter().is_some() {
+            return 0;
+        }
+        self.data.nodes.iter().filter(|n| !visible_awake(n)).count()
+    }
+
+    pub fn fleet_rows(&self) -> Vec<FleetRow> {
+        let indices: Vec<usize> = match self.fleet_filter() {
+            Some((idx, _)) => idx,
+            None => (0..self.data.nodes.len()).filter(|&i| self.show_sleeping || visible_awake(&self.data.nodes[i])).collect(),
+        };
+        let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let mut orchestrator = vec![];
+        for i in indices {
+            let n = &self.data.nodes[i];
+            if n.is_orchestrator {
+                orchestrator.push(i);
+            } else {
+                groups.entry(n.project.clone().unwrap_or_else(|| "otros".into())).or_default().push(i);
+            }
+        }
+        let mut sorted: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
+        sorted.sort_by_key(|(p, v)| (!v.iter().any(|&i| self.data.nodes[i].alive), p.to_lowercase()));
+        if !orchestrator.is_empty() {
+            sorted.insert(0, ("orquestador".into(), orchestrator));
+        }
+        let mut rows = vec![];
+        for (name, nodes) in sorted {
+            let alive = nodes.iter().filter(|&&i| self.data.nodes[i].alive).count();
+            let total = self.data.nodes.iter().filter(|n| !n.is_orchestrator && n.project.as_deref() == Some(name.as_str())).count().max(nodes.len());
+            rows.push(FleetRow::Group { name, alive, total });
+            rows.extend(nodes.into_iter().map(FleetRow::Node));
+        }
+        rows
+    }
+
+    fn fleet_sessions(&self) -> Vec<String> {
+        self.fleet_rows()
+            .iter()
+            .filter_map(|r| match r {
+                FleetRow::Node(i) => Some(self.data.nodes[*i].session_id.clone()),
+                FleetRow::Group { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn selected_node(&self) -> Option<&FleetNode> {
+        self.fleet_sel.as_ref().and_then(|s| self.node(s))
+    }
+
+    fn move_fleet(&mut self, to: isize) {
+        let sessions = self.fleet_sessions();
+        if sessions.is_empty() {
+            return;
+        }
+        let idx = to.clamp(0, sessions.len() as isize - 1) as usize;
+        if self.fleet_sel.as_ref() != Some(&sessions[idx]) {
+            self.fleet_detail_scroll = 0;
+        }
+        self.fleet_idx = idx;
+        self.fleet_sel = Some(sessions[idx].clone());
+    }
+
+    fn fleet_key(&mut self, k: KeyEvent) -> Flow {
+        let i = self.fleet_idx as isize;
+        match k.code {
+            KeyCode::Down | KeyCode::Char('j') => self.move_fleet(i + 1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_fleet(i - 1),
+            KeyCode::Home | KeyCode::Char('g') => self.move_fleet(0),
+            KeyCode::End | KeyCode::Char('G') => self.move_fleet(isize::MAX),
+            KeyCode::PageDown | KeyCode::Char('J') | KeyCode::Char(' ') => self.fleet_detail_scroll += 5,
+            KeyCode::PageUp | KeyCode::Char('K') => self.fleet_detail_scroll = self.fleet_detail_scroll.saturating_sub(5),
+            KeyCode::Char('/') => match self.search.as_mut() {
+                Some(s) => s.editing = true,
+                None => self.search = Some(Search { input: TextInput::default(), editing: true, typed_at: now_millis(), remote: Remote::Idle }),
+            },
+            KeyCode::Esc if self.search.is_some() => self.search = None,
+            KeyCode::Char('d') => {
+                self.show_sleeping = !self.show_sleeping;
+                self.flash(if self.show_sleeping { "Muestro también los nodos dormidos" } else { "Oculto los nodos dormidos" });
+            }
+            KeyCode::Char('r') | KeyCode::Char('m') => {
+                if let Some(n) = self.selected_node() {
+                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: true };
+                    self.compose(target, "");
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Enter => {
+                if let Some(s) = self.fleet_sel.clone() {
+                    return self.attach_to(&s);
+                }
+            }
+            _ => {}
+        }
+        Flow::Go
+    }
+
+    fn search_key(&mut self, k: KeyEvent) {
+        let Some(s) = self.search.as_mut() else { return };
+        match k.code {
+            KeyCode::Esc => self.search = None,
+            KeyCode::Enter | KeyCode::Down | KeyCode::Up | KeyCode::Tab => {
+                s.editing = false;
+                if s.query().is_empty() {
+                    self.search = None;
+                }
+            }
+            _ => {
+                let before = s.query();
+                s.input.handle(k);
+                if s.query() != before {
+                    s.typed_at = now_millis();
+                    s.remote = Remote::Idle;
+                    self.fleet_idx = 0;
+                    self.fleet_sel = None;
+                }
+            }
+        }
     }
 }
 
-fn open_detail(app: &mut App) {
-    match app.focus {
-        Focus::Questions => {
-            let Some(q) = selected_question(app) else { return };
-            let mut lines: Vec<Line> = vec![Line::from(q.title.clone().bold()), Line::default()];
-            if let Some(d) = &q.detail {
-                lines.extend(d.lines().map(|l| Line::from(l.to_string())));
-                lines.push(Line::default());
-            }
-            for (i, o) in q.options.iter().enumerate() {
-                let desc = o.description.clone().map(|d| format!(" — {d}")).unwrap_or_default();
-                lines.push(Line::from(format!("  {}. {}{desc}", i + 1, o.label).yellow()));
-            }
-            for l in &q.links {
-                lines.push(Line::from(format!("  ↗ {} {}", l.title.clone().unwrap_or_default(), l.url).cyan()));
-            }
-            for a in &q.attachments {
-                lines.push(Line::from(format!("  📎 {}", a.stored_path.clone().unwrap_or_else(|| a.source_path.clone())).cyan()));
-            }
-            if let Some(c) = &q.node_context {
-                lines.push(Line::default());
-                lines.push(Line::from("Lo que hacía el nodo:".dark_gray()));
-                lines.extend(c.lines().map(|l| Line::from(l.to_string().dark_gray())));
-            }
-            app.mode = Mode::Detail { title: format!("#{} · {}", q.id, q.node_name.clone().unwrap_or_default()), body: Text::from(lines), scroll: 0 };
+fn visible_awake(n: &FleetNode) -> bool {
+    n.alive || n.is_orchestrator || matches!(n.state, NodeState::WaitingAnswer | NodeState::Unclear)
+}
+
+fn attachment_paths(a: &[alondra_core::Attachment]) -> Vec<String> {
+    a.iter().filter_map(|a| a.stored_path.clone()).collect()
+}
+
+fn links_part(links: &[alondra_core::Link]) -> Option<Part> {
+    (!links.is_empty()).then(|| {
+        let items: Vec<String> = links.iter().map(|l| format!("- {} {}", l.title.clone().unwrap_or_default(), l.url)).collect();
+        Part::Text(format!("## Enlaces\n\n{}", items.join("\n")))
+    })
+}
+
+fn new_reader(key: Key, session: &str, node: &Option<String>, title: &str, kind: &'static str, approval: Option<Approval>, parts: Vec<Part>) -> Reader {
+    Reader {
+        key,
+        session: session.to_string(),
+        node: who(node, session),
+        title: title.to_string(),
+        kind,
+        approval,
+        parts,
+        blocks: vec![],
+        cursor: 0,
+        scroll: 0,
+        ranges: vec![],
+        view_h: 0,
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use alondra_core::{QuestionOption, QuestionStatus};
+
+    pub(super) fn question(id: u64, origin: QuestionOrigin, options: &[&str]) -> Question {
+        Question {
+            id,
+            session_id: "s1".into(),
+            node_name: Some("demo".into()),
+            title: format!("Pregunta {id}"),
+            detail: None,
+            options: options.iter().map(|l| QuestionOption { label: l.to_string(), description: None }).collect(),
+            links: vec![],
+            attachments: vec![],
+            blocking: true,
+            origin,
+            tool_use_id: None,
+            to_orchestrator: false,
+            node_context: None,
+            status: QuestionStatus::Open,
+            answer: None,
+            asked_at: 0,
         }
-        Focus::News => {
-            let Some(r) = selected_news(app) else { return };
-            let mut lines: Vec<Line> = vec![Line::from(r.title.clone().bold()), Line::default()];
-            if let Some(b) = &r.body {
-                lines.extend(b.lines().map(|l| Line::from(l.to_string())));
-                lines.push(Line::default());
-            }
-            for l in &r.links {
-                lines.push(Line::from(format!("  ↗ {} {}", l.title.clone().unwrap_or_default(), l.url).cyan()));
-            }
-            for a in &r.attachments {
-                lines.push(Line::from(format!("  📎 {}", a.stored_path.clone().unwrap_or_else(|| a.source_path.clone())).cyan()));
-            }
-            let who = r.node_name.clone().unwrap_or_default();
-            app.mode = Mode::Detail { title: format!("{} · {who}", report_kind(r.kind)), body: Text::from(lines), scroll: 0 };
-        }
-        Focus::Fleet => {
-            let Some(n) = selected_fleet(app) else { return };
-            let mut lines: Vec<Line> = vec![
-                Line::from(vec![
-                    Span::styled(n.state.label(), Style::new().fg(state_color(n.state)).bold()),
-                    format!("  desde hace {}{}", ago(n.state_since), if n.alive { "" } else { " · 💤 dormido" }).dark_gray(),
-                ]),
-                Line::from(n.cwd.clone().unwrap_or_default().dark_gray()),
-                Line::default(),
-            ];
-            if let Some(t) = &n.tool {
-                lines.push(Line::from(format!("Ahora: {} {} (desde hace {})", t.name, t.summary.clone().unwrap_or_default(), ago(t.since))));
-                lines.push(Line::default());
-            }
-            if let Some(needs) = &n.daemon_needs {
-                lines.push(Line::from(format!("Necesita: {needs}").yellow()));
-                lines.push(Line::default());
-            }
-            lines.extend(said(&n).lines().map(|l| Line::from(l.to_string())));
-            app.mode = Mode::Detail { title: n.display_name().to_string(), body: Text::from(lines), scroll: 0 };
-        }
+    }
+
+    pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
+        let (tx, rx) = mpsc::sync_channel(8);
+        let mut app = App::new(tx);
+        app.data.open_questions = questions;
+        app.reconcile();
+        (app, rx)
+    }
+
+    #[test]
+    fn plans_and_approve_or_change_questions_get_the_review_keys() {
+        let plan = approval_of(&question(1, QuestionOrigin::Plan, &["Aprobar", "Pedir cambios"])).unwrap();
+        assert_eq!(plan.approve.as_deref(), Some("Aprobar"));
+        assert_eq!(plan.changes.as_deref(), Some("Pedir cambios"));
+        let demo = approval_of(&question(2, QuestionOrigin::Ask, &["Aprobar", "Cambiar"])).unwrap();
+        assert_eq!(demo.changes.as_deref(), Some("Cambiar"));
+        assert!(approval_of(&question(3, QuestionOrigin::Ask, &["Sí", "No"])).is_none());
+    }
+
+    #[test]
+    fn answering_advances_to_the_next_item_and_guards_against_a_double_press() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Sí"]), question(2, QuestionOrigin::Ask, &["Sí"])]);
+        assert_eq!(app.sel, Some(Key::Q(1)));
+        app.hide(Key::Q(1));
+        assert_eq!(app.sel, Some(Key::Q(2)));
+        assert!(app.settle_until > now_millis());
+        let q2 = app.selected_question().unwrap();
+        app.choose(&q2, 0);
+        assert!(app.flash.as_ref().is_some_and(|f| f.error));
+        assert_eq!(app.sel, Some(Key::Q(2)));
+    }
+
+    #[test]
+    fn selection_follows_the_item_when_the_list_reorders() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[]), question(2, QuestionOrigin::Ask, &[])]);
+        app.move_inbox(1);
+        assert_eq!(app.sel, Some(Key::Q(2)));
+        app.data.open_questions.insert(0, question(9, QuestionOrigin::Ask, &[]));
+        app.reconcile();
+        assert_eq!(app.sel, Some(Key::Q(2)));
+        assert_eq!(app.sel_idx, 2);
+    }
+
+    #[test]
+    fn a_failed_send_brings_the_item_back() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
+        app.hide(Key::Q(1));
+        assert!(app.inbox_keys().is_empty());
+        app.on_msg(Msg::Posted { key: Some(Key::Q(1)), result: Err("caído".into()) });
+        app.reconcile();
+        assert_eq!(app.sel, Some(Key::Q(1)));
+    }
+
+    #[test]
+    fn a_cancelled_reply_comes_back_as_a_draft() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
+        app.compose(Target::Answer { id: 1, title: "t".into() }, "");
+        app.composer.as_mut().unwrap().input.insert_str("medio escrito");
+        app.cancel_composer();
+        assert!(app.composer.is_none());
+        app.compose(Target::Answer { id: 1, title: "t".into() }, "");
+        assert_eq!(app.composer.as_ref().unwrap().input.text(), "medio escrito");
+    }
+
+    #[test]
+    fn review_feedback_follows_document_order() {
+        let mut rv = Review::default();
+        rv.comments.push(Comment { block: 1, quote: "a".into(), text: "x".into() });
+        rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
+        rv.comments.sort_by_key(|c| c.block);
+        assert!(rv.feedback().starts_with("Comentarios de David:\n\n1. Sobre «b»:"));
     }
 }
