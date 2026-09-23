@@ -1,3 +1,4 @@
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
@@ -31,4 +32,23 @@ apple_bundle_version(
     name = "Version",
     build_version = "1",
     short_version_string = "0.1.0",
+)
+
+swift_library(
+    name = "AlondraiOSEntry",
+    srcs = glob(["iOS/Sources/**/*.swift"]),
+    module_name = "AlondraiOS",
+    deps = [":AlondraShared"],
+)
+
+ios_application(
+    name = "AlondraiOS",
+    bundle_id = "com.bitomule.alondra",
+    bundle_name = "Alondra",
+    families = ["iphone"],
+    infoplists = ["iOS/Info.plist"],
+    minimum_os_version = "26.0",
+    version = ":Version",
+    visibility = ["//visibility:public"],
+    deps = [":AlondraiOSEntry"],
 )
