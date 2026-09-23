@@ -474,6 +474,7 @@ mod tests {
             asked_at: 0,
             action: false,
             steps: vec![],
+            mission: None,
         }
     }
 
@@ -536,6 +537,7 @@ mod tests {
             kind: ReportKind::Final,
             created_at: 2000,
             read: false,
+            mission: None,
         }));
         v.apply(3, 3000, &hook("s", "Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Done);
@@ -701,6 +703,7 @@ mod tests {
             asked_at: at,
             action: false,
             steps: vec![],
+            mission: None,
         };
         v.questions.insert(1, q(1, QuestionStatus::Delivered, 100));
         v.questions.insert(2, q(2, QuestionStatus::Open, 100));
@@ -722,6 +725,7 @@ mod tests {
             kind,
             created_at: at,
             read: false,
+            mission: None,
         })
     }
 

@@ -445,6 +445,7 @@ mod tests {
             asked_at: T0,
             action,
             steps: vec![],
+            mission: None,
         })
     }
 
@@ -460,6 +461,7 @@ mod tests {
             kind,
             created_at: T0,
             read: false,
+            mission: None,
         })
     }
 

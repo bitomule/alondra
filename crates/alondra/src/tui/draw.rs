@@ -342,6 +342,14 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     }
     meta.push(Span::styled(format!(" · {}", ago_phrase(at)), Style::new().fg(DIM)));
     lines.push(fit(meta, width));
+    let mission = match item {
+        Item::Q(q) => q.mission.as_deref(),
+        Item::R(r) => r.mission.as_deref(),
+    };
+    if let Some(m) = mission.map(mission_excerpt).filter(|m| !m.is_empty()) {
+        let label = Span::styled(tr!("Mission: ", "Misión: "), Style::new().fg(DIM).add_modifier(Modifier::BOLD));
+        lines.extend(wrap(vec![Span::styled(m, Style::new().fg(DIM))], width, vec![label], vec![Span::raw("  ")]));
+    }
     lines.push(Line::default());
     lines.extend(wrap(vec![Span::styled(md::one_line(title), Style::new().add_modifier(Modifier::BOLD))], width, vec![], vec![]));
     if let Item::Q(q) = item
@@ -388,6 +396,18 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+const MISSION_MAX: usize = 240;
+
+/// A mission is the whole launch prompt; on a card its opening says enough about why.
+fn mission_excerpt(mission: &str) -> String {
+    let flat = md::one_line(mission);
+    if flat.chars().count() <= MISSION_MAX {
+        return flat;
+    }
+    let cut: String = flat.chars().take(MISSION_MAX).collect();
+    format!("{}…", cut.trim_end())
 }
 
 fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
@@ -1173,6 +1193,18 @@ mod tests {
             assert!(s.contains("1 Approve"), "{w}x{h}\n{s}");
             assert!(s.contains("? help"), "{w}x{h}\n{s}");
         }
+    }
+
+    #[test]
+    fn a_card_built_from_the_terminal_says_what_the_node_was_on() {
+        let mut q = question(1, QuestionOrigin::Classifier, &[]);
+        q.mission = Some(format!("Ship Lumo 4.5 to the App Store. {}", "Details. ".repeat(80)));
+        let (mut app, _rx) = app_with(vec![q]);
+        app.loaded = true;
+        let s = screen(&mut app, 120, 30);
+        assert!(s.contains("Mission: Ship Lumo 4.5 to the App Store."), "{s}");
+        assert!(s.contains('…'), "{s}");
+        assert_eq!(mission_excerpt("  a\n\n b "), "a b");
     }
 
     #[test]

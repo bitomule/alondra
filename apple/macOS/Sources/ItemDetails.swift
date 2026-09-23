@@ -35,6 +35,7 @@ struct QuestionDetail: View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.question(question).style, node: question.nodeName, date: question.askedAt, title: question.title)
+                MissionLine(item: .question(question))
                 if let detail = question.readableDetail, !detail.isEmpty {
                     if question.isPlan {
                         ReviewableDocument(text: detail, anchorPrefix: "plan", draft: draft, focus: $focus)
@@ -224,6 +225,7 @@ struct ReportDetail: View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.report(report).style, node: report.nodeName, date: report.createdAt, title: report.title)
+                MissionLine(item: .report(report))
                 if let body = report.body, !body.isEmpty {
                     if isDocument {
                         ReviewableDocument(text: body, anchorPrefix: "cuerpo", draft: draft, focus: $focus)

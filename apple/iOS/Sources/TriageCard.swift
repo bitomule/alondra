@@ -171,6 +171,12 @@ struct TriageCard: View {
 
     @ViewBuilder
     private var bodyContent: some View {
+        if let mission = item.missionExcerpt {
+            (Text("Mission").fontWeight(.semibold) + Text(verbatim: " · \(mission)"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
         switch item {
         case .question(let question):
             if question.origin == "plan", let plan = question.detail {

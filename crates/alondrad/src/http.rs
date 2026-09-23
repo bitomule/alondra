@@ -248,6 +248,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         asked_at: now_millis(),
         action: false,
         steps: vec![],
+        mission: None,
     }
 }
 
@@ -614,6 +615,7 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
             asked_at: stamp,
             action,
             steps: b.steps.clone(),
+            mission: None,
         }))
     });
     match res {
@@ -798,6 +800,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             kind: b.kind.unwrap_or(ReportKind::Notice),
             created_at: stamp,
             read: false,
+            mission: None,
         }))
     });
     match res {

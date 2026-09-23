@@ -413,6 +413,20 @@ fn joins_previous(prev: &Kind, cur: &Kind) -> bool {
     matches!((prev, cur), (Kind::Item { .. }, Kind::Item { .. }) | (Kind::Row { .. }, Kind::Row { .. }))
 }
 
+#[derive(Default)]
+struct Table {
+    widths: Vec<usize>,
+    header: Option<Vec<String>>,
+}
+
+fn table_at(blocks: &[Block], start: usize) -> Table {
+    let header = match &blocks[start] {
+        Block { kind: Kind::Row { header: true }, lines } => Some(cells(&lines[0])),
+        _ => None,
+    };
+    Table { widths: table_widths(blocks, start), header }
+}
+
 fn table_widths(blocks: &[Block], start: usize) -> Vec<usize> {
     let mut widths: Vec<usize> = vec![];
     for b in blocks[start..].iter().take_while(|b| matches!(b.kind, Kind::Row { .. })) {
@@ -432,13 +446,13 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
     let width = width.max(8);
     let mut lines: Vec<Line<'static>> = vec![];
     let mut ranges = vec![];
-    let mut table: Vec<usize> = vec![];
+    let mut table = Table::default();
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 && !joins_previous(&blocks[i - 1].kind, &b.kind) {
             lines.push(Line::default());
         }
         if matches!(b.kind, Kind::Row { .. }) && (i == 0 || !matches!(blocks[i - 1].kind, Kind::Row { .. })) {
-            table = table_widths(blocks, i);
+            table = table_at(blocks, i);
         }
         let start = lines.len();
         lines.extend(render_block(b, width, &table));
@@ -447,7 +461,21 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
     Rendered { lines, ranges }
 }
 
-fn render_block(b: &Block, width: usize, table: &[usize]) -> Vec<Line<'static>> {
+/// A table too wide for the screen reads as one record per row, each cell under its column name.
+fn record(cs: &[String], header: Option<&[String]>, width: usize) -> Vec<Line<'static>> {
+    let mut out = vec![];
+    for (i, c) in cs.iter().enumerate() {
+        let lead = if i == 0 { "▸ " } else { "  " };
+        let mut first = vec![Span::styled(lead, Style::new().fg(ACCENT))];
+        if let Some(name) = header.and_then(|h| h.get(i)).filter(|n| !n.trim().is_empty()) {
+            first.push(Span::styled(format!("{}: ", strip_inline(name)), Style::new().fg(DIM).add_modifier(Modifier::BOLD)));
+        }
+        out.extend(wrap(inline(c, Style::new()), width, first, vec![Span::raw("    ")]));
+    }
+    out
+}
+
+fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
     let text = b.lines.join(" ");
     match &b.kind {
         Kind::Heading(level) => {
@@ -477,10 +505,14 @@ fn render_block(b: &Block, width: usize, table: &[usize]) -> Vec<Line<'static>> 
         }
         Kind::Row { header } => {
             let cs = cells(&b.lines[0]);
-            let total: usize = table.iter().sum::<usize>() + 3 * table.len().saturating_sub(1);
+            let widths = &table.widths;
+            let total: usize = widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
             let base = if *header { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
-            if total > width || table.len() < cs.len() {
-                return wrap(inline(&cs.join(" │ "), base), width, vec![], vec![]);
+            if total > width || widths.len() < cs.len() {
+                return match (header, table.header.as_deref()) {
+                    (true, Some(_)) => vec![],
+                    (_, names) => record(&cs, names, width),
+                };
             }
             let mut spans = vec![];
             for (i, c) in cs.iter().enumerate() {
@@ -490,11 +522,11 @@ fn render_block(b: &Block, width: usize, table: &[usize]) -> Vec<Line<'static>> 
                 let cell = inline(c, base);
                 let w: usize = cell.iter().map(Span::width).sum();
                 spans.extend(cell);
-                spans.push(Span::raw(" ".repeat(table[i].saturating_sub(w))));
+                spans.push(Span::raw(" ".repeat(widths[i].saturating_sub(w))));
             }
             let mut out = vec![Line::from(spans)];
             if *header {
-                let sep = table.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─");
+                let sep = widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─");
                 out.push(Line::styled(sep, Style::new().fg(DIM)));
             }
             out
@@ -554,6 +586,32 @@ mod tests {
         assert_eq!(b[2].plain(), "one continues one");
         assert_eq!(b[5].lines, vec!["fn main() {}".to_string(), String::new()]);
         assert_eq!(b[7].plain(), "a | b");
+    }
+
+    /// hive/aso-skills, 23 Sep: a three-column table with long cells showed as wrapped `a │ b │ c`.
+    const WIDE: &str = "## Tabla\n\n| Lo que traen | ¿Lo tenemos? | ¿Cambia lo que haríamos? |\n|---|---|---|\n| **Fuente de datos = Appeeky** (API/MCP de pago, 8 $/mes) para volumen y rankings | No, y a propósito | **No.** Sin esa clave sus skills no tienen dato: recomiendan de memoria |\n| Fórmula de oportunidad | Parecido | **No.** Un número inventado ordena peor que un juicio explícito |\n";
+
+    #[test]
+    fn a_table_that_fits_is_a_grid_and_one_that_does_not_is_one_record_per_row() {
+        let blocks = parse(WIDE);
+        let wide: Vec<String> = render(&blocks, 200).lines.iter().map(text_of).collect();
+        assert!(wide.iter().any(|l| l.starts_with("Lo que traen") && l.contains(" │ ¿Lo tenemos?")), "{wide:#?}");
+        assert!(wide.iter().any(|l| l.contains("─┼─")));
+
+        let narrow: Vec<String> = render(&blocks, 60).lines.iter().map(text_of).collect();
+        assert!(narrow.iter().all(|l| !l.contains(" │ ") && str_width(l) <= 60), "{narrow:#?}");
+        let records: Vec<&String> = narrow.iter().filter(|l| l.starts_with("▸ ")).collect();
+        assert_eq!(records.len(), 2, "{narrow:#?}");
+        assert!(records[0].starts_with("▸ Lo que traen: Fuente de datos"), "{narrow:#?}");
+        assert!(narrow.iter().any(|l| l.starts_with("  ¿Lo tenemos?: No, y a propósito")), "{narrow:#?}");
+        assert!(narrow.iter().any(|l| l.starts_with("  ¿Cambia lo que haríamos?: No.")), "{narrow:#?}");
+    }
+
+    #[test]
+    fn a_wide_table_without_a_header_still_reads_row_by_row() {
+        let narrow: Vec<String> = render(&parse("| aaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccc |\n"), 20).lines.iter().map(text_of).collect();
+        assert_eq!(narrow.iter().filter(|l| l.starts_with("▸ ")).count(), 1, "{narrow:#?}");
+        assert!(narrow.iter().all(|l| !l.contains(" │ ")), "{narrow:#?}");
     }
 
     #[test]

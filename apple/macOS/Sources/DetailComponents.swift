@@ -28,6 +28,19 @@ struct DetailScaffold<Content: View, Bar: View>: View {
     }
 }
 
+struct MissionLine: View {
+    let item: InboxItem
+
+    var body: some View {
+        if let mission = item.missionExcerpt {
+            (Text("Mission").fontWeight(.semibold) + Text(verbatim: " · \(mission)"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 struct DetailHeader: View {
     let style: KindStyle
     let node: String?
