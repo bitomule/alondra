@@ -393,6 +393,19 @@ fn draw(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// Back from a node's session: its last frame is still on screen and ratatui does not know,
+/// so the whole TUI is drawn over it in one synchronized update, with no blank frame between.
+fn repaint(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    execute!(stdout(), BeginSynchronizedUpdate)?;
+    let res = terminal.clear().and_then(|_| {
+        app.reconcile();
+        terminal.draw(|f| draw::draw(f, app)).map(|_| ())
+    });
+    execute!(stdout(), EndSynchronizedUpdate)?;
+    res?;
+    Ok(())
+}
+
 fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> Result<()> {
     let mut dirty = true;
     loop {
@@ -409,15 +422,13 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                         Flow::Quit => return Ok(()),
                         Flow::Attach(short) => {
                             let _ = execute!(stdout(), DisableBracketedPaste);
-                            ratatui::restore();
-                            let res = crate::attach::attach(&short);
-                            *terminal = ratatui::init();
+                            let res = crate::attach::attach(&short, crate::attach::Over::Tui);
+                            crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
-                            terminal.clear()?;
                             if let Err(e) = res {
                                 app.fail(trf!("Could not open its terminal: {e}", "No pude abrir su terminal: {e}"));
                             }
-                            dirty = true;
+                            repaint(terminal, &mut app)?;
                             break;
                         }
                         Flow::Go => {}

@@ -8,29 +8,79 @@ use anyhow::{Context, Result, bail};
 const LEFT_ARROWS: [&[u8]; 2] = [b"\x1b[D", b"\x1bOD"];
 const TAIL_BYTES: usize = 2048;
 
-struct RawMode;
+/// Where the attach runs: over the TUI, which keeps its alternate screen so the plain terminal
+/// never shows in between, or straight from a shell.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Over {
+    Tui,
+    Shell,
+}
+
+struct RawMode(Over);
 
 impl RawMode {
-    fn enter() -> Result<Self> {
+    fn enter(over: Over) -> Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        Ok(RawMode)
+        Ok(RawMode(over))
     }
 }
 
 impl Drop for RawMode {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
-        reset_terminal_modes();
+        write_modes(if self.0 == Over::Tui { RESET_INPUT_MODES } else { RESET_MODES });
     }
 }
 
+/// Mouse, focus, paste and keyboard-protocol modes a Claude session may leave switched on.
+const RESET_INPUT_MODES: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<99u\x1b[=0;1u\x1b[>4;0m";
 const RESET_MODES: &[u8] =
     b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<99u\x1b[=0;1u\x1b[>4;0m\x1b[?1049l\x1b[?25h";
 
-pub fn reset_terminal_modes() {
+fn write_modes(modes: &[u8]) {
     let mut out = std::io::stdout();
-    let _ = out.write_all(RESET_MODES);
+    let _ = out.write_all(modes);
     let _ = out.flush();
+}
+
+pub fn reset_terminal_modes() {
+    write_modes(RESET_MODES);
+}
+
+const ALT_SCREEN: [&[u8]; 6] = [b"\x1b[?1049h", b"\x1b[?1049l", b"\x1b[?1047h", b"\x1b[?1047l", b"\x1b[?47h", b"\x1b[?47l"];
+
+/// Drops the session's switches in and out of the alternate screen, so over the TUI it draws
+/// on the screen the TUI already owns and leaving it never uncovers the plain terminal. A
+/// sequence split across two reads is held until the next one.
+#[derive(Default)]
+struct AltScreenFilter {
+    carry: Vec<u8>,
+}
+
+impl AltScreenFilter {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut data = std::mem::take(&mut self.carry);
+        data.extend_from_slice(bytes);
+        let mut out = Vec::with_capacity(data.len());
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] == 0x1b {
+                let rest = &data[i..];
+                if let Some(seq) = ALT_SCREEN.iter().find(|s| rest.starts_with(s)) {
+                    i += seq.len();
+                    continue;
+                }
+                if ALT_SCREEN.iter().any(|s| s.starts_with(rest)) {
+                    self.carry = rest.to_vec();
+                    break;
+                }
+            }
+            out.push(data[i]);
+            i += 1;
+        }
+        out
+    }
 }
 
 struct Fd(RawFd);
@@ -108,7 +158,7 @@ impl LineTracker {
     }
 }
 
-pub fn attach(short_id: &str) -> Result<()> {
+pub fn attach(short_id: &str, over: Over) -> Result<()> {
     let mut ws = window_size();
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
     let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
@@ -132,7 +182,8 @@ pub fn attach(short_id: &str) -> Result<()> {
     let mut child = cmd.spawn().context(tr!("could not launch claude attach", "no pude lanzar claude attach"))?;
     unsafe { libc::close(slave_fd) };
 
-    let raw = RawMode::enter()?;
+    let raw = RawMode::enter(over)?;
+    let mut screen = (over == Over::Tui).then(AltScreenFilter::default);
     let mut stdout = std::io::stdout();
     let mut line = LineTracker::default();
     let mut buf = [0u8; 16 * 1024];
@@ -161,7 +212,10 @@ pub fn attach(short_id: &str) -> Result<()> {
             if got <= 0 {
                 break;
             }
-            stdout.write_all(&buf[..got as usize])?;
+            match screen.as_mut() {
+                Some(filter) => stdout.write_all(&filter.feed(&buf[..got as usize]))?,
+                None => stdout.write_all(&buf[..got as usize])?,
+            }
             stdout.flush()?;
             tail.extend_from_slice(&buf[..got as usize]);
             if tail.len() > TAIL_BYTES {
@@ -232,6 +286,15 @@ impl FromRawFdOwned for Stdio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_the_tui_the_session_never_leaves_the_alternate_screen() {
+        let mut f = AltScreenFilter::default();
+        assert_eq!(f.feed(b"\x1b[?1049h\x1b[2Jhello"), b"\x1b[2Jhello");
+        assert_eq!(f.feed(b"bye\x1b[?10"), b"bye", "a switch split across reads waits for the rest");
+        assert_eq!(f.feed(b"49l\x1b[?25h"), b"\x1b[?25h");
+        assert_eq!(f.feed(b"\x1b[1mbold\x1b[0m\x1b[?47l"), b"\x1b[1mbold\x1b[0m");
+    }
 
     #[test]
     fn empty_line_after_enter_and_escape_sequences_do_not_count() {
