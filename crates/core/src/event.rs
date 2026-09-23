@@ -85,6 +85,12 @@ pub enum Event {
     MenuSeen { session_id: String, waiting_for: Option<String> },
     /// A terminal attached to the node's session, or the last one left.
     AttachChanged { session_id: String, attached: bool },
+    /// A node opened, or mentioned, a pull request.
+    PrOpened { url: String, session_id: String },
+    /// What GitHub says about a pull request now.
+    PrUpdated(crate::pr::PullRequest),
+    PrMerged { id: u64, method: crate::pr::MergeMethod },
+    PrDismissed { id: u64 },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
     Clock {
@@ -135,6 +141,10 @@ impl Event {
             Event::OrchestratorLaunched { .. } => "orchestrator_launched",
             Event::AttachChanged { .. } => "attach_changed",
             Event::MenuSeen { .. } => "menu_seen",
+            Event::PrOpened { .. } => "pr_opened",
+            Event::PrUpdated(_) => "pr_updated",
+            Event::PrMerged { .. } => "pr_merged",
+            Event::PrDismissed { .. } => "pr_dismissed",
             Event::Clock { .. } => "clock",
         }
     }

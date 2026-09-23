@@ -41,6 +41,26 @@ pub struct Overview {
     pub machine: Machine,
     #[serde(default)]
     pub usage: Option<alondra_core::usage::Usage>,
+    #[serde(default)]
+    pub prs: Vec<PrCard>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct PrCard {
+    #[serde(flatten)]
+    pub pr: alondra_core::pr::PullRequest,
+    #[serde(default)]
+    pub preferred_method: Option<alondra_core::pr::MergeMethod>,
+}
+
+impl PrCard {
+    /// The methods offered, the repo's preferred one first; all three when the repo was not read.
+    pub fn methods(&self) -> Vec<alondra_core::pr::MergeMethod> {
+        use alondra_core::pr::MergeMethod;
+        let allowed = if self.pr.merge_methods.is_empty() { vec![MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase] } else { self.pr.merge_methods.clone() };
+        let preferred = self.preferred_method.filter(|m| allowed.contains(m)).unwrap_or(allowed[0]);
+        std::iter::once(preferred).chain(allowed.into_iter().filter(|m| *m != preferred)).collect()
+    }
 }
 
 pub struct Client {

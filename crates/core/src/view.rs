@@ -23,6 +23,11 @@ pub struct View {
     pub machine_strained: bool,
     #[serde(default)]
     pub orchestrator_launched_at: Option<Millis>,
+    #[serde(default)]
+    pub prs: BTreeMap<u64, crate::pr::PullRequest>,
+    /// The merge method last used in each repo, preselected on its next PR card.
+    #[serde(default)]
+    pub merge_methods: BTreeMap<String, crate::pr::MergeMethod>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -205,6 +210,40 @@ impl View {
             Event::AttachChanged { session_id, attached } => {
                 self.node_mut(session_id, at).attached = *attached;
                 Some((session_id.clone(), Trigger::Other))
+            }
+            Event::PrOpened { url, session_id } => {
+                let known = crate::pr::parse_url(url).is_some_and(|(repo, number)| self.prs.values().any(|p| p.repo == repo && p.number == number));
+                if !known {
+                    let id = self.prs.keys().next_back().copied().unwrap_or(0) + 1;
+                    let name = self.nodes.get(session_id).and_then(|n| n.name.clone());
+                    if let Some(pr) = crate::pr::PullRequest::opened(id, url, session_id, name, at) {
+                        self.prs.insert(id, pr);
+                    }
+                }
+                None
+            }
+            Event::PrUpdated(pr) => {
+                if let Some(known) = self.prs.get_mut(&pr.id) {
+                    let dismissed = known.state == crate::pr::PrState::Dismissed && pr.state == crate::pr::PrState::Open;
+                    *known = pr.clone();
+                    if dismissed {
+                        known.state = crate::pr::PrState::Dismissed;
+                    }
+                }
+                None
+            }
+            Event::PrMerged { id, method } => {
+                if let Some(pr) = self.prs.get_mut(id) {
+                    pr.state = crate::pr::PrState::Merged;
+                    self.merge_methods.insert(pr.repo.clone(), *method);
+                }
+                None
+            }
+            Event::PrDismissed { id } => {
+                if let Some(pr) = self.prs.get_mut(id) {
+                    pr.state = crate::pr::PrState::Dismissed;
+                }
+                None
             }
             Event::OrchestratorLaunched { .. } => {
                 self.orchestrator_launched_at = Some(at);
