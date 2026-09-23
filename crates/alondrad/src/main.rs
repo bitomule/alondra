@@ -6,6 +6,7 @@ mod legacy;
 mod machine;
 mod notifier;
 mod push;
+mod sentinel;
 mod store;
 mod wake;
 mod watcher;
@@ -35,6 +36,7 @@ async fn main() -> Result<()> {
     }
     tokio::spawn(notifier::run(hub.clone()));
     tokio::spawn(retention(hub.clone(), config.retention_hours));
+    tokio::spawn(sentinel::run(hub.clone()));
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
     let push = Arc::new(push::Push::open(&config.home)?);
