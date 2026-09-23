@@ -80,6 +80,8 @@ pub enum Event {
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
     WaitingMachine { session_id: String, reason: String },
     Pruned { before: Millis },
+    /// A terminal attached to the node's session, or the last one left.
+    AttachChanged { session_id: String, attached: bool },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
     Clock {
@@ -98,7 +100,8 @@ impl Event {
             | Event::Acknowledged { session_id }
             | Event::MarkedOrchestrator { session_id }
             | Event::Classified { session_id, .. }
-            | Event::WaitingMachine { session_id, .. } => Some(session_id),
+            | Event::WaitingMachine { session_id, .. }
+            | Event::AttachChanged { session_id, .. } => Some(session_id),
             Event::QuestionAsked(q) => Some(&q.session_id),
             Event::ReportPosted(r) => Some(&r.session_id),
             Event::MessageQueued(m) => Some(&m.session_id),
@@ -126,6 +129,7 @@ impl Event {
             Event::WaitingMachine { .. } => "waiting_machine",
             Event::Pruned { .. } => "pruned",
             Event::OrchestratorLaunched { .. } => "orchestrator_launched",
+            Event::AttachChanged { .. } => "attach_changed",
             Event::Clock { .. } => "clock",
         }
     }

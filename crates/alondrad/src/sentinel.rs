@@ -57,7 +57,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     }
 
     let pending: Vec<(String, String, bool)> =
-        hub.read(|v| v.nodes.values().filter(|n| needs_attention(v, n)).map(|n| (n.session_id.clone(), key(n), n.has_plugin)).collect());
+        hub.read(|v| v.nodes.values().filter(|n| needs_attention(v, n, now_millis())).map(|n| (n.session_id.clone(), key(n), n.has_plugin)).collect());
     memory.settled.retain(|k| pending.iter().any(|(_, key, _)| key == k));
 
     let mut due = vec![];
@@ -99,7 +99,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         };
         hub.append_with(|v| {
             let node = v.nodes.get(&session)?;
-            if needs_attention(v, node) && key(node) == due_key { settle(v, node, expects) } else { None }
+            if needs_attention(v, node, now_millis()) && key(node) == due_key { settle(v, node, expects) } else { None }
         })?;
         memory.settled.insert(due_key);
     }
@@ -151,9 +151,9 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 
 /// Only nodes the state machine handed over: idle, with no work in sight and nothing in the
 /// inbox. A node with fresh evidence of work never reaches jev.
-fn needs_attention(v: &View, node: &Node) -> bool {
+fn needs_attention(v: &View, node: &Node, now: i64) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::talking_with_user(v, node) {
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::watching(v, node, now) {
         return false;
     }
     let key = key(node);
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn a_decision_becomes_a_question_with_its_real_question() {
         let v = waiting_view(ASKS);
-        assert!(needs_attention(&v, &v.nodes["s"]));
+        assert!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         assert_eq!(q.title, "Should I ship 4.5.0 now or merge #256 first?");
     }
@@ -292,14 +292,14 @@ mod tests {
         assert_eq!(r.kind, ReportKind::Notice);
         assert_eq!(r.title, "Task complete and reported to hive/corpus-router.");
         v.apply(4, 4000, &event);
-        assert!(!needs_attention(&v, &v.nodes["s"]));
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
     fn a_dormant_node_is_watched_like_a_live_one() {
         let mut v = waiting_view(ASKS);
         v.nodes.get_mut("s").unwrap().alive = false;
-        assert!(needs_attention(&v, &v.nodes["s"]));
+        assert!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(v.nodes["s"].state, NodeState::Working);
-        assert!(!needs_attention(&v, &v.nodes["s"]));
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
@@ -359,14 +359,17 @@ mod tests {
         let Event::ReportPosted(r) = &event else { panic!() };
         assert!(r.read);
         v.apply(4, 4000, &event);
-        assert!(!needs_attention(&v, &v.nodes["s"]));
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
     fn a_node_the_user_is_talking_with_directly_is_left_alone() {
         let mut v = waiting_view(ASKS);
-        v.nodes.get_mut("s").unwrap().last_prompt = Some("the TUI shift key does not work".into());
-        assert!(!needs_attention(&v, &v.nodes["s"]));
+        let node = v.nodes.get_mut("s").unwrap();
+        node.last_prompt = Some("the TUI shift key does not work".into());
+        node.last_prompt_at = Some(1000);
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
+        assert!(needs_attention(&v, &v.nodes["s"], 1000 + states::WATCH_WINDOW_MS + 1), "the user left 10 minutes ago");
         v.nodes.get_mut("s").unwrap().last_prompt = Some(states::nudge_text("Ana"));
         v.apply(9, 9000, &Event::MessageQueued(Message {
             id: 7,
@@ -378,7 +381,7 @@ mod tests {
             handed_at: None,
             delivered_at: None,
         }));
-        assert!(needs_attention(&v, &v.nodes["s"]));
+        assert!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
@@ -398,7 +401,7 @@ mod tests {
         let mut v = waiting_view(ASKS);
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         v.apply(4, 4000, &Event::QuestionAsked(q.clone()));
-        assert!(!needs_attention(&v, &v.nodes["s"]));
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
         assert!(!moved_on(&v, &v.nodes["s"], &q, 4000));
         v.apply(5, 5000, &Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
         assert!(moved_on(&v, &v.nodes["s"], &q, 5000));
@@ -422,7 +425,7 @@ mod tests {
         let mut wanted = vec![];
         replay(include_str!("../../core/fixtures/ctrl_trivial_2.jsonl"), |seq, v| {
             if let Some(n) = v.nodes.get(sid) {
-                wanted.push((seq, needs_attention(v, n)));
+                wanted.push((seq, needs_attention(v, n, n.last_seen)));
             }
         });
         assert!(wanted.iter().filter(|(seq, _)| *seq < 2966).all(|(_, w)| *w));
@@ -436,7 +439,7 @@ mod tests {
         let sid = "11f98ac0-771f-4725-88f5-7e5176ffff92";
         let mut nudged = vec![];
         replay(include_str!("../../core/fixtures/quill.jsonl"), |seq, v| {
-            if [3429, 3436, 3442, 3455].contains(&seq) && needs_attention(v, &v.nodes[sid]) {
+            if [3429, 3436, 3442, 3455].contains(&seq) && needs_attention(v, &v.nodes[sid], v.nodes[sid].last_seen) {
                 nudged.push(seq);
             }
         });

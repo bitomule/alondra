@@ -198,6 +198,10 @@ impl View {
                 self.prune(*before);
                 None
             }
+            Event::AttachChanged { session_id, attached } => {
+                self.node_mut(session_id, at).attached = *attached;
+                Some((session_id.clone(), Trigger::Other))
+            }
             Event::OrchestratorLaunched { .. } => {
                 self.orchestrator_launched_at = Some(at);
                 None
@@ -279,6 +283,7 @@ impl View {
             "UserPromptSubmit" => {
                 if h.prompt.is_some() {
                     node.last_prompt = h.prompt.clone();
+                    node.last_prompt_at = Some(at);
                 }
                 node.busy = true;
                 node.turn += 1;

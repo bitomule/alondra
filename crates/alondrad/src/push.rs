@@ -233,7 +233,8 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
         let (questions, reports, badge, max_q, max_r) = hub.read(|v| {
             let pending = v.questions.values().filter(|q| q.status.is_open() && !q.to_orchestrator).count()
                 + v.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).count();
-            let awake = |session: &str| v.nodes.get(session).is_none_or(|n| n.alive);
+            let now = alondra_core::now_millis();
+            let awake = |session: &str| v.nodes.get(session).is_none_or(|n| n.alive && !alondra_core::states::watching(v, n, now));
             let qs: Vec<Question> = v
                 .questions
                 .range(last_q + 1..)

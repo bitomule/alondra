@@ -38,7 +38,9 @@ pub async fn run(hub: Arc<Hub>) {
             last_try.insert(session_id.clone(), Instant::now());
             let text = msgs.iter().map(|(_, t, _)| t.replace('\n', " ")).collect::<Vec<_>>().join(" · ");
             let short_for_task = short.clone();
+            let own = hub.own_attach(&short);
             let outcome = tokio::task::spawn_blocking(move || type_into(&short_for_task, &text)).await;
+            drop(own);
             match outcome {
                 Ok(Ok(())) => {
                     for (id, _, question) in msgs {
