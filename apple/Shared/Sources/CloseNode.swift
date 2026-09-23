@@ -35,10 +35,9 @@ public struct CloseRequest: Identifiable, Hashable, Sendable {
 
 extension View {
     public func closeConfirmation(_ request: Binding<CloseRequest?>, confirm: @escaping (CloseRequest) -> Void) -> some View {
-        confirmationDialog(
+        alert(
             request.wrappedValue?.title ?? "",
             isPresented: Binding { request.wrappedValue != nil } set: { if !$0 { request.wrappedValue = nil } },
-            titleVisibility: .visible,
             presenting: request.wrappedValue
         ) { request in
             Button(request.confirmTitle, role: .destructive) { confirm(request) }
