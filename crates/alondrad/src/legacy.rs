@@ -83,6 +83,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
                 status: QuestionStatus::Open,
                 answer: None,
                 asked_at: now_millis(),
+                action: false,
             }))
         })?;
         if let Some((_, Event::QuestionAsked(q))) = res {

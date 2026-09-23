@@ -80,13 +80,13 @@ struct NodeRow: View {
         }
         .help(tooltip)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(node.alive ? node.state.label : String(localized: "\(node.state.label), asleep"))
+        .accessibilityValue(node.alive ? node.stateLabel : String(localized: "\(node.stateLabel), asleep"))
     }
 }
 
 extension NodeRow {
     private var tooltip: String {
-        let header = "\(node.displayName) · \(node.state.label)"
+        let header = "\(node.displayName) · \(node.stateLabel)"
         let summary = node.summary.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         guard !summary.isEmpty else { return header }
         return header + "\n" + (summary.count > 140 ? summary.prefix(139) + "…" : summary)
@@ -114,7 +114,7 @@ struct ProjectHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(name)
-            let urgent = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .unclear) }.count
+            let urgent = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .unclear) }.count
             if urgent > 0 {
                 Circle().fill(NodeState.waitingAnswer.color).frame(width: 6, height: 6)
                     .help("\(urgent) nodes waiting")
@@ -127,6 +127,7 @@ extension NodeState {
     var color: Color {
         switch self {
         case .waitingAnswer: .orange
+        case .yourTurn: .pink
         case .unclear: .purple
         case .delivered: .blue
         case .waitingMachine: .yellow

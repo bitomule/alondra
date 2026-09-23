@@ -333,7 +333,7 @@ public struct Notice: Equatable, Sendable {
 extension NodeState {
     public var urgency: Int {
         switch self {
-        case .waitingAnswer: 0
+        case .waitingAnswer, .yourTurn: 0
         case .unclear: 1
         case .waitingMachine: 2
         case .working: 3

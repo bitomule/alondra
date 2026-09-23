@@ -212,7 +212,7 @@ public struct FleetView: View {
         return store.projects.compactMap { project in
             let nodes = project.nodes.filter { node in
                 if let smartMatches { return smartMatches.contains(node.sessionId) }
-                let haystack = "\(node.displayName) \(project.name) \(node.state.label) \(node.summary)".lowercased()
+                let haystack = "\(node.displayName) \(project.name) \(node.stateLabel) \(node.summary)".lowercased()
                 return terms.allSatisfy { haystack.contains($0) }
             }
             return nodes.isEmpty ? nil : (name: project.name, nodes: nodes)

@@ -10,10 +10,12 @@ use tokio::sync::mpsc;
 use crate::hub::Hub;
 
 const SCAN_EVERY: Duration = Duration::from_secs(3);
+const HEARTBEAT_MS: i64 = 5 * 60 * 1000;
 
 struct Seen {
     mtime: i64,
     obs: DaemonObservation,
+    recorded: i64,
 }
 
 pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
@@ -57,11 +59,13 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 obs.last_text = Some(text);
                 obs.last_text_at = at;
             }
-            let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs));
+            let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs) || mtime - s.recorded >= HEARTBEAT_MS);
+            let mut recorded = seen.get(&short).map_or(mtime, |s| s.recorded);
             if meaningful {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
                     eprintln!("alondrad: could not save the observation of {short}");
                 }
+                recorded = mtime;
             }
             if let Some(p) = pid
                 && registered.get(&obs.session_id) != Some(&p)
@@ -69,7 +73,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 registered.insert(obs.session_id.clone(), p);
                 let _ = register.send((obs.session_id.clone(), p));
             }
-            seen.insert(short, Seen { mtime, obs });
+            seen.insert(short, Seen { mtime, obs, recorded });
         }
 
         while let Ok((session_id, pid)) = exit_rx.try_recv() {
@@ -127,6 +131,8 @@ fn differs(a: &DaemonObservation, b: &DaemonObservation) -> bool {
         || a.cwd != b.cwd
         || a.pid != b.pid
         || a.last_text != b.last_text
+        || a.tasks != b.tasks
+        || a.task_kinds != b.task_kinds
 }
 
 fn transcript_path(cache: &mut HashMap<String, PathBuf>, projects: &Path, session_id: &str) -> Option<PathBuf> {
@@ -234,6 +240,18 @@ mod tests {
         assert_eq!(parse_rfc3339_millis("1970-01-01T00:00:01.500Z"), Some(1500));
         assert_eq!(parse_rfc3339_millis("2026-09-22T20:46:20.398Z"), Some(1790109980398));
     }
+
+    #[test]
+    fn background_tasks_come_from_the_job_state() {
+        let dir = std::env::temp_dir().join(format!("alondra-watcher-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, r#"{"sessionId":"s","state":"working","tempo":"idle","inFlight":{"tasks":2,"queued":0,"kinds":["local_bash","local_agent"]}}"#).unwrap();
+        let obs = read_state(&path, "s").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(obs.tasks, Some(2));
+        assert_eq!(obs.task_kinds, vec!["local_bash", "local_agent"]);
+    }
 }
 
 fn job_dirs(jobs: &Path) -> Vec<(PathBuf, String)> {
@@ -282,6 +300,7 @@ fn read_roster(p: &Path) -> HashMap<String, i32> {
 fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).filter(|x| !x.is_empty());
+    let in_flight = v.get("inFlight");
     Some(DaemonObservation {
         session_id: s("sessionId")?,
         short_id: short.to_string(),
@@ -295,6 +314,12 @@ fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
         updated_at: None,
         last_text: None,
         last_text_at: None,
+        tasks: in_flight.and_then(|f| f.get("tasks")).and_then(Value::as_u64).map(|n| n as u32),
+        task_kinds: in_flight
+            .and_then(|f| f.get("kinds"))
+            .and_then(Value::as_array)
+            .map(|k| k.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default(),
     })
 }
 

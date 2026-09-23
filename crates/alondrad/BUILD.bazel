@@ -12,6 +12,10 @@ rust_binary(
 
 rust_test(
     name = "alondrad_test",
+    compile_data = [
+        "//crates/core:fixtures/ctrl_trivial_2.jsonl",
+        "//crates/core:fixtures/quill.jsonl",
+    ],
     crate = ":alondrad",
     edition = "2024",
 )

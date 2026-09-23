@@ -7,10 +7,11 @@ pub const NEWS_WINDOW_MS: Millis = 48 * 3600 * 1000;
 pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
 pub const OTHERS_PROJECT: &str = "others";
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
     WaitingAnswer,
+    YourTurn,
     Unclear,
     Delivered,
     WaitingMachine,
@@ -23,12 +24,95 @@ impl NodeState {
         match self {
             NodeState::Working => "working",
             NodeState::WaitingAnswer => "waiting for an answer",
+            NodeState::YourTurn => "your turn",
             NodeState::Delivered => "delivering a result",
             NodeState::WaitingMachine => "waiting for the machine",
             NodeState::Done => "done",
             NodeState::Unclear => "unclear what it wants",
         }
     }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "working" => NodeState::Working,
+            "waiting_answer" => NodeState::WaitingAnswer,
+            "your_turn" => NodeState::YourTurn,
+            "delivered" => NodeState::Delivered,
+            "waiting_machine" => NodeState::WaitingMachine,
+            "done" => NodeState::Done,
+            _ => NodeState::Unclear,
+        }
+    }
+}
+
+/// A state this build does not know yet reads as `unclear`, so an older client keeps working
+/// when the daemon learns a new state.
+impl<'de> Deserialize<'de> for NodeState {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(NodeState::parse(&String::deserialize(d)?))
+    }
+}
+
+/// What the orchestrator is doing. It is not a node like the others, so it has its own states
+/// and its own place in the fleet; `state` still carries the closest node state for older clients.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorState {
+    OnDuty,
+    Handling,
+    WaitingForYou,
+    Offline,
+    #[serde(other)]
+    Unknown,
+}
+
+impl OrchestratorState {
+    pub fn label(self) -> &'static str {
+        match self {
+            OrchestratorState::OnDuty => "on duty",
+            OrchestratorState::Handling => "handling a request",
+            OrchestratorState::WaitingForYou => "waiting for you",
+            OrchestratorState::Offline => "offline",
+            OrchestratorState::Unknown => "unknown",
+        }
+    }
+
+    pub fn node_state(self) -> NodeState {
+        match self {
+            OrchestratorState::Handling => NodeState::Working,
+            OrchestratorState::WaitingForYou => NodeState::WaitingAnswer,
+            OrchestratorState::OnDuty | OrchestratorState::Offline | OrchestratorState::Unknown => NodeState::Delivered,
+        }
+    }
+}
+
+/// The fact that put a node in its state.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Signal {
+    OpenQuestion,
+    PermissionPrompt,
+    ActionRequested,
+    ToolInFlight,
+    Hook,
+    DaemonActive,
+    BackgroundTask,
+    UsageLimit,
+    DeclaredWait,
+    FinalReport,
+    Report,
+    NoProcess,
+    #[serde(other)]
+    Nothing,
+}
+
+/// The evidence behind a node's state: which row of the table fired, on what signal, and when
+/// that signal was last confirmed.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Evidence {
+    pub row: String,
+    pub signal: Signal,
+    pub at: Millis,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,6 +171,33 @@ pub struct Node {
     pub last_seen: Millis,
     #[serde(default)]
     pub acknowledged_at: Option<Millis>,
+    #[serde(default)]
+    pub last_work_at: Option<Millis>,
+    #[serde(default)]
+    pub last_stop_at: Option<Millis>,
+    #[serde(default)]
+    pub daemon_state: Option<String>,
+    #[serde(default)]
+    pub daemon_tempo: Option<String>,
+    #[serde(default)]
+    pub daemon_seen_at: Option<Millis>,
+    #[serde(default)]
+    pub daemon_tasks: u32,
+    #[serde(default)]
+    pub usage_limited_at: Option<Millis>,
+    #[serde(default)]
+    pub signal_at: Option<Millis>,
+    #[serde(default)]
+    pub episode_since: Millis,
+    #[serde(default, deserialize_with = "lenient")]
+    pub evidence: Option<Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_state: Option<OrchestratorState>,
+}
+
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 impl Node {
@@ -118,7 +229,32 @@ impl Node {
             usage_limited: false,
             last_seen: at,
             acknowledged_at: None,
+            last_work_at: None,
+            last_stop_at: None,
+            daemon_state: None,
+            daemon_tempo: None,
+            daemon_seen_at: None,
+            daemon_tasks: 0,
+            usage_limited_at: None,
+            signal_at: None,
+            episode_since: 0,
+            evidence: None,
+            orchestrator_state: None,
         }
+    }
+
+    /// Something from the user or the orchestrator reached the node: what it declared before
+    /// no longer explains what it does next.
+    pub fn begin_episode(&mut self, at: Millis) {
+        self.episode_since = at;
+        self.turn_signal = None;
+        self.signal_at = None;
+    }
+
+    /// Background nodes the sentinel looks after: the Claude daemon runs them and nobody is
+    /// sitting at their terminal.
+    pub fn watched(&self) -> bool {
+        self.in_daemon && !self.is_orchestrator
     }
 
     pub fn has_news(&self, now: Millis) -> bool {
@@ -248,6 +384,8 @@ pub struct Question {
     #[serde(default)]
     pub answer: Option<Answer>,
     pub asked_at: Millis,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub action: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -327,6 +465,14 @@ pub struct Machine {
     pub disk_total: u64,
     pub disk_available: u64,
     pub unreliable: bool,
+}
+
+pub const STRAINED_FREE_PERCENT: u32 = 15;
+
+impl Machine {
+    pub fn strained(&self) -> bool {
+        self.unreliable || self.memory_free_percent.is_some_and(|p| p < STRAINED_FREE_PERCENT)
+    }
 }
 
 /// Option labels the server writes on held questions and matches when they come back.

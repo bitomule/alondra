@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{DaemonObservation, Event, HookEvent};
 use crate::model::{
-    Millis, Node, NodeState, Question, QuestionOrigin, QuestionStatus, ReportKind, StateSource,
-    ToolInFlight, TurnSignal,
+    Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
+    TurnSignal,
 };
-use crate::model::{Message, Report};
+use crate::model::{Message, MessageFrom, Report};
+use crate::states::{self, Trigger};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct View {
@@ -18,6 +19,8 @@ pub struct View {
     pub messages: BTreeMap<u64, Message>,
     #[serde(default)]
     pub removed: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub machine_strained: bool,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -50,11 +53,11 @@ impl View {
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
-                Some(h.session_id.clone())
+                Some((h.session_id.clone(), Trigger::Hook))
             }
             Event::DaemonSeen(d) => {
                 self.apply_daemon(at, d);
-                Some(d.session_id.clone())
+                Some((d.session_id.clone(), Trigger::Daemon))
             }
             Event::ProcessExited { session_id, pid } => {
                 let node = self.node_mut(session_id, at);
@@ -72,7 +75,7 @@ impl View {
                         q.status = QuestionStatus::Orphaned;
                     }
                 }
-                Some(session_id.clone())
+                Some((session_id.clone(), Trigger::ProcessExit))
             }
             Event::NodeRemoved { session_id } => {
                 self.nodes.remove(session_id);
@@ -92,12 +95,13 @@ impl View {
             }
             Event::MarkedOrchestrator { session_id } => {
                 self.node_mut(session_id, at).is_orchestrator = true;
-                Some(session_id.clone())
+                Some((session_id.clone(), Trigger::Other))
             }
             Event::QuestionAsked(q) => {
                 let node = self.node_mut(&q.session_id, at);
                 if q.blocking && q.origin == QuestionOrigin::Ask {
                     node.turn_signal = Some(TurnSignal::Asked);
+                    node.signal_at = Some(at);
                 }
                 let mut q = q.clone();
                 if q.node_name.is_none() {
@@ -105,7 +109,7 @@ impl View {
                 }
                 let sid = q.session_id.clone();
                 self.questions.insert(q.id, q);
-                Some(sid)
+                Some((sid, Trigger::Question))
             }
             Event::QuestionAnswered { id, answer } => self.question_update(*id, |q| {
                 if q.status.is_open() {
@@ -123,18 +127,22 @@ impl View {
             }),
             Event::ReportPosted(r) => {
                 let node = self.node_mut(&r.session_id, at);
-                node.turn_signal = Some(match r.kind {
-                    ReportKind::Final => TurnSignal::Finished,
-                    ReportKind::Notice | ReportKind::Document => TurnSignal::Delivered,
-                    ReportKind::Progress => node.turn_signal.unwrap_or(TurnSignal::Delivered),
-                });
+                let signal = match r.kind {
+                    ReportKind::Final => Some(TurnSignal::Finished),
+                    ReportKind::Notice | ReportKind::Document => Some(TurnSignal::Delivered),
+                    ReportKind::Progress => None,
+                };
+                if let Some(signal) = signal {
+                    node.turn_signal = Some(signal);
+                    node.signal_at = Some(at);
+                }
                 let mut r = r.clone();
                 if r.node_name.is_none() {
                     r.node_name = node.name.clone();
                 }
                 let sid = r.session_id.clone();
                 self.reports.insert(r.id, r);
-                Some(sid)
+                Some((sid, Trigger::Report))
             }
             Event::ReportRead { id } => {
                 if let Some(r) = self.reports.get_mut(id) {
@@ -144,13 +152,13 @@ impl View {
             }
             Event::MessageQueued(m) => {
                 self.messages.insert(m.id, m.clone());
-                Some(m.session_id.clone())
+                Some((m.session_id.clone(), Trigger::Message))
             }
             Event::MessageHanded { id } => {
                 let mut sid = None;
                 if let Some(m) = self.messages.get_mut(id) {
                     m.handed_at = Some(at);
-                    sid = Some(m.session_id.clone());
+                    sid = Some((m.session_id.clone(), Trigger::Message));
                 }
                 if let Some(node) = sid.as_ref().and_then(|s| self.nodes.get_mut(s)) {
                     node.busy = true;
@@ -168,26 +176,54 @@ impl View {
                         confidence: *confidence,
                     });
                 }
-                Some(session_id.clone())
+                Some((session_id.clone(), Trigger::Other))
             }
             Event::WaitingMachine { session_id, .. } => {
-                self.node_mut(session_id, at).turn_signal = Some(TurnSignal::WaitingMachine);
-                Some(session_id.clone())
+                let node = self.node_mut(session_id, at);
+                node.turn_signal = Some(TurnSignal::WaitingMachine);
+                node.signal_at = Some(at);
+                Some((session_id.clone(), Trigger::Declaration))
             }
             Event::Pruned { before } => {
                 self.prune(*before);
                 None
             }
+            Event::Clock { machine_strained } => {
+                self.machine_strained = *machine_strained;
+                let sessions: Vec<String> = self.nodes.keys().cloned().collect();
+                for sid in sessions {
+                    self.recompute(&sid, at, Trigger::Clock);
+                }
+                debug_assert!(states::limbo(self, at).is_empty(), "nodes in limbo after a sweep: {:?}", states::limbo(self, at));
+                None
+            }
         };
-        if let Some(sid) = touched {
-            self.recompute(&sid, at);
+        if let Some((sid, trigger)) = touched {
+            self.recompute(&sid, at, trigger);
         }
     }
 
-    fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<String> {
+    /// Whether time alone has changed what some node shows, so a sweep at `now` has to record
+    /// an `Event::Clock`.
+    pub fn due(&self, now: Millis, machine_strained: bool) -> bool {
+        self.nodes.values().any(|n| {
+            let o = states::evaluate_with(self, n, now, Trigger::Clock, machine_strained);
+            o.state != n.state || o.orchestrator != n.orchestrator_state || o.drop_tool
+        })
+    }
+
+    fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<(String, Trigger)> {
         let q = self.questions.get_mut(&id)?;
         f(q);
-        Some(q.session_id.clone())
+        let (sid, open, tool_use_id) = (q.session_id.clone(), q.status.is_open(), q.tool_use_id.clone());
+        if !open
+            && let Some(node) = self.nodes.get_mut(&sid)
+            && tool_use_id.is_some()
+            && node.tool.as_ref().is_some_and(|t| t.tool_use_id == tool_use_id)
+        {
+            node.tool = None;
+        }
+        Some((sid, Trigger::Question))
     }
 
     fn node_mut(&mut self, session_id: &str, at: Millis) -> &mut Node {
@@ -197,17 +233,19 @@ impl View {
     }
 
     fn apply_hook(&mut self, at: Millis, h: &HookEvent) {
-        let delivered: Vec<u64> = self
+        let handed: Vec<u64> = self
             .messages
             .values()
             .filter(|m| m.session_id == h.session_id && m.handed_at.is_some() && m.delivered_at.is_none())
             .map(|m| m.id)
             .collect();
         let starts_work = matches!(h.event.as_str(), "UserPromptSubmit" | "PreToolUse");
+        let mut from_someone = false;
         if starts_work {
-            for id in &delivered {
+            for id in &handed {
                 if let Some(m) = self.messages.get_mut(id) {
                     m.delivered_at = Some(at);
+                    from_someone |= m.from != MessageFrom::Alondra;
                 }
             }
         }
@@ -218,6 +256,9 @@ impl View {
         if h.cwd.is_some() && (!node.in_daemon || node.cwd.is_none()) {
             node.cwd = h.cwd.clone();
         }
+        if matches!(h.event.as_str(), "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
+            node.last_work_at = Some(at);
+        }
         match h.event.as_str() {
             "SessionStart" => {
                 node.busy = false;
@@ -226,10 +267,12 @@ impl View {
             "UserPromptSubmit" => {
                 node.busy = true;
                 node.turn += 1;
-                node.turn_signal = None;
                 node.classified = None;
                 node.usage_limited = false;
                 node.waiting_permission = false;
+                if from_someone {
+                    node.begin_episode(at);
+                }
             }
             "PreToolUse" => {
                 node.busy = true;
@@ -271,6 +314,7 @@ impl View {
                 node.busy = false;
                 node.tool = None;
                 node.waiting_permission = false;
+                node.last_stop_at = Some(at);
                 if h.last_message.is_some() {
                     node.last_message = h.last_message.clone();
                     node.last_message_at = Some(at);
@@ -279,11 +323,13 @@ impl View {
             "StopFailure" => {
                 node.busy = false;
                 node.tool = None;
+                node.last_stop_at = Some(at);
                 if h.error_type
                     .as_deref()
                     .is_some_and(|e| USAGE_LIMIT_ERRORS.contains(&e))
                 {
                     node.usage_limited = true;
+                    node.usage_limited_at = Some(at);
                 }
             }
             _ => {}
@@ -307,38 +353,50 @@ impl View {
         if !node.has_plugin && (node.daemon_detail != d.detail || node.daemon_needs != d.needs) {
             node.classified = None;
         }
+        let woke = d.tempo.as_deref() == Some("active") && node.daemon_tempo.as_deref() != Some("active");
         node.daemon_detail = d.detail.clone();
         node.daemon_needs = d.needs.clone();
         node.daemon_updated_at = d.updated_at;
+        node.daemon_state = d.state.clone();
+        node.daemon_tempo = d.tempo.clone();
+        node.daemon_tasks = d.tasks.unwrap_or(0);
+        node.daemon_seen_at = Some(at);
         if !node.has_plugin && d.last_text.is_some() {
             node.last_message = d.last_text.clone();
             node.last_message_at = d.last_text_at.or(d.updated_at);
         }
         if !node.has_plugin {
             node.last_seen = node.last_seen.max(d.updated_at.unwrap_or(at));
-            node.busy = d.tempo.as_deref() == Some("active");
             node.usage_limited = false;
-            node.turn_signal = match d.state.as_deref() {
-                Some("done") => Some(TurnSignal::Delivered),
-                _ => None,
-            };
+            if woke {
+                node.turn += 1;
+                node.begin_episode(at);
+            }
         }
     }
 
-    fn recompute(&mut self, session_id: &str, at: Millis) {
-        let open_blocking = self.questions.values().any(|q| {
-            q.session_id == session_id && q.status.is_open() && q.blocking && !q.to_orchestrator
-        });
+    fn recompute(&mut self, session_id: &str, at: Millis, trigger: Trigger) {
+        let Some(node) = self.nodes.get(session_id) else { return };
+        let outcome = states::evaluate(self, node, at, trigger);
         let Some(node) = self.nodes.get_mut(session_id) else { return };
-        let (state, source) = derive(node, open_blocking);
-        if state != node.state {
-            node.state = state;
+        if outcome.drop_tool {
+            node.tool = None;
+        }
+        let source = match outcome.evidence.signal {
+            Signal::DaemonActive | Signal::BackgroundTask => StateSource::Daemon,
+            _ if node.has_plugin => StateSource::Hooks,
+            _ => StateSource::Daemon,
+        };
+        if outcome.state != node.state {
+            node.state = outcome.state;
             node.state_since = match source {
-                StateSource::Daemon => node.daemon_updated_at.unwrap_or(at).min(at),
+                StateSource::Daemon if !node.has_plugin => node.daemon_updated_at.unwrap_or(at).min(at),
                 _ => at,
             };
         }
         node.state_source = source;
+        node.orchestrator_state = outcome.orchestrator;
+        node.evidence = Some(outcome.evidence);
     }
 
     pub fn news(&self, now: Millis) -> Vec<&Node> {
@@ -375,46 +433,10 @@ impl View {
     }
 }
 
-pub fn derive(node: &Node, open_blocking_question: bool) -> (NodeState, StateSource) {
-    let hooks_or_daemon = if node.has_plugin { StateSource::Hooks } else { StateSource::Daemon };
-    if open_blocking_question || node.waiting_permission {
-        return (NodeState::WaitingAnswer, hooks_or_daemon);
-    }
-    if node.busy || node.tool.is_some() {
-        return (NodeState::Working, hooks_or_daemon);
-    }
-    if node.usage_limited {
-        return (NodeState::WaitingMachine, hooks_or_daemon);
-    }
-    match node.turn_signal {
-        Some(TurnSignal::Finished) => return (NodeState::Done, hooks_or_daemon),
-        Some(TurnSignal::Delivered) => return (NodeState::Delivered, hooks_or_daemon),
-        Some(TurnSignal::WaitingMachine) => return (NodeState::WaitingMachine, hooks_or_daemon),
-        Some(TurnSignal::Asked) if node.busy => return (NodeState::Working, hooks_or_daemon),
-        Some(TurnSignal::Asked) => {}
-        None => {}
-    }
-    if node.is_orchestrator {
-        return (NodeState::Delivered, hooks_or_daemon);
-    }
-    if !node.has_plugin && node.daemon_needs.as_deref().is_some_and(|n| !n.trim().is_empty()) {
-        return (NodeState::WaitingAnswer, StateSource::Daemon);
-    }
-    if let Some(c) = &node.classified
-        && c.turn == node.turn
-    {
-        return (c.state, StateSource::Classifier);
-    }
-    if node.has_plugin && node.turn == 0 && node.last_message.is_none() {
-        return (NodeState::Working, StateSource::Hooks);
-    }
-    (NodeState::Unclear, hooks_or_daemon)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Answer, QuestionOrigin};
+    use crate::model::{Answer, NodeState, OrchestratorState, QuestionOrigin};
 
     fn hook(sid: &str, event: &str) -> Event {
         Event::Hook(HookEvent { session_id: sid.into(), event: event.into(), ..Default::default() })
@@ -438,6 +460,7 @@ mod tests {
             status: QuestionStatus::Open,
             answer: None,
             asked_at: 0,
+            action: false,
         }
     }
 
@@ -474,38 +497,6 @@ mod tests {
     #[test]
     fn turn_without_signal_is_unclear_not_frozen_working() {
         let v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-    }
-
-    #[test]
-    fn classification_expires_with_next_turn() {
-        let mut v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
-        v.apply(3, 3000, &Event::Classified {
-            session_id: "s".into(),
-            turn: 1,
-            state: NodeState::Delivered,
-            confidence: Some(0.9),
-        });
-        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
-        v.apply(4, 4000, &hook("s", "UserPromptSubmit"));
-        v.apply(5, 5000, &hook("s", "Stop"));
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-    }
-
-    #[test]
-    fn stale_classification_for_old_turn_is_ignored() {
-        let mut v = run(&[
-            hook("s", "UserPromptSubmit"),
-            hook("s", "Stop"),
-            hook("s", "UserPromptSubmit"),
-            hook("s", "Stop"),
-        ]);
-        v.apply(9, 9000, &Event::Classified {
-            session_id: "s".into(),
-            turn: 1,
-            state: NodeState::Delivered,
-            confidence: None,
-        });
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
     }
 
@@ -586,21 +577,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_only_node_with_needs_is_waiting_answer() {
-        let v = run(&[Event::DaemonSeen(DaemonObservation {
-            session_id: "s".into(),
-            short_id: "s".into(),
-            state: Some("blocked".into()),
-            tempo: Some("blocked".into()),
-            needs: Some("decide merge".into()),
-            pid: Some(7),
-            ..Default::default()
-        })]);
-        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
-        assert_eq!(v.nodes["s"].state_source, StateSource::Daemon);
-    }
-
-    #[test]
     fn message_delivered_only_when_node_starts_working() {
         let mut v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
         v.apply(3, 3000, &Event::MessageQueued(Message {
@@ -617,20 +593,6 @@ mod tests {
         assert!(v.messages[&1].delivered_at.is_none());
         v.apply(5, 5000, &hook("s", "UserPromptSubmit"));
         assert_eq!(v.messages[&1].delivered_at, Some(5000));
-    }
-
-    #[test]
-    fn dormant_daemon_node_keeps_its_state() {
-        let v = run(&[Event::DaemonSeen(DaemonObservation {
-            session_id: "s".into(),
-            short_id: "s".into(),
-            state: Some("blocked".into()),
-            needs: Some("decide".into()),
-            pid: None,
-            ..Default::default()
-        })]);
-        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
-        assert!(!v.nodes["s"].alive);
     }
 
     #[test]
@@ -651,52 +613,6 @@ mod tests {
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 1 });
         v.apply(4, 4000, &hook("s", "SessionEnd"));
         assert!(!v.nodes.contains_key("s"));
-    }
-
-    #[test]
-    fn finished_daemon_node_without_process_is_delivered() {
-        let v = run(&[Event::DaemonSeen(DaemonObservation {
-            session_id: "s".into(),
-            short_id: "s".into(),
-            state: Some("done".into()),
-            pid: None,
-            ..Default::default()
-        })]);
-        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
-    }
-
-    #[test]
-    fn daemon_classification_expires_when_detail_changes() {
-        let obs = |detail: &str| Event::DaemonSeen(DaemonObservation {
-            session_id: "s".into(),
-            short_id: "s".into(),
-            state: Some("working".into()),
-            tempo: Some("idle".into()),
-            detail: Some(detail.into()),
-            pid: Some(1),
-            ..Default::default()
-        });
-        let mut v = run(&[obs("awaiting machine")]);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-        v.apply(2, 2000, &Event::Classified { session_id: "s".into(), turn: 0, state: NodeState::WaitingMachine, confidence: Some(0.9) });
-        assert_eq!(v.nodes["s"].state, NodeState::WaitingMachine);
-        v.apply(3, 3000, &obs("something else"));
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
-    }
-
-    #[test]
-    fn delivered_node_is_news_until_acknowledged_and_again_after_new_turn() {
-        let mut v = run(&[hook("s", "UserPromptSubmit")]);
-        v.apply(2, 2000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::Delivered, confidence: None });
-        v.apply(3, 3000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("PR #4 lista".into()), ..Default::default() }));
-        v.apply(4, 4000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::Delivered, confidence: None });
-        assert_eq!(v.news(9000).len(), 1);
-        v.apply(5, 5000, &Event::Acknowledged { session_id: "s".into() });
-        assert!(v.news(9000).is_empty());
-        v.apply(6, 6000, &hook("s", "UserPromptSubmit"));
-        v.apply(7, 7000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("something else".into()), ..Default::default() }));
-        v.apply(8, 8000, &Event::Classified { session_id: "s".into(), turn: 2, state: NodeState::Delivered, confidence: None });
-        assert_eq!(v.news(9000).len(), 1);
     }
 
     #[test]
@@ -770,6 +686,7 @@ mod tests {
             status,
             answer: None,
             asked_at: at,
+            action: false,
         };
         v.questions.insert(1, q(1, QuestionStatus::Delivered, 100));
         v.questions.insert(2, q(2, QuestionStatus::Open, 100));
@@ -779,28 +696,115 @@ mod tests {
         assert_eq!(v.questions.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4]);
     }
 
+    fn report(id: u64, sid: &str, kind: ReportKind, at: Millis) -> Event {
+        Event::ReportPosted(Report {
+            id,
+            session_id: sid.into(),
+            node_name: None,
+            title: "Result".into(),
+            body: None,
+            links: vec![],
+            attachments: vec![],
+            kind,
+            created_at: at,
+            read: false,
+        })
+    }
+
+    fn seen(sid: &str, state: &str, tempo: &str, needs: Option<&str>, pid: Option<i32>) -> Event {
+        Event::DaemonSeen(DaemonObservation {
+            session_id: sid.into(),
+            short_id: sid.into(),
+            state: Some(state.into()),
+            tempo: Some(tempo.into()),
+            needs: needs.map(str::to_string),
+            pid,
+            ..Default::default()
+        })
+    }
+
     #[test]
-    fn the_orchestrator_only_waits_on_david_through_a_real_question() {
-        let mut n = Node::new("o", 0);
-        n.is_orchestrator = true;
-        n.has_plugin = true;
-        n.turn = 3;
-        n.classified = Some(crate::model::Classification { state: NodeState::WaitingAnswer, turn: 3, confidence: Some(0.95) });
-        assert_eq!(derive(&n, false).0, NodeState::Delivered);
-        assert_eq!(derive(&n, true).0, NodeState::WaitingAnswer);
+    fn a_classification_never_decides_the_state() {
+        let mut v = run(&[hook("s", "UserPromptSubmit"), hook("s", "Stop")]);
+        v.apply(3, 3000, &Event::Classified { session_id: "s".into(), turn: 1, state: NodeState::WaitingAnswer, confidence: Some(0.97) });
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+    }
+
+    #[test]
+    fn a_daemon_node_with_needs_goes_to_the_sentinel_until_it_has_a_question() {
+        let mut v = run(&[seen("s", "blocked", "blocked", Some("decide merge"), Some(7))]);
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state_source, StateSource::Daemon);
+        v.apply(2, 2000, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Classifier)));
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
+    }
+
+    #[test]
+    fn a_dormant_node_keeps_its_open_question() {
+        let v = run(&[seen("s", "blocked", "blocked", Some("decide"), None), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask))]);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
+        assert!(!v.nodes["s"].alive);
+    }
+
+    #[test]
+    fn a_daemon_saying_done_is_not_done_without_a_report() {
+        let mut v = run(&[seen("s", "done", "idle", None, None)]);
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        v.apply(2, 2000, &report(1, "s", ReportKind::Notice, 2000));
+        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
+    }
+
+    #[test]
+    fn a_final_report_from_a_node_without_the_plugin_is_not_its_own() {
+        let v = run(&[seen("s", "stopped", "idle", None, None), report(1, "s", ReportKind::Final, 1000)]);
+        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
+    }
+
+    #[test]
+    fn delivered_node_is_news_until_acknowledged_and_again_after_new_episode() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("PR #4 ready".into()), ..Default::default() }));
+        v.apply(3, 3000, &report(1, "s", ReportKind::Notice, 3000));
+        assert_eq!(v.news(9000).len(), 1);
+        v.apply(4, 4000, &Event::Acknowledged { session_id: "s".into() });
+        assert!(v.news(9000).is_empty());
+        v.apply(5, 5000, &hook("s", "UserPromptSubmit"));
+        v.apply(6, 6000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("something else".into()), ..Default::default() }));
+        v.apply(7, 7000, &report(2, "s", ReportKind::Notice, 7000));
+        assert_eq!(v.news(9000).len(), 1);
+    }
+
+    #[test]
+    fn the_orchestrator_has_its_own_states() {
+        let mut v = run(&[Event::MarkedOrchestrator { session_id: "o".into() }, hook("o", "UserPromptSubmit")]);
+        assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::Handling));
+        assert_eq!(v.nodes["o"].state, NodeState::Working);
+        v.apply(3, 3000, &hook("o", "Stop"));
+        assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::OnDuty));
+        assert_eq!(v.nodes["o"].state, NodeState::Delivered);
+        v.apply(4, 4000, &Event::QuestionAsked(question(1, "o", QuestionOrigin::Ask)));
+        assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::WaitingForYou));
+        assert_eq!(v.nodes["o"].state, NodeState::WaitingAnswer);
+        v.apply(5, 5000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn });
+        v.apply(6, 6000, &Event::ProcessExited { session_id: "o".into(), pid: 0 });
+        assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::Offline));
+    }
+
+    #[test]
+    fn the_orchestrator_never_waits_on_the_user_through_a_guess() {
+        let mut v = run(&[Event::MarkedOrchestrator { session_id: "o".into() }, hook("o", "UserPromptSubmit"), hook("o", "Stop")]);
+        v.apply(4, 4000, &Event::Classified { session_id: "o".into(), turn: 1, state: NodeState::WaitingAnswer, confidence: Some(0.95) });
+        assert_eq!(v.nodes["o"].orchestrator_state, Some(OrchestratorState::OnDuty));
     }
 
     #[test]
     fn a_node_that_asked_and_then_stopped_is_not_working() {
-        let mut n = Node::new("s", 0);
-        n.has_plugin = true;
-        n.turn = 2;
-        n.last_message = Some("done".into());
-        n.turn_signal = Some(TurnSignal::Asked);
-        n.busy = true;
-        assert_eq!(derive(&n, false).0, NodeState::Working);
-        n.busy = false;
-        assert_ne!(derive(&n, false).0, NodeState::Working);
+        let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask))]);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
+        v.apply(3, 3000, &Event::QuestionClosed { id: 1, status: QuestionStatus::Withdrawn });
+        assert_eq!(v.nodes["s"].state, NodeState::Working);
+        v.apply(4, 4000, &hook("s", "Stop"));
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
     }
 
     #[test]

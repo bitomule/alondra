@@ -1444,7 +1444,7 @@ impl App {
 }
 
 fn visible_awake(n: &FleetNode) -> bool {
-    n.alive || n.is_orchestrator || matches!(n.state, NodeState::WaitingAnswer | NodeState::Unclear)
+    n.alive || n.is_orchestrator || matches!(n.state, NodeState::WaitingAnswer | NodeState::YourTurn | NodeState::Unclear)
 }
 
 fn attachment_paths(a: &[alondra_core::Attachment]) -> Vec<String> {
@@ -1510,6 +1510,7 @@ pub(crate) mod tests {
             status: QuestionStatus::Open,
             answer: None,
             asked_at: 0,
+            action: false,
         }
     }
 

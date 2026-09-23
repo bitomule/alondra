@@ -236,6 +236,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         status: QuestionStatus::Open,
         answer: None,
         asked_at: now_millis(),
+        action: false,
     }
 }
 
@@ -574,6 +575,7 @@ async fn ask(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Respons
             status: QuestionStatus::Open,
             answer: None,
             asked_at: stamp,
+            action: false,
         }))
     });
     match res {
