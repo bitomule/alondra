@@ -155,17 +155,17 @@ impl View {
                 Some((m.session_id.clone(), Trigger::Message))
             }
             Event::MessageHanded { id } => {
-                let mut sid = None;
-                if let Some(m) = self.messages.get_mut(id) {
-                    m.handed_at = Some(at);
-                    sid = Some((m.session_id.clone(), Trigger::Message));
-                }
-                if let Some(node) = sid.as_ref().and_then(|s| self.nodes.get_mut(s)) {
-                    node.busy = true;
-                    node.turn_signal = None;
+                let Some(m) = self.messages.get_mut(id) else { return };
+                m.handed_at = Some(at);
+                let (sid, from_someone) = (m.session_id.clone(), m.from != MessageFrom::Alondra);
+                if let Some(node) = self.nodes.get_mut(&sid) {
+                    node.handed_at = Some(at);
                     node.last_seen = node.last_seen.max(at);
+                    if from_someone {
+                        node.begin_episode(at);
+                    }
                 }
-                sid
+                Some((sid, Trigger::Message))
             }
             Event::Classified { session_id, turn, state, confidence } => {
                 let node = self.node_mut(session_id, at);
@@ -240,12 +240,10 @@ impl View {
             .map(|m| m.id)
             .collect();
         let starts_work = matches!(h.event.as_str(), "UserPromptSubmit" | "PreToolUse");
-        let mut from_someone = false;
         if starts_work {
             for id in &handed {
                 if let Some(m) = self.messages.get_mut(id) {
                     m.delivered_at = Some(at);
-                    from_someone |= m.from != MessageFrom::Alondra;
                 }
             }
         }
@@ -270,9 +268,6 @@ impl View {
                 node.classified = None;
                 node.usage_limited = false;
                 node.waiting_permission = false;
-                if from_someone {
-                    node.begin_episode(at);
-                }
             }
             "PreToolUse" => {
                 node.busy = true;

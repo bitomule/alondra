@@ -95,6 +95,7 @@ pub enum Signal {
     ActionRequested,
     ToolInFlight,
     Hook,
+    MessageHanded,
     DaemonActive,
     BackgroundTask,
     UsageLimit,
@@ -176,6 +177,8 @@ pub struct Node {
     #[serde(default)]
     pub last_stop_at: Option<Millis>,
     #[serde(default)]
+    pub handed_at: Option<Millis>,
+    #[serde(default)]
     pub daemon_state: Option<String>,
     #[serde(default)]
     pub daemon_tempo: Option<String>,
@@ -231,6 +234,7 @@ impl Node {
             acknowledged_at: None,
             last_work_at: None,
             last_stop_at: None,
+            handed_at: None,
             daemon_state: None,
             daemon_tempo: None,
             daemon_seen_at: None,

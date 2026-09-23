@@ -65,6 +65,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("an action waits for the user", Signal::ActionRequested, NodeState::YourTurn),
     row("a tool is in flight", Signal::ToolInFlight, NodeState::Working),
     row("a recent hook inside a turn", Signal::Hook, NodeState::Working),
+    row("Alondra just typed a message into the session", Signal::MessageHanded, NodeState::Working),
     row("the Claude daemon reports the session active", Signal::DaemonActive, NodeState::Working),
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
@@ -87,6 +88,7 @@ pub const ORCHESTRATOR_TABLE: &[Row<OrchestratorState>] = &[
     row("the orchestrator has no process", Signal::NoProcess, OrchestratorState::Offline),
     row("a tool is in flight", Signal::ToolInFlight, OrchestratorState::Handling),
     row("a recent hook inside a turn", Signal::Hook, OrchestratorState::Handling),
+    row("Alondra just typed a message into the session", Signal::MessageHanded, OrchestratorState::Handling),
     row("the Claude daemon reports the session active", Signal::DaemonActive, OrchestratorState::Handling),
     row("a background task is still running", Signal::BackgroundTask, OrchestratorState::Handling),
     row("alive and idle", Signal::Nothing, OrchestratorState::OnDuty),
@@ -144,6 +146,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::ToolInFlight, fresh(node.tool.as_ref().map(|t| t.since), now, TOOL_FRESH_MS));
     f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| node.busy), now, HOOK_FRESH_MS));
     let after_stop = |at: &Millis| node.last_stop_at.is_none_or(|stop| *at > stop);
+    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop), now, HOOK_FRESH_MS));
     let daemon_active = node.alive && node.daemon_tempo.as_deref() == Some("active");
     f.add(Signal::DaemonActive, fresh(node.daemon_seen_at.filter(|_| daemon_active).filter(after_stop), now, DAEMON_FRESH_MS));
     f.add(
@@ -219,7 +222,7 @@ pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, ma
 /// Whether the node shows work right now, ignoring what it is waiting for.
 pub fn works(view: &View, node: &Node, now: Millis) -> bool {
     let f = facts(view, node, now);
-    [Signal::ToolInFlight, Signal::Hook, Signal::DaemonActive, Signal::BackgroundTask].iter().any(|s| f.at(*s).is_some())
+    [Signal::ToolInFlight, Signal::Hook, Signal::MessageHanded, Signal::DaemonActive, Signal::BackgroundTask].iter().any(|s| f.at(*s).is_some())
 }
 
 /// Nodes in limbo at `now`: a background node whose state is out of date, or that is not
@@ -370,12 +373,14 @@ mod tests {
     fn cases() -> Vec<Case> {
         let min = 60_000;
         let stale = NODE_TABLE.iter().find(|r| !r.on.is_empty()).unwrap().name;
+        let [queued, handed] = message(MessageFrom::Alondra);
         vec![
             Case { what: "an open ask", events: vec![hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::OpenQuestion) },
             Case { what: "a permission prompt", events: vec![hook("UserPromptSubmit"), hook("PermissionRequest")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PermissionPrompt) },
             Case { what: "an action for the user", events: vec![daemon("done", "idle", 0, None), question(true, QuestionOrigin::Classifier)], sweep: None, state: NodeState::YourTurn, row: row_named(NodeState::YourTurn, Signal::ActionRequested) },
             Case { what: "a long tool, no hook for 10 min", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((10 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::ToolInFlight) },
             Case { what: "a hook a minute ago", events: vec![hook("UserPromptSubmit")], sweep: Some((min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::Hook) },
+            Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
             Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
             Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
