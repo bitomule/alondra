@@ -821,6 +821,16 @@
         }
       }
     },
+    "it is the orchestrator, which Alondra keeps alive": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "es el orquestador, que Alondra mantiene vivo"
+          }
+        }
+      }
+    },
     "it is working; wait until it stops": {
       "localizations": {
         "es": {

@@ -392,7 +392,7 @@ struct NodeDetail: View {
 extension FleetStore {
     @discardableResult
     func close(_ request: CloseRequest) async -> Bool {
-        let ok = await perform { try await $0.closeNode(request.session) }
+        let ok = await perform { try await $0.closeNode(request.session, force: true) }
         if ok { notice = Notice(String(localized: "\(request.name) closed")) }
         return ok
     }

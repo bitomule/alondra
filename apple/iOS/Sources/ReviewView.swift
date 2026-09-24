@@ -61,7 +61,7 @@ struct ReviewView: View {
         .toolbar(.hidden, for: .tabBar)
         .safeAreaBar(edge: .bottom) { actionBar }
         .toolbar {
-            if case .report(let report) = item, let node = fleet.node(report.sessionId), report.primaryAction(nodeFound: true) == .markRead {
+            if case .report(let report) = item, let node = report.closableNode(fleet.node(report.sessionId)), report.primaryAction(nodeFound: true) == .markRead {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .destructive) {
                         closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
@@ -195,7 +195,7 @@ struct ReviewView: View {
     }
 
     private var closableNode: Node? {
-        guard case .report(let report) = item, let node = fleet.node(report.sessionId),
+        guard case .report(let report) = item, let node = report.closableNode(fleet.node(report.sessionId)),
               report.primaryAction(nodeFound: true) == .readAndClose else { return nil }
         return node
     }

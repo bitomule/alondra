@@ -145,6 +145,7 @@ pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
         "permission" => {
             tr!("it has a permission pending on a tool call that is running", "tiene un permiso pendiente en una llamada a herramienta en marcha").to_string()
         }
+        "orchestrator" => tr!("it is the orchestrator, which Alondra keeps alive", "es el orquestador, que Alondra mantiene vivo").to_string(),
         "worktree" => {
             let detail = detail.unwrap_or_default();
             trf!("it has changes not pushed in {detail}", "tiene cambios sin subir en {detail}")

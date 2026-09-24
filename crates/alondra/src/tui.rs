@@ -1196,7 +1196,7 @@ impl App {
             return;
         }
         let Some(r) = self.selected_report() else { return };
-        if !self.node(&r.session_id).is_some_and(|n| n.alive) {
+        if !self.node(&r.session_id).is_some_and(|n| n.offers_close()) {
             return;
         }
         let name = who(&r.node_name, &r.session_id);
@@ -1609,7 +1609,7 @@ impl App {
                 if let Some(n) = self.selected_node() {
                     let (session, name) = (n.session_id.clone(), n.display_name().to_string());
                     if self.confirm_close(&session, &name) {
-                        self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+                        self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({"force": true}))], trf!("{name} closed", "{name} cerrado"));
                     }
                 }
             }
@@ -2159,6 +2159,25 @@ pub(crate) mod tests {
         assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         press(&mut app, "X");
         assert!(app.pending_close.is_none(), "the second X consumes the confirmation");
+    }
+
+    /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never close it.
+    #[test]
+    fn shift_x_never_closes_the_orchestrator_but_x_still_marks_its_report_read() {
+        for (orchestrator, arms) in [(false, true), (true, false)] {
+            let (mut app, _rx) = app_with(vec![]);
+            app.data.news = vec![report(1).into()];
+            let mut node = alive_node("s1");
+            node.node.is_orchestrator = orchestrator;
+            app.data.nodes = vec![node];
+            app.reconcile();
+            press(&mut app, "X");
+            assert_eq!(app.pending_close.is_some(), arms, "orchestrator={orchestrator}");
+            assert_eq!(app.hidden.contains_key(&Key::R(1)), arms, "orchestrator={orchestrator}: X reads only when it may close");
+            app.pending_close = None;
+            press(&mut app, "x");
+            assert!(app.hidden.contains_key(&Key::R(1)), "orchestrator={orchestrator}: x marks the report read");
+        }
     }
 
     #[test]

@@ -118,10 +118,11 @@ public struct AlondraClient: Sendable {
         try await post("v1/reports/\(report)/read", [:])
     }
 
-    public func closeNode(_ key: String) async throws {
+    /// `force` is the fleet's explicit close, the only one alondrad lets close the orchestrator.
+    public func closeNode(_ key: String, force: Bool = false) async throws {
         let url = base.appending(path: "v1/nodes").appending(component: key).appending(path: "close")
         do {
-            _ = try await perform("POST", url: url, body: Data("{}".utf8), session: Self.longPoll)
+            _ = try await perform("POST", url: url, body: Data((force ? #"{"force":true}"# : "{}").utf8), session: Self.longPoll)
         } catch AlondraError.server(let message) {
             throw CloseRefused(message: message)
         }
@@ -221,6 +222,8 @@ func closeReasonMessage(kind: String, detail: String?) -> String {
         return String(localized: "it is working; wait until it stops", table: "AlondraShared", bundle: #bundle)
     case "permission":
         return String(localized: "it has a permission pending on a tool call that is running", table: "AlondraShared", bundle: #bundle)
+    case "orchestrator":
+        return String(localized: "it is the orchestrator, which Alondra keeps alive", table: "AlondraShared", bundle: #bundle)
     case "worktree":
         return String(localized: "it has changes not pushed in \(detail ?? "")", table: "AlondraShared", bundle: #bundle)
     default:
