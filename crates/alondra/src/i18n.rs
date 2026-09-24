@@ -127,6 +127,10 @@ pub fn option_label(label: &str) -> &str {
     }
 }
 
+pub fn open_in_browser() -> &'static str {
+    tr!("Open in browser", "Abrir en el navegador")
+}
+
 pub fn merge_method(m: alondra_core::pr::MergeMethod) -> &'static str {
     use alondra_core::pr::MergeMethod;
     match m {

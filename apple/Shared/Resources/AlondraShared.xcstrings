@@ -331,6 +331,16 @@
         }
       }
     },
+    "Open in Browser": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir en el navegador"
+          }
+        }
+      }
+    },
     "hung?": {
       "localizations": {
         "es": {

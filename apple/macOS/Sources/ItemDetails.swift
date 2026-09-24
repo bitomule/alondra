@@ -225,6 +225,14 @@ struct ReportDetail: View {
                         .font(.callout.weight(.medium))
                         .foregroundStyle(.orange)
                 }
+                ForEach(report.artifacts, id: \.self) { url in
+                    Link(destination: url) {
+                        Label(Report.openInBrowserLabel, systemImage: "safari")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .help(url.absoluteString)
+                }
                 if let body = report.body, !body.isEmpty {
                     if isDocument {
                         ReviewableDocument(text: body, anchorPrefix: "cuerpo", draft: draft, focus: $focus)
