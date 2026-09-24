@@ -326,6 +326,11 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         return Json(json!({})).into_response();
     };
     let _ = hub.append(Event::QuestionDelivered { id });
+    if let Some(text) = held_follow_up(origin, &answer)
+        && let Err(e) = hub.append_with(|v| Some(follow_up_message(v, &h.session_id, &text)))
+    {
+        log!("could not queue the user's words after #{id}: {e}");
+    }
     let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
     Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response()
 }
@@ -336,6 +341,7 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
         Some(o) => o.to_string(),
     };
     let wants_context = answer.option.as_deref() == Some(answer_option::MORE_CONTEXT);
+    let follows = held_follow_up(origin, answer).is_some();
     let approves = |yes: &str| answer.option.as_deref() == Some(yes) || answer.text.trim().eq_ignore_ascii_case(yes);
     match origin {
         QuestionOrigin::AskUserQuestion => {
@@ -367,13 +373,58 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
         }
         QuestionOrigin::Plan if approves(answer_option::APPROVE) => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
-        QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("{user} requests changes to the plan: {}", answer.text) }}}),
+        QuestionOrigin::Plan => {
+            let reason = match (wants_context, follows) {
+                (true, _) => answer.text.clone(),
+                (false, true) => format!("{user} requested changes; the message follows"),
+                (false, false) => format!("{user} requests changes to the plan"),
+            };
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
+        }
         _ if approves(answer_option::ALLOW) => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"}}}),
-        _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} denies it: {}", answer.text) }}}}),
+        _ => {
+            let reason = match (wants_context, follows) {
+                (true, _) => answer.text.clone(),
+                (false, true) => format!("{user} denied it; the message follows"),
+                (false, false) => format!("{user} denies it"),
+            };
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": reason}}})
+        }
     }
+}
+
+/// What the user wrote when turning down a plan or a permission, which reaches the node as a
+/// message of its own (a user turn) rather than inside the hook's reason.
+fn held_follow_up(origin: QuestionOrigin, answer: &Answer) -> Option<String> {
+    let yes = match origin {
+        QuestionOrigin::Plan => answer_option::APPROVE,
+        QuestionOrigin::AskUserQuestion | QuestionOrigin::Elicitation => return None,
+        _ => answer_option::ALLOW,
+    };
+    let option = answer.option.as_deref();
+    if option == Some(answer_option::MORE_CONTEXT) || option == Some(yes) {
+        return None;
+    }
+    let text = answer.text.trim();
+    let is_label = |l: &str| text.eq_ignore_ascii_case(l);
+    if text.is_empty() || is_label(yes) || option.is_some_and(is_label) || [answer_option::DENY, answer_option::REQUEST_CHANGES].into_iter().any(is_label) {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
+    Event::MessageQueued(Message {
+        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: session_id.to_string(),
+        from: MessageFrom::User,
+        text: text.to_string(),
+        answers_question: None,
+        created_at: now_millis(),
+        handed_at: None,
+        delivered_at: None,
+    })
 }
 
 /// The fields an MCP server's form asks for: (name, title, JSON type).
@@ -1561,7 +1612,7 @@ mod tests {
         assert_eq!((a.text.as_str(), a.option.as_deref()), ("Deny", Some(answer_option::DENY)));
         let out = decision(QuestionOrigin::Permission, &a);
         assert_eq!(out["hookSpecificOutput"]["decision"]["behavior"], "deny");
-        assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it: Deny");
+        assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it");
     }
 
     /// An MCP elicitation reaches the clients as an Accept / Decline card, and the answer goes back
@@ -1610,6 +1661,39 @@ mod tests {
             let schema = c.payload.get("requested_schema").cloned().unwrap_or(Value::Null);
             assert_eq!(hold_decision(QuestionOrigin::Elicitation, &c.answer, schema, "Ana")["hookSpecificOutput"], c.response, "{}", c.what);
         }
+    }
+
+    #[test]
+    fn what_the_user_writes_when_turning_down_a_plan_or_a_permission_follows_as_a_message() {
+        let plan_reason = |a: &Answer| decision(QuestionOrigin::Plan, a)["hookSpecificOutput"]["permissionDecisionReason"].clone();
+        let deny_message = |a: &Answer| decision(QuestionOrigin::Permission, a)["hookSpecificOutput"]["decision"]["message"].clone();
+        let cases: [(&str, QuestionOrigin, Answer, Option<&str>, Value); 8] = [
+            ("changes with text", QuestionOrigin::Plan, answered("Use a feature flag instead", Some("Request changes")), Some("Use a feature flag instead"),
+                json!("Ana requested changes; the message follows")),
+            ("changes, no text", QuestionOrigin::Plan, answered("Request changes", Some("Request changes")), None, json!("Ana requests changes to the plan")),
+            ("free text on a plan", QuestionOrigin::Plan, answered("Split it in two PRs", None), Some("Split it in two PRs"), json!("Ana requested changes; the message follows")),
+            ("more context stays in the reason", QuestionOrigin::Plan, answered("Why?", Some(answer_option::MORE_CONTEXT)), None, json!("Why?")),
+            ("deny with a reason", QuestionOrigin::Permission, answered("Not on main, branch first", Some("Deny")), Some("Not on main, branch first"),
+                json!("Ana denied it; the message follows")),
+            ("deny, no text", QuestionOrigin::Permission, answered("Deny", Some("Deny")), None, json!("Ana denies it")),
+            ("the old Spanish deny label", QuestionOrigin::Permission, answered("Denegar", Some("Denegar")), None, json!("Ana denies it")),
+            ("allow says nothing more", QuestionOrigin::Permission, answered("Allow", Some("Allow")), None, Value::Null),
+        ];
+        for (what, origin, a, follow, reason) in cases {
+            assert_eq!(held_follow_up(origin, &a).as_deref(), follow, "{what}");
+            let said = if origin == QuestionOrigin::Plan { plan_reason(&a) } else { deny_message(&a) };
+            assert_eq!(said, reason, "{what}");
+        }
+        assert_eq!(held_follow_up(QuestionOrigin::AskUserQuestion, &answered("Blue", None)), None);
+        assert_eq!(held_follow_up(QuestionOrigin::Elicitation, &answered("ghp_1", Some("Accept"))), None);
+
+        let mut v = View::default();
+        v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), ..Default::default() }));
+        let queued = follow_up_message(&v, "s", "Use a feature flag instead");
+        v.apply(2, 2, &queued);
+        let pending: Vec<&Message> = v.pending_messages("s").collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!((pending[0].from, pending[0].text.as_str(), pending[0].answers_question), (MessageFrom::User, "Use a feature flag instead", None));
     }
 
     #[test]
