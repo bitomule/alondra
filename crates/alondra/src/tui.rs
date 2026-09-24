@@ -1729,6 +1729,7 @@ pub(crate) mod tests {
             created_at: 0,
             read: false,
             mission: None,
+            looks_like_question: false,
         }
     }
 
@@ -2048,7 +2049,7 @@ pub(crate) mod tests {
     fn asked_on_pr(id: u64, pr: u64) -> crate::client::OpenQuestion {
         let mut q = question(id, QuestionOrigin::Ask, &["Merge it", "Not yet"]);
         q.options[1].description = Some("Write what is missing".into());
-        crate::client::OpenQuestion { question: q, pr_id: Some(pr) }
+        crate::client::OpenQuestion { question: q, pr_id: Some(pr), report: None }
     }
 
     #[test]

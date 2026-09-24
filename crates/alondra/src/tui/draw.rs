@@ -163,6 +163,9 @@ pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color
 }
 
 pub(super) fn report_glyph(r: &Report) -> (&'static str, &'static str, Color) {
+    if r.looks_like_question && r.kind != ReportKind::Final {
+        return ("?", tr!("notice that asks", "aviso que pregunta"), Color::LightYellow);
+    }
     match r.kind {
         ReportKind::Document => ("▤", i18n::report_kind(r.kind), Color::Cyan),
         ReportKind::Final => ("✓", i18n::report_kind(r.kind), Color::LightGreen),
@@ -539,6 +542,17 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         for l in links {
             let t = l.title.clone().map(|t| format!("{t} ")).unwrap_or_default();
             lines.extend(wrap(vec![Span::raw(t), Span::styled(l.url.clone(), Style::new().fg(Color::LightBlue).underlined())], width, vec![Span::raw("↗ ")], vec![Span::raw("  ")]));
+        }
+    }
+    if let Item::Q(q) = item
+        && let Some(r) = app.data.open_questions.iter().find(|o| o.id == q.id).and_then(|o| o.report.as_ref())
+    {
+        lines.push(Line::default());
+        let id = r.id;
+        lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
+        lines.extend(wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]));
+        if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
+            lines.extend(md::render(&md::parse(body), width).lines);
         }
     }
     if let Item::Q(q) = item
@@ -1388,6 +1402,17 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_the_gate_flagged_is_marked_as_asking() {
+        let mut r = report(1);
+        r.kind = ReportKind::Notice;
+        assert_eq!(report_glyph(&r).0, "•");
+        r.looks_like_question = true;
+        assert_eq!(report_glyph(&r).0, "?");
+        r.kind = ReportKind::Final;
+        assert_eq!(report_glyph(&r).0, "✓");
+    }
+
+    #[test]
     fn empty_inbox_says_so_and_offers_the_next_step() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
@@ -1415,7 +1440,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
         q.title = "Merge it before the release?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4) });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1424,6 +1449,25 @@ mod tests {
         assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
         assert!(at("Menus become cards") < at("↳ ? Merge it before the release?"), "{s}");
         assert!(s.contains("The node asks: Merge it before the release?"), "{s}");
+    }
+
+    #[test]
+    fn a_question_about_a_report_shows_the_report_inside_it() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        let report: alondra_core::Report = serde_json::from_value(serde_json::json!({
+            "id": 7, "session_id": "audit", "node_name": "alondra/auditoria", "title": "Audit: 13 things left",
+            "body": "The worst three are in iOS.", "kind": "document", "created_at": 1
+        }))
+        .unwrap();
+        let mut q = question(2, QuestionOrigin::Ask, &["Launch it"]);
+        q.title = "Launch a node to fix the audit?".into();
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report) });
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("Launch a node to fix the audit?"), "{s}");
+        assert!(s.contains("About report #7"), "{s}");
+        assert!(s.contains("Audit: 13 things left") && s.contains("The worst three are in iOS."), "{s}");
     }
 
     #[test]

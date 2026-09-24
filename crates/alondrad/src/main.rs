@@ -1,3 +1,5 @@
+#[macro_use]
+mod log;
 mod auth;
 mod classify;
 mod http;
@@ -25,7 +27,7 @@ use anyhow::{Context, Result, anyhow};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    let config = Config::load().map_err(|e| anyhow!("config.toml ilegible: {e}"))?;
+    let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     let claude_home = watcher::claude_home();
     let hold = std::env::var("ALONDRA_HOLD").map(|v| v != "0").unwrap_or(true);
     let addr = SocketAddr::new(config.listen, config.port);
@@ -50,8 +52,7 @@ async fn main() -> Result<()> {
     let auth = Arc::new(auth::Auth::open(&config.home)?);
     let push = Arc::new(push::Push::open(&config.home)?);
     tokio::spawn(push::run(hub.clone(), push.clone()));
-    eprintln!(
-        "alondrad: listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
+    log!("listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
         config.home.display(),
         config.name,
         if config.legacy_bridge { "yes" } else { "no" },
@@ -70,9 +71,9 @@ async fn retention(hub: Arc<hub::Hub>, retention_hours: f64) {
         tokio::time::sleep(every).await;
         let hub = hub.clone();
         match tokio::task::spawn_blocking(move || hub.compact(keep)).await {
-            Ok(Ok(deleted)) => eprintln!("alondrad: compacted, {deleted} old events deleted"),
-            Ok(Err(e)) => eprintln!("alondrad: could not compact: {e}"),
-            Err(e) => eprintln!("alondrad: compaction crashed: {e}"),
+            Ok(Ok(deleted)) => log!("compacted, {deleted} old events deleted"),
+            Ok(Err(e)) => log!("could not compact: {e}"),
+            Err(e) => log!("compaction crashed: {e}"),
         }
     }
 }

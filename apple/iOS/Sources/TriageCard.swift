@@ -205,6 +205,9 @@ struct TriageCard: View {
                 }
             }
             links(question.links)
+            if let report = question.report {
+                aboutReport(report)
+            }
             if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty, !context.hasPrefix("mcp__") {
                 nodeContext(context)
             }
@@ -357,6 +360,25 @@ struct TriageCard: View {
                 .tint(Palette.sky)
             }
         }
+    }
+
+    private func aboutReport(_ report: Report) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(report.title)
+                .font(.headline)
+                .foregroundStyle(Palette.ink)
+            if let body = report.body, !body.isEmpty {
+                blocks(body)
+                    .font(.callout)
+                    .lineLimit(12)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
     }
 
     private func nodeContext(_ context: String) -> some View {

@@ -28,6 +28,9 @@ What you write in your terminal does not reach the user; only Alondra's tools do
 - **A document for them to read** (plan, long report) → `report` with `kind: "document"` and the
   path in `attachments`. If you also need them to **approve** it, it is not a report: it is an
   `ask` with the document attached.
+- **A question right after your own report on the same thing** → cite the report by number in
+  the question (`informe #N`), or attach the same file or link the same URL: Alondra shows the
+  report inside the question as one card, as long as it is unread and at most 30 minutes old.
 - **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
 - **You opened a PR** → put its URL in your `report` or `links`: Alondra gives it its own card,
   where the user merges, requests changes or sets it aside, and counts you as waiting for the
@@ -44,4 +47,15 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   (including waiting for a build, an upload or a review), send nothing. Alondra rejects these
   reports, and you lose a turn.
 - **Questions inside a report.** If a report asks the user to decide, approve, test or fetch
-  something, Alondra rejects it: send it as `ask` (or `request_action` if it is something to do).
+  something, Alondra delivers it flagged and the question gets lost among the reading: send it as
+  `ask` (or `request_action` if it is something to do).
+
+## Probes and end-to-end tests
+
+- **Never run a probe or an end-to-end test against the real alondrad** (port 47800): whatever
+  it reports or asks lands in the user's inbox. Alondra refuses `report`, `ask` and
+  `request_action` from nodes whose name starts with `test/` unless it runs as a sandbox.
+- Start a sandbox with `make e2e-sandbox` in the Alondra repo: it runs a throwaway alondrad with
+  its own data directory and port, and prints the `claude --bg --name test/<probe> --plugin-dir …
+  --settings …` line that points a probe node at it instead of the real one. Name probes
+  `test/<something>`, close them with `claude rm` and stop the sandbox when done.

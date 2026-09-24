@@ -40,7 +40,7 @@ pub async fn run(hub: Arc<Hub>) {
     loop {
         tokio::time::sleep(EVERY).await;
         if let Err(e) = sweep(&hub, &mut asked_at).await {
-            eprintln!("alondrad: menus: {e}");
+            log!("menus: {e}");
         }
     }
 }
@@ -83,7 +83,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
         let screen = match screen {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("alondrad: menus: could not read {short}'s screen: {e}");
+                log!("menus: could not read {short}'s screen: {e}");
                 continue;
             }
         };
@@ -133,7 +133,7 @@ fn card(v: &View, node: &Node, screen: &str) -> Question {
     let (title, detail, options) = match parse_menu(screen) {
         Some(m) => (m.title, Some(m.detail).filter(|d| !d.is_empty()), m.options),
         None => (
-            format!("{name} is waiting on a menu in its terminal"),
+            format!("{name} espera en un menú que Alondra no sabe leer: ábrelo en su terminal"),
             Some(format!("```\n{}\n```", last_lines(screen, 20))),
             vec![],
         ),
@@ -364,6 +364,7 @@ mod tests {
             created_at: 2,
             read: true,
             mission: None,
+            looks_like_question: false,
         });
         let hook = |e: &str| Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: e.into(), tool_name: Some("Bash".into()), ..Default::default() });
         let cases: Vec<(&str, Vec<Event>, bool)> = vec![
@@ -389,5 +390,16 @@ mod tests {
         let menu = parse_menu(PERMISSION).unwrap();
         assert_eq!(key_for(&menu, "No"), Some(vec!["3".to_string()]));
         assert_eq!(key_for(&menu, "Maybe"), None);
+    }
+
+    #[test]
+    fn a_menu_alondra_cannot_read_sends_the_user_to_the_terminal_in_spanish() {
+        let mut v = View::default();
+        v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), ..Default::default() }));
+        let screen = "Some dialog\nwith no numbered options\nPress any key";
+        let q = card(&v, &v.nodes["s"], screen);
+        assert_eq!(q.title, format!("{} espera en un menú que Alondra no sabe leer: ábrelo en su terminal", v.nodes["s"].display_name()));
+        assert!(q.detail.as_deref().is_some_and(|d| d.contains("Press any key")));
+        assert!(q.options.is_empty());
     }
 }

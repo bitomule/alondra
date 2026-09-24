@@ -91,12 +91,25 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
-fn keep_rejected(home: &std::path::Path, title: &str, body: Option<&str>) {
+fn keep_flagged(home: &std::path::Path, title: &str, body: Option<&str>) {
     use std::io::Write;
     let line = json!({"at": now_millis(), "title": title, "body": body}).to_string();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("rejected-reports.jsonl")) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("flagged-reports.jsonl")) {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// Final reports and the orchestrator's notices skip the report gate: they close a node or
+/// relay what the orchestrator checked, and a false positive cost the user exactly those.
+fn gated(kind: Option<ReportKind>, from_orchestrator: bool) -> bool {
+    !from_orchestrator && !matches!(kind, Some(ReportKind::Progress | ReportKind::Final))
+}
+
+fn flagged_note(user: &str) -> String {
+    format!(
+        "Delivered, marked as possibly asking {user} for something. If it does, send each decision as its own question \
+         with ask (a one-line title, context in detail, options); if that question is already open, do not repeat it."
+    )
 }
 
 pub const USER_KEY_FILE: &str = "tui-key.pem";
@@ -162,7 +175,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
-        eprintln!("alondrad: hook lost: {e}");
+        log!("hook lost: {e}");
         return Json(json!({})).into_response();
     }
     if event == "PostToolUse"
@@ -174,13 +187,13 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         let user = hub.config.name.clone();
         let moved = hub.append_with(|v| v.nodes.get(&session_id).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued));
         if let Err(e) = moved {
-            eprintln!("alondrad: could not act on a stalled node: {e}");
+            log!("could not act on a stalled node: {e}");
         }
     }
     if event == "PreToolUse"
         && let Some(reason) = forbidden_for_nodes(tool.as_deref(), p.get("tool_input"))
     {
-        eprintln!("alondrad: blocked a node from acting as the user: {reason}");
+        log!("blocked a node from acting as the user: {reason}");
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
             "permissionDecisionReason": reason}})).into_response();
     }
@@ -249,8 +262,8 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
         QuestionOrigin::Elicitation => elicitation_card(p),
         _ => (
-            h.tool_summary.clone().map(|t| t.chars().take(120).collect()).unwrap_or_else(|| h.tool_name.clone().unwrap_or_default()),
-            h.tool_summary.clone().filter(|t| t.chars().count() > 120).or_else(|| h.tool_summary.is_none().then(|| input.to_string())),
+            permission_title(h.tool_name.as_deref(), &input, h.tool_summary.as_deref()),
+            permission_detail(&input, h.tool_summary.as_deref()),
             vec![
                 QuestionOption { label: answer_option::ALLOW.into(), description: None },
                 QuestionOption { label: answer_option::DENY.into(), description: Some("Write the reason".into()) },
@@ -260,7 +273,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
     Question {
         id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: h.session_id.clone(),
-        node_name: node.and_then(|n| n.name.clone()),
+        node_name: node.map(|n| n.name.clone().unwrap_or_else(|| n.short_id.clone())),
         title,
         detail,
         options,
@@ -280,6 +293,39 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
     }
 }
 
+const PERMISSION_TITLE_CHARS: usize = 100;
+const DESTRUCTIVE: &str = "⚠️ destructivo";
+
+fn destructive(command: &str) -> bool {
+    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
+    let has = |w: &str| words.contains(&w);
+    let short_flag_with = |f: char| words.iter().any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains(f));
+    words.iter().any(|w| w.starts_with("--force") || *w == "-D" || *w == "rm" || *w == "--hard")
+        || (has("push") && short_flag_with('f'))
+        || (has("clean") && short_flag_with('f'))
+}
+
+fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
+    let tool = tool.unwrap_or("?");
+    let said = str_field(input, "description").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).or_else(|| summary.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")));
+    let title = match said {
+        Some(s) if s.chars().count() > PERMISSION_TITLE_CHARS => format!("{tool}: {}…", s.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()),
+        Some(s) => format!("{tool}: {s}"),
+        None => tool.to_string(),
+    };
+    match str_field(input, "command") {
+        Some(c) if destructive(&c) => format!("{DESTRUCTIVE} · {title}"),
+        _ => title,
+    }
+}
+
+fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
+    if let Some(command) = str_field(input, "command") {
+        return Some(format!("```\n{command}\n```"));
+    }
+    summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
+}
+
 async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> Response {
     let appended = hub.append_with(|v| Some(Event::QuestionAsked(held_question(v, &p, &h, origin))));
     let id = match appended {
@@ -293,6 +339,11 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         return Json(json!({})).into_response();
     };
     let _ = hub.append(Event::QuestionDelivered { id });
+    if let Some(text) = held_follow_up(origin, &answer)
+        && let Err(e) = hub.append_with(|v| Some(follow_up_message(v, &h.session_id, &text)))
+    {
+        log!("could not queue the user's words after #{id}: {e}");
+    }
     let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
     Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response()
 }
@@ -303,6 +354,7 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
         Some(o) => o.to_string(),
     };
     let wants_context = answer.option.as_deref() == Some(answer_option::MORE_CONTEXT);
+    let follows = held_follow_up(origin, answer).is_some();
     let approves = |yes: &str| answer.option.as_deref() == Some(yes) || answer.text.trim().eq_ignore_ascii_case(yes);
     match origin {
         QuestionOrigin::AskUserQuestion => {
@@ -334,13 +386,58 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
         }
         QuestionOrigin::Plan if approves(answer_option::APPROVE) => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
-        QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": if wants_context { answer.text.clone() } else { format!("{user} requests changes to the plan: {}", answer.text) }}}),
+        QuestionOrigin::Plan => {
+            let reason = match (wants_context, follows) {
+                (true, _) => answer.text.clone(),
+                (false, true) => format!("{user} requested changes; the message follows"),
+                (false, false) => format!("{user} requests changes to the plan"),
+            };
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
+        }
         _ if approves(answer_option::ALLOW) => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"}}}),
-        _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-            "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} denies it: {}", answer.text) }}}}),
+        _ => {
+            let reason = match (wants_context, follows) {
+                (true, _) => answer.text.clone(),
+                (false, true) => format!("{user} denied it; the message follows"),
+                (false, false) => format!("{user} denies it"),
+            };
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": reason}}})
+        }
     }
+}
+
+/// What the user wrote when turning down a plan or a permission, which reaches the node as a
+/// message of its own (a user turn) rather than inside the hook's reason.
+fn held_follow_up(origin: QuestionOrigin, answer: &Answer) -> Option<String> {
+    let yes = match origin {
+        QuestionOrigin::Plan => answer_option::APPROVE,
+        QuestionOrigin::AskUserQuestion | QuestionOrigin::Elicitation => return None,
+        _ => answer_option::ALLOW,
+    };
+    let option = answer.option.as_deref();
+    if option == Some(answer_option::MORE_CONTEXT) || option == Some(yes) {
+        return None;
+    }
+    let text = answer.text.trim();
+    let is_label = |l: &str| text.eq_ignore_ascii_case(l);
+    if text.is_empty() || is_label(yes) || option.is_some_and(is_label) || [answer_option::DENY, answer_option::REQUEST_CHANGES].into_iter().any(is_label) {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
+    Event::MessageQueued(Message {
+        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: session_id.to_string(),
+        from: MessageFrom::User,
+        text: text.to_string(),
+        answers_question: None,
+        created_at: now_millis(),
+        handed_at: None,
+        delivered_at: None,
+    })
 }
 
 /// The fields an MCP server's form asks for: (name, title, JSON type).
@@ -531,7 +628,7 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
 fn note_prs(hub: &Hub, session_id: &str, texts: &[String]) {
     for url in texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)) {
         if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
-            eprintln!("alondrad: could not record a PR: {e}");
+            log!("could not record a PR: {e}");
         }
     }
 }
@@ -563,7 +660,7 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
         Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr merge did not finish within 90 s"),
     }
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
-    eprintln!("alondrad: {} merged by {} from {who}", pr.url, hub.config.name);
+    log!("{} merged by {} from {who}", pr.url, hub.config.name);
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
@@ -588,7 +685,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
-                eprintln!("alondrad: changes sent on PR card #{id}, card not set aside: {e}");
+                log!("changes sent on PR card #{id}, card not set aside: {e}");
             }
             Json(json!({"id": id, "sent_to": to})).into_response()
         }
@@ -682,12 +779,17 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 if let Some(pr) = v.question_pr(q) {
                     value["pr_id"] = json!(pr);
                 }
+                if let Some(report) = v.question_report(q).and_then(|id| v.reports.get(&id)) {
+                    value["report"] = json!(report);
+                }
                 value
             })
             .collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
-        let news: Vec<&Report> = v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress).collect();
+        let absorbed = v.absorbed_reports();
+        let news: Vec<&Report> =
+            v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id)).collect();
         let orchestrator_messages: Vec<&Message> = v
             .nodes
             .values()
@@ -699,6 +801,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .map(|n| {
                 let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
                 value["project"] = Value::String(n.project());
+                value["undeliverable_messages"] = json!(v.undeliverable(&n.session_id));
                 value
             })
             .collect();
@@ -736,9 +839,9 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        Some((n, questions, reports, messages))
+        Some((n, questions, reports, messages, v.undeliverable(&sid)))
     });
-    let Some((node, questions, reports, messages)) = found else {
+    let Some((node, questions, reports, messages, undeliverable)) = found else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
@@ -747,7 +850,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
         .collect();
-    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "timeline": timeline})).into_response()
+    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "undeliverable_messages": undeliverable, "timeline": timeline})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -830,7 +933,28 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
         .collect()
 }
 
+const PROBE_PREFIX: &str = "test/";
+
+fn probe_refused(name: Option<&str>, sandbox: bool) -> Option<Response> {
+    let name = name.filter(|n| n.starts_with(PROBE_PREFIX) && !sandbox)?;
+    Some(err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "{name} is a test node and this is the user's real Alondra, so its reports and questions would land in their inbox. \
+             Run probes against a sandbox instead: `make e2e-sandbox` in the Alondra repo starts one and prints how to point a node at it."
+        ),
+    ))
+}
+
+fn caller_probe_refused(hub: &Hub, caller: &Caller) -> Option<Response> {
+    let name = hub.read(|v| resolve_caller(v, caller).and_then(|(_, name)| name));
+    probe_refused(name.as_deref(), hub.config.sandbox)
+}
+
 async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     if b.title.trim().is_empty() || b.detail.as_deref().is_none_or(|d| d.trim().is_empty()) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -841,6 +965,9 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
 }
 
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     b.steps.retain(|s| !s.trim().is_empty());
     if b.title.trim().is_empty() || b.steps.is_empty() {
         return err(
@@ -936,8 +1063,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
     let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
+    let absorbed = hub.read(|v| v.question_report(&q));
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
+    }
+    if let Some(report) = absorbed
+        && let Err(e) = hub.append(Event::ReportRead { id: report })
+    {
+        log!("could not mark report #{report} read with question #{id}: {e}");
     }
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
@@ -950,7 +1083,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     };
     let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
     let text = if other_open { format!("About \"{}\": {reply}", q.title) } else { reply };
-    eprintln!("alondrad: answer to #{id} from {user} {provenance}");
+    log!("answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -1079,6 +1212,9 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     if b.kind != Some(ReportKind::Progress) && (b.title.trim().is_empty() || b.body.as_deref().is_none_or(|t| t.trim().is_empty())) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1089,7 +1225,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         && let Some(session) = hub.read(|v| resolve_caller(v, &b.caller).map(|(s, _)| s))
         && let Some(left) = crate::worktree::leftovers(&session).await
     {
-        eprintln!("alondrad: final report refused, worktree not clean: {left}");
+        log!("final report refused, worktree not clean: {left}");
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
@@ -1099,24 +1235,12 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             ),
         );
     }
-    if b.kind != Some(ReportKind::Progress) {
-        let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
-        let user = &hub.config.name;
-        match crate::classify::judge_report(&text, user).await {
-            crate::classify::ReportVerdict::Asks => {
-                eprintln!("alondrad: report gate: rejected a report that asks for something: {}", b.title);
-                keep_rejected(&hub.home, &b.title, b.body.as_deref());
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!(
-                        "This report asks {user} to decide or do something, and a report is only for reading. Send each \
-                         decision as its own question with ask (a one-line title, context in detail, options) and keep \
-                         only the informative part in report. If the question is already open in Alondra, do not repeat it."
-                    ),
-                );
-            }
-            crate::classify::ReportVerdict::Fine => {}
-        }
+    let from_orchestrator = hub.read(|v| resolve_caller(v, &b.caller).and_then(|(s, _)| v.nodes.get(&s)).is_some_and(|n| n.is_orchestrator));
+    let looks_like_question = gated(b.kind, from_orchestrator)
+        && crate::classify::judge_report(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
+    if looks_like_question {
+        log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
+        keep_flagged(&hub.home, &b.title, b.body.as_deref());
     }
     let stamp = now_millis();
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
@@ -1134,6 +1258,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             created_at: stamp,
             read: false,
             mission: None,
+            looks_like_question,
         }))
     });
     match res {
@@ -1141,6 +1266,9 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             let mut texts: Vec<String> = r.links.iter().map(|l| l.url.clone()).collect();
             texts.extend([r.title.clone(), r.body.clone().unwrap_or_default()]);
             note_prs(&hub, &r.session_id, &texts);
+            if looks_like_question {
+                return Json(json!({"id": r.id, "looks_like_question": true, "note": flagged_note(&hub.config.name)})).into_response();
+            }
             Json(json!({"id": r.id})).into_response()
         }
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
@@ -1197,7 +1325,17 @@ async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Resp
     }
 }
 
+fn undeliverable_to(name: &str) -> String {
+    format!(
+        "{name} is an interactive terminal session, not a background job (claude --bg): Alondra can only type into \
+         background jobs, so a message queued for it would never arrive. Write in its terminal instead."
+    )
+}
+
 async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
+    if let Some(name) = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string())) {
+        return err(StatusCode::CONFLICT, undeliverable_to(&name));
+    }
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
         Some(Event::MessageQueued(Message {
@@ -1237,11 +1375,14 @@ fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Optio
 }
 
 async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session, busy, waiting_permission)) =
-        hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission)))
-    else {
+    let Some((short, session, busy, waiting_permission, in_daemon, name)) = hub.read(|v| {
+        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string()))
+    }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
+    if !in_daemon {
+        return forget_interactive(&hub, &session, &name);
+    }
     let leftovers = crate::worktree::leftovers(&session).await;
     let reasons = close_reasons(busy, waiting_permission, leftovers);
     if !reasons.is_empty() {
@@ -1289,6 +1430,24 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
         }
     }
     err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
+}
+
+/// An interactive session is not a job `claude rm` knows, and the user may be typing in it: Alondra
+/// only stops following it and leaves the terminal alone.
+fn forget_interactive(hub: &Hub, session: &str, name: &str) -> Response {
+    let own_open: Vec<u64> = hub.read(|v| v.questions.values().filter(|q| q.session_id == session && q.status.is_open()).map(|q| q.id).collect());
+    for id in own_open {
+        if let Err(e) = hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn, note: Some("the user closed the node".into()) }) {
+            return internal(e);
+        }
+    }
+    if let Err(e) = hub.append(Event::NodeRemoved { session_id: session.to_string() }) {
+        return internal(e);
+    }
+    Json(json!({"ok": true, "interactive": true, "output": format!(
+        "{name} is an interactive session, not a background job: Alondra removed it from the fleet and left the terminal session itself open. Close it there with /exit when you are done."
+    )}))
+    .into_response()
 }
 
 /// A private index per call: two closes in the same millisecond must not share one.
@@ -1458,8 +1617,18 @@ struct LaunchBody {
     prompt: String,
     model: Option<String>,
     permission_mode: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     over_pace_ok: bool,
+}
+
+fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Bool(b) => Ok(b),
+        Value::Null => Ok(false),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("true") => Ok(true),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("false") => Ok(false),
+        other => Err(serde::de::Error::custom(format!("expected true or false, got {other}"))),
+    }
 }
 
 async fn launch(Json(b): Json<LaunchBody>) -> Response {
@@ -1518,7 +1687,7 @@ mod tests {
         assert_eq!((a.text.as_str(), a.option.as_deref()), ("Deny", Some(answer_option::DENY)));
         let out = decision(QuestionOrigin::Permission, &a);
         assert_eq!(out["hookSpecificOutput"]["decision"]["behavior"], "deny");
-        assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it: Deny");
+        assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it");
     }
 
     /// An MCP elicitation reaches the clients as an Accept / Decline card, and the answer goes back
@@ -1570,6 +1739,39 @@ mod tests {
     }
 
     #[test]
+    fn what_the_user_writes_when_turning_down_a_plan_or_a_permission_follows_as_a_message() {
+        let plan_reason = |a: &Answer| decision(QuestionOrigin::Plan, a)["hookSpecificOutput"]["permissionDecisionReason"].clone();
+        let deny_message = |a: &Answer| decision(QuestionOrigin::Permission, a)["hookSpecificOutput"]["decision"]["message"].clone();
+        let cases: [(&str, QuestionOrigin, Answer, Option<&str>, Value); 8] = [
+            ("changes with text", QuestionOrigin::Plan, answered("Use a feature flag instead", Some("Request changes")), Some("Use a feature flag instead"),
+                json!("Ana requested changes; the message follows")),
+            ("changes, no text", QuestionOrigin::Plan, answered("Request changes", Some("Request changes")), None, json!("Ana requests changes to the plan")),
+            ("free text on a plan", QuestionOrigin::Plan, answered("Split it in two PRs", None), Some("Split it in two PRs"), json!("Ana requested changes; the message follows")),
+            ("more context stays in the reason", QuestionOrigin::Plan, answered("Why?", Some(answer_option::MORE_CONTEXT)), None, json!("Why?")),
+            ("deny with a reason", QuestionOrigin::Permission, answered("Not on main, branch first", Some("Deny")), Some("Not on main, branch first"),
+                json!("Ana denied it; the message follows")),
+            ("deny, no text", QuestionOrigin::Permission, answered("Deny", Some("Deny")), None, json!("Ana denies it")),
+            ("the old Spanish deny label", QuestionOrigin::Permission, answered("Denegar", Some("Denegar")), None, json!("Ana denies it")),
+            ("allow says nothing more", QuestionOrigin::Permission, answered("Allow", Some("Allow")), None, Value::Null),
+        ];
+        for (what, origin, a, follow, reason) in cases {
+            assert_eq!(held_follow_up(origin, &a).as_deref(), follow, "{what}");
+            let said = if origin == QuestionOrigin::Plan { plan_reason(&a) } else { deny_message(&a) };
+            assert_eq!(said, reason, "{what}");
+        }
+        assert_eq!(held_follow_up(QuestionOrigin::AskUserQuestion, &answered("Blue", None)), None);
+        assert_eq!(held_follow_up(QuestionOrigin::Elicitation, &answered("ghp_1", Some("Accept"))), None);
+
+        let mut v = View::default();
+        v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), ..Default::default() }));
+        let queued = follow_up_message(&v, "s", "Use a feature flag instead");
+        v.apply(2, 2, &queued);
+        let pending: Vec<&Message> = v.pending_messages("s").collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!((pending[0].from, pending[0].text.as_str(), pending[0].answers_question), (MessageFrom::User, "Use a feature flag instead", None));
+    }
+
+    #[test]
     fn the_legacy_more_context_option_passes_the_request_through_untouched() {
         let a = answered("Explain the risk", Some("Necesito más contexto"));
         let out = decision(QuestionOrigin::Plan, &a);
@@ -1606,6 +1808,213 @@ mod tests {
             assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
         }
         assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
+    }
+
+    #[test]
+    fn a_permission_card_is_titled_by_what_the_node_says_it_does_and_shows_the_whole_command() {
+        let command = "git worktree remove --force /Users/ana/Projects/lumo/.claude/worktrees/permiso-camara; git branch -D permiso-camara";
+        let mut v = View::default();
+        v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "a1b2c3d4".into(), ..Default::default() }));
+        struct Case {
+            what: &'static str,
+            tool: &'static str,
+            input: Value,
+            title: String,
+            detail: Option<String>,
+        }
+        let long = "x".repeat(150);
+        let cases = [
+            Case { what: "the real worktree cleanup, with its description", tool: "Bash",
+                input: json!({"command": command, "description": "Remove the camera worktree and its branch"}),
+                title: "⚠️ destructivo · Bash: Remove the camera worktree and its branch".into(), detail: Some(format!("```\n{command}\n```")) },
+            Case { what: "the same command without a description", tool: "Bash", input: json!({"command": command}),
+                title: format!("⚠️ destructivo · Bash: {}…", command.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()), detail: Some(format!("```\n{command}\n```")) },
+            Case { what: "a harmless command", tool: "Bash", input: json!({"command": "ls -la", "description": "List files"}),
+                title: "Bash: List files".into(), detail: Some("```\nls -la\n```".into()) },
+            Case { what: "a file edit", tool: "Edit", input: json!({"file_path": "/tmp/a.rs", "old_string": "a", "new_string": "b"}),
+                title: "Edit: /tmp/a.rs".into(), detail: Some("/tmp/a.rs".into()) },
+            Case { what: "a long path is cut", tool: "Write", input: json!({"file_path": long}),
+                title: format!("Write: {}…", "x".repeat(PERMISSION_TITLE_CHARS)), detail: Some(long.clone()) },
+        ];
+        for c in cases {
+            let p = json!({"session_id": "s", "tool_name": c.tool, "tool_input": c.input});
+            let h = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), tool_name: Some(c.tool.into()), tool_summary: tool_summary(Some(c.tool), p.get("tool_input")), ..Default::default() };
+            let q = held_question(&v, &p, &h, QuestionOrigin::Permission);
+            assert_eq!(q.title, c.title, "{}", c.what);
+            assert_eq!(q.detail, c.detail, "{}", c.what);
+            assert_eq!(q.node_name.as_deref(), Some("a1b2c3d4"), "{}: an unnamed node goes by its short id", c.what);
+        }
+    }
+
+    #[test]
+    fn destructive_commands_are_told_apart() {
+        let cases = [
+            ("git worktree remove --force x", true),
+            ("git branch -D feature", true),
+            ("rm -rf build", true),
+            ("cd x && rm file", true),
+            ("git reset --hard origin/main", true),
+            ("git push --force-with-lease", true),
+            ("git push -f origin main", true),
+            ("git clean -fdx", true),
+            ("git push origin main", false),
+            ("git branch -d merged", false),
+            ("cargo test --release", false),
+            ("git clean -n", false),
+            ("ls -f", false),
+        ];
+        for (command, expected) in cases {
+            assert_eq!(destructive(command), expected, "{command}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_about_a_report_is_one_card_and_answering_it_reads_the_report() {
+        let hub = temp_hub("absorb");
+        hub.append(Event::MarkedOrchestrator { session_id: "orq".into() }).unwrap();
+        hub.append(Event::Hook(HookEvent { session_id: "audit".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let now = now_millis();
+        hub.append(Event::ReportPosted(Report {
+            id: 1, session_id: "audit".into(), node_name: None, title: "Auditoría: 13 cosas".into(), body: Some("Detalle adjunto".into()),
+            links: vec![], attachments: vec![], kind: ReportKind::Document, created_at: now, read: false, mission: None, looks_like_question: false,
+        })).unwrap();
+        hub.append(Event::QuestionAsked(Question {
+            id: 1, session_id: "orq".into(), node_name: None, title: "¿Lanzo un nodo que lo arregle?".into(),
+            detail: Some("La auditoría (informe #1) encontró 13 cosas".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
+            origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
+            asked_at: now + 20_000, action: false, steps: vec![], mission: None,
+        })).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["news"].as_array().unwrap().len(), 0, "the report is not a card of its own: {}", o["news"]);
+        assert_eq!(o["open_questions"][0]["report"]["title"], "Auditoría: 13 cosas");
+
+        let body = AnswerBody { text: "Sí, lánzalo".into(), option: None, by: None };
+        let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reports[&1].read), "answering the card settles the report inside it");
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["news"].as_array().unwrap().len(), 0);
+    }
+
+    fn temp_hub(tag: &str) -> Arc<Hub> {
+        hub_with(tag, false)
+    }
+
+    fn hub_with(tag: &str, sandbox: bool) -> Arc<Hub> {
+        let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
+        let env = move |k: &str| (sandbox && k == "ALONDRA_SANDBOX").then(|| "1".to_string());
+        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), env, || Some("Ana".into()));
+        Arc::new(Hub::open(config, false).unwrap())
+    }
+
+    /// test/menu-probe, 24 Sep: a probe run against the real alondrad posted reports #111 and #112
+    /// into the user's inbox.
+    #[tokio::test]
+    async fn test_nodes_reach_only_a_sandbox() {
+        for (sandbox, expected) in [(false, StatusCode::UNPROCESSABLE_ENTITY), (true, StatusCode::OK)] {
+            let hub = hub_with(if sandbox { "sandbox" } else { "real" }, sandbox);
+            for (sid, name) in [("probe", "test/menu-probe"), ("real", "lumo/permiso-camara")] {
+                hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), ..Default::default() })).unwrap();
+            }
+            let body = |sid: &str| ReportBody {
+                caller: Caller { session_id: Some(sid.into()), pids: vec![] },
+                title: "Menú leído".into(),
+                body: Some("La sonda leyó el menú".into()),
+                kind: Some(ReportKind::Final),
+                links: vec![],
+                attachments: vec![],
+            };
+            let (status, said) = status_and_body(report(State(hub.clone()), Json(body("probe"))).await).await;
+            assert_eq!(status, expected, "sandbox {sandbox}: {said}");
+            if !sandbox {
+                assert!(said["error"].as_str().unwrap().contains("make e2e-sandbox"), "{said}");
+            }
+            assert_eq!(status_and_body(report(State(hub.clone()), Json(body("real"))).await).await.0, StatusCode::OK, "sandbox {sandbox}: ordinary nodes still report");
+        }
+        assert!(probe_refused(Some("test/x"), false).is_some());
+        assert!(probe_refused(Some("hive/test/x"), false).is_none());
+        assert!(probe_refused(None, false).is_none());
+    }
+
+    async fn status_and_body(r: Response) -> (StatusCode, Value) {
+        let status = r.status();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// lumo/permiso-camara and hive/servidor-colmena, 24 Sep: close ran `claude rm` on sessions
+    /// that were never background jobs and failed with "No job matching".
+    #[tokio::test]
+    async fn closing_an_interactive_session_forgets_it_without_claude_rm() {
+        let hub = temp_hub("close");
+        hub.append(Event::Hook(HookEvent { session_id: "1234abcd-interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::QuestionAsked(Question {
+            id: 1, session_id: "1234abcd-interactive".into(), node_name: None, title: "t".into(), detail: None, options: vec![], links: vec![],
+            attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
+            status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
+        })).unwrap();
+        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into())).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["interactive"], true);
+        assert!(body["output"].as_str().unwrap().contains("left the terminal session itself open"), "{body}");
+        assert!(hub.read(|v| !v.nodes.contains_key("1234abcd-interactive")));
+        assert!(hub.read(|v| !v.questions[&1].status.is_open()));
+    }
+
+    #[tokio::test]
+    async fn a_message_for_an_interactive_session_is_refused_instead_of_left_queued() {
+        let hub = temp_hub("send");
+        hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
+        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None }));
+        let (status, body) = status_and_body(send("interactive").await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("interactive terminal session"), "{body}");
+        assert_eq!(status_and_body(send("job").await).await.0, StatusCode::OK);
+        assert_eq!(status_and_body(send("nobody").await).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(hub.read(|v| v.messages.len()), 1);
+    }
+
+    /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
+    #[test]
+    fn final_reports_and_the_orchestrator_skip_the_report_gate() {
+        let cases = [
+            ("BlurCamera: tachado de texto delicado en main y probado; nodo listo para cerrar, fase 2 pasada al orquestador", Some(ReportKind::Final), false, false),
+            ("Terminado: no queda nada pendiente mío; tus mensajes del iPhone llegaron, pero tarde", Some(ReportKind::Final), false, false),
+            ("Quill no ha recibido tu petición de cambios del PR #88: Alondra cree que tiene un menú abierto y no lo tiene. Arreglo en el PR #33", Some(ReportKind::Notice), false, true),
+            ("Las respuestas de Quill no están verificadas todavía", Some(ReportKind::Notice), true, false),
+            ("Sigo con la fase 3", Some(ReportKind::Progress), false, false),
+            ("Un aviso sin tipo", None, false, true),
+        ];
+        for (what, kind, orchestrator, expected) in cases {
+            assert_eq!(gated(kind, orchestrator), expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn reports_stored_before_the_flag_replay_unflagged() {
+        let old = r#"{"id":1,"session_id":"s","node_name":null,"title":"t","kind":"notice","created_at":1,"read":false}"#;
+        assert!(!serde_json::from_str::<Report>(old).unwrap().looks_like_question);
+        let flagged = Report { looks_like_question: true, ..serde_json::from_str::<Report>(old).unwrap() };
+        let back: Report = serde_json::from_str(&serde_json::to_string(&flagged).unwrap()).unwrap();
+        assert!(back.looks_like_question);
+    }
+
+    #[test]
+    fn over_pace_ok_is_taken_as_a_bool_or_as_the_string_an_mcp_client_sends() {
+        let body = |extra: &str| serde_json::from_str::<LaunchBody>(&format!(r#"{{"name":"n","cwd":"/tmp","prompt":"p"{extra}}}"#)).map(|b| b.over_pace_ok);
+        let cases = [
+            ("absent", "", Some(false)),
+            ("bool true", r#","over_pace_ok":true"#, Some(true)),
+            ("bool false", r#","over_pace_ok":false"#, Some(false)),
+            ("string true", r#","over_pace_ok":"true""#, Some(true)),
+            ("string False", r#","over_pace_ok":"False""#, Some(false)),
+            ("null", r#","over_pace_ok":null"#, Some(false)),
+            ("anything else", r#","over_pace_ok":"yes please""#, None),
+        ];
+        for (what, extra, expected) in cases {
+            assert_eq!(body(extra).ok(), expected, "{what}");
+        }
     }
 
     #[test]

@@ -1640,6 +1640,16 @@
           }
         }
       }
+    },
+    "About report #%llu": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sobre el informe #%llu"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

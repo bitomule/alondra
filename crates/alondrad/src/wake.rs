@@ -70,10 +70,10 @@ pub async fn run(hub: Arc<Hub>) {
                             let _ = hub.append(Event::QuestionDelivered { id: q });
                         }
                     }
-                    eprintln!("alondrad: message delivered to {short} through its terminal");
+                    log!("message delivered to {short} through its terminal");
                 }
-                Ok(Err(e)) => eprintln!("alondrad: could not deliver to {short}: {e}"),
-                Err(e) => eprintln!("alondrad: delivery task broken for {short}: {e}"),
+                Ok(Err(e)) => log!("could not deliver to {short}: {e}"),
+                Err(e) => log!("delivery task broken for {short}: {e}"),
             }
         }
     }

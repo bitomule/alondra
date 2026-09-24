@@ -61,7 +61,7 @@ impl Push {
             Err(_) => None,
         };
         if apns.is_none() {
-            eprintln!("alondrad: no ~/.alondra/apns.json, notifications are not sent");
+            log!("no ~/.alondra/apns.json, notifications are not sent");
         }
         Ok(Push { path, registrations: Mutex::new(registrations), apns })
     }
@@ -110,11 +110,11 @@ impl Push {
             match apns.send(&reg.token, &reg.environment, &body, priority).await {
                 Ok((200, _)) => {}
                 Ok((410, _)) | Ok((400, _)) => {
-                    eprintln!("alondrad: APNs rejects a token, forgetting it");
+                    log!("APNs rejects a token, forgetting it");
                     self.forget_token(&reg.token);
                 }
-                Ok((status, text)) => eprintln!("alondrad: APNs {status}: {text}"),
-                Err(e) => eprintln!("alondrad: APNs does not respond: {e}"),
+                Ok((status, text)) => log!("APNs {status}: {text}"),
+                Err(e) => log!("APNs does not respond: {e}"),
             }
         }
     }
