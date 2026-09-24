@@ -267,6 +267,15 @@ impl Client {
         Self::check(resp)
     }
 
+    /// The raw body, for files that may not be text (images, PDFs).
+    pub fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let mut resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        if resp.status().as_u16() >= 400 {
+            return Self::check(resp).map(|(_, body)| body.into_bytes());
+        }
+        Ok(resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec()?)
+    }
+
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let (_, body) = self.get_text(path)?;
         Ok(serde_json::from_str(&body)?)

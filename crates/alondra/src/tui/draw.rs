@@ -467,9 +467,27 @@ fn carried_report(r: &Report, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
+/// Where an image goes in the detail text: the first of the blank rows kept for it, how many,
+/// and the stored path it was loaded from.
+struct ImageSlot {
+    line: usize,
+    rows: usize,
+    path: String,
+}
+
+const IMAGE_MAX_ROWS: usize = 20;
+
+/// Rows an image takes at `width` columns, keeping its proportions (a cell is about twice as
+/// tall as it is wide).
+fn image_rows(img: &image::DynamicImage, width: usize) -> usize {
+    let rows = (width as f64 * img.height() as f64 / img.width().max(1) as f64 / 2.0).ceil() as usize;
+    rows.clamp(4, IMAGE_MAX_ROWS)
+}
+
+fn detail(app: &App, item: &Item, width: usize) -> (Vec<Line<'static>>, Vec<ImageSlot>) {
     let (glyph, kind, color) = item_glyph(item);
     let mut lines = vec![];
+    let mut slots = vec![];
     let (no_files, no_links) = (vec![], vec![]);
     let (title, node, at, body, attachments, links) = match item {
         Item::Q(q) => (&q.title, who(&q.node_name, &q.session_id), q.asked_at, &q.detail, &q.attachments, &q.links),
@@ -538,12 +556,20 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     for a in attachments {
         lines.push(Line::default());
         lines.push(md::render(&[md::Block::label(&format!("📎 {}", a.name))], width).lines.remove(0));
-        match a.stored_path.as_ref().and_then(|p| app.files.get(p)) {
-            Some(Ok(text)) => {
+        match a.stored_path.as_ref().and_then(|p| app.files.get(p).map(|f| (p, f))) {
+            Some((_, Ok(super::files::FileBody::Text(text)))) => {
                 lines.push(Line::default());
                 lines.extend(md::render(&md::parse(text), width).lines);
             }
-            Some(Err(e)) => lines.push(Line::from(trf!("Could not load it: {e}", "No he podido cargarlo: {e}").fg(Color::LightRed))),
+            Some((path, Ok(body @ super::files::FileBody::Image(img)))) => {
+                lines.push(Line::from(super::files::not_text(body).fg(DIM)));
+                lines.push(Line::default());
+                let rows = image_rows(img, width);
+                slots.push(ImageSlot { line: lines.len(), rows, path: path.clone() });
+                lines.extend(std::iter::repeat_n(Line::default(), rows));
+            }
+            Some((_, Ok(body))) => lines.push(Line::from(super::files::not_text(body).fg(DIM))),
+            Some((_, Err(e))) => lines.push(Line::from(trf!("Could not load it: {e}", "No he podido cargarlo: {e}").fg(Color::LightRed))),
             None if a.stored_path.is_some() => lines.push(Line::from(tr!("Loading…", "Cargando…").fg(DIM))),
             None => {
                 let src = &a.source_path;
@@ -588,7 +614,7 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             lines.extend(wrap(vec![Span::styled(l.to_string(), Style::new().fg(DIM))], width, vec![], vec![]));
         }
     }
-    lines
+    (lines, slots)
 }
 
 const MISSION_MAX: usize = 240;
@@ -733,7 +759,7 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let actions = action_lines(app, &item, width);
     let ah = (actions.len() as u16 + 1).min(inner.height / 2);
     let [content, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Length(ah)]).areas(inner);
-    let lines = detail_lines(app, &item, width);
+    let (lines, slots) = detail(app, &item, width);
     let total = lines.len();
     let h = content.height as usize;
     app.detail_scroll = app.detail_scroll.min(total.saturating_sub(h));
@@ -744,6 +770,13 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     let text_area = Rect { x: content.x + 1, width: content.width.saturating_sub(2), ..content };
     f.render_widget(Paragraph::new(lines).scroll((app.detail_scroll as u16, 0)), text_area);
+    for slot in slots {
+        let Some(top) = slot.line.checked_sub(app.detail_scroll).filter(|top| top + slot.rows <= h) else { continue };
+        if let Some(state) = app.images.get_mut(&slot.path) {
+            let at = Rect { y: text_area.y + top as u16, height: slot.rows as u16, ..text_area };
+            f.render_stateful_widget(ratatui_image::StatefulImage::default(), at, state);
+        }
+    }
     scrollbar(f, content, total, app.detail_scroll);
     let mut bottom_lines = vec![Line::styled("─".repeat(inner.width as usize), Style::new().fg(DIM))];
     bottom_lines.extend(actions.into_iter().map(|l| {
@@ -1529,6 +1562,29 @@ mod tests {
         plain.reconcile();
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
         assert!(!screen(&mut plain, 120, 30).contains("Abrir en el navegador"));
+    }
+
+    /// 24 Sep: a report with a PNG attached showed the file's bytes as text ("?PNG IHDR?…").
+    #[test]
+    fn an_attached_image_is_drawn_and_a_binary_file_is_named_never_dumped() {
+        use super::super::{Msg, files};
+        let attach = |name: &str, path: &str| alondra_core::model::Attachment { name: name.into(), source_path: format!("/tmp/{name}"), stored_path: Some(path.into()), bytes: None };
+        let mut r = report(1);
+        r.attachments = vec![attach("ios-inbox.png", "/files/1.png"), attach("plan.pdf", "/files/2.pdf")];
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.news = vec![r.into()];
+        app.reconcile();
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        app.on_msg(Msg::File { path: "/files/1.png".into(), result: Ok(files::FileBody::classify(files::png(40, 30))) });
+        app.on_msg(Msg::File { path: "/files/2.pdf".into(), result: Ok(files::FileBody::classify(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3 binary".to_vec())) });
+        let s = screen(&mut app, 120, 50);
+        assert!(s.contains("Imagen 40×30 · v la abre en Vista Previa"), "{s}");
+        assert!(s.contains("Fichero binario, 21 B · v lo abre con su aplicación"), "{s}");
+        assert!(!s.contains("PDF-1.7") && !s.contains("PNG"), "no bytes as text: {s}");
+        assert!(s.contains('▀') || s.contains('▄'), "the image is drawn (half-blocks in tests): {s}");
+        press(&mut app, "v");
+        assert_eq!(app.flash.as_ref().map(|f| f.text.as_str()), Some("Abierto con su aplicación"));
     }
 
     #[test]
