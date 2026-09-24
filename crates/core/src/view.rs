@@ -582,7 +582,11 @@ impl View {
         node.daemon_updated_at = d.updated_at;
         node.daemon_state = d.state.clone();
         node.daemon_tempo = d.tempo.clone();
-        node.daemon_tasks = d.tasks.unwrap_or(0);
+        let tasks = d.tasks.unwrap_or(0);
+        if tasks != node.daemon_tasks || node.daemon_tasks_since.is_none() {
+            node.daemon_tasks_since = Some(at);
+        }
+        node.daemon_tasks = tasks;
         node.background = if node.daemon_tasks == 0 { vec![] } else { d.background.clone() };
         node.daemon_seen_at = Some(at);
         if d.intent.is_some() {

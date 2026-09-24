@@ -241,6 +241,10 @@ pub struct Node {
     pub daemon_seen_at: Option<Millis>,
     #[serde(default)]
     pub daemon_tasks: u32,
+    /// When `daemon_tasks` last changed. A count the daemon keeps reporting with no task listed
+    /// ages from here, not from the last poll.
+    #[serde(default)]
+    pub daemon_tasks_since: Option<Millis>,
     #[serde(default)]
     pub background: Vec<BackgroundItem>,
     #[serde(default)]
@@ -309,6 +313,7 @@ impl Node {
             daemon_tempo: None,
             daemon_seen_at: None,
             daemon_tasks: 0,
+            daemon_tasks_since: None,
             background: vec![],
             usage_limited_at: None,
             signal_at: None,
