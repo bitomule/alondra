@@ -178,9 +178,10 @@ pub struct Node {
     pub name: Option<String>,
     pub cwd: Option<String>,
     pub pid: Option<i32>,
-    /// Internal: whether the daemon can attach a session right now. Not a node state — never
-    /// render this to a client; it stays off the wire on purpose.
-    #[serde(default, skip_serializing)]
+    /// Internal: whether the daemon can attach a session right now. Not a node state: alondrad
+    /// strips it from what clients receive (`http::client_node`), but the store keeps it, so a
+    /// restart does not lose which nodes are alive.
+    #[serde(default)]
     pub alive: bool,
     #[serde(default)]
     pub in_daemon: bool,
