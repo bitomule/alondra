@@ -183,6 +183,11 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     {
         note_prs(&hub, &session_id, &[p.get("tool_response").map(Value::to_string).unwrap_or_default()]);
     }
+    if event == "Stop"
+        && let Some(r) = hand_over_at_turn_end(&hub, &session_id)
+    {
+        return r;
+    }
     if event == "Stop" {
         let user = hub.config.name.clone();
         let moved = hub.append_with(|v| v.nodes.get(&session_id).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued));
@@ -215,6 +220,24 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         ("Elicitation", _) => hold(hub, p, h, QuestionOrigin::Elicitation).await,
         _ => Json(json!({})).into_response(),
     }
+}
+
+/// An interactive session gets what was queued for it when its turn ends: the Stop hook's
+/// `additionalContext` keeps the turn going with the messages (code.claude.com/docs/en/hooks,
+/// "Stop decision control"). Background jobs get theirs typed in by `wake`.
+fn hand_over_at_turn_end(hub: &Hub, session_id: &str) -> Option<Response> {
+    let (ids, text) = hub.read(|v| v.turn_end_delivery(session_id, &hub.config.name))?;
+    for (id, question) in ids {
+        if let Err(e) = hub.append(Event::MessageHanded { id }) {
+            log!("could not hand a message to {session_id}: {e}");
+            return None;
+        }
+        if let Some(q) = question {
+            let _ = hub.append(Event::QuestionDelivered { id: q });
+        }
+    }
+    log!("message handed to interactive session {session_id} at the end of its turn");
+    Some(Json(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})).into_response())
 }
 
 struct HoldGuard {
@@ -297,12 +320,42 @@ const PERMISSION_TITLE_CHARS: usize = 100;
 const DESTRUCTIVE: &str = "⚠️ destructivo";
 
 fn destructive(command: &str) -> bool {
-    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
-    let has = |w: &str| words.contains(&w);
-    let short_flag_with = |f: char| words.iter().any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains(f));
-    words.iter().any(|w| w.starts_with("--force") || *w == "-D" || *w == "rm" || *w == "--hard")
-        || (has("push") && short_flag_with('f'))
-        || (has("clean") && short_flag_with('f'))
+    !risks(command).is_empty()
+}
+
+/// What each risky part of a command does, in plain words, one line per risk, checked segment by
+/// segment so `cd x && rm y` is read as two commands.
+fn risks(command: &str) -> Vec<&'static str> {
+    let mut found = vec![];
+    for segment in command.split(|c: char| matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '\n')) {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        let has = |w: &str| words.contains(&w);
+        let force = words.iter().any(|w| w.starts_with("--force"));
+        let short_flag_with = |f: char| words.iter().any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains(f));
+        let risk = if has("push") && (force || short_flag_with('f')) {
+            Some("`push --force`: reescribe la rama remota; puede borrar commits que no tienes en local")
+        } else if has("worktree") && has("remove") && force {
+            Some("`worktree remove --force`: borra el worktree aunque tenga cambios sin commit")
+        } else if has("branch") && has("-D") {
+            Some("`branch -D`: borra la rama aunque no esté mergeada; sus commits sin push se pierden")
+        } else if has("reset") && has("--hard") {
+            Some("`reset --hard`: descarta todos los cambios sin commit")
+        } else if has("clean") && short_flag_with('f') {
+            Some("`clean -f`: borra los ficheros que git no sigue")
+        } else if has("rm") && !has("git") {
+            Some("`rm`: borra ficheros sin pasar por la papelera")
+        } else if force {
+            Some("`--force`: se salta las comprobaciones de seguridad del comando")
+        } else if has("-D") || has("--hard") {
+            Some("`-D` / `--hard`: variante forzada del comando, sin comprobaciones")
+        } else {
+            None
+        };
+        if let Some(r) = risk.filter(|r| !found.contains(r)) {
+            found.push(r);
+        }
+    }
+    found
 }
 
 fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
@@ -321,7 +374,12 @@ fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) ->
 
 fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
     if let Some(command) = str_field(input, "command") {
-        return Some(format!("```\n{command}\n```"));
+        let risks = risks(&command);
+        if risks.is_empty() {
+            return Some(format!("```\n{command}\n```"));
+        }
+        let lines = risks.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n");
+        return Some(format!("{lines}\n\n```\n{command}\n```"));
     }
     summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
 }
@@ -796,7 +854,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .map(|n| {
                 let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
                 value["project"] = Value::String(n.project());
-                value["undeliverable_messages"] = json!(v.undeliverable(&n.session_id));
+                value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
                 value
             })
             .collect();
@@ -834,9 +892,9 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        Some((n, questions, reports, messages, v.undeliverable(&sid)))
+        Some((n, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
-    let Some((node, questions, reports, messages, undeliverable)) = found else {
+    let Some((node, questions, reports, messages, held)) = found else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
@@ -845,7 +903,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
         .collect();
-    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "undeliverable_messages": undeliverable, "timeline": timeline})).into_response()
+    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1314,17 +1372,16 @@ async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Resp
     }
 }
 
-fn undeliverable_to(name: &str) -> String {
+fn held_for_turn_end_note(name: &str) -> String {
     format!(
-        "{name} is an interactive terminal session, not a background job (claude --bg): Alondra can only type into \
-         background jobs, so a message queued for it would never arrive. Write in its terminal instead."
+        "{name} is an interactive terminal session, not a background job: Alondra cannot type into it, so the message \
+         reaches it when its current turn ends. If it is sitting idle at its prompt, it arrives after the next thing \
+         typed in its terminal."
     )
 }
 
 async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
-    if let Some(name) = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string())) {
-        return err(StatusCode::CONFLICT, undeliverable_to(&name));
-    }
+    let interactive = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string()));
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
         Some(Event::MessageQueued(Message {
@@ -1339,7 +1396,10 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
         }))
     });
     match res {
-        Ok(Some((_, Event::MessageQueued(m)))) => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
+        Ok(Some((_, Event::MessageQueued(m)))) => match interactive {
+            Some(name) => Json(json!({"id": m.id, "session_id": m.session_id, "interactive": true, "note": held_for_turn_end_note(&name)})).into_response(),
+            None => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
+        },
         Ok(_) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
         Err(e) => internal(e),
     }
@@ -1802,6 +1862,8 @@ mod tests {
     #[test]
     fn a_permission_card_is_titled_by_what_the_node_says_it_does_and_shows_the_whole_command() {
         let command = "git worktree remove --force /Users/ana/Projects/lumo/.claude/worktrees/permiso-camara; git branch -D permiso-camara";
+        let explained = "- `worktree remove --force`: borra el worktree aunque tenga cambios sin commit\n\
+                         - `branch -D`: borra la rama aunque no esté mergeada; sus commits sin push se pierden";
         let mut v = View::default();
         v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "a1b2c3d4".into(), ..Default::default() }));
         struct Case {
@@ -1815,9 +1877,9 @@ mod tests {
         let cases = [
             Case { what: "the real worktree cleanup, with its description", tool: "Bash",
                 input: json!({"command": command, "description": "Remove the camera worktree and its branch"}),
-                title: "⚠️ destructivo · Bash: Remove the camera worktree and its branch".into(), detail: Some(format!("```\n{command}\n```")) },
+                title: "⚠️ destructivo · Bash: Remove the camera worktree and its branch".into(), detail: Some(format!("{explained}\n\n```\n{command}\n```")) },
             Case { what: "the same command without a description", tool: "Bash", input: json!({"command": command}),
-                title: format!("⚠️ destructivo · Bash: {}…", command.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()), detail: Some(format!("```\n{command}\n```")) },
+                title: format!("⚠️ destructivo · Bash: {}…", command.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()), detail: Some(format!("{explained}\n\n```\n{command}\n```")) },
             Case { what: "a harmless command", tool: "Bash", input: json!({"command": "ls -la", "description": "List files"}),
                 title: "Bash: List files".into(), detail: Some("```\nls -la\n```".into()) },
             Case { what: "a file edit", tool: "Edit", input: json!({"file_path": "/tmp/a.rs", "old_string": "a", "new_string": "b"}),
@@ -1855,6 +1917,26 @@ mod tests {
         for (command, expected) in cases {
             assert_eq!(destructive(command), expected, "{command}");
         }
+    }
+
+    #[test]
+    fn each_risky_flag_is_explained_in_plain_words() {
+        let cases: [(&str, &[&str]); 9] = [
+            ("git push --force-with-lease origin x", &["`push --force`"]),
+            ("git push -f", &["`push --force`"]),
+            ("git worktree remove --force wt; git branch -D wt", &["`worktree remove --force`", "`branch -D`"]),
+            ("git reset --hard origin/main", &["`reset --hard`"]),
+            ("git clean -fdx", &["`clean -f`"]),
+            ("cd build && rm -rf out", &["`rm`"]),
+            ("brew upgrade --force node", &["`--force`"]),
+            ("git rm old.txt", &[]),
+            ("git branch -d merged && git push origin main", &[]),
+        ];
+        for (command, expected) in cases {
+            let said: Vec<&str> = risks(command).iter().map(|r| r.split(':').next().unwrap()).collect();
+            assert_eq!(said, expected, "{command}");
+        }
+        assert_eq!(risks("rm a; rm b").len(), 1, "one line per kind of risk");
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {
@@ -1923,17 +2005,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_message_for_an_interactive_session_is_refused_instead_of_left_queued() {
+    /// lumo/permiso-camara and hive/servidor-colmena, 24 Sep: messages for interactive sessions sat
+    /// in the queue forever, because `wake` only types into background jobs.
+    async fn a_message_for_an_interactive_session_arrives_when_its_turn_ends() {
         let hub = temp_hub("send");
         hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
         let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None }));
         let (status, body) = status_and_body(send("interactive").await).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"].as_str().unwrap().contains("interactive terminal session"), "{body}");
-        assert_eq!(status_and_body(send("job").await).await.0, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["interactive"], true);
+        assert!(body["note"].as_str().unwrap().contains("when its current turn ends"), "{body}");
+        let (status, body) = status_and_body(send("job").await).await;
+        assert_eq!((status, body.get("interactive")), (StatusCode::OK, None));
         assert_eq!(status_and_body(send("nobody").await).await.0, StatusCode::NOT_FOUND);
-        assert_eq!(hub.read(|v| v.messages.len()), 1);
+
+        let stop = |sid: &str| hook(State(hub.clone()), Json(json!({"hook_event_name": "Stop", "session_id": sid})));
+        let (_, said) = status_and_body(stop("interactive").await).await;
+        let context = said["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string();
+        assert_eq!(said["hookSpecificOutput"]["hookEventName"], "Stop", "{said}");
+        assert!(context.contains("From Ana:\ngo on"), "{said}");
+        assert_eq!(hub.read(|v| v.held_for_turn_end("interactive")), 0);
+        let (_, again) = status_and_body(stop("interactive").await).await;
+        assert!(again.get("hookSpecificOutput").is_none(), "handed once, not on every stop: {again}");
+        let (_, job) = status_and_body(stop("job").await).await;
+        assert!(job.get("hookSpecificOutput").is_none(), "wake types into background jobs: {job}");
+        assert_eq!(hub.read(|v| v.pending_messages("job").count()), 1);
     }
 
     /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
