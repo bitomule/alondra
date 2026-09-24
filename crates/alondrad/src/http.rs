@@ -112,6 +112,13 @@ fn flagged_note(user: &str) -> String {
     )
 }
 
+fn shown_in_pr_note(number: u64, user: &str) -> String {
+    format!(
+        "Shown inside the card of PR #{number}, not as a card of its own: {user} reads it there when they review the PR. \
+         Do not report the PR again."
+    )
+}
+
 pub const USER_KEY_FILE: &str = "tui-key.pem";
 const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
 
@@ -845,9 +852,16 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
-        let absorbed = v.absorbed_reports();
-        let news: Vec<&Report> =
-            v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id)).collect();
+        let news: Vec<Value> = v
+            .inbox_reports()
+            .map(|r| {
+                let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
+                if let Some(pr) = v.report_pr(r) {
+                    value["pr_id"] = json!(pr);
+                }
+                value
+            })
+            .collect();
         let orchestrator_messages: Vec<&Message> = v
             .nodes
             .values()
@@ -1302,6 +1316,11 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     }
     let stamp = now_millis();
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
+    if let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) {
+        let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
+        texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
+        note_prs(&hub, &sid, &texts);
+    }
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         Some(Event::ReportPosted(Report {
@@ -1321,13 +1340,16 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     });
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => {
-            let mut texts: Vec<String> = r.links.iter().map(|l| l.url.clone()).collect();
-            texts.extend([r.title.clone(), r.body.clone().unwrap_or_default()]);
-            note_prs(&hub, &r.session_id, &texts);
+            let card = hub.read(|v| v.report_pr(&r).and_then(|id| v.prs.get(&id)).map(|p| (p.id, p.number)));
+            let mut body = json!({"id": r.id});
             if looks_like_question {
-                return Json(json!({"id": r.id, "looks_like_question": true, "note": flagged_note(&hub.config.name)})).into_response();
+                body["looks_like_question"] = json!(true);
+                body["note"] = json!(flagged_note(&hub.config.name));
+            } else if let Some((id, number)) = card {
+                body["shown_in_pr"] = json!(id);
+                body["note"] = json!(shown_in_pr_note(number, &hub.config.name));
             }
-            Json(json!({"id": r.id})).into_response()
+            Json(body).into_response()
         }
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
         Err(e) => internal(e),
@@ -1976,6 +1998,33 @@ mod tests {
         assert!(hub.read(|v| v.reports[&1].read), "answering the card settles the report inside it");
         let Json(o) = overview(State(hub.clone())).await;
         assert_eq!(o["news"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_report_about_a_pr_goes_inside_its_card_and_the_node_is_told() {
+        let cases: [(&str, Vec<Link>, Option<u64>); 3] = [
+            ("links the PR", vec![Link { url: "https://github.com/a/b/pull/24".into(), title: None }], Some(1)),
+            ("links a page of the PR", vec![Link { url: "https://github.com/a/b/pull/24/checks".into(), title: None }], Some(1)),
+            ("links nothing", vec![], None),
+        ];
+        for (what, links, card) in cases {
+            let hub = temp_hub("report-pr");
+            hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            let body = ReportBody {
+                caller: Caller { session_id: Some("s".into()), pids: vec![] },
+                title: "Listo".into(),
+                body: Some("Hecho y probado".into()),
+                kind: Some(ReportKind::Final),
+                links,
+                attachments: vec![],
+            };
+            let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+            assert_eq!(status, StatusCode::OK, "{what}: {said}");
+            assert_eq!(said["shown_in_pr"].as_u64(), card, "{what}: {said}");
+            assert_eq!(said["note"].as_str().is_some_and(|n| n.contains("PR #24")), card.is_some(), "{what}: {said}");
+            let Json(o) = overview(State(hub.clone())).await;
+            assert_eq!(o["news"][0]["pr_id"].as_u64(), card, "{what}: {}", o["news"]);
+        }
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {

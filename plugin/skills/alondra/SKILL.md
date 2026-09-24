@@ -32,9 +32,11 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   the question (`informe #N`), or attach the same file or link the same URL: Alondra shows the
   report inside the question as one card, as long as it is unread and at most 30 minutes old.
 - **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
-- **You opened a PR** → put its URL in your `report` or `links`: Alondra gives it its own card,
-  where the user merges, requests changes or sets it aside, and counts you as waiting for the
-  user until they do. Do not `ask` whether to merge it. A question about something else in that
+- **You opened a PR** → Alondra sees `gh pr create` and gives it its own card, where the user
+  merges, requests changes or sets it aside, and counts you as waiting for the user until they do.
+  Do not send a report just to say the PR is ready, and do not `ask` whether to merge it. When
+  you are done, your `report` with `kind: "final"` links the PR in `links`: it is shown inside
+  the PR's card, not as a card of its own. A question about something else in that
   PR goes with the PR in `links`, and it is shown inside the PR's card.
 - **A question of yours no longer needs an answer** (settled in the terminal, the PR it was
   about got merged, you moved on) → `withdraw` it with its number, so its card does not stay.

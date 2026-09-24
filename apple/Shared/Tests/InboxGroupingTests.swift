@@ -14,6 +14,11 @@ import Testing
         return try decode(#"{"id":\#(id),"session_id":"s1","title":"Q\#(id)","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","asked_at":\#(id)\#(link)}"#)
     }
 
+    private static func report(_ id: UInt64, pr: UInt64?) throws -> Report {
+        let link = pr.map { #","pr_id":\#($0)"# } ?? ""
+        return try decode(#"{"id":\#(id),"session_id":"s1","title":"R\#(id)","links":[],"attachments":[],"kind":"notice","created_at":\#(id)\#(link)}"#)
+    }
+
     private static func pullRequest(_ id: UInt64) throws -> PullRequest {
         try decode(#"{"id":\#(id),"url":"https://github.com/a/b/pull/\#(id)","repo":"a/b","number":\#(id),"session_id":"s1","title":"PR","state":"open","opened_at":1}"#)
     }
@@ -37,6 +42,20 @@ import Testing
         #expect(grouping.byPullRequest.values.flatMap(\.self).map(\.id) == (c.inInbox ? [] : [1]))
         if !c.inInbox, let pr = c.prId {
             #expect(grouping.byPullRequest[pr]?.map(\.id) == [1])
+        }
+    }
+
+    @Test(arguments: [
+        Case(name: "a report about a waiting PR goes inside its card", prId: 4, cards: [4], inInbox: false),
+        Case(name: "a report whose card is gone is a card of its own", prId: 4, cards: [7], inInbox: true),
+        Case(name: "a report with no PR is a card of its own", prId: nil, cards: [4], inInbox: true),
+    ])
+    func reportsGoInsideTheirWaitingPullRequest(_ c: Case) throws {
+        let grouping = InboxGrouping(questions: [], reports: [try Self.report(1, pr: c.prId)], pullRequests: try c.cards.map(Self.pullRequest))
+        #expect(grouping.looseReports.map(\.id) == (c.inInbox ? [1] : []))
+        #expect(grouping.reportsByPullRequest.values.flatMap(\.self).map(\.id) == (c.inInbox ? [] : [1]))
+        if !c.inInbox, let pr = c.prId {
+            #expect(grouping.reportsByPullRequest[pr]?.map(\.id) == [1])
         }
     }
 }

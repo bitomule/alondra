@@ -73,7 +73,7 @@ public final class FleetStore {
 
     private var ordered: [InboxItem] {
         guard let overview else { return [] }
-        let items = grouping.loose.map(InboxItem.question) + (overview.prs ?? []).map(InboxItem.pullRequest) + overview.news.map(InboxItem.report)
+        let items = grouping.loose.map(InboxItem.question) + (overview.prs ?? []).map(InboxItem.pullRequest) + grouping.looseReports.map(InboxItem.report)
         return InboxRing.ordered(items.filter { !hidden.contains($0.id) })
     }
 
@@ -98,6 +98,11 @@ public final class FleetStore {
         (grouping.byPullRequest[id] ?? []).filter { !hidden.contains("q\($0.id)") }.sorted { $0.askedAt < $1.askedAt }
     }
 
+    /// The unread reports shown inside a PR card, oldest first.
+    public func reports(forPullRequest id: UInt64) -> [Report] {
+        (grouping.reportsByPullRequest[id] ?? []).filter { !hidden.contains("r\($0.id)") }.sorted { $0.createdAt < $1.createdAt }
+    }
+
     public func questions(for item: InboxItem) -> [Question] {
         guard case .pullRequest(let pr) = item else { return [] }
         return questions(forPullRequest: pr.id)
@@ -112,9 +117,9 @@ public final class FleetStore {
     }
 
     private func rebuild() {
-        grouping = InboxGrouping(questions: questions, pullRequests: overview?.prs ?? [])
+        grouping = InboxGrouping(questions: questions, reports: news, pullRequests: overview?.prs ?? [])
         let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
-        let reports = news.map(InboxItem.report).sorted { $0.date > $1.date }
+        let reports = grouping.looseReports.map(InboxItem.report).sorted { $0.date > $1.date }
         let prs = (overview?.prs ?? []).map(InboxItem.pullRequest).sorted { $0.date > $1.date }
         let visible = (questions + prs + reports).filter { !hidden.contains($0.id) }
         inbox = visible
