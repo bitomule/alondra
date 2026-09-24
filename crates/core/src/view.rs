@@ -32,6 +32,26 @@ pub struct View {
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
 
+/// How long after a report a question can still take it in (see `View::question_report`).
+pub const REPORT_ABSORB_WINDOW: Millis = 30 * 60 * 1000;
+
+fn cites_report(lowercase_text: &str, id: u64) -> bool {
+    ["informe #", "report #", "reporte #"].iter().any(|lead| {
+        let needle = format!("{lead}{id}");
+        lowercase_text.match_indices(&needle).any(|(at, m)| {
+            !lowercase_text[at + m.len()..].starts_with(|c: char| c.is_ascii_digit())
+        })
+    })
+}
+
+fn shares_a_link(q: &Question, r: &Report) -> bool {
+    q.links.iter().any(|l| r.links.iter().any(|rl| rl.url == l.url))
+}
+
+fn shares_an_attachment(q: &Question, r: &Report) -> bool {
+    q.attachments.iter().any(|a| r.attachments.iter().any(|ra| ra.name == a.name))
+}
+
 impl View {
     /// Forgets what nobody can act on any more: anything older than the retention window except
     /// the inbox (open questions, unread reports) and nodes Alondra can still watch. A node that
@@ -535,6 +555,32 @@ impl View {
         q.links.iter().filter_map(|l| crate::pr::parse_url(&l.url)).find_map(|(repo, number)| {
             self.prs_awaiting_user().find(|p| p.repo == repo && p.number == number).map(|p| p.id)
         })
+    }
+
+    /// The unread report an open question takes in, so the two are one card. Deliberately narrow:
+    /// the report came first, at most `REPORT_ABSORB_WINDOW` before the question, from the same
+    /// node or relayed by the orchestrator, and the question says it is about that report: it
+    /// cites it by number ("informe #N" / "report #N"), or links a URL or attaches a file of the
+    /// same name as the report. Anything less and both stay separate cards.
+    pub fn question_report(&self, q: &Question) -> Option<u64> {
+        if !q.status.is_open() {
+            return None;
+        }
+        let from_orchestrator = self.nodes.get(&q.session_id).is_some_and(|n| n.is_orchestrator);
+        let text = format!("{}\n{}", q.title, q.detail.as_deref().unwrap_or("")).to_lowercase();
+        self.reports
+            .values()
+            .rev()
+            .filter(|r| !r.read && r.kind != ReportKind::Progress)
+            .filter(|r| r.created_at <= q.asked_at && q.asked_at - r.created_at <= REPORT_ABSORB_WINDOW)
+            .filter(|r| r.session_id == q.session_id || from_orchestrator)
+            .find(|r| cites_report(&text, r.id) || shares_a_link(q, r) || shares_an_attachment(q, r))
+            .map(|r| r.id)
+    }
+
+    /// Reports some open question has taken in: they leave the inbox while it is open.
+    pub fn absorbed_reports(&self) -> std::collections::HashSet<u64> {
+        self.open_questions().filter_map(|q| self.question_report(q)).collect()
     }
 
     pub fn open_questions(&self) -> impl Iterator<Item = &Question> {
@@ -1125,5 +1171,72 @@ mod tests {
         assert_ne!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });
         assert_eq!(v.nodes["s"].state, NodeState::Working);
+    }
+
+    /// Report #136 (the day-one audit) and the orchestrator's question #152 about it, 24 Sep,
+    /// showed as two cards for one decision.
+    #[test]
+    fn a_question_takes_in_the_report_it_is_about_and_nothing_looser() {
+        const MIN: Millis = 60 * 1000;
+        let link = |url: &str| crate::model::Link { url: url.into(), title: None };
+        let file = |name: &str| crate::model::Attachment { name: name.into(), source_path: format!("/tmp/{name}"), stored_path: None, bytes: None };
+        struct Case {
+            what: &'static str,
+            asker: &'static str,
+            asked_after: Millis,
+            detail: &'static str,
+            links: Vec<crate::model::Link>,
+            attachments: Vec<crate::model::Attachment>,
+            absorbs: bool,
+        }
+        let case = |what, asker, asked_after, detail, absorbs| Case { what, asker, asked_after, detail, links: vec![], attachments: vec![], absorbs };
+        let cases = [
+            case("the orchestrator cites it", "orq", MIN, "La auditoría (informe #7, detalle adjunto) encontró 13 cosas", true),
+            case("the same node cites it in English", "node", MIN, "See report #7 for the numbers", true),
+            Case { links: vec![link("https://github.com/a/b/pull/3")], ..case("the same node links the same URL", "node", MIN, "", true) },
+            Case { attachments: vec![file("auditoria.md")], ..case("the orchestrator attaches the same file", "orq", MIN, "", true) },
+            case("no mention of it", "node", MIN, "¿Lanzo un nodo para arreglarlo?", false),
+            case("another number that starts the same", "node", MIN, "Mira el informe #70", false),
+            case("a PR with the same number", "node", MIN, "¿Mergeo la PR #7?", false),
+            case("another node cites it", "other", MIN, "Sobre el informe #7", false),
+            case("too late", "node", REPORT_ABSORB_WINDOW + MIN, "Sobre el informe #7", false),
+            Case { links: vec![link("https://github.com/a/b/pull/4")], ..case("a different link", "node", MIN, "", false) },
+        ];
+        for c in cases {
+            let t0 = 10 * REPORT_ABSORB_WINDOW;
+            let mut v = run(&[Event::MarkedOrchestrator { session_id: "orq".into() }, hook("node", "UserPromptSubmit"), hook("other", "UserPromptSubmit")]);
+            let Event::ReportPosted(mut r) = report(7, "node", ReportKind::Notice, t0) else { unreachable!() };
+            r.links = vec![link("https://github.com/a/b/pull/3")];
+            r.attachments = vec![file("auditoria.md")];
+            v.apply(10, t0, &Event::ReportPosted(r));
+            let mut q = question(1, c.asker, QuestionOrigin::Ask);
+            q.asked_at = t0 + c.asked_after;
+            q.detail = Some(c.detail.into());
+            q.links = c.links;
+            q.attachments = c.attachments;
+            v.apply(11, q.asked_at, &Event::QuestionAsked(q));
+            assert_eq!(v.question_report(&v.questions[&1]), c.absorbs.then_some(7), "{}", c.what);
+            assert_eq!(v.absorbed_reports().contains(&7), c.absorbs, "{}", c.what);
+        }
+    }
+
+    #[test]
+    fn a_read_report_or_an_answered_question_takes_nothing_in() {
+        let asked = |v: &mut View| {
+            let mut q = question(1, "node", QuestionOrigin::Ask);
+            q.asked_at = 2000;
+            q.detail = Some("Sobre el informe #7".into());
+            v.apply(10, 2000, &Event::QuestionAsked(q));
+        };
+        let mut v = run(&[hook("node", "UserPromptSubmit"), report(7, "node", ReportKind::Notice, 1000)]);
+        asked(&mut v);
+        assert_eq!(v.question_report(&v.questions[&1]), Some(7));
+        v.apply(11, 3000, &Event::QuestionAnswered { id: 1, answer: Answer { text: "Sí".into(), option: None, by: None, device: None, at: 3000 } });
+        assert_eq!(v.question_report(&v.questions[&1]), None, "only an open question holds the report");
+        assert!(v.absorbed_reports().is_empty());
+
+        let mut v = run(&[hook("node", "UserPromptSubmit"), report(7, "node", ReportKind::Notice, 1000), Event::ReportRead { id: 7 }]);
+        asked(&mut v);
+        assert_eq!(v.question_report(&v.questions[&1]), None, "a read report is out of the inbox already");
     }
 }

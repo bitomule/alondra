@@ -128,6 +128,9 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let mission: String?
     /// The open PR card this question belongs to; it is shown inside that card.
     public let prId: UInt64?
+    /// The report this question is about; the server keeps it out of the inbox and it is shown
+    /// inside the question instead.
+    public let report: Report?
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }

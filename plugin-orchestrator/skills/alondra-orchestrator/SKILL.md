@@ -71,6 +71,9 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   (decide, approve, test), that is a question with `ask`, one per decision. Never summarize in a
   report the questions that are already open: the user already has them in their inbox.
   Never report progress or that you do not need the user; that is noise and Alondra rejects it.
+- **A question about a node's report** becomes one card with it: cite the report by number in
+  the question (`informe #136`), or attach the same file or link the same URL. The report must
+  still be unread and at most 30 minutes old; otherwise the user gets two cards.
   Your own terminal does not reach the user: anything for them goes through `ask` or `report`, written in the language the MCP instructions name.
 
 ## A finished node leaves a clean worktree
