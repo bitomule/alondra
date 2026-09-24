@@ -20,7 +20,6 @@ struct TriageCard: View {
     @State private var showNodeContext = false
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
-    @State private var merging: String?
     @State private var asking = false
 
     private var kind: Kind { Kind(item) }
@@ -260,25 +259,7 @@ struct TriageCard: View {
             Text(pr.summary)
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
-            if pr.hasConflicts {
-                Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(Palette.dawn)
-            } else if pr.mergeabilityUnknown {
-                Label("GitHub is checking whether it can be merged", systemImage: "clock")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if let stackedOn = pr.stackedOn {
-                Label(stackedOn, systemImage: "square.stack.3d.up")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(pr.checks ?? [], id: \.self) { check in
-                Label(check.name, systemImage: check.passed ? "checkmark.circle.fill" : check.failed ? "xmark.circle.fill" : "clock")
-                    .font(.footnote)
-                    .foregroundStyle(check.passed ? Palette.sage : check.failed ? Palette.rose : Palette.dawn)
-            }
+            PRStatus(pr: pr)
             if let body = pr.body, !body.isEmpty {
                 if body.count > 600 {
                     excerpt(body, cta: String(localized: "Read it all"))
@@ -611,56 +592,8 @@ struct TriageCard: View {
                 }
                 .buttonStyle(.plain)
                 .disabled((reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty) || asking)
-                if pr.hasConflicts {
-                    Button {
-                        resolve(Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)) {
-                            try await $0.resolveConflicts(onPullRequest: pr.id)
-                        }
-                    } label: {
-                        Label("Resolve Conflicts", systemImage: "arrow.triangle.branch")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                    }
-                    .buttonStyle(FilledStyle(tint: Palette.dawn))
-                } else {
-                    Menu {
-                        ForEach(pr.methods, id: \.self) { method in
-                            Button(PullRequest.methodLabel(method)) { merging = method }
-                        }
-                    } label: {
-                        Label(pr.mergeBlockedReason ?? String(localized: "Merge…"), systemImage: pr.mergeBlockedReason == nil ? "arrow.triangle.merge" : "square.stack.3d.up")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                    }
-                    .buttonStyle(FilledStyle(tint: pr.mergeBlockedReason == nil ? Palette.sage : Palette.slate))
-                    .disabled(pr.mergeBlockedReason != nil)
-                    .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
-                        if let method = merging {
-                            Button("Merge (\(PullRequest.methodLabel(method)))") {
-                                resolve(Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)) {
-                                    try await $0.mergePullRequest(pr.id, method: method)
-                                }
-                            }
-                        }
-                    } message: {
-                        Text(pr.summary)
-                    }
-                }
-                HStack {
-                    if let url = URL(string: pr.url) {
-                        Link(destination: url) {
-                            Label("Open on GitHub", systemImage: "arrow.up.right.square")
-                        }
-                    }
-                    Spacer()
-                    Button("Set Aside") {
-                        resolve(Stamp(label: String(localized: "Set aside"), symbol: "tray.and.arrow.down", tint: Palette.slate)) {
-                            try await $0.dismissPullRequest(pr.id)
-                        }
-                    }
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
+                PRMainAction(pr: pr, placement: .card) { settle($0, of: pr) }
+                PRFooter(pr: pr) { settle(.setAside, of: pr) }
             }
         }
     }
@@ -786,6 +719,9 @@ struct TriageCard: View {
         case HandoffLabel.readAndClosed: return Stamp(label: String(localized: "Read and closed"), symbol: "xmark.bin.fill", tint: Palette.rose)
         case HandoffLabel.answered: return Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: kind.tint)
         case HandoffLabel.sent: return Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: kind.tint)
+        case HandoffLabel.merged: return Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)
+        case HandoffLabel.conflictsSent: return Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)
+        case HandoffLabel.setAside: return Stamp(label: String(localized: "Set aside"), symbol: "tray.and.arrow.down", tint: Palette.slate)
         default: break
         }
         let shown = AnswerOption.displayLabel(label)
@@ -812,6 +748,10 @@ struct TriageCard: View {
         }
     }
 
+    private func settle(_ outcome: PullRequestOutcome, of pr: PullRequest) {
+        resolve(stamp(for: outcome.handoffLabel)) { try await pr.perform(outcome, using: $0) }
+    }
+
     private func resolve(_ stamp: Stamp, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         guard self.stamp == nil else { return }
         replyFocused = false
@@ -834,12 +774,15 @@ struct TriageCard: View {
     }
 }
 
-/// Outcomes handed over from ReviewView that are not answer options.
+/// Outcomes handed over from ReviewView and PRReviewView that are not answer options.
 enum HandoffLabel {
     static let read = "alondra.read"
     static let answered = "alondra.answered"
     static let sent = "alondra.sent"
     static let readAndClosed = "alondra.readAndClosed"
+    static let merged = "alondra.merged"
+    static let conflictsSent = "alondra.conflictsSent"
+    static let setAside = "alondra.setAside"
 }
 
 enum OptionTone {
