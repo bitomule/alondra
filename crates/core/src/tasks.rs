@@ -614,12 +614,11 @@ pub struct Board {
 }
 
 impl Board {
+    /// Its tasks give it its state; a request closed with none is done.
     pub fn request_state(&self, id: &str) -> RequestState {
         let mut tasks = self.tasks.values().filter(|t| t.request == id).peekable();
-        if self.requests.get(id).is_some_and(|r| r.closed.is_some()) {
-            RequestState::Done
-        } else if tasks.peek().is_none() {
-            RequestState::Defining
+        if tasks.peek().is_none() {
+            if self.requests.get(id).is_some_and(|r| r.closed.is_some()) { RequestState::Done } else { RequestState::Defining }
         } else if tasks.all(|t| t.state.finished()) {
             RequestState::Done
         } else {

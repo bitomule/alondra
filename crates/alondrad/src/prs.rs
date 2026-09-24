@@ -43,29 +43,41 @@ pub async fn run(hub: Arc<Hub>) {
     }
 }
 
-/// A merge GitHub refused is tried again after this long, unless a push moved the PR first.
+/// A merge GitHub refused is tried again after this long, unless a push moved the PR first; the
+/// wait doubles with each refusal of the same head, up to `MERGE_RETRY_MAX`.
 pub const MERGE_RETRY: Duration = Duration::from_secs(300);
+pub const MERGE_RETRY_MAX: Duration = Duration::from_secs(2 * 3600);
 
 /// What auto-merge remembers between rounds: what it said, once per head, and when a merge of a
-/// head last failed.
+/// head last failed and how many times in a row.
 pub struct AutoMerging {
     told: HashSet<(u64, String, String)>,
-    failed: HashMap<(u64, String), Instant>,
+    failed: HashMap<(u64, String), (Instant, u32)>,
     retry_after: Duration,
+    retry_max: Duration,
 }
 
 impl Default for AutoMerging {
     fn default() -> Self {
-        AutoMerging { told: HashSet::new(), failed: HashMap::new(), retry_after: MERGE_RETRY }
+        AutoMerging { told: HashSet::new(), failed: HashMap::new(), retry_after: MERGE_RETRY, retry_max: MERGE_RETRY_MAX }
+    }
+}
+
+impl AutoMerging {
+    /// How long a head GitHub refused `times` times in a row waits before the next try.
+    fn wait(&self, times: u32) -> Duration {
+        self.retry_after.saturating_mul(1 << times.saturating_sub(1).min(16)).min(self.retry_max)
     }
 }
 
 /// Merges the PRs of auto-merge tasks that GitHub says can go in, through the same path as
 /// David's Merge. A node hears once per push what only it can fix; a merge GitHub refused for
-/// another reason is tried again after `MERGE_RETRY`, and the orchestrator hears why once.
+/// another reason is tried again after `MERGE_RETRY`, then less and less often while GitHub
+/// keeps refusing that head, and the orchestrator hears why once.
 pub async fn auto_merge(hub: &Arc<Hub>, merging: &mut AutoMerging, gh: &impl Gh) {
     let now = alondra_core::now_millis();
-    let (ready, blocked) = hub.read(|v| {
+    let head = |pr: &PullRequest| pr.head_sha.clone().unwrap_or_default();
+    let (ready, blocked, heads) = hub.read(|v| {
         let (mut ready, mut blocked) = (vec![], vec![]);
         for p in open(v) {
             match v.auto_merge(p, now) {
@@ -74,21 +86,22 @@ pub async fn auto_merge(hub: &Arc<Hub>, merging: &mut AutoMerging, gh: &impl Gh)
                 Some(AutoMerge::Waiting(_)) | None => {}
             }
         }
-        (ready, blocked)
+        (ready, blocked, open(v).map(|p| (p.id, head(p))).collect::<HashSet<_>>())
     });
-    let head = |pr: &PullRequest| pr.head_sha.clone().unwrap_or_default();
-    let retry_after = merging.retry_after;
-    merging.failed.retain(|_, at| at.elapsed() < retry_after);
+    merging.failed.retain(|key, _| heads.contains(key));
     for (pr, method) in ready {
         let key = (pr.id, head(&pr));
-        if merging.failed.contains_key(&key) {
-            continue;
-        }
+        let times = match merging.failed.get(&key) {
+            Some((at, times)) if at.elapsed() < merging.wait(*times) => continue,
+            Some((_, times)) => *times,
+            None => 0,
+        };
         let Err(refusal) = crate::http::merge(hub, pr.id, method, crate::http::Merger::Alondra, gh).await else { continue };
         if hub.read(|v| v.prs.get(&pr.id).map(head)).as_ref() != Some(&key.1) {
             continue;
         }
-        merging.failed.insert(key.clone(), Instant::now());
+        merging.failed.insert(key.clone(), (Instant::now(), times + 1));
+        let (first, most) = (merging.wait(1).as_secs() / 60, merging.retry_max.as_secs() / 60);
         if let Some(text) = refusal.for_node(&pr.url)
             && merging.told.insert((pr.id, key.1.clone(), "merge".to_string()))
         {
@@ -100,10 +113,10 @@ pub async fn auto_merge(hub: &Arc<Hub>, merging: &mut AutoMerging, gh: &impl Gh)
         if let Some(why) = refusal.for_orchestrator()
             && merging.told.insert((pr.id, key.1.clone(), "refused".to_string()))
         {
-            log!("{} not merged by Alondra, tried again in {} min: {why}", pr.url, retry_after.as_secs() / 60);
+            log!("{} not merged by Alondra, tried again in {first} min: {why}", pr.url);
             crate::orchestrate::tell_orchestrator(
                 hub,
-                format!("[Alondra] Alondra could not merge {} (auto-merge): {why}. It tries again every {} min; its node was not told, since it cannot fix this.", pr.url, retry_after.as_secs() / 60),
+                format!("[Alondra] Alondra could not merge {} (auto-merge): {why}. It tries again in {first} min, then less and less often while GitHub refuses it (at most every {most} min), and at once after a push; its node was not told, since it cannot fix this.", pr.url),
             );
         }
     }
@@ -729,6 +742,41 @@ mod tests {
         auto_merge(&hub, &mut merging, &gh).await;
         assert_eq!(*gh.merged.lock().unwrap(), ["https://github.com/a/b/pull/7"], "tried again once the wait is over");
         assert_eq!(told(&hub), 1, "the orchestrator heard it once");
+    }
+
+    /// Round 2: a merge GitHub refuses for good (a branch policy) was tried every 5 min forever,
+    /// each try a `gh pr merge` and a `gh pr view`.
+    #[tokio::test]
+    async fn a_merge_github_keeps_refusing_is_tried_less_and_less_often_and_at_once_after_a_push() {
+        let hub = auto_merge_fleet("backoff");
+        let gh = FakeGh { refusals: std::sync::Mutex::new(["GraphQL: Base branch policy prohibits the merge"; 5].into()), ..Default::default() };
+        let mut merging = AutoMerging::default();
+        let tries = |gh: &FakeGh| gh.heads.lock().unwrap().len();
+        let age = |merging: &mut AutoMerging, by: Duration| {
+            for (at, _) in merging.failed.values_mut() {
+                *at = at.checked_sub(by).expect("the machine has been up longer than that");
+            }
+        };
+        checks_passed_at(&hub, "a1");
+        auto_merge(&hub, &mut merging, &gh).await;
+        assert_eq!(tries(&gh), 1);
+        age(&mut merging, MERGE_RETRY + Duration::from_secs(1));
+        auto_merge(&hub, &mut merging, &gh).await;
+        assert_eq!(tries(&gh), 2, "the first wait is 5 min");
+        age(&mut merging, MERGE_RETRY + Duration::from_secs(1));
+        auto_merge(&hub, &mut merging, &gh).await;
+        assert_eq!(tries(&gh), 2, "refused twice, it waits twice as long");
+        age(&mut merging, MERGE_RETRY);
+        auto_merge(&hub, &mut merging, &gh).await;
+        assert_eq!(tries(&gh), 3);
+        assert_eq!((merging.wait(3), merging.wait(9), merging.wait(40)), (4 * MERGE_RETRY, MERGE_RETRY_MAX, MERGE_RETRY_MAX), "doubling up to every 2 h");
+
+        checks_passed_at(&hub, "a2");
+        auto_merge(&hub, &mut merging, &gh).await;
+        assert_eq!(tries(&gh), 4, "a push is tried at once");
+        let told: Vec<String> = said_to(&hub, "o").into_iter().filter(|t| t.contains("Base branch policy prohibits the merge")).collect();
+        assert_eq!(told.len(), 2, "the orchestrator heard it once per head: {told:?}");
+        assert!(told[0].contains("It tries again in 5 min, then less and less often while GitHub refuses it (at most every 120 min)"), "{}", told[0]);
     }
 
     #[test]

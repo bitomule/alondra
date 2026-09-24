@@ -518,4 +518,22 @@ mod tests {
         d.on(Event::RequestClosed { request_id: "r-1".into(), answer: Some("BlurCamera está en revisión".into()), withdrawn: false });
         assert_eq!(d.view.board.request_state("r-1"), crate::tasks::RequestState::Done);
     }
+
+    /// Round 2: a request closed and then given a task (a define before closed ones were refused,
+    /// or a launch naming it) stayed done while its task ran.
+    #[test]
+    fn a_closed_request_that_gets_a_task_goes_by_its_task() {
+        use crate::tasks::RequestState;
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        let mut d = Daemon::new();
+        d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("How is it going?".into()), attachments: vec![] });
+        d.on(Event::RequestClosed { request_id: "r-1".into(), answer: Some("answered".into()), withdrawn: false });
+        assert_eq!(d.view.board.request_state("r-1"), RequestState::Done, "closed with no task");
+        d.on(created("t-1", &[], new_node("app/one")));
+        assert_eq!(d.state("t-1"), Running);
+        assert_eq!(d.view.board.request_state("r-1"), RequestState::InProgress, "a request with a running task is in progress");
+        assert_eq!(d.replayed().board.request_state("r-1"), RequestState::InProgress);
+        d.on(Event::TaskMoved { task: "t-1".into(), event: TaskEvent::Cancel { reason: None } });
+        assert_eq!(d.view.board.request_state("r-1"), RequestState::Done);
+    }
 }
