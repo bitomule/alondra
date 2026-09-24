@@ -591,6 +591,16 @@
         }
       }
     },
+    "GitHub is checking whether it can be merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub está comprobando si se puede fusionar"
+          }
+        }
+      }
+    },
     "Hover over a block to comment on it · 1–2 decides": {
       "localizations": {
         "es": {
@@ -647,6 +657,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tiene conflictos con su rama base"
+          }
+        }
+      }
+    },
+    "Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Su nodo integra la base en la rama, resuelve los conflictos y hace push; la tarjeta vuelve cuando se puede fusionar"
           }
         }
       }
@@ -1137,6 +1157,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pedir cambios (%lld)"
+          }
+        }
+      }
+    },
+    "Resolve Conflicts": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolver conflictos"
           }
         }
       }

@@ -625,11 +625,23 @@ impl App {
 
     /// Merging cannot be undone, so a method key takes a second press within a few seconds.
     fn merge_pr(&mut self, pr: &crate::client::PrCard, i: usize) {
-        let methods = pr.methods();
-        let Some(&method) = methods.get(i) else {
-            let n = i + 1;
-            self.fail(trf!("This PR has no option {n}", "Este PR no tiene opción {n}"));
-            return;
+        let method = match pr.actions().get(i) {
+            Some(crate::client::PrAction::Merge(m)) => *m,
+            Some(crate::client::PrAction::ResolveConflicts) => {
+                let number = pr.pr.number;
+                self.post(
+                    Some(Key::P(pr.pr.id)),
+                    vec![(format!("/v1/prs/{}/resolve-conflicts", pr.pr.id), json!({}))],
+                    trf!("Asked its node to resolve the conflicts of PR #{number}", "Pedido a su nodo que resuelva los conflictos del PR #{number}"),
+                );
+                self.hide(Key::P(pr.pr.id));
+                return;
+            }
+            None => {
+                let n = i + 1;
+                self.fail(trf!("This PR has no option {n}", "Este PR no tiene opción {n}"));
+                return;
+            }
         };
         let now = now_millis();
         let label = i18n::merge_method(method);
@@ -2056,6 +2068,23 @@ pub(crate) mod tests {
         assert_eq!(app.pending_merge.map(|(id, m, _)| (id, m)), Some((4, alondra_core::pr::MergeMethod::Squash)));
         assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press 2 again to merge PR #12 (squash)")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         assert!(!app.hidden.contains_key(&Key::P(4)), "nothing merged yet");
+    }
+
+    #[test]
+    fn a_pr_in_conflict_offers_resolving_it_instead_of_merging() {
+        use crate::client::PrAction;
+        let mut card = pr_card(None);
+        card.pr.mergeable = Some("CONFLICTING".into());
+        assert_eq!(card.actions(), [PrAction::ResolveConflicts]);
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.prs = vec![card];
+        app.reconcile();
+        app.settle_until = 0;
+        press(&mut app, "2");
+        assert_eq!(app.flash.as_ref().map(|f| f.text.as_str()), Some("This PR has no option 2"));
+        press(&mut app, "1");
+        assert!(app.pending_merge.is_none(), "nothing to merge");
+        assert!(app.hidden.contains_key(&Key::P(4)), "the card waits for the node's push");
     }
 
     fn asked_on_pr(id: u64, pr: u64) -> crate::client::OpenQuestion {

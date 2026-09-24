@@ -58,6 +58,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/activity", post(activity))
         .route("/v1/prs/{id}/merge", post(merge_pr))
         .route("/v1/prs/{id}/changes", post(request_pr_changes))
+        .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/file", get(file))
@@ -714,6 +715,9 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     if !pr.merge_methods.is_empty() && !pr.merge_methods.contains(&b.method) {
         return err(StatusCode::UNPROCESSABLE_ENTITY, format!("{} does not allow {}", pr.repo, b.method.label()));
     }
+    if pr.conflicts() {
+        return conflicts(&pr);
+    }
     let merged = tokio::time::timeout(
         Duration::from_secs(90),
         tokio::process::Command::new("gh").args(["pr", "merge", &pr.url, b.method.flag()]).kill_on_drop(true).output(),
@@ -721,7 +725,15 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     .await;
     match merged {
         Ok(Ok(out)) if out.status.success() => {}
-        Ok(Ok(out)) => return err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        Ok(Ok(out)) => {
+            let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let mut card = crate::prs::refresh(&hub, &pr).await;
+            if said.contains(MERGE_COMMIT_FAILS) && !card.conflicts() {
+                card.mergeable = Some("CONFLICTING".into());
+                let _ = hub.append(Event::PrUpdated(card.clone()));
+            }
+            return if card.conflicts() { conflicts(&card) } else { err(StatusCode::BAD_GATEWAY, said) };
+        }
         Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, e.to_string()),
         Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr merge did not finish within 90 s"),
     }
@@ -733,6 +745,43 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
     let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra);
     Json(json!({"id": id, "merged": true})).into_response()
+}
+
+/// What `gh pr merge` says when the branch conflicts with its base.
+const MERGE_COMMIT_FAILS: &str = "merge commit cannot be cleanly created";
+
+/// The refusal a client shows on a PR in conflict, in place of GitHub's error.
+fn conflicts(pr: &alondra_core::pr::PullRequest) -> Response {
+    let base = pr.base.as_deref().unwrap_or("its base");
+    let msg = format!("PR #{} conflicts with {base}: resolve the conflicts first.", pr.number);
+    (StatusCode::CONFLICT, Json(json!({"error": msg, "conflicts": true}))).into_response()
+}
+
+fn resolve_conflicts_text(user: &str, pr: &alondra_core::pr::PullRequest) -> String {
+    let base = pr.base.as_deref().unwrap_or("its base branch");
+    format!(
+        "{user} asks you to resolve the conflicts of {} with {base}: bring {base} into the branch, resolve them, \
+         run the tests and push. The PR card goes back to {user} once GitHub can merge it.",
+        pr.url
+    )
+}
+
+async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+    let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    if pr.state != alondra_core::pr::PrState::Open {
+        return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
+    }
+    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User) {
+        Ok(to) => {
+            if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
+                log!("conflicts sent on PR card #{id}, card not set aside: {e}");
+            }
+            Json(json!({"id": id, "sent_to": to})).into_response()
+        }
+        Err(e) => internal(e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2171,6 +2220,40 @@ mod tests {
             let Json(o) = overview(State(hub.clone())).await;
             assert_eq!(o["news"][0]["pr_id"].as_u64(), card, "{what}: {}", o["news"]);
         }
+    }
+
+    /// PR #54, 24 Sep: fase-1 moved while its card still offered merging, and the merge came back
+    /// as gh's raw "merge commit cannot be cleanly created".
+    #[tokio::test]
+    async fn a_pr_in_conflict_is_not_merged_and_resolving_it_goes_to_its_node() {
+        use alondra_core::pr::MergeMethod;
+        let hub = temp_hub("conflicts");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/54".into(), session_id: "s".into() }).unwrap();
+        let card = |mergeable: &str, head: &str| {
+            let mut pr = hub.read(|v| v.prs[&1].clone());
+            (pr.mergeable, pr.base, pr.head_sha, pr.fetched) = (Some(mergeable.into()), Some("fase-1".into()), Some(head.into()), true);
+            pr
+        };
+        hub.append(Event::PrUpdated(card("CONFLICTING", "abc"))).unwrap();
+        let in_inbox = |hub: &Arc<Hub>| hub.read(|v| crate::prs::in_inbox(v).count());
+
+        let (status, said) = status_and_body(merge_pr(State(hub.clone()), None, Path(1), Json(MergeBody { method: MergeMethod::Merge })).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        assert_eq!(said["conflicts"], true);
+        assert_eq!(said["error"], "PR #54 conflicts with fase-1: resolve the conflicts first.");
+        assert_eq!(hub.read(|v| v.prs[&1].state), alondra_core::pr::PrState::Open);
+
+        let (status, said) = status_and_body(resolve_pr_conflicts(State(hub.clone()), Path(1)).await).await;
+        assert_eq!((status, said["sent_to"].as_str()), (StatusCode::OK, Some("s")), "{said}");
+        let told = hub.read(|v| v.messages.values().last().map(|m| (m.session_id.clone(), m.text.clone()))).unwrap();
+        assert_eq!(told.0, "s");
+        assert!(told.1.contains("resolve the conflicts of https://github.com/a/b/pull/54 with fase-1"), "{}", told.1);
+        assert_eq!(in_inbox(&hub), 0, "the card waits for the node's push");
+
+        hub.append(Event::PrUpdated(card("MERGEABLE", "def"))).unwrap();
+        assert_eq!(in_inbox(&hub), 1, "back once the node pushed");
+        assert!(!hub.read(|v| v.prs[&1].conflicts()));
     }
 
     #[tokio::test]

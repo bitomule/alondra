@@ -681,6 +681,16 @@
         }
       }
     },
+    "GitHub is checking whether it can be merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub está comprobando si se puede fusionar"
+          }
+        }
+      }
+    },
     "I need more context": {
       "localizations": {
         "es": {
@@ -1291,6 +1301,16 @@
         }
       }
     },
+    "Resolve Conflicts": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolver conflictos"
+          }
+        }
+      }
+    },
     "Retrying every few seconds…": {
       "localizations": {
         "es": {
@@ -1387,6 +1407,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Enviado"
+          }
+        }
+      }
+    },
+    "Sent to its node": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enviado a su nodo"
           }
         }
       }

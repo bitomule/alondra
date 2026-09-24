@@ -34,6 +34,9 @@ struct PullRequestDetail: View {
                 if pr.hasConflicts {
                     Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                } else if pr.mergeabilityUnknown {
+                    Label("GitHub is checking whether it can be merged", systemImage: "clock")
+                        .foregroundStyle(.secondary)
                 }
                 if let checks = pr.checks, !checks.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
@@ -63,17 +66,24 @@ struct PullRequestDetail: View {
                 Button(draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")) { requestChanges() }
                     .disabled(review.isEmpty)
                     .controlSize(.large)
-                Picker("Method", selection: $method) {
-                    ForEach(pr.methods, id: \.self) { m in
-                        Text(PullRequest.methodLabel(m)).tag(m)
+                if pr.hasConflicts {
+                    Button("Resolve Conflicts") { resolveConflicts() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .help("Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged")
+                } else {
+                    Picker("Method", selection: $method) {
+                        ForEach(pr.methods, id: \.self) { m in
+                            Text(PullRequest.methodLabel(m)).tag(m)
+                        }
                     }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("How to merge it; the method last used in this repo comes first")
+                    Button("Merge…") { confirmingMerge = true }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                 }
-                .labelsHidden()
-                .fixedSize()
-                .help("How to merge it; the method last used in this repo comes first")
-                Button("Merge…") { confirmingMerge = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
                 Button("Set Aside") { setAside() }
                     .controlSize(.large)
                     .help("Take the card out of the inbox without merging")
@@ -120,6 +130,11 @@ struct PullRequestDetail: View {
     private func merge() {
         let (id, method) = (pr.id, method)
         Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.mergePullRequest(id, method: method) } }
+    }
+
+    private func resolveConflicts() {
+        let id = pr.id
+        Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.resolveConflicts(onPullRequest: id) } }
     }
 
     @ViewBuilder

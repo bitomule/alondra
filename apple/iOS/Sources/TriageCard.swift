@@ -245,6 +245,10 @@ struct TriageCard: View {
                 Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(Palette.dawn)
+            } else if pr.mergeabilityUnknown {
+                Label("GitHub is checking whether it can be merged", systemImage: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             ForEach(pr.checks ?? [], id: \.self) { check in
                 Label(check.name, systemImage: check.passed ? "checkmark.circle.fill" : check.failed ? "xmark.circle.fill" : "clock")
@@ -517,26 +521,39 @@ struct TriageCard: View {
                         try await $0.requestChanges(onPullRequest: pr.id, text: text)
                     }
                 }
-                Menu {
-                    ForEach(pr.methods, id: \.self) { method in
-                        Button(PullRequest.methodLabel(method)) { merging = method }
+                if pr.hasConflicts {
+                    Button {
+                        resolve(Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)) {
+                            try await $0.resolveConflicts(onPullRequest: pr.id)
+                        }
+                    } label: {
+                        Label("Resolve Conflicts", systemImage: "arrow.triangle.branch")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 50)
                     }
-                } label: {
-                    Label("Merge…", systemImage: "arrow.triangle.merge")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 50)
-                }
-                .buttonStyle(FilledStyle(tint: Palette.sage))
-                .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
-                    if let method = merging {
-                        Button("Merge (\(PullRequest.methodLabel(method)))") {
-                            resolve(Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)) {
-                                try await $0.mergePullRequest(pr.id, method: method)
+                    .buttonStyle(FilledStyle(tint: Palette.dawn))
+                } else {
+                    Menu {
+                        ForEach(pr.methods, id: \.self) { method in
+                            Button(PullRequest.methodLabel(method)) { merging = method }
+                        }
+                    } label: {
+                        Label("Merge…", systemImage: "arrow.triangle.merge")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(FilledStyle(tint: Palette.sage))
+                    .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
+                        if let method = merging {
+                            Button("Merge (\(PullRequest.methodLabel(method)))") {
+                                resolve(Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)) {
+                                    try await $0.mergePullRequest(pr.id, method: method)
+                                }
                             }
                         }
+                    } message: {
+                        Text(pr.summary)
                     }
-                } message: {
-                    Text(pr.summary)
                 }
                 HStack {
                     if let url = URL(string: pr.url) {

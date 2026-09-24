@@ -122,6 +122,21 @@ impl PrCard {
         let preferred = self.preferred_method.filter(|m| allowed.contains(m)).unwrap_or(allowed[0]);
         std::iter::once(preferred).chain(allowed.into_iter().filter(|m| *m != preferred)).collect()
     }
+
+    /// The numbered actions of the card: merging in each method, or, while the branch conflicts
+    /// with its base, only asking its node to resolve that.
+    pub fn actions(&self) -> Vec<PrAction> {
+        if self.pr.conflicts() {
+            return vec![PrAction::ResolveConflicts];
+        }
+        self.methods().into_iter().map(PrAction::Merge).collect()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PrAction {
+    Merge(alondra_core::pr::MergeMethod),
+    ResolveConflicts,
 }
 
 pub struct Client {
