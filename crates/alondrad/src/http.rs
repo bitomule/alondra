@@ -928,7 +928,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         let nodes: Vec<Value> = nodes
             .into_iter()
             .map(|n| {
-                let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
+                let mut value = client_node(n);
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
                 value["background"] = json!(states::background(n, now));
@@ -978,7 +978,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        let mut node = serde_json::to_value(&n).unwrap_or(Value::Null);
+        let mut node = client_node(&n);
         node["background"] = json!(states::background(&n, now_millis()));
         Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
@@ -992,6 +992,15 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
         .collect();
     Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
+}
+
+/// A node as clients see it: whether its session is attached is the daemon's business.
+fn client_node(n: &alondra_core::Node) -> Value {
+    let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
+    if let Some(o) = value.as_object_mut() {
+        o.remove("alive");
+    }
+    value
 }
 
 #[derive(Deserialize)]
@@ -1050,10 +1059,10 @@ struct AskBody {
     #[serde(default)]
     steps: Vec<String>,
     /// The node's other open cards this one belongs with; required when it has any.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "card_ids")]
     related: Option<Vec<u64>>,
     /// A question of the same node this one replaces: it is withdrawn once this one is recorded.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "card_id")]
     replaces: Option<u64>,
 }
 
@@ -1265,7 +1274,7 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool, related: Vec<Car
 
 async fn question_detail(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     match hub.read(|v| v.questions.get(&id).cloned().map(|q| (q.clone(), v.nodes.get(&q.session_id).cloned()))) {
-        Some((q, node)) => Json(json!({"question": q, "node": node})).into_response(),
+        Some((q, node)) => Json(json!({"question": q, "node": node.as_ref().map(client_node)})).into_response(),
         None => err(StatusCode::NOT_FOUND, format!("question #{id} does not exist")),
     }
 }
@@ -1439,6 +1448,32 @@ fn withdraw_refusal(id: u64, question: Option<&Question>, asker: Option<Option<&
     (q.status != QuestionStatus::Open).then(|| (StatusCode::CONFLICT, format!("question #{id} is no longer open")))
 }
 
+/// Card ids as a node's tools send them. Nodes launched before `related` existed have no such
+/// field in their tool schema, so it arrives as text: "[]", "[3, 4]", "3,4" or "3".
+fn card_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<u64>>, D::Error> {
+    let v = Option::<Value>::deserialize(d)?;
+    let bad = || serde::de::Error::custom("related must be a list of card numbers, e.g. [] or [3, 4]");
+    let id = |v: &Value| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().trim_start_matches('#').parse().ok()));
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => items.iter().map(|i| id(i).ok_or_else(bad)).collect::<Result<_, _>>().map(Some),
+        Some(n @ Value::Number(_)) => id(&n).map(|i| Some(vec![i])).ok_or_else(bad),
+        Some(Value::String(text)) => {
+            let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
+            inner.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| t.trim_start_matches('#').parse().map_err(|_| bad())).collect::<Result<_, _>>().map(Some)
+        }
+        Some(_) => Err(bad()),
+    }
+}
+
+fn card_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    match card_ids(d)?.as_deref() {
+        None | Some([]) => Ok(None),
+        Some([one]) => Ok(Some(*one)),
+        Some(_) => Err(serde::de::Error::custom("replaces takes one question number")),
+    }
+}
+
 #[derive(Deserialize)]
 struct ReportBody {
     #[serde(flatten)]
@@ -1451,7 +1486,7 @@ struct ReportBody {
     #[serde(default)]
     attachments: Vec<String>,
     /// The node's other open cards this report belongs with; required when it has any.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "card_ids")]
     related: Option<Vec<u64>>,
 }
 
@@ -2276,6 +2311,8 @@ mod tests {
         let (status, detail) = status_and_body(node_detail(State(hub.clone()), Path("job".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(detail["node"]["background"][0]["suspect"], true);
+        assert!(o["nodes"][0].get("alive").is_none() && detail["node"].get("alive").is_none(), "clients never see alive");
+        assert!(hub.read(|v| serde_json::to_value(v).unwrap())["nodes"]["job"]["alive"] == true, "the stored snapshot keeps it");
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -2286,6 +2323,37 @@ mod tests {
 
     /// David's rule (24 Sep): Alondra never infers which cards go together. A node that already has
     /// open cards declares it with `related`; without it nothing is recorded.
+    #[test]
+    fn related_arrives_as_a_list_or_as_the_text_older_tool_schemas_send() {
+        #[derive(Deserialize)]
+        struct Ids {
+            #[serde(default, deserialize_with = "card_ids")]
+            related: Option<Vec<u64>>,
+            #[serde(default, deserialize_with = "card_id")]
+            replaces: Option<u64>,
+        }
+        let cases: [(Value, Option<Option<Vec<u64>>>, Option<u64>); 11] = [
+            (json!({}), Some(None), None),
+            (json!({"related": null}), Some(None), None),
+            (json!({"related": []}), Some(Some(vec![])), None),
+            (json!({"related": [3, 4]}), Some(Some(vec![3, 4])), None),
+            (json!({"related": "[]"}), Some(Some(vec![])), None),
+            (json!({"related": "[3, 4]"}), Some(Some(vec![3, 4])), None),
+            (json!({"related": "#3,4"}), Some(Some(vec![3, 4])), None),
+            (json!({"related": 3}), Some(Some(vec![3])), None),
+            (json!({"related": "tres"}), None, None),
+            (json!({"replaces": "191"}), Some(None), Some(191)),
+            (json!({"replaces": 7}), Some(None), Some(7)),
+        ];
+        for (body, related, replaces) in cases {
+            let parsed = serde_json::from_value::<Ids>(body.clone());
+            assert_eq!(parsed.as_ref().ok().map(|p| p.related.clone()), related, "{body}");
+            if let Ok(p) = parsed {
+                assert_eq!(p.replaces, replaces, "{body}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_node_with_open_cards_says_what_a_new_one_belongs_with() {
         const PR: &str = "https://github.com/a/b/pull/24";
