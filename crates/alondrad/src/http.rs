@@ -1178,6 +1178,8 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
 /// What the overview shows that a client acts on, leaving out what moves with every hook: the
 /// tool in flight, the last message and prompt, when a node was last seen, its activity. Clients
 /// refetch the overview when this changes (the hub bumps their tick then), not on every event.
+/// What time alone moves (a background item turning possibly hung, an auto-merge wait) is in
+/// it, and the machine sample every 10 s looks at it again.
 pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1187,7 +1189,7 @@ pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
         (text(json!(n.state)), text(json!(n.status)), text(json!(n.orchestrator_state)), n.waiting_permission, n.attached, n.menu_waiting.is_some(), &n.mission, n.usage_limited).hash(&mut h);
         v.held_for_turn_end(&n.session_id).hash(&mut h);
         for b in states::background(n, now) {
-            (text(json!(b.kind)), b.label).hash(&mut h);
+            (text(json!(b.kind)), b.label, b.suspect).hash(&mut h);
         }
     }
     for q in v.questions.values() {
@@ -3561,6 +3563,30 @@ mod tests {
         assert_eq!(o["tick"].as_u64(), Some(hub.tick()), "the overview says which tick it shows");
         let replayed = hub_at_home_of(&hub);
         assert_eq!(replayed.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), hub.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), "a replay gives the same view");
+    }
+
+    /// Round 2: the digest hashed a background item by kind and label only, so the possibly-hung
+    /// badge, which time alone raises, reached the apps only when something else moved the tick.
+    #[tokio::test]
+    async fn a_background_item_turning_possibly_hung_moves_the_tick_at_the_next_machine_sample() {
+        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
+        let hub = temp_hub("suspect-tick");
+        let started_at = now_millis() - states::BACKGROUND_SUSPECT_MS + 300;
+        hub.append(Event::DaemonSeen(DaemonObservation {
+            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(1),
+            background: vec![BackgroundItem { kind: BackgroundKind::Shell, label: "until pgrep".into(), started_at, suspect: false }],
+            ..Default::default()
+        })).unwrap();
+        let machine = alondra_core::Machine { memory_total: 1000, memory_available: 500, cpus: 8, disk_total: 1000, disk_available: 500, ..Default::default() };
+        hub.set_machine(machine.clone(), None);
+        let Json(before) = overview(State(hub.clone())).await;
+        assert_eq!(before["nodes"][0]["background"][0].get("suspect"), None, "not yet: {}", before["nodes"][0]["background"]);
+        let shown = hub.tick();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        hub.set_machine(machine, None);
+        let Json(after) = overview(State(hub.clone())).await;
+        assert_eq!(after["nodes"][0]["background"][0]["suspect"], true);
+        assert!(hub.tick() > shown, "the badge the apps paint changed, so they hear of it");
     }
 
     fn hub_at_home_of(hub: &Hub) -> Arc<Hub> {
