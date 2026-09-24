@@ -15,7 +15,7 @@ struct PullRequestDetail: View {
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title)
+                DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title, task: store.task(for: .pullRequest(pr))?.title)
                 nodeSays
                 nodeAsks
                 Text(pr.summary)

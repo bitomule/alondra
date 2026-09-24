@@ -236,7 +236,7 @@ public struct RequestTree: Identifiable, Hashable, Sendable {
 }
 
 /// The tasks grouped the way the Mac sidebar lists them: what waits for the user first.
-public struct TaskGroup: Identifiable, Hashable, Sendable {
+public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
         case task(WorkTask.State)
         case defining
@@ -245,6 +245,12 @@ public struct TaskGroup: Identifiable, Hashable, Sendable {
     public let kind: Kind
     public let tasks: [WorkTask]
     public let requests: [WorkRequest]
+
+    public init(kind: Kind, tasks: [WorkTask], requests: [WorkRequest]) {
+        self.kind = kind
+        self.tasks = tasks
+        self.requests = requests
+    }
 
     public var id: Kind { kind }
     public var count: Int { tasks.count + requests.count }
@@ -331,13 +337,13 @@ public struct TaskBoard: Sendable {
         return below + [task] + above
     }
 
-    public var groups: [TaskGroup] {
+    public var groups: [TaskStateGroup] {
         let defining = requests.filter { $0.state == .defining }
         let all = tasks.values.sorted(by: Self.creationOrder)
-        return TaskGroup.order.compactMap { kind in
-            let group: TaskGroup = switch kind {
-            case .defining: TaskGroup(kind: kind, tasks: [], requests: defining)
-            case .task(let state): TaskGroup(kind: kind, tasks: all.filter { $0.state == state }, requests: [])
+        return TaskStateGroup.order.compactMap { kind in
+            let group: TaskStateGroup = switch kind {
+            case .defining: TaskStateGroup(kind: kind, tasks: [], requests: defining)
+            case .task(let state): TaskStateGroup(kind: kind, tasks: all.filter { $0.state == state }, requests: [])
             }
             return group.count == 0 ? nil : group
         }
