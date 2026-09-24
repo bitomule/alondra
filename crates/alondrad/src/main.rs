@@ -14,6 +14,7 @@ mod prs;
 mod push;
 mod sentinel;
 mod store;
+mod uploads;
 mod usage;
 mod wake;
 mod watcher;
@@ -69,11 +70,18 @@ async fn retention(hub: Arc<hub::Hub>, retention_hours: f64) {
     let every = std::time::Duration::from_secs_f64(every_hours * 3600.0);
     loop {
         tokio::time::sleep(every).await;
-        let hub = hub.clone();
-        match tokio::task::spawn_blocking(move || hub.compact(keep)).await {
+        let compacting = hub.clone();
+        match tokio::task::spawn_blocking(move || compacting.compact(keep)).await {
             Ok(Ok(deleted)) => log!("compacted, {deleted} old events deleted"),
             Ok(Err(e)) => log!("could not compact: {e}"),
             Err(e) => log!("compaction crashed: {e}"),
+        }
+        let referenced = hub.read(|v| v.stored_files());
+        let home = hub.home.clone();
+        match tokio::task::spawn_blocking(move || uploads::sweep(&home, &referenced, uploads::UNSENT_GRACE)).await {
+            Ok(0) => {}
+            Ok(n) => log!("{n} attachment folders nothing refers to any more deleted"),
+            Err(e) => log!("attachment sweep crashed: {e}"),
         }
     }
 }

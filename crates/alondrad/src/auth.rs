@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 const MAX_SKEW_MS: i64 = 120_000;
 const PAIRING_TTL: Duration = Duration::from_secs(600);
-const MAX_BODY: usize = 10 * 1024 * 1024;
+const MAX_BODY: usize = 25 * 1024 * 1024;
 const REPLAY_MEMORY: usize = 4096;
 
 #[derive(Serialize, Deserialize, Clone)]
