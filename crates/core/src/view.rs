@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{DaemonObservation, Event, HookEvent};
 use crate::model::{
-    Answer, CardRef, Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
+    Answer, CardRef, Millis, Node, NodeState, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
     TurnSignal,
 };
 use crate::model::{Message, MessageFrom, Report};
@@ -222,9 +222,10 @@ impl View {
                 Some((m.session_id.clone(), Trigger::Message))
             }
             Event::MessageHanded { id } => {
+                let reopens = self.messages.get(id).is_some_and(|m| m.from != MessageFrom::Alondra || self.is_merge_notice(m));
                 let Some(m) = self.messages.get_mut(id) else { return };
                 m.handed_at = Some(at);
-                let (sid, from_someone) = (m.session_id.clone(), m.from != MessageFrom::Alondra);
+                let (sid, from_someone) = (m.session_id.clone(), reopens);
                 if let Some(node) = self.nodes.get_mut(&sid) {
                     node.handed_at = Some(at);
                     node.last_seen = node.last_seen.max(at);
@@ -564,6 +565,9 @@ impl View {
         };
         if outcome.state != node.state {
             node.state = outcome.state;
+            if outcome.state == NodeState::Done {
+                node.done_at = Some(at);
+            }
             node.state_since = match source {
                 StateSource::Daemon if !node.has_plugin => node.daemon_updated_at.unwrap_or(at).min(at),
                 _ => at,
@@ -736,11 +740,53 @@ impl View {
             .filter(move |m| m.session_id == session_id && m.handed_at.is_none())
     }
 
+    /// Done is final for Alondra: only David or the orchestrator, writing on purpose, reopen a
+    /// done node. Alondra itself never types into one.
+    pub fn may_alondra_write(&self, node: &Node) -> bool {
+        node.is_orchestrator || node.state != NodeState::Done
+    }
+
+    /// The only way Alondra writes to a session: nothing when the node is done or unknown.
+    pub fn alondra_message(&self, session_id: &str, text: String, at: Millis) -> Option<Message> {
+        let node = self.nodes.get(session_id)?;
+        self.may_alondra_write(node).then(|| Message {
+            id: self.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            session_id: session_id.to_string(),
+            from: MessageFrom::Alondra,
+            text,
+            answers_question: None,
+            created_at: at,
+            handed_at: None,
+            delivered_at: None,
+            about: None,
+        })
+    }
+
+    /// What may be typed into the session now: everything from David or the orchestrator, and
+    /// what Alondra queued only while the node may take it and was not done since.
+    pub fn deliverable_messages(&self, session_id: &str) -> impl Iterator<Item = &Message> {
+        let node = self.nodes.get(session_id);
+        self.pending_messages(session_id).filter(move |m| {
+            m.from != MessageFrom::Alondra || node.is_some_and(|n| self.may_alondra_write(n) && n.done_at.is_none_or(|done| m.created_at > done))
+        })
+    }
+
+    /// Alondra's notice that a PR the node opened was merged: the node still has to act on it.
+    pub fn is_merge_notice(&self, m: &Message) -> bool {
+        let Some(crate::model::MessageAbout::PrMerged { pr_id }) = m.about else { return false };
+        self.prs.get(&pr_id).is_some_and(|p| p.session_id == m.session_id && p.state == crate::pr::PrState::Merged)
+    }
+
+    /// A merge notice still on its way to the node: it waits for the merge until the notice lands.
+    pub fn merge_notice_due(&self, session_id: &str) -> Option<Millis> {
+        self.pending_messages(session_id).filter(|m| self.is_merge_notice(m)).map(|m| m.created_at).max()
+    }
+
     /// Messages waiting for an interactive session: Alondra cannot type into a terminal it did not
     /// start, so they wait for the session's next Stop hook (see `turn_end_delivery`).
     pub fn held_for_turn_end(&self, session_id: &str) -> usize {
         match self.nodes.get(session_id) {
-            Some(n) if !n.in_daemon => self.pending_messages(session_id).count(),
+            Some(n) if !n.in_daemon => self.deliverable_messages(session_id).count(),
             _ => 0,
         }
     }
@@ -752,7 +798,7 @@ impl View {
         if self.nodes.get(session_id)?.in_daemon {
             return None;
         }
-        let pending: Vec<&Message> = self.pending_messages(session_id).collect();
+        let pending: Vec<&Message> = self.deliverable_messages(session_id).collect();
         if pending.is_empty() {
             return None;
         }
@@ -1019,6 +1065,7 @@ mod tests {
             created_at: 3000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });
         assert!(v.messages[&1].delivered_at.is_none());
@@ -1159,6 +1206,7 @@ mod tests {
                     created_at: at,
                     handed_at: None,
                     delivered_at: None,
+                    about: None,
                 }));
             }
             next(&mut v, at, Event::Pruned { before: at - 2 * hour });
@@ -1475,7 +1523,7 @@ mod tests {
             ("notice, closed on GitHub", ReportKind::Notice, Box::new(github(PrState::Closed)), true, NodeState::Done),
             ("notice, card set aside", ReportKind::Notice, Box::new(|_| Event::PrDismissed { id: 1 }), true, NodeState::Done),
             ("notice, changes requested", ReportKind::Notice, Box::new(|_| Event::PrChangesRequested { id: 1 }), false, NodeState::Delivered),
-            ("notice, still open", ReportKind::Notice, Box::new(github(PrState::Open)), false, NodeState::WaitingAnswer),
+            ("notice, still open", ReportKind::Notice, Box::new(github(PrState::Open)), false, NodeState::WaitingMerge),
         ];
         for (what, kind, event, read, state) in cases {
             let mut v = run(&[hook("s", "UserPromptSubmit")]);
@@ -1483,7 +1531,7 @@ mod tests {
             v.apply(3, 3000, &hook("s", "Stop"));
             v.apply(4, 4000, &report_about(7, "s", kind, 4000, &[PR], "Ready", ""));
             v.apply(5, 4000, &report_about(8, "t", ReportKind::Notice, 4000, &[], "Something else", ""));
-            assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer, "{what}: the card waits on the user");
+            assert_eq!(v.nodes["s"].state, NodeState::WaitingMerge, "{what}: the card waits on the user");
             let e = event(&v);
             v.apply(6, 6000, &e);
             assert_eq!(v.reports[&7].read, read, "{what}");
@@ -1537,6 +1585,7 @@ mod tests {
                 created_at: 3000,
                 handed_at: None,
                 delivered_at: None,
+                about: None,
             })
         };
         let mut v = View::default();
@@ -1575,6 +1624,7 @@ mod tests {
             created_at: 3000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert_ne!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });

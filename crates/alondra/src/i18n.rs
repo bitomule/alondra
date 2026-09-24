@@ -78,6 +78,7 @@ pub fn state(s: NodeState) -> &'static str {
         NodeState::Working => tr!("working", "trabajando"),
         NodeState::WaitingAnswer => tr!("waiting for an answer", "esperando respuesta"),
         NodeState::YourTurn => tr!("your turn", "te toca"),
+        NodeState::WaitingMerge => tr!("waiting for your merge", "esperando tu merge"),
         NodeState::Delivered => tr!("delivering a result", "entrega resultado"),
         NodeState::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
         NodeState::Done => tr!("done", "terminado"),

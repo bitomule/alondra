@@ -4,6 +4,7 @@ public enum NodeState: String, Codable, Sendable {
     case working
     case waitingAnswer = "waiting_answer"
     case yourTurn = "your_turn"
+    case waitingMerge = "waiting_merge"
     case delivered
     case waitingMachine = "waiting_machine"
     case done
@@ -15,6 +16,7 @@ public enum NodeState: String, Codable, Sendable {
         case .working: String(localized: "working", table: "AlondraShared", bundle: #bundle)
         case .waitingAnswer: String(localized: "waiting for an answer", table: "AlondraShared", bundle: #bundle)
         case .yourTurn: String(localized: "your turn", table: "AlondraShared", bundle: #bundle)
+        case .waitingMerge: String(localized: "waiting for your merge", table: "AlondraShared", bundle: #bundle)
         case .delivered: String(localized: "delivering results", table: "AlondraShared", bundle: #bundle)
         case .waitingMachine: String(localized: "waiting for the machine", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "done", table: "AlondraShared", bundle: #bundle)

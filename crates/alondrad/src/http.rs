@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{
-    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
+    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -510,6 +510,7 @@ fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
         created_at: now_millis(),
         handed_at: None,
         delivered_at: None,
+        about: None,
     })
 }
 
@@ -755,11 +756,11 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     }
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
     log!("{} merged by {} from {who}", pr.url, hub.config.name);
+    let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
+    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }));
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
-    let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
-    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra);
     Json(json!({"id": id, "merged": true})).into_response()
 }
 
@@ -789,7 +790,7 @@ async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) 
     if pr.state != alondra_core::pr::PrState::Open {
         return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
     }
-    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User) {
+    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User, None) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("conflicts sent on PR card #{id}, card not set aside: {e}");
@@ -823,7 +824,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
         return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to change");
     }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
-    match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
+    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("changes sent on PR card #{id}, card not set aside: {e}");
@@ -834,10 +835,11 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     }
 }
 
-/// A message about a PR goes to the node that opened it, or to the orchestrator once that node is gone.
-fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom) -> anyhow::Result<String> {
+/// A message about a PR goes to the node that opened it, or to the orchestrator once that node is
+/// gone, or when the message is Alondra's and the node is done.
+fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>) -> anyhow::Result<String> {
     let res = hub.append_with(|v| {
-        let node = v.nodes.get(&pr.session_id).filter(|n| n.alive || n.in_daemon);
+        let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
         let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -848,6 +850,7 @@ fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, fr
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about,
         }))
     })?;
     match res {
@@ -1373,6 +1376,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -1661,6 +1665,9 @@ fn held_for_turn_end_note(name: &str) -> String {
 }
 
 async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
+    if b.from == Some(MessageFrom::Alondra) && hub.read(|v| v.resolve_node(&key).is_some_and(|n| !v.may_alondra_write(n))) {
+        return err(StatusCode::CONFLICT, format!("{key} is done: only {} or the orchestrator can reopen it", hub.config.name));
+    }
     let interactive = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string()));
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
@@ -1673,6 +1680,7 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -1902,6 +1910,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -2753,6 +2762,34 @@ mod tests {
         let (_, job) = status_and_body(stop("job").await).await;
         assert!(job.get("hookSpecificOutput").is_none(), "wake types into background jobs: {job}");
         assert_eq!(hub.read(|v| v.pending_messages("job").count()), 1);
+    }
+
+    #[tokio::test]
+    async fn alondra_never_writes_to_a_done_node_but_david_and_the_orchestrator_reopen_it() {
+        let hub = temp_hub("done-final");
+        for sid in ["s", "o"] {
+            hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        }
+        hub.append(Event::MarkedOrchestrator { session_id: "o".into() }).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into() }).unwrap();
+        hub.append(Event::PrDismissed { id: 1 }).unwrap();
+        hub.append(Event::ReportPosted(Report {
+            related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "Hecho".into(), body: None,
+            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now_millis(), read: false, mission: None, looks_like_question: false,
+        }))
+        .unwrap();
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), ..Default::default() })).unwrap();
+        assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::Done);
+
+        let pr = hub.read(|v| v.prs[&1].clone());
+        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 })).unwrap(), "o", "Alondra's notice goes to the orchestrator");
+        let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from) }));
+        assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
+        assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");
+
+        assert_eq!(tell_about_pr(&hub, &pr, "Ana requests changes".into(), MessageFrom::User, None).unwrap(), "s", "David's own words reach it");
+        assert_eq!(status_and_body(send(MessageFrom::Orchestrator).await).await.0, StatusCode::OK);
+        assert_eq!(hub.read(|v| v.pending_messages("s").map(|m| m.from).collect::<Vec<_>>()), [MessageFrom::User, MessageFrom::Orchestrator]);
     }
 
     /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.

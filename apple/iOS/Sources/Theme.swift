@@ -101,6 +101,7 @@ extension NodeState {
         case .working: Palette.sky
         case .waitingAnswer: Palette.dawn
         case .yourTurn: Palette.ember
+        case .waitingMerge: Palette.dawn
         case .delivered: Palette.sage
         case .waitingMachine: Palette.slate
         case .done: Palette.sage
@@ -113,6 +114,7 @@ extension NodeState {
         case .working: "hammer.fill"
         case .waitingAnswer: "hand.raised.fill"
         case .yourTurn: "hand.point.right.fill"
+        case .waitingMerge: "arrow.triangle.pull"
         case .delivered: "tray.and.arrow.down.fill"
         case .waitingMachine: "hourglass"
         case .done: "checkmark"

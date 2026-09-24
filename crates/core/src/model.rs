@@ -12,6 +12,7 @@ pub const OTHERS_PROJECT: &str = "others";
 pub enum NodeState {
     WaitingAnswer,
     YourTurn,
+    WaitingMerge,
     Unclear,
     Delivered,
     WaitingMachine,
@@ -26,6 +27,7 @@ impl NodeState {
             NodeState::Working => "working",
             NodeState::WaitingAnswer => "waiting for an answer",
             NodeState::YourTurn => "your turn",
+            NodeState::WaitingMerge => "waiting for your merge",
             NodeState::Delivered => "delivering a result",
             NodeState::WaitingMachine => "waiting for the machine",
             NodeState::Done => "done",
@@ -39,6 +41,7 @@ impl NodeState {
             "working" => NodeState::Working,
             "waiting_answer" => NodeState::WaitingAnswer,
             "your_turn" => NodeState::YourTurn,
+            "waiting_merge" => NodeState::WaitingMerge,
             "delivered" => NodeState::Delivered,
             "waiting_machine" => NodeState::WaitingMachine,
             "done" => NodeState::Done,
@@ -237,6 +240,9 @@ pub struct Node {
     pub signal_at: Option<Millis>,
     #[serde(default)]
     pub episode_since: Millis,
+    /// When the node last became done: what Alondra queued for it before then is void.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<Millis>,
     /// When the node's current turn began: its last `UserPromptSubmit`, or the daemon seeing a
     /// node without the plugin wake up.
     #[serde(default)]
@@ -297,6 +303,7 @@ impl Node {
             usage_limited_at: None,
             signal_at: None,
             episode_since: 0,
+            done_at: None,
             turn_since: 0,
             evidence: None,
             orchestrator_state: None,
@@ -543,6 +550,15 @@ pub struct Message {
     pub handed_at: Option<Millis>,
     #[serde(default)]
     pub delivered_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub about: Option<MessageAbout>,
+}
+
+/// What a message Alondra queued stands for, when the state machine has to know.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessageAbout {
+    PrMerged { pr_id: u64 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

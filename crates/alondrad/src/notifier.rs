@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::{Event, Message, MessageFrom, NodeState, now_millis};
+use alondra_core::{Event, NodeState, now_millis};
 
 use crate::hub::Hub;
 
@@ -67,17 +67,6 @@ pub async fn run(hub: Arc<Hub>) {
             continue;
         }
         let text = format!("[Alondra] Fleet updates:\n{}", lines.join("\n"));
-        let _ = hub.append_with(|v| {
-            Some(Event::MessageQueued(Message {
-                id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-                session_id: orchestrator.clone(),
-                from: MessageFrom::Alondra,
-                text: text.clone(),
-                answers_question: None,
-                created_at: now_millis(),
-                handed_at: None,
-                delivered_at: None,
-            }))
-        });
+        let _ = hub.append_with(|v| v.alondra_message(&orchestrator, text.clone(), now_millis()).map(Event::MessageQueued));
     }
 }

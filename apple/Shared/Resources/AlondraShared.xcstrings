@@ -831,6 +831,16 @@
         }
       }
     },
+    "waiting for your merge": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "esperando tu merge"
+          }
+        }
+      }
+    },
     "it is the orchestrator, which Alondra keeps alive": {
       "localizations": {
         "es": {

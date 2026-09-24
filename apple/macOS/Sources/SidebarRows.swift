@@ -126,7 +126,7 @@ struct ProjectHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(name)
-            let urgent = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .unclear }.count
+            let urgent = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMerge || $0.state == .unclear }.count
             if urgent > 0 {
                 Circle().fill(NodeState.waitingAnswer.color).frame(width: 6, height: 6)
                     .help("\(urgent) nodes waiting")
@@ -140,6 +140,7 @@ extension NodeState {
         switch self {
         case .waitingAnswer: .orange
         case .yourTurn: .pink
+        case .waitingMerge: .mint
         case .unclear: .purple
         case .stalled: .red
         case .delivered: .blue

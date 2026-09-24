@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alondra_core::states;
 use alondra_core::{
-    Event, Message, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
+    Event, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
 };
 
 use crate::classify::{Expects, what_node_expects};
@@ -89,18 +89,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             Some(at) if now_millis() - at < NUDGE_COOLDOWN_MS => due.push((session, key)),
             _ => {
                 let text = states::nudge_text(&hub.config.name);
-                hub.append_with(|v| {
-                    Some(Event::MessageQueued(Message {
-                        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-                        session_id: session.clone(),
-                        from: MessageFrom::Alondra,
-                        text,
-                        answers_question: None,
-                        created_at: now_millis(),
-                        handed_at: None,
-                        delivered_at: None,
-                    }))
-                })?;
+                hub.append_with(|v| v.alondra_message(&session, text, now_millis()).map(Event::MessageQueued))?;
             }
         }
     }
@@ -295,7 +284,7 @@ fn cap(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::{DaemonObservation, HookEvent};
+    use alondra_core::{DaemonObservation, HookEvent, Message};
 
     fn waiting_view(last: &str) -> View {
         let mut v = View::default();
@@ -425,6 +414,7 @@ mod tests {
             created_at: 4000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert_eq!(last_nudge_at(&v, "s"), Some(4000));
     }
@@ -465,6 +455,7 @@ mod tests {
             created_at: 9000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
@@ -493,7 +484,7 @@ mod tests {
     }
 
     fn message(id: u64, from: MessageFrom, at: i64) -> Event {
-        Event::MessageQueued(Message { id, session_id: "s".into(), from, text: "Sí".into(), answers_question: None, created_at: at, handed_at: None, delivered_at: None })
+        Event::MessageQueued(Message { id, session_id: "s".into(), from, text: "Sí".into(), answers_question: None, created_at: at, handed_at: None, delivered_at: None, about: None })
     }
 
     fn asked(id: u64) -> Question {

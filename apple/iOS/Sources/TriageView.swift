@@ -332,7 +332,7 @@ private struct EmptyTriage: View {
         let nodes = fleet.nodes
         return [
             (String(localized: "working"), nodes.filter { $0.state == .working }.count, Palette.sky),
-            (String(localized: "waiting"), nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMachine }.count, Palette.dawn),
+            (String(localized: "waiting"), nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMerge || $0.state == .waitingMachine }.count, Palette.dawn),
             (String(localized: "total"), nodes.count, Palette.sage),
         ]
     }
