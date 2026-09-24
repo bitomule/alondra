@@ -1458,8 +1458,18 @@ struct LaunchBody {
     prompt: String,
     model: Option<String>,
     permission_mode: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     over_pace_ok: bool,
+}
+
+fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    match Value::deserialize(d)? {
+        Value::Bool(b) => Ok(b),
+        Value::Null => Ok(false),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("true") => Ok(true),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("false") => Ok(false),
+        other => Err(serde::de::Error::custom(format!("expected true or false, got {other}"))),
+    }
 }
 
 async fn launch(Json(b): Json<LaunchBody>) -> Response {
@@ -1606,6 +1616,23 @@ mod tests {
             assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
         }
         assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
+    }
+
+    #[test]
+    fn over_pace_ok_is_taken_as_a_bool_or_as_the_string_an_mcp_client_sends() {
+        let body = |extra: &str| serde_json::from_str::<LaunchBody>(&format!(r#"{{"name":"n","cwd":"/tmp","prompt":"p"{extra}}}"#)).map(|b| b.over_pace_ok);
+        let cases = [
+            ("absent", "", Some(false)),
+            ("bool true", r#","over_pace_ok":true"#, Some(true)),
+            ("bool false", r#","over_pace_ok":false"#, Some(false)),
+            ("string true", r#","over_pace_ok":"true""#, Some(true)),
+            ("string False", r#","over_pace_ok":"False""#, Some(false)),
+            ("null", r#","over_pace_ok":null"#, Some(false)),
+            ("anything else", r#","over_pace_ok":"yes please""#, None),
+        ];
+        for (what, extra, expected) in cases {
+            assert_eq!(body(extra).ok(), expected, "{what}");
+        }
     }
 
     #[test]
