@@ -59,6 +59,20 @@ import Testing
         #expect(InboxItem.pullRequest(p).id == "p4")
     }
 
+    /// 24 Sep: David's «la pantalla de PR full screen no tiene los mismos botones»; the card and
+    /// the full screen now both ask the PR which main button to show.
+    @Test(arguments: [
+        ("ready", #","mergeable":"MERGEABLE","merge_methods":["merge","squash"],"preferred_method":"squash""#, PullRequest.MainAction.merge(methods: ["squash", "merge"], blockedBy: nil)),
+        ("GitHub still checking", #","mergeable":"UNKNOWN""#, .merge(methods: PullRequest.allMethods, blockedBy: nil)),
+        ("on top of an open PR", #","below_number":11"#, .merge(methods: PullRequest.allMethods, blockedBy: "Merge PR #11 first")),
+        ("on top of a PR set aside", #","below_number":11,"below_set_aside":true"#, .merge(methods: PullRequest.allMethods, blockedBy: "PR #11 is still open on GitHub: merge or close it first")),
+        ("conflicts", #","mergeable":"CONFLICTING""#, .resolveConflicts),
+        ("conflicts before the PR under it", #","merge_state":"DIRTY","below_number":11"#, .resolveConflicts),
+    ])
+    func conflictsComeFirstAndAMergeWaitsForThePRUnderIt(what: String, extra: String, expected: PullRequest.MainAction) throws {
+        #expect(try pr(extra).mainAction == expected, "\(what)")
+    }
+
     @Test func aDirtyMergeStateIsAConflictAndUnknownIsStillBeingChecked() throws {
         #expect(try pr(#","mergeable":"UNKNOWN","merge_state":"DIRTY""#).hasConflicts)
         let checking = try pr(#","mergeable":"UNKNOWN","merge_state":"UNKNOWN""#)
