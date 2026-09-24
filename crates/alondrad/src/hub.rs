@@ -30,12 +30,17 @@ impl Hub {
     pub fn open(config: Config, hold_enabled: bool) -> Result<Self> {
         let home = config.home.clone();
         std::fs::create_dir_all(home.join("files"))?;
-        let store = Store::open(&home.join("alondra.db"))?;
+        let mut store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         view.backfill_created_at();
         view.backfill_tasks();
         let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
         log!("{n} events replayed, {} nodes", view.nodes.len());
+        if view.board.recorded_since.is_none() {
+            let at = now_millis();
+            let seq = store.append(at, &Event::TasksRecorded)?;
+            view.apply(seq, at, &Event::TasksRecorded);
+        }
         let (tick, _) = watch::channel(0);
         Ok(Hub {
             writer: Mutex::new(store),
@@ -59,6 +64,8 @@ impl Hub {
         Hub { pr_lookup: crate::prs::Lookup::new(gh), ..self }
     }
 
+    /// Records an event, and around it the task events it takes: the task a session's first card
+    /// goes to before it, and what it moves after it (`View::record` without the store).
     pub fn append_with(&self, build: impl FnOnce(&View) -> Option<Event>) -> Result<Option<(u64, Event)>> {
         let mut store = self.writer.lock().expect("writer lock poisoned");
         let event = {
@@ -69,8 +76,19 @@ impl Hub {
             }
         };
         let at = now_millis();
+        let mut view = self.view.write().expect("view lock poisoned");
+        for e in view.tasks_before(&event) {
+            let s = store.append(at, &e)?;
+            view.apply(s, at, &e);
+        }
+        let before = view.before_tasks(&event);
         let seq = store.append(at, &event)?;
-        self.view.write().expect("view lock poisoned").apply(seq, at, &event);
+        view.apply(seq, at, &event);
+        for e in view.task_moves(at, &event, before) {
+            let s = store.append(at, &e)?;
+            view.apply(s, at, &e);
+        }
+        drop(view);
         drop(store);
         self.bump();
         Ok(Some((seq, event)))

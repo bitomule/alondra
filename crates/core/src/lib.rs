@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod automerge;
 pub mod config;
 pub mod event;
 pub mod issues;

@@ -2028,6 +2028,8 @@ pub(crate) mod tests {
             action: false,
             steps: vec![],
             mission: None,
+            replaces: None,
+            task: None,
         }
     }
 
@@ -2047,6 +2049,7 @@ pub(crate) mod tests {
             to_orchestrator: false,
             mission: None,
             looks_like_question: false,
+            task: None,
         }
     }
 

@@ -588,11 +588,13 @@ mod tests {
             action,
             steps: vec![],
             mission: None,
+            replaces: None,
+            task: None,
         })
     }
 
     fn pr_opened() -> Event {
-        Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into() }
+        Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None }
     }
 
     fn report(kind: ReportKind) -> Event {
@@ -619,6 +621,7 @@ mod tests {
             to_orchestrator,
             mission: None,
             looks_like_question: false,
+            task: None,
         })
     }
 

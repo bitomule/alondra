@@ -1,11 +1,12 @@
 //! Keeps each open PR card in step with GitHub through `gh`: title, body, checks, what can be
 //! merged and how.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use alondra_core::automerge::{AutoMerge, Obstacle};
 use alondra_core::pr::{Check, CheckState, MergeMethod, PrState, PullRequest};
 use alondra_core::stack::Retarget;
 use alondra_core::{Event, MessageFrom, View};
@@ -14,13 +15,18 @@ use serde_json::Value;
 use crate::hub::Hub;
 
 const EVERY: Duration = Duration::from_secs(20);
+/// What a merge that did not finish in time says.
+pub const TIMED_OUT: &str = "gh pr merge did not finish within 90 s";
 const REFRESH: Duration = Duration::from_secs(120);
-const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,mergeStateStatus,state,headRefOid";
+/// How often a PR Alondra merges on its own is asked about while its checks run.
+const AUTO_MERGE_REFRESH: Duration = Duration::from_secs(40);
+const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,mergeStateStatus,state,headRefOid,isDraft";
 
 pub async fn run(hub: Arc<Hub>) {
     let mut fetched: HashMap<u64, Instant> = HashMap::new();
     let mut merges: HashMap<String, usize> = HashMap::new();
     let mut base_moved: HashMap<String, Instant> = HashMap::new();
+    let mut told: HashSet<(u64, String, String)> = HashSet::new();
     loop {
         tokio::time::sleep(EVERY).await;
         for (repo, count) in hub.read(merged_per_repo) {
@@ -33,6 +39,58 @@ pub async fn run(hub: Arc<Hub>) {
             fetched.insert(pr.id, Instant::now());
             refresh(&hub, &pr).await;
         }
+        auto_merge(&hub, &mut told, &GhCli).await;
+    }
+}
+
+/// Merges the PRs of auto-merge tasks that GitHub says can go in, through the same path as
+/// David's Merge, and tells a node once per push what only it can fix. `told` keeps what was
+/// said, so nothing is tried or said twice for the same head.
+pub async fn auto_merge(hub: &Arc<Hub>, told: &mut HashSet<(u64, String, String)>, gh: &impl Gh) {
+    let now = alondra_core::now_millis();
+    let (ready, blocked) = hub.read(|v| {
+        let (mut ready, mut blocked) = (vec![], vec![]);
+        for p in open(v) {
+            match v.auto_merge(p, now) {
+                Some(AutoMerge::Ready(method)) => ready.push((p.clone(), method)),
+                Some(AutoMerge::Blocked(obstacle)) => blocked.push((p.clone(), obstacle)),
+                Some(AutoMerge::Waiting(_)) | None => {}
+            }
+        }
+        (ready, blocked)
+    });
+    let head = |pr: &PullRequest| pr.head_sha.clone().unwrap_or_default();
+    for (pr, method) in ready {
+        let key = (pr.id, head(&pr), "merge".to_string());
+        if told.contains(&key) {
+            continue;
+        }
+        if let Err(refusal) = crate::http::merge(hub, pr.id, method, crate::http::Merger::Alondra, gh).await
+            && let Some(text) = refusal.for_node(&pr.url)
+        {
+            told.insert(key);
+            log!("{} not merged by Alondra: {text}", pr.url);
+            if let Err(e) = crate::http::tell_about_pr(hub, &pr, text, MessageFrom::Alondra, None, vec![]) {
+                log!("nobody to tell why {} was not merged: {e}", pr.url);
+            }
+        }
+    }
+    for (pr, obstacle) in blocked {
+        if told.insert((pr.id, head(&pr), format!("{obstacle:?}"))) {
+            let _ = crate::http::tell_about_pr(hub, &pr, obstacle_text(&pr, &obstacle), MessageFrom::Alondra, None, vec![]);
+        }
+    }
+}
+
+/// What the node of an auto-merge task hears when only it can move its PR on.
+pub fn obstacle_text(pr: &PullRequest, obstacle: &Obstacle) -> String {
+    match obstacle {
+        Obstacle::ChecksFailed(names) => format!("[Alondra] The checks of {} failed ({}). Fix them and push: Alondra merges it once they pass.", pr.url, names.join(", ")),
+        Obstacle::Conflicts => {
+            let base = pr.base.as_deref().unwrap_or("its base");
+            format!("[Alondra] {} conflicts with {base}: bring {base} into the branch, resolve the conflicts and push. Alondra merges it once GitHub can.", pr.url)
+        }
+        Obstacle::Draft => format!("[Alondra] {} is a draft. Mark it ready (gh pr ready) when it is: Alondra merges it once its checks pass.", pr.url),
     }
 }
 
@@ -62,7 +120,11 @@ fn due(v: &View, fetched: &HashMap<u64, Instant>, base_moved: &HashMap<String, I
     watched(v)
         .filter(|p| {
             let Some(last) = fetched.get(&p.id).filter(|_| p.fetched) else { return true };
-            now.duration_since(*last) >= REFRESH || p.mergeability_unknown() || base_moved.get(&p.repo).is_some_and(|moved| moved > last)
+            let checks_running = p.auto_merge && p.checks.iter().any(|c| c.state == CheckState::Running);
+            now.duration_since(*last) >= REFRESH
+                || p.mergeability_unknown()
+                || base_moved.get(&p.repo).is_some_and(|moved| moved > last)
+                || (checks_running && now.duration_since(*last) >= AUTO_MERGE_REFRESH)
         })
         .cloned()
         .collect()
@@ -95,6 +157,12 @@ pub trait Gh: Sync {
     fn view(&self, url: &str) -> impl Future<Output = Option<Value>> + Send;
     /// Whether GitHub knows the PR.
     fn exists(&self, url: &str) -> impl Future<Output = bool> + Send;
+
+    /// Merges the PR; what GitHub said when it would not.
+    fn merge(&self, url: &str, method: MergeMethod) -> impl Future<Output = Result<(), String>> + Send {
+        let _ = (url, method);
+        async { Err("merging is not available here".to_string()) }
+    }
 
     fn search_issues(&self, owners: &[String]) -> impl Future<Output = Result<Value, String>> + Send {
         let _ = owners;
@@ -136,6 +204,16 @@ impl Gh for GhCli {
 
     async fn exists(&self, url: &str) -> bool {
         gh_json(&["pr", "view", url, "--json", "url,state,headRefName"]).await.is_some()
+    }
+
+    async fn merge(&self, url: &str, method: MergeMethod) -> Result<(), String> {
+        let merge = tokio::process::Command::new("gh").args(["pr", "merge", url, method.flag()]).kill_on_drop(true).output();
+        match tokio::time::timeout(Duration::from_secs(90), merge).await {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err(TIMED_OUT.into()),
+        }
     }
 
     /// One search across every owner: a call per repo would cost one request each.
@@ -196,10 +274,11 @@ impl Lookup {
     }
 }
 
-/// Opens a card for each PR in `urls` that GitHub confirms. One it does not know (a fixture URL
-/// in test output, a typo) gets no card. 24 Sep, seq 29139-29143: a/b#7, #24 and #54, fixtures
-/// of Alondra's own tests, reached David's inbox as cards.
-pub async fn open_confirmed(hub: &Hub, session_id: &str, urls: Vec<String>) {
+/// Opens a card for each PR in `urls` that GitHub confirms, for the task given, which the caller
+/// decided when it saw the PR. One GitHub does not know (a fixture URL in test output, a typo)
+/// gets no card. 24 Sep, seq 29139-29143: a/b#7, #24 and #54, fixtures of Alondra's own tests,
+/// reached David's inbox as cards.
+pub async fn open_confirmed(hub: &Hub, session_id: &str, urls: Vec<String>, task: Option<String>) {
     for url in urls {
         let Some((repo, number)) = alondra_core::pr::parse_url(&url) else { continue };
         let url = alondra_core::pr::canonical(&repo, number);
@@ -213,7 +292,7 @@ pub async fn open_confirmed(hub: &Hub, session_id: &str, urls: Vec<String>) {
                 continue;
             }
         }
-        if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
+        if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string(), task: task.clone() }) {
             log!("could not record a PR: {e}");
         }
     }
@@ -360,6 +439,7 @@ pub fn refreshed(pr: &PullRequest, view: &Value, repo: Option<&Value>) -> PullRe
         mergeable: s("mergeable"),
         merge_state: s("mergeStateStatus"),
         head_sha: s("headRefOid").or_else(|| pr.head_sha.clone()),
+        draft: view.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
         fetched: true,
         ..pr.clone()
     }
@@ -442,10 +522,12 @@ mod tests {
         assert_eq!(due(&v, &fetched, &HashMap::new(), t0 + REFRESH).len(), 4);
     }
 
+    #[derive(Default)]
     struct FakeGh {
         refuses: bool,
         edits: std::sync::Mutex<Vec<(String, String)>>,
         mergeable: std::sync::Mutex<std::collections::VecDeque<&'static str>>,
+        merged: std::sync::Mutex<Vec<String>>,
     }
 
     impl Gh for FakeGh {
@@ -461,6 +543,11 @@ mod tests {
 
         async fn exists(&self, _url: &str) -> bool {
             true
+        }
+
+        async fn merge(&self, url: &str, _method: MergeMethod) -> Result<(), String> {
+            self.merged.lock().unwrap().push(url.into());
+            Ok(())
         }
     }
 
@@ -482,12 +569,12 @@ mod tests {
             let hub = hub(&i.to_string());
             hub.append(Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             for (n, base, head) in [(1, "main", "x"), (2, "x", "y")] {
-                hub.append(Event::PrOpened { url: format!("https://github.com/a/b/pull/{n}"), session_id: "s".into() }).unwrap();
+                hub.append(Event::PrOpened { url: format!("https://github.com/a/b/pull/{n}"), session_id: "s".into(), task: None }).unwrap();
                 let mut pr = hub.read(|v| v.prs[&n].clone());
                 (pr.base, pr.head) = (Some(base.into()), Some(head.into()));
                 hub.append(Event::PrUpdated(pr)).unwrap();
             }
-            let gh = FakeGh { refuses, edits: Default::default(), mergeable: std::sync::Mutex::new(mergeable.iter().copied().collect()) };
+            let gh = FakeGh { refuses, mergeable: std::sync::Mutex::new(mergeable.iter().copied().collect()), ..Default::default() };
             let plan = hub.read(|v| v.retarget_plan(1));
             hub.append(Event::PrMerged { id: 1, method: MergeMethod::Merge }).unwrap();
             let moved = retarget(&hub, &plan, &gh).await;
@@ -498,6 +585,43 @@ mod tests {
             assert_eq!(asked, told, "{what}");
             assert!(!refuses || gh.mergeable.lock().unwrap().len() == mergeable.len(), "{what}: nothing refreshed after a refused move");
         }
+    }
+
+    #[tokio::test]
+    async fn alondra_merges_an_auto_merge_pr_once_github_lets_it_and_tells_the_node_what_only_it_can_fix() {
+        use alondra_core::tasks::TaskState;
+        let hub = Arc::new(hub("auto-merge"));
+        hub.append(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true }).unwrap();
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), pid: Some(1), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None }).unwrap();
+        let check = |state: CheckState| vec![Check { name: "lint".into(), state, url: None }];
+        let github = |head: &str, checks: Vec<Check>| {
+            let mut pr = hub.read(|v| v.prs[&1].clone());
+            (pr.fetched, pr.head_sha, pr.checks, pr.mergeable) = (true, Some(head.into()), checks, Some("MERGEABLE".into()));
+            hub.append(Event::PrUpdated(pr)).unwrap();
+        };
+        let (gh, mut told) = (FakeGh::default(), HashSet::new());
+        let task = |hub: &Hub| hub.read(|v| v.session_task("s").map(|t| (t.state, v.auto_merge_pending(t, alondra_core::now_millis()))));
+        let said = |hub: &Hub| hub.read(|v| v.messages.values().filter(|m| m.session_id == "s").map(|m| m.text.clone()).collect::<Vec<_>>());
+        assert!(hub.read(|v| v.prs[&1].auto_merge), "the task's option reaches its PR");
+
+        github("a1", check(CheckState::Running));
+        auto_merge(&hub, &mut told, &gh).await;
+        assert!(gh.merged.lock().unwrap().is_empty());
+        assert_eq!(task(&hub), Some((TaskState::Running, true)), "waiting on the checks is not the node's work");
+
+        github("a1", check(CheckState::Failed));
+        auto_merge(&hub, &mut told, &gh).await;
+        auto_merge(&hub, &mut told, &gh).await;
+        assert_eq!(said(&hub).iter().filter(|t| t.contains("checks of https://github.com/a/b/pull/7 failed (lint)")).count(), 1, "told once per push");
+        assert_eq!(task(&hub), Some((TaskState::Running, false)), "only the node can move it on");
+
+        github("a2", check(CheckState::Passed));
+        auto_merge(&hub, &mut told, &gh).await;
+        assert_eq!(*gh.merged.lock().unwrap(), ["https://github.com/a/b/pull/7"]);
+        assert_eq!(hub.read(|v| v.prs[&1].state), PrState::Merged);
+        assert_eq!(task(&hub).map(|t| t.0), Some(TaskState::Closing));
+        assert!(said(&hub).iter().any(|t| t.contains("Alondra merged https://github.com/a/b/pull/7")), "the node gets the merge notice: {:?}", said(&hub));
     }
 
     #[test]

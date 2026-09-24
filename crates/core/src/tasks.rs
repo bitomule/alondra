@@ -10,6 +10,8 @@ use crate::model::{Attachment, Millis};
 
 mod derive;
 
+pub use derive::{Before, CardTask, NODE_CLOSED, Pass, task_id};
+
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Request {
@@ -159,7 +161,10 @@ pub enum TaskEvent {
     /// A PR closed without a merge, a PR card set aside, or a document read without a verdict.
     ReviewClosed { item: Item },
     Reopen,
-    Cancel,
+    Cancel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 impl TaskEvent {
@@ -177,7 +182,7 @@ impl TaskEvent {
             TaskEvent::Merged { .. } => "merged",
             TaskEvent::ReviewClosed { .. } => "review_closed",
             TaskEvent::Reopen => "reopen",
-            TaskEvent::Cancel => "cancel",
+            TaskEvent::Cancel { .. } => "cancel",
         }
     }
 }
@@ -329,7 +334,7 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
 
         (Running | Closing, E::FinalReport { .. }) => nothing_pending(g).map(|()| Done),
         (InReview, E::FinalReport { .. }) => Ok(if g.reviews_left() { InReview } else { Done }),
-        (NeedsYou, E::FinalReport { .. }) => blocked(g).map(|()| Done),
+        (NeedsYou, E::FinalReport { .. }) => blocked(g).and_then(|()| nothing_pending(g)).map(|()| Done),
         (Done, E::FinalReport { .. }) => Ok(Done),
         (Cancelled, E::FinalReport { .. }) => Err(is_cancelled()),
 
@@ -361,9 +366,9 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Done | Cancelled, E::Reopen) => Ok(Running),
         (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Reopen) => Err(refused("only a done or cancelled task can be reopened")),
 
-        (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Cancel) => Ok(Cancelled),
-        (Done, E::Cancel) => Err(refused("the task is already done")),
-        (Cancelled, E::Cancel) => Err(refused("the task is already cancelled")),
+        (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Cancel { .. }) => Ok(Cancelled),
+        (Done, E::Cancel { .. }) => Err(refused("the task is already done")),
+        (Cancelled, E::Cancel { .. }) => Err(refused("the task is already cancelled")),
     }
 }
 
@@ -442,13 +447,41 @@ pub struct Task {
     /// A launch was matched to the task's node.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
+    /// Made by a `TaskCreated` event: everything that moves it is in the log as `TaskMoved`, and
+    /// nothing is read into it from other events.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recorded: bool,
     #[serde(default)]
     pub history: Vec<Transition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anomalies: Vec<Anomaly>,
 }
 
+/// A task as the daemon records its creation: at a launch, or for a session on its first card.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NewTask {
+    pub id: String,
+    pub request: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub options: TaskOptions,
+    /// The node working on it; none yet for a launch whose node has not shown up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Made by a launch: the node that shows up under its title takes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub launched: bool,
+}
+
 impl Task {
+    pub fn is_assigned_to(&self, session_id: &str) -> bool {
+        self.assignee.as_ref().is_some_and(|a| a.session_id == session_id)
+    }
+
     fn last_change(&self) -> Millis {
         let history = self.history.last().map(|t| t.at);
         let anomalies = self.anomalies.last().map(|a| a.at);
@@ -477,6 +510,10 @@ pub struct Board {
     /// Launches whose node has not shown up yet, by node name.
     #[serde(default)]
     pub launches: BTreeMap<String, Launch>,
+    /// Since when the daemon records every task change in the log. Sessions first seen before it
+    /// keep having their task read from their other events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_since: Option<Millis>,
 }
 
 impl Board {
@@ -523,6 +560,32 @@ impl Board {
         }
     }
 
+    pub(crate) fn create(&mut self, t: &NewTask, at: Millis) {
+        self.requests.entry(t.request.clone()).or_insert_with(|| Request::new(&t.request, at, true));
+        let task = Task {
+            id: t.id.clone(),
+            request: t.request.clone(),
+            title: t.title.clone(),
+            brief: t.brief.clone(),
+            depends_on: t.depends_on.clone(),
+            options: t.options.clone(),
+            assignee: t.session_id.as_ref().map(|s| Assignee { session_id: s.clone(), agent_id: None }),
+            prs: vec![],
+            documents: vec![],
+            blocker: None,
+            notices: vec![],
+            state: TaskState::Running,
+            state_since: at,
+            created_at: at,
+            final_report: None,
+            launched: t.launched,
+            recorded: true,
+            history: vec![],
+            anomalies: vec![],
+        };
+        self.tasks.entry(t.id.clone()).or_insert(task);
+    }
+
     /// Forgets tasks nobody can act on any more: their node is gone, nothing of theirs waits for
     /// David and nothing happened to them since `before`. Requests left without tasks, and
     /// launches that never found their node, go with them.
@@ -555,7 +618,7 @@ mod tests {
             TaskEvent::Merged { item: Item::Pr(1) },
             TaskEvent::ReviewClosed { item: Item::Pr(1) },
             TaskEvent::Reopen,
-            TaskEvent::Cancel,
+            TaskEvent::Cancel { reason: None },
         ];
         for e in &all {
             match e {
@@ -571,7 +634,7 @@ mod tests {
                 | TaskEvent::Merged { .. }
                 | TaskEvent::ReviewClosed { .. }
                 | TaskEvent::Reopen
-                | TaskEvent::Cancel => {}
+                | TaskEvent::Cancel { .. } => {}
             }
         }
         all
@@ -646,6 +709,8 @@ mod tests {
             (Closing, e("final_report"), &pr, Err("PR #150 is not merged")),
             (InReview, e("final_report"), &pr, Ok(InReview)),
             (NeedsYou, e("final_report"), &blocker, Err("question #7 is still open")),
+            (NeedsYou, e("final_report"), &pr, Err("PR #150 is not merged")),
+            (NeedsYou, e("final_report"), &document, Err("document #146 is not reviewed yet")),
             (Running, e("node_updated"), &pr, Ok(InReview)),
             (Closing, e("node_updated"), &document, Ok(InReview)),
             (InReview, e("merged"), &pr, Ok(InReview)),
@@ -670,7 +735,7 @@ mod tests {
             ("done again from anything but a reopen", Done, TaskEvent::BlockerRaised { blocker: Q, replaces: false }, Guards::default(), "the task is done: reopen it first"),
             ("done again from a push", Done, TaskEvent::NodeUpdated { on: Item::Pr(1) }, Guards::default(), "the task is done: reopen it first"),
             ("done again from a PR", Done, TaskEvent::PrOpened { pr: 1 }, Guards::default(), "the task is done: reopen it first"),
-            ("cancelling what is finished", Done, TaskEvent::Cancel, Guards::default(), "the task is already done"),
+            ("cancelling what is finished", Done, TaskEvent::Cancel { reason: None }, Guards::default(), "the task is already done"),
             ("reopening what is not done", Running, TaskEvent::Reopen, Guards::default(), "only a done or cancelled task can be reopened"),
             ("working before its dependency", WaitingDependency, TaskEvent::PrOpened { pr: 1 }, Guards { waiting_on: Some("t-a".into()), ..Guards::default() }, "the task has not started: it waits for t-a"),
             ("merging above an unmerged dependency", InReview, TaskEvent::Merged { item: Item::Pr(2) }, Guards { unmerged_dependency: Some(150), ..Guards::default() }, "merge PR #150 first"),
@@ -705,6 +770,7 @@ mod tests {
             created_at: 0,
             final_report: None,
             launched: false,
+            recorded: false,
             history: vec![],
             anomalies: vec![],
         }
