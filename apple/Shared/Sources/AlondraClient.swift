@@ -114,6 +114,22 @@ public struct AlondraClient: Sendable {
         try await post("v1/prs/\(id)/dismiss", [:])
     }
 
+    public func cancelTask(_ id: String) async throws {
+        try await post("v1/tasks/\(id)/cancel", [:])
+    }
+
+    public func reopenTask(_ id: String) async throws {
+        try await post("v1/tasks/\(id)/reopen", [:])
+    }
+
+    /// The task with its history, which the overview leaves out.
+    public func task(_ id: String) async throws -> WorkTask {
+        let data = try await get("v1/tasks/\(id)")
+        struct Wrapped: Decodable { let task: WorkTask }
+        if let wrapped = try? Self.decoder.decode(Wrapped.self, from: data) { return wrapped.task }
+        return try Self.decoder.decode(WorkTask.self, from: data)
+    }
+
     public func activity(client: String) async throws {
         try await post("v1/activity", ["client": client])
     }

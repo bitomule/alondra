@@ -5,6 +5,8 @@ import SwiftUI
 enum Selection: Hashable {
     case item(String)
     case node(String)
+    case task(String)
+    case request(String)
 }
 
 extension EnvironmentValues {
@@ -24,6 +26,8 @@ public struct FleetView: View {
     @State private var closing: CloseRequest?
     @FocusState private var searchFocused: Bool
     @AppStorage("collapsedProjects") private var collapsedRaw = ""
+    @AppStorage("tasksExpanded") private var tasksExpanded = true
+    @AppStorage("toggledTaskGroups") private var toggledGroupsRaw = ""
 
     public init() {}
 
@@ -163,10 +167,30 @@ public struct FleetView: View {
                     SidebarCountHeader(title: String(localized: "Pull Requests"), count: store.inbox.count(where: \.isPullRequest), tint: .purple)
                 }
             }
+            if !store.board.requests.isEmpty || !store.board.tasks.isEmpty {
+                Section(isExpanded: $tasksExpanded) {
+                    ForEach(taskGroups) { group in
+                        DisclosureGroup(isExpanded: expansion(for: group)) {
+                            ForEach(group.tasks) { task in
+                                TaskRow(task: task, store: store)
+                                    .tag(Selection.task(task.id))
+                            }
+                            ForEach(group.requests) { request in
+                                DefiningRow(request: request, store: store)
+                                    .tag(Selection.request(request.id))
+                            }
+                        } label: {
+                            TaskGroupLabel(group: group)
+                        }
+                    }
+                } header: {
+                    SidebarCountHeader(title: String(localized: "Tasks"), count: store.board.openCount, tint: .gray)
+                }
+            }
             ForEach(filteredProjects, id: \.name) { project in
                 Section(isExpanded: expansion(for: project.name)) {
                     ForEach(project.nodes) { node in
-                        NodeRow(node: node)
+                        NodeRow(node: node, tasks: store.board.tasks(onNode: node.sessionId))
                             .badge(store.pendingCount(for: node.sessionId))
                             .tag(Selection.node(node.sessionId))
                             .contextMenu {
@@ -199,9 +223,21 @@ public struct FleetView: View {
             }
         case .node(let id):
             if let node = store.node(id) {
-                NodeDetail(node: node, store: store, drafts: drafts, open: { selection = .item($0) })
+                NodeDetail(node: node, store: store, drafts: drafts, open: { selection = .item($0) }, openTask: { selection = .task($0) })
             } else {
                 ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
+            }
+        case .task(let id):
+            if let task = store.board.task(id) {
+                TaskDetail(task: task, store: store, select: { selection = $0 })
+            } else {
+                ContentUnavailableView("This task is gone", systemImage: "questionmark.circle")
+            }
+        case .request(let id):
+            if let request = store.board.request(id) {
+                RequestDetail(request: request, store: store)
+            } else {
+                ContentUnavailableView("This request is gone", systemImage: "questionmark.circle")
             }
         case nil:
             HomeView(store: store, start: startTriage, newRequest: { showingNew = true })
@@ -242,6 +278,34 @@ public struct FleetView: View {
         }
     }
 
+    /// What waits for the user first; finished groups start folded.
+    private func expansion(for group: TaskStateGroup) -> Binding<Bool> {
+        let key = "\(group.kind)"
+        let byDefault = !group.isFinished
+        return Binding {
+            !terms.isEmpty || byDefault != toggledGroups.contains(key)
+        } set: { expanded in
+            var set = toggledGroups
+            if expanded == byDefault { set.remove(key) } else { set.insert(key) }
+            toggledGroupsRaw = set.sorted().joined(separator: "\n")
+        }
+    }
+
+    private var toggledGroups: Set<String> {
+        Set(toggledGroupsRaw.split(separator: "\n").map(String.init))
+    }
+
+    private var taskGroups: [TaskStateGroup] {
+        let groups = store.board.groups
+        guard !terms.isEmpty else { return groups }
+        return groups.compactMap { group in
+            let tasks = group.tasks.filter { task in terms.allSatisfy { task.title.lowercased().contains($0) } }
+            let requests = group.requests.filter { request in terms.allSatisfy { store.title(of: request).lowercased().contains($0) } }
+            let kept = TaskStateGroup(kind: group.kind, tasks: tasks, requests: requests)
+            return kept.count == 0 ? nil : kept
+        }
+    }
+
     private var terms: [Substring] {
         query.lowercased().split(separator: " ")
     }
@@ -262,7 +326,8 @@ public struct FleetView: View {
         return store.projects.compactMap { project in
             let nodes = project.nodes.filter { node in
                 if let smartMatches { return smartMatches.contains(node.sessionId) }
-                let haystack = "\(node.displayName) \(project.name) \(node.stateLabel) \(node.summary)".lowercased()
+                let tasks = store.board.tasks(onNode: node.sessionId).map(\.title).joined(separator: " ")
+                let haystack = "\(node.displayName) \(project.name) \(node.fleetLabel) \(node.summary) \(tasks)".lowercased()
                 return terms.allSatisfy { haystack.contains($0) }
             }
             return nodes.isEmpty ? nil : (name: project.name, nodes: nodes)
@@ -275,7 +340,7 @@ public struct FleetView: View {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard q.count >= 3 else { return }
         try? await Task.sleep(for: .milliseconds(1200))
-        guard !Task.isCancelled, filteredProjects.isEmpty, visibleInbox.isEmpty else { return }
+        guard !Task.isCancelled, filteredProjects.isEmpty, visibleInbox.isEmpty, taskGroups.isEmpty else { return }
         smartStatus = String(localized: "Searching the conversations…")
         let result = await store.smartSearch(q)
         guard !Task.isCancelled else { return }

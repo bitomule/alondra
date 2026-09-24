@@ -6,6 +6,7 @@ struct NodeDetail: View {
     let store: FleetStore
     let drafts: Drafts
     let open: (String) -> Void
+    let openTask: (String) -> Void
     @FocusState private var focus: DetailField?
     @State private var closing: CloseRequest?
 
@@ -37,19 +38,46 @@ struct NodeDetail: View {
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                     }
                 }
-                if let tool = node.tool {
-                    section(String(localized: "Right now")) {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: "hammer")
-                                .foregroundStyle(.secondary)
-                            Text(verbatim: "\(tool.name) \(tool.summary ?? "")")
-                                .font(.system(.callout, design: .monospaced))
-                                .textSelection(.enabled)
-                            Spacer()
-                            Text("\(ago(tool.since)) ago")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                let tasks = node.isOrchestrator ? [] : store.board.tasks(onNode: node.sessionId)
+                if !tasks.isEmpty {
+                    section(String(localized: "Tasks")) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(tasks) { task in
+                                Button { openTask(task.id) } label: {
+                                    HStack(spacing: 10) {
+                                        StatusDot(color: task.color)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(task.title)
+                                                .fontWeight(.medium)
+                                                .strikethrough(task.state == .cancelled)
+                                            Text(verbatim: taskLine(task))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .contentShape(.rect)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
+                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
+                    }
+                }
+                let threads = store.activity(of: node)
+                if !threads.isEmpty {
+                    section(String(localized: "Right now")) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
+                                ThreadRow(activity: thread, task: thread.task.flatMap(store.board.task))
+                            }
+                        }
+                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                     }
                 }
                 if !node.running.isEmpty {
@@ -114,13 +142,18 @@ struct NodeDetail: View {
                 .font(.title.weight(.semibold))
                 .textSelection(.enabled)
             HStack(spacing: 8) {
-                StatusDot(state: node.state, size: 9)
-                Text(node.stateLabel.capitalizedFirst)
+                StatusDot(color: node.dotColor, size: 9)
+                Text(node.fleetLabel.capitalizedFirst)
                 Text("· \(ago(node.stateSince)) ago")
                     .foregroundStyle(.secondary)
             }
             .font(.callout)
         }
+    }
+
+    private func taskLine(_ task: WorkTask) -> String {
+        guard let request = store.request(of: task) else { return task.state.label }
+        return "\(task.state.label) · \(String(localized: "from «\(store.title(of: request))»"))"
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -130,6 +163,45 @@ struct NodeDetail: View {
                 .foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+/// One thread of a node, the main one or a subagent, and what it does now.
+private struct ThreadRow: View {
+    let activity: NodeActivity
+    let task: WorkTask?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: activity.isMainThread ? "terminal" : "person.2")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(activity.thread)
+                        .fontWeight(.medium)
+                    if !activity.isMainThread, let task {
+                        Text("· subagent of «\(task.title)»")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                if let doing = activity.doing {
+                    Text(doing)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+            Text("\(ago(activity.since)) ago")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
     }
 }
 

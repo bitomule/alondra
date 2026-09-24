@@ -100,6 +100,18 @@ struct TriageCard: View {
                 .foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
             nodeLine
+            if let task = fleet.task(for: item) {
+                Label {
+                    Text(task.title)
+                } icon: {
+                    Image(systemName: "checklist")
+                        .font(.subheadline)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityLabel(Text("Task: \(task.title)"))
+            }
             bodyContent
         }
         .padding(.horizontal, 22)
@@ -151,7 +163,9 @@ struct TriageCard: View {
     private var nodeLine: some View {
         let node = fleet.node(item.sessionId)
         return HStack(spacing: 8) {
-            if let node {
+            if let task = fleet.task(for: item) {
+                Glyph(task: task, size: .small)
+            } else if let node {
                 Image(systemName: node.state.symbol)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(node.state.tint)

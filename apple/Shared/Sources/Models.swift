@@ -82,10 +82,13 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let daemonNeeds: String?
     public let project: String?
     public let background: [BackgroundItem]?
+    /// What each of its threads does now: the main one and every subagent. An older alondrad
+    /// sends none.
+    public let activity: [NodeActivity]?
 
     private enum CodingKeys: String, CodingKey {
         case sessionId, shortId, name, cwd, isOrchestrator, hasPlugin, state, orchestratorState, createdAt, stateSince, stateSource, tool,
-            lastMessage, lastMessageAt, daemonDetail, daemonNeeds, project, background
+            lastMessage, lastMessageAt, daemonDetail, daemonNeeds, project, background, activity
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +113,7 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
         daemonNeeds = try c.decodeIfPresent(String.self, forKey: .daemonNeeds)
         project = try c.decodeIfPresent(String.self, forKey: .project)
         background = try c.decodeIfPresent([BackgroundItem].self, forKey: .background)
+        activity = try c.decodeIfPresent([NodeActivity].self, forKey: .activity)
     }
 
     public var running: [BackgroundItem] { background ?? [] }
@@ -175,6 +179,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     /// Every report the question takes in, oldest first: the one it cites and the node's earlier
     /// reports of the same episode. An older alondrad sends only `report`.
     public let reports: [Report]?
+    /// The task this question blocks.
+    public let task: String?
 
     public var aboutReports: [Report] { reports ?? report.map { [$0] } ?? [] }
 
@@ -230,6 +236,8 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     /// The earlier unread reports of the same episode, oldest first; this card carries them and
     /// reading it reads them.
     public let earlier: [Report]?
+    /// The task this report belongs to.
+    public let task: String?
 
     public var seemsToAsk: Bool { looksLikeQuestion == true }
 
@@ -319,6 +327,10 @@ public struct Overview: Codable, Sendable {
     public let usage: Usage?
     public let prs: [PullRequest]?
     public let user: String?
+    /// The newest reports, read or not; a task's documents are looked up here.
+    public let reports: [Report]?
+    public let requests: [WorkRequest]?
+    public let tasks: [WorkTask]?
 }
 
 public func ago(_ millis: Int64) -> String {
