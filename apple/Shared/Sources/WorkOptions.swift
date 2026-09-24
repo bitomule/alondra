@@ -33,6 +33,7 @@ public struct OptionSpec: Decodable, Identifiable, Hashable, Sendable {
     public struct Value: Decodable, Identifiable, Hashable, Sendable {
         public let id: String
         public let label: String
+        public let description: String?
     }
 
     public let id: String
@@ -71,11 +72,39 @@ public struct OptionSpec: Decodable, Identifiable, Hashable, Sendable {
         switch value.id {
         case "review": return String(localized: "Review each one", table: "AlondraShared", bundle: #bundle)
         case "auto_merge": return String(localized: "Auto-merge", table: "AlondraShared", bundle: #bundle)
+        case "auto": return String(localized: "Auto", table: "AlondraShared", bundle: #bundle)
         case "light": return String(localized: "Light", table: "AlondraShared", bundle: #bundle)
         case "normal": return String(localized: "Normal", table: "AlondraShared", bundle: #bundle)
         case "hard": return String(localized: "Hard", table: "AlondraShared", bundle: #bundle)
         default: return value.label
         }
+    }
+
+    /// The line under a value: the built-ins' in the app's language, the user's from `options.toml`.
+    public func description(of value: Value) -> String? {
+        guard builtin else { return value.description }
+        switch value.id {
+        case "review": return String(localized: "Each PR is a card for you; the node waits for your merge", table: "AlondraShared", bundle: #bundle)
+        case "auto_merge": return String(localized: "The node merges its own PR once its checks pass", table: "AlondraShared", bundle: #bundle)
+        case "auto": return String(localized: "The orchestrator picks the model and effort from the task", table: "AlondraShared", bundle: #bundle)
+        case "light": return String(localized: "A quick, cheaper model for small, clear work", table: "AlondraShared", bundle: #bundle)
+        case "normal": return String(localized: "Claude’s default model and effort", table: "AlondraShared", bundle: #bundle)
+        case "hard": return String(localized: "The strongest model and the most effort", table: "AlondraShared", bundle: #bundle)
+        default: return value.description
+        }
+    }
+
+    /// The values a picker lists: the option's own, or yes and no for a toggle.
+    public var choices: [OptionChoice] {
+        switch kind {
+        case .toggle: [.toggle(true), .toggle(false)]
+        case .choice: values.map { .value($0.id) }
+        }
+    }
+
+    public func description(of choice: OptionChoice) -> String? {
+        guard case .value(let id) = choice, let value = values.first(where: { $0.id == id }) else { return nil }
+        return description(of: value)
     }
 
     public func title(of choice: OptionChoice) -> String {
@@ -106,7 +135,14 @@ public struct ProjectList: Decodable, Sendable {
         public let name: String
     }
 
+    /// Most recently used first, as alondrad ranks them.
     public let projects: [Project]
+
+    /// What a project picker shows for what was typed: every word in the name, in ranked order.
+    public static func filter(_ ranked: [String], query: String) -> [String] {
+        let words = query.lowercased().split(whereSeparator: \.isWhitespace)
+        return ranked.filter { name in words.allSatisfy { name.lowercased().contains($0) } }
+    }
 }
 
 public struct NewRequestBody: Encodable, Sendable, Equatable {
@@ -114,12 +150,15 @@ public struct NewRequestBody: Encodable, Sendable, Equatable {
     public var attachments: [String] = []
     public let project: String?
     public let options: [String: OptionChoice]
+    public var issue: String?
 }
 
 /// What the user picked in "New". Only what differs from the defaults is kept, so alondrad
 /// fills in the rest and a default changed in `options.toml` applies to the next request.
 public struct WorkOptions: Sendable, Equatable {
     public var project: String?
+    /// `owner/repo#n` the work comes from; alondrad passes its text on and the node's PR closes it.
+    public var issue: String?
     public private(set) var specs: [OptionSpec] = []
     public private(set) var chosen: [String: OptionChoice] = [:]
     public private(set) var error: String?
@@ -147,7 +186,7 @@ public struct WorkOptions: Sendable, Equatable {
     }
 
     public func body(text: String) -> NewRequestBody {
-        NewRequestBody(text: text, project: project, options: chosen)
+        NewRequestBody(text: text, project: project, options: chosen, issue: issue)
     }
 
     public var summary: String {
@@ -182,5 +221,12 @@ public final class WorkOptionsModel {
     public func choose(project: String?) async {
         options.project = project
         await load()
+    }
+
+    /// Picks the issue, and its repo's project when the user has a checkout of that name.
+    public func choose(issue: String?) async {
+        options.issue = issue
+        guard let project = IssueSummary.project(of: issue, among: projects), project != options.project else { return }
+        await choose(project: project)
     }
 }

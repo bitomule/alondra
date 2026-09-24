@@ -1180,6 +1180,76 @@
           }
         }
       }
+    },
+    "Auto": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automático"
+          }
+        }
+      }
+    },
+    "Each PR is a card for you; the node waits for your merge": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cada PR es una tarjeta para ti; el nodo espera a que hagas merge"
+          }
+        }
+      }
+    },
+    "The node merges its own PR once its checks pass": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo hace merge de su PR cuando pasan los checks"
+          }
+        }
+      }
+    },
+    "The orchestrator picks the model and effort from the task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El orquestador elige modelo y esfuerzo según la tarea"
+          }
+        }
+      }
+    },
+    "A quick, cheaper model for small, clear work": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un modelo rápido y barato para trabajo pequeño y claro"
+          }
+        }
+      }
+    },
+    "Claude’s default model and effort": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo y el esfuerzo por defecto de Claude"
+          }
+        }
+      }
+    },
+    "The strongest model and the most effort": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El modelo más potente y el máximo esfuerzo"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -2190,6 +2190,86 @@
           }
         }
       }
+    },
+    "Issue": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issue"
+          }
+        }
+      }
+    },
+    "Issues": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issues"
+          }
+        }
+      }
+    },
+    "Remove": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar"
+          }
+        }
+      }
+    },
+    "Choose an issue": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elegir una issue"
+          }
+        }
+      }
+    },
+    "Filter, or paste an issue link": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtra, o pega el enlace de una issue"
+          }
+        }
+      }
+    },
+    "Use %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar %@"
+          }
+        }
+      }
+    },
+    "No open issues match": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguna issue abierta coincide"
+          }
+        }
+      }
+    },
+    "Filter projects": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtrar proyectos"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

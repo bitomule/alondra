@@ -44,6 +44,9 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
    - A request carries the options the user chose and a `request_id`. Pass that `request_id` to
      every `launch` for the request. Alondra writes the options into the node's mission and sets
      its model and effort, so leave them out of your prompt and never contradict them.
+   - Effort: when the request says it is auto, choose it yourself for each `launch` (`effort`:
+     light for small, clear work; normal for most; hard for tricky or risky work). When the user
+     chose light, normal or hard, that choice is binding and Alondra ignores yours.
    - An ambiguous request is a question for the user: one question costs less than a node
      launched on the wrong reading.
 2. Alondra's digest, every 90 s in one message: new reports, handoffs ("Handoff from …": a node

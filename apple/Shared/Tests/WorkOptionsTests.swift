@@ -9,9 +9,9 @@ import Testing
       {"id": "pr", "label": "PR handling", "kind": "choice", "builtin": true, "default": "review",
        "values": [{"id": "review", "label": "review each PR"}, {"id": "auto_merge", "label": "auto-merge"}]},
       {"id": "effort", "label": "Effort", "kind": "choice", "builtin": true, "default": "normal",
-       "values": [{"id": "light", "label": "light"}, {"id": "normal", "label": "normal"}, {"id": "hard", "label": "hard"}]},
+       "values": [{"id": "auto", "label": "auto"}, {"id": "light", "label": "light"}, {"id": "normal", "label": "normal"}, {"id": "hard", "label": "hard"}]},
       {"id": "how_far", "label": "Hasta dónde", "kind": "choice", "builtin": false, "default": "merge",
-       "values": [{"id": "merge", "label": "merge"}, {"id": "beta", "label": "beta"}]},
+       "values": [{"id": "merge", "label": "merge"}, {"id": "beta", "label": "beta", "description": "Sube una beta"}]},
       {"id": "device", "label": "Probar en mi iPhone", "kind": "toggle", "builtin": false, "default": false, "values": []}
     ]}
     """#
@@ -72,7 +72,7 @@ import Testing
         var options = try loaded()
         options.set(spec("how_far", in: options), to: .value("beta"))
         options.set(spec("device", in: options), to: .toggle(true))
-        let fewer = Self.served.replacingOccurrences(of: #"{"id": "beta", "label": "beta"}"#, with: #"{"id": "store", "label": "App Store"}"#)
+        let fewer = Self.served.replacingOccurrences(of: #"{"id": "beta", "label": "beta", "description": "Sube una beta"}"#, with: #"{"id": "store", "label": "App Store"}"#)
         options.apply(try catalog(fewer))
         #expect(options.body(text: "x").options == ["device": .toggle(true)])
         let other = Self.served.replacingOccurrences(of: #""project": null"#, with: #""project": "Other""#)
@@ -83,5 +83,26 @@ import Testing
     @Test func builtInsAreWordedByTheAppAndTheUsersOptionsKeepTheirWords() throws {
         let options = try loaded()
         #expect(options.summary == "PRs: Review each one · Effort: Normal · Hasta dónde: merge · Probar en mi iPhone: No")
+    }
+
+    @Test func eachValueCarriesTheLineThatExplainsIt() throws {
+        let options = try loaded()
+        let effort = spec("effort", in: options)
+        #expect(effort.choices.map { effort.title(of: $0) } == ["Auto", "Light", "Normal", "Hard"])
+        #expect(effort.description(of: .value("auto")) == "The orchestrator picks the model and effort from the task")
+        let far = spec("how_far", in: options)
+        #expect(far.description(of: .value("beta")) == "Sube una beta", "the user's own line from options.toml")
+        #expect(far.description(of: .value("merge")) == nil)
+        #expect(spec("device", in: options).choices == [.toggle(true), .toggle(false)])
+    }
+
+    @Test(arguments: [
+        ("", ["Recent", "Older", "Here"]),
+        ("re", ["Recent", "Here"]),
+        ("OLD", ["Older"]),
+        ("zz", []),
+    ])
+    func theProjectListFiltersInRankedOrder(_ query: String, _ shown: [String]) {
+        #expect(ProjectList.filter(["Recent", "Older", "Here"], query: query) == shown)
     }
 }

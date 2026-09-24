@@ -40,7 +40,7 @@ struct NewRequestSheet: View {
                 .modifier(DropsFiles(attachments: attachments, client: store.client))
             AttachmentStrip(attachments, client: store.client)
             if let options {
-                WorkOptionsForm(model: options)
+                WorkOptionsForm(model: options, client: store.client)
             }
             HStack {
                 AttachFilesButton(attachments: attachments, client: store.client)
@@ -86,6 +86,9 @@ struct NewRequestSheet: View {
 
 private struct WorkOptionsForm: View {
     @Bindable var model: WorkOptionsModel
+    let client: AlondraClient
+    @State private var picking = false
+    @State private var choosingProject = false
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
@@ -93,12 +96,27 @@ private struct WorkOptionsForm: View {
                 Text("Project")
                     .foregroundStyle(.secondary)
                     .gridColumnAlignment(.trailing)
-                Picker("Project", selection: projectBinding) {
-                    Text("The orchestrator decides").tag(String?.none)
-                    ForEach(model.projects, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                Button {
+                    choosingProject = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(model.options.project ?? String(localized: "The orchestrator decides"))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .labelsHidden()
-                .fixedSize()
+                .popover(isPresented: $choosingProject, arrowEdge: .bottom) {
+                    ProjectPicker(projects: model.projects, current: model.options.project) { project in
+                        choosingProject = false
+                        Task { await model.choose(project: project) }
+                    }
+                }
+            }
+            GridRow {
+                Text("Issue")
+                    .foregroundStyle(.secondary)
+                issueControl
             }
             ForEach(model.options.specs) { spec in
                 GridRow {
@@ -121,8 +139,30 @@ private struct WorkOptionsForm: View {
         .animation(.default, value: model.loaded)
     }
 
-    private var projectBinding: Binding<String?> {
-        Binding(get: { model.options.project }, set: { project in Task { await model.choose(project: project) } })
+    @ViewBuilder
+    private var issueControl: some View {
+        if let issue = model.options.issue {
+            HStack(spacing: 6) {
+                Label(issue, systemImage: "smallcircle.filled.circle")
+                    .foregroundStyle(.green)
+                Button {
+                    Task { await model.choose(issue: nil) }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help(Text("Remove the issue"))
+                .accessibilityLabel(Text("Remove the issue"))
+            }
+        } else {
+            Button("From an issue…") { picking = true }
+                .popover(isPresented: $picking, arrowEdge: .bottom) {
+                    IssuePicker(client: client) { issue in
+                        picking = false
+                        Task { await model.choose(issue: issue) }
+                    }
+                }
+        }
     }
 
     private func choiceBinding(_ spec: OptionSpec) -> Binding<OptionChoice> {
@@ -130,28 +170,152 @@ private struct WorkOptionsForm: View {
     }
 }
 
+/// The option's current value; its menu lists every value with the line that explains it.
 private struct OptionControl: View {
     let spec: OptionSpec
     @Binding var choice: OptionChoice
 
     var body: some View {
-        switch spec.kind {
-        case .toggle:
-            Toggle(spec.title, isOn: Binding(get: { choice == .toggle(true) }, set: { choice = .toggle($0) }))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-        case .choice:
-            let picker = Picker(spec.title, selection: $choice) {
-                ForEach(spec.values) { Text(verbatim: spec.title(of: $0)).tag(OptionChoice.value($0.id)) }
+        Menu {
+            ForEach(spec.choices, id: \.self) { value in
+                Button {
+                    choice = value
+                } label: {
+                    if value == choice {
+                        Image(systemName: "checkmark")
+                    }
+                    Text(verbatim: spec.title(of: value))
+                    if let description = spec.description(of: value) {
+                        Text(verbatim: description)
+                    }
+                }
             }
-            .labelsHidden()
-            .fixedSize()
-            if spec.values.count <= 4 {
-                picker.pickerStyle(.segmented)
-            } else {
-                picker.pickerStyle(.menu)
+        } label: {
+            Text(verbatim: spec.title(of: choice))
+        }
+        .menuStyle(.button)
+        .fixedSize()
+    }
+}
+
+/// The projects, most recently used first, filtered as you type.
+private struct ProjectPicker: View {
+    let projects: [String]
+    let current: String?
+    let pick: (String?) -> Void
+    @State private var query = ""
+
+    private var shown: [String] { ProjectList.filter(projects, query: query) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Filter projects", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { if let first = shown.first { pick(first) } }
+            List {
+                if query.isEmpty {
+                    row(nil, title: String(localized: "The orchestrator decides"))
+                }
+                ForEach(shown, id: \.self) { row($0, title: $0) }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if shown.isEmpty && !query.isEmpty {
+                    Text("No project matches")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .padding(12)
+        .frame(width: 320, height: 340)
+    }
+
+    private func row(_ project: String?, title: String) -> some View {
+        Button {
+            pick(project)
+        } label: {
+            HStack {
+                Text(verbatim: title)
+                Spacer()
+                if project == current {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct IssuePicker: View {
+    @State private var issues: IssuesModel
+    let pick: (String) -> Void
+
+    init(client: AlondraClient, pick: @escaping (String) -> Void) {
+        _issues = State(initialValue: IssuesModel(client: client))
+        self.pick = pick
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Filter, or paste an issue link", text: $issues.query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if let first = issues.pasted ?? issues.visible.first?.reference { pick(first) } }
+                Button {
+                    Task { await issues.load(refresh: true) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help(Text("Search GitHub again"))
+                .accessibilityLabel(Text("Search GitHub again"))
+                .disabled(issues.loading)
+            }
+            if let error = issues.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+            List {
+                if let pasted = issues.pasted {
+                    Button {
+                        pick(pasted)
+                    } label: {
+                        Label("Use \(pasted)", systemImage: "link")
+                    }
+                    .buttonStyle(.plain)
+                }
+                ForEach(issues.visible) { issue in
+                    Button {
+                        pick(issue.reference)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: issue.title)
+                                .lineLimit(2)
+                            Text(verbatim: ([issue.reference] + issue.labels).joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if issues.loading && issues.issues.isEmpty {
+                    ProgressView()
+                } else if issues.loaded && issues.visible.isEmpty && issues.pasted == nil {
+                    Text("No open issues match")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 440, height: 360)
+        .task { await issues.load() }
     }
 }
