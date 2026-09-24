@@ -1346,6 +1346,13 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
         .collect()
 }
 
+/// The copies of a card that was not recorded.
+fn discard_stored(attachments: &[Attachment]) {
+    for path in attachments.iter().filter_map(|a| a.stored_path.as_deref()) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 const PROBE_PREFIX: &str = "test/";
 
 fn probe_refused(name: Option<&str>, sandbox: bool) -> Option<Response> {
@@ -1497,15 +1504,24 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
         task: task.clone(),
         replaces: b.replaces,
     };
-    if let Some((refused_task, anomaly)) = hub.read(|v| v.refusal(stamp, &Event::QuestionAsked(question(v, vec![])))) {
-        log!("{} refused for {refused_task}: {}", if action { "action" } else { "question" }, anomaly.reason);
-        return task_refused(&refused_task, &anomaly, &hub.config.name);
-    }
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
-    let res = hub.append_with(|v| Some(Event::QuestionAsked(question(v, attachments.clone()))));
+    let res = hub.append_all(|v| {
+        let asked = Event::QuestionAsked(question(v, attachments.clone()));
+        match v.refusal(stamp, &asked) {
+            Some(refused) => Err(refused),
+            None => Ok(vec![asked]),
+        }
+    });
     let q = match res {
-        Ok(Some((_, Event::QuestionAsked(q)))) => q,
-        Ok(_) => return err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
+        Ok(Ok(recorded)) => match recorded.into_iter().next() {
+            Some((_, Event::QuestionAsked(q))) => q,
+            _ => return err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
+        },
+        Ok(Err((refused_task, anomaly))) => {
+            discard_stored(&attachments);
+            log!("{} refused for {refused_task}: {}", if action { "action" } else { "question" }, anomaly.reason);
+            return task_refused(&refused_task, &anomaly, &hub.config.name);
+        }
         Err(e) => return internal(e),
     };
     if let Some(old) = b.replaces
@@ -1829,13 +1845,28 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         return task_refused(&refused_task, &anomaly, &hub.config.name);
     }
     let looks_like_question = gated(b.kind, from_orchestrator)
-        && crate::classify::judge_report(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
+        && hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
     if looks_like_question {
         log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
         keep_flagged(&hub.home, &b.title, b.body.as_deref());
     }
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
-    let res = hub.append_with(|v| Some(Event::ReportPosted(report(v, attachments.clone(), looks_like_question))));
+    let res = hub.append_all(|v| {
+        let posted = Event::ReportPosted(report(v, attachments.clone(), looks_like_question));
+        match v.refusal(stamp, &posted) {
+            Some(refused) => Err(refused),
+            None => Ok(vec![posted]),
+        }
+    });
+    let res = match res {
+        Ok(Err((refused_task, anomaly))) => {
+            discard_stored(&attachments);
+            log!("report refused for {refused_task} once it was judged: {}", anomaly.reason);
+            return task_refused(&refused_task, &anomaly, &hub.config.name);
+        }
+        Ok(Ok(recorded)) => Ok(recorded.into_iter().next()),
+        Err(e) => Err(e),
+    };
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => {
             let card = hub.read(|v| v.report_pr(&r).and_then(|id| v.prs.get(&id)).map(|p| (p.id, p.number)));
@@ -2445,14 +2476,18 @@ async fn reopen_task(State(hub): State<AppState>, Path(id): Path<String>) -> Res
 }
 
 fn move_task(hub: &Hub, id: &str, event: alondra_core::tasks::TaskEvent) -> Response {
-    if hub.read(|v| !v.board.tasks.contains_key(id)) {
-        return err(StatusCode::NOT_FOUND, format!("task {id} does not exist"));
-    }
-    if let Some(r) = hub.read(|v| v.task_refusal(id, &event)) {
-        return refused(StatusCode::CONFLICT, "task_refused", r.reason);
-    }
-    match hub.append(Event::TaskMoved { task: id.to_string(), event }) {
-        Ok(_) => Json(json!({"id": id, "state": hub.read(|v| v.board.tasks.get(id).map(|t| t.state))})).into_response(),
+    let recorded = hub.append_all(|v| {
+        if !v.board.tasks.contains_key(id) {
+            return Err(err(StatusCode::NOT_FOUND, format!("task {id} does not exist")));
+        }
+        match v.task_refusal(id, &event) {
+            Some(r) => Err(refused(StatusCode::CONFLICT, "task_refused", r.reason)),
+            None => Ok(vec![Event::TaskMoved { task: id.to_string(), event: event.clone() }]),
+        }
+    });
+    match recorded {
+        Ok(Ok(_)) => Json(json!({"id": id, "state": hub.read(|v| v.board.tasks.get(id).map(|t| t.state))})).into_response(),
+        Ok(Err(refusal)) => refusal,
         Err(e) => internal(e),
     }
 }
@@ -3282,6 +3317,96 @@ mod tests {
         assert!(said["error"].as_str().unwrap_or_default().contains("to_orchestrator: true"), "a done task sends new questions to the orchestrator: {said}");
         let (status, _) = status_and_body(ask(State(hub.clone()), Json(AskBody { to_orchestrator: true, ..ask_body("s", "¿Sigo con otra cosa?") })).await).await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    /// Two questions of one task at once: each was checked on the view before the other was
+    /// recorded, so both went in and the task got a second blocker the machine had refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_questions_at_once_give_the_task_one_blocker_and_the_other_node_a_refusal() {
+        for round in 0..20 {
+            let hub = started(&format!("race-ask-{round}"), &["s"]);
+            let gate = Arc::new(tokio::sync::Barrier::new(2));
+            let asking = |title: &'static str| {
+                let (hub, gate) = (hub.clone(), gate.clone());
+                tokio::spawn(async move {
+                    gate.wait().await;
+                    status_and_body(ask(State(hub), Json(ask_body("s", title))).await).await.0
+                })
+            };
+            let (a, b) = (asking("¿Despliego?"), asking("¿Y la base de datos?"));
+            let mut statuses = vec![a.await.unwrap(), b.await.unwrap()];
+            statuses.sort();
+            assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT], "round {round}");
+            assert_eq!(hub.read(|v| (v.questions.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "round {round}: one question, nothing refused recorded");
+        }
+    }
+
+    /// Holds every report it reads until the test lets it go.
+    struct SlowJudge {
+        reading: Arc<tokio::sync::Notify>,
+        done: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::classify::JudgesReports for SlowJudge {
+        fn judge<'a>(&'a self, _text: &'a str, _user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = crate::classify::ReportVerdict> + Send + 'a>> {
+            Box::pin(async move {
+                self.reading.notify_one();
+                self.done.notified().await;
+                crate::classify::ReportVerdict::Fine
+            })
+        }
+    }
+
+    /// A document checked against its task, then read by jev for seconds: the task was cancelled
+    /// meanwhile, and the document went in anyway, refused by the machine, while the node heard
+    /// it was delivered.
+    #[tokio::test]
+    async fn a_report_whose_task_moved_while_it_was_read_is_refused_not_recorded() {
+        let (reading, done) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let home = std::env::temp_dir().join(format!("alondra-http-slow-judge-{}-{}", std::process::id(), now_millis()));
+        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        let hub = Arc::new(Hub::open(config, false).unwrap().with_github(FakeGithub::default()).with_report_judge(SlowJudge { reading: reading.clone(), done: done.clone() }));
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::ReportPosted(Report {
+            id: 1, session_id: "s".into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
+            kind: ReportKind::Notice, created_at: 0, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
+        }))
+        .unwrap();
+        let posting = tokio::spawn({
+            let hub = hub.clone();
+            async move { status_and_body(report(State(hub), Json(report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]))).await).await }
+        });
+        reading.notified().await;
+        let (status, _) = status_and_body(cancel_task(State(hub.clone()), Path("t-s".into()), None).await).await;
+        assert_eq!(status, StatusCode::OK);
+        done.notify_one();
+        let (status, said) = posting.await.unwrap();
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("task_refused")), "{said}");
+        assert_eq!(hub.read(|v| (v.reports.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "nothing recorded, no anomaly");
+    }
+
+    /// Cancelling a task twice at once: both passed the check, the second cancel was recorded as
+    /// an anomaly and its caller told it worked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_task_cancelled_twice_at_once_is_cancelled_once() {
+        for round in 0..20 {
+            let hub = started(&format!("race-cancel-{round}"), &["s"]);
+            let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+            assert_eq!(status, StatusCode::OK);
+            let gate = Arc::new(std::sync::Barrier::new(2));
+            let cancelling = || {
+                let (hub, gate) = (hub.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    move_task(&hub, "t-s", alondra_core::tasks::TaskEvent::Cancel { reason: None }).status()
+                })
+            };
+            let (a, b) = (cancelling(), cancelling());
+            let mut statuses = vec![a.join().unwrap(), b.join().unwrap()];
+            statuses.sort();
+            assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT], "round {round}");
+            assert_eq!(hub.read(|v| v.board.anomalies.values().sum::<u64>()), 0, "round {round}");
+        }
     }
 
     #[tokio::test]

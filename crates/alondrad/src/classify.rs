@@ -28,6 +28,19 @@ pub enum ReportVerdict {
     Fine,
 }
 
+/// Whoever reads a report before it goes to the user, so tests can stand in for jev.
+pub trait JudgesReports: Send + Sync {
+    fn judge<'a>(&'a self, text: &'a str, user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>>;
+}
+
+pub struct Jev;
+
+impl JudgesReports for Jev {
+    fn judge<'a>(&'a self, text: &'a str, user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>> {
+        Box::pin(judge_report(text, user))
+    }
+}
+
 pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
     let out = tokio::time::timeout(
         Duration::from_secs(10),
