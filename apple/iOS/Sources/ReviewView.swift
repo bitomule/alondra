@@ -63,14 +63,10 @@ struct ReviewView: View {
         .toolbar {
             if case .report(let report) = item, let node = fleet.node(report.sessionId), report.primaryAction(nodeFound: true) == .markRead {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button(role: .destructive) {
-                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                        } label: {
-                            Label("Read and Close Node", systemImage: "xmark.bin")
-                        }
+                    Button(role: .destructive) {
+                        closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
                     } label: {
-                        Label("More", systemImage: "ellipsis")
+                        Label("Read and Close Node", systemImage: "xmark.bin")
                     }
                     .disabled(sending)
                 }

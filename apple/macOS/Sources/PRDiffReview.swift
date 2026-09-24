@@ -9,21 +9,45 @@ struct PRDiffReview: View {
     var focus: FocusState<DetailField?>.Binding
     @Environment(\.colorScheme) private var scheme
     @State private var colours = DiffColours()
+    @State private var collapsed: Set<String>
+
+    init(files: [DiffFile], draft: ReviewDraft, focus: FocusState<DetailField?>.Binding) {
+        self.files = files
+        self.draft = draft
+        self.focus = focus
+        _collapsed = State(initialValue: Set(files.filter(\.startsCollapsed).map(\.id)))
+    }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(files) { file in
-                Section {
-                    ForEach(file.lines) { line in
-                        CommentableDiffLine(line: line, coloured: colours.lines[line.id], draft: draft, focus: focus)
+        let allCollapsed = collapsed.count == files.count
+        VStack(alignment: .trailing, spacing: 6) {
+            Button(allCollapsed ? String(localized: "Expand All Files") : String(localized: "Collapse All Files")) {
+                withAnimation(.snappy(duration: 0.2)) { collapsed = allCollapsed ? [] : Set(files.map(\.id)) }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                ForEach(files) { file in
+                    Section {
+                        if !collapsed.contains(file.id) {
+                            ForEach(file.lines) { line in
+                                CommentableDiffLine(line: line, coloured: colours.lines[line.id], draft: draft, focus: focus)
+                            }
+                        }
+                    } header: {
+                        DiffFileHeader(file: file, comments: comments(in: file), collapsed: collapsed.contains(file.id)) {
+                            withAnimation(.snappy(duration: 0.2)) { collapsed.formSymmetricDifference([file.id]) }
+                        }
                     }
-                } header: {
-                    DiffFileHeader(file: file)
                 }
             }
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
         }
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
         .task(id: scheme) { await colours.load(files, dark: scheme == .dark) }
+    }
+
+    private func comments(in file: DiffFile) -> Int {
+        Set(file.lines.compactMap(\.anchor)).filter { draft.comment(for: $0) != nil }.count
     }
 }
 

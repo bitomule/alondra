@@ -1621,6 +1621,26 @@
         }
       }
     },
+    "Expand All Files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desplegar todos los archivos"
+          }
+        }
+      }
+    },
+    "Collapse All Files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plegar todos los archivos"
+          }
+        }
+      }
+    },
     "About report #%llu": {
       "localizations": {
         "es": {

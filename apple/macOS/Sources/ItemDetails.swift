@@ -220,6 +220,11 @@ struct ReportDetail: View {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.report(report).style, node: report.nodeName, date: report.createdAt, title: report.title)
                 MissionLine(item: .report(report))
+                if report.seemsToAsk {
+                    Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
                 if let body = report.body, !body.isEmpty {
                     if isDocument {
                         ReviewableDocument(text: body, anchorPrefix: "cuerpo", draft: draft, focus: $focus)
@@ -244,12 +249,23 @@ struct ReportDetail: View {
                         canSend: !feedback.isEmpty,
                         send: sendFeedback
                     )
-                    ReadButton(prominent: feedback.isEmpty, action: markRead)
-                    if let node = store.node(report.sessionId) {
-                        Button("Read and Close Node…", role: .destructive) {
-                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                    let node = store.node(report.sessionId)
+                    let closesFirst = report.primaryAction(nodeFound: node != nil) == .readAndClose
+                    ReadButton(prominent: feedback.isEmpty && !closesFirst, action: markRead)
+                    if let node {
+                        Group {
+                            if closesFirst && feedback.isEmpty {
+                                Button("Read and Close Node…") {
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else {
+                                Button("Read and Close Node…", role: .destructive) {
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                                }
+                                .buttonStyle(.bordered)
+                            }
                         }
-                        .buttonStyle(.bordered)
                         .controlSize(.large)
                         .help("Mark as read and close the node that sent it (claude rm)")
                     }
