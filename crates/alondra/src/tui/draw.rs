@@ -425,7 +425,7 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let sections: [Section; 3] = [
         (|k, nested| matches!(k, Key::Q(_)) && !nested, tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
         (|k, nested| matches!(k, Key::P(_)) || nested, tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
-        (|k, _| matches!(k, Key::R(_)), tr!("TO READ", "PARA LEER"), Color::Cyan),
+        (|k, nested| matches!(k, Key::R(_)) && !nested, tr!("TO READ", "PARA LEER"), Color::Cyan),
     ];
     for (belongs, label, color) in sections {
         let members: Vec<(Key, bool)> = keys.iter().zip(&nested).map(|(k, n)| (*k, *n)).filter(|(k, n)| belongs(*k, *n)).collect();
@@ -508,6 +508,11 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             let label = Span::styled(tr!("The node asks: ", "El nodo pregunta: "), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
             lines.push(Line::default());
             lines.extend(wrap(vec![Span::styled(md::one_line(&q.title), Style::new().add_modifier(Modifier::BOLD))], width, vec![label], vec![Span::raw("  ")]));
+        }
+        for r in app.reported_on(p.pr.id) {
+            let label = Span::styled(tr!("The node says: ", "El nodo dice: "), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            lines.push(Line::default());
+            lines.extend(wrap(vec![Span::styled(md::one_line(&r.title), Style::new().add_modifier(Modifier::BOLD))], width, vec![label], vec![Span::raw("  ")]));
         }
     }
     if let Item::Q(q) = item
@@ -639,7 +644,7 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             } else {
                 tr!(" read all  ", " leer entero  ")
             };
-            let close = [keycap("X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
+            let close = [keycap("Shift+X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
             let closable = app.node(&r.session_id).is_some_and(|n| n.alive);
             let mut spans = vec![];
             if closable && r.kind == ReportKind::Final {
@@ -1220,7 +1225,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 if let Some(Item::R(rep)) = app.item(r.key)
                     && app.node(&rep.session_id).is_some_and(|n| n.alive)
                 {
-                    v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+                    v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
                 }
             }
             (None, Key::P(_)) => v.push(k("s", tr!("request changes", "pedir cambios"))),
@@ -1267,7 +1272,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         Some(Item::R(r)) => {
             let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))];
             if app.node(&r.session_id).is_some_and(|n| n.alive) {
-                v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+                v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
             }
             v.extend([k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))]);
             v.extend(tail);
@@ -1351,7 +1356,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("x", tr!("mark as read", "marcar como leído")),
-        row("X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -1361,7 +1366,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
-        row("X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -1458,6 +1463,23 @@ mod tests {
         assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
         assert!(at("Menus become cards") < at("↳ ? Merge it before the release?"), "{s}");
         assert!(s.contains("The node asks: Merge it before the release?"), "{s}");
+    }
+
+    #[test]
+    fn a_report_about_a_pr_is_drawn_under_it_and_not_as_reading() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.prs = vec![pr_card(None)];
+        let mut r = report(2);
+        r.title = "PR ready: leaving a node returns to Alondra".into();
+        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4) });
+        app.reconcile();
+        let s = screen(&mut app, 120, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(!s.contains("TO READ"), "{s}");
+        assert!(s.contains("Inbox 1"), "{s}");
+        assert!(at("Menus become cards") < at("↳ "), "{s}");
+        assert!(s.contains("The node says: PR ready: leaving a node returns to Alondra"), "{s}");
     }
 
     #[test]
@@ -1589,7 +1611,7 @@ mod tests {
     fn the_footer_offers_read_and_close_only_while_the_node_is_alive() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
         app.reconcile();
         let s = screen(&mut app, 250, 24);
@@ -1617,7 +1639,7 @@ mod tests {
             app.loaded = true;
             let mut r = report(1);
             r.kind = kind;
-            app.data.news = vec![r];
+            app.data.news = vec![r.into()];
             app.data.nodes = vec![alive_node("s1")];
             app.data.nodes[0].node.alive = alive;
             app.reconcile();
@@ -1627,6 +1649,7 @@ mod tests {
         let final_row = actions(ReportKind::Final, true);
         let at = |row: &str, t: &str| row.find(t).unwrap_or_else(|| panic!("{t} missing: {row}"));
         assert!(at(&final_row, "read and close node") < at(&final_row, "read all"), "{final_row}");
+        assert!(at(&final_row, "Shift+X") < at(&final_row, "read and close node"), "the key says it needs Shift: {final_row}");
         let notice_row = actions(ReportKind::Notice, true);
         assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
         assert!(!actions(ReportKind::Final, false).contains("read and close node"), "a dead node cannot be closed");

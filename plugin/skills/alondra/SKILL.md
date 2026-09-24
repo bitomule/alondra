@@ -34,11 +34,14 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - A question right after your own report on the same thing becomes one card with it when the
   question cites the report (`informe #N`), attaches the same file or links the same URL, and
   the report is unread and at most 30 minutes old.
-- A PR URL in your `report` or `links` gets its own card, where the user merges, requests
-  changes or sets it aside; you count as waiting for the user until then. The merge decision
-  lives on that card, so an `ask` about merging would be a second card for the same decision.
-  A question about something else in the PR goes with the PR in `links` and shows inside its
-  card.
+- A PR you open (Alondra sees `gh pr create`) gets its own card, where the user merges,
+  requests changes or sets it aside; you count as waiting for the user until then. The merge
+  decision lives on that card, so an `ask` about merging would be a second card for the same
+  decision.
+- A report that links the PR is shown inside the PR's card, not as a card of its own. That
+  card already says the PR is ready, so the report that goes with it is your final one, with
+  the PR in `links`. A question about something else in the PR goes with the PR in `links` and
+  shows inside its card too.
 
 ## What a report is not
 

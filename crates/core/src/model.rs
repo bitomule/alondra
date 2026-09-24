@@ -209,6 +209,10 @@ pub struct Node {
     pub signal_at: Option<Millis>,
     #[serde(default)]
     pub episode_since: Millis,
+    /// When the node's current turn began: its last `UserPromptSubmit`, or the daemon seeing a
+    /// node without the plugin wake up.
+    #[serde(default)]
+    pub turn_since: Millis,
     #[serde(default, deserialize_with = "lenient")]
     pub evidence: Option<Evidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,6 +268,7 @@ impl Node {
             usage_limited_at: None,
             signal_at: None,
             episode_since: 0,
+            turn_since: 0,
             evidence: None,
             orchestrator_state: None,
         }

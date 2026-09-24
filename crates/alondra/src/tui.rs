@@ -556,11 +556,14 @@ impl App {
         }
     }
 
-    /// Questions first, then each PR card followed by the questions that belong to it, then reading.
+    /// Questions first, then each PR card followed by the questions and reports that belong to it,
+    /// then reading.
     pub fn inbox_keys(&self) -> Vec<Key> {
-        let q = self.data.open_questions.iter().filter(|q| self.card_of(q).is_none()).map(|q| Key::Q(q.id));
-        let p = self.data.prs.iter().flat_map(|p| std::iter::once(Key::P(p.pr.id)).chain(self.asked_on(p.pr.id).map(|q| Key::Q(q.id))));
-        let r = self.data.news.iter().map(|r| Key::R(r.id));
+        let q = self.data.open_questions.iter().filter(|q| self.card_of(q.pr_id).is_none()).map(|q| Key::Q(q.id));
+        let p = self.data.prs.iter().flat_map(|p| {
+            std::iter::once(Key::P(p.pr.id)).chain(self.asked_on(p.pr.id).map(|q| Key::Q(q.id))).chain(self.reported_on(p.pr.id).map(|r| Key::R(r.id)))
+        });
+        let r = self.data.news.iter().filter(|r| self.card_of(r.pr_id).is_none()).map(|r| Key::R(r.id));
         q.chain(p).chain(r).filter(|k| !self.hidden.contains_key(k) && self.parent(*k).is_none_or(|p| !self.hidden.contains_key(&Key::P(p)))).collect()
     }
 
@@ -569,24 +572,31 @@ impl App {
         self.inbox_keys().into_iter().filter(|k| self.parent(*k).is_none()).count()
     }
 
-    /// The PR card a question is drawn inside, when that card is in the inbox.
-    fn card_of(&self, q: &crate::client::OpenQuestion) -> Option<u64> {
-        q.pr_id.filter(|id| self.data.prs.iter().any(|p| p.pr.id == *id))
+    /// The PR card a question or report is drawn inside, when that card is in the inbox.
+    fn card_of(&self, pr_id: Option<u64>) -> Option<u64> {
+        pr_id.filter(|id| self.data.prs.iter().any(|p| p.pr.id == *id))
     }
 
     pub fn parent(&self, key: Key) -> Option<u64> {
-        let Key::Q(id) = key else { return None };
-        self.data.open_questions.iter().find(|q| q.id == id).and_then(|q| self.card_of(q))
+        match key {
+            Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).and_then(|q| self.card_of(q.pr_id)),
+            Key::R(id) => self.data.news.iter().find(|r| r.id == id).and_then(|r| self.card_of(r.pr_id)),
+            Key::P(_) => None,
+        }
     }
 
     pub fn asked_on(&self, pr: u64) -> impl Iterator<Item = &crate::client::OpenQuestion> {
-        self.data.open_questions.iter().filter(move |q| self.card_of(q) == Some(pr))
+        self.data.open_questions.iter().filter(move |q| self.card_of(q.pr_id) == Some(pr))
+    }
+
+    pub fn reported_on(&self, pr: u64) -> impl Iterator<Item = &crate::client::NewsReport> {
+        self.data.news.iter().filter(move |r| self.card_of(r.pr_id) == Some(pr))
     }
 
     pub fn item(&self, key: Key) -> Option<Item<'_>> {
         match key {
             Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(|q| Item::Q(q)),
-            Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(Item::R),
+            Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(|r| Item::R(&r.report)),
             Key::P(id) => self.data.prs.iter().find(|p| p.pr.id == id).map(Item::P),
         }
     }
@@ -1192,7 +1202,7 @@ impl App {
         let name = who(&r.node_name, &r.session_id);
         self.mark_read(&r);
         self.pending_close = Some((r.session_id.clone(), now + 4000));
-        self.flash(trf!("Read. Press X again to close {name}", "Leído. Pulsa X otra vez para cerrar {name}"));
+        self.flash(trf!("Read. Press Shift+X again to close {name}", "Leído. Pulsa Shift+X otra vez para cerrar {name}"));
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
@@ -2074,6 +2084,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_report_about_a_waiting_pr_sits_under_its_card_and_counts_with_it() {
+        let reported = |id: u64, pr: Option<u64>| crate::client::NewsReport { report: report(id), pr_id: pr };
+        let cases: [(&str, Vec<crate::client::NewsReport>, Vec<Key>, usize); 3] = [
+            ("the report links the waiting PR", vec![reported(2, None), reported(1, Some(4))], vec![Key::P(4), Key::R(1), Key::R(2)], 2),
+            ("the report's card is not in the inbox", vec![reported(2, None), reported(1, Some(99))], vec![Key::P(4), Key::R(2), Key::R(1)], 3),
+            ("the report links no PR", vec![reported(2, None), reported(1, None)], vec![Key::P(4), Key::R(2), Key::R(1)], 3),
+        ];
+        for (what, news, keys, count) in cases {
+            let (mut app, _rx) = app_with(vec![]);
+            app.data.prs = vec![pr_card(None)];
+            app.data.news = news;
+            app.reconcile();
+            assert_eq!(app.inbox_keys(), keys, "{what}");
+            assert_eq!(app.inbox_count(), count, "{what}");
+            assert_eq!(app.parent(Key::R(1)).is_some(), count == 2, "{what}");
+        }
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.prs = vec![pr_card(None)];
+        app.data.news = vec![reported(1, Some(4))];
+        app.reconcile();
+        app.hide(Key::P(4));
+        assert!(app.inbox_keys().is_empty(), "the report leaves with its card");
+    }
+
+    #[test]
     fn digits_on_a_question_inside_a_pr_card_answer_the_question() {
         let (mut app, _rx) = app_with(vec![]);
         app.data.prs = vec![pr_card(None)];
@@ -2103,7 +2138,7 @@ pub(crate) mod tests {
     #[test]
     fn x_only_marks_a_report_read_and_never_closes_its_node() {
         let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
         app.reconcile();
         assert_eq!(app.sel, Some(Key::R(1)));
@@ -2115,13 +2150,13 @@ pub(crate) mod tests {
     #[test]
     fn shift_x_reads_and_arms_a_close_that_a_second_press_confirms() {
         let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
         app.reconcile();
         press(&mut app, "X");
         assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report immediately");
         assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         press(&mut app, "X");
         assert!(app.pending_close.is_none(), "the second X consumes the confirmation");
     }
@@ -2129,7 +2164,7 @@ pub(crate) mod tests {
     #[test]
     fn shift_x_does_nothing_for_a_report_whose_node_is_no_longer_alive() {
         let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         let mut node = alive_node("s1");
         node.node.alive = false;
         app.data.nodes = vec![node];
@@ -2142,7 +2177,7 @@ pub(crate) mod tests {
     #[test]
     fn shift_x_also_works_from_reading_mode() {
         let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
         app.reconcile();
         press(&mut app, "o");
