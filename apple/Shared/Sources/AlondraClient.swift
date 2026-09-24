@@ -98,6 +98,10 @@ public struct AlondraClient: Sendable {
         try await post("v1/prs/\(id)/changes", ["text": text, "attachments": attachments])
     }
 
+    public func ask(onPullRequest id: UInt64, text: String, attachments: [String] = []) async throws {
+        try await post("v1/prs/\(id)/ask", ["text": text, "attachments": attachments])
+    }
+
     public func resolveConflicts(onPullRequest id: UInt64) async throws {
         try await post("v1/prs/\(id)/resolve-conflicts", [:])
     }

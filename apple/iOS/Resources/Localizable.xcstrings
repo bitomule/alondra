@@ -301,6 +301,16 @@
         }
       }
     },
+    "Ask": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preguntar"
+          }
+        }
+      }
+    },
     "Ask for Context": {
       "localizations": {
         "es": {

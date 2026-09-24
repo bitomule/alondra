@@ -586,6 +586,19 @@ struct TriageCard: View {
                         try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
                     }
                 }
+                Button {
+                    let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                    resolve(Stamp(label: String(localized: "Sent"), symbol: "questionmark.bubble", tint: Palette.sky)) { [attachments] client in
+                        try await client.ask(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
+                    }
+                } label: {
+                    Label("Ask", systemImage: "questionmark.bubble")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 30)
+                }
+                .buttonStyle(.plain)
+                .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
                 if pr.hasConflicts {
                     Button {
                         resolve(Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)) {

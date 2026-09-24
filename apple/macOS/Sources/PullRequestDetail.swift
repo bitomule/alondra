@@ -90,6 +90,9 @@ struct PullRequestDetail: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.trailing)
             }
+            Button("Ask") { ask() }
+                .disabled(!hasChanges)
+                .help("Ask the node about this PR; the card stays in the inbox")
             Group {
                 if hasChanges {
                     Button(requestChangesTitle) { requestChanges() }
@@ -189,6 +192,17 @@ struct PullRequestDetail: View {
             files = UnifiedDiff.parse(try await store.client.pullRequestDiff(pr.id))
         } catch {
             diffError = error.localizedDescription
+        }
+    }
+
+    private func ask() {
+        let (id, text, attachments) = (pr.id, review, draft.attachments)
+        Task {
+            if await store.resolve(.pullRequest(pr), { client in
+                try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }) {
+                drafts.discard(InboxItem.pullRequest(pr).id)
+            }
         }
     }
 

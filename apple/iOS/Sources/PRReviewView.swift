@@ -118,14 +118,24 @@ struct PRReviewView: View {
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
             }
-            Button {
-                send()
-            } label: {
-                Label(comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(comments.count))"), systemImage: "arrow.uturn.backward")
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: 8) {
+                Button {
+                    ask()
+                } label: {
+                    Label("Ask", systemImage: "questionmark.bubble")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                .disabled((review.isEmpty && attachments.isEmpty) || sending)
+                Button {
+                    send()
+                } label: {
+                    Label(comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(comments.count))"), systemImage: "arrow.uturn.backward")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                .disabled((review.isEmpty && attachments.isEmpty) || sending)
             }
-            .buttonStyle(.glassProminent)
-            .disabled((review.isEmpty && attachments.isEmpty) || sending)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -138,6 +148,18 @@ struct PRReviewView: View {
         Task {
             let ok = await fleet.resolve(.pullRequest(pr)) { [attachments] client in
                 try await client.requestChanges(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }
+            sending = false
+            if ok { dismiss() }
+        }
+    }
+
+    private func ask() {
+        let (id, text) = (pr.id, review)
+        sending = true
+        Task {
+            let ok = await fleet.resolve(.pullRequest(pr)) { [attachments] client in
+                try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
             }
             sending = false
             if ok { dismiss() }

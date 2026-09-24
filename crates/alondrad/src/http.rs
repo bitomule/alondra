@@ -63,6 +63,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/activity", post(activity))
         .route("/v1/prs/{id}/merge", post(merge_pr))
         .route("/v1/prs/{id}/changes", post(request_pr_changes))
+        .route("/v1/prs/{id}/ask", post(ask_about_pr))
         .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
@@ -862,6 +863,39 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
             }
             Json(json!({"id": id, "sent_to": to})).into_response()
         }
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct AskPrBody {
+    text: String,
+    #[serde(default)]
+    attachments: Vec<String>,
+}
+
+/// #150, 24 Sep: asking a node about its PR had no way but "Request changes", which parks the
+/// card until a new push and blocked the train above it. This asks without touching the PR's
+/// state, so the card stays in the inbox and the node answers with a report linking the PR.
+async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<AskPrBody>) -> Response {
+    let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    if b.text.trim().is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to ask");
+    }
+    let attachments = match attached(&hub, &b.attachments) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let text = format!(
+        "{} asks about {}: {}\n\nAnswer with a report linking the PR so the answer shows inside its card.",
+        hub.config.name,
+        pr.url,
+        b.text.trim()
+    );
+    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None, attachments) {
+        Ok(to) => Json(json!({"id": id, "sent_to": to})).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -2736,6 +2770,56 @@ mod tests {
         hub.append(Event::PrUpdated(card("MERGEABLE", "def"))).unwrap();
         assert_eq!(in_inbox(&hub), 1, "back once the node pushed");
         assert!(!hub.read(|v| v.prs[&1].conflicts()));
+    }
+
+    /// #150, 24 Sep: "Request changes" was the only way to ask a node about its PR, which parked
+    /// the card until a new push. Asking must reach the node without touching the PR's state.
+    #[tokio::test]
+    async fn asking_about_a_pr_reaches_its_node_and_keeps_the_card_in_the_inbox() {
+        let hub = temp_hub("ask");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/150".into(), session_id: "s".into() }).unwrap();
+
+        let body = AskPrBody { text: "why did CI fail?".into(), attachments: vec![] };
+        let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(said["sent_to"].as_str(), Some("s"));
+
+        let told = hub.read(|v| v.messages.values().last().map(|m| (m.session_id.clone(), m.text.clone()))).unwrap();
+        assert_eq!(told.0, "s");
+        assert!(told.1.contains("asks about https://github.com/a/b/pull/150: why did CI fail?"), "{}", told.1);
+        assert!(told.1.contains("Answer with a report linking the PR"), "{}", told.1);
+
+        assert!(hub.read(|v| v.prs[&1].changes_requested_on.is_none()), "asking must not park the card");
+        assert_eq!(hub.read(|v| v.prs_awaiting_user().map(|p| p.id).collect::<Vec<_>>()), vec![1], "the card stays in the inbox");
+    }
+
+    /// A PR stacked on the one being asked about must not become any harder to merge than it
+    /// already was: asking is not a change request, so it must not add a new block.
+    #[tokio::test]
+    async fn asking_about_a_pr_does_not_block_a_stacked_pr_more_than_before() {
+        let hub = temp_hub("ask-stack");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/150".into(), session_id: "s".into() }).unwrap();
+        let mut below = hub.read(|v| v.prs[&1].clone());
+        (below.base, below.head, below.head_sha, below.fetched) = (Some("main".into()), Some("below".into()), Some("sha1".into()), true);
+        hub.append(Event::PrUpdated(below)).unwrap();
+
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/151".into(), session_id: "s".into() }).unwrap();
+        let mut above = hub.read(|v| v.prs[&2].clone());
+        (above.base, above.head, above.head_sha, above.fetched) = (Some("below".into()), Some("above".into()), Some("sha2".into()), true);
+        hub.append(Event::PrUpdated(above)).unwrap();
+
+        let before = hub.read(|v| merge_blocked(v, 2));
+        assert_eq!(before.as_deref(), Some("merge PR #150 first"));
+
+        let body = AskPrBody { text: "can you explain this diff?".into(), attachments: vec![] };
+        let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+
+        let after = hub.read(|v| merge_blocked(v, 2));
+        assert_eq!(after, before, "a stacked PR is not blocked more than before asking");
+        assert_eq!(hub.read(|v| v.prs_awaiting_user().map(|p| p.id).collect::<Vec<_>>()), vec![1, 2], "both cards stay in the inbox");
     }
 
     #[tokio::test]
