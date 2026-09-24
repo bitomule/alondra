@@ -174,7 +174,11 @@ impl View {
                 }
             }),
             Event::ReportPosted(r) => {
+                let settled = self.about_settled_pr(r);
                 let node = self.node_mut(&r.session_id, at);
+                if settled {
+                    node.acknowledged_at = Some(at);
+                }
                 let signal = match r.kind {
                     ReportKind::Final => Some(TurnSignal::Finished),
                     ReportKind::Notice | ReportKind::Document => Some(TurnSignal::Delivered),
@@ -188,6 +192,7 @@ impl View {
                 if r.node_name.is_none() {
                     r.node_name = node.name.clone();
                 }
+                r.read |= settled;
                 let sid = r.session_id.clone();
                 self.reports.insert(r.id, r);
                 Some((sid, Trigger::Report))
@@ -590,6 +595,17 @@ impl View {
     /// The PR card a report is about: the first PR it links (its links, then its title, then its
     /// body) whose card is open, also while that card waits for new commits. The report is shown
     /// inside that card and never as a card of its own.
+    /// The report links a PR the user already merged or closed on its card, and no open one: it
+    /// is filed read, as merging reads the reports inside the card. PR #61, 24 Sep: the node's
+    /// "deployed" report after the merge stayed as a card of its own asking for David.
+    fn about_settled_pr(&self, r: &Report) -> bool {
+        let settled = |repo: &str, number: u64| {
+            self.prs.values().any(|p| p.repo == repo && p.number == number && matches!(p.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed))
+        };
+        let texts = r.links.iter().map(|l| l.url.as_str()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")]);
+        self.report_pr(r).is_none() && texts.flat_map(crate::pr::urls_in).filter_map(|u| crate::pr::parse_url(&u)).any(|(repo, number)| settled(&repo, number))
+    }
+
     pub fn report_pr(&self, r: &Report) -> Option<u64> {
         let texts = r.links.iter().map(|l| l.url.as_str()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")]);
         texts.flat_map(crate::pr::urls_in).filter_map(|u| crate::pr::parse_url(&u)).find_map(|(repo, number)| {
@@ -863,6 +879,39 @@ mod tests {
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 42 });
         assert!(!v.nodes["s"].alive);
         assert_ne!(v.nodes["s"].state, NodeState::Working);
+    }
+
+    #[test]
+    fn a_report_about_a_pr_already_merged_or_closed_is_filed_read() {
+        use crate::pr::MergeMethod;
+        let report = |id: u64, url: &str| {
+            Event::ReportPosted(Report {
+                related: vec![],
+                id,
+                session_id: "s".into(),
+                node_name: None,
+                title: "PR #61 deployed".into(),
+                body: None,
+                links: vec![crate::model::Link { url: url.into(), title: None }],
+                attachments: vec![],
+                kind: ReportKind::Final,
+                created_at: 2000,
+                read: false,
+                mission: None,
+                looks_like_question: false,
+            })
+        };
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &Event::PrOpened { url: "https://github.com/a/b/pull/61".into(), session_id: "s".into() });
+        v.apply(3, 3000, &Event::PrOpened { url: "https://github.com/a/b/pull/62".into(), session_id: "s".into() });
+        v.apply(4, 4000, &Event::PrMerged { id: 1, method: MergeMethod::Merge });
+        v.apply(5, 5000, &Event::PrDismissed { id: 2 });
+        v.apply(6, 6000, &report(1, "https://github.com/a/b/pull/61"));
+        v.apply(7, 7000, &report(2, "https://github.com/a/b/pull/62"));
+        v.apply(8, 8000, &hook("s", "Stop"));
+        assert!(v.reports[&1].read, "merged: nothing left for the user to do on it");
+        assert!(!v.reports[&2].read, "only set aside: the user has not settled it");
+        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), vec![2]);
     }
 
     #[test]
