@@ -375,8 +375,10 @@ impl View {
                 None
             }
             Event::Resumed { session_id, ok, error } => {
+                let task = self.nodes.get(session_id).and_then(|n| crate::upkeep::open_task(self, n)).map(|t| t.id.clone());
                 if let Some(node) = self.nodes.get_mut(session_id) {
-                    node.resumed = Some(crate::model::ResumeAttempt { at, exit: node.exited_at, ok: *ok, error: error.clone() });
+                    let in_a_row = node.resumed.as_ref().filter(|r| r.task == task && node.last_stop_at.is_none_or(|stop| stop < r.at)).map_or(0, |r| r.streak);
+                    node.resumed = Some(crate::model::ResumeAttempt { at, exit: node.exited_at, ok: *ok, error: error.clone(), task, streak: in_a_row + 1 });
                 }
                 None
             }
