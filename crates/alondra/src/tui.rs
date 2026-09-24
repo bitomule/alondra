@@ -2059,7 +2059,7 @@ pub(crate) mod tests {
     fn asked_on_pr(id: u64, pr: u64) -> crate::client::OpenQuestion {
         let mut q = question(id, QuestionOrigin::Ask, &["Merge it", "Not yet"]);
         q.options[1].description = Some("Write what is missing".into());
-        crate::client::OpenQuestion { question: q, pr_id: Some(pr), report: None }
+        crate::client::OpenQuestion { question: q, pr_id: Some(pr), report: None, reports: vec![] }
     }
 
     #[test]
@@ -2085,7 +2085,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_report_about_a_waiting_pr_sits_under_its_card_and_counts_with_it() {
-        let reported = |id: u64, pr: Option<u64>| crate::client::NewsReport { report: report(id), pr_id: pr };
+        let reported = |id: u64, pr: Option<u64>| crate::client::NewsReport { report: report(id), pr_id: pr, earlier: vec![] };
         let cases: [(&str, Vec<crate::client::NewsReport>, Vec<Key>, usize); 3] = [
             ("the report links the waiting PR", vec![reported(2, None), reported(1, Some(4))], vec![Key::P(4), Key::R(1), Key::R(2)], 2),
             ("the report's card is not in the inbox", vec![reported(2, None), reported(1, Some(99))], vec![Key::P(4), Key::R(2), Key::R(1)], 3),

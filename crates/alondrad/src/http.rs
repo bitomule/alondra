@@ -845,8 +845,10 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 if let Some(pr) = v.question_pr(q) {
                     value["pr_id"] = json!(pr);
                 }
-                if let Some(report) = v.question_report(q).and_then(|id| v.reports.get(&id)) {
-                    value["report"] = json!(report);
+                let reports: Vec<&Report> = v.question_reports(q).iter().filter_map(|id| v.reports.get(id)).collect();
+                if let Some(newest) = reports.last() {
+                    value["report"] = json!(newest);
+                    value["reports"] = json!(reports);
                 }
                 value
             })
@@ -859,6 +861,10 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
                 if let Some(pr) = v.report_pr(r) {
                     value["pr_id"] = json!(pr);
+                }
+                let earlier: Vec<&Report> = v.report_stack(r).iter().filter_map(|id| v.reports.get(id)).collect();
+                if !earlier.is_empty() {
+                    value["earlier"] = json!(earlier);
                 }
                 value
             })
@@ -1148,14 +1154,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
     let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
-    let absorbed = hub.read(|v| v.question_report(&q));
+    let absorbed = hub.read(|v| v.question_reports(&q));
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
     }
-    if let Some(report) = absorbed
-        && let Err(e) = hub.append(Event::ReportRead { id: report })
-    {
-        log!("could not mark report #{report} read with question #{id}: {e}");
+    for report in absorbed {
+        if let Err(e) = hub.append(Event::ReportRead { id: report }) {
+            log!("could not mark report #{report} read with question #{id}: {e}");
+        }
     }
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
@@ -2060,6 +2066,52 @@ mod tests {
         let (status, detail) = status_and_body(node_detail(State(hub.clone()), Path("job".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(detail["node"]["background"][0]["suspect"], true);
+    }
+
+    fn delivered(id: u64, title: &str, at: i64) -> Event {
+        Event::ReportPosted(Report {
+            id, session_id: "s".into(), node_name: None, title: title.into(), body: Some("Hecho".into()),
+            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: at, read: false, mission: None, looks_like_question: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn one_episode_is_one_card_and_reading_it_reads_all_of_it() {
+        let hub = temp_hub("episode");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let now = now_millis();
+        hub.append(delivered(1, "Auditoría", now)).unwrap();
+        hub.append(delivered(2, "Anexo", now + 1)).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        let news = o["news"].as_array().unwrap();
+        assert_eq!(news.len(), 1, "{}", o["news"]);
+        assert_eq!((news[0]["id"].as_u64(), news[0]["earlier"][0]["id"].as_u64()), (Some(2), Some(1)));
+        let (status, _) = status_and_body(report_read(State(hub.clone()), Path(2)).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(hub.read(|v| v.reports[&1].read && v.reports[&2].read), "reading the card reads the whole episode");
+    }
+
+    #[tokio::test]
+    async fn a_question_after_its_nodes_reports_carries_them_and_answering_reads_them() {
+        let hub = temp_hub("episode-question");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let now = now_millis();
+        hub.append(delivered(1, "Menús como tarjeta", now)).unwrap();
+        hub.append(delivered(2, "Uso de la suscripción", now + 1)).unwrap();
+        hub.append(Event::QuestionAsked(Question {
+            id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo con el salto de la TUI?".into(),
+            detail: Some("Todo lo anterior está subido".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
+            origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
+            asked_at: now + 2, action: false, steps: vec![], mission: None,
+        })).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["news"].as_array().unwrap().len(), 0, "{}", o["news"]);
+        let ids: Vec<u64> = o["open_questions"][0]["reports"].as_array().unwrap().iter().filter_map(|r| r["id"].as_u64()).collect();
+        assert_eq!(ids, [1, 2]);
+        let body = AnswerBody { text: "Sí".into(), option: None, by: None };
+        let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reports[&1].read && v.reports[&2].read), "answering reads every report inside the question");
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {

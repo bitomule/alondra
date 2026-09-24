@@ -205,7 +205,7 @@ struct TriageCard: View {
                 }
             }
             links(question.links)
-            if let report = question.report {
+            ForEach(question.aboutReports) { report in
                 aboutReport(report)
             }
             if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty, !context.hasPrefix("mcp__") {
@@ -228,6 +228,9 @@ struct TriageCard: View {
                 reviewButton(String(localized: "Read the document"), detail: attachment.name, symbol: "doc.richtext")
             }
             links(report.links)
+            if let earlier = report.earlier, !earlier.isEmpty {
+                earlierReports(earlier)
+            }
         case .pullRequest(let pr):
             ForEach(fleet.reports(forPullRequest: pr.id)) { report in
                 AttachedReport(report: report)
@@ -363,6 +366,29 @@ struct TriageCard: View {
                 .tint(Palette.sky)
             }
         }
+    }
+
+    private func earlierReports(_ earlier: [Report]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(String(localized: "Earlier in this delivery (\(earlier.count))"), systemImage: "tray.full")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(earlier) { e in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(e.title)
+                        .font(.headline)
+                        .foregroundStyle(Palette.ink)
+                    if let body = e.body, !body.isEmpty {
+                        blocks(body)
+                            .font(.callout)
+                            .lineLimit(8)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
     }
 
     private func aboutReport(_ report: Report) -> some View {

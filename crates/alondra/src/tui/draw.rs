@@ -458,6 +458,14 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     scrollbar(f, inner, total, app.list_scroll);
 }
 
+fn carried_report(r: &Report, width: usize) -> Vec<Line<'static>> {
+    let mut lines = wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]);
+    if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
+        lines.extend(md::render(&md::parse(body), width).lines);
+    }
+    lines
+}
+
 fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let (glyph, kind, color) = item_glyph(item);
     let mut lines = vec![];
@@ -550,14 +558,24 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         }
     }
     if let Item::Q(q) = item
-        && let Some(r) = app.data.open_questions.iter().find(|o| o.id == q.id).and_then(|o| o.report.as_ref())
+        && let Some(o) = app.data.open_questions.iter().find(|o| o.id == q.id)
+    {
+        for r in o.about() {
+            lines.push(Line::default());
+            let id = r.id;
+            lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
+            lines.extend(carried_report(r, width));
+        }
+    }
+    if let Item::R(r) = item
+        && let Some(n) = app.data.news.iter().find(|n| n.id == r.id).filter(|n| !n.earlier.is_empty())
     {
         lines.push(Line::default());
-        let id = r.id;
-        lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
-        lines.extend(wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]));
-        if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
-            lines.extend(md::render(&md::parse(body), width).lines);
+        let count = n.earlier.len();
+        lines.push(Line::from(trf!("Earlier in this delivery ({count})", "Antes en esta entrega ({count})").fg(DIM).bold()));
+        for e in &n.earlier {
+            lines.push(Line::default());
+            lines.extend(carried_report(e, width));
         }
     }
     if let Item::Q(q) = item
@@ -1509,7 +1527,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
         q.title = "Merge it before the release?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None, reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1527,7 +1545,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut r = report(2);
         r.title = "PR ready: leaving a node returns to Alondra".into();
-        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4) });
+        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4), earlier: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1548,12 +1566,59 @@ mod tests {
         .unwrap();
         let mut q = question(2, QuestionOrigin::Ask, &["Launch it"]);
         q.title = "Launch a node to fix the audit?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report) });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report), reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 40);
         assert!(s.contains("Launch a node to fix the audit?"), "{s}");
         assert!(s.contains("About report #7"), "{s}");
         assert!(s.contains("Audit: 13 things left") && s.contains("The worst three are in iOS."), "{s}");
+    }
+
+    fn delivered(id: u64, title: &str) -> alondra_core::Report {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "session_id": "s1", "node_name": "alondra/plan", "title": title, "kind": "final", "created_at": id
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_question_shows_every_report_it_takes_in() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        let mut q = question(2, QuestionOrigin::Ask, &["Yes"]);
+        q.title = "Go on with the TUI jump?".into();
+        let reports = vec![delivered(7, "Menus become cards"), delivered(8, "Subscription usage")];
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: reports.last().cloned(), reports });
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at("About report #7") < at("About report #8"), "{s}");
+        assert!(s.contains("Subscription usage"), "{s}");
+    }
+
+    #[test]
+    fn a_report_card_carries_the_earlier_reports_of_its_delivery() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.news = vec![crate::client::NewsReport { report: delivered(2, "Annex to the audit"), pr_id: None, earlier: vec![delivered(1, "Audit redone")] }];
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("TO READ 1"), "{s}");
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at("Earlier in this delivery (1)") < at("Audit redone"), "{s}");
+    }
+
+    #[test]
+    fn the_overview_carries_a_questions_reports_and_a_cards_earlier_ones() {
+        let q = serde_json::json!({
+            "id": 2, "session_id": "s1", "title": "Go on?", "options": [], "links": [], "attachments": [], "blocking": true,
+            "origin": "ask", "status": "open", "asked_at": 3, "reports": [{"id": 1, "session_id": "s1", "title": "A", "kind": "final", "created_at": 1}]
+        });
+        let q: crate::client::OpenQuestion = serde_json::from_value(q).unwrap();
+        assert_eq!(q.about().iter().map(|r| r.id).collect::<Vec<_>>(), [1]);
+        let r = serde_json::json!({"id": 2, "session_id": "s1", "title": "B", "kind": "final", "created_at": 2, "earlier": [{"id": 1, "session_id": "s1", "title": "A", "kind": "final", "created_at": 1}]});
+        let r: crate::client::NewsReport = serde_json::from_value(r).unwrap();
+        assert_eq!(r.earlier.len(), 1);
     }
 
     #[test]

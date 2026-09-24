@@ -136,6 +136,11 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     /// The report this question is about; the server keeps it out of the inbox and it is shown
     /// inside the question instead.
     public let report: Report?
+    /// Every report the question takes in, oldest first: the one it cites and the node's earlier
+    /// reports of the same episode. An older alondrad sends only `report`.
+    public let reports: [Report]?
+
+    public var aboutReports: [Report] { reports ?? report.map { [$0] } ?? [] }
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }
@@ -183,6 +188,9 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let looksLikeQuestion: Bool?
     /// The open PR card this report is about; it is shown inside that card.
     public let prId: UInt64?
+    /// The earlier unread reports of the same episode, oldest first; this card carries them and
+    /// reading it reads them.
+    public let earlier: [Report]?
 
     public var seemsToAsk: Bool { looksLikeQuestion == true }
 

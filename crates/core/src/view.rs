@@ -28,6 +28,10 @@ pub struct View {
     /// The merge method last used in each repo, preselected on its next PR card.
     #[serde(default)]
     pub merge_methods: BTreeMap<String, crate::pr::MergeMethod>,
+    /// When each node's episodes began, oldest first, so reports and questions can be told apart
+    /// by the episode they belong to after a newer one has started.
+    #[serde(default)]
+    pub episodes: BTreeMap<String, Vec<Millis>>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -82,6 +86,7 @@ impl View {
         for sid in &gone {
             self.nodes.remove(sid);
         }
+        self.episodes.retain(|sid, _| self.nodes.contains_key(sid));
         self.questions.retain(|_, q| q.status.is_open() || q.asked_at >= before);
         self.reports.retain(|_, r| !(r.read && r.created_at < before));
         self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
@@ -98,6 +103,12 @@ impl View {
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
+                let typed_by_user = h.event == "UserPromptSubmit"
+                    && h.prompt.is_some()
+                    && self.nodes.get(&h.session_id).is_some_and(|n| states::talking_with_user(self, n));
+                if typed_by_user && let Some(node) = self.nodes.get_mut(&h.session_id) {
+                    node.begin_episode(at);
+                }
                 Some((h.session_id.clone(), Trigger::Hook))
             }
             Event::DaemonSeen(d) => {
@@ -193,6 +204,12 @@ impl View {
                 Some((sid, Trigger::Report))
             }
             Event::ReportRead { id } => {
+                let earlier = self.reports.get(id).map(|r| self.report_stack(r)).unwrap_or_default();
+                for e in earlier {
+                    if let Some(r) = self.reports.get_mut(&e) {
+                        r.read = true;
+                    }
+                }
                 let session = self.reports.get_mut(id).map(|r| {
                     r.read = true;
                     r.session_id.clone()
@@ -319,6 +336,11 @@ impl View {
             }
         };
         if let Some((sid, trigger)) = touched {
+            let begun = self.nodes.get(&sid).map_or(0, |n| n.episode_since);
+            let starts = self.episodes.entry(sid.clone()).or_default();
+            if begun > 0 && starts.last() != Some(&begun) {
+                starts.push(begun);
+            }
             self.recompute(&sid, at, trigger);
         }
     }
@@ -595,10 +617,68 @@ impl View {
     /// a PR card that waits off the inbox for new commits.
     pub fn inbox_reports(&self) -> impl Iterator<Item = &Report> {
         let absorbed = self.absorbed_reports();
+        let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
             let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !parked
+            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
         })
+    }
+
+    /// When the node's episode at `at` began: nothing from the user or the orchestrator reached it
+    /// between then and `at`, so what it reported and asked in that stretch is about one thing.
+    pub fn episode_at(&self, session_id: &str, at: Millis) -> Millis {
+        self.episodes.get(session_id).and_then(|starts| starts.iter().rev().find(|s| **s <= at).copied()).unwrap_or(0)
+    }
+
+    /// Unread reports of one of the node's episodes that no PR card holds, oldest first.
+    fn episode_reports<'a>(&'a self, session_id: &'a str, episode: Millis) -> impl Iterator<Item = &'a Report> {
+        self.reports.values().filter(move |r| {
+            r.session_id == session_id
+                && !r.read
+                && r.kind != ReportKind::Progress
+                && self.episode_at(session_id, r.created_at) == episode
+                && self.report_pr(r).is_none()
+        })
+    }
+
+    /// The reports an open question takes in: the one it cites or links (`question_report`), and,
+    /// for the node's own question, every unread report it sent earlier in the same episode. They
+    /// are shown inside the question and answering it reads them.
+    pub fn question_reports(&self, q: &Question) -> Vec<u64> {
+        if !q.status.is_open() {
+            return vec![];
+        }
+        let own = !q.to_orchestrator && matches!(q.origin, QuestionOrigin::Ask | QuestionOrigin::AskUserQuestion);
+        let mut ids: Vec<u64> = self.question_report(q).into_iter().collect();
+        if own {
+            let episode = self.episode_at(&q.session_id, q.asked_at);
+            ids.extend(self.episode_reports(&q.session_id, episode).filter(|r| r.created_at <= q.asked_at).map(|r| r.id));
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// The earlier unread reports of the same episode that the newest one carries, oldest first,
+    /// when `r` is that newest one. Reports a question took in are not stacked.
+    pub fn report_stack(&self, r: &Report) -> Vec<u64> {
+        self.stack_beside(r, &self.absorbed_reports())
+    }
+
+    fn stack_beside(&self, r: &Report, absorbed: &std::collections::HashSet<u64>) -> Vec<u64> {
+        let episode = self.episode_at(&r.session_id, r.created_at);
+        let mut episode: Vec<&Report> = self.episode_reports(&r.session_id, episode).filter(|x| !absorbed.contains(&x.id)).collect();
+        if episode.last().map(|x| x.id) != Some(r.id) {
+            return vec![];
+        }
+        episode.pop();
+        episode.into_iter().map(|x| x.id).collect()
+    }
+
+    /// Reports carried by a newer report of their episode: they leave the inbox with it.
+    pub fn stacked_reports(&self) -> std::collections::HashSet<u64> {
+        let absorbed = self.absorbed_reports();
+        self.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).flat_map(|r| self.stack_beside(r, &absorbed)).collect()
     }
 
     /// The unread report an open question takes in, so the two are one card. Deliberately narrow:
@@ -626,7 +706,7 @@ impl View {
 
     /// Reports some open question has taken in: they leave the inbox while it is open.
     pub fn absorbed_reports(&self) -> std::collections::HashSet<u64> {
-        self.open_questions().filter_map(|q| self.question_report(q)).collect()
+        self.open_questions().flat_map(|q| self.question_reports(q)).collect()
     }
 
     pub fn open_questions(&self) -> impl Iterator<Item = &Question> {
@@ -1211,6 +1291,106 @@ mod tests {
         }
     }
 
+    fn typed(sid: &str, prompt: &str) -> Event {
+        Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), prompt: Some(prompt.into()), ..Default::default() })
+    }
+
+    fn told(v: &mut View, seq: u64, at: Millis, sid: &str) {
+        v.apply(seq, at, &Event::MessageQueued(Message {
+            id: seq, session_id: sid.into(), from: MessageFrom::User, text: "Sigue con la fase 2".into(),
+            answers_question: None, created_at: at, handed_at: None, delivered_at: None,
+        }));
+        v.apply(seq + 1, at, &Event::MessageHanded { id: seq });
+    }
+
+    /// alondra/plan-siguiente, 23 Sep: David gave it one task after another in its own terminal,
+    /// and without an episode boundary its unrelated deliveries would join into one card.
+    #[test]
+    fn the_users_own_prompt_in_the_terminal_starts_an_episode() {
+        let cases: Vec<(&str, Event, bool)> = vec![
+            ("the user types a new task", typed("s", "Ahora arregla el salto de la TUI"), true),
+            ("Alondra types a message", typed("s", "[Alondra] Your turn ended without telling"), false),
+            ("Claude Code reports a task", typed("s", "<task-notification> build finished"), false),
+            ("the launch mission", typed("s", "Audit the inbox"), false),
+            ("a turn with no prompt text", hook("s", "UserPromptSubmit"), false),
+        ];
+        for (what, prompt, begins) in cases {
+            let mut v = run(&[hook("s", "SessionStart")]);
+            v.nodes.get_mut("s").unwrap().mission = Some("Audit the inbox".into());
+            v.apply(5, 5000, &prompt);
+            assert_eq!(v.nodes["s"].episode_since == 5000, begins, "{what}");
+        }
+    }
+
+    /// R#113 "Los menús que Alondra no veía ya llegan como tarjeta…" and then Q#123 "Siguiente:
+    /// ¿uso de la suscripción…?" (23 Sep): two cards, the final contradicted by the question.
+    #[test]
+    fn a_nodes_own_question_takes_in_the_reports_of_its_episode() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        struct Case {
+            what: &'static str,
+            reporter: &'static str,
+            reported_at: Millis,
+            link: Option<&'static str>,
+            message_between: bool,
+            origin: QuestionOrigin,
+            to_orchestrator: bool,
+            takes_in: bool,
+        }
+        let case = |what, takes_in| Case { what, reporter: "s", reported_at: 3000, link: None, message_between: false, origin: QuestionOrigin::Ask, to_orchestrator: false, takes_in };
+        let cases = [
+            case("a final, then a question", true),
+            Case { message_between: true, ..case("a message reached the node in between", false) },
+            Case { reported_at: 5000, ..case("the report came after the question", false) },
+            Case { reporter: "t", ..case("another node's report", false) },
+            Case { link: Some(PR), ..case("the report sits in its PR card", false) },
+            Case { origin: QuestionOrigin::AskUserQuestion, ..case("a menu question of the node", true) },
+            Case { origin: QuestionOrigin::Permission, ..case("a permission card", false) },
+            Case { to_orchestrator: true, ..case("a question for the orchestrator", false) },
+        ];
+        for c in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
+            v.apply(3, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+            v.apply(4, c.reported_at, &report_about(7, c.reporter, ReportKind::Final, c.reported_at, c.link.as_slice(), "Hecho", ""));
+            if c.message_between {
+                told(&mut v, 5, 3500, "s");
+            }
+            let mut q = question(1, "s", c.origin);
+            q.asked_at = 4000;
+            q.title = "¿Sigo con lo siguiente?".into();
+            q.to_orchestrator = c.to_orchestrator;
+            v.apply(10, 4000, &Event::QuestionAsked(q));
+            assert_eq!(v.question_reports(&v.questions[&1]).contains(&7), c.takes_in, "{}", c.what);
+            assert_eq!(v.inbox_reports().any(|r| r.id == 7), !c.takes_in, "{}", c.what);
+        }
+    }
+
+    #[test]
+    fn reports_of_one_episode_stack_under_the_newest() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &report_about(1, "s", ReportKind::Final, 2000, &[], "Auditoría", ""));
+        v.apply(3, 3000, &report_about(2, "s", ReportKind::Final, 3000, &[], "Anexo", ""));
+        v.apply(4, 3500, &report(3, "s", ReportKind::Progress, 3500));
+        let inbox = |v: &View| v.inbox_reports().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(inbox(&v), [2], "one card for the episode");
+        assert_eq!(v.report_stack(&v.reports[&2]), [1]);
+        assert!(v.report_stack(&v.reports[&1]).is_empty(), "only the newest carries the others");
+
+        told(&mut v, 5, 4000, "s");
+        v.apply(7, 5000, &report_about(4, "s", ReportKind::Notice, 5000, &[], "Otra cosa", ""));
+        assert_eq!(inbox(&v), [4, 2], "a new episode is a card of its own");
+        assert_eq!(v.report_stack(&v.reports[&2]), [1], "the old episode's stack holds");
+
+        let mut older = v.clone();
+        older.apply(8, 6000, &Event::ReportRead { id: 1 });
+        assert!(!older.reports[&2].read, "reading an earlier report does not read the newest");
+
+        v.apply(8, 6000, &Event::ReportRead { id: 2 });
+        assert!(v.reports[&1].read, "reading the newest reads the ones it carries");
+        assert!(!v.reports[&4].read);
+        assert_eq!(inbox(&v), [4]);
+    }
+
     #[test]
     fn a_question_does_not_take_a_report_out_of_its_pr_card() {
         const PR: &str = "https://github.com/a/b/pull/24";
@@ -1392,7 +1572,8 @@ mod tests {
             q.attachments = c.attachments;
             v.apply(11, q.asked_at, &Event::QuestionAsked(q));
             assert_eq!(v.question_report(&v.questions[&1]), c.absorbs.then_some(7), "{}", c.what);
-            assert_eq!(v.absorbed_reports().contains(&7), c.absorbs, "{}", c.what);
+            let same_episode = c.asker == "node";
+            assert_eq!(v.absorbed_reports().contains(&7), c.absorbs || same_episode, "{}: the node's own question takes in its episode's reports", c.what);
         }
     }
 
