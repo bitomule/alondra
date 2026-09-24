@@ -8,6 +8,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::hub::Hub;
+use crate::markdown;
 
 const SCAN_EVERY: Duration = Duration::from_secs(3);
 const HEARTBEAT_MS: i64 = 5 * 60 * 1000;
@@ -188,6 +189,7 @@ fn transcript_path(cache: &mut HashMap<String, PathBuf>, projects: &Path, sessio
 }
 
 const TAIL_BYTES: u64 = 512 * 1024;
+const MESSAGE_MAX: usize = 16000;
 
 fn last_assistant_text(path: &Path) -> Option<(String, Option<i64>)> {
     use std::io::{Read, Seek, SeekFrom};
@@ -223,12 +225,40 @@ fn last_assistant_text(path: &Path) -> Option<(String, Option<i64>)> {
             continue;
         }
         let at = v.get("timestamp").and_then(Value::as_str).and_then(parse_rfc3339_millis);
-        let joined: String = texts.join("\n").chars().take(4000).collect();
+        let joined = clip(&texts.join("\n"), MESSAGE_MAX);
         candidates.push((joined, at));
     }
     let newest_at = candidates.first().and_then(|c| c.1);
     let best = candidates.into_iter().max_by_key(|c| c.0.chars().count())?;
     Some((best.0, newest_at.or(best.1)))
+}
+
+/// Cuts at the last blank line outside code that fits in `limit` characters, and says so with a closing `…`.
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let (mut fence, mut boundary, mut at, mut chars) = (None, None, 0, 0);
+    for line in text.split_inclusive('\n') {
+        if chars > limit {
+            break;
+        }
+        if line.trim().is_empty() && fence.is_none() && !text[..at].trim().is_empty() {
+            boundary = Some(at);
+        }
+        fence = markdown::fence_after(fence, line);
+        at += line.len();
+        chars += line.chars().count();
+    }
+    if let Some(at) = boundary {
+        return format!("{}\n\n…", text[..at].trim_end());
+    }
+    let cut: String = text.chars().take(limit).collect();
+    let open = cut.lines().fold(None, markdown::fence_after);
+    match open {
+        Some(marker) => format!("{}\n{marker}\n\n…", cut.trim_end()),
+        None => format!("{}\n\n…", cut.trim_end()),
+    }
 }
 
 fn last_human_prompt(path: &Path) -> Option<String> {
@@ -289,6 +319,24 @@ fn parse_rfc3339_millis(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_messages_are_cut_on_a_block_boundary() {
+        let fence_inside = format!("intro\n\n```\n{}\n\n{}\n```", "a".repeat(10), "b".repeat(20));
+        let open_fence = format!("text\n```rust\n{}", "x".repeat(40));
+        let cases: Vec<(&str, String, usize, String)> = vec![
+            ("short text is untouched", "one\n\ntwo".into(), 20, "one\n\ntwo".into()),
+            ("exactly the limit is untouched", "a".repeat(20), 20, "a".repeat(20)),
+            ("cut at the last blank line", "first\n\nsecond\n\nthird block is long".into(), 16, "first\n\nsecond\n\n…".into()),
+            ("blank line at the limit counts", "0123456789\n\nmore text".into(), 11, "0123456789\n\n…".into()),
+            ("blank line inside a fence is ignored", fence_inside, 25, "intro\n\n…".into()),
+            ("no boundary: cut at the limit and close the fence", open_fence, 20, "text\n```rust\nxxxxxxx\n```\n\n…".into()),
+            ("multibyte characters are cut whole", "ñ".repeat(30), 10, format!("{}\n\n…", "ñ".repeat(10))),
+        ];
+        for (name, text, limit, want) in cases {
+            assert_eq!(clip(&text, limit), want, "{name}");
+        }
+    }
 
     #[test]
     fn only_claude_attach_processes_count_as_watching() {
