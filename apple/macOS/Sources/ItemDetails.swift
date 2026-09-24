@@ -278,8 +278,20 @@ struct ReportDetail: View {
                         send: sendFeedback
                     )
                     let node = report.closableNode(store.node(report.sessionId))
-                    let closesFirst = report.primaryAction(nodeFound: node != nil) == .readAndClose
-                    ReadButton(prominent: feedback.isEmpty && !closesFirst, action: markRead)
+                    let primary = report.primaryAction(nodeFound: node != nil)
+                    let closesFirst = primary == .readAndClose
+                    if primary == .review {
+                        Group {
+                            Button("Rescue Comments") { review(.comments) }
+                                .buttonStyle(.borderedProminent)
+                                .help("The node reads your comments on the artifact and applies them (C)")
+                            Button("Approve") { review(.approved) }
+                                .buttonStyle(.bordered)
+                                .help("Tell the node the artifact is approved (V)")
+                        }
+                        .controlSize(.large)
+                    }
+                    ReadButton(prominent: feedback.isEmpty && primary == .markRead, action: markRead)
                     if let node {
                         Group {
                             if closesFirst && feedback.isEmpty {
@@ -321,6 +333,8 @@ struct ReportDetail: View {
         switch character {
         case "r": focus = .reply
         case "l": markRead()
+        case "c" where !report.artifacts.isEmpty: review(.comments)
+        case "v" where !report.artifacts.isEmpty: review(.approved)
         default: return false
         }
         return true
@@ -328,6 +342,7 @@ struct ReportDetail: View {
 
     private var hint: String {
         if focus == .reply { return String(localized: "↩ sends · ⌥↩ new line · esc leaves") }
+        if !report.artifacts.isEmpty { return String(localized: "C rescues your comments · V approves · L marks as read") }
         if isDocument { return String(localized: "Hover over a block to comment on it · L marks as read") }
         return String(localized: "L marks as read · R writes")
     }
@@ -340,6 +355,10 @@ struct ReportDetail: View {
 
     private func markRead() {
         resolve { await store.markRead(report) }
+    }
+
+    private func review(_ verdict: ReviewVerdict) {
+        resolve { await store.review(report, verdict) }
     }
 
     private func resolve(_ action: @escaping @MainActor () async -> Bool) {

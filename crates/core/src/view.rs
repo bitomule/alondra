@@ -28,6 +28,9 @@ pub struct View {
     /// The merge method last used in each repo, preselected on its next PR card.
     #[serde(default)]
     pub merge_methods: BTreeMap<String, crate::pr::MergeMethod>,
+    /// Artifacts David approved, with when: a later report about one of them asks nothing of him.
+    #[serde(default)]
+    pub approved_artifacts: BTreeMap<String, Millis>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -94,6 +97,7 @@ impl View {
         self.reports.retain(|_, r| !(r.read && r.created_at < before));
         self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
         self.messages.retain(|_, m| m.created_at >= before);
+        self.approved_artifacts.retain(|_, at| *at >= before);
     }
 
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
@@ -182,7 +186,7 @@ impl View {
                 }
             }),
             Event::ReportPosted(r) => {
-                let settled = self.about_settled_pr(r);
+                let settled = self.about_settled_pr(r) || self.about_approved_artifact(r);
                 let node = self.node_mut(&r.session_id, at);
                 if settled {
                     node.acknowledged_at = Some(at);
@@ -205,25 +209,16 @@ impl View {
                 self.reports.insert(r.id, r);
                 Some((sid, Trigger::Report))
             }
-            Event::ReportRead { id } => {
-                let earlier = self.reports.get(id).map(|r| self.report_stack(r)).unwrap_or_default();
-                for e in earlier {
-                    if let Some(r) = self.reports.get_mut(&e) {
-                        r.read = true;
+            Event::ReportRead { id } => self.read_report(*id, at),
+            Event::ArtifactReviewed { report, verdict } => {
+                if *verdict == crate::event::ReviewVerdict::Approved
+                    && let Some(r) = self.reports.get(report)
+                {
+                    for url in crate::artifact::in_report(r) {
+                        self.approved_artifacts.insert(url, at);
                     }
                 }
-                let session = self.reports.get_mut(id).map(|r| {
-                    r.read = true;
-                    r.session_id.clone()
-                });
-                let node = session.as_ref().and_then(|s| self.nodes.get_mut(s));
-                match node {
-                    Some(n) => {
-                        n.acknowledged_at = Some(at);
-                        session.map(|s| (s, Trigger::Report))
-                    }
-                    None => None,
-                }
+                self.read_report(*report, at)
             }
             Event::MessageQueued(m) => {
                 self.messages.insert(m.id, m.clone());
@@ -382,6 +377,24 @@ impl View {
                 self.recompute(&sid, at, Trigger::Report);
             }
         }
+    }
+
+    /// Reading a report reads the earlier ones stacked in its card, and the user has now seen what
+    /// its node delivered.
+    fn read_report(&mut self, id: u64, at: Millis) -> Option<(String, Trigger)> {
+        let earlier = self.reports.get(&id).map(|r| self.report_stack(r)).unwrap_or_default();
+        for e in earlier {
+            if let Some(r) = self.reports.get_mut(&e) {
+                r.read = true;
+            }
+        }
+        let session = self.reports.get_mut(&id).map(|r| {
+            r.read = true;
+            r.session_id.clone()
+        })?;
+        let node = self.nodes.get_mut(&session)?;
+        node.acknowledged_at = Some(at);
+        Some((session, Trigger::Report))
     }
 
     fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<(String, Trigger)> {
@@ -616,6 +629,25 @@ impl View {
         };
         let texts = r.links.iter().map(|l| l.url.as_str()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")]);
         self.report_pr(r).is_none() && texts.flat_map(crate::pr::urls_in).filter_map(|u| crate::pr::parse_url(&u)).any(|(repo, number)| settled(&repo, number))
+    }
+
+    /// Every artifact the report links was already approved by David: it is filed read, as the
+    /// approval already answered it.
+    fn about_approved_artifact(&self, r: &Report) -> bool {
+        let artifacts = crate::artifact::in_report(r);
+        !artifacts.is_empty() && artifacts.iter().all(|url| self.approved_artifacts.contains_key(url))
+    }
+
+    /// Unread reports that send an artifact for David to review, outside PR cards (the PR decides
+    /// there). Each is a review card: its node waits until David approves it or sends it his comments.
+    pub fn reviews_awaiting_user(&self) -> impl Iterator<Item = &Report> {
+        self.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none() && !crate::artifact::in_report(r).is_empty())
+    }
+
+    /// David's verdict on an artifact, still on its way to the node: it waits for the review until
+    /// the verdict lands.
+    pub fn review_reply_due(&self, session_id: &str) -> Option<Millis> {
+        self.pending_messages(session_id).filter(|m| matches!(m.about, Some(crate::model::MessageAbout::ArtifactReview { .. }))).map(|m| m.created_at).max()
     }
 
     pub fn report_pr(&self, r: &Report) -> Option<u64> {

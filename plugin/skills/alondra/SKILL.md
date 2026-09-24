@@ -51,6 +51,13 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
   card already says the PR is ready, so the report that goes with it is your final one, with
   the PR in `links`. A question about something else in the PR goes with the PR in `links` and
   shows inside its card too.
+- An artifact you publish for the user to review goes out as a `report` with kind `document` and
+  its URL in `links`. That report is a review card: the user comments on the artifact in the
+  browser and then approves it or sends the comments to you from the card. You count as waiting for
+  the user's review until then, and a final report does not finish you while it is open. The
+  comments arrive in this session as the user's words: read them with `ArtifactComments` (action
+  `read`), apply them, republish to the same URL, and send a new `document` report linking it for
+  the next round. Once it is approved, a later report about that artifact asks nothing of the user.
 
 ## What a report is not
 

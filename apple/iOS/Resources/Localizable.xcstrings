@@ -2010,6 +2010,36 @@
           }
         }
       }
+    },
+    "Rescue Comments": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rescatar comentarios"
+          }
+        }
+      }
+    },
+    "Comments sent": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comentarios enviados"
+          }
+        }
+      }
+    },
+    "Approved": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobado"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

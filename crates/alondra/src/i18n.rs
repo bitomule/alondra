@@ -78,7 +78,7 @@ pub fn state(s: NodeState) -> &'static str {
         NodeState::Working => tr!("working", "trabajando"),
         NodeState::WaitingAnswer => tr!("waiting for an answer", "esperando respuesta"),
         NodeState::YourTurn => tr!("your turn", "te toca"),
-        NodeState::WaitingMerge => tr!("waiting for your merge", "esperando tu merge"),
+        NodeState::WaitingMerge => tr!("waiting for your review", "espera tu revisión"),
         NodeState::Delivered => tr!("delivering a result", "entrega resultado"),
         NodeState::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
         NodeState::Done => tr!("done", "terminado"),
@@ -130,6 +130,14 @@ pub fn option_label(label: &str) -> &str {
 
 pub fn open_in_browser() -> &'static str {
     tr!("Open in browser", "Abrir en el navegador")
+}
+
+pub fn rescue_comments() -> &'static str {
+    tr!("Rescue comments", "Rescatar comentarios")
+}
+
+pub fn approve_artifact() -> &'static str {
+    tr!("Approve", "Aprobar")
 }
 
 pub fn merge_method(m: alondra_core::pr::MergeMethod) -> &'static str {

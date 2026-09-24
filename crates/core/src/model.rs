@@ -12,6 +12,8 @@ pub const OTHERS_PROJECT: &str = "others";
 pub enum NodeState {
     WaitingAnswer,
     YourTurn,
+    /// A PR or an artifact of the node waits for David's review. Still `waiting_merge` on the wire,
+    /// so the apps already installed keep reading it.
     WaitingMerge,
     Unclear,
     Delivered,
@@ -27,7 +29,7 @@ impl NodeState {
             NodeState::Working => "working",
             NodeState::WaitingAnswer => "waiting for an answer",
             NodeState::YourTurn => "your turn",
-            NodeState::WaitingMerge => "waiting for your merge",
+            NodeState::WaitingMerge => "waiting for your review",
             NodeState::Delivered => "delivering a result",
             NodeState::WaitingMachine => "waiting for the machine",
             NodeState::Done => "done",
@@ -109,6 +111,7 @@ pub enum Signal {
     UsageLimit,
     DeclaredWait,
     PrAwaitingUser,
+    ReviewAwaitingUser,
     FinalReport,
     Reviewed,
     Report,
@@ -561,6 +564,8 @@ pub struct Message {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageAbout {
     PrMerged { pr_id: u64 },
+    /// David's verdict on an artifact the node sent for review: its comments to read, or approval.
+    ArtifactReview { report_id: u64 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

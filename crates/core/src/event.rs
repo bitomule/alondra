@@ -77,6 +77,8 @@ pub enum Event {
     QuestionClosed { id: u64, status: crate::model::QuestionStatus, #[serde(default)] note: Option<String> },
     ReportPosted(Report),
     ReportRead { id: u64 },
+    /// David reviewed the artifact a report sent: he approved it, or sent the node his comments.
+    ArtifactReviewed { report: u64, verdict: ReviewVerdict },
     MessageQueued(Message),
     MessageHanded { id: u64 },
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
@@ -101,6 +103,13 @@ pub enum Event {
         #[serde(default)]
         machine_strained: bool,
     },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Comments,
+    Approved,
 }
 
 impl Event {
@@ -137,6 +146,7 @@ impl Event {
             Event::QuestionClosed { .. } => "question_closed",
             Event::ReportPosted(_) => "report_posted",
             Event::ReportRead { .. } => "report_read",
+            Event::ArtifactReviewed { .. } => "artifact_reviewed",
             Event::MessageQueued(_) => "message_queued",
             Event::MessageHanded { .. } => "message_handed",
             Event::Classified { .. } => "classified",

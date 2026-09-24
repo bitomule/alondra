@@ -414,6 +414,13 @@ public final class FleetStore {
     }
 
     @discardableResult
+    public func review(_ report: Report, _ verdict: ReviewVerdict) async -> Bool {
+        await resolving("r\(report.id)") { client in
+            try await client.review(report.id, verdict)
+        }
+    }
+
+    @discardableResult
     public func readAndClose(_ report: Report) async -> Bool {
         guard await close(session: report.sessionId, force: false) else { return false }
         return await markRead(report)

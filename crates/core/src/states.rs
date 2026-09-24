@@ -83,6 +83,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
     row("a PR of the node waits for the user's merge, or its merge has yet to reach it", Signal::PrAwaitingUser, NodeState::WaitingMerge),
+    row("an artifact of the node waits for the user's review, or the review has yet to reach it", Signal::ReviewAwaitingUser, NodeState::WaitingMerge),
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
     row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
@@ -218,6 +219,8 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     }
     let awaiting = view.prs_awaiting_user().filter(|p| p.session_id == node.session_id).map(|p| p.opened_at).max();
     f.add(Signal::PrAwaitingUser, awaiting.max(view.merge_notice_due(&node.session_id)));
+    let reviewing = view.reviews_awaiting_user().filter(|r| r.session_id == node.session_id).map(|r| r.created_at).max();
+    f.add(Signal::ReviewAwaitingUser, reviewing.max(view.review_reply_due(&node.session_id)));
     let agreed = !daemon_contradicts(node, declared);
     match node.turn_signal {
         Some(TurnSignal::Finished) if agreed && node.has_plugin => f.add(Signal::FinalReport, Some(declared)),
@@ -313,7 +316,7 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
             NodeState::Working => !works(view, node, now),
             NodeState::WaitingAnswer => !open(false) && !node.waiting_permission && node.menu_waiting.is_none(),
             NodeState::YourTurn => !open(true),
-            NodeState::WaitingMerge => outcome.evidence.signal != Signal::PrAwaitingUser,
+            NodeState::WaitingMerge => !matches!(outcome.evidence.signal, Signal::PrAwaitingUser | Signal::ReviewAwaitingUser),
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
             NodeState::Done => !reported(&[ReportKind::Final]),
             NodeState::Delivered => !reported(&[ReportKind::Final, ReportKind::Notice, ReportKind::Document]),
@@ -663,6 +666,7 @@ mod tests {
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: row_named(NodeState::WaitingMerge, Signal::PrAwaitingUser) },
+            Case { what: "an artifact sent for review", events: vec![hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: row_named(NodeState::WaitingMerge, Signal::ReviewAwaitingUser) },
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
@@ -1029,6 +1033,62 @@ mod tests {
 
     fn merged() -> Event {
         Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }
+    }
+
+    const PAGE: &str = "https://claude.ai/artifact/plan";
+
+    fn sent_for_review(id: u64, kind: ReportKind) -> Event {
+        let Event::ReportPosted(r) = report(kind) else { unreachable!() };
+        Event::ReportPosted(Report { id, created_at: T0 + id as Millis * 10_000, links: vec![crate::model::Link { url: PAGE.into(), title: None }], ..r })
+    }
+
+    fn verdict(report: u64, verdict: crate::event::ReviewVerdict, message: u64) -> [Event; 3] {
+        let m = Message {
+            id: message,
+            session_id: "s".into(),
+            from: MessageFrom::User,
+            text: "David left comments".into(),
+            answers_question: None,
+            created_at: T0,
+            handed_at: None,
+            delivered_at: None,
+            about: Some(crate::model::MessageAbout::ArtifactReview { report_id: report }),
+            attachments: vec![],
+        };
+        [Event::ArtifactReviewed { report, verdict }, Event::MessageQueued(m), Event::MessageHanded { id: message }]
+    }
+
+    #[test]
+    fn an_artifact_sent_for_review_waits_on_david_until_he_approves_it_or_sends_his_comments() {
+        use crate::event::ReviewVerdict::{Approved, Comments};
+        let sent = |kind| background(&[hook("UserPromptSubmit"), sent_for_review(1, kind), hook("Stop")]);
+        let [comments, comments_queued, comments_handed] = verdict(1, Comments, 9);
+        let [approved, approved_queued, approved_handed] = verdict(2, Approved, 10);
+        let reviewed = |more: &[Event]| [sent(ReportKind::Document), vec![comments.clone(), comments_queued.clone(), comments_handed.clone()], more.to_vec()].concat();
+        let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
+            ("a document with the artifact", sent(ReportKind::Document), NodeState::WaitingMerge),
+            ("a final report with the artifact is not done", sent(ReportKind::Final), NodeState::WaitingMerge),
+            ("a progress report sends nothing for review", background(&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Progress), hook("Stop")]), NodeState::Stalled),
+            ("the comments on their way", [sent(ReportKind::Document), vec![comments.clone(), comments_queued.clone()]].concat(), NodeState::WaitingMerge),
+            ("the comments typed in", reviewed(&[]), NodeState::Working),
+            ("republished for another round", reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop")]), NodeState::WaitingMerge),
+            (
+                "approved, then its final report links the page again",
+                reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved.clone(), approved_queued.clone(), approved_handed.clone(), hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]),
+                NodeState::Done,
+            ),
+            ("David sets it aside", [sent(ReportKind::Final), vec![Event::ReportRead { id: 1 }]].concat(), NodeState::Done),
+            ("inside an open PR card the PR decides", background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some(format!("{PAGE} and https://github.com/a/b/pull/7")), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]), NodeState::WaitingMerge),
+        ];
+        for (what, events, state) in cases {
+            let v = run(&events, None);
+            assert_eq!(v.nodes["s"].state, state, "{what}");
+            assert!(limbo(&v, T0 + events.len() as Millis * 1000).is_empty(), "{what}: {:?}", limbo(&v, T0 + events.len() as Millis * 1000));
+        }
+        let v = run(&reviewed(&[hook("UserPromptSubmit"), sent_for_review(2, ReportKind::Document), hook("Stop"), approved, approved_queued, approved_handed, hook("UserPromptSubmit"), sent_for_review(3, ReportKind::Final), hook("Stop")]), None);
+        assert!(v.reports[&3].read, "a report about an approved artifact asks nothing of David");
+        let pr = run(&background(&[hook("UserPromptSubmit"), pr_opened(), Event::ReportPosted(Report { body: Some("https://github.com/a/b/pull/7".into()), ..match sent_for_review(1, ReportKind::Final) { Event::ReportPosted(r) => r, _ => unreachable!() } }), hook("Stop")]), None);
+        assert_eq!(pr.nodes["s"].evidence.as_ref().map(|e| e.signal), Some(Signal::PrAwaitingUser), "the PR card, not a review card");
     }
 
     #[test]

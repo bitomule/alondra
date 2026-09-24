@@ -130,6 +130,11 @@ public struct AlondraClient: Sendable {
         try await post("v1/reports/\(report)/read", [:])
     }
 
+    /// David's verdict on the artifact a report sent: the node reads his comments on it, or it is approved.
+    public func review(_ report: UInt64, _ verdict: ReviewVerdict) async throws {
+        try await post("v1/reports/\(report)/review", ["verdict": verdict.rawValue])
+    }
+
     /// `force` is the fleet's explicit close, the only one alondrad lets close the orchestrator.
     public func closeNode(_ key: String, force: Bool = false) async throws {
         let url = base.appending(path: "v1/nodes").appending(component: key).appending(path: "close")
