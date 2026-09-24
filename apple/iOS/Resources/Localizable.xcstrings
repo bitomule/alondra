@@ -2021,6 +2021,16 @@
         }
       }
     },
+    "Couldn’t send %lld: Alondra didn’t answer for 2 minutes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo enviar (%lld): Alondra no respondió en 2 minutos"
+          }
+        }
+      }
+    },
     "Dismiss": {
       "localizations": {
         "es": {

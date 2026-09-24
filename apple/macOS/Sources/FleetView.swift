@@ -90,6 +90,9 @@ public struct FleetView: View {
             await store.run()
         }
         .task { await reportActivity() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.retryPendingSends()
+        }
         .onChange(of: device.client.identity) { store.use(device.client) }
         .task(id: store.connection) { await pairIfNeeded() }
         .onChange(of: inboxIDs, initial: true) { old, new in
@@ -355,6 +358,23 @@ struct ErrorBanner: View {
                     try? await Task.sleep(for: .seconds(6))
                     if !Task.isCancelled { store.lastError = nil }
                 }
+            } else if !store.stuckSends.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("Couldn’t send \(store.stuckSends.count): Alondra didn’t answer for 2 minutes").lineLimit(2)
+                    Button {
+                        store.dismissStuckSends()
+                    } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.bold))
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.regularMaterial, in: .capsule)
+                .padding(.top, 10)
+                .transition(.opacity)
             } else if !store.pendingSends.isEmpty {
                 Label(String(localized: "Alondra isn’t responding; \(store.pendingSends.count) pending, retrying"), systemImage: "arrow.clockwise")
                     .lineLimit(1)
@@ -368,5 +388,6 @@ struct ErrorBanner: View {
         }
         .animation(.snappy, value: store.lastError)
         .animation(.snappy, value: store.pendingSends.count)
+        .animation(.snappy, value: store.stuckSends)
     }
 }

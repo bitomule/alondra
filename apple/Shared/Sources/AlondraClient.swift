@@ -54,6 +54,13 @@ public struct AlondraClient: Sendable {
         return URLSession(configuration: config)
     }()
 
+    private static let slow: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 95
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
     private static let longPoll: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 70
@@ -82,8 +89,9 @@ public struct AlondraClient: Sendable {
         try await post("v1/questions/\(question)/more-context", ["note": note])
     }
 
+    /// `gh pr merge` may take up to 90 s on alondrad; giving up sooner sends the merge twice.
     public func mergePullRequest(_ id: UInt64, method: String) async throws {
-        try await post("v1/prs/\(id)/merge", ["method": method])
+        _ = try await perform("POST", "v1/prs/\(id)/merge", body: try JSONSerialization.data(withJSONObject: ["method": method]), session: Self.slow)
     }
 
     public func requestChanges(onPullRequest id: UInt64, text: String) async throws {
@@ -298,18 +306,31 @@ public enum AlondraError: LocalizedError, Equatable {
     public static let longestMessage = 300
 
     /// Only alondrad's JSON errors reach the user as text; a proxy's HTML page never does.
+    /// A 5xx carrying alondrad's own JSON is alondrad answering, not a gateway standing in for it:
+    /// sending the same thing again would get the same answer.
     public static func from(status: Int, body: Data) -> AlondraError {
         if status == 401 { return .unauthorized }
-        if [502, 503, 504].contains(status) { return .unreachable }
         let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         if let reasons = json?["reasons"] as? [[String: Any]], !reasons.isEmpty {
             let lines = reasons.map { closeReasonMessage(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String) }
             return .server(lines.count == 1 ? lines[0] : lines.map { "- \($0)" }.joined(separator: "\n"))
         }
         if let message = (json?["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-            return .server(message.count > longestMessage ? String(message.prefix(longestMessage)) + "…" : message)
+            let detail = message.count > longestMessage ? String(message.prefix(longestMessage)) + "…" : message
+            return .server(refusalMessage(kind: json?["kind"] as? String, detail: detail))
         }
+        if [502, 503, 504].contains(status) { return .unreachable }
         return .unexpected(status)
+    }
+
+    /// alondrad's `kind` in the user's language; its English `error` only when the kind is unknown.
+    static func refusalMessage(kind: String?, detail: String) -> String {
+        switch kind {
+        case "pr_not_open": String(localized: "This PR is no longer open", table: "AlondraShared", bundle: #bundle)
+        case "merge_refused": String(localized: "GitHub didn’t merge it: \(detail)", table: "AlondraShared", bundle: #bundle)
+        case "question_closed": String(localized: "This question was already answered", table: "AlondraShared", bundle: #bundle)
+        default: detail
+        }
     }
 
     public var errorDescription: String? {

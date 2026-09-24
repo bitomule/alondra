@@ -84,6 +84,12 @@ fn err_reasons(msg: impl Into<String>, reasons: Vec<CloseReason>) -> Response {
     (StatusCode::CONFLICT, Json(json!({ "error": msg.into(), "reasons": reasons }))).into_response()
 }
 
+/// A refusal the clients word in the user's language from `kind`; `error` stays for logs and
+/// older clients.
+fn refused(status: StatusCode, kind: &'static str, msg: impl Into<String>) -> Response {
+    (status, Json(json!({ "error": msg.into(), "kind": kind }))).into_response()
+}
+
 fn internal(e: anyhow::Error) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
@@ -709,8 +715,10 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
-    if pr.state != alondra_core::pr::PrState::Open {
-        return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
+    match pr.state {
+        alondra_core::pr::PrState::Open => {}
+        alondra_core::pr::PrState::Merged => return already_merged(id),
+        _ => return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url)),
     }
     if !pr.merge_methods.is_empty() && !pr.merge_methods.contains(&b.method) {
         return err(StatusCode::UNPROCESSABLE_ENTITY, format!("{} does not allow {}", pr.repo, b.method.label()));
@@ -727,14 +735,22 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
         Ok(Ok(out)) if out.status.success() => {}
         Ok(Ok(out)) => {
             let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            if gh_says_already_merged(&said) {
+                if hub.read(|v| v.prs.get(&id).is_some_and(|p| p.state == alondra_core::pr::PrState::Open))
+                    && let Err(e) = hub.append(Event::PrMerged { id, method: b.method })
+                {
+                    return internal(e);
+                }
+                return already_merged(id);
+            }
             let mut card = crate::prs::refresh(&hub, &pr).await;
             if said.contains(MERGE_COMMIT_FAILS) && !card.conflicts() {
                 card.mergeable = Some("CONFLICTING".into());
                 let _ = hub.append(Event::PrUpdated(card.clone()));
             }
-            return if card.conflicts() { conflicts(&card) } else { err(StatusCode::BAD_GATEWAY, said) };
+            return if card.conflicts() { conflicts(&card) } else { refused(StatusCode::UNPROCESSABLE_ENTITY, "merge_refused", said) };
         }
-        Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, e.to_string()),
+        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr merge did not finish within 90 s"),
     }
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
@@ -782,6 +798,16 @@ async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) 
         }
         Err(e) => internal(e),
     }
+}
+
+/// A merge sent twice (a phone retrying after a timeout) finds the PR merged: that is the
+/// outcome it asked for, not an error.
+fn already_merged(id: u64) -> Response {
+    Json(json!({"id": id, "merged": true, "already": true})).into_response()
+}
+
+fn gh_says_already_merged(stderr: &str) -> bool {
+    stderr.to_lowercase().contains("already merged")
 }
 
 #[derive(Deserialize)]
@@ -1291,7 +1317,10 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
-        return err(StatusCode::CONFLICT, format!("question #{id} is no longer open"));
+        if q.answer.as_ref().is_some_and(|a| a.text == b.text && a.option == b.option) {
+            return Json(json!({"id": id, "already": true})).into_response();
+        }
+        return refused(StatusCode::CONFLICT, "question_closed", format!("question #{id} is no longer open"));
     }
     if crate::menus::is_menu_card(&q) {
         return answer_menu(hub, q, b.option.as_deref(), signed.map(|s| s.name)).await;
@@ -2360,6 +2389,35 @@ mod tests {
         }
     }
 
+    /// alondra/retry-queue, 24 Sep: the iPhone kept a merge "pending" forever because alondrad
+    /// answered gh's refusal with a 502, which clients read as "alondrad is down".
+    #[tokio::test]
+    async fn a_merge_sent_again_succeeds_and_a_refusal_is_named() {
+        use alondra_core::pr::{MergeMethod, PrState, PullRequest};
+        let closed = |state: PrState| move |pr: PullRequest| Event::PrUpdated(PullRequest { state, ..pr });
+        type Before = Box<dyn Fn(PullRequest) -> Event>;
+        let cases: [(&str, u64, Option<Before>, StatusCode, Value); 5] = [
+            ("merged from a card", 1, Some(Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge })), StatusCode::OK, json!({"already": true})),
+            ("merged on GitHub", 1, Some(Box::new(closed(PrState::Merged))), StatusCode::OK, json!({"already": true})),
+            ("closed on GitHub", 1, Some(Box::new(closed(PrState::Closed))), StatusCode::CONFLICT, json!({"kind": "pr_not_open"})),
+            ("set aside", 1, Some(Box::new(|_| Event::PrDismissed { id: 1 })), StatusCode::CONFLICT, json!({"kind": "pr_not_open"})),
+            ("no such card", 9, None, StatusCode::NOT_FOUND, json!({})),
+        ];
+        for (what, id, before, status, fields) in cases {
+            let hub = temp_hub("merge-again");
+            hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/24".into(), session_id: "s".into() }).unwrap();
+            if let Some(before) = before {
+                let pr = hub.read(|v| v.prs[&1].clone());
+                hub.append(before(pr)).unwrap();
+            }
+            let (got, said) = status_and_body(merge_pr(State(hub.clone()), None, Path(id), Json(MergeBody { method: MergeMethod::Merge })).await).await;
+            assert_eq!(got, status, "{what}: {said}");
+            for (k, v) in fields.as_object().unwrap() {
+                assert_eq!(&said[k], v, "{what}: {said}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn answering_a_question_reads_the_reports_it_carries() {
         let hub = temp_hub("related-answer");
@@ -2449,6 +2507,58 @@ mod tests {
             if status == StatusCode::OK && c.replaces == Some(1) {
                 let carried = hub.read(|v| v.question_reports(&v.questions[&(after as u64)]));
                 assert_eq!(carried, [1], "{what}: the new question carries what the replaced one carried");
+            }
+        }
+    }
+
+    #[test]
+    fn gh_saying_the_pr_is_already_merged_is_told_apart_from_a_refusal() {
+        let cases = [
+            ("X Pull request a/b#24 was already merged", true),
+            ("GraphQL: Pull Request is already merged (mergePullRequest)", true),
+            ("X Pull request a/b#54 is not mergeable: the merge commit cannot be cleanly created.", false),
+            ("GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)", false),
+            ("", false),
+        ];
+        for (stderr, expected) in cases {
+            assert_eq!(gh_says_already_merged(stderr), expected, "{stderr}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_sent_again_succeeds_and_a_different_one_is_refused() {
+        let body = |text: &str| Json(AnswerBody { text: text.into(), option: None, by: None });
+        let cases: [(&str, Option<&str>, bool, &str, StatusCode, Value); 5] = [
+            ("first answer", None, false, "Sí", StatusCode::OK, json!({"id": 1})),
+            ("the same answer again", Some("Sí"), false, "Sí", StatusCode::OK, json!({"already": true})),
+            ("the same answer after delivery", Some("Sí"), true, "Sí", StatusCode::OK, json!({"already": true})),
+            ("a different answer", Some("Sí"), false, "No", StatusCode::CONFLICT, json!({"kind": "question_closed"})),
+            ("withdrawn", None, true, "Sí", StatusCode::CONFLICT, json!({"kind": "question_closed"})),
+        ];
+        for (what, earlier, closed, text, status, fields) in cases {
+            let hub = temp_hub("answer-again");
+            hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            hub.append(Event::QuestionAsked(Question {
+                related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![],
+                attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false,
+                node_context: None, status: QuestionStatus::Open, answer: None, asked_at: now_millis(), action: false, steps: vec![], mission: None,
+            })).unwrap();
+            if let Some(earlier) = earlier {
+                let (got, said) = status_and_body(answer(State(hub.clone()), None, Path(1), body(earlier)).await).await;
+                assert_eq!(got, StatusCode::OK, "{what}: {said}");
+            }
+            if closed {
+                let status = if earlier.is_some() { QuestionStatus::Delivered } else { QuestionStatus::Withdrawn };
+                hub.append(Event::QuestionClosed { id: 1, status, note: None }).unwrap();
+            }
+            let messages = hub.read(|v| v.messages.len());
+            let (got, said) = status_and_body(answer(State(hub.clone()), None, Path(1), body(text)).await).await;
+            assert_eq!(got, status, "{what}: {said}");
+            for (k, v) in fields.as_object().unwrap() {
+                assert_eq!(&said[k], v, "{what}: {said}");
+            }
+            if said["already"] == json!(true) {
+                assert_eq!(hub.read(|v| v.messages.len()), messages, "{what}: the node is not told twice");
             }
         }
     }

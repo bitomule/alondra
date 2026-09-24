@@ -970,6 +970,36 @@
           }
         }
       }
+    },
+    "GitHub didn’t merge it: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub no lo ha fusionado: %@"
+          }
+        }
+      }
+    },
+    "This PR is no longer open": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este PR ya no está abierto"
+          }
+        }
+      }
+    },
+    "This question was already answered": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta pregunta ya tenía respuesta"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
