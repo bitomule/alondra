@@ -10,6 +10,7 @@ mod machine;
 mod markdown;
 mod menus;
 mod notifier;
+mod options;
 mod prs;
 mod push;
 mod sentinel;
