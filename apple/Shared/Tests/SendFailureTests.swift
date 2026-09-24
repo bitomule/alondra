@@ -172,4 +172,17 @@ import Testing
         #expect(fleet.isHidden(item.id))
         #expect(!fleet.inbox.contains { $0.id == item.id })
     }
+
+    /// pr-card-ask review, 24 Sep: asking about a PR never parks its card, so sending it through
+    /// `resolve` (which hides the card until the next full reload) undid the fix. `perform` must
+    /// leave a still-live card exactly where it was.
+    @Test func performingAnActionNeverHidesACardUnlikeResolving() async throws {
+        let fleet = FleetStore(retryDelay: .seconds(30), stuckAfter: .seconds(600))
+        let item = try pullRequest()
+        fleet.apply(try overview())
+        let ok = await fleet.perform { _ in }
+        #expect(ok)
+        #expect(!fleet.isHidden(item.id))
+        #expect(fleet.inbox.contains { $0.id == item.id })
+    }
 }

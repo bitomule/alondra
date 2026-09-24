@@ -195,10 +195,12 @@ struct PullRequestDetail: View {
         }
     }
 
+    /// Unlike `requestChanges`, asking never parks the PR's card, so it must not go through
+    /// `store.resolve` (which would hide it locally until the next full reload).
     private func ask() {
         let (id, text, attachments) = (pr.id, review, draft.attachments)
         Task {
-            if await store.resolve(.pullRequest(pr), { client in
+            if await store.perform({ client in
                 try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
             }) {
                 drafts.discard(InboxItem.pullRequest(pr).id)

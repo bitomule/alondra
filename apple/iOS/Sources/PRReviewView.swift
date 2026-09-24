@@ -154,11 +154,13 @@ struct PRReviewView: View {
         }
     }
 
+    /// Unlike `send`, asking never parks the PR's card, so it must not go through `resolve`
+    /// (which would hide it locally until the next full reload); `perform` just sends it.
     private func ask() {
         let (id, text) = (pr.id, review)
         sending = true
         Task {
-            let ok = await fleet.resolve(.pullRequest(pr)) { [attachments] client in
+            let ok = await fleet.perform { [attachments] client in
                 try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
             }
             sending = false
