@@ -58,6 +58,8 @@ pub struct DaemonObservation {
     pub tasks: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background: Vec<crate::model::BackgroundItem>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

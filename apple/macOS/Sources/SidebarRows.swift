@@ -91,6 +91,13 @@ struct NodeRow: View {
                     .foregroundStyle(.tertiary)
                     .help("Asleep")
             }
+            if let badge = node.backgroundBadge {
+                Spacer(minLength: 4)
+                Text(verbatim: badge.text)
+                    .font(.caption)
+                    .foregroundStyle(badge.suspect ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+            }
         }
         .help(tooltip)
         .accessibilityElement(children: .combine)

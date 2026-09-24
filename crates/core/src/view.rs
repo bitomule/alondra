@@ -516,6 +516,7 @@ impl View {
         node.daemon_state = d.state.clone();
         node.daemon_tempo = d.tempo.clone();
         node.daemon_tasks = d.tasks.unwrap_or(0);
+        node.background = if node.daemon_tasks == 0 { vec![] } else { d.background.clone() };
         node.daemon_seen_at = Some(at);
         if d.intent.is_some() {
             node.mission = d.intent.clone();

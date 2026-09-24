@@ -733,17 +733,53 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// "2 subagentes · 1 shell", in the warning colour and marked when one may be hung.
+fn background_badge(n: &FleetNode) -> Option<(String, Style)> {
+    let text = i18n::background_badge(&n.background)?;
+    if n.background.iter().any(|b| b.suspect) {
+        Some((format!("{text} · {}", i18n::possibly_hung()), Style::new().fg(Color::LightRed)))
+    } else {
+        Some((text, Style::new().fg(DIM)))
+    }
+}
+
+fn background_lines(n: &FleetNode, width: usize) -> Vec<Line<'static>> {
+    if n.background.is_empty() {
+        return vec![];
+    }
+    let mut lines = vec![Line::default(), Line::from(tr!("Running in the background", "En marcha en segundo plano").fg(DIM).bold())];
+    for b in &n.background {
+        let color = if b.suspect { Color::LightRed } else { ACCENT };
+        let mut tail = vec![Span::styled(format!(" · {}", ago(b.started_at)), Style::new().fg(DIM))];
+        if b.suspect {
+            tail.push(Span::styled(format!(" · {}", i18n::possibly_hung()), Style::new().fg(Color::LightRed)));
+        }
+        let mut spans = vec![Span::raw(md::one_line(&b.label))];
+        spans.extend(tail);
+        lines.extend(wrap(spans, width, vec![Span::styled(format!("{} ", i18n::background_kind(b.kind)), Style::new().fg(color))], vec![]));
+    }
+    lines
+}
+
 fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let bar = if selected { Span::styled("▌", Style::new().fg(ACCENT)) } else { Span::raw(" ") };
     let dot = if n.alive { "●" } else { "○" };
     let state_w = if width >= 64 { 20 } else { 0 };
     let since = ago(n.state_since);
-    let name_w = width.saturating_sub(4 + state_w + 5);
+    let room = width.saturating_sub(4 + state_w + 5);
     let short = if n.is_orchestrator { format!("★ {}", n.display_name()) } else { n.display_name().to_string() };
-    let name = truncate(&md::one_line(&short), name_w);
+    let short = md::one_line(&short);
+    let badge_room = room.saturating_sub(str_width(&short).min(room / 2));
+    let badge = background_badge(n).map(|(text, style)| (truncate(&format!(" {text}"), badge_room), style));
+    let name_w = room.saturating_sub(badge.as_ref().map_or(0, |(t, _)| str_width(t)));
+    let name = truncate(&short, name_w);
     let pad = name_w.saturating_sub(str_width(&name));
     let name_style = if n.alive { Style::new() } else { Style::new().fg(SOFT) };
-    let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style), Span::raw(" ".repeat(pad))];
+    let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style)];
+    if let Some((text, style)) = badge {
+        spans.push(Span::styled(text, style));
+    }
+    spans.push(Span::raw(" ".repeat(pad)));
     if state_w > 0 {
         spans.push(Span::styled(format!(" {:<19}", truncate(i18n::node_state(n), 19)), Style::new().fg(state_color(n.state))));
     }
@@ -892,6 +928,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
             vec![],
         ));
     }
+    lines.extend(background_lines(&n, width));
     if let Some(needs) = &n.daemon_needs {
         lines.push(Line::default());
         lines.extend(wrap(vec![Span::styled(needs.clone(), Style::new().fg(Color::Yellow))], width, vec![Span::styled(tr!("Needs: ", "Necesita: "), Style::new().fg(DIM))], vec![]));
@@ -1413,6 +1450,24 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_node_row_counts_what_runs_in_the_background_and_the_detail_lists_it() {
+        use alondra_core::{BackgroundItem, BackgroundKind};
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let mut n = alive_node("s");
+        let item = |kind, label: &str, suspect| BackgroundItem { kind, label: label.into(), started_at: now_millis() - 3_600_000, suspect };
+        n.node.background = vec![item(BackgroundKind::Agent, "Revisar el PR", false), item(BackgroundKind::Agent, "Auditar", false), item(BackgroundKind::Shell, "bazelisk build", false)];
+        let row = |n: &FleetNode| node_row(n, 90, false).spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert!(row(&n).contains("2 subagentes · 1 shell"), "{}", row(&n));
+        assert!(!row(&n).contains("¿colgada?"));
+        n.node.background[2].suspect = true;
+        assert!(row(&n).contains("2 subagentes · 1 shell · ¿colgada?"), "{}", row(&n));
+        let detail: String = background_lines(&n, 60).iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        assert!(detail.contains("subagente Revisar el PR · 1h") && detail.contains("shell bazelisk build · 1h · ¿colgada?"), "{detail}");
+        n.node.background.clear();
+        assert!(!row(&n).contains("shell"));
     }
 
     #[test]

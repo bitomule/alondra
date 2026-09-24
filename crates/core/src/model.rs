@@ -102,6 +102,7 @@ pub enum Signal {
     MessageHanded,
     DaemonActive,
     BackgroundTask,
+    BackgroundSuspect,
     UsageLimit,
     DeclaredWait,
     PrAwaitingUser,
@@ -147,6 +148,27 @@ pub struct ToolInFlight {
     pub name: String,
     pub summary: Option<String>,
     pub since: Millis,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundKind {
+    Agent,
+    Shell,
+    #[serde(other)]
+    Other,
+}
+
+/// A subagent or background shell the node left running, as the Claude daemon's job state
+/// lists it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BackgroundItem {
+    pub kind: BackgroundKind,
+    pub label: String,
+    pub started_at: Millis,
+    /// Running for long while the node shows no other work. Only the server's views set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspect: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -203,6 +225,8 @@ pub struct Node {
     pub daemon_seen_at: Option<Millis>,
     #[serde(default)]
     pub daemon_tasks: u32,
+    #[serde(default)]
+    pub background: Vec<BackgroundItem>,
     #[serde(default)]
     pub usage_limited_at: Option<Millis>,
     #[serde(default)]
@@ -265,6 +289,7 @@ impl Node {
             daemon_tempo: None,
             daemon_seen_at: None,
             daemon_tasks: 0,
+            background: vec![],
             usage_limited_at: None,
             signal_at: None,
             episode_since: 0,

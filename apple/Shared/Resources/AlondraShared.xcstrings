@@ -41,6 +41,126 @@
         }
       }
     },
+    "%lld shells": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld shell"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld shells"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld shell"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld shells"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld subagents": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld subagent"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld subagents"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld subagente"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld subagentes"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld tasks": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld task"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld tasks"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld tarea"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld tareas"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "+%llu −%llu in %llu files": {
       "localizations": {
         "es": {
@@ -207,6 +327,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Terminado"
+          }
+        }
+      }
+    },
+    "hung?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿colgada?"
           }
         }
       }
@@ -381,6 +511,16 @@
         }
       }
     },
+    "Running in the background": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En marcha en segundo plano"
+          }
+        }
+      }
+    },
     "Runs claude rm. It never discards work: if the node has uncommitted or unpushed changes, or its worktree is still there, the server refuses and tells you why.": {
       "localizations": {
         "es": {
@@ -401,12 +541,42 @@
         }
       }
     },
+    "shell": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "shell"
+          }
+        }
+      }
+    },
     "Squash": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Squash"
+          }
+        }
+      }
+    },
+    "subagent": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "subagente"
+          }
+        }
+      }
+    },
+    "task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tarea"
           }
         }
       }
