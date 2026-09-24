@@ -414,6 +414,7 @@ mod tests {
             created_at: 4000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert_eq!(last_nudge_at(&v, "s"), Some(4000));
     }
@@ -454,6 +455,7 @@ mod tests {
             created_at: 9000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
@@ -482,7 +484,7 @@ mod tests {
     }
 
     fn message(id: u64, from: MessageFrom, at: i64) -> Event {
-        Event::MessageQueued(Message { id, session_id: "s".into(), from, text: "Sí".into(), answers_question: None, created_at: at, handed_at: None, delivered_at: None })
+        Event::MessageQueued(Message { id, session_id: "s".into(), from, text: "Sí".into(), answers_question: None, created_at: at, handed_at: None, delivered_at: None, about: None })
     }
 
     fn asked(id: u64) -> Question {

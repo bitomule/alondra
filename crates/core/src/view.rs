@@ -758,6 +758,7 @@ impl View {
             created_at: at,
             handed_at: None,
             delivered_at: None,
+            about: None,
         })
     }
 
@@ -772,8 +773,8 @@ impl View {
 
     /// Alondra's notice that a PR the node opened was merged: the node still has to act on it.
     pub fn is_merge_notice(&self, m: &Message) -> bool {
-        m.from == MessageFrom::Alondra
-            && self.prs.values().any(|p| p.session_id == m.session_id && p.state == crate::pr::PrState::Merged && m.text.contains(&p.url))
+        let Some(crate::model::MessageAbout::PrMerged { pr_id }) = m.about else { return false };
+        self.prs.get(&pr_id).is_some_and(|p| p.session_id == m.session_id && p.state == crate::pr::PrState::Merged)
     }
 
     /// A merge notice still on its way to the node: it waits for the merge until the notice lands.
@@ -1064,6 +1065,7 @@ mod tests {
             created_at: 3000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });
         assert!(v.messages[&1].delivered_at.is_none());
@@ -1204,6 +1206,7 @@ mod tests {
                     created_at: at,
                     handed_at: None,
                     delivered_at: None,
+                    about: None,
                 }));
             }
             next(&mut v, at, Event::Pruned { before: at - 2 * hour });
@@ -1582,6 +1585,7 @@ mod tests {
                 created_at: 3000,
                 handed_at: None,
                 delivered_at: None,
+                about: None,
             })
         };
         let mut v = View::default();
@@ -1620,6 +1624,7 @@ mod tests {
             created_at: 3000,
             handed_at: None,
             delivered_at: None,
+            about: None,
         }));
         assert_ne!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });

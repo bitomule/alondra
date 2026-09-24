@@ -172,10 +172,16 @@ pub fn facts(view: &View, node: &Node, now: Millis) -> Facts {
     facts_with(view, node, now, view.machine_strained)
 }
 
-/// A message typed into a done node moves it only when David or the orchestrator wrote it.
+/// Only David or the orchestrator reopen a done node: a message of theirs typed in after it was
+/// done, or David typing in its terminal. What Alondra or Claude Code type into it moves nothing.
 fn reopened(view: &View, node: &Node) -> bool {
-    node.state != NodeState::Done
-        || view.messages.values().filter(|m| m.session_id == node.session_id && m.handed_at.is_some()).max_by_key(|m| m.handed_at).is_some_and(|m| m.from != MessageFrom::Alondra)
+    if node.state != NodeState::Done {
+        return true;
+    }
+    let done = node.done_at.unwrap_or(node.state_since);
+    let written = view.messages.values().any(|m| m.session_id == node.session_id && m.from != MessageFrom::Alondra && m.handed_at.is_some_and(|at| at > done));
+    let typed = talking_with_user(view, node) && node.last_prompt_at.is_some_and(|at| at > done);
+    written || typed
 }
 
 fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> Facts {
@@ -192,14 +198,15 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::PermissionPrompt, (node.waiting_permission || node.menu_waiting.is_some()).then_some(node.last_seen));
     f.add(Signal::ActionRequested, action);
 
-    f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
-    f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| now - t.since <= call_limit(&t.name)).map(|t| t.since));
-    f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| node.busy), now, HOOK_FRESH_MS));
-    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)).filter(|_| reopened(view, node)), now, HOOK_FRESH_MS));
-    f.add(Signal::DaemonActive, daemon_active(node, now));
+    let live = reopened(view, node);
+    f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| live && node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
+    f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| live && now - t.since <= call_limit(&t.name)).map(|t| t.since));
+    f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| live && node.busy), now, HOOK_FRESH_MS));
+    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)).filter(|_| live), now, HOOK_FRESH_MS));
+    f.add(Signal::DaemonActive, daemon_active(node, now).filter(|_| live));
     let tasks_seen = fresh(node.daemon_seen_at.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS);
     let all_suspect = !node.background.is_empty() && background(node, now).iter().all(|b| b.suspect);
-    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| !all_suspect));
+    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live && !all_suspect));
     f.add(Signal::BackgroundSuspect, tasks_seen.filter(|_| all_suspect));
 
     f.add(Signal::UsageLimit, fresh(node.usage_limited_at.filter(|_| node.usage_limited), now, USAGE_LIMIT_WAIT_MS));
@@ -608,7 +615,7 @@ mod tests {
     }
 
     fn message(from: MessageFrom) -> [Event; 2] {
-        let m = Message { id: 9, session_id: "s".into(), from, text: "go on".into(), answers_question: None, created_at: T0, handed_at: None, delivered_at: None };
+        let m = Message { id: 9, session_id: "s".into(), from, text: "go on".into(), answers_question: None, created_at: T0, handed_at: None, delivered_at: None, about: None };
         [Event::MessageQueued(m), Event::MessageHanded { id: 9 }]
     }
 
@@ -773,7 +780,7 @@ mod tests {
 
     fn alondra_says(v: &mut View, session: &str, text: String, seq: u64) {
         let id = v.messages.keys().next_back().copied().unwrap_or(0) + 1;
-        let m = Message { id, session_id: session.into(), from: MessageFrom::Alondra, text, answers_question: None, created_at: T0 + seq as Millis * 1000, handed_at: None, delivered_at: None };
+        let m = Message { id, session_id: session.into(), from: MessageFrom::Alondra, text, answers_question: None, created_at: T0 + seq as Millis * 1000, handed_at: None, delivered_at: None, about: None };
         v.apply(seq, T0 + seq as Millis * 1000, &Event::MessageQueued(m));
     }
 
@@ -1009,11 +1016,12 @@ mod tests {
             id: 9,
             session_id: "s".into(),
             from: MessageFrom::Alondra,
-            text: "[Alondra] Ana merged https://github.com/a/b/pull/7 (merge commit).".into(),
+            text: "[Alondra] Ana merged it.".into(),
             answers_question: None,
             created_at: T0,
             handed_at: None,
             delivered_at: None,
+            about: Some(crate::model::MessageAbout::PrMerged { pr_id: 1 }),
         };
         [Event::MessageQueued(m), Event::MessageHanded { id: 9 }]
     }
@@ -1046,10 +1054,20 @@ mod tests {
             ("done, the orchestrator sends it on", then(&[from_orchestrator, orchestrator_handed]), NodeState::Working),
             ("done, David types in its terminal", then(&[typed("one more thing")]), NodeState::Working),
             ("done, an Alondra message typed in all the same", then(&[from_alondra, alondra_handed]), NodeState::Done),
+            ("done, Claude Code reports a finished task", then(&[harness("<task-notification>\n<task-id>a1</task-id>"), tool("PreToolUse", "t")]), NodeState::Done),
+            ("done, another session's message arrives", then(&[harness("<agent-message from=\"x\">done</agent-message>"), tool("PreToolUse", "t")]), NodeState::Done),
+            ("done, a cross-session message arrives", then(&[harness("<cross-session-message from=\"x\">hi</cross-session-message>")]), NodeState::Done),
+            ("done, a reminder is typed in", then(&[harness("<system-reminder>check</system-reminder>")]), NodeState::Done),
+            ("done, David types after a harness prompt", then(&[harness("<task-notification>a1"), hook("Stop"), typed("one more thing")]), NodeState::Working),
         ];
-        for (what, events, state) in cases {
-            assert_eq!(run(&events, None).nodes["s"].state, state, "{what}");
-        }
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter_map(|(what, events, state)| {
+                let got = run(&events, None).nodes["s"].state;
+                (got != state).then(|| format!("{what}: {got:?}, expected {state:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

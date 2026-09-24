@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{
-    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
+    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -510,6 +510,7 @@ fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
         created_at: now_millis(),
         handed_at: None,
         delivered_at: None,
+        about: None,
     })
 }
 
@@ -756,7 +757,7 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
     log!("{} merged by {} from {who}", pr.url, hub.config.name);
     let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
-    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra);
+    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }));
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
@@ -789,7 +790,7 @@ async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) 
     if pr.state != alondra_core::pr::PrState::Open {
         return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
     }
-    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User) {
+    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User, None) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("conflicts sent on PR card #{id}, card not set aside: {e}");
@@ -823,7 +824,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
         return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to change");
     }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
-    match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
+    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("changes sent on PR card #{id}, card not set aside: {e}");
@@ -836,7 +837,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
 
 /// A message about a PR goes to the node that opened it, or to the orchestrator once that node is
 /// gone, or when the message is Alondra's and the node is done.
-fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom) -> anyhow::Result<String> {
+fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>) -> anyhow::Result<String> {
     let res = hub.append_with(|v| {
         let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
         let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
@@ -849,6 +850,7 @@ fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, fr
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about,
         }))
     })?;
     match res {
@@ -1374,6 +1376,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -1677,6 +1680,7 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -1906,6 +1910,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
+            about: None,
         }))
     });
     match res {
@@ -2777,12 +2782,12 @@ mod tests {
         assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::Done);
 
         let pr = hub.read(|v| v.prs[&1].clone());
-        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra).unwrap(), "o", "Alondra's notice goes to the orchestrator");
+        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 })).unwrap(), "o", "Alondra's notice goes to the orchestrator");
         let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from) }));
         assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
         assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");
 
-        assert_eq!(tell_about_pr(&hub, &pr, "Ana requests changes".into(), MessageFrom::User).unwrap(), "s", "David's own words reach it");
+        assert_eq!(tell_about_pr(&hub, &pr, "Ana requests changes".into(), MessageFrom::User, None).unwrap(), "s", "David's own words reach it");
         assert_eq!(status_and_body(send(MessageFrom::Orchestrator).await).await.0, StatusCode::OK);
         assert_eq!(hub.read(|v| v.pending_messages("s").map(|m| m.from).collect::<Vec<_>>()), [MessageFrom::User, MessageFrom::Orchestrator]);
     }

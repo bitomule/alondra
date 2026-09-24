@@ -550,6 +550,15 @@ pub struct Message {
     pub handed_at: Option<Millis>,
     #[serde(default)]
     pub delivered_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub about: Option<MessageAbout>,
+}
+
+/// What a message Alondra queued stands for, when the state machine has to know.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessageAbout {
+    PrMerged { pr_id: u64 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
