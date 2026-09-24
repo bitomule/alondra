@@ -97,6 +97,10 @@ pub enum Event {
     PrDismissed { id: u64 },
     /// Changes were requested on the PR; its card waits until the node pushes again.
     PrChangesRequested { id: u64 },
+    /// The user asked for new work with these options; launches that cite the request get them.
+    RequestSent { request_id: String, options: crate::options::Resolved },
+    /// A node was launched with these options; `auto_merge` keeps its PRs out of the inbox.
+    Launched { name: String, request_id: Option<String>, auto_merge: bool },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
     Clock {
@@ -161,6 +165,8 @@ impl Event {
             Event::PrDismissed { .. } => "pr_dismissed",
             Event::PrChangesRequested { .. } => "pr_changes_requested",
             Event::Clock { .. } => "clock",
+            Event::RequestSent { .. } => "request_sent",
+            Event::Launched { .. } => "launched",
         }
     }
 }

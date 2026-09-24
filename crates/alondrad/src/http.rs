@@ -55,6 +55,8 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
         .route("/v1/requests", post(new_request))
+        .route("/v1/options", get(options_catalog))
+        .route("/v1/projects", get(projects))
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
         .route("/v1/activity", post(activity))
@@ -2046,10 +2048,40 @@ async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -
 }
 
 #[derive(Deserialize)]
+struct OptionsQuery {
+    project: Option<String>,
+}
+
+async fn options_catalog(State(hub): State<AppState>, Query(q): Query<OptionsQuery>) -> Json<Value> {
+    let loaded = crate::options::load(&hub);
+    let project = q.project.filter(|p| !p.trim().is_empty());
+    Json(json!({"project": project, "options": loaded.file.catalog(project.as_deref()), "error": loaded.error}))
+}
+
+async fn projects(State(hub): State<AppState>) -> Json<Value> {
+    let loaded = crate::options::load(&hub);
+    let root = loaded.file.projects_root(&crate::options::user_home());
+    let list: Vec<Value> = alondra_core::options::projects(&root).into_iter().map(|(name, path)| json!({"name": name, "path": path})).collect();
+    Json(json!({"root": root, "projects": list, "error": loaded.error}))
+}
+
+#[derive(Deserialize)]
 struct RequestBody {
     text: String,
     #[serde(default)]
     attachments: Vec<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    options: std::collections::BTreeMap<String, alondra_core::options::Choice>,
+}
+
+fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_id: &str, options: &alondra_core::options::Resolved) -> String {
+    let pass_on = if attached { " Put the attached files' paths in the node's mission so it can open them." } else { "" };
+    format!(
+        "[Alondra] New request from {user}: {text}{delivery}\n\nOptions chosen by {user} (request {request_id}): {}.\nPass request_id \"{request_id}\" to launch: Alondra writes these options into the node's mission and sets its model and effort, so do not restate them.\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
+        options.summary()
+    )
 }
 
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
@@ -2057,13 +2089,20 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
         Ok(a) => a,
         Err(r) => return r,
     };
-    let pass_on = if attachments.is_empty() { "" } else { " Put the attached files' paths in the node's mission so it can open them." };
-    let text = format!(
-        "[Alondra] New request from {}: {}{}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
-        hub.config.name,
-        b.text,
-        uploads::delivery_note(&hub.config.name, &attachments)
-    );
+    let loaded = crate::options::load(&hub);
+    let project = b.project.as_deref().filter(|p| !p.trim().is_empty());
+    let resolved = match loaded.file.resolve(project, &b.options) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    if !hub.read(|v| v.nodes.values().any(|n| n.is_orchestrator)) {
+        return err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra");
+    }
+    let request_id = format!("r-{}", now_millis());
+    if let Err(e) = hub.append(Event::RequestSent { request_id: request_id.clone(), options: resolved.clone() }) {
+        return internal(e);
+    }
+    let text = request_text(&hub.config.name, &b.text, &uploads::delivery_note(&hub.config.name, &attachments), !attachments.is_empty(), &request_id, &resolved);
     let res = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator)?;
         Some(Event::MessageQueued(Message {
@@ -2080,7 +2119,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
         }))
     });
     match res {
-        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
+        Ok(Some(_)) => Json(json!({"ok": true, "request_id": request_id})).into_response(),
         Ok(None) => err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra"),
         Err(e) => internal(e),
     }
@@ -2132,6 +2171,10 @@ struct LaunchBody {
     permission_mode: Option<String>,
     #[serde(default, deserialize_with = "lenient_bool")]
     over_pace_ok: bool,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
 }
 
 fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -2144,25 +2187,45 @@ fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error
     }
 }
 
-async fn launch(Json(b): Json<LaunchBody>) -> Response {
+/// The options a launch carries: its request's, or the defaults when no request stands behind
+/// it. Only a request the user sent can let a node merge on its own.
+fn launch_options(hub: &Hub, b: &LaunchBody) -> Result<alondra_core::options::Resolved, Response> {
+    let request = b.request_id.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    match request {
+        Some(id) => hub
+            .read(|v| v.requests.get(id).cloned())
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unknown request_id {id}: pass the one in the user's request, or none"))),
+        None => {
+            let file = crate::options::load(hub).file;
+            let project = crate::options::project_of(&file, std::path::Path::new(&b.cwd));
+            Ok(file.orchestrator_defaults(project.as_deref(), b.effort.as_deref()))
+        }
+    }
+}
+
+async fn launch(State(hub): State<AppState>, Json(b): Json<LaunchBody>) -> Response {
     if let Some(reason) = launch_blocked(crate::usage::current(&crate::watcher::claude_home()).as_ref(), b.over_pace_ok) {
         return err(StatusCode::CONFLICT, reason);
     }
     if !std::path::Path::new(&b.cwd).is_dir() {
         return err(StatusCode::BAD_REQUEST, format!("directory {} does not exist", b.cwd));
     }
+    let resolved = match launch_options(&hub, &b) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let request_id = b.request_id.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let args = crate::options::launch_args(&b.name, b.permission_mode.as_deref(), b.model.as_deref(), &b.prompt, &resolved, request_id);
     let mut cmd = tokio::process::Command::new("claude");
-    cmd.current_dir(&b.cwd)
-        .args(["--bg", "--name", &b.name])
-        .args(["--permission-mode", b.permission_mode.as_deref().unwrap_or("auto")]);
-    if let Some(m) = &b.model {
-        cmd.args(["--model", m]);
-    }
-    cmd.arg("--").arg(&b.prompt).kill_on_drop(true);
+    cmd.current_dir(&b.cwd).args(&args).kill_on_drop(true);
     match tokio::time::timeout(Duration::from_secs(60), cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            Json(json!({"ok": true, "output": stdout})).into_response()
+            let launched = Event::Launched { name: b.name.clone(), request_id: request_id.map(str::to_string), auto_merge: resolved.auto_merge };
+            if let Err(e) = hub.append(launched) {
+                return internal(e);
+            }
+            Json(json!({"ok": true, "output": stdout, "auto_merge": resolved.auto_merge})).into_response()
         }
         Ok(Ok(out)) => err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).to_string()),
         Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
@@ -2868,7 +2931,7 @@ mod tests {
         }
     }
 
-    fn temp_hub(tag: &str) -> Arc<Hub> {
+    pub(super) fn temp_hub(tag: &str) -> Arc<Hub> {
         hub_with(tag, false)
     }
 
@@ -3014,7 +3077,7 @@ mod tests {
         assert!(probe_refused(None, false).is_none());
     }
 
-    async fn status_and_body(r: Response) -> (StatusCode, Value) {
+    pub(super) async fn status_and_body(r: Response) -> (StatusCode, Value) {
         let status = r.status();
         let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
@@ -3367,3 +3430,140 @@ mod broken_worktree_tests {
     }
 }
 
+#[cfg(test)]
+mod new_work_tests {
+    use super::*;
+    use super::tests::{status_and_body, temp_hub};
+
+    const OPTIONS: &str = r#"
+[defaults]
+effort = "light"
+
+[[option]]
+id = "how_far"
+label = "How far"
+kind = "choice"
+values = [
+  { id = "merge", label = "merge" },
+  { id = "install", label = "merge and install", mission = "After the merge, run the install target." },
+]
+
+[projects.App]
+defaults = { pr = "auto_merge" }
+"#;
+
+    fn hub_with_options(tag: &str, options: Option<&str>) -> Arc<Hub> {
+        let hub = temp_hub(tag);
+        if let Some(text) = options {
+            std::fs::write(alondra_core::options::path_in(&hub.home), text).unwrap();
+        }
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "orch".into(), short_id: "orch".into(), name: Some("orchestrator".into()), ..Default::default() })).unwrap();
+        hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        hub
+    }
+
+    fn request(text: &str, project: Option<&str>, options: Value) -> Json<RequestBody> {
+        Json(serde_json::from_value(json!({"text": text, "project": project, "options": options})).unwrap())
+    }
+
+    fn launch_body(request_id: Option<&str>, cwd: &str, effort: Option<&str>) -> LaunchBody {
+        serde_json::from_value(json!({"name": "app/fix", "cwd": cwd, "prompt": "Fix it.", "request_id": request_id, "effort": effort})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_request_carries_its_options_to_the_orchestrator_and_keeps_them_for_launch() {
+        let hub = hub_with_options("req-options", Some(OPTIONS));
+        let (status, said) = status_and_body(new_request(State(hub.clone()), request("Fix the crash", Some("App"), json!({"how_far": "install"}))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let id = said["request_id"].as_str().unwrap().to_string();
+        let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
+        assert!(text.starts_with("[Alondra] New request from Ana: Fix the crash"), "{text}");
+        assert!(text.contains(&format!("(request {id}): project App · PR handling: auto-merge · Effort: light · How far: merge and install.")), "{text}");
+        assert!(text.contains(&format!("Pass request_id \"{id}\" to launch")), "{text}");
+        let kept = hub.read(|v| v.requests.get(&id).cloned()).unwrap();
+        assert!(kept.auto_merge);
+        assert_eq!(kept.flags.model.as_deref(), Some("sonnet"));
+    }
+
+    #[tokio::test]
+    async fn a_request_is_refused_when_its_options_are_wrong_or_nobody_orchestrates() {
+        for (what, options, orchestrator, expected) in [
+            ("unknown option", json!({"nope": true}), true, StatusCode::BAD_REQUEST),
+            ("bad value", json!({"how_far": "moon"}), true, StatusCode::BAD_REQUEST),
+            ("no orchestrator", json!({}), false, StatusCode::CONFLICT),
+            ("fine", json!({}), true, StatusCode::OK),
+        ] {
+            let hub = if orchestrator { hub_with_options("req-refused", Some(OPTIONS)) } else { temp_hub("req-no-orch") };
+            let (status, said) = status_and_body(new_request(State(hub.clone()), request("x", None, options)).await).await;
+            assert_eq!(status, expected, "{what}: {said}");
+            assert_eq!(hub.read(|v| v.requests.len()), usize::from(expected == StatusCode::OK), "{what}: a refused request leaves nothing behind");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_user_request_lets_a_node_auto_merge() {
+        let hub = hub_with_options("launch-guard", Some(OPTIONS));
+        let (_, said) = status_and_body(new_request(State(hub.clone()), request("x", Some("App"), json!({}))).await).await;
+        let id = said["request_id"].as_str().unwrap().to_string();
+        let in_app = crate::options::user_home().join("Projects").join("App").to_string_lossy().to_string();
+        for (what, request_id, auto_merge) in [
+            ("the user's request", Some(id.as_str()), true),
+            ("the orchestrator alone, in a project whose default is auto-merge", None, false),
+        ] {
+            let resolved = launch_options(&hub, &launch_body(request_id, &in_app, None)).unwrap_or_else(|_| panic!("{what}"));
+            assert_eq!(resolved.auto_merge, auto_merge, "{what}");
+        }
+        let (status, said) = status_and_body(launch_options(&hub, &launch_body(Some("r-0"), &in_app, None)).unwrap_err()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
+        let alone = launch_options(&hub, &launch_body(None, "/tmp", Some("hard"))).unwrap();
+        assert_eq!((alone.effort.as_str(), alone.project.as_deref()), ("hard", None));
+    }
+
+    #[test]
+    fn the_launch_command_carries_the_flags_and_the_options_section() {
+        let file = alondra_core::options::OptionsFile::parse(OPTIONS).unwrap();
+        let resolved = file.resolve(Some("App"), &[("how_far".to_string(), alondra_core::options::Choice::Value("install".into()))].into()).unwrap();
+        let args = crate::options::launch_args("app/fix", None, None, "Fix it.\n", &resolved, Some("r-1"));
+        assert_eq!(args[..9], ["--bg", "--name", "app/fix", "--permission-mode", "auto", "--model", "sonnet", "--effort", "medium"]);
+        assert_eq!(args[9], "--");
+        let prompt = &args[10];
+        assert!(prompt.starts_with("Fix it.\n\n## Launch options\n\nThe user chose these for this work (request r-1):"), "{prompt}");
+        assert!(prompt.contains("- How far: merge and install. After the merge, run the install target."), "{prompt}");
+        let explicit = crate::options::launch_args("n", Some("plan"), Some("haiku"), "p", &resolved, None);
+        assert_eq!(explicit[3..9], ["--permission-mode", "plan", "--model", "haiku", "--effort", "medium"]);
+    }
+
+    #[test]
+    fn a_node_launched_with_auto_merge_raises_no_pr_card() {
+        for (auto_merge, cards) in [(true, 0), (false, 1)] {
+            let hub = temp_hub("auto-merge-card");
+            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge }).unwrap();
+            hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), ..Default::default() })).unwrap();
+            hub.append(Event::PrOpened { url: "https://github.com/a/app/pull/3".into(), session_id: "s".into() }).unwrap();
+            assert_eq!(hub.read(|v| crate::prs::in_inbox(v).count()), cards, "auto_merge {auto_merge}");
+            assert_eq!(hub.read(|v| v.prs.len()), 1, "auto_merge {auto_merge}: the PR is still tracked");
+            let mut fetched = hub.read(|v| v.prs[&1].clone());
+            fetched.auto_merge = false;
+            fetched.fetched = true;
+            hub.append(Event::PrUpdated(fetched)).unwrap();
+            assert_eq!(hub.read(|v| crate::prs::in_inbox(v).count()), cards, "auto_merge {auto_merge}: a refresh from GitHub keeps it");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_broken_options_file_keeps_the_last_good_one_and_says_why() {
+        let hub = hub_with_options("options-broken", Some(OPTIONS));
+        let ids = |v: &Value| v["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let Json(good) = options_catalog(State(hub.clone()), Query(OptionsQuery { project: Some("App".into()) })).await;
+        assert_eq!(ids(&good), ["pr", "effort", "how_far"]);
+        assert_eq!(good["options"][0]["default"], "auto_merge");
+        assert!(good["error"].is_null());
+        std::fs::write(alondra_core::options::path_in(&hub.home), "[[option]]\nid = 1\n").unwrap();
+        let Json(broken) = options_catalog(State(hub.clone()), Query(OptionsQuery { project: None })).await;
+        assert_eq!(ids(&broken), ["pr", "effort", "how_far"]);
+        assert!(broken["error"].as_str().unwrap().contains("options.toml"), "{broken}");
+        let fresh = hub_with_options("options-none", None);
+        let Json(none) = options_catalog(State(fresh), Query(OptionsQuery { project: None })).await;
+        assert_eq!(ids(&none), ["pr", "effort"], "with no file only the built-ins");
+    }
+}

@@ -41,6 +41,9 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
    - The mission you write is complete: what to build, what evidence to leave, what has already
      been ruled out and whom to report to.
    - Node names carry their hierarchy (`lumo/phase-c`).
+   - A request carries the options the user chose and a `request_id`. Pass that `request_id` to
+     every `launch` for the request. Alondra writes the options into the node's mission and sets
+     its model and effort, so leave them out of your prompt and never contradict them.
    - An ambiguous request is a question for the user: one question costs less than a node
      launched on the wrong reading.
 2. Alondra's digest, every 90 s in one message: new reports, nodes that finished without

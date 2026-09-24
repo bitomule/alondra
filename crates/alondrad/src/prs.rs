@@ -78,9 +78,10 @@ pub fn watched(v: &View) -> impl Iterator<Item = &PullRequest> {
     v.prs.values().filter(|p| p.state == PrState::Open || (p.state == PrState::Dismissed && open(v).any(|up| v.stack_below(up).is_some_and(|b| b.id == p.id))))
 }
 
-/// Open cards that want the user now; one waiting for the node's next push stays out.
+/// Open cards that want the user now. One waiting for the node's next push stays out, and so
+/// does one the user let its node merge on its own.
 pub fn in_inbox(v: &View) -> impl Iterator<Item = &PullRequest> {
-    open(v).filter(|p| !p.awaiting_push())
+    open(v).filter(|p| !p.awaiting_push() && !p.auto_merge)
 }
 
 async fn gh_json(args: &[&str]) -> Option<Value> {

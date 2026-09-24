@@ -25,7 +25,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(c) => {
             let preview = c.chips.iter().rev().find(|c| app.previews.contains_key(&c.seq)).map(|c| c.seq);
             let preview_h = if preview.is_some() { PREVIEW_ROWS } else { 0 };
-            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + preview_h).min(body.height.saturating_sub(3));
+            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + form_height(c.form.as_ref()) + preview_h).min(body.height.saturating_sub(3));
             let [main, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(body);
             let preview_area = draw_composer(f, app, comp, preview_h);
             if let (Some(seq), Some(area)) = (preview, preview_area)
@@ -1310,6 +1310,31 @@ fn chips_height(chips: &[super::dropped::Chip]) -> u16 {
     u16::from(!chips.is_empty())
 }
 
+fn form_height(form: Option<&super::work::OptionsForm>) -> u16 {
+    u16::from(form.is_some())
+}
+
+fn form_line(form: &super::work::OptionsForm) -> Line<'static> {
+    if !form.loaded {
+        return Line::from(tr!("Loading the options…", "Cargando las opciones…").fg(DIM));
+    }
+    let mut spans = vec![];
+    for (i, (label, value, focused)) in form.parts().into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(DIM)));
+        }
+        let style = if focused { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+        spans.push(Span::styled(format!("{label}: "), Style::new().fg(DIM)));
+        spans.push(Span::styled(value, style));
+    }
+    if let Some(e) = &form.error {
+        spans.push(Span::styled(format!("  ⚠ {e}"), Style::new().fg(Color::Red)));
+    } else if form.focus.is_none() {
+        spans.push(Span::styled(format!("  [{}]", tr!("Tab changes", "Tab cambia")), Style::new().fg(DIM)));
+    }
+    Line::from(spans)
+}
+
 fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
     let mut spans = vec![];
     for chip in chips {
@@ -1367,11 +1392,16 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
-    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(1));
-    let preview_h = preview_h.min(text.height.saturating_sub(chips_h + 1));
-    let [preview, chips, text] = Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Min(1)]).areas(text);
+    let form_h = form_height(c.form.as_ref()).min(text.height.saturating_sub(1));
+    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(form_h + 1));
+    let preview_h = preview_h.min(text.height.saturating_sub(form_h + chips_h + 1));
+    let [preview, chips, form, text] =
+        Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Length(form_h), Constraint::Min(1)]).areas(text);
     if chips_h > 0 {
         f.render_widget(Paragraph::new(chip_line(&c.chips)), chips);
+    }
+    if let Some(o) = c.form.as_ref().filter(|_| form_h > 0) {
+        f.render_widget(Paragraph::new(form_line(o)), form);
     }
     let (lines, (row, col)) = c.input.layout(text.width as usize);
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
@@ -1395,6 +1425,15 @@ fn composer_action(t: &Target) -> &'static str {
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
     if let Some(c) = app.composer.as_ref() {
+        if c.form.as_ref().is_some_and(|f| f.focus.is_some()) {
+            return vec![
+                k("←/→", tr!("option", "opción")),
+                k(tr!("Space", "Espacio"), tr!("change", "cambia")),
+                k("p", tr!("project", "proyecto")),
+                k("Tab", tr!("back to the text", "vuelve al texto")),
+                k("⏎", composer_action(&c.target)),
+            ];
+        }
         return vec![
             k("⏎", composer_action(&c.target)),
             k("Alt+⏎", tr!("new line", "nueva línea")),

@@ -3,6 +3,7 @@ pub mod config;
 pub mod event;
 pub mod keeper;
 pub mod model;
+pub mod options;
 pub mod pr;
 pub mod stack;
 #[cfg(test)]
