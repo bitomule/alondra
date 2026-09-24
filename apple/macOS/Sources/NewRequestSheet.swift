@@ -44,7 +44,6 @@ struct NewRequestSheet: View {
             }
             HStack {
                 AttachFilesButton(attachments: attachments, client: store.client)
-                Hint(text: String(localized: "⌘↩ sends · esc cancels"))
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -59,6 +58,7 @@ struct NewRequestSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
+                .help(Text(verbatim: "\(String(localized: "Send")) (⌘↩)"))
                 .disabled(sending || (trimmed.isEmpty && attachments.isEmpty))
             }
         }
