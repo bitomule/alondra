@@ -761,6 +761,16 @@
         }
       }
     },
+    "Finished (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminado (%lld)"
+          }
+        }
+      }
+    },
     "Finished without tasks": {
       "localizations": {
         "es": {
@@ -841,12 +851,12 @@
         }
       }
     },
-    "Hides the archived tasks": {
+    "Hides them": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Oculta las tareas archivadas"
+            "value": "Las oculta"
           }
         }
       }
@@ -1671,12 +1681,12 @@
         }
       }
     },
-    "Shows the archived tasks": {
+    "Shows them": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muestra las tareas archivadas"
+            "value": "Las muestra"
           }
         }
       }
@@ -1777,6 +1787,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "El nodo te lo explicará y volverá a preguntar."
+          }
+        }
+      }
+    },
+    "The orchestrator left it without tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El orquestador la dejó sin tareas"
           }
         }
       }
@@ -2457,22 +2477,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Filtrar proyectos"
-          }
-        }
-      }
-    },
-    "requests-done.header": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Done"
-          }
-        },
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hechas"
           }
         }
       }

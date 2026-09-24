@@ -15,10 +15,16 @@ use super::{App, Flow, Item, Key, Msg, Pane, Target, md};
 use crate::client::{Activity, Client, ClientRequest, ClientTask, FleetNode, NotFound, PrCard};
 use crate::mcp::urlencode;
 
+/// A request still defining this long after it was sent was left without tasks: the
+/// orchestrator defines or closes one within minutes.
+pub const LEFT_DEFINING: i64 = 10 * 60 * 1000;
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TaskKey {
     Task(String),
     Request(String),
+    /// The header of the finished section, which opens and closes it.
+    Finished,
     /// The header of the archived section, which opens and closes it.
     Archived,
 }
@@ -36,12 +42,40 @@ pub struct TreeRow {
 }
 
 pub enum TaskListRow {
-    Request(String),
+    /// The header of what is still open, with what the Tasks tab counts.
+    Active(usize),
+    /// A request with one task, as one row: that task.
+    Single(String),
+    /// The header of a request with several tasks, above their tree: how many of them finished,
+    /// of how many.
+    Request(String, usize, usize),
     Task(TreeRow),
-    /// A request with no task: still being defined, or finished without one.
+    /// A request with no task: still being defined, left without tasks, or finished without one.
     Taskless(String),
+    /// The finished section's header: how many requests, and when the last one finished.
+    Finished(usize, i64),
     /// The archived section's header, with how much it holds.
     Archived(usize),
+}
+
+impl TaskListRow {
+    /// What selecting the row selects; headers of what they hold select nothing.
+    pub fn key(&self) -> Option<TaskKey> {
+        match self {
+            TaskListRow::Single(id) => Some(TaskKey::Task(id.clone())),
+            TaskListRow::Task(row) => Some(TaskKey::Task(row.id.clone())),
+            TaskListRow::Taskless(id) => Some(TaskKey::Request(id.clone())),
+            TaskListRow::Finished(..) => Some(TaskKey::Finished),
+            TaskListRow::Archived(_) => Some(TaskKey::Archived),
+            TaskListRow::Active(_) | TaskListRow::Request(..) => None,
+        }
+    }
+}
+
+/// One request's rows in the list, and the moment it is sorted by.
+struct Group {
+    at: i64,
+    rows: Vec<TaskListRow>,
 }
 
 /// Each task under the dependency it goes after (the newest one when it has several); tasks with
@@ -164,31 +198,66 @@ impl App {
         if listed.is_empty() { self.data.tasks.iter().filter(|t| t.request == r.id).collect() } else { listed }
     }
 
-    /// Requests still open, newest first, then the finished ones.
-    pub fn ordered_requests(&self) -> Vec<&ClientRequest> {
-        let mut all: Vec<&ClientRequest> = self.data.requests.iter().collect();
-        all.sort_by(|a, b| ((a.state == RequestState::Done), std::cmp::Reverse((a.created_at, &a.id))).cmp(&((b.state == RequestState::Done), std::cmp::Reverse((b.created_at, &b.id)))));
-        all
+    /// A probe session's task, which the Tasks tab leaves out: a node's own task on a request
+    /// made up for it, never recorded, whose node was a test node or that ended cancelled
+    /// without delivering anything. Nothing of a request the user made is hidden.
+    pub fn hidden(&self, t: &ClientTask) -> bool {
+        if t.recorded || !self.request(&t.request).is_some_and(|r| r.synthetic) {
+            return false;
+        }
+        let delivered = !t.prs.is_empty() || !t.documents.is_empty() || t.final_report.is_some();
+        t.title.starts_with(alondra_core::PROBE_PREFIX) || (t.state == TaskState::Cancelled && !delivered)
     }
 
-    /// Each request with its tasks, then the archived section: the same requests with the tasks
-    /// that were archived, shown only while the section is open.
+    /// A request left defining: the orchestrator neither defined it nor closed it.
+    pub fn left_defining(&self, r: &ClientRequest) -> bool {
+        r.state == RequestState::Defining && now_millis() - r.created_at >= LEFT_DEFINING
+    }
+
+    /// What is open, the request that changed last first; then the finished requests folded
+    /// under one header, the last to finish first; then the archived section. Probe sessions are
+    /// left out, and a request with one task is one row.
     pub fn task_rows(&self) -> Vec<TaskListRow> {
-        let mut rows = vec![];
-        let mut archived = vec![];
-        for r in self.ordered_requests() {
-            let tasks = self.request_tasks(r);
-            if tasks.is_empty() {
-                let into = if r.archived_at.is_some() { &mut archived } else { &mut rows };
-                into.extend([TaskListRow::Request(r.id.clone()), TaskListRow::Taskless(r.id.clone())]);
+        let (mut active, mut finished, mut archived) = (vec![], vec![], vec![]);
+        let mut requests: Vec<&ClientRequest> = self.data.requests.iter().collect();
+        requests.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+        for r in requests {
+            let all = self.request_tasks(r);
+            if all.is_empty() {
+                if r.synthetic {
+                    continue;
+                }
+                let rows = vec![TaskListRow::Taskless(r.id.clone())];
+                match (r.archived_at, r.state) {
+                    (Some(_), _) => archived.extend(rows),
+                    (None, RequestState::Done) => finished.push(Group { at: r.closed.as_ref().map_or(r.created_at, |c| c.at), rows }),
+                    (None, _) => active.push(Group { at: r.created_at, rows }),
+                }
                 continue;
             }
-            let (old, open): (Vec<&ClientTask>, Vec<&ClientTask>) = tasks.into_iter().partition(|t| t.archived_at.is_some());
-            for (into, tasks) in [(&mut rows, open), (&mut archived, old)] {
-                if !tasks.is_empty() {
-                    into.push(TaskListRow::Request(r.id.clone()));
-                    into.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
-                }
+            let (old, current): (Vec<&ClientTask>, Vec<&ClientTask>) = all.into_iter().filter(|t| !self.hidden(t)).partition(|t| t.archived_at.is_some());
+            if !old.is_empty() {
+                archived.extend(group_rows(r, &old));
+            }
+            if current.is_empty() {
+                continue;
+            }
+            if current.iter().all(|t| t.state.finished()) {
+                let at = current.iter().map(|t| t.state_since).max().unwrap_or(r.created_at);
+                finished.push(Group { at, rows: group_rows(r, &current) });
+            } else {
+                let at = current.iter().map(|t| t.last_change.unwrap_or(t.state_since).max(t.state_since)).max().unwrap_or(r.created_at);
+                active.push(Group { at, rows: group_rows(r, &current) });
+            }
+        }
+        active.sort_by_key(|g| std::cmp::Reverse(g.at));
+        finished.sort_by_key(|g| std::cmp::Reverse(g.at));
+        let mut rows = vec![TaskListRow::Active(self.open_task_count())];
+        rows.extend(active.into_iter().flat_map(|g| g.rows));
+        if let Some(last) = finished.first().map(|g| g.at) {
+            rows.push(TaskListRow::Finished(finished.len(), last));
+            if self.finished_open {
+                rows.extend(finished.into_iter().flat_map(|g| g.rows));
             }
         }
         let n = self.archived_count();
@@ -202,21 +271,13 @@ impl App {
     }
 
     pub fn task_keys(&self) -> Vec<TaskKey> {
-        self.task_rows()
-            .into_iter()
-            .filter_map(|r| match r {
-                TaskListRow::Task(row) => Some(TaskKey::Task(row.id)),
-                TaskListRow::Taskless(id) => Some(TaskKey::Request(id)),
-                TaskListRow::Archived(_) => Some(TaskKey::Archived),
-                TaskListRow::Request(_) => None,
-            })
-            .collect()
+        self.task_rows().iter().filter_map(TaskListRow::key).collect()
     }
 
     /// Archived tasks, and requests archived without tasks.
     pub fn archived_count(&self) -> usize {
-        let tasks = self.data.tasks.iter().filter(|t| t.archived_at.is_some()).count();
-        tasks + self.data.requests.iter().filter(|r| r.archived_at.is_some() && self.request_tasks(r).is_empty()).count()
+        let tasks = self.data.tasks.iter().filter(|t| t.archived_at.is_some() && !self.hidden(t)).count();
+        tasks + self.data.requests.iter().filter(|r| r.archived_at.is_some() && !r.synthetic && self.request_tasks(r).is_empty()).count()
     }
 
     /// What Shift+A archives: finished tasks, and requests that finished without tasks.
@@ -242,15 +303,16 @@ impl App {
     }
 
     pub fn tasks_on(&self, session: &str) -> Vec<&ClientTask> {
-        let mut tasks: Vec<&ClientTask> =
-            self.data.tasks.iter().filter(|t| t.archived_at.is_none() && t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
+        let mut tasks: Vec<&ClientTask> = self.data.tasks.iter().filter(|t| t.archived_at.is_none() && t.is_assigned_to(session) && !self.hidden(t)).collect();
         tasks.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         tasks
     }
 
-    /// Open tasks and requests still being defined: what the Tasks tab counts.
+    /// Open tasks and requests still being defined, probe sessions left out: what the Tasks tab
+    /// counts.
     pub fn open_task_count(&self) -> usize {
-        self.data.tasks.iter().filter(|t| !t.state.finished()).count() + self.data.requests.iter().filter(|r| r.state == RequestState::Defining).count()
+        let tasks = self.data.tasks.iter().filter(|t| !t.state.finished() && !self.hidden(t)).count();
+        tasks + self.data.requests.iter().filter(|r| r.state == RequestState::Defining && !r.synthetic).count()
     }
 
     /// The title the orchestrator gave it, else its only task's, else the first line of what the
@@ -261,6 +323,17 @@ impl App {
         let only = (tasks.len() == 1).then(|| tasks[0].title.clone());
         let line = r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
         given.or(only).or(line).or_else(|| tasks.first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
+    }
+
+    /// The title of a request shown as its one task's row: the orchestrator's, else the task's.
+    pub fn single_title(&self, t: &ClientTask) -> String {
+        let given = self.request(&t.request).and_then(|r| r.title.as_deref()).map(str::trim).filter(|x| !x.is_empty());
+        given.map_or_else(|| t.title.clone(), str::to_string)
+    }
+
+    /// A dependency of the task belongs to another request.
+    pub fn waits_elsewhere(&self, t: &ClientTask) -> bool {
+        self.dependencies(t).iter().any(|d| d.request != t.request)
     }
 
     pub fn task_project(&self, t: &ClientTask) -> Option<String> {
@@ -376,9 +449,7 @@ impl App {
                 if let Some((n, below)) = self.task_prs(t).first().and_then(|p| p.below_number.map(|b| (p.pr.number, b))) {
                     return Some(trf!("PR #{n} on top of #{below}", "PR #{n} va encima del #{below}"));
                 }
-                let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
-                let title = &first.title;
-                Some(trf!("after “{title}”", "tras «{title}»"))
+                None
             }
             TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
             TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
@@ -485,6 +556,7 @@ impl App {
             Cmd::Move(Motion::Top) => self.move_tasks(0),
             Cmd::Move(Motion::Bottom) => self.move_tasks(isize::MAX),
             Cmd::Move(m) => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Finished) => self.finished_open = !self.finished_open,
             Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             Cmd::Right if self.task_view.shown && !self.task_zoom => self.focus = Pane::Detail,
             Cmd::Right => self.task_zoom = self.task_sel.is_some(),
@@ -503,6 +575,7 @@ impl App {
             KeyCode::Char('x') => self.cancel_task(),
             KeyCode::Char('R') => self.reopen_task(),
             KeyCode::Char('A') => self.archive_finished(),
+            KeyCode::Enter if self.task_sel == Some(TaskKey::Finished) => self.finished_open = !self.finished_open,
             KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_task().and_then(|t| t.assignee.as_ref()).and_then(|a| self.node(&a.session_id)) {
@@ -621,6 +694,14 @@ impl App {
             Item::P(p) => Key::P(p.pr.id),
         };
         self.task_of(key).map(|t| t.title.clone())
+    }
+}
+
+/// A request's rows: one row for a single task, else its header above the tree.
+fn group_rows(r: &ClientRequest, tasks: &[&ClientTask]) -> Vec<TaskListRow> {
+    match tasks {
+        [one] => vec![TaskListRow::Single(one.id.clone())],
+        _ => std::iter::once(TaskListRow::Request(r.id.clone(), tasks.iter().filter(|t| t.state.finished()).count(), tasks.len())).chain(tree(tasks).into_iter().map(TaskListRow::Task)).collect(),
     }
 }
 

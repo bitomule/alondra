@@ -198,7 +198,7 @@ pub(super) fn task_glyph(t: &ClientTask) -> (&'static str, Color) {
     state_glyph(t.state)
 }
 
-const DEFINING: (&str, Color) = ("…", Color::LightMagenta);
+const DEFINING: (&str, Color) = ("◇", Color::LightMagenta);
 
 pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color) {
     if q.action {
@@ -1607,7 +1607,13 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         if app.task_zoom {
             return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
         }
-        let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel")), k("o", tr!("expand", "expandir")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
+        let folds = matches!(app.task_sel, Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived));
+        let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel"))];
+        if folds {
+            v.push(k("⏎", tr!("open/fold", "abrir/plegar")));
+        } else {
+            v.extend([k("o", tr!("expand", "expandir")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))]);
+        }
         if app.selected_defining_request().is_some() {
             v.push(k("x", tr!("withdraw", "retirar")));
         } else if !app.task_actions_missing {

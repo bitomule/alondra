@@ -2,7 +2,7 @@ BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac e2e-sandbox soak
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac e2e-sandbox soak tasks-screen
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -66,3 +66,9 @@ e2e-sandbox:
 soak:
 	bazelisk build //crates/alondrad
 	taskpolicy -b python3 tools/soak.py --binary $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(SOAK_ARGS)
+
+# The TUI's Tasks tab for the running alondrad's overview, at 130x33, as text (SCREEN=path keeps it).
+tasks-screen:
+	curl -sf http://127.0.0.1:47800/v1/overview -o /tmp/alondra-overview.json
+	ALONDRA_OVERVIEW=/tmp/alondra-overview.json ALONDRA_SCREEN=$(or $(SCREEN),/tmp/alondra-tasks.txt) cargo test -q -p alondra tasks_screen_of_an_overview -- --ignored
+	cat $(or $(SCREEN),/tmp/alondra-tasks.txt)
