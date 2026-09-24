@@ -3,6 +3,7 @@ filegroup(
     srcs = glob([
         "*.md",
         "*.blocks",
+        "tables/*.txt",
     ]),
     visibility = ["//visibility:public"],
 )

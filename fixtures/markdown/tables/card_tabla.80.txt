@@ -1,0 +1,43 @@
+Nada de instalar: dos cosas que copiar, el resto ya lo tenemos mejor. Repo leído
+entero (40 skills, sin scripts salvo un validador; no pide credenciales
+nuestras, no ejecuta nada).
+
+Tabla
+
+Lo que traen            │ ¿Lo tenemos?          │ ¿Cambia lo que haríamos?
+────────────────────────┼───────────────────────┼───────────────────────────────
+Fuente de datos =       │ No, y a propósito     │ No. Sin esa clave sus skills
+Appeeky (API/MCP de     │                       │ no tienen dato: recomiendan de
+pago, 8 $/mes) para     │                       │ memoria. Su volumen/dificultad
+volumen, dificultad,    │                       │ son estimaciones de un
+rankings, estimaciones  │                       │ proveedor; nuestro suggest.js
+de descargas            │                       │ lee el autocompletado real de
+                        │                       │ la tienda (lo medido en
+                        │                       │ reference_aso_keyword_verifica
+                        │                       │ tion_autocomplete) y
+                        │                       │ store-signals.sh lee las
+                        │                       │ keywords que Apple indexa hoy
+                        │                       │ por locale. No hay dato mejor
+                        │                       │ delante, así que no se toca
+────────────────────────┼───────────────────────┼───────────────────────────────
+Fórmula de oportunidad  │ Parecido (ordenamos   │ No. Dos de los tres términos
+Volumen×0,4 +           │ por                   │ son estimaciones de Appeeky y
+(100−Dificultad)×0,3 +  │ relevancia/tráfico/co │ el tercero (relevancia) se lo
+Relevancia×0,3          │ mpetencia sin número) │ inventa el modelo. Un número
+                        │                       │ inventado ordena peor que un
+                        │                       │ juicio explícito
+────────────────────────┼───────────────────────┼───────────────────────────────
+in-app-events — ficha   │ No tenemos nada       │ Sí. Es superficie gratis que
+de evento en la pestaña │                       │ ni tocamos: 6 tipos, 30/50/120
+Hoy y en búsqueda       │                       │ caracteres, imagen 2160×1080,
+                        │                       │ hasta 10 vivos. Para Lumo o
+                        │                       │ Quill un evento tipo Major
+                        │                       │ Update en cada release pone la
+                        │                       │ app en Hoy sin pagar nada
+
+La suma
+
+2 filas de 40 cambian algo: In-App Events y Custom Product Pages. Ambas son
+superficies de la tienda, no métodos — cosas que Apple ofrece y nosotros no
+usamos. El método suyo es peor que el nuestro en todo lo que se solapa, porque
+su capa de datos es un SaaS de pago y la nuestra es la tienda.
