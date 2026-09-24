@@ -141,12 +141,15 @@ struct OptionButton: View {
     let detail: String?
     var prominent = false
     var selected = false
+    var showsKey = true
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                KeyCap(key: String(index + 1), onAccent: prominent)
+                if showsKey {
+                    KeyCap(key: String(index + 1), onAccent: prominent)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(label)
                         .font(.body.weight(.semibold))
@@ -161,7 +164,7 @@ struct OptionButton: View {
             }
         }
         .buttonStyle(OptionButtonStyle(prominent: prominent, selected: selected))
-        .help("Key \(index + 1)")
+        .help(showsKey ? Text("Key \(index + 1)") : Text(verbatim: ""))
     }
 }
 

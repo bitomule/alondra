@@ -104,6 +104,7 @@ pub enum Signal {
     BackgroundTask,
     UsageLimit,
     DeclaredWait,
+    PrAwaitingUser,
     FinalReport,
     Reviewed,
     Report,

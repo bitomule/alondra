@@ -65,7 +65,7 @@ struct QuestionDetail: View {
             VStack(alignment: .leading, spacing: 12) {
                 CommentsSummary(draft: draft)
                 if !question.options.isEmpty {
-                    options
+                    QuestionOptions(options: question.options, selected: pendingOption, detail: optionDetail, prominent: isProminent, choose: choose)
                 }
                 Composer(
                     placeholder: placeholder,
@@ -100,34 +100,10 @@ struct QuestionDetail: View {
         .triageKeys(focus: $focus, handle: handleKey)
     }
 
-    private var options: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { optionButtons }
-            VStack(spacing: 8) { optionButtons }
-        }
-    }
-
-    private var optionButtons: some View {
-        ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
-            OptionButton(
-                index: index,
-                label: option.displayLabel,
-                detail: optionDetail(option),
-                prominent: isProminent(option, index: index),
-                selected: pendingOption == option.label,
-                action: { choose(option) }
-            )
-        }
-    }
-
-    private func needsText(_ option: QuestionOption) -> Bool {
-        ["write", "escribe"].contains { option.description?.lowercased().hasPrefix($0) == true }
-    }
-
     private func optionDetail(_ option: QuestionOption) -> String? {
         let comments = draft.comments.count
         guard comments > 0 else { return option.displayDescription }
-        if needsText(option) || !question.isPlan {
+        if option.needsText || !question.isPlan {
             return String(localized: "Sends your \(comments) comments")
         }
         return String(localized: "Without your comments")
@@ -135,7 +111,7 @@ struct QuestionDetail: View {
 
     private func isProminent(_ option: QuestionOption, index: Int) -> Bool {
         guard question.isPlan else { return false }
-        return draft.hasFeedback ? needsText(option) : index == 0
+        return draft.hasFeedback ? option.needsText : index == 0
     }
 
     private var placeholder: String {
@@ -173,7 +149,7 @@ struct QuestionDetail: View {
 
     private func choose(_ option: QuestionOption) {
         let text = feedback
-        if needsText(option) && text.isEmpty {
+        if option.needsText && text.isEmpty {
             pendingOption = option.label
             focus = .reply
             return
@@ -186,7 +162,7 @@ struct QuestionDetail: View {
         guard !text.isEmpty else { return }
         if let pendingOption {
             answer(text, option: pendingOption)
-        } else if question.isPlan, let change = question.options.first(where: needsText) ?? question.options.dropFirst().first {
+        } else if question.isPlan, let change = question.options.first(where: \.needsText) ?? question.options.dropFirst().first {
             answer(text, option: change.label)
         } else {
             answer(text, option: nil)

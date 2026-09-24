@@ -223,7 +223,7 @@ impl View {
                         self.prs.insert(id, pr);
                     }
                 }
-                None
+                self.nodes.contains_key(session_id).then(|| (session_id.clone(), Trigger::Other))
             }
             Event::PrUpdated(pr) => {
                 if let Some(known) = self.prs.get_mut(&pr.id) {
@@ -238,7 +238,7 @@ impl View {
                 if matches!(pr.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed) {
                     self.withdraw_questions_about(pr.id);
                 }
-                None
+                self.pr_node(pr.id)
             }
             Event::PrMerged { id, method } => {
                 if let Some(pr) = self.prs.get_mut(id) {
@@ -246,19 +246,19 @@ impl View {
                     self.merge_methods.insert(pr.repo.clone(), *method);
                 }
                 self.withdraw_questions_about(*id);
-                None
+                self.pr_node(*id)
             }
             Event::PrDismissed { id } => {
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.state = crate::pr::PrState::Dismissed;
                 }
-                None
+                self.pr_node(*id)
             }
             Event::PrChangesRequested { id } => {
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.changes_requested_on = Some(pr.head_sha.clone().unwrap_or_default());
                 }
-                None
+                self.pr_node(*id)
             }
             Event::OrchestratorLaunched { .. } => {
                 self.orchestrator_launched_at = Some(at);
@@ -286,6 +286,12 @@ impl View {
             let o = states::evaluate_with(self, n, now, Trigger::Clock, machine_strained);
             o.state != n.state || o.orchestrator != n.orchestrator_state || o.drop_tool
         })
+    }
+
+    /// A change to a PR card can change its node's state: the card is a decision waiting for the user.
+    fn pr_node(&self, id: u64) -> Option<(String, Trigger)> {
+        let sid = &self.prs.get(&id)?.session_id;
+        self.nodes.contains_key(sid).then(|| (sid.clone(), Trigger::Other))
     }
 
     /// Once a PR is merged or closed, the open questions that link to it have nothing left to decide.
@@ -498,6 +504,18 @@ impl View {
         let mut v: Vec<&Node> = self.nodes.values().filter(|n| n.has_news(now)).collect();
         v.sort_by_key(|n| std::cmp::Reverse(n.last_message_at.unwrap_or(n.state_since).max(n.state_since)));
         v
+    }
+
+    /// Open PR cards the user has to act on: not merged, closed, set aside or waiting for new commits.
+    pub fn prs_awaiting_user(&self) -> impl Iterator<Item = &crate::pr::PullRequest> {
+        self.prs.values().filter(|p| p.state == crate::pr::PrState::Open && !p.awaiting_push())
+    }
+
+    /// The PR card a question is about: the first PR it links that has a card waiting for the user.
+    pub fn question_pr(&self, q: &Question) -> Option<u64> {
+        q.links.iter().filter_map(|l| crate::pr::parse_url(&l.url)).find_map(|(repo, number)| {
+            self.prs_awaiting_user().find(|p| p.repo == repo && p.number == number).map(|p| p.id)
+        })
     }
 
     pub fn open_questions(&self) -> impl Iterator<Item = &Question> {
@@ -913,6 +931,29 @@ mod tests {
             let e = event(&v);
             v.apply(4, 4000, &e);
             assert_eq!(v.questions[&1].status, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_question_that_links_a_pr_waiting_on_its_card_belongs_to_that_card() {
+        use crate::model::Link;
+        let cases: Vec<(&str, &str, Vec<Event>, Option<u64>)> = vec![
+            ("links the PR", "https://github.com/a/b/pull/24", vec![], Some(1)),
+            ("links a page of the PR", "https://github.com/a/b/pull/24/files", vec![], Some(1)),
+            ("links another PR", "https://github.com/a/b/pull/25", vec![], None),
+            ("links something else", "https://example.com/pull/24", vec![], None),
+            ("the PR waits for new commits", "https://github.com/a/b/pull/24", vec![Event::PrChangesRequested { id: 1 }], None),
+            ("the PR card was set aside", "https://github.com/a/b/pull/24", vec![Event::PrDismissed { id: 1 }], None),
+        ];
+        for (what, link, events, expected) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit")]);
+            v.apply(2, 2000, &Event::PrOpened { url: "https://github.com/a/b/pull/24".into(), session_id: "s".into() });
+            for (i, e) in events.iter().enumerate() {
+                v.apply(3 + i as u64, 3000, e);
+            }
+            let mut q = question(1, "s", QuestionOrigin::Ask);
+            q.links = vec![Link { url: link.into(), title: None }];
+            assert_eq!(v.question_pr(&q), expected, "{what}");
         }
     }
 

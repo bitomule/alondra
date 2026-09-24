@@ -215,7 +215,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let mut left = vec![Span::styled(" Alondra ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
-    let (inbox, fleet) = (app.inbox_keys().len(), app.data.nodes.len());
+    let (inbox, fleet) = (app.inbox_count(), app.data.nodes.len());
     left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
     left.push(tab(trf!("Fleet {fleet}", "Flota {fleet}"), app.screen == Screen::Fleet));
     if app.offline {
@@ -346,9 +346,11 @@ fn centered_lines(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     f.render_widget(Paragraph::new(lines).centered().wrap(Wrap { trim: true }), r);
 }
 
-fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'static>> {
+/// One inbox row; a question inside a PR card is drawn indented under it.
+fn item_lines(app: &App, key: Key, width: usize, selected: bool, nested: bool) -> Vec<Line<'static>> {
     let Some(item) = app.item(key) else { return vec![] };
     let bar = if selected { Span::styled("▌", Style::new().fg(ACCENT)) } else { Span::raw(" ") };
+    let (hook, gap) = if nested { (Span::styled("  ↳ ", Style::new().fg(Color::Magenta)), Span::raw("    ")) } else { (Span::raw(""), Span::raw("")) };
     let (glyph, _, color) = item_glyph(&item);
     let title_style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
     let pending = app.reviews.get(&key).map(|r| r.count()).unwrap_or(0);
@@ -357,8 +359,8 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool) -> Vec<Line<'st
         Item::R(r) => (r.title.clone(), who(&r.node_name, &r.session_id), r.created_at),
         Item::P(p) => (p.pr.title.clone(), who(&p.pr.node_name, &p.pr.session_id), p.pr.opened_at),
     };
-    let first = fit(vec![bar.clone(), Span::styled(format!("{glyph} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(md::one_line(&title), title_style)], width);
-    let mut meta = vec![bar, Span::styled(format!("  {node} · {}", ago(at)), Style::new().fg(DIM))];
+    let first = fit(vec![bar.clone(), hook, Span::styled(format!("{glyph} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(md::one_line(&title), title_style)], width);
+    let mut meta = vec![bar, gap, Span::styled(format!("  {node} · {}", ago(at)), Style::new().fg(DIM))];
     if pending > 0 {
         meta.push(Span::styled(format!(" · ✎{pending}"), Style::new().fg(COMMENT)));
     }
@@ -415,13 +417,16 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = vec![];
     let mut sel_range = None;
-    let sections: [(fn(&Key) -> bool, &str, Color); 3] = [
-        (|k| matches!(k, Key::Q(_)), tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
-        (|k| matches!(k, Key::P(_)), tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
-        (|k| matches!(k, Key::R(_)), tr!("TO READ", "PARA LEER"), Color::Cyan),
+    let nested: Vec<bool> = keys.iter().map(|k| app.parent(*k).is_some()).collect();
+    type Section = (fn(Key, bool) -> bool, &'static str, Color);
+    let sections: [Section; 3] = [
+        (|k, nested| matches!(k, Key::Q(_)) && !nested, tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
+        (|k, nested| matches!(k, Key::P(_)) || nested, tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
+        (|k, _| matches!(k, Key::R(_)), tr!("TO READ", "PARA LEER"), Color::Cyan),
     ];
     for (belongs, label, color) in sections {
-        let count = keys.iter().filter(|k| belongs(k)).count();
+        let members: Vec<(Key, bool)> = keys.iter().zip(&nested).map(|(k, n)| (*k, *n)).filter(|(k, n)| belongs(*k, *n)).collect();
+        let count = members.iter().filter(|(_, n)| !n).count();
         if count == 0 {
             continue;
         }
@@ -429,10 +434,10 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::default());
         }
         lines.push(Line::from(vec![Span::styled(format!(" {label} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(count.to_string(), Style::new().fg(DIM))]));
-        for &k in keys.iter().filter(|k| belongs(k)) {
+        for (k, inside) in members {
             let selected = app.sel == Some(k);
             let start = lines.len();
-            lines.extend(item_lines(app, k, width, selected));
+            lines.extend(item_lines(app, k, width, selected, inside));
             if selected {
                 sel_range = Some((start, lines.len()));
             }
@@ -496,6 +501,11 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             lines.push(fit(vec![Span::styled(format!("  {mark} "), Style::new().fg(color)), Span::raw(c.name.clone())], width));
         }
         lines.push(fit(vec![Span::styled(p.pr.url.clone(), Style::new().fg(Color::LightBlue).underlined())], width));
+        for q in app.asked_on(p.pr.id) {
+            let label = Span::styled(tr!("The node asks: ", "El nodo pregunta: "), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
+            lines.push(Line::default());
+            lines.extend(wrap(vec![Span::styled(md::one_line(&q.title), Style::new().add_modifier(Modifier::BOLD))], width, vec![label], vec![Span::raw("  ")]));
+        }
     }
     if let Item::Q(q) = item
         && !q.steps.is_empty()
@@ -1385,6 +1395,24 @@ mod tests {
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
         assert!(at("WAITING FOR YOU 1") < at("PULL REQUESTS 1"), "{s}");
         assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
+    }
+
+    #[test]
+    fn a_question_about_a_pr_is_drawn_under_it_and_not_as_waiting() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.prs = vec![pr_card(None)];
+        let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
+        q.title = "Merge it before the release?".into();
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4) });
+        app.reconcile();
+        let s = screen(&mut app, 120, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(!s.contains("WAITING FOR YOU"), "{s}");
+        assert!(s.contains("Inbox 1"), "{s}");
+        assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
+        assert!(at("Menus become cards") < at("↳ ? Merge it before the release?"), "{s}");
+        assert!(s.contains("The node asks: Merge it before the release?"), "{s}");
     }
 
     #[test]

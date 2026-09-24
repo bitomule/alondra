@@ -38,6 +38,7 @@ func shortName(_ name: String?) -> String {
 
 struct InboxRow: View {
     let item: InboxItem
+    var asks = false
 
     var body: some View {
         let style = item.style
@@ -46,9 +47,18 @@ struct InboxRow: View {
                 .foregroundStyle(style.tint)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(item.title)
+                        .fontWeight(.medium)
+                        .lineLimit(2)
+                    if asks {
+                        Image(systemName: "questionmark.bubble.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .help("The node asks something")
+                            .accessibilityLabel("The node asks something")
+                    }
+                }
                 Text(verbatim: "\(style.label) · \(shortName(item.nodeName)) · \(ago(item.date))")
                     .font(.caption)
                     .foregroundStyle(.secondary)

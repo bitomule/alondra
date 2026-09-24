@@ -1501,6 +1501,16 @@
         }
       }
     },
+    "The node asks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo pregunta"
+          }
+        }
+      }
+    },
     "The node will explain and ask again.": {
       "localizations": {
         "es": {

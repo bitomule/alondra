@@ -35,7 +35,7 @@ impl std::ops::Deref for FleetNode {
 pub struct Overview {
     pub tick: u64,
     pub nodes: Vec<FleetNode>,
-    pub open_questions: Vec<Question>,
+    pub open_questions: Vec<OpenQuestion>,
     #[serde(default)]
     pub news: Vec<Report>,
     pub machine: Machine,
@@ -43,6 +43,28 @@ pub struct Overview {
     pub usage: Option<alondra_core::usage::Usage>,
     #[serde(default)]
     pub prs: Vec<PrCard>,
+}
+
+/// An open question, with the PR card it belongs to when that card is waiting on the user.
+#[derive(Deserialize, Clone)]
+pub struct OpenQuestion {
+    #[serde(flatten)]
+    pub question: Question,
+    #[serde(default)]
+    pub pr_id: Option<u64>,
+}
+
+impl From<Question> for OpenQuestion {
+    fn from(question: Question) -> Self {
+        OpenQuestion { question, pr_id: None }
+    }
+}
+
+impl std::ops::Deref for OpenQuestion {
+    type Target = Question;
+    fn deref(&self) -> &Question {
+        &self.question
+    }
 }
 
 #[derive(Deserialize, Clone)]

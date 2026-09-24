@@ -556,16 +556,36 @@ impl App {
         }
     }
 
+    /// Questions first, then each PR card followed by the questions that belong to it, then reading.
     pub fn inbox_keys(&self) -> Vec<Key> {
-        let q = self.data.open_questions.iter().map(|q| Key::Q(q.id));
-        let p = self.data.prs.iter().map(|p| Key::P(p.pr.id));
+        let q = self.data.open_questions.iter().filter(|q| self.card_of(q).is_none()).map(|q| Key::Q(q.id));
+        let p = self.data.prs.iter().flat_map(|p| std::iter::once(Key::P(p.pr.id)).chain(self.asked_on(p.pr.id).map(|q| Key::Q(q.id))));
         let r = self.data.news.iter().map(|r| Key::R(r.id));
-        q.chain(p).chain(r).filter(|k| !self.hidden.contains_key(k)).collect()
+        q.chain(p).chain(r).filter(|k| !self.hidden.contains_key(k) && self.parent(*k).is_none_or(|p| !self.hidden.contains_key(&Key::P(p)))).collect()
+    }
+
+    /// The inbox as the user counts it: a PR card and the questions inside it are one thing.
+    pub fn inbox_count(&self) -> usize {
+        self.inbox_keys().into_iter().filter(|k| self.parent(*k).is_none()).count()
+    }
+
+    /// The PR card a question is drawn inside, when that card is in the inbox.
+    fn card_of(&self, q: &crate::client::OpenQuestion) -> Option<u64> {
+        q.pr_id.filter(|id| self.data.prs.iter().any(|p| p.pr.id == *id))
+    }
+
+    pub fn parent(&self, key: Key) -> Option<u64> {
+        let Key::Q(id) = key else { return None };
+        self.data.open_questions.iter().find(|q| q.id == id).and_then(|q| self.card_of(q))
+    }
+
+    pub fn asked_on(&self, pr: u64) -> impl Iterator<Item = &crate::client::OpenQuestion> {
+        self.data.open_questions.iter().filter(move |q| self.card_of(q) == Some(pr))
     }
 
     pub fn item(&self, key: Key) -> Option<Item<'_>> {
         match key {
-            Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(Item::Q),
+            Key::Q(id) => self.data.open_questions.iter().find(|q| q.id == id).map(|q| Item::Q(q)),
             Key::R(id) => self.data.news.iter().find(|r| r.id == id).map(Item::R),
             Key::P(id) => self.data.prs.iter().find(|p| p.pr.id == id).map(Item::P),
         }
@@ -1682,7 +1702,7 @@ pub(crate) mod tests {
         i18n::set_for_this_thread(i18n::Lang::En);
         let (tx, rx) = mpsc::sync_channel(8);
         let mut app = App::new(tx);
-        app.data.open_questions = questions;
+        app.data.open_questions = questions.into_iter().map(Into::into).collect();
         app.reconcile();
         (app, rx)
     }
@@ -1715,7 +1735,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[]), question(2, QuestionOrigin::Ask, &[])]);
         app.move_inbox(1);
         assert_eq!(app.sel, Some(Key::Q(2)));
-        app.data.open_questions.insert(0, question(9, QuestionOrigin::Ask, &[]));
+        app.data.open_questions.insert(0, question(9, QuestionOrigin::Ask, &[]).into());
         app.reconcile();
         assert_eq!(app.sel, Some(Key::Q(2)));
         assert_eq!(app.sel_idx, 2);
@@ -1985,6 +2005,47 @@ pub(crate) mod tests {
         assert_eq!(app.pending_merge.map(|(id, m, _)| (id, m)), Some((4, alondra_core::pr::MergeMethod::Squash)));
         assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press 2 again to merge PR #12 (squash)")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         assert!(!app.hidden.contains_key(&Key::P(4)), "nothing merged yet");
+    }
+
+    fn asked_on_pr(id: u64, pr: u64) -> crate::client::OpenQuestion {
+        let mut q = question(id, QuestionOrigin::Ask, &["Merge it", "Not yet"]);
+        q.options[1].description = Some("Write what is missing".into());
+        crate::client::OpenQuestion { question: q, pr_id: Some(pr) }
+    }
+
+    #[test]
+    fn the_overview_says_which_pr_card_a_question_belongs_to() {
+        let mut value = serde_json::to_value(question(2, QuestionOrigin::Ask, &["Yes"])).unwrap();
+        let plain: crate::client::OpenQuestion = serde_json::from_value(value.clone()).unwrap();
+        value["pr_id"] = json!(4);
+        let attached: crate::client::OpenQuestion = serde_json::from_value(value).unwrap();
+        assert_eq!((plain.pr_id, attached.pr_id, attached.id), (None, Some(4), 2));
+    }
+
+    #[test]
+    fn a_question_about_a_waiting_pr_sits_under_its_card_and_counts_with_it() {
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &["Yes"])]);
+        app.data.prs = vec![pr_card(None)];
+        app.data.open_questions.extend([asked_on_pr(2, 4), asked_on_pr(3, 99)]);
+        app.reconcile();
+        assert_eq!(app.inbox_keys(), [Key::Q(1), Key::Q(3), Key::P(4), Key::Q(2)], "a question whose card is gone stays a card of its own");
+        assert_eq!(app.inbox_count(), 3);
+        app.hide(Key::P(4));
+        assert_eq!(app.inbox_keys(), [Key::Q(1), Key::Q(3)], "the question leaves with its card");
+    }
+
+    #[test]
+    fn digits_on_a_question_inside_a_pr_card_answer_the_question() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.prs = vec![pr_card(None)];
+        app.data.open_questions.push(asked_on_pr(2, 4));
+        app.reconcile();
+        press(&mut app, "j");
+        assert_eq!(app.sel, Some(Key::Q(2)));
+        press(&mut app, "2");
+        let Some(Composer { target: Target::Answer { id: 2, option, .. }, .. }) = &app.composer else { panic!("no composer") };
+        assert_eq!(option.as_deref(), Some("Not yet"));
+        assert!(app.pending_merge.is_none(), "the PR is not merged from its question");
     }
 
     #[test]

@@ -30,8 +30,9 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   `ask` with the document attached.
 - **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
 - **You opened a PR** → put its URL in your `report` or `links`: Alondra gives it its own card,
-  where the user merges, requests changes or sets it aside. Never `ask` whether to merge it;
-  Alondra rejects that question.
+  where the user merges, requests changes or sets it aside, and counts you as waiting for the
+  user until they do. Do not `ask` whether to merge it. A question about something else in that
+  PR goes with the PR in `links`, and it is shown inside the PR's card.
 - **A question of yours no longer needs an answer** (settled in the terminal, the PR it was
   about got merged, you moved on) → `withdraw` it with its number, so its card does not stay.
   Alondra already withdraws questions that link to a PR once that PR is merged or closed.

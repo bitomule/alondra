@@ -144,7 +144,7 @@ public struct FleetView: View {
             if !pullRequests.isEmpty {
                 Section {
                     ForEach(pullRequests) { item in
-                        InboxRow(item: item)
+                        InboxRow(item: item, asks: !store.questions(for: item).isEmpty)
                             .tag(Selection.item(item.id))
                     }
                 } header: {
@@ -280,6 +280,9 @@ extension FleetStore {
     func item(id: String) -> InboxItem? {
         if id.hasPrefix("q") {
             return questions.first { "q\($0.id)" == id }.map(InboxItem.question)
+        }
+        if id.hasPrefix("p") {
+            return (overview?.prs ?? []).first { "p\($0.id)" == id }.map(InboxItem.pullRequest)
         }
         return news.first { "r\($0.id)" == id }.map(InboxItem.report)
     }

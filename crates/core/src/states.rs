@@ -79,6 +79,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
+    row("a PR of the node waits for the user on its card", Signal::PrAwaitingUser, NodeState::WaitingAnswer),
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
     row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
@@ -173,6 +174,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         let holds = machine_strained || now - quiet_since <= MACHINE_WAIT_QUIET_MS;
         f.add(Signal::DeclaredWait, holds.then_some(declared));
     }
+    f.add(Signal::PrAwaitingUser, view.prs_awaiting_user().filter(|p| p.session_id == node.session_id).map(|p| p.opened_at).max());
     let agreed = !daemon_contradicts(node, declared);
     match node.turn_signal {
         Some(TurnSignal::Finished) if agreed && node.has_plugin => f.add(Signal::FinalReport, Some(declared)),
@@ -465,6 +467,10 @@ mod tests {
         })
     }
 
+    fn pr_opened() -> Event {
+        Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into() }
+    }
+
     fn report(kind: ReportKind) -> Event {
         Event::ReportPosted(Report {
             id: 1,
@@ -536,6 +542,7 @@ mod tests {
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
+            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PrAwaitingUser) },
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
@@ -576,6 +583,9 @@ mod tests {
             ("handed the user an action", background(&[hook("UserPromptSubmit"), question(true, QuestionOrigin::Ask), hook("Stop")]), NodeState::YourTurn),
             ("reported final", background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
             ("declared a machine wait", background(&[hook("UserPromptSubmit"), wait(), hook("Stop")]), NodeState::WaitingMachine),
+            ("opened a PR, which has its card", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop")]), NodeState::WaitingAnswer),
+            ("its PR was merged", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }, hook("Stop")]), NodeState::Stalled),
+            ("changes were requested on its PR", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrChangesRequested { id: 1 }, hook("Stop")]), NodeState::Stalled),
             ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Unclear),
             ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], NodeState::Unclear),
             ("declared, then got a new message and stopped silently", background(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
