@@ -176,9 +176,24 @@ struct Composer: View {
     let canSend: Bool
     let send: () -> Void
     var escape: () -> Void = {}
+    var attachments: Attachments?
+    var client: AlondraClient = .local
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let attachments {
+                AttachmentStrip(attachments, client: client)
+            }
+            field
+        }
+        .modifier(DropsFiles(attachments: attachments, client: client))
+    }
+
+    private var field: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            if let attachments {
+                AttachFilesButton(attachments: attachments, client: client)
+            }
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)

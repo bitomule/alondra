@@ -88,14 +88,17 @@ struct QuestionDetail: View {
                     text: $draft.general,
                     focus: $focus,
                     sendTitle: sendTitle,
-                    canSend: !feedback.isEmpty,
+                    canSend: !feedback.isEmpty || !draft.attachments.isEmpty,
                     send: submit,
-                    escape: { pendingOption = nil }
+                    escape: { pendingOption = nil },
+                    attachments: draft.attachments,
+                    client: store.client
                 )
                 HStack(spacing: 12) {
                     Button {
                         let note = feedback
-                        resolve { await store.moreContext(question, note: note) }
+                        let attachments = draft.attachments
+                        resolve { await store.moreContext(question, note: note, attachments: attachments) }
                     } label: {
                         Label("I need more context", systemImage: "questionmark.bubble")
                     }
@@ -186,7 +189,8 @@ struct QuestionDetail: View {
     }
 
     private func answer(_ text: String, option: String?) {
-        resolve { await store.answer(question, text: text, option: option) }
+        let attachments = draft.attachments
+        resolve { await store.answer(question, text: text, option: option, attachments: attachments) }
     }
 
     private func resolve(_ action: @escaping @MainActor () async -> Bool) {
@@ -274,8 +278,10 @@ struct ReportDetail: View {
                         text: $draft.general,
                         focus: $focus,
                         sendTitle: isDocument ? String(localized: "Send Comments") : String(localized: "Reply"),
-                        canSend: !feedback.isEmpty,
-                        send: sendFeedback
+                        canSend: !feedback.isEmpty || !draft.attachments.isEmpty,
+                        send: sendFeedback,
+                        attachments: draft.attachments,
+                        client: store.client
                     )
                     let node = report.closableNode(store.node(report.sessionId))
                     let primary = report.primaryAction(nodeFound: node != nil)
@@ -349,8 +355,9 @@ struct ReportDetail: View {
 
     private func sendFeedback() {
         let text = feedback
-        guard !text.isEmpty else { return }
-        resolve { await store.reply(to: report, text: text) }
+        guard !text.isEmpty || !draft.attachments.isEmpty else { return }
+        let attachments = draft.attachments
+        resolve { await store.reply(to: report, text: text, attachments: attachments) }
     }
 
     private func markRead() {

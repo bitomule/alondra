@@ -389,23 +389,23 @@ public final class FleetStore {
     }
 
     @discardableResult
-    public func answer(_ question: Question, text: String, option: String? = nil) async -> Bool {
+    public func answer(_ question: Question, text: String, option: String? = nil, attachments: Attachments? = nil) async -> Bool {
         await resolving("q\(question.id)") { client in
-            try await client.answer(question.id, text: text, option: option)
+            try await client.answer(question.id, text: text, option: option, attachments: await attachments?.storedIDs(using: client) ?? [])
         }
     }
 
     @discardableResult
-    public func moreContext(_ question: Question, note: String) async -> Bool {
+    public func moreContext(_ question: Question, note: String, attachments: Attachments? = nil) async -> Bool {
         await resolving("q\(question.id)") { client in
-            try await client.moreContext(question.id, note: note)
+            try await client.moreContext(question.id, note: note, attachments: await attachments?.storedIDs(using: client) ?? [])
         }
     }
 
     @discardableResult
-    public func reply(to report: Report, text: String) async -> Bool {
+    public func reply(to report: Report, text: String, attachments: Attachments? = nil) async -> Bool {
         await resolving("r\(report.id)") { client in
-            try await client.send(to: report.sessionId, text: text)
+            try await client.send(to: report.sessionId, text: text, attachments: await attachments?.storedIDs(using: client) ?? [])
             try await client.markRead(report.id)
         }
     }
@@ -447,9 +447,9 @@ public final class FleetStore {
         return false
     }
 
-    public func newRequest(_ text: String) async -> Bool {
+    public func newRequest(_ text: String, attachments: Attachments? = nil) async -> Bool {
         do {
-            try await client.newRequest(text)
+            try await client.newRequest(text, attachments: await attachments?.storedIDs(using: client) ?? [])
             return true
         } catch {
             lastError = error.localizedDescription
@@ -468,9 +468,9 @@ public final class FleetStore {
         return text
     }
 
-    public func send(to node: Node, text: String, acknowledge: Bool = false) async {
+    public func send(to node: Node, text: String, acknowledge: Bool = false, attachments: Attachments? = nil) async {
         do {
-            try await client.send(to: node.sessionId, text: text)
+            try await client.send(to: node.sessionId, text: text, attachments: await attachments?.storedIDs(using: client) ?? [])
             if acknowledge { try await client.acknowledge(node.sessionId) }
         } catch {
             lastError = error.localizedDescription

@@ -145,18 +145,22 @@ private struct NodeComposer: View {
             text: $draft.general,
             focus: focus,
             sendTitle: String(localized: "Send"),
-            canSend: !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            send: send
+            canSend: !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.attachments.isEmpty,
+            send: send,
+            attachments: draft.attachments,
+            client: store.client
         )
     }
 
     private func send() {
         let text = draft.general.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !draft.attachments.isEmpty else { return }
         draft.general = ""
+        let attachments = draft.attachments
+        draft.attachments = Attachments()
         let store = store
         let node = node
-        Task { await store.send(to: node, text: text) }
+        Task { await store.send(to: node, text: text, attachments: attachments) }
     }
 }
 

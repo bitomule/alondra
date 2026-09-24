@@ -17,7 +17,7 @@
         <true/>
     </dict>
     <key>NSCameraUsageDescription</key>
-    <string>Alondra uses the camera to read the QR code that pairs this iPhone with your Mac.</string>
+    <string>Alondra uses the camera to read the QR code that pairs this iPhone with your Mac, and to take photos you attach to a message.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Alondra connects to the server on your Mac to show you the fleet.</string>
     <key>UILaunchScreen</key>

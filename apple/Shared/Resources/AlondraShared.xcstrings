@@ -1050,6 +1050,46 @@
           }
         }
       }
+    },
+    "%@ is %@: attachments go up to 20 MB": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ocupa %2$@: los adjuntos llegan hasta 20 MB"
+          }
+        }
+      }
+    },
+    "Remove %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar %@"
+          }
+        }
+      }
+    },
+    "Copying to Alondra": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copiando a Alondra"
+          }
+        }
+      }
+    },
+    "Not copied · Retry": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se copió · Reintentar"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

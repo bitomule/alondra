@@ -11,6 +11,7 @@ struct TriageCard: View {
     @Environment(FleetStore.self) private var fleet
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var reply = ""
+    @State private var attachments = Attachments()
     @State private var pickedOption: QuestionOption?
     @State private var stamp: Stamp?
     @State private var askingContext = false
@@ -504,8 +505,8 @@ struct TriageCard: View {
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "Reply to \(item.nodeName ?? String(localized: "this node"))…")) {
                     let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                    resolve(Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)) { client in
-                        try await client.send(to: report.sessionId, text: text)
+                    resolve(Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)) { [attachments] client in
+                        try await client.send(to: report.sessionId, text: text, attachments: try await attachments.storedIDs(using: client))
                         try await client.markRead(report.id)
                     }
                 }
@@ -581,8 +582,8 @@ struct TriageCard: View {
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "What should change?")) {
                     let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                    resolve(Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)) {
-                        try await $0.requestChanges(onPullRequest: pr.id, text: text)
+                    resolve(Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)) { [attachments] client in
+                        try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
                     }
                 }
                 if pr.hasConflicts {
@@ -659,13 +660,17 @@ struct TriageCard: View {
                 .background(kind.tint.opacity(0.14), in: .capsule)
                 .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
             }
+            AttachmentStrip(attachments, client: fleet.client)
             HStack(alignment: .bottom, spacing: 8) {
+                AttachButton(attachments: attachments)
+                    .padding(.leading, 6)
+                    .padding(.bottom, 4)
                 TextField(placeholder, text: $reply, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($replyFocused)
-                    .padding(.horizontal, 16)
+                    .padding(.trailing, 16)
                     .padding(.vertical, 12)
-                let empty = reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let empty = reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty
                 Button(action: onSend) {
                     Image(systemName: "arrow.up")
                         .font(.body.weight(.bold))
@@ -720,8 +725,8 @@ struct TriageCard: View {
     private func send(answerTo question: Question) {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         let option = pickedOption?.label
-        resolve(option.map(stamp(for:)) ?? Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky)) {
-            try await $0.answer(question.id, text: text, option: option)
+        resolve(option.map(stamp(for:)) ?? Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky)) { [attachments] client in
+            try await client.answer(question.id, text: text, option: option, attachments: try await attachments.storedIDs(using: client))
         }
     }
 

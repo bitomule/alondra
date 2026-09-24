@@ -191,6 +191,7 @@ struct NodeDetail: View {
     @Environment(\.dismiss) private var dismiss
     @State private var closing: CloseRequest?
     @State private var message = ""
+    @State private var attachments = Attachments()
     @State private var sending = false
     @State private var sentCount = 0
     @FocusState private var focused: Bool
@@ -340,13 +341,27 @@ struct NodeDetail: View {
     }
 
     private func composer(_ node: Node) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AttachmentStrip(attachments, client: fleet.client)
+            messageBox(node)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func messageBox(_ node: Node) -> some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Write to \(node.displayName)…", text: $message, axis: .vertical)
-                .lineLimit(1...5)
-                .focused($focused)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+            HStack(alignment: .bottom, spacing: 4) {
+                AttachButton(attachments: attachments)
+                    .padding(.leading, 6)
+                    .padding(.bottom, 4)
+                TextField("Write to \(node.displayName)…", text: $message, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($focused)
+                    .padding(.trailing, 16)
+                    .padding(.vertical, 12)
+            }
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
             Button {
                 send(to: node)
             } label: {
@@ -358,11 +373,9 @@ struct NodeDetail: View {
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)
             .tint(Palette.dawn)
-            .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+            .disabled((message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty) || sending)
             .accessibilityLabel("Send")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 
     private func send(to node: Node) {
@@ -370,10 +383,13 @@ struct NodeDetail: View {
         let session = node.sessionId
         sending = true
         Task {
-            let ok = await fleet.perform { try await $0.send(to: session, text: text) }
+            let ok = await fleet.perform { [attachments] client in
+                try await client.send(to: session, text: text, attachments: try await attachments.storedIDs(using: client))
+            }
             sending = false
             if ok {
                 message = ""
+                attachments = Attachments()
                 focused = false
                 sentCount += 1
                 fleet.notice = Notice(String(localized: "Message sent to \(node.displayName)"))
