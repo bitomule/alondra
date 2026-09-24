@@ -1851,7 +1851,7 @@
         }
       }
     },
-    "from «%@»": {
+    "from “%@”": {
       "localizations": {
         "es": {
           "stringUnit": {
@@ -1861,7 +1861,7 @@
         }
       }
     },
-    "· subagent of «%@»": {
+    "· subagent of “%@”": {
       "localizations": {
         "es": {
           "stringUnit": {

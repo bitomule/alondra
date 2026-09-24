@@ -85,7 +85,7 @@ extension FleetStore {
                 return String(localized: "PR #\(String(pr.number)) on top of #\(String(below))", table: "AlondraShared", bundle: #bundle)
             }
             guard let first = board.dependencies(of: task).first(where: { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }) else { return nil }
-            return String(localized: "after «\(first.title)»", table: "AlondraShared", bundle: #bundle)
+            return String(localized: "after “\(first.title)”", table: "AlondraShared", bundle: #bundle)
         case .running:
             guard let latest = activity(for: task).max(by: { $0.since < $1.since }) else { return nil }
             let doing = latest.doing ?? ""
@@ -102,7 +102,7 @@ extension FleetStore {
         guard task.state == .waitingDependency else { return nil }
         let pending = board.dependencies(of: task).filter { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }
         guard let first = pending.first else { return nil }
-        return String(localized: "It starts once «\(first.title)» (\(first.state.label)) has its PR open, builds on top of it, and its own PR merges after that one.", table: "AlondraShared", bundle: #bundle)
+        return String(localized: "It starts once “\(first.title)” (\(first.state.label)) has its PR open, builds on top of it, and its own PR merges after that one.", table: "AlondraShared", bundle: #bundle)
     }
 
     private static func named(_ project: String) -> String? {

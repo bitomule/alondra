@@ -94,7 +94,7 @@ struct TaskDetail: View {
     }
 
     private func origin(_ task: WorkTask) -> String? {
-        let request = fleet.request(of: task).map { String(localized: "from «\(fleet.title(of: $0))»") }
+        let request = fleet.request(of: task).map { String(localized: "from “\(fleet.title(of: $0))”") }
         let parts = [fleet.project(of: task), request].compactMap(\.self)
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
