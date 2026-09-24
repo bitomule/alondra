@@ -1650,6 +1650,16 @@
           }
         }
       }
+    },
+    "Alondra isn’t responding; %lld pending, retrying": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra no responde; lo reintento (pendientes: %lld)"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

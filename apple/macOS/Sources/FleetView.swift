@@ -355,8 +355,18 @@ struct ErrorBanner: View {
                     try? await Task.sleep(for: .seconds(6))
                     if !Task.isCancelled { store.lastError = nil }
                 }
+            } else if !store.pendingSends.isEmpty {
+                Label(String(localized: "Alondra isn’t responding; \(store.pendingSends.count) pending, retrying"), systemImage: "arrow.clockwise")
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(.regularMaterial, in: .capsule)
+                    .padding(.top, 10)
+                    .transition(.opacity)
             }
         }
         .animation(.snappy, value: store.lastError)
+        .animation(.snappy, value: store.pendingSends.count)
     }
 }

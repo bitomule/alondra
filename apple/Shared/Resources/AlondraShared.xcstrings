@@ -780,6 +780,16 @@
           }
         }
       }
+    },
+    "Alondra isn’t responding right now": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra no responde ahora mismo"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
