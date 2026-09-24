@@ -447,9 +447,11 @@ public final class FleetStore {
         return false
     }
 
-    public func newRequest(_ text: String, attachments: Attachments? = nil) async -> Bool {
+    public func newRequest(_ body: NewRequestBody, attachments: Attachments? = nil) async -> Bool {
         do {
-            try await client.newRequest(text, attachments: await attachments?.storedIDs(using: client) ?? [])
+            var body = body
+            body.attachments = try await attachments?.storedIDs(using: client) ?? []
+            try await client.newRequest(body)
             return true
         } catch {
             lastError = error.localizedDescription
