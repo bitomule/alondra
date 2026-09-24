@@ -1201,12 +1201,12 @@
         }
       }
     },
-    "The node merges its own PR once its checks pass": {
+    "Alondra merges the node’s PR once its checks pass": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El nodo hace merge de su PR cuando pasan los checks"
+            "value": "Alondra hace merge del PR del nodo cuando pasan los checks"
           }
         }
       }

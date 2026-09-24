@@ -35,30 +35,41 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 - `ask` with `replaces`: a question of yours changed (rephrased, or new facts change it). The new
   question is recorded and the old one, given by its number, is withdrawn in the same step, so
-  the user never sees both. The replaced question needs no `related`, and what it carried passes
-  to the new one.
+  the user never sees both.
 - `withdraw`: a question of yours no longer needs an answer (settled in the terminal, its PR
   merged, you moved on). Alondra withdraws questions linked to a PR once that PR is merged or
   closed.
 
-## How Alondra groups things
+## Your task
 
-- When you already have open cards for the user, an `ask` or `report` without `related` is
-  refused with the list of them; send it again with `related` set to the numbers it belongs
-  with (they become one card: a question carries those reports, a report stacks with them) or
-  `[]` if none.
-- A question about a report, including one relayed from another node, also becomes one card with it
-  when the question cites the report (`informe #N`), attaches the same file or links the same URL,
-  and the report is unread and at most 30 minutes old.
+- What you work on is a task in Alondra. Everything you send for it shows as one card: your
+  questions and reports go inside its PR card while one is open, else your question carries your
+  reports, else your reports stack under the newest document.
+- A task puts one question (or action) at a time in front of the user. A second one while the
+  first is open is refused: wait for the answer, send it with `replaces` if it changes the open
+  one, or `withdraw` the open one first. A permission prompt waiting for the user counts as that
+  one question too.
+- If you work on several tasks, say which with `task` on `ask`, `request_action`, `report` and
+  `withdraw`; Alondra lists them when it cannot tell. With one task you never need it.
+- When Alondra refuses a call, nothing was recorded and the reply says why and what to do.
+- Once your task is done (your final report), the user gets no new questions from it: if there is
+  more to do, ask the orchestrator (`to_orchestrator: true`) or hand it over with
+  `report(kind: final, to_orchestrator: true)`.
+
+## Your PR
+
 - A PR you open (Alondra sees `gh pr create`) gets its own card, where the user merges,
-  requests changes or sets it aside; you count as waiting for the user's merge until then, and a
-  final report does not finish you while the PR is open. The merge notice is typed into this
-  session: do what the merge unblocks, then send your final report. The merge decision lives on
-  that card, so an `ask` about merging would be a second card for the same decision.
-- A report that links the PR is shown inside the PR's card, not as a card of its own. That
-  card already says the PR is ready, so the report that goes with it is your final one, with
-  the PR in `links`. A question about something else in the PR goes with the PR in `links` and
-  shows inside its card too.
+  asks, requests changes or sets it aside. The merge decision lives on that card, so an `ask`
+  about merging would be a second card for the same decision.
+- If nothing is left for you after the merge, send your final report with the PR in `links`: it
+  shows inside the PR card and the merge finishes your task; no notice comes. If something is
+  left (deploy, install, check on main), do not report final yet: the merge notice is typed
+  into this session, then do what it unblocks and report final.
+- When the user asks about the PR or requests changes, answer with a report linking it, or push:
+  either puts the PR back in front of the user.
+- With auto-merge, Alondra merges the PR itself once its checks pass and GitHub can merge it.
+  Open it and end your turn; do not merge it yourself or wait on its checks. Alondra types the
+  merge notice into this session, or what only you can fix (failed checks, conflicts).
 - An artifact you publish for the user to review goes out as a `report` with kind `document` and
   its URL in `links`. That report is a review card: the user comments on the artifact in the
   browser and then approves it or sends the comments to you from the card. You count as waiting for
