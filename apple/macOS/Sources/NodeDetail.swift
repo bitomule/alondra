@@ -114,14 +114,10 @@ struct NodeDetail: View {
                 .font(.title.weight(.semibold))
                 .textSelection(.enabled)
             HStack(spacing: 8) {
-                StatusDot(state: node.state, alive: node.alive, size: 9)
+                StatusDot(state: node.state, size: 9)
                 Text(node.stateLabel.capitalizedFirst)
                 Text("· \(ago(node.stateSince)) ago")
                     .foregroundStyle(.secondary)
-                if !node.alive {
-                    Label("Asleep", systemImage: "moon.zzz")
-                        .foregroundStyle(.secondary)
-                }
             }
             .font(.callout)
         }
@@ -145,7 +141,7 @@ private struct NodeComposer: View {
 
     var body: some View {
         Composer(
-            placeholder: node.alive ? String(localized: "Write to \(shortName(node.displayName))…") : String(localized: "Write to \(shortName(node.displayName)) (wakes it up)…"),
+            placeholder: String(localized: "Write to \(shortName(node.displayName))…"),
             text: $draft.general,
             focus: focus,
             sendTitle: String(localized: "Send"),

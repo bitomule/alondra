@@ -178,6 +178,9 @@ pub struct Node {
     pub name: Option<String>,
     pub cwd: Option<String>,
     pub pid: Option<i32>,
+    /// Internal: whether the daemon can attach a session right now. Not a node state — never
+    /// render this to a client; it stays off the wire on purpose.
+    #[serde(default, skip_serializing)]
     pub alive: bool,
     #[serde(default)]
     pub in_daemon: bool,
@@ -344,9 +347,9 @@ impl Node {
     }
 
     /// Whether a card from this node may offer to close it. The orchestrator never: Alondra
-    /// keeps it alive on purpose.
+    /// keeps it around on purpose. Whatever its session is doing does not matter here.
     pub fn offers_close(&self) -> bool {
-        self.alive && !self.is_orchestrator
+        !self.is_orchestrator
     }
 }
 

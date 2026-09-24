@@ -66,7 +66,7 @@ public final class FleetStore {
     public var machine: Machine? { overview?.machine }
     public var usage: Usage? { overview?.usage }
     public var userName: String { overview?.user ?? "" }
-    public var orchestrator: Node? { nodes.filter(\.isOrchestrator).max { !$0.alive && $1.alive } }
+    public var orchestrator: Node? { nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince } }
     public var sentToOrchestrator: [SentMessage] {
         (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
     }
@@ -130,7 +130,6 @@ public final class FleetStore {
     }
 
     private static func attentionOrder(_ lhs: Node, _ rhs: Node) -> Bool {
-        if lhs.alive != rhs.alive { return lhs.alive }
         if lhs.state.urgency != rhs.state.urgency { return lhs.state.urgency < rhs.state.urgency }
         return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
     }

@@ -48,8 +48,8 @@ on its own, every 90 s and in a single message, of:
 
 (`claude --bg` does not inherit environment variables, so the role goes in its own plugin.)
 
-If no orchestrator is running or dormant, alondrad launches one this way on its own and posts a
-notice saying so (only when `wake` is on).
+If no orchestrator is running, alondrad launches one this way on its own and posts a notice
+saying so (only when `wake` is on).
 
 ### The TUI
 
@@ -57,8 +57,7 @@ notice saying so (only when `wake` is on).
   `Enter` opens them with all their context, `1`–`4` picks an option and `r` answers with text.
 - **Fleet**: everything `claude agents` lists, with its state (working, waiting for an answer,
   delivering a result, waiting for the machine, done, unclear what it wants). `~` = reported by
-  the Claude Code daemon, `*` = decided by jevi, `💤` = asleep (no process; it wakes up with
-  `attach` when you send it a message).
+  the Claude Code daemon, `*` = decided by jevi.
 - `m` sends a message to the selected node and `o`, to the orchestrator.
 
 ## Development

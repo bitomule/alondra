@@ -118,8 +118,7 @@ public struct FleetView: View {
         guard store.connected, let overview = store.overview else { return String(localized: "No connection to alondrad") }
         let count = store.inbox.count
         let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
-        let alive = store.nodes.filter(\.alive).count
-        return [pending, String(localized: "\(alive) active nodes")].joined(separator: " · ")
+        return [pending, String(localized: "\(store.nodes.count) nodes")].joined(separator: " · ")
     }
 
     private var sidebar: some View {

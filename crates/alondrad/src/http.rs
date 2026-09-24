@@ -1527,7 +1527,7 @@ async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Resp
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     if !hub.config.wake {
-        return err(StatusCode::CONFLICT, "this alondrad does not touch node sessions (wake is off)");
+        return err(StatusCode::CONFLICT, "this alondrad does not attach to node sessions");
     }
     let own = hub.own_attach(&short);
     let outcome = tokio::task::spawn_blocking(move || crate::wake::interrupt(&short)).await;

@@ -225,7 +225,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::raw(" "));
         left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
-    let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working && n.alive).count();
+    let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working).count();
     let lw: usize = left.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
     if !app.loaded {
@@ -733,9 +733,8 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn fleet_summary(app: &App) -> Vec<Line<'static>> {
-    let alive: Vec<&FleetNode> = app.data.nodes.iter().filter(|n| n.alive).collect();
     let mut counts: Vec<(NodeState, usize)> = vec![];
-    for n in &alive {
+    for n in &app.data.nodes {
         match counts.iter_mut().find(|(s, _)| *s == n.state) {
             Some((_, c)) => *c += 1,
             None => counts.push((n.state, 1)),
@@ -743,7 +742,7 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     }
     let mut lines = vec![Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()), Line::default()];
     if counts.is_empty() {
-        lines.push(Line::from(tr!("No node is awake.", "Ningún nodo despierto.").fg(DIM)));
+        lines.push(Line::from(tr!("No nodes yet.", "Todavía no hay nodos.").fg(DIM)));
     }
     for (s, c) in counts {
         lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(state_color(s))), Span::raw(format!("{c} {}", i18n::state(s)))]));
@@ -781,7 +780,6 @@ fn background_lines(n: &FleetNode, width: usize) -> Vec<Line<'static>> {
 
 fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let bar = if selected { Span::styled("▌", Style::new().fg(ACCENT)) } else { Span::raw(" ") };
-    let dot = if n.alive { "●" } else { "○" };
     let state_w = if width >= 64 { 20 } else { 0 };
     let since = ago(n.state_since);
     let room = width.saturating_sub(4 + state_w + 5);
@@ -792,8 +790,7 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let name_w = room.saturating_sub(badge.as_ref().map_or(0, |(t, _)| str_width(t)));
     let name = truncate(&short, name_w);
     let pad = name_w.saturating_sub(str_width(&name));
-    let name_style = if n.alive { Style::new() } else { Style::new().fg(SOFT) };
-    let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style)];
+    let mut spans = vec![bar, Span::styled(" ● ", Style::new().fg(state_color(n.state))), Span::styled(name, Style::new())];
     if let Some((text, style)) = badge {
         spans.push(Span::styled(text, style));
     }
@@ -818,14 +815,8 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         (area, None)
     };
-    let hidden = app.sleeping_hidden();
     let focused = app.focus == Pane::List || !app.fleet_view.shown;
-    let mut block = panel(Line::from(tr!(" Fleet by project ", " Flota por proyecto ").bold()), focused);
-    if hidden > 0 {
-        block = block.title_bottom(Line::from(trf!(" {hidden} sleeping hidden · d shows them ", " {hidden} dormidos ocultos · d los muestra ").fg(DIM)));
-    } else if app.show_sleeping && app.search.is_none() {
-        block = block.title_bottom(Line::from(tr!(" d hides the sleeping ", " d oculta los dormidos ").fg(DIM)));
-    }
+    let block = panel(Line::from(tr!(" Fleet by project ", " Flota por proyecto ").bold()), focused);
     let inner = block.inner(list);
     f.render_widget(block, list);
     let mut body = inner;
@@ -867,14 +858,14 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sel = None;
     for (i, r) in rows.iter().enumerate() {
         match r {
-            FleetRow::Group { name, orchestrator, alive, total } => {
+            FleetRow::Group { name, orchestrator, total } => {
                 if i > 0 {
                     lines.push(Line::default());
                 }
                 let label = if *orchestrator { format!("★ {name}") } else { name.clone() };
                 lines.push(Line::from(vec![
                     Span::styled(format!(" {label}"), Style::new().add_modifier(Modifier::BOLD)),
-                    Span::styled(trf!("  {alive} awake of {total}", "  {alive} despiertos de {total}"), Style::new().fg(DIM)),
+                    Span::styled(format!("  {total}"), Style::new().fg(DIM)),
                 ]));
             }
             FleetRow::Node(idx) => {
@@ -891,7 +882,7 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
         let msg = match app.search.as_ref().map(|s| &s.remote) {
             Some(Remote::Pending) => tr!("Asking jev…", "Preguntando a jev…"),
             Some(_) => tr!("Nothing matches the search.", "Nada coincide con la búsqueda."),
-            None => tr!("No node is awake. d shows the sleeping ones.", "No hay nodos despiertos. d muestra los dormidos."),
+            None => tr!("No nodes yet.", "Todavía no hay nodos."),
         };
         centered_lines(f, body, vec![Line::from(msg.fg(DIM))]);
     } else {
@@ -926,7 +917,6 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
         vec![
             Span::styled(format!("● {}", i18n::node_state(&n)), Style::new().fg(state_color(n.state)).bold()),
             Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
-            Span::styled(if n.alive { tr!(" · awake", " · despierto") } else { tr!(" · asleep", " · dormido") }, Style::new().fg(DIM)),
         ],
         width,
     )];
@@ -971,26 +961,26 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
-    let block = panel(Line::from(tr!(" Awake fleet ", " Flota despierta ").fg(SOFT)), false);
+    let block = panel(Line::from(tr!(" Fleet ", " Flota ").fg(SOFT)), false);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines = vec![];
     for r in app.fleet_rows() {
         match r {
-            FleetRow::Group { name, orchestrator, alive, .. } => {
+            FleetRow::Group { name, orchestrator, total } => {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
                 let label = if orchestrator { format!("★ {name}") } else { name };
-                lines.push(fit(vec![Span::styled(format!(" {label}"), Style::new().bold()), Span::styled(format!(" {alive}"), Style::new().fg(DIM))], width));
+                lines.push(fit(vec![Span::styled(format!(" {label}"), Style::new().bold()), Span::styled(format!(" {total}"), Style::new().fg(DIM))], width));
             }
             FleetRow::Node(i) => {
                 let n = &app.data.nodes[i];
                 let name = n.display_name().rsplit('/').next().unwrap_or(n.display_name()).to_string();
                 lines.push(fit(
                     vec![
-                        Span::styled(if n.alive { "  ● " } else { "  ○ " }, Style::new().fg(state_color(n.state))),
+                        Span::styled("  ● ", Style::new().fg(state_color(n.state))),
                         Span::raw(md::one_line(&name)),
                         Span::styled(format!(" {}", i18n::node_state(n)), Style::new().fg(DIM)),
                     ],
@@ -1000,7 +990,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     if lines.is_empty() {
-        lines.push(Line::from(tr!(" No node is awake.", " Ningún nodo despierto.").fg(DIM)));
+        lines.push(Line::from(tr!(" No nodes yet.", " Todavía no hay nodos.").fg(DIM)));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -1411,7 +1401,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("x", tr!("mark as read", "marcar como leído")),
-        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; alive nodes only, never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo, nunca el orquestador)")),
+        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; nunca el orquestador)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -1421,7 +1411,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
-        row("Shift+X", tr!("read and close the node (twice to confirm; alive nodes only, never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo, nunca el orquestador)")),
+        row("Shift+X", tr!("read and close the node (twice to confirm; never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; nunca el orquestador)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -1728,27 +1718,19 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_offers_read_and_close_only_while_the_node_is_alive() {
+    fn the_footer_offers_read_and_close_whatever_the_node_session_is_doing() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
         app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
+        app.data.nodes[0].node.alive = false;
         app.reconcile();
         let s = screen(&mut app, 250, 24);
         assert!(s.contains("read and close node"), "{s}");
 
-        app.data.nodes[0].node.alive = false;
-        let s = screen(&mut app, 250, 24);
-        assert!(!s.contains("read and close node"), "{s}");
-
-        app.data.nodes[0].node.alive = true;
         press(&mut app, "o");
         let s = screen(&mut app, 250, 24);
         assert!(s.contains("read and close node"), "reading mode also offers it\n{s}");
-
-        app.data.nodes[0].node.alive = false;
-        let s = screen(&mut app, 250, 24);
-        assert!(!s.contains("read and close node"), "{s}");
     }
 
     /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never offer to close it.
@@ -1774,24 +1756,22 @@ mod tests {
     /// 24 Sep: David found read-and-close only in the footer, not among the report's own actions.
     #[test]
     fn a_report_offers_read_and_close_among_its_own_actions_first_when_it_is_final() {
-        let actions = |kind: ReportKind, alive: bool| {
+        let actions = |kind: ReportKind| {
             let (mut app, _rx) = app_with(vec![]);
             app.loaded = true;
             let mut r = report(1);
             r.kind = kind;
             app.data.news = vec![r.into()];
             app.data.nodes = vec![alive_node("s1")];
-            app.data.nodes[0].node.alive = alive;
             app.reconcile();
             let s = screen(&mut app, 250, 30);
             s.lines().find(|l| l.contains("read all") && l.contains("reply")).map(str::to_string).unwrap_or_else(|| panic!("no actions row\n{s}"))
         };
-        let final_row = actions(ReportKind::Final, true);
+        let final_row = actions(ReportKind::Final);
         let at = |row: &str, t: &str| row.find(t).unwrap_or_else(|| panic!("{t} missing: {row}"));
         assert!(at(&final_row, "read and close node") < at(&final_row, "read all"), "{final_row}");
         assert!(at(&final_row, "Shift+X") < at(&final_row, "read and close node"), "the key says it needs Shift: {final_row}");
-        let notice_row = actions(ReportKind::Notice, true);
+        let notice_row = actions(ReportKind::Notice);
         assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
-        assert!(!actions(ReportKind::Final, false).contains("read and close node"), "a dead node cannot be closed");
     }
 }

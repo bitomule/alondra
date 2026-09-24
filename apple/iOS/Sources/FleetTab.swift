@@ -4,16 +4,12 @@ import SwiftUI
 struct FleetTab: View {
     @Environment(FleetStore.self) private var fleet
     @State private var query = ""
-    @State private var showSleeping = false
     @State private var closing: CloseRequest?
 
     private var sections: [(name: String, nodes: [Node])] {
         let needle = query.trimmingCharacters(in: .whitespaces)
         return fleet.projectsByRecency.compactMap { project in
-            let nodes = project.nodes.filter { node in
-                (showSleeping || node.alive || !fleet.pending(for: node.sessionId).isEmpty)
-                    && (needle.isEmpty || matches(node, project.name, needle))
-            }
+            let nodes = needle.isEmpty ? project.nodes : project.nodes.filter { matches($0, project.name, needle) }
             return nodes.isEmpty ? nil : (project.name, nodes)
         }
     }
@@ -64,17 +60,6 @@ struct FleetTab: View {
             .animation(.smooth, value: sections.map(\.name))
             .navigationTitle("Fleet")
             .searchable(text: $query, prompt: "Node, project or what it’s doing")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Toggle(isOn: $showSleeping.animation(.smooth)) {
-                            Label("Show Sleeping Nodes", systemImage: "moon.zzz")
-                        }
-                    } label: {
-                        Label("Filter", systemImage: showSleeping ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                    }
-                }
-            }
             .navigationDestination(for: String.self) { session in
                 NodeDetail(session: session)
             }
@@ -97,13 +82,13 @@ private struct ProjectHeader: View {
                 .foregroundStyle(Palette.ink)
                 .textCase(nil)
             Spacer()
-            let working = nodes.filter { $0.alive && $0.state == .working }.count
+            let working = nodes.filter { $0.state == .working }.count
             if working > 0 {
                 Label(String(working), systemImage: "hammer.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.sky)
             }
-            let waiting = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .yourTurn) }.count
+            let waiting = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn }.count
             if waiting > 0 {
                 Label(String(waiting), systemImage: "hand.raised.fill")
                     .font(.caption.weight(.semibold))
@@ -135,8 +120,8 @@ struct NodeRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(node.alive ? node.stateLabel : String(localized: "asleep · \(node.stateLabel)"))
-                        .foregroundStyle(node.alive ? node.state.tint : .secondary)
+                    Text(node.stateLabel)
+                        .foregroundStyle(node.state.tint)
                     Text(verbatim: "· \(relative(node.stateSince))")
                         .foregroundStyle(.tertiary)
                 }
@@ -168,7 +153,6 @@ struct NodeRow: View {
             }
         }
         .padding(.vertical, 4)
-        .opacity(node.alive ? 1 : 0.6)
     }
 
     private var oneLine: String {
@@ -184,10 +168,10 @@ struct StateGlyph: View {
     var body: some View {
         Image(systemName: node.state.symbol)
             .font(.footnote.weight(.bold))
-            .foregroundStyle(node.alive ? node.state.tint : .secondary)
+            .foregroundStyle(node.state.tint)
             .frame(width: 34, height: 34)
-            .background((node.alive ? node.state.tint : Palette.slate).opacity(0.15), in: .circle)
-            .symbolEffect(.pulse, options: .repeating, isActive: node.alive && node.state == .working)
+            .background(node.state.tint.opacity(0.15), in: .circle)
+            .symbolEffect(.pulse, options: .repeating, isActive: node.state == .working)
     }
 }
 
@@ -242,7 +226,7 @@ struct NodeDetail: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         StateGlyph(node: node)
-                        Text(node.alive ? node.stateLabel.prefix(1).uppercased() + node.stateLabel.dropFirst() : String(localized: "Asleep"))
+                        Text(node.stateLabel.prefix(1).uppercased() + node.stateLabel.dropFirst())
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(node.state.tint)
                         Text("since \(relative(node.stateSince))")
@@ -404,7 +388,6 @@ extension FleetStore {
     }
 
     private static func recencyOrder(_ a: Node, _ b: Node) -> Bool {
-        if a.alive != b.alive { return a.alive }
-        return a.stateSince > b.stateSince
+        a.stateSince > b.stateSince
     }
 }

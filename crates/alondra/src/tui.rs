@@ -8,7 +8,7 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
-use alondra_core::{Node, NodeState, Question, QuestionOption, QuestionOrigin, Report, now_millis};
+use alondra_core::{Node, Question, QuestionOption, QuestionOrigin, Report, now_millis};
 use anyhow::Result;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -286,7 +286,7 @@ impl Search {
 }
 
 pub enum FleetRow {
-    Group { name: String, orchestrator: bool, alive: usize, total: usize },
+    Group { name: String, orchestrator: bool, total: usize },
     Node(usize),
 }
 
@@ -322,7 +322,6 @@ pub struct App {
     fleet_idx: usize,
     pub fleet_scroll: usize,
     pub fleet_detail_scroll: usize,
-    pub show_sleeping: bool,
     pending_close: Option<(String, i64)>,
     pending_merge: Option<(u64, alondra_core::pr::MergeMethod, i64)>,
     pub search: Option<Search>,
@@ -531,7 +530,6 @@ impl App {
             fleet_idx: 0,
             fleet_scroll: 0,
             fleet_detail_scroll: 0,
-            show_sleeping: true,
             pending_close: None,
             pending_merge: None,
             search: None,
@@ -1513,17 +1511,10 @@ impl App {
         }
     }
 
-    pub fn sleeping_hidden(&self) -> usize {
-        if self.show_sleeping || self.fleet_filter().is_some() {
-            return 0;
-        }
-        self.data.nodes.iter().filter(|n| !visible_awake(n)).count()
-    }
-
     pub fn fleet_rows(&self) -> Vec<FleetRow> {
         let indices: Vec<usize> = match self.fleet_filter() {
             Some((idx, _)) => idx,
-            None => (0..self.data.nodes.len()).filter(|&i| self.show_sleeping || visible_awake(&self.data.nodes[i])).collect(),
+            None => (0..self.data.nodes.len()).collect(),
         };
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut orchestrator = vec![];
@@ -1536,15 +1527,14 @@ impl App {
             }
         }
         let mut sorted: Vec<(String, bool, Vec<usize>)> = groups.into_iter().map(|(p, v)| (p, false, v)).collect();
-        sorted.sort_by_key(|(p, _, v)| (!v.iter().any(|&i| self.data.nodes[i].alive), p.to_lowercase()));
+        sorted.sort_by_key(|(p, ..)| p.to_lowercase());
         if !orchestrator.is_empty() {
             sorted.insert(0, (tr!("orchestrator", "orquestador").into(), true, orchestrator));
         }
         let mut rows = vec![];
         for (name, is_orchestrator, nodes) in sorted {
-            let alive = nodes.iter().filter(|&&i| self.data.nodes[i].alive).count();
             let total = self.data.nodes.iter().filter(|n| !n.is_orchestrator && n.project.as_deref() == Some(name.as_str())).count().max(nodes.len());
-            rows.push(FleetRow::Group { name, orchestrator: is_orchestrator, alive, total });
+            rows.push(FleetRow::Group { name, orchestrator: is_orchestrator, total });
             rows.extend(nodes.into_iter().map(FleetRow::Node));
         }
         rows
@@ -1651,10 +1641,6 @@ impl App {
             }
         }
     }
-}
-
-fn visible_awake(n: &FleetNode) -> bool {
-    n.alive || n.is_orchestrator || matches!(n.state, NodeState::WaitingAnswer | NodeState::YourTurn | NodeState::Unclear)
 }
 
 fn attachment_paths(a: &[alondra_core::Attachment]) -> Vec<String> {
@@ -2183,7 +2169,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shift_x_does_nothing_for_a_report_whose_node_is_no_longer_alive() {
+    fn shift_x_reads_and_arms_a_close_whatever_the_node_session_is_doing() {
         let (mut app, _rx) = app_with(vec![]);
         app.data.news = vec![report(1).into()];
         let mut node = alive_node("s1");
@@ -2191,8 +2177,8 @@ pub(crate) mod tests {
         app.data.nodes = vec![node];
         app.reconcile();
         press(&mut app, "X");
-        assert!(!app.hidden.contains_key(&Key::R(1)), "a dead node's report is not touched by X");
-        assert!(app.pending_close.is_none());
+        assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report whatever the session is doing");
+        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
     }
 
     #[test]

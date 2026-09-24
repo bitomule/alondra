@@ -37,13 +37,8 @@ struct NewRequestView: View {
     private var orchestratorStatus: some View {
         Group {
             if let orchestrator = fleet.orchestrator {
-                if orchestrator.alive {
-                    Label("\(orchestrator.displayName) receives it, prepares the mission and launches the node.", systemImage: "point.3.connected.trianglepath.dotted")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label("The orchestrator is asleep: it will read this as soon as it wakes up.", systemImage: "moon.zzz")
-                        .foregroundStyle(Palette.dawn)
-                }
+                Label("\(orchestrator.displayName) receives it, prepares the mission and launches the node.", systemImage: "point.3.connected.trianglepath.dotted")
+                    .foregroundStyle(.secondary)
             } else if fleet.overview != nil {
                 Label("No orchestrator is connected to Alondra, so nothing can be sent right now.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Palette.rose)

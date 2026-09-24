@@ -321,16 +321,6 @@
         }
       }
     },
-    "Asleep": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dormido"
-          }
-        }
-      }
-    },
     "Available memory": {
       "localizations": {
         "es": {
@@ -1461,16 +1451,6 @@
         }
       }
     },
-    "Show Sleeping Nodes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mostrar nodos dormidos"
-          }
-        }
-      }
-    },
     "Tap a block to comment on it": {
       "localizations": {
         "es": {
@@ -1567,16 +1547,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "El nodo te lo explicará y volverá a preguntar."
-          }
-        }
-      }
-    },
-    "The orchestrator is asleep: it will read this as soon as it wakes up.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador está dormido: lo leerá en cuanto despierte."
           }
         }
       }
@@ -1881,26 +1851,6 @@
         }
       }
     },
-    "alive": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "vivos"
-          }
-        }
-      }
-    },
-    "asleep · %@": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "dormido · %@"
-          }
-        }
-      }
-    },
     "node": {
       "localizations": {
         "es": {
@@ -1937,6 +1887,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "este nodo"
+          }
+        }
+      }
+    },
+    "total": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "total"
           }
         }
       }
