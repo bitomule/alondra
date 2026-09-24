@@ -12,7 +12,7 @@ mod define;
 mod derive;
 
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
-pub use derive::{Before, CardTask, NODE_CLOSED, Pass, task_id};
+pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -28,11 +28,29 @@ pub struct Request {
     /// Made up for a session no request of David's stands behind.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
+    /// The short name the orchestrator gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The orchestrator closed it without tasks: it answered it, or David withdrew it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<RequestClosure>,
+}
+
+/// How a request that needed no task ended.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RequestClosure {
+    /// What the orchestrator told David, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    /// David withdrew it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withdrawn: bool,
+    pub at: Millis,
 }
 
 impl Request {
     fn new(id: &str, created_at: Millis, synthetic: bool) -> Self {
-        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic }
+        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic, title: None, closed: None }
     }
 }
 
@@ -196,6 +214,8 @@ pub struct Guards {
     pub auto_merge: bool,
     /// A task this one depends on that has no PR open yet and is not done.
     pub waiting_on: Option<String>,
+    /// A task this one depends on that was cancelled before it was ready: this one cannot start.
+    pub cancelled_dependency: Option<String>,
     /// A PR of a task this one depends on that is not merged yet: this task's PRs merge after it.
     pub unmerged_dependency: Option<u64>,
     /// What already blocks the task on David.
@@ -281,6 +301,27 @@ fn mergeable(g: &Guards) -> Result<(), Refused> {
     }
 }
 
+/// A merge is a fact of GitHub's: it moves the task whatever Alondra would have decided. What
+/// would have kept Alondra from merging stays on the transition.
+fn merge_note(event: &TaskEvent, g: &Guards) -> Option<String> {
+    let kept_back = match event {
+        TaskEvent::Merged { .. } => dependencies_merged(g),
+        TaskEvent::AutoMerged { .. } => mergeable(g),
+        _ => Ok(()),
+    };
+    kept_back.err().map(|r| r.reason)
+}
+
+/// A reopened task waits again while a dependency is not ready, and cannot come back while one
+/// was cancelled.
+fn reopened(g: &Guards) -> Result<TaskState, Refused> {
+    match (&g.cancelled_dependency, &g.waiting_on) {
+        (Some(d), _) => Err(refused(format!("{d} was cancelled: reopen it first"))),
+        (None, Some(_)) => Ok(TaskState::WaitingDependency),
+        (None, None) => Ok(TaskState::Running),
+    }
+}
+
 /// Where a merge leaves a task that was in `stay`: there while something else waits for David,
 /// done when the node already said it was finished, closing otherwise.
 fn after_merge(stay: TaskState, g: &Guards) -> TaskState {
@@ -331,8 +372,8 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Done, E::DocumentSent { .. }) => Err(is_done()),
         (Cancelled, E::DocumentSent { .. }) => Err(is_cancelled()),
 
-        (Running | InReview, E::AutoMerged { .. }) => mergeable(g).map(|()| after_merge(state, g)),
-        (NeedsYou | Closing | Done | Cancelled, E::AutoMerged { .. }) => mergeable(g).map(|()| state),
+        (Running | InReview, E::AutoMerged { .. }) => Ok(after_merge(state, g)),
+        (NeedsYou | Closing | Done | Cancelled, E::AutoMerged { .. }) => Ok(state),
 
         (Running | Closing, E::FinalReport { .. }) => nothing_pending(g).map(|()| Done),
         (InReview, E::FinalReport { .. }) => Ok(if g.reviews_left() { InReview } else { Done }),
@@ -353,8 +394,8 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Done, E::NodeUpdated { .. }) => Err(is_done()),
         (Cancelled, E::NodeUpdated { .. }) => Err(is_cancelled()),
 
-        (Running | InReview, E::Merged { .. }) => dependencies_merged(g).map(|()| after_merge(state, g)),
-        (NeedsYou | Closing | Done | Cancelled, E::Merged { .. }) => dependencies_merged(g).map(|()| state),
+        (Running | InReview, E::Merged { .. }) => Ok(after_merge(state, g)),
+        (NeedsYou | Closing | Done | Cancelled, E::Merged { .. }) => Ok(state),
 
         (InReview, E::ReviewClosed { .. }) => Ok(if g.reviews_left() {
             InReview
@@ -365,7 +406,7 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         }),
         (Running | NeedsYou | Closing | Done | Cancelled, E::ReviewClosed { .. }) => Ok(state),
 
-        (Done | Cancelled, E::Reopen) => Ok(Running),
+        (Done | Cancelled, E::Reopen) => reopened(g),
         (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Reopen) => Err(refused("only a done or cancelled task can be reopened")),
 
         (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Cancel { .. }) => Ok(Cancelled),
@@ -416,6 +457,9 @@ pub struct Transition {
     pub to: TaskState,
     pub event: TaskEvent,
     pub at: Millis,
+    /// What would have kept Alondra from making this move itself, for a fact it had to take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A fact the machine refused: it happened, so it is kept, but it did not move the task.
@@ -463,6 +507,9 @@ pub struct Task {
     /// A launch was matched to the task's node.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
+    /// When its node was last launched: until that node shows up, no other node takes the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_at: Option<Millis>,
     /// The name of the node launched for it, when that is not its title: the node that shows up
     /// under it takes the task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -498,6 +545,9 @@ pub struct NewTask {
     /// Made by a launch: the node that shows up under its title takes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
+    /// The launched node's name, when the task has a title of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_as: Option<String>,
     /// Defined by the orchestrator: how Alondra starts it. It waits while a dependency does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<Start>,
@@ -518,7 +568,8 @@ impl Task {
         self.launched_as.as_deref().unwrap_or(&self.title)
     }
 
-    fn last_change(&self) -> Millis {
+    /// When anything of it last changed: a move, a refused fact, its creation.
+    pub fn last_change(&self) -> Millis {
         let history = self.history.last().map(|t| t.at);
         let anomalies = self.anomalies.last().map(|a| a.at);
         self.state_since.max(self.created_at).max(history.unwrap_or(0)).max(anomalies.unwrap_or(0))
@@ -555,7 +606,9 @@ pub struct Board {
 impl Board {
     pub fn request_state(&self, id: &str) -> RequestState {
         let mut tasks = self.tasks.values().filter(|t| t.request == id).peekable();
-        if tasks.peek().is_none() {
+        if self.requests.get(id).is_some_and(|r| r.closed.is_some()) {
+            RequestState::Done
+        } else if tasks.peek().is_none() {
             RequestState::Defining
         } else if tasks.all(|t| t.state.finished()) {
             RequestState::Done
@@ -572,9 +625,12 @@ impl Board {
         match transition(from, &event, g) {
             Ok(to) => {
                 match &event {
-                    TaskEvent::BlockerRaised { blocker, .. } => task.blocker = Some(*blocker),
+                    TaskEvent::BlockerRaised { blocker, .. } => {
+                        task.blocker = Some(*blocker);
+                        task.final_report = None;
+                    }
                     TaskEvent::FinalReport { report } => task.final_report = Some(*report),
-                    TaskEvent::ChangesRequested { .. } | TaskEvent::Reopen => task.final_report = None,
+                    TaskEvent::ChangesRequested { .. } | TaskEvent::Reopen | TaskEvent::Answered { .. } => task.final_report = None,
                     _ => {}
                 }
                 if to != TaskState::NeedsYou {
@@ -584,7 +640,8 @@ impl Board {
                     task.state = to;
                     task.state_since = at;
                 }
-                task.history.push(Transition { from, to, event, at });
+                let note = merge_note(&event, g);
+                task.history.push(Transition { from, to, event, at, note });
                 Ok(to)
             }
             Err(r) => {
@@ -615,7 +672,8 @@ impl Board {
             created_at: at,
             final_report: None,
             launched: t.launched,
-            launched_as: None,
+            launched_at: t.launched.then_some(at),
+            launched_as: t.launched_as.clone(),
             start: t.start.clone(),
             recorded: true,
             history: vec![],
@@ -727,6 +785,7 @@ mod tests {
         let waiting = Guards { waiting_on: Some("t-a".into()), ..Guards::default() };
         let failed = Guards { checks_failed: Some(151), ..Guards::default() };
         let below = Guards { unmerged_dependency: Some(149), ..Guards::default() };
+        let cancelled = Guards { waiting_on: Some("t-a".into()), cancelled_dependency: Some("t-a".into()), ..Guards::default() };
         let replacing = TaskEvent::BlockerRaised { blocker: Q, replaces: true };
         let e = |name: &str| every_event().into_iter().find(|e| e.name() == name).unwrap();
         let cases: Vec<(TaskState, TaskEvent, &Guards, Result<TaskState, &str>)> = vec![
@@ -736,10 +795,13 @@ mod tests {
             (NeedsYou, replacing, &blocker, Ok(NeedsYou)),
             (Running, e("pr_opened"), &auto, Ok(Running)),
             (Closing, e("pr_opened"), &auto, Ok(Closing)),
-            (Running, e("auto_merged"), &failed, Err("the checks of PR #151 have not passed")),
-            (Running, e("auto_merged"), &below, Err("merge PR #149 first")),
-            (InReview, e("merged"), &below, Err("merge PR #149 first")),
-            (Done, e("merged"), &below, Err("merge PR #149 first")),
+            (Running, e("auto_merged"), &failed, Ok(Closing)),
+            (Running, e("auto_merged"), &below, Ok(Closing)),
+            (InReview, e("merged"), &below, Ok(Closing)),
+            (Done, e("merged"), &below, Ok(Done)),
+            (Done, e("reopen"), &waiting, Ok(WaitingDependency)),
+            (Cancelled, e("reopen"), &waiting, Ok(WaitingDependency)),
+            (Cancelled, e("reopen"), &cancelled, Err("t-a was cancelled: reopen it first")),
             (Running, e("auto_merged"), &pr, Ok(Running)),
             (Running, e("auto_merged"), &finished, Ok(Done)),
             (Running, e("final_report"), &pr, Err("PR #150 is not merged")),
@@ -776,11 +838,15 @@ mod tests {
             ("cancelling what is finished", Done, TaskEvent::Cancel { reason: None }, Guards::default(), "the task is already done"),
             ("reopening what is not done", Running, TaskEvent::Reopen, Guards::default(), "only a done or cancelled task can be reopened"),
             ("working before its dependency", WaitingDependency, TaskEvent::PrOpened { pr: 1 }, Guards { waiting_on: Some("t-a".into()), ..Guards::default() }, "the task has not started: it waits for t-a"),
-            ("merging above an unmerged dependency", InReview, TaskEvent::Merged { item: Item::Pr(2) }, Guards { unmerged_dependency: Some(150), ..Guards::default() }, "merge PR #150 first"),
         ];
         for (what, state, event, g, reason) in cases {
             assert_eq!(transition(state, &event, &g), Err(Refused { reason: reason.into() }), "{what}");
         }
+        let mut board = Board::default();
+        board.tasks.insert("t-s".into(), task(InReview));
+        let below = Guards { unmerged_dependency: Some(150), ..Guards::default() };
+        assert_eq!(board.apply_fact("t-s", TaskEvent::Merged { item: Item::Pr(2) }, &below, 5), Ok(Closing), "merging above an unmerged dependency: GitHub merged it, so the task moves");
+        assert_eq!(board.tasks["t-s"].history[0].note.as_deref(), Some("merge PR #150 first"), "what Alondra would have refused stays on the move");
         for state in TaskState::ALL {
             let merged = transition(state, &TaskEvent::Merged { item: Item::Pr(1) }, &pr);
             assert_ne!((state, merged.clone()), (InReview, Ok(Done)), "in review to done without a merge left");
@@ -808,6 +874,7 @@ mod tests {
             created_at: 0,
             final_report: None,
             launched: false,
+            launched_at: None,
             launched_as: None,
             start: None,
             recorded: false,

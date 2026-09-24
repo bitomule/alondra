@@ -194,7 +194,7 @@ impl View {
         let mut out: Vec<Candidate> = self
             .nodes
             .values()
-            .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon) && !self.removed.contains(&n.session_id))
+            .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon) && !self.removed.contains_key(&n.session_id))
             .filter_map(|n| {
                 let mine: Vec<&Task> = self.tasks_of(&n.session_id).collect();
                 let mut why = vec![];
@@ -233,6 +233,56 @@ impl View {
         out.sort_by_key(|c| (std::cmp::Reverse(c.why.len()), c.status != NodeStatus::Free, c.node.clone()));
         out
     }
+
+    /// What the orchestrator is told when its turn ended with a request it received still
+    /// defining: neither defined nor closed. Once per request, read from its messages, and not
+    /// while something of the user's is still on its way to it or a question of its own waits.
+    pub fn defining_nudges(&self, user: &str, now: crate::model::Millis) -> Vec<crate::model::Message> {
+        let Some(o) = self.nodes.values().find(|n| n.is_orchestrator && n.alive) else { return vec![] };
+        let Some(stopped) = o.last_stop_at.filter(|stop| *stop >= o.turn_since) else { return vec![] };
+        if self.pending_messages(&o.session_id).next().is_some() {
+            return vec![];
+        }
+        let asked_since = |at: crate::model::Millis| {
+            self.questions.values().any(|q| q.session_id == o.session_id && q.asked_at >= at && (q.status.is_open() || q.status == crate::model::QuestionStatus::Answered))
+        };
+        let mut next_id = self.messages.keys().next_back().copied().unwrap_or(0);
+        self.board
+            .requests
+            .values()
+            .filter(|r| !r.synthetic && r.closed.is_none() && r.created_at < stopped && now - r.created_at < DEFINING_NUDGE_WINDOW)
+            .filter(|r| self.board.request_state(&r.id) == super::RequestState::Defining && !asked_since(r.created_at))
+            .filter(|r| !self.messages.values().any(|m| m.session_id == o.session_id && m.text.starts_with(&defining_prefix(&r.id))))
+            .map(|r| {
+                next_id += 1;
+                let asked: String = r.text.as_deref().unwrap_or("").chars().take(80).collect();
+                crate::model::Message {
+                    id: next_id,
+                    session_id: o.session_id.clone(),
+                    from: crate::model::MessageFrom::Alondra,
+                    text: format!(
+                        "{}“{asked}”) is still defining: your turn ended without defining it or closing it. If it needs work, `define` it. \
+                         If it was a question or a status check you already answered, or {user} withdrew it, close it with `close_request`.",
+                        defining_prefix(&r.id)
+                    ),
+                    answers_question: None,
+                    created_at: now,
+                    handed_at: None,
+                    delivered_at: None,
+                    about: None,
+                    attachments: vec![],
+                }
+            })
+            .collect()
+    }
+}
+
+/// A request older than this is not nudged: it predates the nudge, or the orchestrator long
+/// since let it be.
+pub const DEFINING_NUDGE_WINDOW: crate::model::Millis = 24 * 3600 * 1000;
+
+fn defining_prefix(request: &str) -> String {
+    format!("[Alondra] Request {request} (")
 }
 
 #[cfg(test)]
@@ -294,6 +344,7 @@ mod tests {
             options: TaskOptions::default(),
             session_id: None,
             launched: false,
+            launched_as: None,
             start: Some(start),
         }
     }
@@ -311,7 +362,7 @@ mod tests {
     }
 
     fn launched(name: &str, task: &str) -> Event {
-        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()) }
+        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
     }
 
     fn opened(sid: &str) -> Event {
@@ -431,5 +482,40 @@ mod tests {
         assert_eq!((got[0].status, got[0].tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()), (NodeStatus::Free, vec!["t-a"]));
         let by_repo: Vec<String> = d.view.candidates(None, Some("acme/web")).into_iter().map(|c| c.node).collect();
         assert_eq!(by_repo, ["web/copy"]);
+    }
+
+    /// r-1790277835004, 24 Sep: "En qué punto tenemos a BlurCamera?" arrived, the orchestrator asked
+    /// #240, David answered, and the orchestrator stopped with no tool call: the request sat in
+    /// defining, where nothing could move it.
+    #[test]
+    fn a_request_left_defining_when_the_orchestrators_turn_ends_gets_one_nudge() {
+        use crate::event::HookEvent;
+        use crate::model::{Answer, Question, QuestionOrigin, QuestionStatus};
+        let hook = |event: &str| Event::Hook(HookEvent { session_id: "o".into(), event: event.into(), prompt: Some("go".into()), ..Default::default() });
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        let question = Question {
+            id: 240, session_id: "o".into(), node_name: None, title: "¿Qué parte?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
+            blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open,
+            answer: None, asked_at: 4000, action: false, steps: vec![], mission: None, replaces: None, task: None,
+        };
+        let mut d = Daemon::new();
+        d.on(Event::MarkedOrchestrator { session_id: "o".into() }).on(hook("SessionStart"));
+        d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("En qué punto tenemos a BlurCamera?".into()), attachments: vec![] });
+        d.on(hook("UserPromptSubmit")).on(Event::QuestionAsked(question)).on(hook("Stop"));
+        assert!(d.view.defining_nudges("Ana", d.at).is_empty(), "it waits for Ana's answer");
+        d.on(Event::QuestionAnswered { id: 240, answer: Answer { text: "El estado".into(), option: None, by: None, device: None, at: 0 } });
+        assert!(d.view.defining_nudges("Ana", d.at).is_empty(), "the answer is on its way");
+        d.on(Event::QuestionDelivered { id: 240 }).on(hook("UserPromptSubmit"));
+        assert!(d.view.defining_nudges("Ana", d.at).is_empty(), "its turn is under way");
+        d.on(hook("Stop"));
+        let nudges = d.view.defining_nudges("Ana", d.at);
+        assert_eq!(nudges.len(), 1);
+        assert!(nudges[0].session_id == "o" && nudges[0].text.starts_with("[Alondra] Request r-1 (“En qué punto tenemos a BlurCamera?”) is still defining"), "{}", nudges[0].text);
+        assert!(nudges[0].text.contains("close_request"));
+        d.on(Event::MessageQueued(nudges[0].clone())).on(Event::MessageHanded { id: nudges[0].id }).on(hook("UserPromptSubmit")).on(hook("Stop"));
+        assert!(d.view.defining_nudges("Ana", d.at).is_empty(), "once");
+        assert!(d.replayed().defining_nudges("Ana", d.at).is_empty(), "a restart reads the nudge from the log");
+        d.on(Event::RequestClosed { request_id: "r-1".into(), answer: Some("BlurCamera está en revisión".into()), withdrawn: false });
+        assert_eq!(d.view.board.request_state("r-1"), crate::tasks::RequestState::Done);
     }
 }

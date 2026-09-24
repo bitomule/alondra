@@ -764,7 +764,7 @@ mod tests {
         let mut pr = crate::pr::PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", Some("n".into()), T0).unwrap();
         pr.fetched = true;
         pr.checks = vec![crate::pr::Check { name: "ci".into(), state: checks, url: None }];
-        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true, task: None };
+        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true, task: None, title: None };
         vec![launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop"), Event::PrUpdated(pr)]
     }
 
@@ -1384,7 +1384,7 @@ mod tests {
     #[test]
     fn an_idle_node_is_nudged_then_handed_on_by_its_running_task_whatever_its_state() {
         let named = Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("n".into()), pid: Some(7), ..Default::default() });
-        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true, task: None };
+        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true, task: None, title: None };
         let mut v = run(&[launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop")], None);
         v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
         v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));

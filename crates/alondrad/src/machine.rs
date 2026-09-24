@@ -39,7 +39,8 @@ pub async fn run(hub: Arc<Hub>) {
             disk_available: root.map(|d| d.available_space()).unwrap_or(0),
             unreliable: load.one > UNRELIABLE_LOAD,
         };
-        hub.set_machine(machine);
+        let usage = crate::usage::current(&crate::watcher::claude_home());
+        hub.set_machine(machine, usage.as_ref());
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }

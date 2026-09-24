@@ -227,6 +227,12 @@ pub struct ResumeAttempt {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The task left open when it was restarted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// Restarts in a row for that task with no turn completed in between.
+    #[serde(default)]
+    pub streak: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -218,9 +218,28 @@ mod tests {
         let (mut shown, mut entered) = (std::collections::HashMap::new(), std::collections::BTreeMap::<&str, usize>::new());
         let mut contradicted = std::collections::BTreeMap::<&str, usize>::new();
         let two_hours = 2 * 3600 * 1000;
+        let last_at: i64 = s.conn.query_row("SELECT COALESCE(MAX(at), 0) FROM events", [], |r| r.get(0)).unwrap();
+        let hour_from = last_at - 3600 * 1000;
+        let (mut hour_events, mut hour_hooks, mut batches, mut bumps) = (0usize, 0usize, 0usize, 0usize);
+        let (mut batch_at, mut digest): (Option<i64>, Option<u64>) = (None, None);
         let n = s.replay(0, |seq, at, e| {
             if let Some(sid) = e.session_id() {
                 sessions.insert(sid.to_string());
+            }
+            if at >= hour_from {
+                match batch_at {
+                    None => digest = Some(crate::http::overview_digest(&full, at)),
+                    Some(b) if b != at => {
+                        batches += 1;
+                        let now = crate::http::overview_digest(&full, b);
+                        bumps += usize::from(digest != Some(now));
+                        digest = Some(now);
+                    }
+                    Some(_) => {}
+                }
+                batch_at = Some(at);
+                hour_events += 1;
+                hour_hooks += usize::from(matches!(e, Event::Hook(_)));
             }
             full.apply(seq, at, &e);
             let touched: Vec<String> = e.session_id().map_or_else(|| full.nodes.keys().cloned().collect(), |s| vec![s.to_string()]);
@@ -243,6 +262,13 @@ mod tests {
                 threads = threads.max(n.ledger.threads.len());
             }
         }).unwrap();
+        if let Some(b) = batch_at {
+            batches += 1;
+            bumps += usize::from(digest != Some(crate::http::overview_digest(&full, b)));
+        }
+        println!(
+            "last hour: {hour_events} events ({hour_hooks} hooks) in {batches} appends; every append moved the clients' tick before, {bumps} move it now (machine samples: 360 before, only 5 % steps now)"
+        );
         println!("whole log: {n} events from seq {first}, {} sessions, {} nodes, {} removed", sessions.len(), full.nodes.len(), full.removed.len());
         println!("{}", summary(&full));
         let mut last = std::collections::BTreeMap::<&str, usize>::new();

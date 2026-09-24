@@ -1,5 +1,5 @@
 {
   "name": "alondra-orchestrator",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Alondra for the orchestrator: the same hooks as a node, plus the fleet, machine, messaging and launch tools."
 }

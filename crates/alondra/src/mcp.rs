@@ -24,7 +24,7 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never to hand off work); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. Your work is a task in Alondra: its questions, reports and PR show as one card, and it puts one question at a time in front of {user} (another is refused until that one is answered, unless it `replaces` it); if you work on several tasks, name it with `task`. A PR you open gets its own card where {user} decides the merge; with auto-merge Alondra merges it once its checks pass. If nothing is left for you after the merge, report final with the PR in links: the merge then finishes your task and no notice comes. If something is left (deploy, verify), do not report final yet: the merge notice is typed into this session. An `ask` about merging would be a second card for the same decision. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
-        Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`define`, `candidates`, `launch`, `send`, `interrupt`, `cancel`, `reopen`). Every request of {user}'s is kept as a request, defining until you `define` its tasks: each task has a brief, depends_on, options and a node (a live one with the context, found with `candidates`, or a new one), and Alondra starts it as soon as nothing it depends on holds it back. The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
+        Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`define`, `candidates`, `launch`, `send`, `interrupt`, `cancel`, `reopen`, `close_request`). Every request of {user}'s is kept as a request, defining until you `define` its tasks: each task has a brief, depends_on, options and a node (a live one with the context, found with `candidates`, or a new one), and Alondra starts it as soon as nothing it depends on holds it back. A request that needs no work (a question or a status check you answered, or one {user} withdrew) is closed with `close_request`. Give every request and every task a short title of a few words: it is what {user} reads. The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
     }
 }
 
@@ -83,6 +83,7 @@ fn define_schema(user: &str) -> Value {
         "properties": {
             "request": {"type": "string", "description": format!("The request_id of {user}'s request (r-…)")},
             "text": {"type": "string", "description": format!("Instead of request: what {user} asked for outside the apps, in their words")},
+            "title": {"type": "string", "description": format!("A short name for the request (a few words), which {user} reads in place of the whole text")},
             "tasks": {"type": "array", "description": "The tasks, in order; depends_on names others by their position here (0 is the first)", "items": {"type": "object", "properties": {
                 "title": {"type": "string", "description": format!("One line: what {user} sees in the task list")},
                 "brief": {"type": "string", "description": "The task's mission: what to build, what evidence to leave, what was ruled out. Its node gets it as is"},
@@ -118,11 +119,17 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Yours to choose from the task when the request's effort is auto or there is no request: light for small clear work, normal for most, hard for tricky or risky work. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Yours to choose from the task when the request's effort is auto or there is no request: light for small clear work, normal for most, hard for tricky or risky work. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd"]}}),
             json!({"name": "define", "description": format!("Turn a request into tasks. Each task gets a brief (what its node is told), depends_on, options and an assignee: a live node (by name) that already has the context, or \"new\" for a node Alondra launches. A task with nothing to wait for starts at once; one with depends_on waits until every task it depends on has its PR open or is done, then starts on top of that PR's branch, and its PR merges after theirs. Refused with every reason when the tasks cannot stand (a cycle, an unknown dependency, an unknown or closed node). For work {user} asked for outside the apps (in your terminal), pass text instead of request: Alondra records the request first."), "inputSchema": define_schema(user)}),
             json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or working on tasks it depends on, that depend on it, or of the same request. Each comes with why, its open tasks and whether it is free or busy.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}}}}),
             json!({"name": "cancel", "description": format!("Cancel a task that should not go on (dropped, or replaced by another). {user} sees it as cancelled. Its node is not told: send it what to do."), "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}, "reason": {"type": "string", "description": format!("Why, in one line, for {user}")}}, "required": ["task"]}}),
             json!({"name": "reopen", "description": "Reopen a done or cancelled task: it is running again. A task no node took starts as it was defined; otherwise send its node what is left, with task.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}),
+            json!({"name": "close_request", "description": format!("Close a request that needs no task: a question or a status check you answered (answer: what you told {user}, in one line), or one {user} withdrew (withdrawn: true). It shows as done. A request with tasks is done when they are."), "inputSchema": {"type": "object", "properties": {
+                "request": {"type": "string", "description": "The request_id (r-…)"},
+                "answer": {"type": "string", "description": format!("What you told {user}, in one line")},
+                "withdrawn": {"type": "boolean", "description": format!("true when {user} withdrew it")},
+                "title": {"type": "string", "description": format!("A short name for the request (a few words), which {user} reads in place of the whole text")}
+            }, "required": ["request"]}}),
         ]);
     }
     Value::Array(list)
@@ -188,7 +195,28 @@ fn report_reply(id: u64, to_orchestrator: bool, note: Option<&str>, user: &str) 
     }
 }
 
+/// Every call waits this long for alondrad.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a call waits for alondrad. `launch` and `send` wait for any start under way (up to a
+/// launch) and then launch, or hand the task, themselves: a shorter wait gave up on calls that
+/// went through, and the retry made a second node.
+fn call_timeout(tool: &str) -> Duration {
+    match tool {
+        "launch" | "send" => alondra_core::LAUNCH_TIMEOUT * 2 + CALL_TIMEOUT,
+        _ => CALL_TIMEOUT,
+    }
+}
+
 fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Result<String> {
+    let waiting;
+    let client = match call_timeout(name) {
+        CALL_TIMEOUT => client,
+        longer => {
+            waiting = Client::new(longer);
+            &waiting
+        }
+    };
     let who = caller();
     Ok(match name {
         "ask" => {
@@ -259,6 +287,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
                 .filter_map(|k| args.get(*k).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).map(|v| format!("{k}={}", urlencode(v))))
                 .collect();
             serde_json::to_string_pretty(&client.get::<Value>(&format!("/v1/candidates?{}", query.join("&")))?)?
+        }
+        "close_request" if role == Role::Orchestrator => {
+            let request = args.get("request").and_then(Value::as_str).unwrap_or("");
+            let r = client.post(&format!("/v1/requests/{}/close", urlencode(request)), &pick(args, &["answer", "withdrawn", "title"]))?;
+            format!("{request} is {} now.", r.get("state").and_then(Value::as_str).unwrap_or("closed").replace('_', " "))
         }
         "cancel" | "reopen" if role == Role::Orchestrator => {
             let task = args.get("task").and_then(Value::as_str).unwrap_or("");
@@ -564,7 +597,7 @@ pub fn urlencode(s: &str) -> String {
 
 pub fn serve(role: Role) -> Result<()> {
     let user = crate::client::config().name.clone();
-    let client = Client::new(Duration::from_secs(30));
+    let client = Client::new(CALL_TIMEOUT);
     let mut registered = role != Role::Orchestrator;
     let mut register = |client: &Client| {
         if !registered {
@@ -616,6 +649,16 @@ pub fn serve(role: Role) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `launch` and `send` with a task wait for a start under way, then launch: the 30 s every
+    /// call had gave up first, and the orchestrator's retry made a second node.
+    #[test]
+    fn a_call_that_may_wait_for_a_launch_outlasts_it_and_the_one_before_it() {
+        for tool in ["launch", "send"] {
+            assert!(call_timeout(tool) > alondra_core::LAUNCH_TIMEOUT * 2, "{tool}: {:?}", call_timeout(tool));
+        }
+        assert_eq!(call_timeout("ask"), CALL_TIMEOUT);
+    }
 
     #[test]
     fn the_configured_name_reaches_every_text_a_node_reads() {
