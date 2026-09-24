@@ -19,6 +19,9 @@ pub const AUDITORIA: &str = include_str!("../fixtures/auditoria_jev_alondra.json
 pub const COLMENA: &str = include_str!("../fixtures/servidor_colmena.jsonl");
 pub const QUILL: &str = include_str!("../fixtures/quill.jsonl");
 pub const CTRL_TRIVIAL: &str = include_str!("../fixtures/ctrl_trivial_2.jsonl");
+/// A view serialized by the build before tasks existed: colmena up to seq 2680 (questions 44 and
+/// 45 open) and a node `pr-node` with PR card 1 open.
+const VIEW_BEFORE_TASKS: &str = include_str!("../fixtures/view_before_tasks.json");
 
 const AUDITORIA_SID: &str = "bea82247-f71b-4d3e-b815-a082dbea985f";
 const COLMENA_SID: &str = "a3934428-f43b-45b1-974d-8cb023b45e23";
@@ -168,4 +171,64 @@ fn ctrl_trivial_one_report_settles_a_dormant_node_for_good() {
         between(&states, 2966, 4439).iter().all(|s| matches!(s, NodeState::Delivered | NodeState::Done)),
         "delivered from the first report on, done once the user read it"
     );
+}
+
+/// Each recorded node becomes one request with one task, and its cards move that task. The
+/// anomalies are what the old model let through: two questions open at once (colmena, 12:53),
+/// and a final report sent while a question was still open (auditoria, 14:08).
+#[test]
+fn every_fixture_replays_into_one_task_with_the_states_its_cards_gave() {
+    use crate::tasks::TaskState::*;
+    let cases = [
+        (AUDITORIA, AUDITORIA_SID, vec![NeedsYou, Running, Done, Done, Running, Done, Running, NeedsYou, Running, NeedsYou, Running, Done], vec!["needs_you+final_report"]),
+        (COLMENA, COLMENA_SID, vec![NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running], vec!["needs_you+blocker_raised"]),
+        (QUILL, QUILL_SID, vec![NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, NeedsYou, Running, Done, Running, NeedsYou, Running, Done], vec![]),
+        (CTRL_TRIVIAL, CTRL_TRIVIAL_SID, vec![Done, Done, Done, Done, Done], vec![]),
+    ];
+    for (fixture, sid, states, anomalies) in cases {
+        let (view, _) = replay(fixture, sid);
+        assert_eq!((view.board.tasks.len(), view.board.requests.len()), (1, 1), "{sid}");
+        let task = view.session_task(sid).expect("the node's task");
+        assert_eq!(task.request, format!("r-{sid}"), "no launch stands behind it");
+        assert_eq!(task.history.iter().map(|h| h.to).collect::<Vec<_>>(), states, "{}", task.title);
+        assert_eq!(task.anomalies.iter().map(|a| a.kind()).collect::<Vec<_>>(), anomalies, "{}", task.title);
+        let (again, _) = replay(fixture, sid);
+        assert_eq!(again.board, view.board, "the same events give the same tasks");
+    }
+}
+
+/// Colmena asked questions 44 and 45 in the same second: 44 is the blocker, and 45 takes its
+/// place once 44 is answered instead of being lost.
+#[test]
+fn colmena_a_second_question_waits_its_turn_as_the_blocker() {
+    let (view, _) = replay(COLMENA, COLMENA_SID);
+    let task = view.session_task(COLMENA_SID).unwrap();
+    let blockers: Vec<u64> = task.history.iter().filter_map(|h| match &h.event {
+        crate::tasks::TaskEvent::BlockerRaised { blocker, .. } => Some(blocker.question),
+        _ => None,
+    }).collect();
+    assert_eq!(blockers, vec![27, 37, 39, 44, 45, 59], "question 18 did not block");
+}
+
+#[test]
+fn a_snapshot_from_before_tasks_loads_and_its_nodes_get_their_tasks() {
+    use crate::tasks::TaskState::*;
+    let raw: serde_json::Value = serde_json::from_str(VIEW_BEFORE_TASKS).unwrap();
+    assert!(raw.get("board").is_none(), "written before tasks existed");
+    let mut view: View = serde_json::from_str(VIEW_BEFORE_TASKS).expect("an old snapshot loads");
+    assert!(view.board.tasks.is_empty());
+    view.backfill_tasks();
+    view.backfill_tasks();
+    assert_eq!(view.board.tasks.len(), 2);
+    let colmena = view.session_task(COLMENA_SID).unwrap();
+    assert_eq!((colmena.state, colmena.blocker.map(|b| b.question)), (NeedsYou, Some(44)));
+    let pr = view.session_task("pr-node").unwrap();
+    assert_eq!((pr.state, pr.prs.clone()), (InReview, vec![1]));
+
+    let at = 1_790_168_100_000;
+    let answer = crate::model::Answer { text: "text-1".into(), option: None, by: None, device: None, at };
+    view.apply(3004, at, &Event::QuestionAnswered { id: 44, answer });
+    view.apply(3005, at, &Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge });
+    assert_eq!(view.session_task(COLMENA_SID).unwrap().blocker.map(|b| b.question), Some(45), "the other open question takes its place");
+    assert_eq!(view.session_task("pr-node").unwrap().state, Closing);
 }

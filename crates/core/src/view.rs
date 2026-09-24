@@ -37,6 +37,9 @@ pub struct View {
     /// Names of nodes launched with auto-merge.
     #[serde(default)]
     pub auto_merge_nodes: std::collections::BTreeSet<String>,
+    /// Requests and the tasks they became.
+    #[serde(default)]
+    pub board: crate::tasks::Board,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -116,6 +119,8 @@ impl View {
         self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
         self.messages.retain(|_, m| m.created_at >= before);
         self.approved_artifacts.retain(|_, at| *at >= before);
+        let keep = self.tasks_to_keep();
+        self.board.prune(before, |t| keep.contains(&t.id));
     }
 
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
@@ -125,6 +130,7 @@ impl View {
         {
             return;
         }
+        let before = self.before_tasks(event);
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
@@ -341,7 +347,7 @@ impl View {
                 }
                 self.pr_node(*id)
             }
-            Event::RequestSent { request_id, options } => {
+            Event::RequestSent { request_id, options, .. } => {
                 self.requests.insert(request_id.clone(), options.clone());
                 None
             }
@@ -370,6 +376,7 @@ impl View {
         if let Some((sid, trigger)) = touched {
             self.recompute(&sid, at, trigger);
         }
+        self.derive_tasks(at, event, before);
     }
 
     /// Whether time alone has changed what some node shows, so a sweep at `now` has to record
@@ -679,7 +686,11 @@ impl View {
     /// Unread reports that send an artifact for David to review, outside PR cards (the PR decides
     /// there). Each is a review card: its node waits until David approves it or sends it his comments.
     pub fn reviews_awaiting_user(&self) -> impl Iterator<Item = &Report> {
-        self.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none() && !crate::artifact::in_report(r).is_empty())
+        self.reports.values().filter(|r| self.awaits_review(r))
+    }
+
+    pub fn awaits_review(&self, r: &Report) -> bool {
+        !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none() && !crate::artifact::in_report(r).is_empty()
     }
 
     /// David's verdict on an artifact, still on its way to the node: it waits for the review until

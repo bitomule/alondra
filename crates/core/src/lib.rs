@@ -10,6 +10,7 @@ pub mod stack;
 #[cfg(test)]
 mod recorded;
 pub mod states;
+pub mod tasks;
 pub mod usage;
 pub mod view;
 
