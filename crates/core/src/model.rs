@@ -4,6 +4,9 @@ pub type Millis = i64;
 
 pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
 pub const OTHERS_PROJECT: &str = "others";
+/// A node whose name starts with it is a test node: the real Alondra refuses its cards, and the
+/// apps leave out its session.
+pub const PROBE_PREFIX: &str = "test/";
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]

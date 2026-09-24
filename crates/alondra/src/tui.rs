@@ -399,6 +399,8 @@ pub struct App {
     pub archive_missing: bool,
     /// The Tasks list shows its archived section open.
     pub archived_open: bool,
+    /// The Tasks list shows its finished section open.
+    pub finished_open: bool,
     /// What each thread of the selected node does, as its own route last said.
     pub threads: Option<(String, Vec<crate::client::Activity>)>,
     /// The node, the tick and when its threads were last asked for.
@@ -665,6 +667,7 @@ impl App {
             task_actions_missing: false,
             archive_missing: false,
             archived_open: false,
+            finished_open: false,
             threads: None,
             threads_asked: None,
             pending_cancel: None,

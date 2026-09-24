@@ -1445,10 +1445,8 @@ fn discard_stored(attachments: &[Attachment]) {
     }
 }
 
-const PROBE_PREFIX: &str = "test/";
-
 fn probe_refused(name: Option<&str>, sandbox: bool) -> Option<Response> {
-    let name = name.filter(|n| n.starts_with(PROBE_PREFIX) && !sandbox)?;
+    let name = name.filter(|n| n.starts_with(alondra_core::PROBE_PREFIX) && !sandbox)?;
     Some(err(
         StatusCode::UNPROCESSABLE_ENTITY,
         format!(
