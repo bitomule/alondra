@@ -286,6 +286,7 @@ pub fn migrate_env(label: Option<&str>, env: &BTreeMap<String, String>) -> FileC
         legacy_bridge: Some(true),
         service_label: label.map(str::to_string),
         name: get("ALONDRA_NAME"),
+        ..Default::default()
     }
 }
 
@@ -364,6 +365,7 @@ fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig>
         wake: args.wake,
         retention_hours: args.retention_hours,
         service_label: args.service_label.clone(),
+        ..Default::default()
     };
     wanted = wanted.overlay(&flags);
     let known = |w: &FileConfig, f: fn(&FileConfig) -> bool| f(w) || existing.is_some_and(f);

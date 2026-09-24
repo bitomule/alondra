@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -28,11 +29,20 @@ pub struct FileConfig {
     pub retention_hours: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_dead_nodes: Option<bool>,
+    /// How long a node stays free before Alondra closes it, as `30m`, `2h` or `1d`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_free_nodes_after: Option<String>,
 }
 
 impl FileConfig {
     pub fn parse(text: &str) -> Result<Self, String> {
-        toml::from_str(text).map_err(|e| e.to_string())
+        let file: FileConfig = toml::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(after) = &file.close_free_nodes_after {
+            parse_duration(after).map_err(|e| format!("close_free_nodes_after: {e}"))?;
+        }
+        Ok(file)
     }
 
     pub fn render(&self) -> String {
@@ -44,9 +54,27 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after);
         self
     }
+}
+
+/// `90s`, `30m`, `2h`, `1.5d`: a positive number and its unit.
+pub fn parse_duration(text: &str) -> Result<Duration, String> {
+    let text = text.trim();
+    let unit = text.chars().last().ok_or("empty")?;
+    let seconds = match unit {
+        's' => 1.0,
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86400.0,
+        _ => return Err(format!("\"{text}\" needs a unit: s, m, h or d")),
+    };
+    let amount: f64 = text[..text.len() - 1].trim().parse().map_err(|_| format!("\"{text}\" is not a duration like 30m, 2h or 1d"))?;
+    if !(amount.is_finite() && amount > 0.0) {
+        return Err(format!("\"{text}\" must be longer than zero"));
+    }
+    Ok(Duration::from_secs_f64(amount * seconds))
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -62,6 +90,10 @@ pub struct Config {
     pub service_label: String,
     /// A throwaway instance for probes and end-to-end runs: only it takes reports and questions from `test/` nodes.
     pub sandbox: bool,
+    /// Restart a node whose process ended while it still had work. Only with `wake`.
+    pub resume_dead_nodes: bool,
+    /// Close a node once it has been free this long. Off unless set.
+    pub close_free_nodes_after: Option<Duration>,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -126,6 +158,10 @@ impl Config {
                 .unwrap_or(DEFAULT_RETENTION_HOURS),
             service_label: var("ALONDRA_SERVICE_LABEL").or_else(|| file.service_label.clone()).unwrap_or_else(|| DEFAULT_LABEL.into()),
             sandbox: var("ALONDRA_SANDBOX").is_some_and(flag),
+            resume_dead_nodes: var("ALONDRA_RESUME_DEAD_NODES").map(flag).or(file.resume_dead_nodes).unwrap_or(true),
+            close_free_nodes_after: var("ALONDRA_CLOSE_FREE_NODES_AFTER")
+                .and_then(|v| parse_duration(&v).ok())
+                .or_else(|| file.close_free_nodes_after.as_deref().and_then(|v| parse_duration(v).ok())),
             home,
         }
     }
@@ -233,6 +269,34 @@ mod tests {
         let base = FileConfig { name: Some("Ana".into()), port: Some(1), ..Default::default() };
         let over = FileConfig { port: Some(2), wake: Some(true), ..Default::default() };
         assert_eq!(base.overlay(&over), FileConfig { name: Some("Ana".into()), port: Some(2), wake: Some(true), ..Default::default() });
+    }
+
+    #[test]
+    fn dead_nodes_are_resumed_and_free_nodes_kept_unless_the_config_says_otherwise() {
+        let c = resolve(&FileConfig::default(), &[]);
+        assert!(c.resume_dead_nodes);
+        assert_eq!(c.close_free_nodes_after, None);
+
+        let file = FileConfig::parse("resume_dead_nodes = false\nclose_free_nodes_after = \"2h\"\n").unwrap();
+        let c = resolve(&file, &[]);
+        assert!(!c.resume_dead_nodes);
+        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7200)));
+        let c = resolve(&file, &[("ALONDRA_RESUME_DEAD_NODES", "1"), ("ALONDRA_CLOSE_FREE_NODES_AFTER", "30m")]);
+        assert!(c.resume_dead_nodes);
+        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(1800)));
+        let c = resolve(&file, &[("ALONDRA_CLOSE_FREE_NODES_AFTER", "soon")]);
+        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7200)), "a broken env value falls through to the file");
+
+        assert!(FileConfig::parse("close_free_nodes_after = \"2 hours\"").unwrap_err().contains("close_free_nodes_after"), "a typo in the file is an error, not silently off");
+        assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
+    }
+
+    #[test]
+    fn durations_are_a_positive_number_and_a_unit() {
+        let cases = [("90s", Some(90)), ("30m", Some(1800)), (" 2h ", Some(7200)), ("1.5d", Some(129_600)), ("2", None), ("0h", None), ("-1h", None), ("h", None), ("", None), ("2 hours", None)];
+        for (text, secs) in cases {
+            assert_eq!(parse_duration(text).ok().map(|d| d.as_secs()), secs, "{text:?}");
+        }
     }
 
     #[test]

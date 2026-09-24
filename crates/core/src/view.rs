@@ -121,6 +121,7 @@ impl View {
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
+                self.note_activity(at, h);
                 Some((h.session_id.clone(), Trigger::Hook))
             }
             Event::DaemonSeen(d) => {
@@ -134,6 +135,8 @@ impl View {
                     node.busy = false;
                     node.tool = None;
                     node.waiting_permission = false;
+                    node.exited_at = Some(at);
+                    node.ledger.on_exit(at);
                 }
                 for q in self.questions.values_mut() {
                     if &q.session_id == session_id
@@ -353,6 +356,12 @@ impl View {
                 self.orchestrator_launched_at = Some(at);
                 None
             }
+            Event::Resumed { session_id, ok, error } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.resumed = Some(crate::model::ResumeAttempt { at, exit: node.exited_at, ok: *ok, error: error.clone() });
+                }
+                None
+            }
             Event::Clock { machine_strained } => {
                 self.machine_strained = *machine_strained;
                 let sessions: Vec<String> = self.nodes.keys().cloned().collect();
@@ -363,10 +372,19 @@ impl View {
                 None
             }
         };
+        self.derive_tasks(at, event, before);
         if let Some((sid, trigger)) = touched {
             self.recompute(&sid, at, trigger);
         }
-        self.derive_tasks(at, event, before);
+        let assignee = match event {
+            Event::TaskCreated(t) => t.session_id.clone(),
+            Event::TaskAssigned { session_id, .. } => Some(session_id.clone()),
+            Event::TaskMoved { task, .. } => self.board.tasks.get(task).and_then(|t| t.assignee.as_ref()).map(|a| a.session_id.clone()),
+            _ => None,
+        };
+        if let Some(sid) = assignee {
+            self.recompute(&sid, at, Trigger::Other);
+        }
     }
 
     /// Whether time alone has changed what some node shows, so a sweep at `now` has to record
@@ -374,7 +392,7 @@ impl View {
     pub fn due(&self, now: Millis, machine_strained: bool) -> bool {
         self.nodes.values().any(|n| {
             let o = states::evaluate_with(self, n, now, Trigger::Clock, machine_strained);
-            o.state != n.state || o.orchestrator != n.orchestrator_state || o.drop_tool
+            o.state != n.state || o.status != n.status || o.orchestrator != n.orchestrator_state || o.drop_tool
         })
     }
 
@@ -622,6 +640,7 @@ impl View {
         let Some(node) = self.nodes.get_mut(session_id) else { return };
         if outcome.drop_tool {
             node.tool = None;
+            node.ledger.drop_main_tool(at);
         }
         let source = match outcome.evidence.signal {
             Signal::DaemonActive | Signal::BackgroundTask => StateSource::Daemon,
@@ -639,6 +658,7 @@ impl View {
             };
         }
         node.state_source = source;
+        node.status = outcome.status;
         node.orchestrator_state = outcome.orchestrator;
         node.evidence = Some(outcome.evidence);
     }
@@ -1371,9 +1391,10 @@ mod tests {
     }
 
     #[test]
-    fn a_final_report_from_a_node_without_the_plugin_is_not_its_own() {
+    fn a_node_without_the_plugin_shows_what_its_task_says() {
         let v = run(&[seen("s", "stopped", "idle", None, None), report(1, "s", ReportKind::Final, 1000)]);
-        assert_eq!(v.nodes["s"].state, NodeState::Delivered);
+        assert_eq!(v.session_task("s").map(|t| t.state), Some(crate::tasks::TaskState::Done));
+        assert_eq!(v.nodes["s"].state, NodeState::Done);
     }
 
     #[test]
@@ -1595,11 +1616,11 @@ mod tests {
             }
         };
         let cases: Vec<(&str, ReportKind, Box<dyn Fn(&View) -> Event>, bool, NodeState)> = vec![
-            ("notice, merged from the card", ReportKind::Notice, Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), true, NodeState::Done),
+            ("notice, merged from the card: work after the merge", ReportKind::Notice, Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), true, NodeState::Delivered),
             ("final, merged from the card", ReportKind::Final, Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Squash }), true, NodeState::Done),
-            ("notice, merged on GitHub", ReportKind::Notice, Box::new(github(PrState::Merged)), true, NodeState::Done),
-            ("notice, closed on GitHub", ReportKind::Notice, Box::new(github(PrState::Closed)), true, NodeState::Done),
-            ("notice, card set aside", ReportKind::Notice, Box::new(|_| Event::PrDismissed { id: 1 }), true, NodeState::Done),
+            ("notice, merged on GitHub: work after the merge", ReportKind::Notice, Box::new(github(PrState::Merged)), true, NodeState::Delivered),
+            ("notice, closed on GitHub: its task goes on", ReportKind::Notice, Box::new(github(PrState::Closed)), true, NodeState::Delivered),
+            ("notice, card set aside: its task goes on", ReportKind::Notice, Box::new(|_| Event::PrDismissed { id: 1 }), true, NodeState::Delivered),
             ("notice, changes requested", ReportKind::Notice, Box::new(|_| Event::PrChangesRequested { id: 1 }), false, NodeState::Delivered),
             ("notice, still open", ReportKind::Notice, Box::new(github(PrState::Open)), false, NodeState::WaitingMerge),
         ];

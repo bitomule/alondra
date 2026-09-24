@@ -35,7 +35,8 @@ claude --bg --name "test/alondra" --plugin-dir ~/Projects/alondra/plugin --permi
 or, from the orchestrator, with its `launch` tool.
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
-`legacy_bridge`, `wake`, `retention_hours`, `service_label`). An `ALONDRA_*` environment
+`legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
+`close_free_nodes_after`). An `ALONDRA_*` environment
 variable overrides the file; `alondra config` shows the values in effect.
 
 **The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: the

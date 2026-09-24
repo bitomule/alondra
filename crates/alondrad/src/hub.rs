@@ -17,6 +17,7 @@ pub struct Hub {
     tick: watch::Sender<u64>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     own_attaches: Mutex<HashSet<String>>,
+    closing: Mutex<HashSet<String>>,
     activity: Mutex<HashMap<String, i64>>,
     pub options: Mutex<Option<alondra_core::options::OptionsFile>>,
     pub issues: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
@@ -49,6 +50,7 @@ impl Hub {
             tick,
             holds: Mutex::new(HashMap::new()),
             own_attaches: Mutex::new(HashSet::new()),
+            closing: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
             options: Mutex::new(None),
             issues: tokio::sync::Mutex::new(None),
@@ -128,6 +130,17 @@ impl Hub {
         self.own_attaches.lock().expect("attaches lock poisoned").contains(short)
     }
 
+    /// Marks that Alondra is closing a node, whose process `claude rm` stops on the way: that
+    /// exit is not one to restart.
+    pub fn closing(&self, session_id: &str) -> Closing<'_> {
+        self.closing.lock().expect("closing lock poisoned").insert(session_id.to_string());
+        Closing { hub: self, session_id: session_id.to_string() }
+    }
+
+    pub fn is_closing(&self, session_id: &str) -> bool {
+        self.closing.lock().expect("closing lock poisoned").contains(session_id)
+    }
+
     pub fn read<T>(&self, f: impl FnOnce(&View) -> T) -> T {
         f(&self.view.read().expect("view lock poisoned"))
     }
@@ -199,5 +212,16 @@ pub struct OwnAttach<'a> {
 impl Drop for OwnAttach<'_> {
     fn drop(&mut self) {
         self.hub.own_attaches.lock().expect("attaches lock poisoned").remove(&self.short);
+    }
+}
+
+pub struct Closing<'a> {
+    hub: &'a Hub,
+    session_id: String,
+}
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        self.hub.closing.lock().expect("closing lock poisoned").remove(&self.session_id);
     }
 }
