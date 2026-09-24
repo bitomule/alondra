@@ -1780,6 +1780,26 @@
           }
         }
       }
+    },
+    "Project": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proyecto"
+          }
+        }
+      }
+    },
+    "The orchestrator decides": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo decide el orquestador"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

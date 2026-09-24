@@ -7,6 +7,8 @@ struct NewRequestView: View {
     @State private var attachments = Attachments()
     @State private var sending = false
     @State private var sentCount = 0
+    @State private var options: WorkOptionsModel?
+    @State private var showingOptions = false
     @FocusState private var focused: Bool
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -21,6 +23,9 @@ struct NewRequestView: View {
                         orchestratorStatus
                     }
                     editor
+                    if let options {
+                        optionsRow(options)
+                    }
                     if !fleet.sentToOrchestrator.isEmpty {
                         history
                     }
@@ -32,7 +37,47 @@ struct NewRequestView: View {
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaBar(edge: .bottom) { sendBar }
             .sensoryFeedback(.success, trigger: sentCount)
+            .task {
+                let model = WorkOptionsModel(client: fleet.client)
+                options = model
+                await model.load()
+            }
+            .sheet(isPresented: $showingOptions) {
+                if let options {
+                    WorkOptionsSheet(model: options)
+                        .presentationDetents([.medium, .large])
+                }
+            }
         }
+    }
+
+    private func optionsRow(_ model: WorkOptionsModel) -> some View {
+        Button {
+            showingOptions = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundStyle(Palette.ember)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.options.project ?? String(localized: "The orchestrator picks the project"))
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.options.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.loaded)
+        .accessibilityHint(Text("Changes the options for this request"))
     }
 
     private var orchestratorStatus: some View {
@@ -129,11 +174,13 @@ struct NewRequestView: View {
     }
 
     private func send() {
-        let request = trimmed
+        let body = (options?.options ?? WorkOptions()).body(text: trimmed)
         sending = true
         Task {
             let ok = await fleet.perform { [attachments] client in
-                try await client.newRequest(request, attachments: try await attachments.storedIDs(using: client))
+                var body = body
+                body.attachments = try await attachments.storedIDs(using: client)
+                try await client.newRequest(body)
             }
             sending = false
             if ok {
@@ -144,5 +191,50 @@ struct NewRequestView: View {
                 fleet.notice = Notice(String(localized: "Sent to the orchestrator"))
             }
         }
+    }
+}
+
+private struct WorkOptionsSheet: View {
+    @Bindable var model: WorkOptionsModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Project", selection: projectBinding) {
+                        Text("The orchestrator picks").tag(String?.none)
+                        ForEach(model.projects, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                    }
+                }
+                Section {
+                    ForEach(model.options.specs) { spec in
+                        switch spec.kind {
+                        case .toggle:
+                            Toggle(spec.title, isOn: Binding(get: { model.options.current(spec) == .toggle(true) }, set: { model.options.set(spec, to: .toggle($0)) }))
+                        case .choice:
+                            Picker(spec.title, selection: Binding(get: { model.options.current(spec) }, set: { model.options.set(spec, to: $0) })) {
+                                ForEach(spec.values) { Text(verbatim: spec.title(of: $0)).tag(OptionChoice.value($0.id)) }
+                            }
+                        }
+                    }
+                } footer: {
+                    if let error = model.options.error {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                    }
+                }
+            }
+            .navigationTitle("Options")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var projectBinding: Binding<String?> {
+        Binding(get: { model.options.project }, set: { project in Task { await model.choose(project: project) } })
     }
 }
