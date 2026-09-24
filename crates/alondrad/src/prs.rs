@@ -591,7 +591,7 @@ mod tests {
     async fn alondra_merges_an_auto_merge_pr_once_github_lets_it_and_tells_the_node_what_only_it_can_fix() {
         use alondra_core::tasks::TaskState;
         let hub = Arc::new(hub("auto-merge"));
-        hub.append(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None }).unwrap();
+        hub.append(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).unwrap();
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), pid: Some(1), ..Default::default() })).unwrap();
         hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None }).unwrap();
         let check = |state: CheckState| vec![Check { name: "lint".into(), state, url: None }];

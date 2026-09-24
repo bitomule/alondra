@@ -58,6 +58,8 @@ pub struct Launch {
     pub request_id: Option<String>,
     pub options: Resolved,
     pub task: Option<String>,
+    /// The title of the task the launch makes or serves; the node's name when absent.
+    pub title: Option<String>,
 }
 
 /// Launches a node and records the launch; with `task`, the node takes that task.
@@ -70,7 +72,7 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
     }
     let args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref());
     let output = launcher.run(&l.cwd, &args).await?;
-    let launched = Event::Launched { name: l.name.clone(), request_id: l.request_id.clone(), auto_merge: l.options.auto_merge, task: l.task.clone() };
+    let launched = Event::Launched { name: l.name.clone(), request_id: l.request_id.clone(), auto_merge: l.options.auto_merge, task: l.task.clone(), title: l.title.clone() };
     hub.append(launched).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(json!({"ok": true, "output": output, "auto_merge": l.options.auto_merge, "task": l.task}))
 }
@@ -93,7 +95,7 @@ pub fn task_options(hub: &Hub, task: &Task, effort: Option<&str>) -> Resolved {
 }
 
 fn live(v: &View, session_id: &str) -> bool {
-    !v.removed.contains(session_id) && v.nodes.get(session_id).is_some_and(|n| n.alive || n.in_daemon)
+    !v.removed.contains_key(session_id) && v.nodes.get(session_id).is_some_and(|n| n.alive || n.in_daemon)
 }
 
 fn node_name(v: &View, session_id: &str) -> String {
@@ -323,7 +325,7 @@ fn plan(v: &View, d: &Definition, file: &OptionsFile, root: &Path, user: &str, n
                 }),
             },
             Some(key) => match v.resolve_node(key) {
-                None if v.removed.contains(key) => Err(format!("{label}: node {key} was closed: pick a live node (see candidates) or \"new\"")),
+                None if v.removed.contains_key(key) => Err(format!("{label}: node {key} was closed: pick a live node (see candidates) or \"new\"")),
                 None => Err(format!("{label}: there is no node {key}: pick a live node (see candidates) or \"new\"")),
                 Some(n) if n.is_orchestrator => Err(format!("{label}: {key} is the orchestrator: give the task to a node, or \"new\"")),
                 Some(n) if !live(v, &n.session_id) => Err(format!("{label}: node {key} is closed: pick a live node (see candidates) or \"new\"")),
@@ -363,6 +365,7 @@ fn plan(v: &View, d: &Definition, file: &OptionsFile, root: &Path, user: &str, n
             },
             session_id: None,
             launched: false,
+            launched_as: None,
             start,
         }));
     }
@@ -451,7 +454,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
         Some(Start::NewNode { name, cwd, model }) => {
             let waiting = hub.read(|v| v.nodes.values().any(|n| n.name.as_deref() == Some(name) && live(v, &n.session_id) && v.tasks_of(&n.session_id).next().is_none()));
             if waiting {
-                let launched = Event::Launched { name: name.clone(), request_id: Some(task.request.clone()), auto_merge: task.options.auto_merge, task: Some(task.id.clone()) };
+                let launched = Event::Launched { name: name.clone(), request_id: Some(task.request.clone()), auto_merge: task.options.auto_merge, task: Some(task.id.clone()), title: None };
                 hub.append(launched).map_err(|e| e.to_string())?;
                 return Ok(format!("in node {name}, already running"));
             }
@@ -466,6 +469,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
                 request_id,
                 options: task_options(hub, task, None),
                 task: Some(task.id.clone()),
+                title: None,
             };
             launch(hub, l, launcher).await.map(|_| format!("in a new node {name}")).map_err(|(_, e)| e)
         }

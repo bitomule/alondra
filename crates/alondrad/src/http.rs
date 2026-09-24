@@ -2474,6 +2474,9 @@ pub(crate) struct LaunchBody {
     /// The task the node is launched for; its brief is the prompt unless one is given.
     #[serde(default)]
     task: Option<String>,
+    /// A short title for the task, which otherwise goes by the node's name.
+    #[serde(default)]
+    title: Option<String>,
 }
 
 fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -2534,6 +2537,7 @@ pub(crate) async fn launch_with(hub: &Hub, b: LaunchBody, launcher: &impl crate:
         request_id,
         options,
         task,
+        title: b.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string),
     };
     match crate::orchestrate::launch(hub, l, launcher).await {
         Ok(v) => Json(v).into_response(),
@@ -3115,7 +3119,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{said}");
         hub.append(Event::TaskCreated(NewTask {
             id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-            session_id: Some("s".into()), launched: false, start: None,
+            session_id: Some("s".into()), launched: false, launched_as: None, start: None,
         }))
         .unwrap();
         let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| {
@@ -3225,7 +3229,7 @@ mod tests {
                 }
                 if c.second_task {
                     let second = alondra_core::tasks::NewTask {
-                        id: "t-2".into(), request: "r-2".into(), title: "Otra".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, start: None,
+                        id: "t-2".into(), request: "r-2".into(), title: "Otra".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, launched_as: None, start: None,
                     };
                     hub.append(Event::TaskCreated(second)).unwrap();
                 }
@@ -4200,7 +4204,7 @@ defaults = { pr = "auto_merge" }
     fn a_node_launched_with_auto_merge_raises_no_pr_card() {
         for (auto_merge, cards) in [(true, 0), (false, 1)] {
             let hub = temp_hub("auto-merge-card");
-            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge, task: None }).unwrap();
+            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge, task: None, title: None }).unwrap();
             hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), ..Default::default() })).unwrap();
             hub.append(Event::PrOpened { url: "https://github.com/a/app/pull/3".into(), session_id: "s".into(), task: None }).unwrap();
             assert_eq!(hub.read(|v| crate::prs::in_inbox(v).count()), cards, "auto_merge {auto_merge}");

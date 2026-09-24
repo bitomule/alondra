@@ -17,8 +17,9 @@ pub struct View {
     pub questions: BTreeMap<u64, Question>,
     pub reports: BTreeMap<u64, Report>,
     pub messages: BTreeMap<u64, Message>,
-    #[serde(default)]
-    pub removed: std::collections::BTreeSet<String>,
+    /// Nodes closed, with when: their late events are ignored until the retention window drops them.
+    #[serde(default, deserialize_with = "removed_nodes")]
+    pub removed: BTreeMap<String, Millis>,
     #[serde(default)]
     pub machine_strained: bool,
     #[serde(default)]
@@ -45,6 +46,26 @@ pub struct View {
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
+
+/// Snapshots before the removal time was kept hold a bare list: those count as removed at 0,
+/// so the next prune forgets them.
+fn removed_nodes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Millis>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Removed {
+        Since(BTreeMap<String, Millis>),
+        Listed(Vec<String>),
+    }
+    Ok(match Removed::deserialize(d)? {
+        Removed::Since(map) => map,
+        Removed::Listed(ids) => ids.into_iter().map(|id| (id, 0)).collect(),
+    })
+}
+
+/// A request id made by `new_request` carries when it was sent.
+fn request_sent_at(id: &str) -> Option<Millis> {
+    id.strip_prefix("r-")?.parse().ok()
+}
 
 /// A report that sends an artifact for David to review: a review card of its own.
 fn is_review(r: &Report) -> bool {
@@ -106,14 +127,17 @@ impl View {
         self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
         self.messages.retain(|_, m| m.created_at >= before);
         self.approved_artifacts.retain(|_, at| *at >= before);
+        self.removed.retain(|_, at| *at >= before);
         let keep = self.tasks_to_keep();
         self.board.prune(before, |t| keep.contains(&t.id));
+        let board = &self.board.requests;
+        self.requests.retain(|id, _| board.contains_key(id) || request_sent_at(id).is_some_and(|at| at >= before));
     }
 
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
         self.seq = seq;
         if let Some(sid) = event.session_id()
-            && self.removed.contains(sid)
+            && self.removed.contains_key(sid)
         {
             return;
         }
@@ -150,7 +174,7 @@ impl View {
             }
             Event::NodeRemoved { session_id } => {
                 self.nodes.remove(session_id);
-                self.removed.insert(session_id.clone());
+                self.removed.insert(session_id.clone(), at);
                 for q in self.questions.values_mut() {
                     if &q.session_id == session_id && q.status.is_open() {
                         q.status = QuestionStatus::Orphaned;
@@ -331,7 +355,7 @@ impl View {
                 self.pr_node(*id)
             }
             Event::PrAsked { id } => self.pr_node(*id),
-            Event::TasksRecorded | Event::TaskCreated(_) | Event::TaskAssigned { .. } | Event::TaskMoved { .. } => None,
+            Event::TasksRecorded | Event::TaskCreated(_) | Event::TaskAssigned { .. } | Event::TaskMoved { .. } | Event::RequestTitled { .. } | Event::RequestClosed { .. } => None,
             Event::RequestSent { request_id, options, .. } => {
                 self.requests.insert(request_id.clone(), options.clone());
                 None
@@ -1175,6 +1199,25 @@ mod tests {
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 1 });
         v.apply(4, 4000, &hook("s", "SessionEnd"));
         assert!(!v.nodes.contains_key("s"));
+    }
+
+    /// The closed nodes and the options of every request only ever grew, and every snapshot
+    /// carried them.
+    #[test]
+    fn a_closed_nodes_mark_and_an_old_requests_options_go_with_the_retention_window() {
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2_000, &Event::NodeRemoved { session_id: "s".into() });
+        v.apply(3, 3_000, &Event::RequestSent { request_id: "r-3000".into(), options, text: None, attachments: vec![] });
+        v.apply(4, 4_000, &Event::Pruned { before: 1_500 });
+        assert!(v.removed.contains_key("s") && v.requests.contains_key("r-3000"), "within the window");
+        v.apply(5, 4_500, &hook("s", "Stop"));
+        assert!(!v.nodes.contains_key("s"), "a late event of a closed node is still ignored");
+        v.apply(6, 9_000, &Event::Pruned { before: 5_000 });
+        assert!(v.removed.is_empty(), "{:?}", v.removed);
+        assert!(v.requests.is_empty(), "{:?}", v.requests.keys().collect::<Vec<_>>());
+        let legacy: View = serde_json::from_value(serde_json::json!({"seq": 1, "nodes": {}, "questions": {}, "reports": {}, "messages": {}, "removed": ["old"]})).unwrap();
+        assert_eq!(legacy.removed.get("old"), Some(&0), "a snapshot from before keeps its closed nodes until the next prune");
     }
 
     #[test]

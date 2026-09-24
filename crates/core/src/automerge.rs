@@ -77,7 +77,7 @@ impl View {
         let g = self.task_guards(task);
         match task.state {
             TaskState::Done => true,
-            TaskState::Running | TaskState::InReview => g.nothing_after_merge && !others && g.unreviewed_document.is_none(),
+            TaskState::Running | TaskState::InReview => task.final_report.is_some() && !others && g.unreviewed_document.is_none(),
             TaskState::WaitingDependency | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => false,
         }
     }

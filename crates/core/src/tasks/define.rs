@@ -194,7 +194,7 @@ impl View {
         let mut out: Vec<Candidate> = self
             .nodes
             .values()
-            .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon) && !self.removed.contains(&n.session_id))
+            .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon) && !self.removed.contains_key(&n.session_id))
             .filter_map(|n| {
                 let mine: Vec<&Task> = self.tasks_of(&n.session_id).collect();
                 let mut why = vec![];
@@ -294,6 +294,7 @@ mod tests {
             options: TaskOptions::default(),
             session_id: None,
             launched: false,
+            launched_as: None,
             start: Some(start),
         }
     }
@@ -311,7 +312,7 @@ mod tests {
     }
 
     fn launched(name: &str, task: &str) -> Event {
-        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()) }
+        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
     }
 
     fn opened(sid: &str) -> Event {
