@@ -670,7 +670,11 @@ impl App {
         self.reconcile();
     }
 
+    /// Every call to alondrad runs here. Tests never reach the user's live alondrad.
     fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>) + Send + 'static) {
+        if cfg!(test) {
+            return;
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || job(&tx));
     }
