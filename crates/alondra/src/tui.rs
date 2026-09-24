@@ -359,6 +359,8 @@ pub struct App {
     /// What each post would have called and flashed on success, since tests never reach alondrad.
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<(Vec<String>, String)>>,
+    #[cfg(test)]
+    posted_keys: std::cell::RefCell<Vec<Option<Key>>>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -614,6 +616,8 @@ impl App {
             pending_merge: None,
             #[cfg(test)]
             posted: Default::default(),
+            #[cfg(test)]
+            posted_keys: Default::default(),
             search: None,
             composer: None,
             reader: None,
@@ -821,6 +825,8 @@ impl App {
     fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
         #[cfg(test)]
         self.posted.borrow_mut().push((calls.iter().map(|(p, _)| p.clone()).collect(), ok.clone()));
+        #[cfg(test)]
+        self.posted_keys.borrow_mut().push(key);
         self.spawn(move |tx| {
             let client = Client::for_user(Duration::from_secs(15));
             let mut result = Ok(ok);
@@ -894,6 +900,14 @@ impl App {
         self.load_threads();
     }
 
+    /// alondrad came back, maybe a newer one: the routes an older one lacked are tried again.
+    fn forget_missing_routes(&mut self) {
+        self.task_actions_missing = false;
+        self.archive_missing = false;
+        self.history_missing = false;
+        self.history_asked.clear();
+    }
+
     /// Asks the selected node's own route what each of its threads does, once each time the node
     /// is opened: the overview does not carry it.
     fn load_threads(&mut self) {
@@ -915,6 +929,9 @@ impl App {
     fn on_msg(&mut self, m: Msg) {
         match m {
             Msg::Data(o) => {
+                if self.offline || o.tick < self.data.tick {
+                    self.forget_missing_routes();
+                }
                 self.data = *o;
                 self.connected = true;
                 self.loaded = true;
@@ -1632,7 +1649,7 @@ impl App {
                 self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text, "attachments": ids}))], tr!("Changes requested", "Cambios pedidos").to_string());
             }
             Target::PrAsk { id, .. } => {
-                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/ask"), json!({"text": text, "attachments": ids}))], tr!("Asked its node", "Preguntado a su nodo").to_string());
+                self.post(None, vec![(format!("/v1/prs/{id}/ask"), json!({"text": text, "attachments": ids}))], tr!("Asked its node", "Preguntado a su nodo").to_string());
             }
             Target::Answer { id, option, .. } => {
                 self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref(), &ids))], trf!("#{id} answered", "#{id} contestada"));
@@ -2256,6 +2273,30 @@ pub(crate) mod tests {
         rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
         rv.comments.sort_by_key(|c| c.block);
         assert!(rv.feedback().starts_with(&format!("Comments from {}:\n\n1. On \"b\":", crate::client::config().name)));
+    }
+
+    #[test]
+    fn asking_on_a_pr_keeps_the_comments_drafted_in_its_reader() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.reviews.insert(Key::P(4), Review { comments: vec![Comment { block: 0, quote: "a".into(), text: "why this?".into() }], ..Default::default() });
+        app.compose(Target::PrAsk { id: 4, title: "t".into() }, "");
+        app.composer.as_mut().unwrap().input.insert_str("Does it build?");
+        app.submit();
+        assert_eq!(app.posted.borrow().last().map(|(p, _)| p.clone()), Some(vec!["/v1/prs/4/ask".to_string()]));
+        let key = app.posted_keys.borrow().last().cloned().flatten();
+        app.on_msg(Msg::Posted { key, result: Ok("Asked its node".into()) });
+        assert_eq!(app.reviews.get(&Key::P(4)).map(|r| r.comments.len()), Some(1), "the Ask sent none of them");
+    }
+
+    #[test]
+    fn what_an_older_alondrad_lacked_is_tried_again_once_it_is_back() {
+        let (mut app, _rx) = app_with(vec![]);
+        (app.task_actions_missing, app.archive_missing, app.history_missing) = (true, true, true);
+        app.on_msg(Msg::Data(Box::new(app.data.clone())));
+        assert!(app.task_actions_missing && app.archive_missing, "the same alondrad still lacks them");
+        app.on_msg(Msg::Offline);
+        app.on_msg(Msg::Data(Box::new(app.data.clone())));
+        assert!(!app.task_actions_missing && !app.archive_missing && !app.history_missing);
     }
 
     pub(super) fn press(app: &mut App, keys: &str) -> Flow {

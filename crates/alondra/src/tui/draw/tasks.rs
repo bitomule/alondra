@@ -301,13 +301,7 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
         }
     }
     section(&mut lines, tr!(" Options", " Opciones"));
-    let yes_no = |b: bool| if b { tr!("yes", "sí") } else { tr!("no", "no") };
-    let mut options = vec![
-        Span::styled(tr!(" auto-merge ", " auto-merge "), Style::new().fg(DIM)),
-        Span::raw(yes_no(t.options.auto_merge)),
-        Span::styled(tr!(" · review PR ", " · revisar PR "), Style::new().fg(DIM)),
-        Span::raw(yes_no(!t.options.auto_merge)),
-    ];
+    let mut options = vec![Span::styled(tr!(" PR handling ", " gestión de PR "), Style::new().fg(DIM)), Span::raw(super::super::work::pr_handling(t.options.auto_merge))];
     if let Some(effort) = &t.options.effort {
         options.push(Span::styled(tr!(" · effort ", " · esfuerzo "), Style::new().fg(DIM)));
         options.push(Span::raw(effort.clone()));
@@ -424,7 +418,7 @@ pub fn node_detail_lines(app: &App, n: &FleetNode, width: usize) -> Vec<Line<'st
             lines.push(activity_line(a, "", width, Span::raw("")));
             if let Some(task) = a.task.as_deref().and_then(|id| app.task(id)).filter(|_| !a.is_main()) {
                 let title = md::one_line(&task.title);
-                lines.push(fit(vec![Span::raw(" ".repeat(11)), Span::styled(trf!("subagent of «{title}»", "subagente de «{title}»"), Style::new().fg(DIM))], width));
+                lines.push(fit(vec![Span::raw(" ".repeat(11)), Span::styled(trf!("subagent of “{title}”", "subagente de «{title}»"), Style::new().fg(DIM))], width));
             }
         }
     }
@@ -652,11 +646,54 @@ mod tests {
         assert!(app.task_sel == Some(super::super::super::tasks::TaskKey::Archived));
         code(&mut app, KeyCode::Enter);
         let s = screen(&mut app, 150, 40);
-        for shown in ["▾ Archivadas (2)", "Old work", "Shipped fix", "How is it going?", "terminada sin tareas"] {
+        for shown in ["▾ Archivadas (2)", "Shipped fix", "How is it going?", "terminada sin tareas"] {
             assert!(s.contains(shown), "{shown}:\n{s}");
         }
         assert!(app.archivable_count() == 0, "archived work is not archived again");
         press(&mut app, "o");
         assert!(!screen(&mut app, 150, 40).contains("Shipped fix"), "o closes it again");
+    }
+
+    #[test]
+    fn a_tasks_history_is_asked_again_when_the_task_changes_or_the_fetch_failed() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
+        assert!(app.history_asked.contains(&(id.clone(), since)));
+        app.history_loaded(id.clone(), since, Ok(vec![]));
+        let later = since + 5;
+        app.data.tasks.iter_mut().find(|t| t.id == id).unwrap().last_change = Some(later);
+        app.reconcile();
+        assert!(app.history_asked.contains(&(id.clone(), later)), "a move that kept its state still reaches its history");
+        app.history_loaded(id.clone(), later, Err(false));
+        app.reconcile();
+        assert!(app.history_asked.contains(&(id.clone(), later)) && !app.history_missing, "a failed fetch is asked again");
+    }
+
+    #[test]
+    fn a_request_goes_by_its_title_then_its_only_tasks_then_what_the_user_wrote() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        finished(&mut app, None);
+        let title = |app: &App, id: &str| app.request_title(app.request(id).unwrap());
+        assert_eq!(title(&app, "r-2"), "Import lists from Notes", "still defined: what the user wrote");
+        assert_eq!(title(&app, "r-3"), "Shipped fix", "its only task's title, not the prompt");
+        assert_eq!(title(&app, "r-1"), "Strike-through phase 2", "three tasks and no title from an older alondrad");
+        let given: crate::client::ClientRequest = serde_json::from_value(json!({"id": "r-1", "created_at": 1, "state": "in_progress", "tasks": ["t-1"], "title": "Strike-through, phase 2"})).unwrap();
+        app.data.requests[0] = given;
+        assert_eq!(title(&app, "r-1"), "Strike-through, phase 2", "the orchestrator's title wins");
+    }
+
+    #[test]
+    fn a_task_shows_how_its_prs_are_handled_once() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let s = screen(&mut app, 130, 40);
+        assert!(s.contains("PR handling review each one"), "{s}");
+        assert!(!s.contains("review PR") && !s.contains("auto-merge no"), "one setting, one row:\n{s}");
     }
 }

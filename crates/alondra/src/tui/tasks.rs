@@ -245,11 +245,14 @@ impl App {
         self.data.tasks.iter().filter(|t| !t.state.finished()).count() + self.data.requests.iter().filter(|r| r.state == RequestState::Defining).count()
     }
 
-    /// The first line of what the user asked; a request made up for an older node takes its
-    /// first task's title.
+    /// The title the orchestrator gave it, else its only task's, else the first line of what the
+    /// user asked (all a request being defined has), else its first task's.
     pub fn request_title(&self, r: &ClientRequest) -> String {
+        let tasks = self.request_tasks(r);
+        let given = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        let only = (tasks.len() == 1).then(|| tasks[0].title.clone());
         let line = r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
-        line.or_else(|| self.request_tasks(r).first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
+        given.or(only).or(line).or_else(|| tasks.first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
     }
 
     pub fn task_project(&self, t: &ClientTask) -> Option<String> {
@@ -367,7 +370,7 @@ impl App {
                 }
                 let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
                 let title = &first.title;
-                Some(trf!("after «{title}»", "tras «{title}»"))
+                Some(trf!("after “{title}”", "tras «{title}»"))
             }
             TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
             TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
@@ -382,7 +385,7 @@ impl App {
         let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
         let (title, state) = (&first.title, crate::i18n::task_state(first.state));
         Some(trf!(
-            "It starts once «{title}» ({state}) has its PR open, builds on top of it, and its own PR merges after that one.",
+            "It starts once “{title}” ({state}) has its PR open, builds on top of it, and its own PR merges after that one.",
             "Empieza cuando «{title}» ({state}) tenga su PR abierto, se construye encima y su PR se fusiona después."
         ))
     }
@@ -411,7 +414,7 @@ impl App {
 
     /// The selected task's history, which only its own endpoint carries; asked once per state.
     fn load_history(&mut self) {
-        let Some((id, since)) = self.selected_task().map(|t| (t.id.clone(), t.state_since)) else { return };
+        let Some((id, since)) = self.selected_task().map(|t| (t.id.clone(), t.last_change.unwrap_or(t.state_since))) else { return };
         if self.history_missing || self.histories.get(&id).is_some_and(|(at, _)| *at == since) || !self.history_asked.insert((id.clone(), since)) {
             return;
         }
@@ -433,7 +436,10 @@ impl App {
             Ok(h) => {
                 self.histories.insert(id, (since, h));
             }
-            Err(missing) => self.history_missing |= missing,
+            Err(true) => self.history_missing = true,
+            Err(false) => {
+                self.history_asked.remove(&(id, since));
+            }
         }
     }
 
@@ -508,7 +514,7 @@ impl App {
         let now = now_millis();
         if !self.pending_cancel.as_ref().is_some_and(|(p, until)| *p == id && now < *until) {
             self.pending_cancel = Some((id, now + 4000));
-            self.fail(trf!("Press x again to cancel «{title}»", "Pulsa x otra vez para descartar «{title}»"));
+            self.fail(trf!("Press x again to cancel “{title}”", "Pulsa x otra vez para descartar «{title}»"));
             return;
         }
         self.pending_cancel = None;

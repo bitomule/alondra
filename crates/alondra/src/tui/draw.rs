@@ -1491,7 +1491,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
         Target::NewRequest => tr!("New work: the orchestrator prepares the mission and launches the node", "Trabajo nuevo: el orquestador prepara la misión y lanza el nodo").into(),
         Target::Comment { quote, .. } => {
             let q = md::one_line(quote);
-            trf!("Comment on «{q}»", "Comentario sobre «{q}»")
+            trf!("Comment on “{q}”", "Comentario sobre «{q}»")
         }
         Target::General { send: true } if app.reader.as_ref().is_some_and(|r| r.approval.is_some()) => tr!("What changes do you want? (⏎ sends them)", "¿Qué cambios pides? (⏎ los envía)").into(),
         Target::General { send: true } => tr!("Your comments (⏎ sends them)", "Tus comentarios (⏎ los envía)").into(),

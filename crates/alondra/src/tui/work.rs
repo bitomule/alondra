@@ -290,10 +290,15 @@ pub fn label(s: &Spec) -> String {
     }
 }
 
+/// How a task's PRs are handled, in the launch option's words.
+pub fn pr_handling(auto_merge: bool) -> &'static str {
+    if auto_merge { tr!("auto-merge", "merge automático") } else { tr!("review each one", "revisar cada una") }
+}
+
 pub fn value_label(s: &Spec, c: &Choice) -> String {
     let builtin = |v: &str| match v {
-        "review" => Some(tr!("review each one", "revisar cada una")),
-        "auto_merge" => Some(tr!("auto-merge", "merge automático")),
+        "review" => Some(pr_handling(false)),
+        "auto_merge" => Some(pr_handling(true)),
         AUTO => Some(tr!("auto", "automático")),
         "light" => Some(tr!("light", "ligero")),
         "normal" => Some(tr!("normal", "normal")),

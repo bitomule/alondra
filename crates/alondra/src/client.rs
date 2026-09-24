@@ -63,6 +63,9 @@ pub struct ClientRequest {
     pub state: alondra_core::tasks::RequestState,
     #[serde(default)]
     pub tasks: Vec<String>,
+    /// The title the orchestrator gave it.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl std::ops::Deref for ClientRequest {
@@ -79,6 +82,9 @@ pub struct ClientTask {
     /// Alondra merges its PR by itself once the checks pass.
     #[serde(default)]
     pub auto_merge_pending: bool,
+    /// When anything last happened to it, its history included.
+    #[serde(default)]
+    pub last_change: Option<i64>,
 }
 
 impl std::ops::Deref for ClientTask {
@@ -368,31 +374,42 @@ impl Client {
         let status = resp.status().as_u16();
         let body = resp.body_mut().read_to_string().unwrap_or_default();
         if status >= 400 {
-            let parsed = serde_json::from_str::<Value>(&body).ok();
-            if status == 404 && parsed.as_ref().and_then(|v| v.get("error")).is_none() {
-                return Err(anyhow::Error::new(NotFound));
-            }
-            let reasons: Vec<String> = parsed
-                .as_ref()
-                .and_then(|v| v.get("reasons"))
-                .and_then(Value::as_array)
-                .map(|rs| {
-                    rs.iter()
-                        .map(|r| crate::i18n::close_reason(r.get("kind").and_then(Value::as_str).unwrap_or_default(), r.get("detail").and_then(Value::as_str)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !reasons.is_empty() {
-                let text = match reasons.as_slice() {
-                    [one] => one.clone(),
-                    many => many.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n"),
-                };
-                return Err(anyhow!(text));
-            }
-            let msg = parsed.as_ref().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string)).unwrap_or(body);
-            return Err(anyhow!(trf!("alondrad answered: {msg}", "alondrad respondió: {msg}")));
+            return Err(Self::failure(status, body));
         }
         Ok((status, body))
+    }
+
+    /// Why alondrad said no, in the user's language where the reason is one the apps know.
+    fn failure(status: u16, body: String) -> anyhow::Error {
+        let parsed = serde_json::from_str::<Value>(&body).ok();
+        if status == 404 && parsed.as_ref().and_then(|v| v.get("error")).is_none() {
+            return anyhow::Error::new(NotFound);
+        }
+        if status == 404 {
+            return anyhow!(tr!("Alondra no longer has it", "Alondra ya no lo tiene"));
+        }
+        if parsed.as_ref().and_then(|v| v.get("kind")).and_then(Value::as_str) == Some("task_refused") {
+            return anyhow!(tr!("The task’s state does not allow that now", "El estado de la tarea no lo permite ahora"));
+        }
+        let reasons: Vec<String> = parsed
+            .as_ref()
+            .and_then(|v| v.get("reasons"))
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .map(|r| crate::i18n::close_reason(r.get("kind").and_then(Value::as_str).unwrap_or_default(), r.get("detail").and_then(Value::as_str)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !reasons.is_empty() {
+            let text = match reasons.as_slice() {
+                [one] => one.clone(),
+                many => many.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n"),
+            };
+            return anyhow!(text);
+        }
+        let msg = parsed.as_ref().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string)).unwrap_or(body);
+        anyhow!(trf!("alondrad answered: {msg}", "alondrad respondió: {msg}"))
     }
 
     pub fn get_text(&self, path: &str) -> Result<(u16, String)> {
@@ -448,5 +465,21 @@ impl Client {
 
     pub fn overview(&self) -> Result<Overview> {
         self.get("/v1/overview")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{Lang, set_for_this_thread};
+
+    #[test]
+    fn a_refused_task_action_and_something_gone_read_in_the_users_language() {
+        set_for_this_thread(Lang::Es);
+        let said = |status, body: &str| Client::failure(status, body.to_string()).to_string();
+        assert_eq!(said(409, r#"{"error":"the task is already done","kind":"task_refused"}"#), "El estado de la tarea no lo permite ahora");
+        assert_eq!(said(404, r#"{"error":"task t-9 does not exist"}"#), "Alondra ya no lo tiene");
+        assert!(Client::failure(404, String::new()).downcast_ref::<NotFound>().is_some(), "a bare 404 is a route this alondrad lacks");
+        assert_eq!(said(409, r#"{"error":"something new"}"#), "alondrad respondió: something new");
     }
 }
