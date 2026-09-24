@@ -313,7 +313,7 @@ enum Msg {
     Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
     /// A task's history, or whether alondrad has no route for it.
-    TaskHistory { id: String, since: i64, history: Result<Vec<alondra_core::tasks::Transition>, bool> },
+    TaskHistory { id: String, since: i64, history: Result<(Vec<alondra_core::tasks::Transition>, Vec<alondra_core::Report>), bool> },
     /// A cancel or reopen: what to flash, or why it failed and whether alondrad has no route for it.
     TaskAction(Result<String, (String, bool)>),
     /// An archive of what is finished, told like a task action.
@@ -392,6 +392,7 @@ pub struct App {
     pub task_zoom: bool,
     /// Each task's history by id, with the `state_since` it was fetched at.
     pub histories: HashMap<String, (i64, Vec<alondra_core::tasks::Transition>)>,
+    pub task_reports: HashMap<String, Vec<alondra_core::Report>>,
     history_asked: HashSet<(String, i64)>,
     history_missing: bool,
     pub task_actions_missing: bool,
@@ -644,6 +645,7 @@ impl App {
             task_view: View::default(),
             task_zoom: false,
             histories: HashMap::new(),
+            task_reports: HashMap::new(),
             history_asked: HashSet::new(),
             history_missing: false,
             task_actions_missing: false,

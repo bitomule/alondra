@@ -19,8 +19,13 @@ pub const RESUME_BACKOFF_MS: Millis = 15 * MINUTE;
 const NOT_DEAD_STATES: &[&str] = &["done", "blocked", STOPPED];
 const STOPPED: &str = "stopped";
 
+/// Restarts in a row for one task, with no turn completed in between, before Alondra leaves the
+/// node to the orchestrator.
+pub const MAX_RESUMES: u32 = 3;
+
 pub const RESUMED_PREFIX: &str = "[Alondra] Your process stopped";
 pub const RESUME_FAILED_PREFIX: &str = "[Alondra] Could not restart a node";
+pub const RESUMES_GIVEN_UP_PREFIX: &str = "[Alondra] Stopped restarting a node";
 
 /// The node's process ended while it was working: neither the daemon letting an idle session go
 /// nor someone stopping it.
@@ -34,12 +39,18 @@ pub fn stopped_on_purpose(node: &Node) -> bool {
 }
 
 /// The task a dead process leaves open: not finished, and not closed by the node's own final report.
-fn open_task<'a>(view: &'a View, node: &Node) -> Option<&'a Task> {
+pub(crate) fn open_task<'a>(view: &'a View, node: &Node) -> Option<&'a Task> {
     view.tasks_of(&node.session_id).find(|t| !t.state.finished() && t.final_report.is_none())
 }
 
-/// The open task of a node whose process died, when it is time to restart it: once per exit, and
-/// not twice within the backoff.
+/// The node died again after `MAX_RESUMES` restarts in a row for the same task, none of which
+/// got a turn done: another restart would only repeat them.
+fn restarts_spent(node: &Node, task: &Task) -> bool {
+    node.resumed.as_ref().is_some_and(|r| r.streak >= MAX_RESUMES && r.task.as_deref() == Some(task.id.as_str()) && node.last_stop_at.is_none_or(|stop| stop < r.at))
+}
+
+/// The open task of a node whose process died, when it is time to restart it: once per exit, not
+/// twice within the backoff, and not after `MAX_RESUMES` restarts that got nothing done.
 pub fn resume_due<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
     let exited = node.exited_at?;
     if !died_working(node) || node.attached || now - exited < RESUME_GRACE_MS || node.turn_signal == Some(TurnSignal::Finished) {
@@ -48,7 +59,30 @@ pub fn resume_due<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Ta
     if node.resumed.as_ref().is_some_and(|r| r.exit == Some(exited) || now - r.at < RESUME_BACKOFF_MS) {
         return None;
     }
-    open_task(view, node)
+    open_task(view, node).filter(|t| !restarts_spent(node, t))
+}
+
+/// The orchestrator hears once that Alondra stopped restarting a node that keeps dying.
+pub fn resumes_given_up_message(view: &View, node: &Node, at: Millis) -> Option<Message> {
+    let attempt = node.resumed.as_ref()?;
+    let task = open_task(view, node).filter(|t| restarts_spent(node, t))?;
+    if !died_working(node) || node.exited_at.is_none_or(|exit| exit <= attempt.at) {
+        return None;
+    }
+    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
+    let tag = resume_tag(node, attempt.at);
+    let told = view.messages.values().any(|m| m.session_id == orchestrator.session_id && m.text.starts_with(RESUMES_GIVEN_UP_PREFIX) && m.text.contains(&tag));
+    if told {
+        return None;
+    }
+    let text = format!(
+        "{RESUMES_GIVEN_UP_PREFIX}: {} {tag} stopped again after {} restarts in a row while its task “{}” was open, without finishing a turn in between. \
+         Alondra no longer restarts it: look at it (`node`), then `send` it what to do, or give the task to another node.",
+        node.display_name(),
+        attempt.streak,
+        task.title
+    );
+    view.alondra_message(&orchestrator.session_id, text, at)
 }
 
 pub fn resumed_text(task: &Task) -> String {
@@ -59,9 +93,13 @@ pub fn resumed_text(task: &Task) -> String {
     )
 }
 
-/// What the node is told once its process is back.
+/// What the node is told once its process is back, unless the same word from an earlier restart
+/// has not reached it yet.
 pub fn resumed_message(view: &View, session_id: &str, at: Millis) -> Option<Message> {
     let task = open_task(view, view.nodes.get(session_id)?)?;
+    if view.pending_messages(session_id).any(|m| m.from == MessageFrom::Alondra && m.text.starts_with(RESUMED_PREFIX)) {
+        return None;
+    }
     view.alondra_message(session_id, resumed_text(task), at)
 }
 

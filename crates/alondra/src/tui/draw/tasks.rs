@@ -433,7 +433,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use serde_json::json;
 
-    use super::super::super::tests::{alive_node, app_with, code, pr_card, press, question};
+    use super::super::super::tests::{alive_node, app_with, code, pr_card, press, question, report};
     use super::super::super::{App, Screen};
     use crate::i18n::{Lang, set_for_this_thread};
 
@@ -662,7 +662,7 @@ mod tests {
         press(&mut app, "j");
         let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
         assert!(app.history_asked.contains(&(id.clone(), since)));
-        app.history_loaded(id.clone(), since, Ok(vec![]));
+        app.history_loaded(id.clone(), since, Ok((vec![], vec![])));
         let later = since + 5;
         app.data.tasks.iter_mut().find(|t| t.id == id).unwrap().last_change = Some(later);
         app.reconcile();
@@ -670,6 +670,18 @@ mod tests {
         app.history_loaded(id.clone(), later, Err(false));
         app.reconcile();
         assert!(app.history_asked.contains(&(id.clone(), later)) && !app.history_missing, "a failed fetch is asked again");
+    }
+
+    #[test]
+    fn a_document_older_than_the_overviews_reports_comes_from_its_task() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
+        assert!(app.report_by_id(9_001).is_none(), "the overview does not carry it");
+        app.history_loaded(id, since, Ok((vec![], vec![report(9_001)])));
+        assert_eq!(app.report_by_id(9_001).map(|r| r.id), Some(9_001));
     }
 
     #[test]

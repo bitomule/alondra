@@ -209,7 +209,7 @@ import Testing
         let older = try Self.task("t", created: 5)
         let newer: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1,"last_change":9}"#)
         #expect(older.historyKey == 5 && newer.historyKey == 9, "a move that keeps the state still moves the key")
-        let wrapped: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1,"history":[{"from":"running","to":"in_review","event":{"kind":"pr_opened","pr":2},"at":6}]},"documents":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
+        let wrapped: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1,"history":[{"from":"running","to":"in_review","event":{"kind":"pr_opened","pr":2},"at":6}]},"reports":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
         let bare: TaskInFull = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1}"#)
         #expect(wrapped.task.history?.count == 1 && wrapped.documents?.map(\.id) == [5])
         #expect(bare.task.id == "t" && bare.documents == nil, "an older alondrad sends the task alone")
@@ -220,7 +220,7 @@ import Testing
 
     @MainActor @Test func aTasksDocumentsComeFromItsOwnRouteBeyondTheOverviewsNewestReports() throws {
         let task: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","documents":[5],"state":"in_review","state_since":5,"created_at":1}"#)
-        let details: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"in_review","state_since":5,"created_at":1},"documents":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
+        let details: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"in_review","state_since":5,"created_at":1},"reports":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
         let store = FleetStore()
         store.apply(try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"reports":[]}"#))
         #expect(store.documents(of: task, in: nil).isEmpty, "report 5 is not among the overview's newest")

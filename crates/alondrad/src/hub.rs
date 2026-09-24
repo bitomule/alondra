@@ -14,7 +14,12 @@ pub struct Hub {
     writer: Mutex<Store>,
     view: RwLock<View>,
     machine: RwLock<Machine>,
+    /// Moves when what clients show changes: they refetch the overview then.
     tick: watch::Sender<u64>,
+    /// Moves on every event and machine sample: Alondra's own loops wake on it.
+    changes: watch::Sender<u64>,
+    /// What clients were last shown: the overview's digest and the machine's rounded gauges.
+    shown: Mutex<(u64, u64)>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     own_attaches: Mutex<HashSet<String>>,
     closing: Mutex<HashSet<String>>,
@@ -25,6 +30,8 @@ pub struct Hub {
     pub config: Config,
     pub hold_enabled: bool,
     pub pr_lookup: crate::prs::Lookup,
+    /// Reads a node's report for a question hidden in it.
+    pub report_judge: Box<dyn crate::classify::JudgesReports>,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
 }
@@ -45,11 +52,15 @@ impl Hub {
             view.apply(seq, at, &Event::TasksRecorded);
         }
         let (tick, _) = watch::channel(0);
+        let (changes, _) = watch::channel(0);
+        let shown = crate::http::overview_digest(&view, now_millis());
         Ok(Hub {
             writer: Mutex::new(store),
             view: RwLock::new(view),
             machine: RwLock::new(Machine::default()),
             tick,
+            changes,
+            shown: Mutex::new((shown, 0)),
             holds: Mutex::new(HashMap::new()),
             own_attaches: Mutex::new(HashSet::new()),
             closing: Mutex::new(HashSet::new()),
@@ -60,6 +71,7 @@ impl Hub {
             config,
             hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
+            report_judge: Box::new(crate::classify::Jev),
             starts: tokio::sync::Mutex::new(()),
         })
     }
@@ -67,6 +79,11 @@ impl Hub {
     #[cfg(test)]
     pub fn with_github(self, gh: impl crate::prs::FindsPrs + 'static) -> Self {
         Hub { pr_lookup: crate::prs::Lookup::new(gh), ..self }
+    }
+
+    #[cfg(test)]
+    pub fn with_report_judge(self, judge: impl crate::classify::JudgesReports + 'static) -> Self {
+        Hub { report_judge: Box::new(judge), ..self }
     }
 
     /// Records an event, and around it the task events it takes: the task a session's first card
@@ -104,10 +121,18 @@ impl Hub {
             }
             recorded.push((seq, event));
         }
+        let digest = crate::http::overview_digest(&view, at);
         drop(view);
         drop(store);
-        self.bump();
+        self.changed(Some(digest), None);
         Ok(Ok(recorded))
+    }
+
+    /// Reads the view once nothing is being recorded: whatever an append started before this
+    /// call has landed.
+    pub fn read_settled<T>(&self, f: impl FnOnce(&View) -> T) -> T {
+        let _store = self.writer.lock().expect("writer lock poisoned");
+        f(&self.view.read().expect("view lock poisoned"))
     }
 
     pub fn compact(&self, retention: std::time::Duration) -> Result<usize> {
@@ -165,34 +190,50 @@ impl Hub {
         self.writer.lock().expect("writer lock poisoned").session_timeline(session, limit, before)
     }
 
-    pub fn set_machine(&self, m: Machine) {
+    /// A machine sample, with the subscription's usage read with it. Clients hear of it only when
+    /// a gauge crosses a 5 % step; the overview is looked at again too, for what time alone moved.
+    pub fn set_machine(&self, m: Machine, usage: Option<&alondra_core::usage::Usage>) {
+        let gauges = gauges_digest(&m, usage);
         *self.machine.write().expect("machine lock poisoned") = m;
-        self.bump();
+        let digest = self.read(|v| crate::http::overview_digest(v, now_millis()));
+        self.changed(Some(digest), Some(gauges));
     }
 
     pub fn machine(&self) -> Machine {
         self.machine.read().expect("machine lock poisoned").clone()
     }
 
-    fn bump(&self) {
-        self.tick.send_modify(|t| *t += 1);
+    fn changed(&self, overview: Option<u64>, gauges: Option<u64>) {
+        self.changes.send_modify(|c| *c += 1);
+        let mut shown = self.shown.lock().expect("shown lock poisoned");
+        let before = *shown;
+        shown.0 = overview.unwrap_or(shown.0);
+        shown.1 = gauges.unwrap_or(shown.1);
+        if *shown != before {
+            self.tick.send_modify(|t| *t += 1);
+        }
     }
 
+    /// The clients' tick: it moves when what they show changes.
     pub fn tick(&self) -> u64 {
         *self.tick.borrow()
     }
 
     pub async fn wait_change(&self, after: u64, wait: Duration) -> u64 {
-        let mut rx = self.tick.subscribe();
-        if *rx.borrow_and_update() > after {
-            return *rx.borrow();
-        }
-        let _ = tokio::time::timeout(wait, rx.changed()).await;
-        *rx.borrow()
+        wait_past(&self.tick, after, wait).await
+    }
+
+    /// Every event and machine sample so far.
+    pub fn changes(&self) -> u64 {
+        *self.changes.borrow()
+    }
+
+    pub async fn wait_changes(&self, after: u64, wait: Duration) -> u64 {
+        wait_past(&self.changes, after, wait).await
     }
 
     pub async fn wait_event(&self, wait: Duration) {
-        let mut rx = self.tick.subscribe();
+        let mut rx = self.changes.subscribe();
         rx.borrow_and_update();
         let _ = tokio::time::timeout(wait, rx.changed()).await;
     }
@@ -218,6 +259,37 @@ impl Hub {
         self.holds.lock().expect("holds lock poisoned").len()
     }
 
+}
+
+async fn wait_past(counter: &watch::Sender<u64>, after: u64, wait: Duration) -> u64 {
+    let mut rx = counter.subscribe();
+    if *rx.borrow_and_update() > after {
+        return *rx.borrow();
+    }
+    let _ = tokio::time::timeout(wait, rx.changed()).await;
+    *rx.borrow()
+}
+
+/// The machine's gauges and the subscription's usage as clients read them: in 5 % steps.
+fn gauges_digest(m: &Machine, usage: Option<&alondra_core::usage::Usage>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let step = |part: f64, whole: f64| if whole > 0.0 { (part / whole * 20.0).floor() as i64 } else { -1 };
+    let percent = |p: f64| (p / 5.0).floor() as i64;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (
+        step(m.memory_available as f64, m.memory_total as f64),
+        m.memory_free_percent.map(|p| p / 5),
+        step(m.load[0], m.cpus as f64),
+        percent(m.cpu_usage as f64),
+        step(m.disk_available as f64, m.disk_total as f64),
+        m.unreliable,
+        m.strained(),
+    )
+        .hash(&mut h);
+    if let Some(u) = usage {
+        (percent(u.week_percent), u.five_hour_percent.map(percent), u.today_spent.map(percent), u.over_pace).hash(&mut h);
+    }
+    h.finish()
 }
 
 pub struct OwnAttach<'a> {

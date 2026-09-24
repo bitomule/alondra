@@ -12,10 +12,15 @@ use crate::view::View;
 use super::{Assignee, Blocker, BlockerKind, Guards, Item, Launch, NewTask, Request, Task, TaskEvent, TaskOptions, TaskState};
 
 /// A launch and a node of the same name go together when the node appeared this close to it.
-const LAUNCH_WINDOW: Millis = 10 * 60 * 1000;
+pub const LAUNCH_WINDOW: Millis = 10 * 60 * 1000;
 
 /// Why a node's task moved without a card of it: the node is gone.
 pub const NODE_CLOSED: &str = "its node was closed";
+
+/// Why a task that waited for another was cancelled with it.
+pub fn dependency_cancelled(dependency: &str) -> String {
+    format!("{dependency} was cancelled")
+}
 
 /// Which tasks the rules move in the pass under way: the ones read from events, or, on a copy
 /// of the board, the recorded ones, keeping each move to be recorded.
@@ -100,7 +105,8 @@ fn may_move_tasks(event: &Event) -> bool {
         | Event::NodeRemoved { .. }
         | Event::DaemonSeen(_)
         | Event::Launched { .. }
-        | Event::TaskCreated(_) => true,
+        | Event::TaskCreated(_)
+        | Event::TaskMoved { .. } => true,
         _ => false,
     }
 }
@@ -174,6 +180,7 @@ impl View {
             options: TaskOptions { auto_merge: node.name.as_ref().is_some_and(|n| self.auto_merge_nodes.contains(n)), ..TaskOptions::default() },
             session_id: Some(session_id.to_string()),
             launched: false,
+            launched_as: None,
             start: None,
         };
         Some((id, Event::TaskCreated(new)))
@@ -227,16 +234,24 @@ impl View {
 
     pub fn task_guards(&self, task: &Task) -> Guards {
         let dependencies = task.depends_on.iter().map(|d| (d, self.board.tasks.get(d)));
+        let unready = dependencies.clone().filter(|(_, t)| t.is_none_or(|t| !self.dependency_ready(t)));
         Guards {
             auto_merge: task.options.auto_merge,
-            waiting_on: dependencies.clone().find(|(_, t)| t.is_none_or(|t| !self.dependency_ready(t))).map(|(d, _)| d.clone()),
+            waiting_on: unready.clone().map(|(d, _)| d.clone()).next(),
+            cancelled_dependency: unready.filter(|(_, t)| t.is_some_and(|t| t.state == TaskState::Cancelled)).map(|(d, _)| d.clone()).next(),
             unmerged_dependency: dependencies.filter_map(|(_, t)| t).flat_map(|t| self.open_prs(t)).map(|p| p.number).next(),
             blocker: task.blocker,
             unmerged_pr: self.open_prs(task).filter(|p| !p.auto_merge).map(|p| p.number).next(),
             unreviewed_document: task.documents.iter().copied().find(|id| self.review_pending(*id)),
-            nothing_after_merge: task.final_report.is_some(),
+            nothing_after_merge: task.final_report.is_some() || self.assignee_gone(task),
             checks_failed: None,
         }
+    }
+
+    /// The node that worked on the task was closed or forgotten: nobody is left to do what a
+    /// merge would unblock.
+    fn assignee_gone(&self, task: &Task) -> bool {
+        task.assignee.as_ref().is_some_and(|a| self.removed.contains_key(&a.session_id) || !self.nodes.contains_key(&a.session_id))
     }
 
     /// The guards for one event: a PR Alondra merges on its own counts for the PR it is about.
@@ -364,11 +379,25 @@ impl View {
             (Event::TaskMoved { task, event }, _) => {
                 self.apply_task_event(task, event.clone(), at);
             }
-            (Event::Launched { name, task: Some(task), .. }, _) => {
+            (Event::Launched { name, task: Some(task), title, .. }, _) => {
                 if let Some(t) = self.board.tasks.get_mut(task) {
                     t.launched = true;
+                    t.launched_at = Some(at);
                     t.launched_as = Some(name.clone());
                     t.assignee = None;
+                    if let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                        t.title = title.to_string();
+                    }
+                }
+            }
+            (Event::RequestTitled { request_id, title }, _) => {
+                if let Some(r) = self.board.requests.get_mut(request_id) {
+                    r.title = Some(title.clone());
+                }
+            }
+            (Event::RequestClosed { request_id, answer, withdrawn }, _) => {
+                if let Some(r) = self.board.requests.get_mut(request_id) {
+                    r.closed = Some(super::RequestClosure { answer: answer.clone(), withdrawn: *withdrawn, at });
                 }
             }
             (Event::MarkedOrchestrator { session_id }, _) => self.drop_tasks(session_id),
@@ -444,9 +473,18 @@ impl View {
 
     /// The rules: what each event does to the tasks this pass moves.
     fn move_tasks(&mut self, at: Millis, event: &Event, before: Before) {
-        if let Event::NodeRemoved { session_id } = event {
-            return self.node_closed(session_id, at);
+        let mut moved = match event {
+            Event::NodeRemoved { session_id } => self.node_closed(session_id, at),
+            _ => self.moved_by(at, event, before),
+        };
+        moved.extend(self.dependencies_cancelled(at));
+        moved.extend(self.dependencies_ready(at));
+        for id in moved {
+            self.raise_waiting_question(&id, at);
         }
+    }
+
+    fn moved_by(&mut self, at: Millis, event: &Event, before: Before) -> Vec<String> {
         let mut moved = vec![];
         let closes_questions = match event {
             Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure"),
@@ -488,9 +526,9 @@ impl View {
             (Event::PrOpened { .. }, Before::LastPr(last)) => {
                 let opened: Vec<u64> = self.prs.range(last + 1..).map(|(id, _)| *id).collect();
                 for pr in opened {
-                    if let Some(id) = self.pr_task(pr)
-                        && self.fact(&id, TaskEvent::PrOpened { pr }, at)
-                    {
+                    let Some(id) = self.pr_task(pr) else { continue };
+                    let reopens = self.own_pr_on_done_task(&id, pr) && self.fact(&id, TaskEvent::Reopen, at);
+                    if self.fact(&id, TaskEvent::PrOpened { pr }, at) || reopens {
                         moved.push(id);
                     }
                 }
@@ -507,16 +545,19 @@ impl View {
             (Event::ArtifactReviewed { report, verdict }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, Some((*report, *verdict)), at)),
             (Event::ReportRead { .. }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, None, at)),
             (Event::DaemonSeen(d), _) => self.bind_launch_of(&d.session_id),
-            (Event::Launched { name, request_id, auto_merge, task }, _) => match task {
+            (Event::Launched { name, request_id, auto_merge, task, title }, _) => match task {
                 Some(task) => self.launched_for(task),
-                None => self.launched(name, Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
+                None => self.launched(name, title.as_deref(), Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
             },
             _ => {}
         }
-        moved.extend(self.dependencies_ready(at));
-        for id in moved {
-            self.raise_waiting_question(&id, at);
-        }
+        moved
+    }
+
+    /// The node that works on a done task opened a new PR for it: the task has work again.
+    fn own_pr_on_done_task(&self, id: &str, pr: u64) -> bool {
+        let opener = self.prs.get(&pr).map(|p| p.session_id.as_str());
+        self.board.tasks.get(id).is_some_and(|t| t.state == TaskState::Done && opener.is_some_and(|s| t.is_assigned_to(s)))
     }
 
     fn new_task(&self, session_id: &str, at: Millis) -> Option<Task> {
@@ -538,6 +579,7 @@ impl View {
             created_at: at,
             final_report: None,
             launched: false,
+            launched_at: None,
             launched_as: None,
             start: None,
             recorded: false,
@@ -593,16 +635,49 @@ impl View {
     }
 
     /// A node closed before it finished: what it was doing is dropped, unless a PR of it still
-    /// waits for David's merge.
-    fn node_closed(&mut self, session_id: &str, at: Millis) {
-        let dropped: Vec<String> = self
+    /// waits for David's merge. Then the question it left open no longer holds the task, which
+    /// waits for David on that PR.
+    fn node_closed(&mut self, session_id: &str, at: Millis) -> Vec<String> {
+        let open: Vec<(String, TaskState, Option<u64>, Option<u64>)> = self
             .tasks_of(session_id)
             .filter(|t| matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::Closing))
-            .filter(|t| self.open_prs(t).next().is_none())
-            .map(|t| t.id.clone())
+            .map(|t| (t.id.clone(), t.state, self.open_prs(t).next().map(|p| p.id), t.blocker.map(|b| b.question)))
             .collect();
-        for id in dropped {
-            self.fact(&id, TaskEvent::Cancel { reason: Some(NODE_CLOSED.to_string()) }, at);
+        let mut moved = vec![];
+        for (id, state, pr, question) in open {
+            let changed = match (state, pr) {
+                (_, None) => self.fact(&id, TaskEvent::Cancel { reason: Some(NODE_CLOSED.to_string()) }, at),
+                (TaskState::NeedsYou, Some(pr)) => {
+                    let settled = question.is_some_and(|q| self.fact(&id, TaskEvent::Answered { question: q }, at));
+                    self.fact(&id, TaskEvent::NodeUpdated { on: Item::Pr(pr) }, at) || settled
+                }
+                (_, Some(_)) => false,
+            };
+            if changed {
+                moved.push(id);
+            }
+        }
+        moved
+    }
+
+    /// Tasks waiting for a dependency that was cancelled before it was ready can never start:
+    /// they are cancelled too, and so on down the tree.
+    fn dependencies_cancelled(&mut self, at: Millis) -> Vec<String> {
+        let mut moved = vec![];
+        loop {
+            let dropped: Vec<(String, String)> = self
+                .board
+                .tasks
+                .values()
+                .filter(|t| t.state == TaskState::WaitingDependency && t.recorded == self.recording())
+                .filter_map(|t| Some((t.id.clone(), self.task_guards(t).cancelled_dependency?)))
+                .collect();
+            let cancelled: Vec<String> =
+                dropped.into_iter().filter(|(id, d)| self.fact(id, TaskEvent::Cancel { reason: Some(dependency_cancelled(d)) }, at)).map(|(id, _)| id).collect();
+            if cancelled.is_empty() {
+                return moved;
+            }
+            moved.extend(cancelled);
         }
     }
 
@@ -617,7 +692,7 @@ impl View {
                 let b = t.blocker?;
                 let sid = &t.assignee.as_ref()?.session_id;
                 let open = self.questions.get(&b.question).is_some_and(|q| q.status.is_open());
-                (!open && !self.removed.contains(sid)).then(|| (t.id.clone(), b.question))
+                (!open && !self.removed.contains_key(sid)).then(|| (t.id.clone(), b.question))
             })
             .collect();
         settled.into_iter().filter(|(id, q)| self.fact(id, TaskEvent::Answered { question: *q }, at)).map(|(id, _)| id).collect()
@@ -703,15 +778,16 @@ impl View {
     /// A launch makes its task at once, with the request's options; the node that shows up
     /// under its name takes it. Before tasks were recorded, the launch waited for its node and
     /// joined the task read from it.
-    fn launched(&mut self, name: &str, launch: Launch) {
+    fn launched(&mut self, name: &str, title: Option<&str>, launch: Launch) {
         if self.recording() {
             let request = launch.request_id.clone();
             let options = request.as_ref().and_then(|r| self.requests.get(r));
             let id = format!("t-{}", self.seq);
+            let title = title.map(str::trim).filter(|t| !t.is_empty() && *t != name);
             let new = NewTask {
                 id: id.clone(),
                 request: request.clone().unwrap_or_else(|| format!("r-{}", self.seq)),
-                title: name.to_string(),
+                title: title.unwrap_or(name).to_string(),
                 brief: None,
                 depends_on: vec![],
                 options: TaskOptions {
@@ -722,6 +798,7 @@ impl View {
                 },
                 session_id: None,
                 launched: true,
+                launched_as: title.map(|_| name.to_string()),
                 start: None,
             };
             self.board.create(&new, launch.at);
@@ -1051,7 +1128,7 @@ mod tests {
     #[test]
     fn an_auto_merge_task_does_not_wait_for_its_pr() {
         let mut run = Run::new();
-        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None }).on(seen("app/fix"));
+        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix"));
         assert!(run.task().launched && run.task().options.auto_merge);
         run.on(opened()).on(report(1, ReportKind::Final, &[PR])).pr(|p| p.state = PrState::Merged);
         assert_eq!(run.states(), vec![Running, Done, Done]);
@@ -1064,7 +1141,7 @@ mod tests {
         let mut run = Run::new();
         run.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
         assert_eq!(run.view.board.request_state("r-1"), RequestState::Defining);
-        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None });
+        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None, title: None });
         let task = run.task();
         assert_eq!((task.request.as_str(), task.options.effort.as_deref(), task.options.project.as_deref()), ("r-1", Some("hard"), Some("app")));
         assert_eq!(run.view.board.requests.keys().collect::<Vec<_>>(), vec!["r-1"], "the made-up request is gone");
@@ -1232,7 +1309,7 @@ mod tests {
             let options = crate::options::Resolved { project: Some("app".into()), auto_merge: true, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None };
             let mut d = Daemon::new();
             d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
-            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None, title: None });
             let id = d.view.board.tasks.keys().next().cloned().expect("the launch made its task");
             assert_eq!(d.view.board.tasks[&id].assignee, None, "no node yet");
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
@@ -1407,11 +1484,163 @@ mod tests {
             assert_eq!(d.view.board.tasks["t-s"].state, Running, "the PR is still David's to merge");
         }
 
+        fn defined(id: &str, depends_on: &[&str], name: &str) -> Event {
+            Event::TaskCreated(NewTask {
+                id: id.into(),
+                request: "r-1".into(),
+                title: format!("Task {id}"),
+                brief: Some(format!("Build {id}.")),
+                depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+                options: TaskOptions::default(),
+                session_id: None,
+                launched: false,
+                launched_as: None,
+                start: Some(crate::tasks::Start::NewNode { name: name.into(), cwd: "/tmp".into(), model: None }),
+            })
+        }
+
+        fn launched_for(task: &str, name: &str) -> Event {
+            Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
+        }
+
+        fn seen_as(sid: &str, name: &str) -> Event {
+            Event::DaemonSeen(DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), pid: Some(1), ..Default::default() })
+        }
+
+        fn moved(task: &str, event: TaskEvent) -> Event {
+            Event::TaskMoved { task: task.into(), event }
+        }
+
+        fn state(d: &Daemon, id: &str) -> TaskState {
+            d.view.board.tasks[id].state
+        }
+
+        fn last_event(d: &Daemon, id: &str) -> Option<TaskEvent> {
+            d.view.board.tasks[id].history.last().map(|h| h.event.clone())
+        }
+
+        /// A task cancelled while another waited on it (by the orchestrator, or by closing its node
+        /// before it opened a PR) left the other waiting for good: nothing could start it, and
+        /// reopening it was refused.
+        #[test]
+        fn a_task_waiting_for_a_cancelled_one_is_cancelled_with_it() {
+            let mut d = Daemon::new();
+            d.on(defined("t-a", &[], "app/a")).on(defined("t-b", &["t-a"], "app/b")).on(defined("t-c", &["t-b"], "app/c"));
+            d.on(moved("t-a", TaskEvent::Cancel { reason: Some("not needed".into()) }));
+            assert_eq!((state(&d, "t-a"), state(&d, "t-b"), state(&d, "t-c")), (Cancelled, Cancelled, Cancelled));
+            assert_eq!(last_event(&d, "t-b"), Some(TaskEvent::Cancel { reason: Some("t-a was cancelled".into()) }));
+            assert_eq!(last_event(&d, "t-c"), Some(TaskEvent::Cancel { reason: Some("t-b was cancelled".into()) }));
+            assert_eq!(d.view.task_refusal("t-b", &TaskEvent::Reopen).map(|r| r.reason).as_deref(), Some("t-a was cancelled: reopen it first"));
+            d.on(moved("t-a", TaskEvent::Reopen)).on(moved("t-b", TaskEvent::Reopen));
+            assert_eq!((state(&d, "t-a"), state(&d, "t-b")), (Running, WaitingDependency), "back in line behind t-a");
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
+
+            let mut closed = Daemon::new();
+            closed.on(defined("t-a", &[], "app/a")).on(defined("t-b", &["t-a"], "app/b"));
+            closed.on(launched_for("t-a", "app/a")).on(seen_as("s", "app/a")).on(Event::NodeRemoved { session_id: "s".into() });
+            assert_eq!((state(&closed, "t-a"), state(&closed, "t-b")), (Cancelled, Cancelled), "its node closed before it opened a PR");
+            assert!(closed.view.tasks_to_start().is_empty());
+        }
+
+        /// Reopening a task that waits for another sent it straight to work, ahead of what it
+        /// builds on.
+        #[test]
+        fn a_reopened_task_waits_again_for_what_it_depends_on() {
+            let mut d = Daemon::new();
+            d.on(defined("t-a", &[], "app/a")).on(defined("t-b", &["t-a"], "app/b"));
+            d.on(moved("t-b", TaskEvent::Cancel { reason: None })).on(moved("t-b", TaskEvent::Reopen));
+            assert_eq!(state(&d, "t-b"), WaitingDependency);
+            assert!(!d.view.board.tasks["t-b"].needs_start());
+            assert_eq!(d.view.tasks_to_start().iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t-a"]);
+            d.on(launched_for("t-a", "app/a")).on(seen_as("s", "app/a")).on(hook_of("s", UPS)).on(opened_by(PR, "s"));
+            assert_eq!(state(&d, "t-b"), Running, "t-a has its PR open: t-b builds on it");
+        }
+
+        /// A node closed while its task waited for David's answer and its PR was open: the orphaned
+        /// question stayed the task's blocker, and the merge left it needing David for good.
+        #[test]
+        fn a_node_closed_while_its_pr_waits_leaves_the_task_in_review_and_the_merge_finishes_it() {
+            let mut d = Daemon::new();
+            d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(asked(1, "s", |_| {}));
+            assert_eq!(state(&d, "t-s"), NeedsYou);
+            d.on(Event::NodeRemoved { session_id: "s".into() });
+            let t = &d.view.board.tasks["t-s"];
+            assert_eq!((t.state, t.blocker), (InReview, None), "its PR waits for David; nobody is left to answer");
+            d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
+            assert_eq!(state(&d, "t-s"), Done, "nobody is left to do what the merge unblocks");
+            assert!(d.view.board.tasks["t-s"].anomalies.is_empty());
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
+        }
+
+        /// A merge is GitHub's fact: David merging an auto-merge PR by hand while a check ran, or a
+        /// PR above one of its dependency's, left the task claiming it still waited.
+        #[test]
+        fn a_merge_on_github_moves_the_task_even_where_alondra_would_not_have_merged() {
+            let mut d = Daemon::new();
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix")).on(hook(UPS)).on(opened());
+            d.github(1, |p| p.checks = vec![crate::pr::Check { name: "ci".into(), state: CheckState::Running, url: None }]);
+            d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
+            let t = d.task("s");
+            assert_eq!((t.state, t.anomalies.len()), (Closing, 0));
+            assert_eq!(t.history.last().and_then(|h| h.note.as_deref()), Some("the checks of PR #7 have not passed"));
+
+            let mut stacked = Daemon::new();
+            stacked.on(defined("t-a", &[], "app/a")).on(defined("t-b", &["t-a"], "app/b"));
+            stacked.on(launched_for("t-a", "app/a")).on(seen_as("a", "app/a")).on(hook_of("a", UPS)).on(opened_by(PR150, "a"));
+            stacked.on(launched_for("t-b", "app/b")).on(seen_as("b", "app/b")).on(hook_of("b", UPS)).on(opened_by(PR151, "b"));
+            stacked.github(2, |p| p.state = PrState::Merged);
+            let t = &stacked.view.board.tasks["t-b"];
+            assert_eq!((t.state, t.anomalies.len()), (Closing, 0));
+            assert_eq!(t.history.last().and_then(|h| h.note.as_deref()), Some("merge PR #150 first"));
+        }
+
+        /// A final report, then a question and its answer: the node went back to work, so its
+        /// report no longer says nothing follows the merge.
+        #[test]
+        fn a_question_after_the_final_report_means_work_follows_the_merge() {
+            let mut d = Daemon::new();
+            d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(reported(1, "s", ReportKind::Final, &[PR]));
+            assert!(d.view.merge_finishes_task(1));
+            d.on(asked(1, "s", |_| {})).on(answered(1));
+            assert_eq!(d.task("s").final_report, None);
+            assert!(!d.view.merge_finishes_task(1), "the node gets the merge notice");
+            d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
+            assert_eq!(d.task("s").state, Closing);
+        }
+
+        /// A node that opens a new PR for its done task has work on it again.
+        #[test]
+        fn a_new_pr_of_its_own_node_reopens_a_done_task() {
+            let mut d = Daemon::new();
+            d.on(hook_of("s", UPS)).on(reported(1, "s", ReportKind::Final, &[]));
+            assert_eq!(d.task("s").state, Done);
+            d.on(opened_by(PR, "s"));
+            let t = d.task("s");
+            assert_eq!((t.state, t.prs.clone(), t.anomalies.len()), (InReview, vec![1], 0));
+            assert_eq!(t.history.iter().map(|h| h.event.name()).collect::<Vec<_>>(), ["final_report", "reopen", "pr_opened"]);
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
+        }
+
+        /// A launch made its task under the node's name; the orchestrator's title is what David reads.
+        #[test]
+        fn a_launched_task_goes_by_the_title_it_was_given_and_its_node_still_takes_it() {
+            let mut d = Daemon::new();
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: Some("Fix the login crash".into()) });
+            d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
+            let t = d.task("s");
+            assert_eq!((t.title.as_str(), t.launch_name(), d.view.board.tasks.len()), ("Fix the login crash", "app/fix", 1));
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
+
+            let mut plain = Daemon::new();
+            plain.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None }).on(seen("app/fix"));
+            assert_eq!(plain.task("s").title, "app/fix", "without a title it goes by its node's name");
+        }
+
         #[test]
         fn a_node_with_several_open_tasks_says_which_one_a_card_is_for() {
             let mut d = Daemon::new();
             d.on(hook_of("s", UPS)).on(asked(1, "s", |_| {}));
-            let second = crate::tasks::NewTask { id: "t-2".into(), request: "r-1".into(), title: "Second".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, start: None };
+            let second = crate::tasks::NewTask { id: "t-2".into(), request: "r-1".into(), title: "Second".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, launched_as: None, start: None };
             d.on(Event::TaskCreated(second));
             assert_eq!(d.view.card_task("s", None, None), Err(CardTask::Several(vec!["t-2".into(), "t-s".into()])));
             assert_eq!(d.view.card_task("s", Some("t-2"), None), Ok("t-2".into()));

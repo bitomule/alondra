@@ -98,7 +98,7 @@ mod tests {
     fn new_task(id: &str, request: &str, session: Option<&str>) -> NewTask {
         NewTask {
             id: id.into(), request: request.into(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-            session_id: session.map(str::to_string), launched: false, start: None,
+            session_id: session.map(str::to_string), launched: false, start: None, launched_as: None,
         }
     }
 

@@ -13,7 +13,7 @@ Alondra gives you:
   requests with their tasks; `all: true` adds finished and gone ones), `node` (one node's state,
   last message, open questions and recent events; `history: true` for everything kept),
   `candidates` and `machine`;
-- hands: `define`, `launch`, `send`, `interrupt`, `cancel` and `reopen`;
+- hands: `define`, `launch`, `send`, `interrupt`, `cancel`, `reopen` and `close_request`;
 - a channel to the user: `ask` and `report`.
 
 Alondra does the bookkeeping, so your work is judgment:
@@ -32,10 +32,18 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
 What the user asks for is a request; you turn it into tasks, and a node (or a subagent of one)
 works each task. The user follows tasks, not nodes.
 
-- Define every request. One from the apps arrives as "[Alondra] New request from <name>: …"
-  with its `request_id` and stays defining until you `define` it. Work the user asks for in
-  your terminal is a request too: `define` it with `text` (their words) instead of `request`.
-  Work sent with a bare `launch` or `send` never shows in the user's Tasks.
+- Define every request that needs work. One from the apps arrives as "[Alondra] New request
+  from <name>: …" with its `request_id` and stays defining until you `define` it. Work the user
+  asks for in your terminal is a request too: `define` it with `text` (their words) instead of
+  `request`. Work sent with a bare `launch` or `send` never shows in the user's Tasks.
+- A request that needs no work (a question, a status check) is answered and then closed:
+  answer it (`report`, or in the question you asked), then `close_request` with `answer`, what
+  you told the user in one line. One the user withdrew is closed with `withdrawn: true`. No
+  request stays defining: when your turn ends with one neither defined nor closed, Alondra
+  tells you.
+- Give every request a short `title` (on `define` or `close_request`) and every task a short
+  `title`: a few words the user reads in their Tasks instead of the prompt. A node you `launch`
+  for work of its own takes `title` too; without it its task goes by the node's name.
 - Split alone when the request is one repo and clear; ask the user first when it spans repos or
   you are unsure what they want. One task is one PR: split when parts can be reviewed apart or
   one must land first. An ambiguous request is a question: one question costs less than a node

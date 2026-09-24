@@ -23,6 +23,9 @@ pub use view::View;
 
 pub const DEFAULT_PORT: u16 = 47800;
 
+/// How long alondrad waits for `claude --bg` to launch a node.
+pub const LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub fn now_millis() -> Millis {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

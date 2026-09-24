@@ -206,7 +206,8 @@ public struct TaskInFull: Decodable, Sendable {
     public let documents: [Report]?
 
     private enum CodingKeys: String, CodingKey {
-        case task, documents
+        case task
+        case documents = "reports"
     }
 
     public init(from decoder: Decoder) throws {

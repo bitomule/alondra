@@ -391,7 +391,13 @@ impl App {
     }
 
     pub fn report_by_id(&self, id: u64) -> Option<&alondra_core::Report> {
-        self.data.news.iter().map(|n| &n.report).find(|r| r.id == id).or_else(|| self.data.reports.iter().find(|r| r.id == id))
+        self.data
+            .news
+            .iter()
+            .map(|n| &n.report)
+            .find(|r| r.id == id)
+            .or_else(|| self.data.reports.iter().find(|r| r.id == id))
+            .or_else(|| self.task_reports.values().flatten().find(|r| r.id == id))
     }
 
     pub(super) fn reconcile_tasks(&mut self) {
@@ -422,8 +428,9 @@ impl App {
             let result = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/tasks/{}", urlencode(&id)));
             let history = match result {
                 Ok(v) => {
+                    let reports = serde_json::from_value::<Vec<alondra_core::Report>>(v["reports"].clone()).unwrap_or_default();
                     let task = if v.get("task").is_some() { v["task"].clone() } else { v };
-                    Ok(serde_json::from_value::<Vec<Transition>>(task["history"].clone()).unwrap_or_default())
+                    Ok((serde_json::from_value::<Vec<Transition>>(task["history"].clone()).unwrap_or_default(), reports))
                 }
                 Err(e) => Err(e.downcast_ref::<NotFound>().is_some()),
             };
@@ -431,9 +438,12 @@ impl App {
         });
     }
 
-    pub(super) fn history_loaded(&mut self, id: String, since: i64, history: Result<Vec<Transition>, bool>) {
+    pub(super) fn history_loaded(&mut self, id: String, since: i64, history: Result<(Vec<Transition>, Vec<alondra_core::Report>), bool>) {
         match history {
-            Ok(h) => {
+            Ok((h, reports)) => {
+                if !reports.is_empty() {
+                    self.task_reports.insert(id.clone(), reports);
+                }
                 self.histories.insert(id, (since, h));
             }
             Err(true) => self.history_missing = true,
