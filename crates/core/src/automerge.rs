@@ -8,8 +8,8 @@ use crate::pr::{CheckState, MergeMethod, PrState, PullRequest};
 use crate::tasks::{Task, TaskState};
 use crate::view::View;
 
-/// Right after a PR is opened GitHub may not list its checks yet: one with none is not merged
-/// before this long.
+/// Right after a PR is opened or pushed to, GitHub may not list the checks of its new head yet:
+/// one with none is not merged before this long after Alondra first saw that head.
 pub const NO_CHECKS_GRACE: Millis = 2 * 60 * 1000;
 
 #[derive(Debug, PartialEq)]
@@ -46,7 +46,7 @@ impl View {
             AutoMerge::Blocked(Obstacle::ChecksFailed(failed))
         } else if pr.checks.iter().any(|c| c.state == CheckState::Running) {
             AutoMerge::Waiting("its checks are running")
-        } else if pr.checks.is_empty() && now - pr.opened_at < NO_CHECKS_GRACE {
+        } else if pr.checks.is_empty() && now - pr.head_seen_at.unwrap_or(pr.opened_at).max(pr.opened_at) < NO_CHECKS_GRACE {
             AutoMerge::Waiting("its checks may not have started")
         } else if pr.mergeable.as_deref() != Some("MERGEABLE") {
             AutoMerge::Waiting("GitHub is working out whether it merges")
@@ -80,5 +80,35 @@ impl View {
             TaskState::Running | TaskState::InReview => task.final_report.is_some() && !others && g.unreviewed_document.is_none(),
             TaskState::WaitingDependency | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+
+    const MIN: Millis = 60 * 1000;
+
+    /// The wait for a PR's first checks counted from when it was opened, so a push to a PR open
+    /// for hours was merged before GitHub listed the checks of the new head.
+    #[test]
+    fn a_push_waits_for_the_checks_of_its_new_head() {
+        let mut v = View::default();
+        let mut pr = PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", None, 0).unwrap();
+        pr.auto_merge = true;
+        v.prs.insert(1, pr);
+        let fetched = |v: &mut View, seq: u64, head: &str, at: Millis| {
+            let mut p = v.prs[&1].clone();
+            (p.fetched, p.head_sha, p.mergeable) = (true, Some(head.into()), Some("MERGEABLE".into()));
+            v.apply(seq, at, &Event::PrUpdated(p));
+        };
+        fetched(&mut v, 1, "a1", 10 * MIN);
+        assert!(matches!(v.auto_merge(&v.prs[&1], 13 * MIN), Some(AutoMerge::Ready(_))));
+        fetched(&mut v, 2, "a1", 60 * MIN);
+        assert!(matches!(v.auto_merge(&v.prs[&1], 60 * MIN), Some(AutoMerge::Ready(_))), "the same head fetched again waits for nothing");
+        fetched(&mut v, 3, "a2", 90 * MIN);
+        assert_eq!(v.auto_merge(&v.prs[&1], 90 * MIN + MIN / 2), Some(AutoMerge::Waiting("its checks may not have started")));
+        assert!(matches!(v.auto_merge(&v.prs[&1], 93 * MIN), Some(AutoMerge::Ready(_))));
     }
 }

@@ -752,6 +752,7 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
         Err(MergeRefusal::Refused(said)) => refused(StatusCode::UNPROCESSABLE_ENTITY, "merge_refused", said),
         Err(MergeRefusal::TimedOut) => err(StatusCode::GATEWAY_TIMEOUT, crate::prs::TIMED_OUT),
         Err(MergeRefusal::Failed(e)) => internal(e),
+        Err(MergeRefusal::HeadUnknown) => err(StatusCode::CONFLICT, "GitHub has not said which commit the PR is at yet"),
     }
 }
 
@@ -772,19 +773,30 @@ pub(crate) enum MergeRefusal {
     Refused(String),
     TimedOut,
     Failed(anyhow::Error),
+    /// Alondra merges only the head whose checks it saw pass, and has not seen one yet.
+    HeadUnknown,
 }
 
 impl MergeRefusal {
-    /// What the node of an auto-merge task hears when Alondra could not merge its PR; nothing
-    /// when there is nothing for it to do.
+    /// What the node of an auto-merge task hears when Alondra could not merge its PR: only what
+    /// it can fix, a conflict with the base. The rest is tried again later.
     pub(crate) fn for_node(&self, url: &str) -> Option<String> {
-        let said = match self {
-            MergeRefusal::Missing | MergeRefusal::AlreadyMerged | MergeRefusal::NotOpen(_) | MergeRefusal::Stacked(_) | MergeRefusal::TimedOut => return None,
-            MergeRefusal::Conflicts(_) => "it conflicts with its base".to_string(),
-            MergeRefusal::Method(why) | MergeRefusal::Refused(why) => why.clone(),
-            MergeRefusal::Failed(e) => e.to_string(),
-        };
-        Some(format!("[Alondra] Alondra could not merge {url}: {said}. Fix what it says and push: Alondra merges it once GitHub lets it."))
+        match self {
+            MergeRefusal::Conflicts(_) => {
+                Some(format!("[Alondra] Alondra could not merge {url}: it conflicts with its base. Fix what it says and push: Alondra merges it once GitHub lets it."))
+            }
+            _ => None,
+        }
+    }
+
+    /// Why GitHub or the repo would not take the merge, when trying again will not change it by
+    /// itself: the orchestrator hears it, since the node cannot fix it.
+    pub(crate) fn for_orchestrator(&self) -> Option<String> {
+        match self {
+            MergeRefusal::Method(why) | MergeRefusal::Refused(why) => Some(why.clone()),
+            MergeRefusal::Failed(e) => Some(e.to_string()),
+            _ => None,
+        }
     }
 }
 
@@ -807,7 +819,11 @@ pub(crate) async fn merge(hub: &Arc<Hub>, id: u64, method: alondra_core::pr::Mer
     if pr.conflicts() {
         return Err(MergeRefusal::Conflicts(Box::new(pr)));
     }
-    if let Err(said) = gh.merge(&pr.url, method).await {
+    let head = match by {
+        Merger::User(_) => None,
+        Merger::Alondra => Some(pr.head_sha.clone().ok_or(MergeRefusal::HeadUnknown)?),
+    };
+    if let Err(said) = gh.merge(&pr.url, method, head.as_deref()).await {
         if said == crate::prs::TIMED_OUT {
             return Err(MergeRefusal::TimedOut);
         }
@@ -817,7 +833,13 @@ pub(crate) async fn merge(hub: &Arc<Hub>, id: u64, method: alondra_core::pr::Mer
             }
             return Err(MergeRefusal::AlreadyMerged);
         }
-        let mut card = crate::prs::refresh(hub, &pr).await;
+        let mut card = match gh.view(&pr.url).await {
+            Some(view) => crate::prs::refreshed(&pr, &view, None),
+            None => pr.clone(),
+        };
+        if card != pr {
+            let _ = hub.append(Event::PrUpdated(card.clone()));
+        }
         if said.contains(MERGE_COMMIT_FAILS) && !card.conflicts() {
             card.mergeable = Some("CONFLICTING".into());
             let _ = hub.append(Event::PrUpdated(card.clone()));
@@ -847,12 +869,15 @@ pub(crate) async fn merge(hub: &Arc<Hub>, id: u64, method: alondra_core::pr::Mer
     Ok(())
 }
 
-/// Why a PR card cannot be merged yet: the PR under it in its train is still open on GitHub.
+/// Why a PR card cannot be merged yet: the PR under it in its train, or a PR of a task its task
+/// depends on, is still open on GitHub.
 fn merge_blocked(v: &View, id: u64) -> Option<String> {
-    v.merge_blocked_by(id).map(|below| match below.state {
+    let below = v.merge_blocked_by(id).map(|below| match below.state {
         alondra_core::pr::PrState::Dismissed => format!("PR #{} is still open on GitHub: merge or close it first", below.number),
         _ => format!("merge PR #{} first", below.number),
-    })
+    });
+    let dependency = || v.prs.get(&id).and_then(|p| v.pr_task_of(p)).and_then(|t| v.task_guards(t).unmerged_dependency).map(|n| format!("merge PR #{n} first"));
+    below.or_else(dependency)
 }
 
 /// What `gh pr merge` says when the branch conflicts with its base.
@@ -3494,6 +3519,31 @@ mod tests {
         }
     }
 
+    /// The task machine refused a merge above an unmerged dependency only after GitHub had done
+    /// it; the order of dependent tasks is kept where Alondra decides to merge.
+    #[tokio::test]
+    async fn a_pr_whose_task_depends_on_an_unmerged_pr_is_not_merged_first() {
+        use alondra_core::tasks::{NewTask, Start};
+        let hub = started("merge-order", &[]);
+        for (id, depends_on, sid, name, url) in [("t-a", vec![], "a", "app/a", "https://github.com/a/b/pull/150"), ("t-b", vec!["t-a".to_string()], "b", "app/b", "https://github.com/a/c/pull/151")] {
+            hub.append(Event::TaskCreated(NewTask {
+                id: id.into(), request: "r-1".into(), title: id.into(), brief: Some("b".into()), depends_on, options: Default::default(), session_id: None,
+                launched: false, launched_as: None, start: Some(Start::NewNode { name: name.into(), cwd: "/tmp".into(), model: None }),
+            }))
+            .unwrap();
+            hub.append(Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(id.into()), title: None }).unwrap();
+            hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), pid: Some(1), ..Default::default() })).unwrap();
+            hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            hub.append(Event::PrOpened { url: url.into(), session_id: sid.into(), task: None }).unwrap();
+        }
+        let github = FakeGithub::default();
+        let refused = merge(&hub, 2, alondra_core::pr::MergeMethod::Squash, Merger::User("test".into()), &github).await.err();
+        assert!(matches!(&refused, Some(MergeRefusal::Stacked(why)) if why == "merge PR #150 first"), "{}", refused.is_some());
+        assert!(github.merges.lock().unwrap().is_empty(), "GitHub was not asked");
+        assert!(merge(&hub, 1, alondra_core::pr::MergeMethod::Squash, Merger::User("test".into()), &github).await.is_ok());
+        assert!(merge(&hub, 2, alondra_core::pr::MergeMethod::Squash, Merger::User("test".into()), &github).await.is_ok(), "once #150 is in");
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum NewCard {
         Ask,
@@ -3713,6 +3763,7 @@ mod tests {
     struct FakeGithub {
         missing: Vec<&'static str>,
         asked: Arc<std::sync::Mutex<Vec<String>>>,
+        merges: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl crate::prs::Gh for FakeGithub {
@@ -3729,7 +3780,8 @@ mod tests {
             !self.missing.contains(&url)
         }
 
-        async fn merge(&self, _url: &str, _method: alondra_core::pr::MergeMethod) -> Result<(), String> {
+        async fn merge(&self, url: &str, _method: alondra_core::pr::MergeMethod, _head: Option<&str>) -> Result<(), String> {
+            self.merges.lock().unwrap().push(url.into());
             Ok(())
         }
     }

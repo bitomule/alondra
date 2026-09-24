@@ -485,7 +485,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
     }
 }
 
-fn tell_orchestrator(hub: &Hub, text: String) {
+pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
     let told = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
         Some(Event::MessageQueued(Message {

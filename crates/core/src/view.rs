@@ -319,7 +319,9 @@ impl View {
                     let dismissed = known.state == crate::pr::PrState::Dismissed && pr.state == crate::pr::PrState::Open;
                     let requested = known.changes_requested_on.take();
                     let (auto_merge, task) = (known.auto_merge, known.task.take());
+                    let head_seen_at = if known.head_sha == pr.head_sha { known.head_seen_at } else { pr.head_sha.as_ref().map(|_| at) };
                     *known = pr.clone();
+                    known.head_seen_at = head_seen_at;
                     known.changes_requested_on = requested;
                     known.auto_merge = auto_merge;
                     known.task = task.or(known.task.take());

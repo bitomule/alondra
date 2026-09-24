@@ -97,6 +97,9 @@ pub struct PullRequest {
     pub fetched: bool,
     #[serde(default)]
     pub head_sha: Option<String>,
+    /// When Alondra first saw the current head commit: a push restarts the wait for its checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_seen_at: Option<Millis>,
     /// The head commit when changes were last requested; empty when it was not known yet.
     #[serde(default)]
     pub changes_requested_on: Option<String>,
@@ -135,6 +138,7 @@ impl PullRequest {
             opened_at: at,
             fetched: false,
             head_sha: None,
+            head_seen_at: None,
             changes_requested_on: None,
             auto_merge: false,
             draft: false,
