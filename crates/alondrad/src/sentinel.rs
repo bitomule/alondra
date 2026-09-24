@@ -9,6 +9,7 @@ use alondra_core::{
 
 use crate::classify::{Expects, what_node_expects};
 use crate::hub::Hub;
+use crate::markdown;
 
 const EVERY: Duration = Duration::from_secs(15);
 const DEBOUNCE: Duration = Duration::from_secs(1);
@@ -201,7 +202,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
 
 fn finished_report(v: &View, node: &Node) -> Report {
     let said = what_it_said(node).unwrap_or_default();
-    let first = said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let first = first_line(&said);
     let first_sentence = first.split_inclusive(". ").next().unwrap_or(first).trim();
     let (title, body) = if first_sentence.is_empty() {
         (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None)
@@ -236,11 +237,15 @@ fn plain(text: &str) -> String {
 }
 
 fn last_question(message: &str) -> Option<&str> {
-    message.lines().rev().map(str::trim).find(|l| l.ends_with('?'))
+    markdown::prose_lines(message).into_iter().rev().find(|l| l.ends_with('?'))
+}
+
+fn first_line(message: &str) -> &str {
+    markdown::prose_lines(message).into_iter().find(|l| !l.is_empty()).unwrap_or_default()
 }
 
 fn last_line(message: &str) -> &str {
-    message.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or(message)
+    markdown::prose_lines(message).into_iter().rev().find(|l| !l.is_empty()).unwrap_or(message)
 }
 
 fn cap(text: &str) -> String {
@@ -271,6 +276,30 @@ mod tests {
     }
 
     const ASKS: &str = "I prepared the release.\nShould I ship 4.5.0 now or merge #256 first?";
+
+    #[test]
+    fn titles_skip_table_rows_and_code() {
+        let cases = [
+            ("plain last line", "Done.\nShipped 4.5.0", "Shipped 4.5.0", None),
+            ("table row is not a title", "Results:\n\n| app | size |\n|---|---|\n| Lumo | 12 |", "Results:", None),
+            ("code is not a title", "Run this:\n```sh\nmake test\n```", "Run this:", None),
+            ("question inside code is ignored", "Is this right?\n```\nwhy?\n```", "Is this right?", Some("Is this right?")),
+            ("question in a table is ignored", "Pick one?\n| a? | b? |", "Pick one?", Some("Pick one?")),
+            ("pipe prose still counts", "|x is the absolute value?", "|x is the absolute value?", Some("|x is the absolute value?")),
+        ];
+        for (name, message, line, question) in cases {
+            assert_eq!(last_line(message), line, "{name}");
+            assert_eq!(last_question(message), question, "{name}");
+        }
+        let firsts = [
+            ("plain first", "Shipped 4.5.0.\nAll green.", "Shipped 4.5.0."),
+            ("table row first", "| app | size |\n|---|---|\n| Lumo | 12 |\nSizes are stable.", "Sizes are stable."),
+            ("code first", "```sh\nmake test\n```\nTests pass.", "Tests pass."),
+        ];
+        for (name, message, line) in firsts {
+            assert_eq!(first_line(message), line, "{name}");
+        }
+    }
 
     #[test]
     fn a_decision_becomes_a_question_with_its_real_question() {

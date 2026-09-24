@@ -5,6 +5,7 @@ mod keeper;
 mod hub;
 mod legacy;
 mod machine;
+mod markdown;
 mod menus;
 mod notifier;
 mod prs;
