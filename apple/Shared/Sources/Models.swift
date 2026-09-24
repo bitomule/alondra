@@ -176,8 +176,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     /// The report this question is about; the server keeps it out of the inbox and it is shown
     /// inside the question instead.
     public let report: Report?
-    /// Every report the question takes in, oldest first: the one it cites and the node's earlier
-    /// reports of the same episode. An older alondrad sends only `report`.
+    /// Every report the question takes in, oldest first: its task's unread reports outside its PR
+    /// card and its review cards. An older alondrad sends only `report`.
     public let reports: [Report]?
     /// The task this question blocks.
     public let task: String?
@@ -233,8 +233,8 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let toOrchestrator: Bool?
     /// The open PR card this report is about; it is shown inside that card.
     public let prId: UInt64?
-    /// The earlier unread reports of the same episode, oldest first; this card carries them and
-    /// reading it reads them.
+    /// The other unread reports of its task that no question carries, oldest first; this card
+    /// carries them and reading it reads them.
     public let earlier: [Report]?
     /// The task this report belongs to.
     public let task: String?

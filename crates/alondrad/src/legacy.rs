@@ -70,7 +70,6 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
             Some(Event::QuestionAsked(Question {
                 task,
                 replaces: None,
-                related: vec![],
                 id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
                 session_id,
                 node_name,

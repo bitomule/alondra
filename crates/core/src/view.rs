@@ -158,12 +158,7 @@ impl View {
                 }
                 None
             }
-            Event::Acknowledged { session_id } => {
-                if let Some(n) = self.nodes.get_mut(session_id) {
-                    n.acknowledged_at = Some(at);
-                }
-                None
-            }
+            Event::Acknowledged { .. } => None,
             Event::MarkedOrchestrator { session_id } => {
                 self.node_mut(session_id, at).is_orchestrator = true;
                 Some((session_id.clone(), Trigger::Other))
@@ -202,9 +197,6 @@ impl View {
             Event::ReportPosted(r) => {
                 let settled = self.about_settled_pr(r) || self.about_approved_artifact(r);
                 let node = self.node_mut(&r.session_id, at);
-                if settled {
-                    node.acknowledged_at = Some(at);
-                }
                 let signal = match r.kind {
                     ReportKind::Final => Some(TurnSignal::Finished),
                     ReportKind::Notice | ReportKind::Document => Some(TurnSignal::Delivered),
@@ -223,7 +215,7 @@ impl View {
                 self.reports.insert(r.id, r);
                 Some((sid, Trigger::Report))
             }
-            Event::ReportRead { id } => self.read_report(*id, at),
+            Event::ReportRead { id } => self.read_report(*id),
             Event::ArtifactReviewed { report, verdict } => {
                 if *verdict == crate::event::ReviewVerdict::Approved
                     && let Some(r) = self.reports.get(report)
@@ -232,7 +224,7 @@ impl View {
                         self.approved_artifacts.insert(url, at);
                     }
                 }
-                self.read_report(*report, at)
+                self.read_report(*report)
             }
             Event::MessageQueued(m) => {
                 self.messages.insert(m.id, m.clone());
@@ -430,29 +422,21 @@ impl View {
             let Some(r) = self.reports.get_mut(&id) else { continue };
             r.read = true;
             let sid = r.session_id.clone();
-            if let Some(n) = self.nodes.get_mut(&sid) {
-                n.acknowledged_at = Some(at);
-                self.recompute(&sid, at, Trigger::Report);
-            }
+            self.recompute(&sid, at, Trigger::Report);
         }
     }
 
-    /// Reading a report reads the earlier ones stacked in its card, and the user has now seen what
-    /// its node delivered.
-    fn read_report(&mut self, id: u64, at: Millis) -> Option<(String, Trigger)> {
+    /// Reading a report reads the earlier ones stacked in its card.
+    fn read_report(&mut self, id: u64) -> Option<(String, Trigger)> {
         let earlier = self.reports.get(&id).map(|r| self.report_stack(r)).unwrap_or_default();
         for e in earlier {
             if let Some(r) = self.reports.get_mut(&e) {
                 r.read = true;
             }
         }
-        let session = self.reports.get_mut(&id).map(|r| {
-            r.read = true;
-            r.session_id.clone()
-        })?;
-        let node = self.nodes.get_mut(&session)?;
-        node.acknowledged_at = Some(at);
-        Some((session, Trigger::Report))
+        let r = self.reports.get_mut(&id)?;
+        r.read = true;
+        Some((r.session_id.clone(), Trigger::Report))
     }
 
     fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<(String, Trigger)> {
@@ -661,12 +645,6 @@ impl View {
         node.status = outcome.status;
         node.orchestrator_state = outcome.orchestrator;
         node.evidence = Some(outcome.evidence);
-    }
-
-    pub fn news(&self, now: Millis) -> Vec<&Node> {
-        let mut v: Vec<&Node> = self.nodes.values().filter(|n| n.has_news(now)).collect();
-        v.sort_by_key(|n| std::cmp::Reverse(n.last_message_at.unwrap_or(n.state_since).max(n.state_since)));
-        v
     }
 
     /// Open PR cards the user has to act on: not merged, closed, set aside or waiting for new commits.
@@ -949,7 +927,6 @@ mod tests {
 
     fn question(id: u64, sid: &str, origin: QuestionOrigin) -> Question {
         Question {
-            related: vec![],
             id,
             session_id: sid.into(),
             node_name: None,
@@ -1036,7 +1013,6 @@ mod tests {
         use crate::pr::MergeMethod;
         let report = |id: u64, url: &str| {
             Event::ReportPosted(Report {
-                related: vec![],
                 id,
                 session_id: "s".into(),
                 node_name: None,
@@ -1070,7 +1046,6 @@ mod tests {
     fn final_report_then_exit_is_done_not_down() {
         let mut v = run(&[hook("s", "UserPromptSubmit")]);
         v.apply(2, 2000, &Event::ReportPosted(Report {
-            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,
@@ -1257,7 +1232,6 @@ mod tests {
         let mut v = View::default();
         v.apply(1, 1000, &hook("s", "Stop"));
         let q = |id: u64, status: QuestionStatus, at: Millis| Question {
-            related: vec![],
             id,
             session_id: "s".into(),
             node_name: None,
@@ -1329,7 +1303,6 @@ mod tests {
 
     fn report(id: u64, sid: &str, kind: ReportKind, at: Millis) -> Event {
         Event::ReportPosted(Report {
-            related: vec![],
             id,
             session_id: sid.into(),
             node_name: None,
@@ -1395,20 +1368,6 @@ mod tests {
         let v = run(&[seen("s", "stopped", "idle", None, None), report(1, "s", ReportKind::Final, 1000)]);
         assert_eq!(v.session_task("s").map(|t| t.state), Some(crate::tasks::TaskState::Done));
         assert_eq!(v.nodes["s"].state, NodeState::Done);
-    }
-
-    #[test]
-    fn delivered_node_is_news_until_acknowledged_and_again_after_new_episode() {
-        let mut v = run(&[hook("s", "UserPromptSubmit")]);
-        v.apply(2, 2000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("PR #4 ready".into()), ..Default::default() }));
-        v.apply(3, 3000, &report(1, "s", ReportKind::Notice, 3000));
-        assert_eq!(v.news(9000).len(), 1);
-        v.apply(4, 4000, &Event::Acknowledged { session_id: "s".into() });
-        assert!(v.news(9000).is_empty());
-        v.apply(5, 5000, &hook("s", "UserPromptSubmit"));
-        v.apply(6, 6000, &Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), last_message: Some("something else".into()), ..Default::default() }));
-        v.apply(7, 7000, &report(2, "s", ReportKind::Notice, 7000));
-        assert_eq!(v.news(9000).len(), 1);
     }
 
     #[test]

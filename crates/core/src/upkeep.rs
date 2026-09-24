@@ -140,7 +140,7 @@ mod tests {
     fn final_report() -> Event {
         Event::ReportPosted(Report {
             id: 1, session_id: "s".into(), node_name: None, title: "Done".into(), body: None, links: vec![], attachments: vec![], kind: ReportKind::Final,
-            created_at: T0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, related: vec![], task: None,
+            created_at: T0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
         })
     }
 
@@ -148,7 +148,7 @@ mod tests {
         Event::QuestionAsked(Question {
             id: 1, session_id: "s".into(), node_name: None, title: "Deploy?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open,
-            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, related: vec![], replaces: None, task: None,
+            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, replaces: None, task: None,
         })
     }
 

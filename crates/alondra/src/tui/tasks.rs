@@ -463,7 +463,7 @@ impl App {
             KeyCode::Char('R') => self.reopen_task(),
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_task().and_then(|t| t.assignee.as_ref()).and_then(|a| self.node(&a.session_id)) {
-                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: false };
+                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string() };
                     self.compose(target, "");
                 }
             }

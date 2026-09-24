@@ -595,10 +595,8 @@ impl View {
     /// waits for David's merge.
     fn node_closed(&mut self, session_id: &str, at: Millis) {
         let dropped: Vec<String> = self
-            .board
-            .tasks
-            .values()
-            .filter(|t| t.is_assigned_to(session_id) && matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::Closing))
+            .tasks_of(session_id)
+            .filter(|t| matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::Closing))
             .filter(|t| self.open_prs(t).next().is_none())
             .map(|t| t.id.clone())
             .collect();
@@ -981,7 +979,6 @@ mod tests {
             to_orchestrator: false,
             mission: None,
             looks_like_question: false,
-            related: vec![],
             task: None,
         })
     }
@@ -1007,7 +1004,6 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            related: vec![],
             replaces: None,
             task: None,
         })
