@@ -110,6 +110,9 @@ pub enum Event {
     PrChangesRequested { id: u64 },
     /// David asked the node about its PR from the card; the card stays where it is.
     PrAsked { id: u64 },
+    /// David or the orchestrator said which task of its node a PR card is for: the task it was
+    /// on goes back to where its own facts leave it, and this one takes the PR as it is.
+    PrReassigned { pr: u64, task: String },
     /// The user asked for new work with these options; launches that cite the request get them.
     RequestSent {
         request_id: String,
@@ -231,6 +234,7 @@ impl Event {
             Event::PrDismissed { .. } => "pr_dismissed",
             Event::PrChangesRequested { .. } => "pr_changes_requested",
             Event::PrAsked { .. } => "pr_asked",
+            Event::PrReassigned { .. } => "pr_reassigned",
             Event::TasksRecorded => "tasks_recorded",
             Event::TaskCreated(_) => "task_created",
             Event::TaskAssigned { .. } => "task_assigned",

@@ -578,6 +578,31 @@ impl Task {
         self.launched_as.as_deref().unwrap_or(&self.title)
     }
 
+    /// What a move leaves the task holding: the blocker it raised, the final report it sent.
+    fn hold(&mut self, event: &TaskEvent, to: TaskState) {
+        match event {
+            TaskEvent::BlockerRaised { blocker, .. } => {
+                self.blocker = Some(*blocker);
+                self.final_report = None;
+            }
+            TaskEvent::FinalReport { report } => self.final_report = Some(*report),
+            TaskEvent::ChangesRequested { .. } | TaskEvent::Reopen | TaskEvent::Answered { .. } => self.final_report = None,
+            _ => {}
+        }
+        if to != TaskState::NeedsYou {
+            self.blocker = None;
+        }
+    }
+
+    /// What the task holds after its history, worked out again once part of it was taken out.
+    pub(crate) fn rehold(&mut self) {
+        (self.blocker, self.final_report) = (None, None);
+        for i in 0..self.history.len() {
+            let (event, to) = (self.history[i].event.clone(), self.history[i].to);
+            self.hold(&event, to);
+        }
+    }
+
     /// When anything of it last changed: a move, a refused fact, its creation.
     pub fn last_change(&self) -> Millis {
         let history = self.history.last().map(|t| t.at);
@@ -633,18 +658,7 @@ impl Board {
         let from = task.state;
         match transition(from, &event, g) {
             Ok(to) => {
-                match &event {
-                    TaskEvent::BlockerRaised { blocker, .. } => {
-                        task.blocker = Some(*blocker);
-                        task.final_report = None;
-                    }
-                    TaskEvent::FinalReport { report } => task.final_report = Some(*report),
-                    TaskEvent::ChangesRequested { .. } | TaskEvent::Reopen | TaskEvent::Answered { .. } => task.final_report = None,
-                    _ => {}
-                }
-                if to != TaskState::NeedsYou {
-                    task.blocker = None;
-                }
+                task.hold(&event, to);
                 if !to.finished() {
                     task.archived_at = None;
                 }
