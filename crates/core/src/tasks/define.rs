@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::NodeStatus;
 use crate::pr::PullRequest;
 use crate::view::View;
 
@@ -101,8 +102,7 @@ pub struct Candidate {
     pub node: String,
     pub short_id: String,
     pub project: String,
-    /// `busy` while the node is in a turn, `free` otherwise.
-    pub status: &'static str,
+    pub status: NodeStatus,
     pub tasks: Vec<CandidateTask>,
     pub why: Vec<String>,
 }
@@ -224,13 +224,13 @@ impl View {
                     node: n.display_name().to_string(),
                     short_id: n.short_id.clone(),
                     project: n.project(),
-                    status: if n.busy { "busy" } else { "free" },
+                    status: n.status,
                     tasks: mine.iter().filter(|m| !m.state.finished()).map(|m| CandidateTask { id: m.id.clone(), title: m.title.clone(), state: m.state }).collect(),
                     why,
                 })
             })
             .collect();
-        out.sort_by_key(|c| (std::cmp::Reverse(c.why.len()), c.status != "free", c.node.clone()));
+        out.sort_by_key(|c| (std::cmp::Reverse(c.why.len()), c.status != NodeStatus::Free, c.node.clone()));
         out
     }
 }
@@ -428,7 +428,7 @@ mod tests {
             [("app/model", vec!["works in project app", "works on t-a “Task t-a”, which t-b builds on"]), ("web/copy", vec!["works on t-c “Task t-c” of the same request"])],
             "the orchestrator, closed nodes and unrelated ones are left out"
         );
-        assert_eq!((got[0].status, got[0].tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()), ("free", vec!["t-a"]));
+        assert_eq!((got[0].status, got[0].tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()), (NodeStatus::Free, vec!["t-a"]));
         let by_repo: Vec<String> = d.view.candidates(None, Some("acme/web")).into_iter().map(|c| c.node).collect();
         assert_eq!(by_repo, ["web/copy"]);
     }

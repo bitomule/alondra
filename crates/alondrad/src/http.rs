@@ -183,6 +183,12 @@ fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     Some(s.chars().take(300).collect())
 }
 
+/// The task one of Alondra's own tools names in its `task` argument.
+fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+    tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;
+    input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
+}
+
 async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     let Some(session_id) = str_field(&p, "session_id") else {
         return Json(json!({})).into_response();
@@ -200,6 +206,8 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         error_type: str_field(&p, "error_type").or_else(|| str_field(&p, "error")),
         cwd: str_field(&p, "cwd"),
         agent_id: str_field(&p, "agent_id"),
+        agent_type: str_field(&p, "agent_type"),
+        task: named_task(tool.as_deref(), p.get("tool_input")),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
@@ -1059,6 +1067,8 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
     Json(json!({"ok": true, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
                 "config": {"name": c.name, "port": c.port, "listen": c.listen.to_string(), "public_url": c.public_url,
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
+                           "resume_dead_nodes": c.resume_dead_nodes,
+                           "close_free_nodes_after_secs": c.close_free_nodes_after.map(|d| d.as_secs()),
                            "home": c.home.display().to_string()}}))
 }
 
@@ -1122,6 +1132,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
                 value["background"] = json!(states::background(n, now));
+                value["activity"] = json!(v.activity(n));
                 value
             })
             .collect();
@@ -1220,6 +1231,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
         let mut node = client_node(&n);
         node["background"] = json!(states::background(&n, now_millis()));
+        node["activity"] = json!(v.activity(&n));
         Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
     let Some((node, session_id, questions, reports, messages, held)) = found else {
@@ -1234,11 +1246,13 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
     Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
 }
 
-/// A node as clients see it: whether its session is attached is the daemon's business.
+/// A node as clients see it: whether its session is attached is the daemon's business, and its
+/// ledger reaches them as `activity`.
 fn client_node(n: &alondra_core::Node) -> Value {
     let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
     if let Some(o) = value.as_object_mut() {
         o.remove("alive");
+        o.remove("ledger");
     }
     value
 }
@@ -1369,7 +1383,8 @@ fn caller_task(v: &View, sid: &str, named: Option<&str>) -> Result<Option<String
     if v.nodes.get(sid).is_some_and(|n| n.is_orchestrator) {
         return Ok(None);
     }
-    v.card_task(sid, named, None).map(Some).map_err(|e| match e {
+    let agent = v.alondra_caller(sid).flatten();
+    v.card_task(sid, named, agent).map(Some).map_err(|e| match e {
         CardTask::Unknown(id) => (StatusCode::NOT_FOUND, format!("task: {id} does not exist. Nothing was recorded.")),
         CardTask::NotYours(id) => (StatusCode::FORBIDDEN, format!("task: {id} is not yours. Nothing was recorded.")),
         CardTask::Several(ids) => {
@@ -2052,8 +2067,14 @@ fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Optio
 /// `{"force": true}`, may close it; a card's read-and-close never does.
 async fn close_node(State(hub): State<AppState>, Path(key): Path<String>, body: axum::body::Bytes) -> Response {
     let force = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.get("force").and_then(Value::as_bool)).unwrap_or(false);
+    close(&hub, &key, force).await
+}
+
+/// Closes a node the way `claude rm` does, which keeps a worktree with work not yet saved
+/// elsewhere, and refuses while the node still has something pending.
+pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
     let Some((short, session, busy, waiting_permission, in_daemon, name, orchestrator)) = hub.read(|v| {
-        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
+        v.resolve_node(key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
     }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
@@ -2064,8 +2085,9 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>, body: 
         );
     }
     if !in_daemon {
-        return forget_interactive(&hub, &session, &name);
+        return forget_interactive(hub, &session, &name);
     }
+    let _closing = hub.closing(&session);
     let leftovers = crate::worktree::leftovers(&session).await;
     let reasons = close_reasons(busy, waiting_permission, leftovers);
     if !reasons.is_empty() {
@@ -3060,6 +3082,78 @@ mod tests {
         let task = &o["tasks"][0];
         assert_eq!((&task["id"], &task["state"], &task["prs"]), (&json!("t-s"), &json!("in_review"), &json!([1])));
         assert!(task.get("history").is_none(), "{task}");
+    }
+
+    #[tokio::test]
+    async fn each_node_lists_what_its_main_thread_and_each_subagent_do_and_for_which_task() {
+        let hub = started("activity", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let payloads = [
+            json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests"}}),
+            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
+            json!({"session_id": "s", "hook_event_name": "PostToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "mcp__plugin_alondra_alondra__report", "tool_use_id": "u2", "tool_input": {"task": "t-s", "title": "Tests pass"}}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
+        ];
+        for p in payloads {
+            hook(State(hub.clone()), Json(p)).await;
+        }
+        let stored = hub.read(|v| v.nodes["s"].ledger.clone());
+        assert_eq!(stored.bound, vec![(Some("a1".to_string()), "t-s".to_string())], "the subagent bound itself with the task its Alondra call named");
+        let Json(o) = overview(State(hub.clone())).await;
+        let node = &o["nodes"][0];
+        assert!(node.get("ledger").is_none(), "clients get it as activity: {node}");
+        let activity = node["activity"].as_array().expect("activity on every node");
+        let keys: Vec<std::collections::BTreeSet<&str>> = activity.iter().map(|a| a.as_object().unwrap().keys().map(String::as_str).collect()).collect();
+        let shape = std::collections::BTreeSet::from(["agent_id", "agent_type", "since", "summary", "task", "tool"]);
+        assert_eq!(keys, vec![shape; 2], "the shape the apps code against, nulls included");
+        let main = json!({"agent_id": null, "agent_type": null, "task": "t-s", "tool": "Agent", "summary": "Check the tests"});
+        let sub = json!({"agent_id": "a1", "agent_type": "Explore", "task": "t-s", "tool": "Bash", "summary": "cargo test"});
+        for (got, want) in activity.iter().zip([main, sub]) {
+            for (k, v) in want.as_object().unwrap() {
+                assert_eq!(&got[k], v, "{k} in {got}");
+            }
+            assert!(got["since"].as_i64().is_some_and(|s| s > 0), "{got}");
+        }
+        assert_eq!(node["tool"]["name"], "Agent", "today's tool field is untouched");
+        assert_eq!((&node["status"], &node["state"]), (&json!("busy"), &json!("working")));
+        let (_, detail) = status_and_body(node_detail(State(hub.clone()), Path("s".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
+        assert_eq!(detail["node"]["status"], "busy");
+        assert_eq!(detail["node"]["activity"].as_array().map(Vec::len), Some(2));
+    }
+
+    /// The MCP call does not say which subagent makes it; its `PreToolUse`, which reaches Alondra
+    /// first, does.
+    #[tokio::test]
+    async fn a_subagents_card_without_task_goes_to_the_task_it_bound_itself_to() {
+        use alondra_core::tasks::{NewTask, TaskOptions};
+        let hub = started("bound", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        hub.append(Event::TaskCreated(NewTask {
+            id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
+            session_id: Some("s".into()), launched: false, start: None,
+        }))
+        .unwrap();
+        let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| {
+            json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "tool_name": "mcp__plugin_alondra_alondra__ask", "tool_use_id": id, "tool_input": {"task": task, "title": "¿Sigo?"}})
+        };
+        for p in [ask_tool("a1", "PreToolUse", "b1", Some("t-other")), ask_tool("a1", "PostToolUse", "b1", Some("t-other"))] {
+            hook(State(hub.clone()), Json(p)).await;
+        }
+        let asked = |hub: Arc<Hub>, agent: &'static str, id: &'static str| async move {
+            hook(State(hub.clone()), Json(ask_tool(agent, "PreToolUse", id, None))).await;
+            let answer = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo con esto?"))).await).await;
+            hook(State(hub.clone()), Json(ask_tool(agent, "PostToolUse", id, None))).await;
+            answer
+        };
+        let (status, said) = asked(hub.clone(), "a1", "c1").await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let task = hub.read(|v| v.questions.values().next_back().and_then(|q| q.task.clone()));
+        assert_eq!(task.as_deref(), Some("t-other"), "the subagent's own task, although the node has two open");
+        let (status, said) = asked(hub.clone(), "a2", "d1").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a subagent that never named its task still has to: {said}");
     }
 
     fn ask_body(sid: &str, title: &str) -> AskBody {

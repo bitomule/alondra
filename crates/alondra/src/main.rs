@@ -134,6 +134,8 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("wake", c.wake.to_string()),
         ("retention_hours", c.retention_hours.to_string()),
         ("service_label", c.service_label.clone()),
+        ("resume_dead_nodes", c.resume_dead_nodes.to_string()),
+        ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
     ];
     match get {
         Some(key) => match rows.iter().find(|(k, _)| *k == key) {

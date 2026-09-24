@@ -47,6 +47,9 @@ async fn main() -> Result<()> {
         tokio::spawn(wake::run(hub.clone()));
         tokio::spawn(keeper::run(hub.clone(), claude_home.clone()));
         tokio::spawn(menus::run(hub.clone()));
+        if config.resume_dead_nodes {
+            tokio::spawn(wake::resume_loop(hub.clone()));
+        }
     }
     tokio::spawn(notifier::run(hub.clone()));
     tokio::spawn(retention(hub.clone(), config.retention_hours));

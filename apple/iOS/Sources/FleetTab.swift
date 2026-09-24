@@ -414,7 +414,7 @@ struct NodeDetail: View {
 
     private func taskLine(_ task: WorkTask) -> String {
         guard let request = fleet.request(of: task) else { return task.state.label }
-        return "\(task.state.label) · \(String(localized: "from «\(fleet.title(of: request))»"))"
+        return "\(task.state.label) · \(String(localized: "from “\(fleet.title(of: request))”"))"
     }
 
     private func section<Content: View>(_ title: String, symbol: String, trailing: String? = nil, @ViewBuilder content: () -> Content) -> some View {
@@ -512,7 +512,7 @@ private struct ThreadLine: View {
                     Text(activity.thread)
                         .font(.subheadline.weight(.semibold))
                     if !activity.isMainThread, let task {
-                        Text("· subagent of «\(task.title)»")
+                        Text("· subagent of “\(task.title)”")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

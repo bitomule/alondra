@@ -107,8 +107,9 @@ fn may_move_tasks(event: &Event) -> bool {
 
 impl View {
     /// The tasks a node works on.
-    pub fn tasks_of<'a>(&'a self, session_id: &'a str) -> impl Iterator<Item = &'a Task> + 'a {
-        self.board.tasks.values().filter(move |t| t.is_assigned_to(session_id))
+    pub fn tasks_of<'a>(&'a self, session_id: &str) -> impl Iterator<Item = &'a Task> + use<'a> {
+        let session_id = session_id.to_string();
+        self.board.tasks.values().filter(move |t| t.is_assigned_to(&session_id))
     }
 
     /// The task a node works on now: its newest open one, else its newest.
@@ -180,14 +181,17 @@ impl View {
 
     /// The task a new card of the node goes to: the one it names, else its only open task, else
     /// its newest, else the one its first card gives it. A subagent's card goes to the open task
-    /// it works on.
+    /// it works on: assigned to it, or the one it bound itself to (`activity`).
     pub fn card_task(&self, session_id: &str, named: Option<&str>, agent_id: Option<&str>) -> Result<String, CardTask> {
         if let Some(id) = named.map(str::trim).filter(|t| !t.is_empty()) {
             let task = self.board.tasks.get(id).ok_or_else(|| CardTask::Unknown(id.to_string()))?;
             return if task.is_assigned_to(session_id) { Ok(task.id.clone()) } else { Err(CardTask::NotYours(id.to_string())) };
         }
         let open: Vec<&Task> = self.tasks_of(session_id).filter(|t| !t.state.finished()).collect();
-        let by_agent = open.iter().find(|t| agent_id.is_some() && t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == agent_id);
+        let bound = agent_id.and_then(|a| self.nodes.get(session_id)?.ledger.bound(Some(a)));
+        let by_agent = open.iter().find(|t| {
+            agent_id.is_some() && (t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == agent_id || bound == Some(t.id.as_str()))
+        });
         match (open.as_slice(), by_agent) {
             (_, Some(t)) => Ok(t.id.clone()),
             ([one], None) => Ok(one.id.clone()),
