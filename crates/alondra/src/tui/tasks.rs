@@ -137,7 +137,7 @@ pub fn transition_summary(t: &Transition) -> String {
         E::Merged { .. } => tr!("merged", "fusionada").into(),
         E::ReviewClosed { .. } => tr!("the review closed without a merge", "la revisión se cerró sin fusionar").into(),
         E::Reopen => tr!("reopened", "reabierta").into(),
-        E::Cancel => tr!("cancelled", "descartada").into(),
+        E::Cancel { .. } => tr!("cancelled", "descartada").into(),
     }
 }
 

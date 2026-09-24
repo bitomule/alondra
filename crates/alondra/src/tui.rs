@@ -1297,6 +1297,11 @@ impl App {
                     self.compose(Target::PrAsk { id: p.pr.id, title: p.pr.title }, "");
                 }
             }
+            KeyCode::Char('v') if self.selected_report().is_some_and(|r| !alondra_core::artifact::in_report(&r).is_empty()) => {
+                if let Some(r) = self.selected_report() {
+                    self.review(&r, ReviewVerdict::Approved);
+                }
+            }
             KeyCode::Char('v') => {
                 let attachments = match self.sel.and_then(|k| self.item(k)) {
                     Some(Item::Q(q)) => q.attachments.clone(),
@@ -1352,11 +1357,6 @@ impl App {
                     self.compose(Target::MoreContext { id: q.id, title: q.title }, "");
                 } else if let Some(r) = self.selected_report() {
                     self.review(&r, ReviewVerdict::Comments);
-                }
-            }
-            KeyCode::Char('v') => {
-                if let Some(r) = self.selected_report() {
-                    self.review(&r, ReviewVerdict::Approved);
                 }
             }
             KeyCode::Char('x') => {
