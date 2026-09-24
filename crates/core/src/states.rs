@@ -205,7 +205,11 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| live && node.busy), now, HOOK_FRESH_MS));
     f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)).filter(|_| live), now, HOOK_FRESH_MS));
     f.add(Signal::DaemonActive, daemon_active(node, now).filter(|_| live));
-    let tasks_seen = fresh(node.daemon_seen_at.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS);
+    let tasks_seen = if node.background.is_empty() {
+        fresh(node.daemon_tasks_since.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS)
+    } else {
+        fresh(node.daemon_seen_at.filter(|_| node.alive), now, BACKGROUND_TASK_FRESH_MS)
+    };
     let all_suspect = !node.background.is_empty() && background(node, now).iter().all(|b| b.suspect);
     f.add(Signal::BackgroundTask, tasks_seen.filter(|_| live && !all_suspect));
     f.add(Signal::BackgroundSuspect, tasks_seen.filter(|_| all_suspect));
@@ -669,7 +673,7 @@ mod tests {
             Case { what: "a hook a minute ago", events: vec![hook("UserPromptSubmit")], sweep: Some((min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::Hook) },
             Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
             Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
-            Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
+            Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0 + 80 * min)])], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
             Case { what: "a wait loop left alone for 40 min", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], sweep: Some((40 * min, false)), state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::BackgroundSuspect) },
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
@@ -905,6 +909,26 @@ mod tests {
             let at = T0 + events.len() as Millis * 1000;
             assert_eq!(unseen_menu(&v, &v.nodes["s"], at), expected, "{what}");
             assert_eq!(v.nodes["s"].state, state, "{what}");
+        }
+    }
+
+    /// alondra/sin-dormidos (45b58bd9), 24 Sep: idle for hours, `daemon_tasks: 1`, `background: []`,
+    /// and `daemon_seen_at` refreshed on every poll. The count alone kept it working forever.
+    #[test]
+    fn a_task_count_with_nothing_listed_ages_from_its_last_change_not_the_last_poll() {
+        let min = 60_000;
+        let cases = [
+            ("listed task, polled for 3 h", true, 180 * min, NodeState::Working),
+            ("count only, 30 min after it appeared", false, 30 * min, NodeState::Working),
+            ("count only, polled for 3 h", false, 180 * min, NodeState::Stalled),
+        ];
+        for (what, listed, after, expected) in cases {
+            let mut v = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+            let seen = |at: Millis| if listed { daemon_running(&[(BackgroundKind::Shell, at)]) } else { daemon("working", "idle", 1, None) };
+            for (i, at) in (0..=after).step_by((10 * min) as usize).enumerate() {
+                v.apply(100 + i as u64, T0 + 10_000 + at, &seen(T0 + 10_000 + at));
+            }
+            assert_eq!(v.nodes["s"].state, expected, "{what}");
         }
     }
 
