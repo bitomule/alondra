@@ -202,7 +202,7 @@ pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
         let (ok, bad, run) = (count(CheckState::Passed), count(CheckState::Failed), count(CheckState::Running));
         s.push_str(&trf!(" · checks {ok}✓ {bad}✗ {run}…", " · checks {ok}✓ {bad}✗ {run}…"));
     }
-    if pr.mergeable.as_deref() == Some("CONFLICTING") {
+    if pr.conflicts() {
         s.push_str(tr!(" · conflicts", " · conflictos"));
     }
     s
@@ -588,19 +588,30 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let hint = |spans: Vec<Span<'static>>| fit(spans, width);
     match item {
         Item::P(p) => {
-            let mut out: Vec<Line> = p
-                .methods()
-                .into_iter()
-                .enumerate()
-                .map(|(i, m)| {
-                    let method = i18n::merge_method(m);
-                    let mut spans = vec![keycap(&(i + 1).to_string()), Span::styled(trf!(" merge: {method}", " fusionar: {method}"), Style::new().add_modifier(Modifier::BOLD))];
-                    if i == 0 && p.preferred_method == Some(m) {
-                        spans.push(Span::styled(tr!("  last used here", "  el último usado aquí"), Style::new().fg(DIM)));
+            let mut out: Vec<Line> = vec![];
+            if p.pr.conflicts() {
+                let base = p.pr.base.clone().unwrap_or_else(|| tr!("its base", "su base").to_string());
+                out.push(fit(vec![Span::styled(trf!("Conflicts with {base}: it cannot be merged", "Conflictos con {base}: no se puede fusionar"), Style::new().fg(Color::LightRed))], width));
+            } else if p.pr.mergeability_unknown() && p.pr.fetched {
+                out.push(fit(vec![Span::styled(tr!("GitHub is checking whether it merges…", "GitHub está comprobando si se puede fusionar…"), Style::new().fg(DIM))], width));
+            }
+            out.extend(p.actions().into_iter().enumerate().map(|(i, action)| {
+                let label = match action {
+                    crate::client::PrAction::Merge(m) => {
+                        let method = i18n::merge_method(m);
+                        trf!(" merge: {method}", " fusionar: {method}")
                     }
-                    fit(spans, width)
-                })
-                .collect();
+                    crate::client::PrAction::ResolveConflicts => tr!(" resolve conflicts (its node does it)", " resolver conflictos (lo hace su nodo)").to_string(),
+                };
+                let mut spans = vec![keycap(&(i + 1).to_string()), Span::styled(label, Style::new().add_modifier(Modifier::BOLD))];
+                if let crate::client::PrAction::Merge(m) = action
+                    && i == 0
+                    && p.preferred_method == Some(m)
+                {
+                    spans.push(Span::styled(tr!("  last used here", "  el último usado aquí"), Style::new().fg(DIM)));
+                }
+                fit(spans, width)
+            }));
             out.push(hint(vec![
                 keycap("d"),
                 Span::styled(tr!(" diff and comment (tuicr)  ", " diff y comentarios (tuicr)  "), Style::new().fg(SOFT)),
@@ -1279,8 +1290,12 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v
         }
         Some(Item::P(p)) => {
-            let n = p.methods().len();
-            let mut v = vec![pane, k(&format!("1-{n}"), tr!("merge", "fusionar")), k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
+            let first = if p.pr.conflicts() {
+                k("1", tr!("resolve conflicts", "resolver conflictos"))
+            } else {
+                k(&format!("1-{}", p.methods().len()), tr!("merge", "fusionar"))
+            };
+            let mut v = vec![pane, first,k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }

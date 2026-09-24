@@ -89,6 +89,9 @@ pub struct PullRequest {
     pub changed_files: u64,
     #[serde(default)]
     pub mergeable: Option<String>,
+    /// GitHub's `mergeStateStatus`: `DIRTY` means conflicts, `BEHIND`, `BLOCKED`, `CLEAN`…
+    #[serde(default)]
+    pub merge_state: Option<String>,
     pub opened_at: Millis,
     #[serde(default)]
     pub fetched: bool,
@@ -120,11 +123,23 @@ impl PullRequest {
             deletions: 0,
             changed_files: 0,
             mergeable: None,
+            merge_state: None,
             opened_at: at,
             fetched: false,
             head_sha: None,
             changes_requested_on: None,
         })
+    }
+
+    /// GitHub cannot create the merge commit: the branch conflicts with its base.
+    pub fn conflicts(&self) -> bool {
+        self.mergeable.as_deref() == Some("CONFLICTING") || self.merge_state.as_deref() == Some("DIRTY")
+    }
+
+    /// GitHub is still computing whether the PR merges: it answers `UNKNOWN` right after the base
+    /// moves, until someone asks again.
+    pub fn mergeability_unknown(&self) -> bool {
+        !self.conflicts() && matches!(self.mergeable.as_deref(), None | Some("UNKNOWN"))
     }
 
     /// Changes were requested and the node has not pushed since: the card waits off the inbox.

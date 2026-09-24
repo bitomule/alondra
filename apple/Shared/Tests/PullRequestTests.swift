@@ -26,4 +26,12 @@ import Testing
         #expect(p.checks?.first?.failed == true)
         #expect(InboxItem.pullRequest(p).id == "p4")
     }
+
+    @Test func aDirtyMergeStateIsAConflictAndUnknownIsStillBeingChecked() throws {
+        #expect(try pr(#","mergeable":"UNKNOWN","merge_state":"DIRTY""#).hasConflicts)
+        let checking = try pr(#","mergeable":"UNKNOWN","merge_state":"UNKNOWN""#)
+        #expect(!checking.hasConflicts && checking.mergeabilityUnknown)
+        let clean = try pr(#","mergeable":"MERGEABLE","merge_state":"CLEAN""#)
+        #expect(!clean.hasConflicts && !clean.mergeabilityUnknown)
+    }
 }

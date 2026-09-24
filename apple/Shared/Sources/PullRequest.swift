@@ -29,6 +29,7 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
     public let deletions: UInt64?
     public let changedFiles: UInt64?
     public let mergeable: String?
+    public let mergeState: String?
     public let openedAt: Int64
     public let preferredMethod: String?
 
@@ -41,7 +42,10 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
         return [preferred] + allowed.filter { $0 != preferred }
     }
 
-    public var hasConflicts: Bool { mergeable == "CONFLICTING" }
+    public var hasConflicts: Bool { mergeable == "CONFLICTING" || mergeState == "DIRTY" }
+
+    /// GitHub answers `UNKNOWN` right after the base moves, until Alondra asks again.
+    public var mergeabilityUnknown: Bool { !hasConflicts && (mergeable == nil || mergeable == "UNKNOWN") }
 
     /// "bitomule/alondra #12 · fase-1 ← menus · +120 −8 in 5 files"
     public var summary: String {
