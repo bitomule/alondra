@@ -15,7 +15,8 @@ struct FleetTab: View {
     }
 
     private func matches(_ node: Node, _ project: String, _ needle: String) -> Bool {
-        [node.displayName, project, node.summary, node.cwd ?? "", node.stateLabel]
+        let tasks = fleet.board.tasks(onNode: node.sessionId).map(\.title)
+        return ([node.displayName, project, node.summary, node.cwd ?? "", node.fleetLabel] + tasks)
             .contains { $0.localizedStandardContains(needle) }
     }
 
@@ -72,6 +73,9 @@ struct FleetTab: View {
             .navigationDestination(for: String.self) { session in
                 NodeDetail(session: session)
             }
+            .navigationDestination(for: TaskLink.self) { link in
+                TaskDetail(taskID: link.id)
+            }
             .refreshable { await fleet.refresh() }
             .closeConfirmation($closing) { request in
                 Task { await fleet.close(request) }
@@ -91,17 +95,14 @@ private struct ProjectHeader: View {
                 .foregroundStyle(Palette.ink)
                 .textCase(nil)
             Spacer()
-            let working = nodes.filter { $0.state == .working }.count
-            if working > 0 {
-                Label(String(working), systemImage: "hammer.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Palette.sky)
-            }
-            let waiting = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMerge }.count
-            if waiting > 0 {
-                Label(String(waiting), systemImage: "hand.raised.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Palette.dawn)
+            ForEach([NodeOccupancy.busy, .free, .waitingMachine], id: \.self) { occupancy in
+                let count = nodes.count(where: { $0.occupancy == occupancy })
+                if count > 0 {
+                    Label(String(count), systemImage: occupancy.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(occupancy.tint)
+                        .accessibilityLabel(Text(verbatim: "\(count) \(occupancy.label)"))
+                }
             }
         }
         .padding(.top, 6)
@@ -112,7 +113,10 @@ struct NodeRow: View {
     let node: Node
     let pending: Int
 
+    @Environment(FleetStore.self) private var fleet
+
     var body: some View {
+        let tasks = node.isOrchestrator ? [] : fleet.board.tasks(onNode: node.sessionId)
         HStack(alignment: .top, spacing: 12) {
             StateGlyph(node: node)
             VStack(alignment: .leading, spacing: 4) {
@@ -129,8 +133,8 @@ struct NodeRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(node.stateLabel)
-                        .foregroundStyle(node.state.tint)
+                    Text(node.fleetLabel)
+                        .foregroundStyle(node.glyphTint)
                     Text(verbatim: "· \(relative(node.stateSince))")
                         .foregroundStyle(.tertiary)
                 }
@@ -146,13 +150,17 @@ struct NodeRow: View {
                     .foregroundStyle(badge.suspect ? Palette.ember : Palette.slate)
                     .lineLimit(1)
                 }
-                if !oneLine.isEmpty {
+                if !tasks.isEmpty {
+                    NodeTasks(tasks: tasks)
+                        .padding(.top, 5)
+                } else if !oneLine.isEmpty {
                     Text(oneLine)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
             }
+            Spacer(minLength: 0)
             if pending > 0 {
                 Text(pending, format: .number)
                     .font(.caption.weight(.bold).monospacedDigit())
@@ -175,12 +183,60 @@ struct StateGlyph: View {
     let node: Node
 
     var body: some View {
-        Image(systemName: node.state.symbol)
-            .font(.footnote.weight(.bold))
-            .foregroundStyle(node.state.tint)
-            .frame(width: 34, height: 34)
-            .background(node.state.tint.opacity(0.15), in: .circle)
-            .symbolEffect(.pulse, options: .repeating, isActive: node.state == .working)
+        Glyph(symbol: node.glyphSymbol, tint: node.glyphTint, pulse: node.glyphPulses)
+    }
+}
+
+/// A node's tasks under it, and for those running, what each of its threads does.
+struct NodeTasks: View {
+    let tasks: [WorkTask]
+
+    @Environment(FleetStore.self) private var fleet
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(tasks) { task in
+                HStack(alignment: .top, spacing: 8) {
+                    Glyph(task: task, size: .tiny)
+                        .padding(.top, 1)
+                    VStack(alignment: .leading, spacing: 5) {
+                        (Text(task.title).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
+                            + Text(verbatim: " · \(task.state.label)").font(.caption.weight(.semibold)).foregroundStyle(task.tint))
+                            .lineLimit(2)
+                        if task.state == .running {
+                            let threads = fleet.activity(for: task)
+                            if !threads.isEmpty {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
+                                        ActivityLine(activity: thread)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ActivityLine: View {
+    let activity: NodeActivity
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: activity.isMainThread ? "terminal" : "person.2")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+                .accessibilityHidden(true)
+            (Text(activity.thread).fontWeight(.semibold).foregroundStyle(Palette.ink.opacity(0.8))
+                + Text(verbatim: " ")
+                + Text(activity.doing ?? "").font(.mono(.caption2)).foregroundStyle(Palette.sky)
+                + Text(verbatim: " · \(ago(activity.since))").foregroundStyle(.secondary))
+                .font(.caption)
+                .lineLimit(2)
+        }
     }
 }
 
@@ -204,7 +260,7 @@ struct NodeDetail: View {
                 ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
         }
-        .background(DawnBackground(glow: fleet.node(session)?.state.tint ?? Palette.dawn))
+        .background(DawnBackground(glow: fleet.node(session)?.glyphTint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
@@ -236,9 +292,9 @@ struct NodeDetail: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         StateGlyph(node: node)
-                        Text(node.stateLabel.prefix(1).uppercased() + node.stateLabel.dropFirst())
+                        Text(node.fleetLabel.prefix(1).uppercased() + node.fleetLabel.dropFirst())
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(node.state.tint)
+                            .foregroundStyle(node.glyphTint)
                         Text("since \(relative(node.stateSince))")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -252,11 +308,47 @@ struct NodeDetail: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
-                    if let tool = node.tool {
-                        Label("\(tool.name) \(tool.summary ?? "")" as String, systemImage: "wrench.and.screwdriver")
-                            .font(.mono(.footnote))
-                            .foregroundStyle(Palette.sky)
-                            .lineLimit(2)
+                }
+
+                let tasks = node.isOrchestrator ? [] : fleet.board.tasks(onNode: node.sessionId)
+                if !tasks.isEmpty {
+                    section(String(localized: "Tasks"), symbol: "checklist") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(tasks) { task in
+                                NavigationLink(value: TaskLink(id: task.id)) {
+                                    HStack(spacing: 10) {
+                                        Glyph(task: task, size: .small)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(task.title)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(Palette.ink)
+                                                .multilineTextAlignment(.leading)
+                                            Text(taskLine(task))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .contentShape(.rect)
+                                }
+                                .buttonStyle(PressStyle())
+                            }
+                        }
+                    }
+                }
+
+                let threads = fleet.activity(of: node)
+                if !threads.isEmpty {
+                    section(String(localized: "Right now"), symbol: "wrench.and.screwdriver") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
+                                ThreadLine(activity: thread, task: thread.task.flatMap(fleet.board.task))
+                            }
+                        }
                     }
                 }
 
@@ -318,6 +410,11 @@ struct NodeDetail: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { composer(node) }
+    }
+
+    private func taskLine(_ task: WorkTask) -> String {
+        guard let request = fleet.request(of: task) else { return task.state.label }
+        return "\(task.state.label) · \(String(localized: "from «\(fleet.title(of: request))»"))"
     }
 
     private func section<Content: View>(_ title: String, symbol: String, trailing: String? = nil, @ViewBuilder content: () -> Content) -> some View {
@@ -393,6 +490,44 @@ struct NodeDetail: View {
                 focused = false
                 sentCount += 1
                 fleet.notice = Notice(String(localized: "Message sent to \(node.displayName)"))
+            }
+        }
+    }
+}
+
+/// One thread of a node: the main one or a subagent, with the task it works on.
+private struct ThreadLine: View {
+    let activity: NodeActivity
+    let task: WorkTask?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: activity.isMainThread ? "terminal" : "person.2")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(activity.thread)
+                        .font(.subheadline.weight(.semibold))
+                    if !activity.isMainThread, let task {
+                        Text("· subagent of «\(task.title)»")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Text(relative(activity.since))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                if let doing = activity.doing {
+                    Text(doing)
+                        .font(.mono(.footnote))
+                        .foregroundStyle(Palette.sky)
+                        .lineLimit(2)
+                }
             }
         }
     }

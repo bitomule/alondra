@@ -54,7 +54,7 @@ private struct RootView: View {
     @State private var tab = AppTab.triage
 
     enum AppTab: Hashable {
-        case triage, fleet, new
+        case triage, tasks, fleet, new
     }
 
     /// While the app is in front of the user (it leaves the foreground when the screen locks),
@@ -78,6 +78,9 @@ private struct RootView: View {
                 TriageView()
             }
             .badge(fleet.connection == .unpaired ? 0 : fleet.queue.count)
+            Tab("Tasks", systemImage: "checklist", value: .tasks) {
+                TasksTab()
+            }
             Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
                 FleetTab()
             }
