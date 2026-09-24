@@ -55,6 +55,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     for session in stalled {
         hub.append_with(|v| v.nodes.get(&session).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued))?;
     }
+    nudge_defining_requests(hub, now_millis())?;
     let running: Vec<String> = hub.read(|v| v.nodes.values().filter(|n| n.watched() && !n.background.is_empty()).map(|n| n.session_id.clone()).collect());
     for session in running {
         while hub
@@ -117,6 +118,17 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         })?;
         memory.settled.insert(due_key);
     }
+    Ok(())
+}
+
+/// Tells the orchestrator about each request its last turn left defining, once.
+pub(crate) fn nudge_defining_requests(hub: &Hub, now: i64) -> anyhow::Result<()> {
+    let user = hub.config.name.clone();
+    let nudges = |v: &alondra_core::View| {
+        let due: Vec<Event> = v.defining_nudges(&user, now).into_iter().map(Event::MessageQueued).collect();
+        if due.is_empty() { Err(()) } else { Ok(due) }
+    };
+    hub.append_all(nudges)?.ok();
     Ok(())
 }
 
@@ -337,6 +349,32 @@ mod tests {
     }
 
     const ASKS: &str = "I prepared the release.\nShould I ship 4.5.0 now or merge #256 first?";
+
+    /// Whatever the sweeps, the orchestrator hears once about a request its turn left defining.
+    #[test]
+    fn the_sweep_nudges_the_orchestrator_once_about_a_request_left_defining() {
+        let home = std::env::temp_dir().join(format!("alondra-sentinel-defining-{}-{}", std::process::id(), now_millis()));
+        let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("Ana".into()));
+        let hub = Hub::open(config, false).unwrap();
+        let hook = |event: &str| Event::Hook(HookEvent { session_id: "o".into(), event: event.into(), prompt: Some("go".into()), ..Default::default() });
+        hub.append(Event::MarkedOrchestrator { session_id: "o".into() }).unwrap();
+        hub.append(hook("SessionStart")).unwrap();
+        let options = alondra_core::options::OptionsFile::default().orchestrator_defaults(None, None);
+        hub.append(Event::RequestSent { request_id: "r-1".into(), options, text: Some("¿Cómo va BlurCamera?".into()), attachments: vec![] }).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        hub.append(hook("UserPromptSubmit")).unwrap();
+        hub.append(hook("Stop")).unwrap();
+        for _ in 0..3 {
+            nudge_defining_requests(&hub, now_millis()).unwrap();
+        }
+        let nudges = || hub.read(|v| v.messages.values().filter(|m| m.session_id == "o" && m.text.starts_with("[Alondra] Request r-1 (")).map(|m| m.id).collect::<Vec<_>>());
+        assert_eq!(nudges().len(), 1);
+        hub.append(Event::MessageHanded { id: nudges()[0] }).unwrap();
+        hub.append(hook("UserPromptSubmit")).unwrap();
+        hub.append(hook("Stop")).unwrap();
+        nudge_defining_requests(&hub, now_millis()).unwrap();
+        assert_eq!(nudges().len(), 1, "not again once it reached the orchestrator and its turn ended");
+    }
 
     #[test]
     fn titles_skip_table_rows_and_code() {

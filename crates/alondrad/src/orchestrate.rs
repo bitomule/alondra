@@ -188,6 +188,9 @@ pub struct Definition {
     /// What the user asked, in their words, for a request they made outside the apps.
     #[serde(default)]
     pub text: Option<String>,
+    /// A short name for the request, which the user reads in place of its text.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub tasks: Vec<TaskIn>,
 }
@@ -360,6 +363,9 @@ fn plan(v: &View, d: &Definition, file: &OptionsFile, root: &Path, user: &str, n
     }
     let effort = |asked: Option<&String>| if options.effort == alondra_core::options::AUTO { asked.cloned().or(Some(options.effort.clone())) } else { Some(options.effort.clone()) };
     let mut events: Vec<Event> = sent.into_iter().collect();
+    if let Some(title) = d.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        events.push(Event::RequestTitled { request_id: request.clone(), title: title.to_string() });
+    }
     for (((t, id), depends_on), start) in d.tasks.iter().zip(&ids).zip(depends).zip(starts) {
         events.push(Event::TaskCreated(NewTask {
             id: id.clone(),
@@ -855,6 +861,17 @@ mod tests {
 
         hub.append(seen("s1", "app/model")).unwrap();
         assert!(hub.read(|v| v.board.tasks[&model].is_assigned_to("s1")), "its own node takes it");
+    }
+
+    /// A task made by `launch` went by its node's name in the apps.
+    #[tokio::test]
+    async fn a_launch_with_a_title_names_the_task_it_makes() {
+        let (hub, home) = fleet("launch-title");
+        let b: crate::http::LaunchBody = serde_json::from_value(json!({"name": "app/login", "cwd": home.display().to_string(), "prompt": "Fix the crash.", "title": "Crash del login"})).unwrap();
+        assert_eq!(body(crate::http::launch_with(&hub, b, &FakeClaude::default()).await).await.0, StatusCode::OK);
+        hub.append(seen("s9", "app/login")).unwrap();
+        let task = hub.read(|v| v.session_task("s9").map(|t| (t.title.clone(), t.launch_name().to_string())));
+        assert_eq!(task, Some(("Crash del login".to_string(), "app/login".to_string())));
     }
 
     /// A task handed to a node Alondra was closing (a free node closed on its own) was cancelled

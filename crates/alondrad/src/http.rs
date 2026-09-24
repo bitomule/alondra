@@ -57,6 +57,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
         .route("/v1/requests", post(new_request))
+        .route("/v1/requests/{id}/close", post(close_request))
         .route("/v1/options", get(options_catalog))
         .route("/v1/projects", get(projects))
         .route("/v1/issues", get(open_issues))
@@ -2407,7 +2408,7 @@ fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_
     let pass_on = if attached { " Put the attached files' paths in the brief of the task that needs them so its node can open them." } else { "" };
     let issue = issue.map(|i| format!("\n\n{i}")).unwrap_or_default();
     format!(
-        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nAlondra keeps this request as {request_id} and gives its options to every task you define for it: it writes them into each node's mission and sets its model and effort, so do not restate them. {}\n\nTurn it into tasks with Alondra's define tool (request \"{request_id}\"): one task, or several with depends_on; each goes to a new node or, after checking candidates, to a live node that already has the context. Use ask if something is missing.{pass_on}",
+        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nAlondra keeps this request as {request_id} and gives its options to every task you define for it: it writes them into each node's mission and sets its model and effort, so do not restate them. {}\n\nTurn it into tasks with Alondra's define tool (request \"{request_id}\"): one task, or several with depends_on; each goes to a new node or, after checking candidates, to a live node that already has the context. Give the request and each task a short title. Use ask if something is missing. If it needs no work (a question or a status check), answer it and close it with close_request.{pass_on}",
         options.summary(),
         options.effort_note(user)
     )
@@ -2503,6 +2504,52 @@ async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::G
     match res {
         Ok(Some(_)) => Json(json!({"ok": true, "request_id": request_id})).into_response(),
         Ok(None) => err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra"),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct CloseRequestBody {
+    /// What the orchestrator told the user, in one line.
+    #[serde(default)]
+    answer: Option<String>,
+    /// The user withdrew the request.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    withdrawn: bool,
+    /// A short name for the request.
+    #[serde(default)]
+    title: Option<String>,
+}
+
+fn trimmed(text: &Option<String>) -> Option<String> {
+    text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
+}
+
+/// The orchestrator closes a request that needs no task: a question or a status check it
+/// answered, or one the user withdrew. A request with tasks is closed by finishing or
+/// cancelling them.
+pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CloseRequestBody>>) -> Response {
+    let b = body.map(|Json(b)| b).unwrap_or_default();
+    let (answer, title) = (trimmed(&b.answer), trimmed(&b.title));
+    if answer.is_none() && !b.withdrawn {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("say in answer what you told {} (one line), or pass withdrawn: true if they withdrew it", hub.config.name));
+    }
+    let recorded = hub.append_all(|v| {
+        let Some(request) = v.board.requests.get(&id) else { return Err(err(StatusCode::NOT_FOUND, format!("request {id} does not exist"))) };
+        if request.closed.is_some() {
+            return Err(refused(StatusCode::CONFLICT, "request_closed", format!("{id} is already closed")));
+        }
+        let tasks: Vec<&str> = v.board.tasks.values().filter(|t| t.request == id).map(|t| t.id.as_str()).collect();
+        if !tasks.is_empty() {
+            return Err(refused(StatusCode::CONFLICT, "request_has_tasks", format!("{id} has tasks ({}): it is done when they are done or cancelled; cancel the ones that should not go on", tasks.join(", "))));
+        }
+        let mut events: Vec<Event> = title.iter().map(|t| Event::RequestTitled { request_id: id.clone(), title: t.clone() }).collect();
+        events.push(Event::RequestClosed { request_id: id.clone(), answer: answer.clone(), withdrawn: b.withdrawn });
+        Ok(events)
+    });
+    match recorded {
+        Ok(Ok(_)) => Json(json!({"request": id, "state": hub.read(|v| v.board.request_state(&id))})).into_response(),
+        Ok(Err(refusal)) => refusal,
         Err(e) => internal(e),
     }
 }
@@ -3535,6 +3582,64 @@ mod tests {
         assert!(said["reports"].as_array().unwrap().iter().all(|r| r["task"] == "t-s"));
     }
 
+    fn request_sent(hub: &Hub, id: &str, text: &str) {
+        let options = alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("app"), None);
+        hub.append(Event::RequestSent { request_id: id.into(), options, text: Some(text.into()), attachments: vec![] }).unwrap();
+    }
+
+    /// r-1790277835004, 24 Sep: a status check the orchestrator answered stayed defining for good,
+    /// since a request only left defining through tasks.
+    #[tokio::test]
+    async fn the_orchestrator_closes_a_request_that_needs_no_work() {
+        let hub = started("close-request", &[]);
+        request_sent(&hub, "r-1", "En qué punto tenemos a BlurCamera?");
+        let close = |id: &str, b: Value| {
+            let b: CloseRequestBody = serde_json::from_value(b).unwrap();
+            close_request(State(hub.clone()), Path(id.to_string()), Some(Json(b)))
+        };
+        let (status, said) = status_and_body(close("r-1", json!({})).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        assert_eq!(status_and_body(close("r-9", json!({"answer": "x"})).await).await.0, StatusCode::NOT_FOUND);
+        let (status, said) = status_and_body(close("r-1", json!({"answer": "BlurCamera está en revisión: PR #150", "title": "Estado de BlurCamera"})).await).await;
+        assert_eq!((status, said["state"].as_str()), (StatusCode::OK, Some("done")), "{said}");
+        let Json(o) = overview(State(hub.clone())).await;
+        let r = &o["requests"][0];
+        assert_eq!((r["state"].as_str(), r["title"].as_str(), r["closed"]["answer"].as_str()), (Some("done"), Some("Estado de BlurCamera"), Some("BlurCamera está en revisión: PR #150")), "{r}");
+        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::CONFLICT, "once");
+
+        request_sent(&hub, "r-2", "Arregla el menú");
+        hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
+            id: "t-2".into(), request: "r-2".into(), title: "Menú".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: None,
+            launched: false, launched_as: None, start: None,
+        }))
+        .unwrap();
+        let (status, said) = status_and_body(close("r-2", json!({"withdrawn": true})).await).await;
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("request_has_tasks")), "{said}");
+        let replayed = hub_at_home_of(&hub);
+        assert_eq!(replayed.read(|v| v.board.requests["r-1"].clone()), hub.read(|v| v.board.requests["r-1"].clone()), "a replay keeps the closure and the title");
+    }
+
+    /// The apps showed a request's prompt, and a task a launch made its node's name, where the
+    /// orchestrator had given each a title.
+    #[tokio::test]
+    async fn a_request_and_its_tasks_go_by_the_titles_the_orchestrator_gave_them() {
+        let hub = started("titles", &[]);
+        request_sent(&hub, "r-1", "Quiero que el menú de la app se organice por secciones y que cada sección se pueda plegar");
+        request_sent(&hub, "r-2", "Arregla el crash del login");
+        let cwd = hub.home.display().to_string();
+        let define = |v: Value| crate::orchestrate::define(&hub, serde_json::from_value(v).unwrap()).map_err(|r| r.problems);
+        define(json!({"request": "r-1", "title": "Menú por secciones", "tasks": [
+            {"title": "Modelo", "brief": "Separa el modelo.", "assignee": "new", "cwd": cwd},
+            {"title": "Vista", "brief": "Pinta las secciones.", "assignee": "new", "cwd": cwd, "depends_on": [0]},
+        ]}))
+        .unwrap();
+        define(json!({"request": "r-2", "tasks": [{"title": "Crash del login", "brief": "Arréglalo.", "assignee": "new", "cwd": cwd}]})).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        let title = |id: &str| o["requests"].as_array().unwrap().iter().find(|r| r["id"] == id).and_then(|r| r["title"].as_str().map(str::to_string));
+        assert_eq!(title("r-1").as_deref(), Some("Menú por secciones"), "the orchestrator's title");
+        assert_eq!(title("r-2").as_deref(), Some("Crash del login"), "without one, its only task's");
+    }
+
     /// `claude rm` and `claude agents` as a test sees them: every close goes through.
     #[derive(Default)]
     struct FakeAgents(std::sync::Mutex<Vec<String>>);
@@ -3620,8 +3725,11 @@ mod tests {
     async fn a_task_cancelled_twice_at_once_is_cancelled_once() {
         for round in 0..20 {
             let hub = started(&format!("race-cancel-{round}"), &["s"]);
-            let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
-            assert_eq!(status, StatusCode::OK);
+            hub.append(Event::ReportPosted(Report {
+                id: 1, session_id: "s".into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
+                kind: ReportKind::Notice, created_at: 0, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
+            }))
+            .unwrap();
             let gate = Arc::new(std::sync::Barrier::new(2));
             let cancelling = || {
                 let (hub, gate) = (hub.clone(), gate.clone());
