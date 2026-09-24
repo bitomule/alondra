@@ -51,7 +51,7 @@ struct BlockView: View {
             }
         case .code(let language):
             ScrollView(.horizontal) {
-                Text(block.plainText)
+                HighlightedCode(code: block.plainText, language: language)
                     .font(.system(.callout, design: .monospaced))
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(12)

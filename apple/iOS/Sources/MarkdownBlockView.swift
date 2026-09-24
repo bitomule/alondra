@@ -67,7 +67,7 @@ struct MarkdownBlockView: View {
                         .foregroundStyle(.tertiary)
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(block.plainText)
+                    HighlightedCode(code: block.plainText, language: language)
                         .font(.mono(.callout))
                         .fixedSize()
                 }
@@ -102,38 +102,54 @@ struct MarkdownBlockView: View {
     }
 }
 
-struct TableBlock<Cell: View, Below: View>: View {
+struct TableBlock<Cell: View, Below: View, Card: View>: View {
     let rows: [MarkdownBlock]
     @ViewBuilder let cell: (MarkdownBlock, TableCell) -> Cell
     @ViewBuilder let below: (MarkdownBlock) -> Below
+    @ViewBuilder let card: (MarkdownBlock, TableRowCardView) -> Card
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                ForEach(rows) { block in
-                    if let row = block.tableRow {
-                        GridRow {
-                            ForEach(row.cells.indices, id: \.self) { column in
-                                cell(block, TableCell(text: row.cells[column], alignment: row.alignment(of: column), isHeader: row.isHeader))
-                            }
+        ViewThatFits(in: .horizontal) {
+            grid
+            cards
+        }
+        .padding(.leading, CGFloat(rows.first?.depth ?? 0) * 18)
+    }
+
+    private var grid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(rows) { block in
+                if let row = block.tableRow {
+                    GridRow {
+                        ForEach(row.cells.indices, id: \.self) { column in
+                            cell(block, TableCell(text: row.cells[column], alignment: row.alignment(of: column), isHeader: row.isHeader))
                         }
-                        if row.isHeader {
-                            Divider().gridCellUnsizedAxes(.horizontal)
-                        }
-                        below(block)
                     }
+                    if row.isHeader {
+                        Divider().gridCellUnsizedAxes(.horizontal)
+                    }
+                    below(block)
                 }
             }
-            .padding(6)
         }
+        .padding(6)
         .background(Palette.night.opacity(0.5), in: .rect(cornerRadius: 12))
-        .padding(.leading, CGFloat(rows.first?.depth ?? 0) * 18)
+    }
+
+    private var cards: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(rows) { block in
+                if let row = block.tableRow, !row.isHeader || rows.count == 1 {
+                    card(block, TableRowCardView(card: TableRowCard(row)))
+                }
+            }
+        }
     }
 }
 
-extension TableBlock where Cell == TableCell, Below == EmptyView {
+extension TableBlock where Cell == TableCell, Below == EmptyView, Card == TableRowCardView {
     init(rows: [MarkdownBlock]) {
-        self.init(rows: rows, cell: { _, cell in cell }, below: { _ in EmptyView() })
+        self.init(rows: rows, cell: { _, cell in cell }, below: { _ in EmptyView() }, card: { _, card in card })
     }
 }
 

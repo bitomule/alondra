@@ -8,14 +8,22 @@ public enum DiffHighlighter {
         let code = file.lines.filter { $0.kind != .hunk && $0.kind != .note }
         guard !code.isEmpty, let language = language(for: file.path) else { return [:] }
         let text = code.map(\.text).joined(separator: "\n")
-        let colors: HighlightColors = dark ? .dark(.github) : .light(.github)
-        guard let coloured = try? await Highlight().request(text, mode: .languageAliasIgnoreIllegal(language), colors: colors), !coloured.isUndefined else { return [:] }
+        guard let coloured = await colour(text, language: language, dark: dark) else { return [:] }
         var out: [String: AttributedString] = [:]
-        for (line, highlighted) in zip(code, split(coloured.attributedText)) {
+        for (line, highlighted) in zip(code, split(coloured)) {
             out[line.id] = restoringIndent(highlighted, of: line.text)
         }
         return out
     }
+
+    /// Nil when highlight.js does not know the language, so the caller keeps the plain text.
+    public static func colour(_ text: String, language: String, dark: Bool) async -> AttributedString? {
+        let colors: HighlightColors = dark ? .dark(.github) : .light(.github)
+        guard let coloured = try? await Highlight().request(text, mode: .languageAliasIgnoreIllegal(language), colors: colors), !coloured.isUndefined else { return nil }
+        return coloured.attributedText
+    }
+
+    public static let aliases = ["bzl": "python", "xcstrings": "json", "plist": "xml", "entitlements": "xml", "jsonl": "json", "mdx": "markdown"]
 
     /// highlight.js knows most file extensions as aliases; a few names need a hint.
     public static func language(for path: String) -> String? {
@@ -23,7 +31,6 @@ public enum DiffHighlighter {
         let named = ["Makefile": "makefile", "Dockerfile": "dockerfile", "BUILD.bazel": "python", "MODULE.bazel": "python", "Package.swift": "swift"]
         if let known = named[name] { return known }
         let ext = (name as NSString).pathExtension.lowercased()
-        let aliases = ["bzl": "python", "xcstrings": "json", "plist": "xml", "entitlements": "xml", "jsonl": "json", "mdx": "markdown"]
         return aliases[ext] ?? (ext.isEmpty ? nil : ext)
     }
 

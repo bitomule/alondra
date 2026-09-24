@@ -418,22 +418,44 @@ private struct TableRows: View {
             .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
         } below: { block in
             if let comment = comments[block.draftKey] {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "text.bubble.fill")
-                        .foregroundStyle(tint)
-                    Text(comment)
-                        .font(.subheadline)
-                        .foregroundStyle(Palette.ink)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(tint.opacity(0.14), in: .rect(cornerRadius: 10))
-                .padding(.vertical, 4)
-                .gridCellUnsizedAxes(.horizontal)
-                .onTapGesture { onTap(block) }
+                bubble(comment)
+                    .padding(.vertical, 4)
+                    .gridCellUnsizedAxes(.horizontal)
+                    .onTapGesture { onTap(block) }
             }
+        } card: { block, card in
+            let comment = comments[block.draftKey]
+            Button { onTap(block) } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    card
+                        .overlay {
+                            if comment != nil {
+                                RoundedRectangle(cornerRadius: 12).strokeBorder(tint, lineWidth: 1.5)
+                            }
+                        }
+                    if let comment {
+                        bubble(comment)
+                    }
+                }
+                .contentShape(.rect(cornerRadius: 12))
+            }
+            .buttonStyle(BlockButtonStyle(tint: tint))
+            .accessibilityHint(comment == nil ? String(localized: "Add comment") : String(localized: "Edit comment"))
         }
         .foregroundStyle(Palette.ink)
+    }
+
+    private func bubble(_ comment: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "text.bubble.fill")
+                .foregroundStyle(tint)
+            Text(comment)
+                .font(.subheadline)
+                .foregroundStyle(Palette.ink)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.14), in: .rect(cornerRadius: 10))
     }
 }
 
