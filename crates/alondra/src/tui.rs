@@ -399,9 +399,10 @@ pub struct App {
     pub archive_missing: bool,
     /// The Tasks list shows its archived section open.
     pub archived_open: bool,
-    /// What each thread of the selected node does, as its own route said when it was opened.
+    /// What each thread of the selected node does, as its own route last said.
     pub threads: Option<(String, Vec<crate::client::Activity>)>,
-    threads_asked: Option<String>,
+    /// The node, the tick and when its threads were last asked for.
+    threads_asked: Option<(String, u64, i64)>,
     pending_cancel: Option<(String, i64)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
@@ -412,6 +413,8 @@ pub struct App {
 const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const PREVIEW_PIXELS: u32 = 480;
 const ACTIVITY_EVERY_MS: i64 = 60_000;
+/// Threads move with every tool call, which does not move the tick: the open node asks again this often.
+const THREADS_EVERY_MS: i64 = 10_000;
 
 pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Msg>(64);
@@ -910,17 +913,18 @@ impl App {
         self.history_asked.clear();
     }
 
-    /// Asks the selected node's own route what each of its threads does, once each time the node
-    /// is opened: the overview does not carry it.
+    /// Asks the selected node's own route what each of its threads does, which the overview does
+    /// not carry: when the node is opened, when the tick moves and every `THREADS_EVERY_MS`.
     fn load_threads(&mut self) {
         if self.screen != Screen::Fleet {
             return;
         }
         let Some(session) = self.fleet_sel.clone() else { return };
-        if self.threads_asked.as_ref() == Some(&session) {
+        let now = now_millis();
+        if self.threads_asked.as_ref().is_some_and(|(s, tick, at)| *s == session && *tick == self.data.tick && now - at < THREADS_EVERY_MS) {
             return;
         }
-        self.threads_asked = Some(session.clone());
+        self.threads_asked = Some((session.clone(), self.data.tick, now));
         self.spawn(move |tx| {
             let detail = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/nodes/{}", urlencode(&session)));
             let threads = detail.ok().and_then(|v| serde_json::from_value(v["node"]["activity"].clone()).ok());
@@ -989,7 +993,8 @@ impl App {
             Msg::TaskHistory { id, since, history } => self.history_loaded(id, since, history),
             Msg::TaskAction(result) => self.task_action_done(result),
             Msg::TasksArchived(result) => self.archive_done(result),
-            Msg::NodeThreads { session, threads } => self.threads = threads.map(|t| (session, t)),
+            Msg::NodeThreads { session, threads: Some(threads) } => self.threads = Some((session, threads)),
+            Msg::NodeThreads { threads: None, .. } => {}
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -1015,6 +1020,7 @@ impl App {
         if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
             dirty = true;
         }
+        self.load_threads();
         let wants_remote = self.search.as_ref().and_then(|s| {
             let q = s.query();
             let idle = matches!(&s.remote, Remote::Idle);
@@ -2288,6 +2294,39 @@ pub(crate) mod tests {
         let key = app.posted_keys.borrow().last().cloned().flatten();
         app.on_msg(Msg::Posted { key, result: Ok("Asked its node".into()) });
         assert_eq!(app.reviews.get(&Key::P(4)).map(|r| r.comments.len()), Some(1), "the Ask sent none of them");
+    }
+
+    /// Round 2: the open node's threads were asked for once, when it was opened, and never again
+    /// while it stayed open: the overview no longer carries them.
+    #[test]
+    fn the_open_nodes_threads_are_asked_again_when_the_tick_moves_and_every_few_seconds() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.nodes = vec![alive_node("s")];
+        app.data.tick = 1;
+        app.show(Screen::Fleet);
+        app.reconcile();
+        let asked = |app: &App| app.threads_asked.clone().map(|(s, tick, _)| (s, tick));
+        assert_eq!(asked(&app), Some(("s".to_string(), 1)));
+
+        let mut moved = app.data.clone();
+        moved.tick = 2;
+        app.on_msg(Msg::Data(Box::new(moved)));
+        app.reconcile();
+        assert_eq!(asked(&app), Some(("s".to_string(), 2)), "a state changed: asked again");
+
+        let before = app.threads_asked.as_ref().map(|(_, _, at)| *at).unwrap();
+        app.on_timers();
+        assert_eq!(app.threads_asked.as_ref().map(|(_, _, at)| *at), Some(before), "nothing moved: not asked again yet");
+        if let Some((_, _, at)) = app.threads_asked.as_mut() {
+            *at -= THREADS_EVERY_MS;
+        }
+        app.on_timers();
+        assert!(app.threads_asked.as_ref().is_some_and(|(_, _, at)| *at >= before), "tool calls move threads without the tick: asked again");
+
+        let main = crate::client::Activity { tool: Some("Bash".into()), summary: Some("make test".into()), since: 5, ..Default::default() };
+        app.on_msg(Msg::NodeThreads { session: "s".into(), threads: Some(vec![main]) });
+        app.on_msg(Msg::NodeThreads { session: "s".into(), threads: None });
+        assert_eq!(app.threads.as_ref().map(|(s, t)| (s.as_str(), t.len())), Some(("s", 1)), "a failed ask keeps what was shown");
     }
 
     #[test]

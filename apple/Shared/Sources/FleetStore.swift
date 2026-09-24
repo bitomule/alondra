@@ -486,6 +486,20 @@ public final class FleetStore {
         await taskAction { try await $0.reopenTask(task.id) }
     }
 
+    /// Withdraws a request the orchestrator has not defined, so it stops waiting to be and can be
+    /// archived.
+    @discardableResult
+    public func withdraw(_ request: WorkRequest) async -> Bool {
+        guard request.canWithdraw else { return false }
+        do {
+            try await client.withdrawRequest(request.id)
+            return true
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
     public var canArchive: Bool { !archiveUnavailable && board.hasArchivable }
 
     /// alondrad came back, maybe a newer one: the routes an older one lacked are tried again.

@@ -123,6 +123,7 @@ private struct RequestSection: View {
     let tree: RequestTree
 
     @Environment(FleetStore.self) private var fleet
+    @State private var confirmingWithdraw = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -149,6 +150,20 @@ private struct RequestSection: View {
                 }
                 Spacer(minLength: 8)
                 StateChip(label: tree.request.state.label, tint: tree.request.state.tint)
+                if tree.request.canWithdraw {
+                    Menu {
+                        Button("Withdraw Request", systemImage: "xmark.circle", role: .destructive) {
+                            confirmingWithdraw = true
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
+                            .labelStyle(.iconOnly)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 32, minHeight: 32)
+                            .contentShape(.rect)
+                    }
+                }
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 9)
@@ -165,6 +180,13 @@ private struct RequestSection: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 24)
+        .confirmationDialog("Withdraw this request?", isPresented: $confirmingWithdraw, titleVisibility: .visible) {
+            Button("Withdraw Request", role: .destructive) {
+                Task { await fleet.withdraw(tree.request) }
+            }
+        } message: {
+            Text("It ends as done, without tasks, and the orchestrator can no longer define it.")
+        }
     }
 
     private var meta: String {

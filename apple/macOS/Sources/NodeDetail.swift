@@ -124,7 +124,9 @@ struct NodeDetail: View {
             let node = node
             Task { await store.close(node) }
         }
-        .task(id: node.sessionId) { threads = await store.threads(of: node) }
+        .task(id: store.threadsKey(of: node.sessionId)) {
+            await store.followThreads(of: node.sessionId) { threads = $0 }
+        }
     }
 
     private var header: some View {

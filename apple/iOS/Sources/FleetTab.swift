@@ -227,9 +227,8 @@ struct NodeDetail: View {
                 ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
         }
-        .task(id: session) {
-            guard let node = fleet.node(session) else { return }
-            threads = await fleet.threads(of: node)
+        .task(id: fleet.threadsKey(of: session)) {
+            await fleet.followThreads(of: session) { threads = $0 }
         }
         .background(DawnBackground(glow: fleet.node(session)?.glyphTint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)

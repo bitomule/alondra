@@ -73,6 +73,43 @@ import Testing
         #expect(older.activity == nil)
     }
 
+    /// Round 2: a node's detail asked its threads once, when it opened, and never again while it
+    /// stayed open.
+    @MainActor @Test func anOpenNodesThreadsAreAskedAgainWhenTheTickMovesAndWhileItShows() async throws {
+        let overview = { (tick: Int, summary: String) throws -> Overview in
+            let node = Self.node.replacingOccurrences(of: "make test", with: summary)
+            return try Self.decode(#"{"tick":\#(tick),"nodes":[\#(node)],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine)}"#)
+        }
+        let store = FleetStore(client: AlondraClient(base: try #require(URL(string: "http://127.0.0.1:9"))))
+        store.apply(try overview(1, "make test"))
+        let opened = store.threadsKey(of: "s1")
+        store.apply(try overview(1, "make lint"))
+        #expect(store.threadsKey(of: "s1") == opened, "a tool call alone does not restart it")
+        store.apply(try overview(2, "make lint"))
+        #expect(store.threadsKey(of: "s1") != opened, "a state changed: asked again")
+
+        let shown = Shown()
+        let following = Task { await store.followThreads(of: "s1", every: .milliseconds(20)) { shown.doing.append($0.first?.doing) } }
+        defer { following.cancel() }
+        for _ in 0..<100 where shown.doing.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(shown.doing.first == "Bash make lint")
+        store.apply(try overview(2, "cargo test"))
+        for _ in 0..<100 where shown.doing.last != "Bash cargo test" { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(shown.doing.last == "Bash cargo test", "what it does now reaches the open detail without a tick")
+    }
+
+    /// Round 2: a request the orchestrator never defined nor closed had no way out for the user.
+    @MainActor @Test func onlyARequestStillBeingDefinedCanBeWithdrawn() async throws {
+        let defining = try Self.request("r-1", tasks: [], state: "defining")
+        #expect(defining.canWithdraw)
+        #expect(try Self.request("r-2", tasks: ["t-1"]).canWithdraw == false, "one with tasks ends through them")
+        let answered = try Self.request("r-3", tasks: [], state: "done")
+        #expect(answered.canWithdraw == false)
+        let store = FleetStore(client: AlondraClient(base: try #require(URL(string: "http://127.0.0.1:9"))))
+        #expect(await store.withdraw(answered) == false)
+        #expect(store.notice == nil, "nothing was sent for it")
+    }
+
     @Test func aCardWithoutItsTaskIsFoundThroughWhatTheTaskCarries() throws {
         let question: Question = try Self.decode(#"{"id":7,"session_id":"s1","title":"Q","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","asked_at":3}"#)
         let blocked: WorkTask = try Self.decode(#"{"id":"t-9","request":"r-1","title":"T","blocker":{"kind":"question","question":7,"since":3},"state":"needs_you","state_since":3,"created_at":2}"#)
@@ -231,4 +268,9 @@ import Testing
         let spec: OptionSpec = try Self.decode(#"{"id":"pr","label":"PR handling","kind":"choice","builtin":true,"default":"review","values":[{"id":"review","label":"review each PR"},{"id":"auto_merge","label":"auto-merge"}]}"#)
         #expect(spec.values.map(spec.title(of:)) == [OptionSpec.prHandling(autoMerge: false), OptionSpec.prHandling(autoMerge: true)])
     }
+}
+
+/// What a node's detail was shown, in order.
+@MainActor private final class Shown {
+    var doing: [String?] = []
 }

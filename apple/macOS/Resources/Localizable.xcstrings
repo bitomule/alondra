@@ -2200,6 +2200,46 @@
           }
         }
       }
+    },
+    "Withdraw Request…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirar petición…"
+          }
+        }
+      }
+    },
+    "Withdraw Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirar petición"
+          }
+        }
+      }
+    },
+    "Withdraw “%@”?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Retirar «%@»?"
+          }
+        }
+      }
+    },
+    "It ends as done, without tasks, and the orchestrator can no longer define it.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

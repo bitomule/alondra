@@ -122,6 +122,11 @@ public struct AlondraClient: Sendable {
         try await post("v1/tasks/\(id)/reopen", [:])
     }
 
+    /// Closes a request the orchestrator has not defined, as withdrawn by the user.
+    public func withdrawRequest(_ id: String) async throws {
+        try await post("v1/requests/\(id)/close", ["withdrawn": true])
+    }
+
     /// Archives every done or cancelled task, and request that finished without tasks, or those
     /// `ids` names: they leave the Tasks list for its archived section.
     public func archiveCompletedTasks(ids: [String]? = nil) async throws {

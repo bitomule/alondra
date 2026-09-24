@@ -233,6 +233,14 @@ impl App {
         }
     }
 
+    /// The selected request while the orchestrator has not defined it: the user can withdraw it.
+    pub fn selected_defining_request(&self) -> Option<&ClientRequest> {
+        match &self.task_sel {
+            Some(TaskKey::Request(id)) => self.request(id).filter(|r| r.state == RequestState::Defining),
+            _ => None,
+        }
+    }
+
     pub fn tasks_on(&self, session: &str) -> Vec<&ClientTask> {
         let mut tasks: Vec<&ClientTask> =
             self.data.tasks.iter().filter(|t| t.archived_at.is_none() && t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
@@ -269,7 +277,7 @@ impl App {
         r.options.as_ref().and_then(|o| o.project.clone()).filter(|p| !p.is_empty() && p != alondra_core::OTHERS_PROJECT).or_else(|| self.request_tasks(r).iter().find_map(|t| self.task_project(t)))
     }
 
-    /// What the node does now, per thread, as its own route said when it was opened; until then,
+    /// What the node does now, per thread, as its own route last said; until it answers,
     /// or from an alondrad without the activity ledger, the main thread's tool in flight.
     pub fn node_activity(&self, n: &FleetNode) -> Vec<Activity> {
         let asked = self.threads.as_ref().filter(|(s, _)| *s == n.session_id).map(|(_, t)| t.clone());
@@ -491,6 +499,7 @@ impl App {
         match k.code {
             KeyCode::Char('J') => self.task_detail_scroll = keys::by(self.task_detail_scroll, 5, self.task_view.h, self.task_view.total),
             KeyCode::Char('K') => self.task_detail_scroll = keys::by(self.task_detail_scroll, -5, self.task_view.h, self.task_view.total),
+            KeyCode::Char('x') if self.selected_defining_request().is_some() => self.withdraw_request(),
             KeyCode::Char('x') => self.cancel_task(),
             KeyCode::Char('R') => self.reopen_task(),
             KeyCode::Char('A') => self.archive_finished(),
@@ -529,6 +538,19 @@ impl App {
         }
         self.pending_cancel = None;
         self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"), Msg::TaskAction);
+    }
+
+    /// Closes a request the orchestrator never defined, as withdrawn: then it can be archived.
+    fn withdraw_request(&mut self) {
+        let Some((id, title)) = self.selected_defining_request().map(|r| (r.id.clone(), md::truncate(&self.request_title(r), 60))) else { return };
+        let now = now_millis();
+        if !self.pending_cancel.as_ref().is_some_and(|(p, until)| *p == id && now < *until) {
+            self.pending_cancel = Some((id, now + 4000));
+            self.fail(trf!("Press x again to withdraw “{title}”", "Pulsa x otra vez para retirar «{title}»"));
+            return;
+        }
+        self.pending_cancel = None;
+        self.post(None, vec![(format!("/v1/requests/{}/close", urlencode(&id)), json!({"withdrawn": true}))], trf!("Withdrawn: {title}", "Retirada: {title}"));
     }
 
     fn reopen_task(&mut self) {

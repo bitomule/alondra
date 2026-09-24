@@ -40,6 +40,9 @@ public struct WorkRequest: Codable, Identifiable, Hashable, Sendable {
     /// When it left the Tasks list: every task of it is archived, or it finished without tasks
     /// and was archived itself.
     public let archivedAt: Int64?
+
+    /// The orchestrator has not defined it: the user can withdraw it, and it can then be archived.
+    public var canWithdraw: Bool { state == .defining }
 }
 
 /// One piece of work a request became, with its own state machine on the server.

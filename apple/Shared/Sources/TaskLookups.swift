@@ -54,12 +54,30 @@ extension FleetStore {
         board.request(task.request)
     }
 
-    /// What the node does now, per thread, asked of its own route when its detail opens: the
-    /// overview does not carry it. An alondrad without the activity ledger gives only the main
-    /// thread's tool in flight.
+    /// What the node does now, per thread, asked of its own route: the overview does not carry
+    /// it. An alondrad without the activity ledger gives only the main thread's tool in flight.
     public func threads(of node: Node) async -> [NodeActivity] {
         let asked = try? await client.nodeThreads(node.sessionId).activity
         return (asked ?? node.activity ?? node.toolThread).sorted { $0.since > $1.since }
+    }
+
+    /// Moves when a node's detail asks its threads again from the start: the tick moved, so a
+    /// state changed.
+    public func threadsKey(of session: String) -> ThreadsKey {
+        ThreadsKey(session: session, tick: overview?.tick ?? 0)
+    }
+
+    /// Feeds `show` what the node's threads do for as long as the caller runs (its detail shows):
+    /// at once, then every `period`, since tool calls move them without moving the tick.
+    public func followThreads(of session: String, every period: Duration = .seconds(10), _ show: ([NodeActivity]) -> Void) async {
+        while !Task.isCancelled {
+            if let node = node(session) {
+                let threads = await threads(of: node)
+                if Task.isCancelled { return }
+                show(threads)
+            }
+            try? await Task.sleep(for: period)
+        }
     }
 
     /// One line on what is happening to the task right now, or nil when there is nothing to add

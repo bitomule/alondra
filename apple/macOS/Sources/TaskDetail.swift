@@ -278,6 +278,9 @@ struct RequestDetail: View {
     let store: FleetStore
     let select: (Selection) -> Void
 
+    @State private var confirmingWithdraw = false
+    @State private var acting = false
+
     var body: some View {
         TaskPage {
             VStack(alignment: .leading, spacing: 8) {
@@ -330,6 +333,30 @@ struct RequestDetail: View {
                 }
             }
             RequestText(request: request, store: store)
+        }
+        .toolbar {
+            if request.canWithdraw {
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        confirmingWithdraw = true
+                    } label: {
+                        Label("Withdraw Request…", systemImage: "xmark.circle")
+                    }
+                    .disabled(acting)
+                    .help("It ends as done, without tasks, and the orchestrator can no longer define it.")
+                }
+            }
+        }
+        .confirmationDialog("Withdraw “\(store.title(of: request))”?", isPresented: $confirmingWithdraw) {
+            Button("Withdraw Request", role: .destructive) {
+                acting = true
+                Task {
+                    await store.withdraw(request)
+                    acting = false
+                }
+            }
+        } message: {
+            Text("It ends as done, without tasks, and the orchestrator can no longer define it.")
         }
     }
 }

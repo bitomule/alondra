@@ -567,6 +567,24 @@ mod tests {
         assert_eq!(app.posted.borrow().len(), 1, "nothing more is sent once alondrad said it has no route");
     }
 
+    /// Round 2: a request the orchestrator never defined nor closed stayed defining for good,
+    /// with nothing the user could do about it.
+    #[test]
+    fn a_request_left_defining_is_withdrawn_with_a_second_press() {
+        let (mut app, _rx) = app_with(vec![]);
+        set_for_this_thread(Lang::En);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        let at = app.task_keys().iter().position(|k| *k == super::super::super::tasks::TaskKey::Request("r-2".into())).expect("the defining request is listed");
+        app.move_tasks(at as isize);
+        assert!(screen(&mut app, 130, 33).contains("x withdraw"));
+        press(&mut app, "x");
+        assert!(app.posted.borrow().is_empty(), "the first press only asks");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press x again to withdraw “Import lists from Notes”")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        press(&mut app, "x");
+        assert_eq!(app.posted.borrow().last().map(|(paths, ok)| (paths.clone(), ok.clone())), Some((vec!["/v1/requests/r-2/close".to_string()], "Withdrawn: Import lists from Notes".to_string())));
+    }
+
     #[test]
     fn a_card_names_its_task_under_the_node() {
         let (mut app, _rx) = app_with(vec![question(7, alondra_core::QuestionOrigin::Ask, &["Yes", "No"])]);
