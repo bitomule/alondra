@@ -95,7 +95,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::HookEvent;
+    use alondra_core::{HookEvent, states, upkeep};
+    use std::collections::BTreeSet;
 
     #[test]
     fn append_then_replay_rebuilds_same_events() {
@@ -193,13 +194,35 @@ mod tests {
         let first: i64 = s.conn.query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0)).unwrap();
         let mut sessions = std::collections::BTreeSet::new();
         let mut full = View::default();
+        let (mut idle_by_task_only, mut resumes, mut closable, mut threads) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), 0usize);
+        let two_hours = 2 * 3600 * 1000;
         let n = s.replay(0, |seq, at, e| {
             if let Some(sid) = e.session_id() {
                 sessions.insert(sid.to_string());
             }
             full.apply(seq, at, &e);
+            let touched: Vec<String> = e.session_id().map_or_else(|| full.nodes.keys().cloned().collect(), |s| vec![s.to_string()]);
+            for n in touched.iter().filter_map(|sid| full.nodes.get(sid)) {
+                if states::stall_move(&full, n).is_none() && states::idle_move(&full, n, at).is_some() {
+                    idle_by_task_only.insert((n.session_id.clone(), n.episode_since));
+                }
+                if upkeep::resume_due(&full, n, at).is_some() {
+                    resumes.insert((n.session_id.clone(), n.exited_at));
+                }
+                if upkeep::free_to_close(&full, n, at, two_hours) {
+                    closable.insert(n.session_id.clone());
+                }
+                threads = threads.max(n.ledger.threads.len());
+            }
         }).unwrap();
-        println!("whole log: {n} events from seq {first}, {} sessions, {} nodes, {} removed", sessions.len(), full.nodes.len(), full.removed.len());        println!("{}", summary(&full));
+        println!("whole log: {n} events from seq {first}, {} sessions, {} nodes, {} removed", sessions.len(), full.nodes.len(), full.removed.len());
+        println!("{}", summary(&full));
+        println!(
+            "idle by their running task but not stalled: {} episodes {idle_by_task_only:?}\nprocesses Alondra would restart: {} {resumes:?}\nnodes free for 2 h it could close: {}\nmost threads in one node: {threads}",
+            idle_by_task_only.len(),
+            resumes.len(),
+            closable.len()
+        );
         if let Some((after, mut resumed)) = s.latest_snapshot().unwrap() {
             resumed.backfill_created_at();
             resumed.backfill_tasks();
