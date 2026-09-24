@@ -204,6 +204,11 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public func primaryAction(nodeFound: Bool) -> PrimaryAction {
         isFinal && nodeFound ? .readAndClose : .markRead
     }
+
+    /// The node this card may offer to close: never the orchestrator, which Alondra keeps alive.
+    public func closableNode(_ node: Node?) -> Node? {
+        node.flatMap { $0.isOrchestrator ? nil : $0 }
+    }
 }
 
 extension InboxItem {

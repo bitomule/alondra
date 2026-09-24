@@ -442,7 +442,7 @@ struct TriageCard: View {
                         try await client.markRead(report.id)
                     }
                 }
-                let node = fleet.node(report.sessionId)
+                let node = report.closableNode(fleet.node(report.sessionId))
                 if report.primaryAction(nodeFound: node != nil) == .readAndClose, let node {
                     Button {
                         closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)

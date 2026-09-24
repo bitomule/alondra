@@ -1465,12 +1465,21 @@ fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Optio
     reasons
 }
 
-async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session, busy, waiting_permission, in_daemon, name)) = hub.read(|v| {
-        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string()))
+/// The orchestrator is kept alive on purpose, so only the fleet's explicit close, which sends
+/// `{"force": true}`, may close it; a card's read-and-close never does.
+async fn close_node(State(hub): State<AppState>, Path(key): Path<String>, body: axum::body::Bytes) -> Response {
+    let force = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.get("force").and_then(Value::as_bool)).unwrap_or(false);
+    let Some((short, session, busy, waiting_permission, in_daemon, name, orchestrator)) = hub.read(|v| {
+        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
     }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
+    if orchestrator && !force {
+        return err_reasons(
+            format!("{name} is the orchestrator, which Alondra keeps alive; close it from the fleet if you really mean to"),
+            vec![CloseReason { kind: "orchestrator", detail: None }],
+        );
+    }
     if !in_daemon {
         return forget_interactive(&hub, &session, &name);
     }
@@ -2093,12 +2102,40 @@ mod tests {
             attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
             status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
         })).unwrap();
-        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into())).await).await;
+        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into()), axum::body::Bytes::from_static(b"{}")).await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["interactive"], true);
         assert!(body["output"].as_str().unwrap().contains("left the terminal session itself open"), "{body}");
         assert!(hub.read(|v| !v.nodes.contains_key("1234abcd-interactive")));
         assert!(hub.read(|v| !v.questions[&1].status.is_open()));
+    }
+
+    /// 24 Sep: David keeps the orchestrator alive on purpose; only the fleet's explicit close
+    /// (`force`) may close it, never a card's read-and-close.
+    #[tokio::test]
+    async fn the_orchestrator_is_closed_only_by_an_explicit_force() {
+        for (orchestrator, body, closed) in [
+            (true, &b"{}"[..], false),
+            (true, &b""[..], false),
+            (true, &br#"{"force": true}"#[..], true),
+            (false, &b"{}"[..], true),
+            (false, &br#"{"force": true}"#[..], true),
+        ] {
+            let hub = temp_hub("close-orch");
+            hub.append(Event::Hook(HookEvent { session_id: "orch".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            if orchestrator {
+                hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+            }
+            let (status, reply) = status_and_body(close_node(State(hub.clone()), Path("orch".into()), axum::body::Bytes::copy_from_slice(body)).await).await;
+            let case = format!("orchestrator={orchestrator} body={}", String::from_utf8_lossy(body));
+            if closed {
+                assert_eq!(status, StatusCode::OK, "{case}: {reply}");
+            } else {
+                assert_eq!(status, StatusCode::CONFLICT, "{case}: {reply}");
+                assert_eq!(reply["reasons"][0]["kind"], "orchestrator", "{case}: {reply}");
+            }
+            assert_eq!(hub.read(|v| v.nodes.contains_key("orch")), !closed, "{case}");
+        }
     }
 
     #[tokio::test]

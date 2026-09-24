@@ -249,7 +249,7 @@ struct ReportDetail: View {
                         canSend: !feedback.isEmpty,
                         send: sendFeedback
                     )
-                    let node = store.node(report.sessionId)
+                    let node = report.closableNode(store.node(report.sessionId))
                     let closesFirst = report.primaryAction(nodeFound: node != nil) == .readAndClose
                     ReadButton(prominent: feedback.isEmpty && !closesFirst, action: markRead)
                     if let node {

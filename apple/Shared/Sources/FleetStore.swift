@@ -361,18 +361,18 @@ public final class FleetStore {
 
     @discardableResult
     public func readAndClose(_ report: Report) async -> Bool {
-        guard await close(session: report.sessionId) else { return false }
+        guard await close(session: report.sessionId, force: false) else { return false }
         return await markRead(report)
     }
 
     @discardableResult
     public func close(_ node: Node) async -> Bool {
-        await close(session: node.sessionId)
+        await close(session: node.sessionId, force: true)
     }
 
-    private func close(session: String) async -> Bool {
+    private func close(session: String, force: Bool) async -> Bool {
         do {
-            try await client.closeNode(session)
+            try await client.closeNode(session, force: force)
             return true
         } catch let refused as CloseRefused {
             refusal = refused.message
