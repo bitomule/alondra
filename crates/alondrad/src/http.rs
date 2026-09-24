@@ -943,13 +943,20 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
                            "home": c.home.display().to_string()}}))
 }
 
+/// Oldest node first, state does not drive the order: a state change must not move a node's
+/// place in the list. The session id breaks ties deterministically. The orchestrator always
+/// sorts first (clients keep it out of the stable-ordered list entirely).
+fn fleet_order_key(n: &alondra_core::Node) -> (bool, alondra_core::Millis, String) {
+    (!n.is_orchestrator, n.created_at, n.session_id.clone())
+}
+
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
     let now = now_millis();
     let machine = hub.machine();
     let usage = crate::usage::current(&crate::watcher::claude_home());
     let body = hub.read(|v| {
         let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
-        nodes.sort_by_key(|n| (!n.is_orchestrator, n.state, std::cmp::Reverse(n.last_seen)));
+        nodes.sort_by_key(|n| fleet_order_key(n));
         let open: Vec<Value> = v
             .questions
             .values()
@@ -2086,6 +2093,40 @@ mod tests {
 
     fn decision(origin: QuestionOrigin, a: &Answer) -> Value {
         hold_decision(origin, a, json!({"plan": "p"}), "Ana")
+    }
+
+    /// The fleet list sorts by creation time, oldest first; a node's state changing (even
+    /// several times, in any direction) must never move it.
+    #[test]
+    fn a_state_change_does_not_move_a_node_in_the_fleet_order() {
+        let mut a = alondra_core::Node::new("a", 100);
+        let mut b = alondra_core::Node::new("b", 200);
+        let mut c = alondra_core::Node::new("c", 300);
+        let order_of = |nodes: &[&alondra_core::Node]| {
+            let mut v = nodes.to_vec();
+            v.sort_by_key(|n| fleet_order_key(n));
+            v.iter().map(|n| n.session_id.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(order_of(&[&a, &b, &c]), vec!["a", "b", "c"]);
+        // Push every state through every other state; the creation-time order must hold.
+        for state in [alondra_core::NodeState::Done, alondra_core::NodeState::YourTurn, alondra_core::NodeState::Stalled, alondra_core::NodeState::Working] {
+            b.state = state;
+            b.state_since = now_millis();
+            c.state = state;
+            c.state_since = now_millis();
+            a.state = state;
+            a.state_since = now_millis();
+            assert_eq!(order_of(&[&a, &b, &c]), vec!["a", "b", "c"], "state={state:?}");
+        }
+    }
+
+    #[test]
+    fn nodes_created_at_the_same_time_tie_break_on_session_id() {
+        let a = alondra_core::Node::new("zzz", 100);
+        let b = alondra_core::Node::new("aaa", 100);
+        let mut v = [&a, &b];
+        v.sort_by_key(|n| fleet_order_key(n));
+        assert_eq!(v.map(|n| n.session_id.as_str()), ["aaa", "zzz"]);
     }
 
     #[test]

@@ -190,6 +190,12 @@ pub struct Node {
     pub in_daemon: bool,
     pub is_orchestrator: bool,
     pub has_plugin: bool,
+    /// When the node first appeared. Fixed for the node's lifetime: the fleet view sorts by
+    /// this, not by state, so a node keeps its place as its state changes. Snapshots taken
+    /// before this field existed default it to 0; the hub backfills those from `state_since`
+    /// on load.
+    #[serde(default)]
+    pub created_at: Millis,
     pub state: NodeState,
     pub state_since: Millis,
     pub state_source: StateSource,
@@ -270,6 +276,7 @@ impl Node {
             in_daemon: false,
             is_orchestrator: false,
             has_plugin: false,
+            created_at: at,
             state: NodeState::Working,
             state_since: at,
             state_source: StateSource::Watcher,

@@ -131,6 +131,16 @@ public struct FleetView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            // The orchestrator's own fixed area, first and outside every project folder: a
+            // state change of the orchestrator (or of a regular node) must never move it.
+            if let orchestrator = store.orchestrator {
+                Section {
+                    NodeRow(node: orchestrator)
+                        .tag(Selection.node(orchestrator.sessionId))
+                } header: {
+                    SidebarCountHeader(title: String(localized: "Orchestrator"), count: 0, tint: .orange)
+                }
+            }
             Section {
                 if waiting.isEmpty {
                     Label(query.isEmpty ? String(localized: "All caught up") : String(localized: "Nothing matches"), systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")

@@ -8,7 +8,7 @@ struct FleetTab: View {
 
     private var sections: [(name: String, nodes: [Node])] {
         let needle = query.trimmingCharacters(in: .whitespaces)
-        return fleet.projectsByRecency.compactMap { project in
+        return fleet.projectsByCreation.compactMap { project in
             let nodes = needle.isEmpty ? project.nodes : project.nodes.filter { matches($0, project.name, needle) }
             return nodes.isEmpty ? nil : (project.name, nodes)
         }
@@ -22,6 +22,15 @@ struct FleetTab: View {
     var body: some View {
         NavigationStack {
             List {
+                if query.trimmingCharacters(in: .whitespaces).isEmpty, let orchestrator = fleet.orchestrator {
+                    Section {
+                        NavigationLink(value: orchestrator.sessionId) {
+                            NodeRow(node: orchestrator, pending: fleet.pending(for: orchestrator.sessionId).count)
+                        }
+                        .listRowBackground(Palette.ember.opacity(0.12))
+                    }
+                    .listSectionSpacing(.compact)
+                }
                 ForEach(sections, id: \.name) { section in
                     Section {
                         ForEach(section.nodes) { node in
@@ -381,13 +390,17 @@ extension FleetStore {
         return ok
     }
 
-    var projectsByRecency: [(name: String, nodes: [Node])] {
-        Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "No project") }
-            .map { (name: $0.key, nodes: $0.value.sorted(by: Self.recencyOrder)) }
+    /// Regular nodes, grouped by project in a stable, creation-time order; the orchestrator is
+    /// never one of these rows (see `fleet.orchestrator`), so it never lands in a project group.
+    var projectsByCreation: [(name: String, nodes: [Node])] {
+        Dictionary(grouping: nodes.filter { !$0.isOrchestrator }) { $0.projectName ?? String(localized: "No project") }
+            .map { (name: $0.key, nodes: $0.value.sorted(by: Self.creationOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private static func recencyOrder(_ a: Node, _ b: Node) -> Bool {
-        a.stateSince > b.stateSince
+    /// Oldest node first; state does not drive the order, so a state change never moves a node.
+    private static func creationOrder(_ a: Node, _ b: Node) -> Bool {
+        if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
+        return a.sessionId < b.sessionId
     }
 }

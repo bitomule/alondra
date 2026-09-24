@@ -857,11 +857,44 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     fit(spans, width)
 }
 
+/// The orchestrator's own fixed strip, always at the top and never inside a project folder: it
+/// is not a node among the stable-ordered fleet list, so it gets its own look instead of a
+/// `FleetRow::Group` header.
+fn draw_orchestrator_strip(f: &mut Frame, area: Rect, n: &FleetNode, selected: bool) -> Rect {
+    let [strip, rest] = Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(area);
+    let block = Panel::bordered().border_type(BorderType::Double).border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(strip);
+    f.render_widget(block, strip);
+    if selected {
+        f.buffer_mut().set_style(inner, Style::new().bg(SEL_BG));
+    }
+    let width = inner.width.saturating_sub(1) as usize;
+    let line = fit(
+        vec![
+            Span::styled(" ★ ", Style::new().fg(ACCENT).bold()),
+            Span::styled(format!("{} ", tr!("Orchestrator", "Orquestador")), Style::new().bold()),
+            Span::styled(format!("● {}", i18n::node_state(n)), Style::new().fg(state_color(n.state))),
+            Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
+        ],
+        width,
+    );
+    f.render_widget(Paragraph::new(line), inner);
+    rest
+}
+
 fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     if app.fleet_zoom && app.selected_node().is_some() {
         draw_node_detail(f, app, area);
         return;
     }
+    let orchestrator = app.orchestrator().cloned();
+    let area = match &orchestrator {
+        Some(o) => {
+            let selected = app.fleet_sel.as_deref() == Some(o.session_id.as_str());
+            draw_orchestrator_strip(f, area, o, selected)
+        }
+        None => area,
+    };
     app.fleet_view.shown = area.width >= 100;
     let (list, detail) = if area.width >= 100 {
         let lw = (area.width * 11 / 20).clamp(56, 90);
@@ -913,13 +946,12 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     let mut sel = None;
     for (i, r) in rows.iter().enumerate() {
         match r {
-            FleetRow::Group { name, orchestrator, total } => {
+            FleetRow::Group { name, total } => {
                 if i > 0 {
                     lines.push(Line::default());
                 }
-                let label = if *orchestrator { format!("★ {name}") } else { name.clone() };
                 lines.push(Line::from(vec![
-                    Span::styled(format!(" {label}"), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" {name}"), Style::new().add_modifier(Modifier::BOLD)),
                     Span::styled(format!("  {total}"), Style::new().fg(DIM)),
                 ]));
             }
@@ -1021,14 +1053,23 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines = vec![];
+    if let Some(o) = app.orchestrator() {
+        lines.push(fit(
+            vec![
+                Span::styled(" ★ ", Style::new().fg(ACCENT).bold()),
+                Span::styled(format!("{} ", tr!("Orchestrator", "Orquestador")), Style::new().bold()),
+                Span::styled(i18n::node_state(o), Style::new().fg(state_color(o.state))),
+            ],
+            width,
+        ));
+    }
     for r in app.fleet_rows() {
         match r {
-            FleetRow::Group { name, orchestrator, total } => {
+            FleetRow::Group { name, total } => {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
-                let label = if orchestrator { format!("★ {name}") } else { name };
-                lines.push(fit(vec![Span::styled(format!(" {label}"), Style::new().bold()), Span::styled(format!(" {total}"), Style::new().fg(DIM))], width));
+                lines.push(fit(vec![Span::styled(format!(" {name}"), Style::new().bold()), Span::styled(format!(" {total}"), Style::new().fg(DIM))], width));
             }
             FleetRow::Node(i) => {
                 let n = &app.data.nodes[i];
@@ -1189,7 +1230,7 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize, approval: 
             lines.push(key("^d ^u", tr!("half a page down / up", "media página abajo / arriba")));
             lines.push(key("/", tr!("search the text; n/N next/prev", "busca en el texto; n/N sig./ant.")));
             lines.push(key("c", tr!("comment on the marked block", "comenta el bloque marcado")));
-            lines.push(key("C", tr!("general comment", "comentario general")));
+            lines.push(key("Shift+C", tr!("general comment", "comentario general")));
             if approval {
                 lines.push(key("a", tr!("approve as is", "aprueba tal cual")));
                 lines.push(key("p", tr!("request changes with your notes", "pide cambios con tus notas")));
@@ -1309,9 +1350,9 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         }
         let mut v = vec![k("j/k", tr!("block", "bloque")), k("^d/^u", tr!("half page", "media página")), k("/", tr!("search", "buscar"))];
         if r.find.is_some() {
-            v.push(k("n/N", tr!("next/prev", "sig./ant.")));
+            v.push(k("n/Shift+N", tr!("next/prev", "sig./ant.")));
         }
-        v.extend([k("c", tr!("comment", "comentar")), k("C", tr!("general", "general")), k("d", tr!("delete", "borrar"))]);
+        v.extend([k("c", tr!("comment", "comentar")), k("Shift+C", tr!("general", "general")), k("d", tr!("delete", "borrar"))]);
         match (&r.approval, r.key) {
             (Some(a), _) => {
                 let label = a.approve.as_ref().map(|l| format!(" («{l}»)")).unwrap_or_default();
@@ -1392,7 +1433,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v.extend(tail);
             v
         }
-        None => vec![k("n", tr!("new work", "trabajo nuevo")), k("M", tr!("orchestrator", "orquestador")), k("Tab", tr!("fleet", "flota")), k("q", tr!("quit", "salir"))],
+        None => vec![k("n", tr!("new work", "trabajo nuevo")), k("Shift+M", tr!("orchestrator", "orquestador")), k("Tab", tr!("fleet", "flota")), k("q", tr!("quit", "salir"))],
     }
 }
 
@@ -1445,7 +1486,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
     vec![
         section(tr!("Moving (vim style; arrows work too)", "Moverse (estilo vim; las flechas también valen)")),
         row("j/k  ↓↑", tr!("down / up; after answering you move to the next one", "abajo / arriba; al contestar pasas solo a la siguiente")),
-        row("gg  G", tr!("first / last", "primero / último")),
+        row("gg  Shift+G", tr!("first / last", "primero / último")),
         row("Ctrl-d  Ctrl-u", tr!("half a page down / up (scrolls the detail)", "media página abajo / arriba (desplaza el detalle)")),
         row("Ctrl-f  Ctrl-b", tr!("a full page down / up; also Space, PgDn, PgUp", "página entera abajo / arriba; también Espacio, AvPág, RePág")),
         row("h/l  ←→", tr!("focus the list / the detail pane", "enfocar la lista / el panel de detalle")),
@@ -1465,13 +1506,13 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("x", tr!("mark as read", "marcar como leído")),
         row("Shift+X", tr!("read and close the node that sent it (twice to confirm; never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; nunca el orquestador)")),
-        row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
+        row("Shift+J/Shift+K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
         section(tr!("Reading (after o)", "Lectura (tras o)")),
         row("j/k", tr!("next / previous block; long blocks scroll line by line", "bloque siguiente / anterior; los bloques largos avanzan línea a línea")),
-        row("/  n  N", tr!("search the text · next match · previous match", "buscar en el texto · siguiente · anterior")),
-        row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
+        row("/  n  Shift+N", tr!("search the text · next match · previous match", "buscar en el texto · siguiente · anterior")),
+        row("c · Shift+C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
         row("Shift+X", tr!("read and close the node (twice to confirm; never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; nunca el orquestador)")),
@@ -1485,7 +1526,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         Line::default(),
         section(tr!("Always", "Siempre")),
         row("Tab", tr!("inbox ⇄ fleet", "bandeja ⇄ flota")),
-        row("n · M", tr!("new work · message the orchestrator", "trabajo nuevo · mensaje al orquestador")),
+        row("n · Shift+M", tr!("new work · message the orchestrator", "trabajo nuevo · mensaje al orquestador")),
         row("q  Ctrl-c", tr!("quit", "salir")),
         row(tr!("typing", "al escribir"), tr!("letters go to the text box; Esc leaves it", "las letras van al cuadro de texto; Esc sale")),
     ]
@@ -1882,5 +1923,31 @@ mod tests {
         assert!(at(&final_row, "Shift+X") < at(&final_row, "read and close node"), "the key says it needs Shift: {final_row}");
         let notice_row = actions(ReportKind::Notice);
         assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
+    }
+
+    /// A shortcut key that needs an uppercase letter must read "Shift+X", never a bare capital:
+    /// the help screen is the one place that lists every key, so scanning it here catches a
+    /// regression anywhere a footer or card label spells one out again.
+    #[test]
+    fn help_never_shows_a_bare_uppercase_shortcut_key() {
+        for line in help_lines() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let chars: Vec<char> = text.chars().collect();
+            for (i, &c) in chars.iter().enumerate() {
+                if !c.is_ascii_uppercase() {
+                    continue;
+                }
+                let boundary_before = i == 0 || !chars[i - 1].is_alphanumeric();
+                let boundary_after = i + 1 == chars.len() || !chars[i + 1].is_alphanumeric();
+                if !boundary_before || !boundary_after {
+                    continue; // part of a longer word like "Esc", "Tab", "CPU"
+                }
+                // A real modifier combo (Ctrl+Z, Alt+…) already says so; only a bare capital
+                // typed with Shift, with no modifier prefix at all, needs the Shift+ label.
+                let has_modifier_prefix =
+                    ["Shift+", "Ctrl+", "Ctrl-", "Alt+"].iter().any(|m| i >= m.chars().count() && chars[i - m.chars().count()..i].iter().collect::<String>() == *m);
+                assert!(has_modifier_prefix, "bare uppercase key {c:?} in help line {text:?}: should read Shift+{c}");
+            }
+        }
     }
 }
