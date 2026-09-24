@@ -76,6 +76,10 @@ tasks starts with "[Task t-… “…”]".
   `SendMessage` (to: its name or agent ID), which continues it with its context. Do not answer
   for it, and do not relay one task's answer to another task's subagent.
 - Each task ends with its own final report, with `task`; the others go on.
+- Every PR you or a subagent open for one of them has "Alondra task: t-…" in its body: Alondra
+  files it under that task. `task` on a call from this main session counts for that call only.
+  A PR Alondra cannot place gets no task, and Alondra types "PR #N: which task is it for?": answer
+  with a report that links the PR, with `task`.
 
 ## Your PR
 
