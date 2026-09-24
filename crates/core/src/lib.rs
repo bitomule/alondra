@@ -1,6 +1,7 @@
 pub mod artifact;
 pub mod config;
 pub mod event;
+pub mod issues;
 pub mod keeper;
 pub mod model;
 pub mod options;

@@ -45,6 +45,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Screen::Fleet => draw_fleet(f, app, body),
         }
     }
+    if let Some(p) = app.composer.as_ref().and_then(|c| c.form.as_ref()).and_then(|o| o.picker.as_ref()) {
+        draw_issue_picker(f, p, body);
+    }
     draw_foot(f, app, foot);
     draw_flash(f, app, body);
     if app.help {
@@ -1310,6 +1313,35 @@ fn chips_height(chips: &[super::dropped::Chip]) -> u16 {
     u16::from(!chips.is_empty())
 }
 
+fn draw_issue_picker(f: &mut Frame, p: &super::work::IssuePicker, area: Rect) {
+    let title = Line::from(Span::styled(format!(" {} ", tr!("Issues", "Issues")), Style::new().fg(ACCENT).bold()));
+    let hint = tr!(" type to filter · ↑↓ · ⏎ picks · Ctrl+R searches GitHub again · Esc ", " escribe para filtrar · ↑↓ · ⏎ elige · Ctrl+R busca de nuevo en GitHub · Esc ");
+    let block = panel(title, true).title_bottom(Line::from(hint.fg(DIM)).right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let mut lines = vec![Line::from(vec![Span::styled("/ ", Style::new().fg(DIM)), Span::raw(p.query.clone())])];
+    if p.loading {
+        lines.push(Line::from(tr!("Asking GitHub…", "Preguntando a GitHub…").fg(DIM)));
+    }
+    if let Some(e) = &p.error {
+        lines.push(Line::from(Span::styled(format!("⚠ {e}"), Style::new().fg(Color::Red))));
+    }
+    let visible = p.visible();
+    if visible.is_empty() && !p.loading {
+        lines.push(Line::from(tr!("No open issues match", "Ninguna issue abierta coincide").fg(DIM)));
+    }
+    let room = (inner.height as usize).saturating_sub(lines.len()).max(1);
+    let start = p.sel.saturating_sub(room - 1);
+    for (i, issue) in visible.iter().enumerate().skip(start).take(room) {
+        let style = if i == p.sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+        let labels = if issue.labels.is_empty() { String::new() } else { format!("  [{}]", issue.labels.join(", ")) };
+        let text = truncate(&format!("{}  {}{labels}", issue.reference(), issue.title), inner.width as usize);
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn form_height(form: Option<&super::work::OptionsForm>) -> u16 {
     u16::from(form.is_some())
 }
@@ -1430,6 +1462,8 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 k("←/→", tr!("option", "opción")),
                 k(tr!("Space", "Espacio"), tr!("change", "cambia")),
                 k("p", tr!("project", "proyecto")),
+                k("i", tr!("issue", "issue")),
+                k("x", tr!("drop the issue", "quita la issue")),
                 k("Tab", tr!("back to the text", "vuelve al texto")),
                 k("⏎", composer_action(&c.target)),
             ];

@@ -3,6 +3,7 @@ mod log;
 mod auth;
 mod classify;
 mod http;
+mod issues;
 mod keeper;
 mod hub;
 mod legacy;

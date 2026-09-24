@@ -77,6 +77,17 @@ pub struct OptionsFile {
     pub defaults: BTreeMap<String, Choice>,
     pub option: Vec<UserOption>,
     pub projects: BTreeMap<String, ProjectOptions>,
+    pub issues: IssuesConfig,
+}
+
+/// Where "New" looks for open issues. With no owners, the owners of the GitHub checkouts
+/// under the projects root.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct IssuesConfig {
+    pub owners: Vec<String>,
+    /// `owner/repo` whose issues are never offered or passed on.
+    pub exclude: Vec<String>,
 }
 
 /// One option as a client draws it: every value with its label, and the default already merged.
@@ -121,6 +132,9 @@ pub struct Resolved {
     pub flags: EffortFlags,
     #[serde(default)]
     pub picked: Vec<Picked>,
+    /// `owner/repo#n` the work comes from, which the node's PR closes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
 }
 
 fn builtin_effort(level: &str) -> EffortFlags {
@@ -346,7 +360,7 @@ impl OptionsFile {
                 Picked { id: s.id.clone(), label: s.label.clone(), value_label: s.value_label(&choice), choice, mission }
             })
             .collect();
-        Ok(Resolved { project: project.map(str::to_string), auto_merge, flags: self.effort_flags(&effort), effort, picked })
+        Ok(Resolved { project: project.map(str::to_string), auto_merge, flags: self.effort_flags(&effort), effort, picked, issue: None })
     }
 
     /// For a launch no user request stands behind: the defaults, but never auto-merge, since
@@ -413,6 +427,9 @@ impl Resolved {
                 Some(m) => lines.push(format!("- {}: {}. {m}", p.label, p.value_label)),
                 None => lines.push(format!("- {}: {}.", p.label, p.value_label)),
             }
+        }
+        if let Some(issue) = &self.issue {
+            lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
         }
         lines.push(String::new());
         lines.push("When you reach this point, send `report` kind final: the orchestrator closes you.".into());
