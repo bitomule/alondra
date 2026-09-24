@@ -123,14 +123,15 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// What the node reads after the user's text: every attachment as a path it can open.
+/// What the node reads after the user's text: every attachment as a path it can open, in
+/// backticks because file names carry spaces.
 pub fn delivery_note(user: &str, attachments: &[Attachment]) -> String {
     let files: Vec<String> = attachments
         .iter()
         .filter_map(|a| {
             let path = a.stored_path.as_ref()?;
             let kind = if is_image(&a.name) { "image" } else { "file" };
-            Some(format!("{path} ({kind}, {})", human_size(a.bytes.unwrap_or(0))))
+            Some(format!("`{path}` ({kind}, {})", human_size(a.bytes.unwrap_or(0))))
         })
         .collect();
     if files.is_empty() {
@@ -221,7 +222,7 @@ mod tests {
         assert_eq!(delivery_note("David", &[]), "");
         assert_eq!(
             delivery_note("David", &[a("foto.jpg", 1_300_000), a("notas.txt", 900)]),
-            "\n\nDavid attached files (open with the Read tool): /h/files/uploads/x/foto.jpg (image, 1.2 MB); /h/files/uploads/x/notas.txt (file, 900 B)"
+            "\n\nDavid attached files (open with the Read tool): `/h/files/uploads/x/foto.jpg` (image, 1.2 MB); `/h/files/uploads/x/notas.txt` (file, 900 B)"
         );
     }
 

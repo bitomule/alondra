@@ -1,4 +1,5 @@
 mod draw;
+mod dropped;
 mod files;
 mod input;
 mod keys;
@@ -20,6 +21,7 @@ use serde_json::{Value, json};
 use crate::client::{Client, FleetNode, Overview};
 use crate::mcp::urlencode;
 use crate::i18n;
+use dropped::{Chip, Upload};
 use input::TextInput;
 use keys::{Cmd, Keymap, Motion};
 use md::Block;
@@ -80,15 +82,16 @@ pub struct Comment {
 pub struct Review {
     pub comments: Vec<Comment>,
     pub general: String,
+    pub chips: Vec<Chip>,
 }
 
 impl Review {
     pub fn is_empty(&self) -> bool {
-        self.comments.is_empty() && self.general.trim().is_empty()
+        self.comments.is_empty() && self.general.trim().is_empty() && self.chips.is_empty()
     }
 
     pub fn count(&self) -> usize {
-        self.comments.len() + usize::from(!self.general.trim().is_empty())
+        self.comments.len() + usize::from(!self.general.trim().is_empty()) + self.chips.len()
     }
 
     fn feedback(&self) -> String {
@@ -250,6 +253,7 @@ pub enum Target {
 pub struct Composer {
     pub target: Target,
     pub input: TextInput,
+    pub chips: Vec<Chip>,
 }
 
 impl Target {
@@ -297,6 +301,8 @@ enum Msg {
     Posted { key: Option<Key>, result: Result<String, String> },
     File { path: String, result: Result<files::FileBody, String> },
     Found { query: String, result: Result<(String, Vec<String>), String> },
+    Uploaded { seq: u64, result: Result<String, String> },
+    Preview { seq: u64, image: image::DynamicImage },
 }
 
 pub enum Flow {
@@ -329,13 +335,16 @@ pub struct App {
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
     pub reviews: HashMap<Key, Review>,
-    drafts: HashMap<String, String>,
+    drafts: HashMap<String, (String, Vec<Chip>)>,
+    chip_seq: u64,
     pub files: HashMap<String, Result<files::FileBody, String>>,
     /// How images are drawn in this terminal: Kitty graphics in Ghostty and Kitty, iTerm2 or sixel
     /// where supported, colour half-blocks elsewhere. Found once, when the TUI starts.
     pub picker: Option<ratatui_image::picker::Picker>,
     /// Each image, encoded for the terminal, by stored path.
     pub images: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
+    /// The preview of each image attached in the composer, by chip.
+    pub previews: HashMap<u64, ratatui_image::protocol::StatefulProtocol>,
     loading: HashSet<String>,
     pub flash: Option<Flash>,
     pub help: bool,
@@ -351,6 +360,8 @@ pub struct App {
     tx: SyncSender<Msg>,
 }
 
+const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const PREVIEW_PIXELS: u32 = 480;
 const ACTIVITY_EVERY_MS: i64 = 60_000;
 
 pub fn run() -> Result<()> {
@@ -523,8 +534,15 @@ fn clone_of(node_cwd: Option<&str>, repo: &str) -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(&home).join("Projects").join(name)).filter(|p| is_repo(p))
 }
 
-fn answer_body(text: &str, option: Option<&str>) -> Value {
-    json!({"text": text, "option": option, "device": "tui"})
+fn answer_body(text: &str, option: Option<&str>, attachments: &[String]) -> Value {
+    json!({"text": text, "option": option, "device": "tui", "attachments": attachments})
+}
+
+fn stored_ids(chips: &[Chip]) -> Vec<String> {
+    chips.iter().filter_map(|c| match &c.upload {
+        Upload::Stored(id) => Some(id.clone()),
+        Upload::Sending => None,
+    }).collect()
 }
 
 impl App {
@@ -553,6 +571,8 @@ impl App {
             reader: None,
             reviews: HashMap::new(),
             drafts: HashMap::new(),
+            chip_seq: 0,
+            previews: HashMap::new(),
             files: HashMap::new(),
             picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
             images: HashMap::new(),
@@ -831,6 +851,12 @@ impl App {
                 }
                 self.fail(trf!("Not sent: {e}", "No se envió: {e}"));
             }
+            Msg::Uploaded { seq, result } => self.uploaded(seq, result),
+            Msg::Preview { seq, image } => {
+                if let Some(p) = self.picker.as_ref() {
+                    self.previews.insert(seq, p.new_resize_protocol(image));
+                }
+            }
             Msg::File { path, result } => {
                 self.loading.remove(&path);
                 if let (Ok(files::FileBody::Image(img)), Some(picker)) = (&result, &self.picker) {
@@ -894,7 +920,13 @@ impl App {
     }
 
     fn on_paste(&mut self, s: &str) {
-        if let Some(c) = self.composer.as_mut() {
+        if self.composer.is_some()
+            && let Some(files) = dropped::dropped_files(s)
+        {
+            for f in files {
+                self.attach(f);
+            }
+        } else if let Some(c) = self.composer.as_mut() {
             c.input.insert_str(s);
         } else if let Some(search) = self.search.as_mut().filter(|s| s.editing) {
             search.input.insert_str(&md::one_line(s));
@@ -1049,18 +1081,17 @@ impl App {
     }
 
     fn compose(&mut self, target: Target, prefill: &str) {
-        let draft = target.draft_key().and_then(|k| self.drafts.remove(&k));
-        let text = draft.as_deref().unwrap_or(prefill);
-        self.composer = Some(Composer { target, input: TextInput::with(text) });
+        let (text, chips) = target.draft_key().and_then(|k| self.drafts.remove(&k)).unwrap_or_else(|| (prefill.to_string(), vec![]));
+        self.composer = Some(Composer { target, input: TextInput::with(&text), chips });
     }
 
     fn cancel_composer(&mut self) {
         let Some(c) = self.composer.take() else { return };
         let text = c.input.text();
         if let Some(k) = c.target.draft_key()
-            && !text.trim().is_empty()
+            && (!text.trim().is_empty() || !c.chips.is_empty())
         {
-            self.drafts.insert(k, text);
+            self.drafts.insert(k, (text, c.chips));
             self.flash(tr!("Draft saved: open it again to pick up where you left off", "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"));
         }
     }
@@ -1224,7 +1255,7 @@ impl App {
         let who = who(&q.node_name, &q.session_id);
         self.post(
             Some(Key::Q(q.id)),
-            vec![(format!("/v1/questions/{}/answer", q.id), answer_body(&opt.label, Some(&opt.label)))],
+            vec![(format!("/v1/questions/{}/answer", q.id), answer_body(&opt.label, Some(&opt.label), &[]))],
             format!("«{}» → {who}", opt.label),
         );
         self.reader = None;
@@ -1279,9 +1310,59 @@ impl App {
                 c.input.handle(k);
             }
             KeyCode::Enter => self.submit(),
+            KeyCode::Backspace if c.input.text().is_empty() && !c.chips.is_empty() => {
+                c.chips.pop();
+            }
             _ => {
                 c.input.handle(k);
             }
+        }
+    }
+
+    /// Copies a dropped file into Alondra's storage while the user keeps writing.
+    fn attach(&mut self, path: std::path::PathBuf) {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if bytes > MAX_ATTACHMENT_BYTES {
+            let size = files::size(bytes as usize);
+            self.fail(trf!("{name} is {size}: attachments go up to 20 MB", "{name} ocupa {size}: los adjuntos llegan hasta 20 MB"));
+            return;
+        }
+        self.chip_seq += 1;
+        let seq = self.chip_seq;
+        let Some(c) = self.composer.as_mut() else { return };
+        let chip = Chip { seq, name: name.clone(), bytes, upload: Upload::Sending };
+        let preview = self.picker.is_some() && chip.image();
+        c.chips.push(chip);
+        self.spawn(move |tx| {
+            if preview && let Ok(image) = image::open(&path) {
+                let _ = tx.send(Msg::Preview { seq, image: image.thumbnail(PREVIEW_PIXELS, PREVIEW_PIXELS) });
+            }
+            let result = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| Client::for_user(Duration::from_secs(120)).upload(&name, &bytes).map_err(|e| e.to_string()))
+                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "no id".to_string()));
+            let _ = tx.send(Msg::Uploaded { seq, result });
+        });
+    }
+
+    fn uploaded(&mut self, seq: u64, result: Result<String, String>) {
+        let chips = self.composer.iter_mut().flat_map(|c| c.chips.iter_mut()).chain(self.drafts.values_mut().flat_map(|(_, c)| c.iter_mut()));
+        let mut failed = None;
+        for chip in chips.filter(|c| c.seq == seq) {
+            match &result {
+                Ok(id) => chip.upload = Upload::Stored(id.clone()),
+                Err(e) => failed = Some((chip.name.clone(), e.clone())),
+            }
+        }
+        if let Some((name, e)) = failed {
+            if let Some(c) = self.composer.as_mut() {
+                c.chips.retain(|c| c.seq != seq);
+            }
+            for (_, chips) in self.drafts.values_mut() {
+                chips.retain(|c| c.seq != seq);
+            }
+            self.fail(trf!("Could not attach {name}: {e}", "No se pudo adjuntar {name}: {e}"));
         }
     }
 
@@ -1289,22 +1370,33 @@ impl App {
         let Some(c) = self.composer.take() else { return };
         let text = c.input.text().trim().to_string();
         let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest | Target::PrChanges { .. });
-        if needs_text && text.is_empty() {
+        if needs_text && text.is_empty() && c.chips.is_empty() {
             self.composer = Some(c);
             return;
         }
+        if c.chips.iter().any(|c| c.upload == Upload::Sending) {
+            self.composer = Some(c);
+            self.flash(tr!("Still copying the attachments: ⏎ again in a moment", "Aún se están copiando los adjuntos: ⏎ otra vez en un momento"));
+            return;
+        }
+        let ids = stored_ids(&c.chips);
+        if !matches!(c.target, Target::Comment { .. } | Target::General { .. }) {
+            for chip in &c.chips {
+                self.previews.remove(&chip.seq);
+            }
+        }
         match c.target {
             Target::PrChanges { id, .. } => {
-                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text}))], tr!("Changes requested", "Cambios pedidos").to_string());
+                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text, "attachments": ids}))], tr!("Changes requested", "Cambios pedidos").to_string());
             }
             Target::Answer { id, option, .. } => {
-                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], trf!("#{id} answered", "#{id} contestada"));
+                self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref(), &ids))], trf!("#{id} answered", "#{id} contestada"));
                 self.hide(Key::Q(id));
             }
             Target::MoreContext { id, .. } => {
                 self.post(
                     Some(Key::Q(id)),
-                    vec![(format!("/v1/questions/{id}/more-context"), json!({"note": text}))],
+                    vec![(format!("/v1/questions/{id}/more-context"), json!({"note": text, "attachments": ids}))],
                     trf!("#{id} sent back: it will ask you again with more context", "#{id} devuelta: te la volverá a preguntar con más contexto"),
                 );
                 self.hide(Key::Q(id));
@@ -1313,7 +1405,7 @@ impl App {
                 self.post(
                     Some(Key::R(id)),
                     vec![
-                        (format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david"})),
+                        (format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david", "attachments": ids})),
                         (format!("/v1/reports/{id}/read"), json!({})),
                     ],
                     trf!("Sent to {name} and marked read", "Enviado a {name} y marcado leído"),
@@ -1321,18 +1413,19 @@ impl App {
                 self.hide(Key::R(id));
             }
             Target::Message { session, name, ack } => {
-                let mut calls = vec![(format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david"}))];
+                let mut calls = vec![(format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david", "attachments": ids}))];
                 if ack {
                     calls.push((format!("/v1/nodes/{}/ack", urlencode(&session)), json!({})));
                 }
                 self.post(None, calls, trf!("Sent to {name}", "Enviado a {name}"));
             }
             Target::NewRequest => {
-                self.post(None, vec![("/v1/requests".into(), json!({"text": text}))], tr!("Sent to the orchestrator: it will prepare the mission and launch the node", "Enviado al orquestador: preparará la misión y lanzará el nodo").into())
+                self.post(None, vec![("/v1/requests".into(), json!({"text": text, "attachments": ids}))], tr!("Sent to the orchestrator: it will prepare the mission and launch the node", "Enviado al orquestador: preparará la misión y lanzará el nodo").into())
             }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
                 let review = self.reviews.entry(key).or_default();
+                review.chips.extend(c.chips);
                 review.comments.retain(|c| c.block != block);
                 if !text.is_empty() {
                     review.comments.push(Comment { block, quote, text });
@@ -1341,7 +1434,9 @@ impl App {
             }
             Target::General { send } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
-                self.reviews.entry(key).or_default().general = text;
+                let review = self.reviews.entry(key).or_default();
+                review.general = text;
+                review.chips.extend(c.chips);
                 if send {
                     self.send_feedback();
                 }
@@ -1499,7 +1594,7 @@ impl App {
             None => label.clone().unwrap_or_else(|| "Approved".into()),
         };
         let node = r.node.clone();
-        self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref()))], trf!("Approved → {node}", "Aprobado → {node}"));
+        self.post(Some(r.key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, label.as_deref(), &[]))], trf!("Approved → {node}", "Aprobado → {node}"));
         self.reader = None;
         self.hide(Key::Q(id));
     }
@@ -1512,6 +1607,7 @@ impl App {
             return;
         };
         let text = review.feedback();
+        let ids = stored_ids(&review.chips);
         let n = review.count();
         let node = r.node.clone();
         let count = i18n::comments(n);
@@ -1522,20 +1618,20 @@ impl App {
                     Some(_) => trf!("Changes requested from {node} ({count})", "Cambios pedidos a {node} ({count})"),
                     None => trf!("Answer sent to {node} ({count})", "Respuesta enviada a {node} ({count})"),
                 };
-                self.post(Some(key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref()))], done);
+                self.post(Some(key), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref(), &ids))], done);
             }
             Key::R(id) => {
                 self.post(
                     Some(key),
                     vec![
-                        (format!("/v1/nodes/{}/messages", urlencode(&r.session)), json!({"text": text, "from": "david"})),
+                        (format!("/v1/nodes/{}/messages", urlencode(&r.session)), json!({"text": text, "from": "david", "attachments": ids})),
                         (format!("/v1/reports/{id}/read"), json!({})),
                     ],
                     trf!("{count} sent to {node}; marked read", "{count} enviados a {node}; marcado leído"),
                 );
             }
             Key::P(id) => {
-                self.post(Some(key), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text}))], trf!("Changes requested from {node} ({count})", "Cambios pedidos a {node} ({count})"));
+                self.post(Some(key), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text, "attachments": ids}))], trf!("Changes requested from {node} ({count})", "Cambios pedidos a {node} ({count})"));
             }
         }
         self.reader = None;
@@ -1855,6 +1951,42 @@ pub(crate) mod tests {
         app.on_msg(Msg::Posted { key: Some(Key::Q(1)), result: Err("down".into()) });
         app.reconcile();
         assert_eq!(app.sel, Some(Key::Q(1)));
+    }
+
+    #[test]
+    fn a_dropped_file_becomes_an_attachment_that_waits_for_its_copy_before_sending() {
+        let dir = std::env::temp_dir().join(format!("alondra-tui-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("Captura de pantalla.png");
+        std::fs::write(&shot, b"x").unwrap();
+        let (mut app, _rx) = app_with(vec![question(1, QuestionOrigin::Ask, &[])]);
+        app.compose(Target::Answer { id: 1, title: "t".into(), option: None }, "");
+        app.on_paste(&format!("{}/Captura\\ de\\ pantalla.png", dir.display()));
+        let c = app.composer.as_ref().unwrap();
+        assert_eq!(c.input.text(), "", "the path is not typed into the answer");
+        assert_eq!(c.chips.iter().map(|c| (c.name.as_str(), c.bytes)).collect::<Vec<_>>(), [("Captura de pantalla.png", 1)]);
+
+        app.submit();
+        assert!(app.composer.is_some(), "an attachment still copying holds the send back");
+
+        let seq = app.composer.as_ref().unwrap().chips[0].seq;
+        app.on_msg(Msg::Uploaded { seq, result: Ok("0123456789abcdef".into()) });
+        assert_eq!(app.composer.as_ref().unwrap().chips[0].upload, Upload::Stored("0123456789abcdef".into()));
+        assert_eq!(stored_ids(&app.composer.as_ref().unwrap().chips), ["0123456789abcdef"]);
+        app.cancel_composer();
+        app.compose(Target::Answer { id: 1, title: "t".into(), option: None }, "");
+        assert_eq!(app.composer.as_ref().unwrap().chips.len(), 1, "a draft keeps its attachments");
+
+        app.on_paste("no es una ruta");
+        app.composer.as_mut().unwrap().input = TextInput::default();
+        app.composer_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(app.composer.as_ref().unwrap().chips.is_empty(), "backspace on an empty box removes the last attachment");
+
+        app.on_paste(&shot.display().to_string());
+        let seq = app.composer.as_ref().unwrap().chips[0].seq;
+        app.on_msg(Msg::Uploaded { seq, result: Err("alondrad answered: the file is over 20 MB".into()) });
+        assert!(app.composer.as_ref().unwrap().chips.is_empty(), "a failed copy is not left pretending to be attached");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
