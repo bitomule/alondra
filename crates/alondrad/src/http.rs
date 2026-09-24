@@ -196,9 +196,11 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         return Json(json!({})).into_response();
     }
     if event == "PostToolUse"
-        && p.pointer("/tool_input/command").and_then(Value::as_str).is_some_and(|c| c.contains("gh pr create"))
+        && p.pointer("/tool_input/command").and_then(Value::as_str).is_some_and(crate::prs::runs_pr_create)
+        && let Some(url) = p.get("tool_response").and_then(crate::prs::created_pr)
     {
-        note_prs(&hub, &session_id, &[p.get("tool_response").map(Value::to_string).unwrap_or_default()]);
+        let (hub, session_id) = (hub.clone(), session_id.clone());
+        tokio::spawn(async move { crate::prs::open_confirmed(&hub, &session_id, vec![url]).await });
     }
     if event == "Stop"
         && let Some(r) = hand_over_at_turn_end(&hub, &session_id)
@@ -702,12 +704,11 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
     }
 }
 
-/// Every pull request a node mentions gets its card, once.
-fn note_prs(hub: &Hub, session_id: &str, texts: &[String]) {
-    for url in texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)) {
-        if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
-            log!("could not record a PR: {e}");
-        }
+/// Every pull request a node mentions and GitHub confirms gets its card, once. Awaited, so a
+/// question or report about a new PR is filed inside its card instead of loose in the inbox.
+async fn note_prs(hub: &Hub, caller: &Caller, texts: &[String]) {
+    if let Some((sid, _)) = hub.read(|v| resolve_caller(v, caller)) {
+        crate::prs::open_confirmed(hub, &sid, texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)).collect()).await;
     }
 }
 
@@ -1233,6 +1234,7 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
         None => vec![],
     };
     let replaces = b.replaces;
+    note_prs(&hub, &b.caller, &question_texts(&b)).await;
     let recorded = record_question(hub.clone(), b, false, related);
     if let Some(old) = replaces
         && recorded.status().is_success()
@@ -1327,18 +1329,18 @@ async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>)
     b.options = vec![];
     b.blocking = true;
     b.to_orchestrator = false;
+    note_prs(&hub, &b.caller, &question_texts(&b)).await;
     record_question(hub, b, true, vec![])
+}
+
+fn question_texts(b: &AskBody) -> Vec<String> {
+    b.links.iter().map(|l| l.url.clone()).chain(b.detail.clone()).collect()
 }
 
 fn record_question(hub: AppState, mut b: AskBody, action: bool, related: Vec<CardRef>) -> Response {
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
-    if let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) {
-        let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
-        texts.extend(b.detail.clone());
-        note_prs(&hub, &sid, &texts);
-    }
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         let ctx = v.nodes.get(&sid).and_then(|n| n.tool.as_ref().map(|t| format!("{} {}", t.name, t.summary.clone().unwrap_or_default())).or(n.last_message.clone()));
@@ -1651,11 +1653,9 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     }
     let stamp = now_millis();
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
-    if let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) {
-        let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
-        texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
-        note_prs(&hub, &sid, &texts);
-    }
+    let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
+    texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
+    note_prs(&hub, &b.caller, &texts).await;
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         Some(Event::ReportPosted(Report {
@@ -2873,10 +2873,115 @@ mod tests {
     }
 
     fn hub_with(tag: &str, sandbox: bool) -> Arc<Hub> {
+        hub_on(tag, sandbox, FakeGithub::default())
+    }
+
+    fn hub_on(tag: &str, sandbox: bool, github: FakeGithub) -> Arc<Hub> {
         let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
         let env = move |k: &str| (sandbox && k == "ALONDRA_SANDBOX").then(|| "1".to_string());
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), env, || Some("Ana".into()));
-        Arc::new(Hub::open(config, false).unwrap())
+        Arc::new(Hub::open(config, false).unwrap().with_github(github))
+    }
+
+    /// GitHub as the tests see it: every PR exists but the `missing` ones.
+    #[derive(Clone, Default)]
+    struct FakeGithub {
+        missing: Vec<&'static str>,
+        asked: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl crate::prs::Gh for FakeGithub {
+        async fn edit_base(&self, _url: &str, _base: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn view(&self, _url: &str) -> Option<Value> {
+            None
+        }
+
+        async fn exists(&self, url: &str) -> bool {
+            self.asked.lock().unwrap().push(url.into());
+            !self.missing.contains(&url)
+        }
+    }
+
+    const FIXTURE: &str = "https://github.com/a/b/pull/7";
+
+    fn card_urls(hub: &Hub) -> Vec<String> {
+        hub.read(|v| v.prs.values().map(|p| p.url.clone()).collect())
+    }
+
+    async fn post_tool_use(hub: &Arc<Hub>, command: &str, stdout: &str) {
+        let p = json!({
+            "hook_event_name": "PostToolUse", "session_id": "s", "tool_name": "Bash",
+            "tool_input": {"command": command}, "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false},
+        });
+        hook(State(hub.clone()), Json(p)).await;
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// 24 Sep, seq 29139-29143: a node's grep for 'gh pr create' printed Alondra's own test code,
+    /// and a/b#7, #24 and #54, its fixture PRs, became cards in David's inbox.
+    #[tokio::test]
+    async fn only_a_pr_that_gh_pr_create_made_and_github_knows_gets_a_card_from_the_hook() {
+        const GREP: &str = "sed -n 680,715p crates/alondrad/src/http.rs; grep -rn 'fn pr_url\\|pull/\\|gh pr create' crates/";
+        let grep_out = format!(
+            "crates/alondrad/src/http.rs:3031:        hub.append(Event::PrOpened {{ url: \"{FIXTURE}\".into(), session_id: \"s\".into() }}).unwrap();\n\
+             crates/alondrad/src/http.rs:2533:        hub.append(Event::PrOpened {{ url: \"https://github.com/a/b/pull/54\".into(), session_id: \"s\".into() }}).unwrap();\n"
+        );
+        let cases: &[(&str, &str, &str, &[&str], &[&str])] = &[
+            ("a grep for gh pr create", GREP, &grep_out, &[], &[]),
+            ("a grep whose output ends in a lone PR URL", GREP, &format!("{FIXTURE}\n"), &[], &[]),
+            ("an echo", "echo gh pr create", "gh pr create\n", &[], &[]),
+            ("a PR made", "gh pr create --title x --body \"see https://github.com/a/b/pull/7\"", "https://github.com/o/r/pull/12\n", &["https://github.com/o/r/pull/12"], &["https://github.com/o/r/pull/12"]),
+            ("a PR made after cd", "cd x && gh pr create --fill", "https://github.com/o/r/pull/13\n", &["https://github.com/o/r/pull/13"], &["https://github.com/o/r/pull/13"]),
+            ("a PR GitHub does not know", "gh pr create --fill", &format!("{FIXTURE}\n"), &[FIXTURE], &[]),
+        ];
+        for &(what, command, stdout, asked, cards) in cases {
+            let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
+            let hub = hub_on("hook-pr", false, github.clone());
+            post_tool_use(&hub, command, stdout).await;
+            assert_eq!(*github.asked.lock().unwrap(), asked, "{what}");
+            assert_eq!(card_urls(&hub), cards, "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn github_is_not_asked_again_soon_about_a_pr_it_did_not_know() {
+        let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
+        let hub = hub_on("hook-pr-cache", false, github.clone());
+        for _ in 0..3 {
+            post_tool_use(&hub, "gh pr create --fill", FIXTURE).await;
+        }
+        assert_eq!(github.asked.lock().unwrap().len(), 1);
+        assert!(card_urls(&hub).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_fixture_pr_in_a_report_or_question_gets_no_card() {
+        let text = format!("Tests pass. Output:\ncrates/alondrad/src/http.rs:3031: url: \"{FIXTURE}\"");
+        for kind in [NewCard::Ask, NewCard::Report] {
+            let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
+            let hub = hub_on("fixture-pr", false, github.clone());
+            hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            let caller = Caller { session_id: Some("s".into()), pids: vec![] };
+            let links = vec![Link { url: FIXTURE.into(), title: None }];
+            let response = match kind {
+                NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
+                    caller, title: "¿Sigo?".into(), detail: Some(text.clone()), options: vec![], links, attachments: vec![], blocking: true,
+                    to_orchestrator: false, steps: vec![], related: None, replaces: None,
+                })).await,
+                NewCard::Report => report(State(hub.clone()), Json(ReportBody {
+                    caller, title: "Listo".into(), body: Some(text.clone()), kind: Some(ReportKind::Notice), links, attachments: vec![], related: None,
+                })).await,
+            };
+            let (status, said) = status_and_body(response).await;
+            assert_eq!(status, StatusCode::OK, "{kind:?}: {said}");
+            assert_eq!(*github.asked.lock().unwrap(), [FIXTURE], "{kind:?}");
+            assert!(card_urls(&hub).is_empty(), "{kind:?}");
+        }
     }
 
     /// test/menu-probe, 24 Sep: a probe run against the real alondrad posted reports #111 and #112

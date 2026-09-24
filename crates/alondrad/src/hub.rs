@@ -21,6 +21,7 @@ pub struct Hub {
     pub home: PathBuf,
     pub config: Config,
     pub hold_enabled: bool,
+    pub pr_lookup: crate::prs::Lookup,
 }
 
 impl Hub {
@@ -44,7 +45,13 @@ impl Hub {
             home,
             config,
             hold_enabled,
+            pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_github(self, gh: impl crate::prs::FindsPrs + 'static) -> Self {
+        Hub { pr_lookup: crate::prs::Lookup::new(gh), ..self }
     }
 
     pub fn append_with(&self, build: impl FnOnce(&View) -> Option<Event>) -> Result<Option<(u64, Event)>> {

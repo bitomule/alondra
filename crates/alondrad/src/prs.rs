@@ -2,7 +2,8 @@
 //! merged and how.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alondra_core::pr::{Check, CheckState, MergeMethod, PrState, PullRequest};
@@ -91,6 +92,8 @@ async fn gh_json(args: &[&str]) -> Option<Value> {
 pub trait Gh: Sync {
     fn edit_base(&self, url: &str, base: &str) -> impl Future<Output = Result<(), String>> + Send;
     fn view(&self, url: &str) -> impl Future<Output = Option<Value>> + Send;
+    /// Whether GitHub knows the PR.
+    fn exists(&self, url: &str) -> impl Future<Output = bool> + Send;
 }
 
 pub struct GhCli;
@@ -109,6 +112,132 @@ impl Gh for GhCli {
     async fn view(&self, url: &str) -> Option<Value> {
         gh_json(&["pr", "view", url, "--json", FIELDS]).await
     }
+
+    async fn exists(&self, url: &str) -> bool {
+        gh_json(&["pr", "view", url, "--json", "url,state,headRefName"]).await.is_some()
+    }
+}
+
+type Found<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+
+/// `Gh::exists` behind a pointer, so the hub can hold the real `gh` or a test's fake.
+pub trait FindsPrs: Send + Sync {
+    fn finds<'a>(&'a self, url: &'a str) -> Found<'a>;
+}
+
+impl<G: Gh + Send> FindsPrs for G {
+    fn finds<'a>(&'a self, url: &'a str) -> Found<'a> {
+        Box::pin(self.exists(url))
+    }
+}
+
+const MISSING_FOR: Duration = Duration::from_secs(600);
+
+/// Asks GitHub whether a PR exists before it gets a card, remembering for `MISSING_FOR` the ones
+/// it did not know, so a node repeating a fixture URL does not send Alondra back to `gh`.
+pub struct Lookup {
+    gh: Box<dyn FindsPrs>,
+    missing: Mutex<HashMap<String, Instant>>,
+}
+
+impl Lookup {
+    pub fn new(gh: impl FindsPrs + 'static) -> Self {
+        Lookup { gh: Box::new(gh), missing: Mutex::new(HashMap::new()) }
+    }
+
+    fn missing_lately(&self, url: &str) -> bool {
+        let mut missing = self.missing.lock().expect("missing lock poisoned");
+        missing.retain(|_, at| at.elapsed() < MISSING_FOR);
+        missing.contains_key(url)
+    }
+
+    async fn finds(&self, url: &str) -> bool {
+        let found = self.gh.finds(url).await;
+        if !found {
+            self.missing.lock().expect("missing lock poisoned").insert(url.to_string(), Instant::now());
+        }
+        found
+    }
+}
+
+/// Opens a card for each PR in `urls` that GitHub confirms. One it does not know (a fixture URL
+/// in test output, a typo) gets no card. 24 Sep, seq 29139-29143: a/b#7, #24 and #54, fixtures
+/// of Alondra's own tests, reached David's inbox as cards.
+pub async fn open_confirmed(hub: &Hub, session_id: &str, urls: Vec<String>) {
+    for url in urls {
+        let Some((repo, number)) = alondra_core::pr::parse_url(&url) else { continue };
+        let url = alondra_core::pr::canonical(&repo, number);
+        if !hub.read(|v| v.prs.values().any(|p| p.repo == repo && p.number == number)) {
+            if hub.pr_lookup.missing_lately(&url) {
+                continue;
+            }
+            if !hub.pr_lookup.finds(&url).await {
+                let node = hub.read(|v| v.nodes.get(session_id).and_then(|n| n.name.clone())).unwrap_or_else(|| session_id.to_string());
+                log!("PR {url} from {node}: not found on GitHub, no card");
+                continue;
+            }
+        }
+        if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
+            log!("could not record a PR: {e}");
+        }
+    }
+}
+
+/// Whether a command of the shell line runs `gh pr create`, rather than only mentioning it as a
+/// grep or an echo does. 24 Sep, seq 29139: a grep for 'gh pr create' counted as one.
+pub fn runs_pr_create(line: &str) -> bool {
+    commands(line).iter().any(|c| {
+        let mut words = c.split_whitespace().skip_while(|w| is_assignment(w) || *w == "command");
+        (words.next(), words.next(), words.next()) == (Some("gh"), Some("pr"), Some("create"))
+    })
+}
+
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// The commands of a shell line, split at `&&`, `||`, `;`, `|` and newlines outside quotes.
+fn commands(line: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None | Some('"'), '\\') => {
+                current.push(c);
+                current.extend(chars.next());
+                continue;
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (None, ';' | '|' | '\n') => {
+                out.push(std::mem::take(&mut current));
+                continue;
+            }
+            (None, '&') if chars.peek() == Some(&'&') => {
+                chars.next();
+                out.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    out.push(current);
+    out
+}
+
+/// The PR `gh pr create` made: gh prints its URL alone on the last line of its output. Any other
+/// PR URL the output mentions is not it.
+pub fn created_pr(response: &Value) -> Option<String> {
+    let out = response.get("stdout").and_then(Value::as_str).or_else(|| response.as_str())?;
+    let last = out.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+    let (repo, number) = alondra_core::pr::parse_url(last)?;
+    let url = alondra_core::pr::canonical(&repo, number);
+    (url == last).then_some(url)
 }
 
 /// Moves each PR of the plan onto its new base and returns the ones GitHub accepted. GitHub
@@ -293,6 +422,10 @@ mod tests {
             let m = self.mergeable.lock().unwrap().pop_front()?;
             Some(json!({"title": "Upper", "state": "OPEN", "baseRefName": "main", "headRefName": "y", "mergeable": m}))
         }
+
+        async fn exists(&self, _url: &str) -> bool {
+            true
+        }
     }
 
     fn hub(tag: &str) -> Hub {
@@ -347,6 +480,37 @@ mod tests {
         v.apply(2, 2, &Event::PrUpdated(merged));
         assert_eq!(v.merge_blocked_by(2), None, "merged on GitHub");
         assert_eq!(watched(&v).map(|p| p.id).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn a_command_counts_as_making_a_pr_only_when_it_runs_gh_pr_create() {
+        for (command, runs) in [
+            ("sed -n 680,715p crates/alondrad/src/http.rs; grep -rn 'fn pr_url\\|pull/\\|gh pr create' crates/", false),
+            ("grep -rn \"a|gh pr create\" .", false),
+            ("echo gh pr create", false),
+            ("git log --grep 'gh pr create'", false),
+            ("gh pr create --title x --body \"see https://github.com/a/b/pull/7\"", true),
+            ("cd x && gh pr create --fill", true),
+            ("git push -u origin b\ngh pr create --fill | tee out", true),
+            ("false || GH_TOKEN=t command gh pr create --fill", true),
+            ("gh pr view 12", false),
+        ] {
+            assert_eq!(runs_pr_create(command), runs, "{command}");
+        }
+    }
+
+    #[test]
+    fn the_pr_made_is_the_url_gh_prints_last_on_its_own_line() {
+        for (response, pr) in [
+            (json!({"stdout": "https://github.com/o/r/pull/12\n"}), Some("https://github.com/o/r/pull/12")),
+            (json!({"stdout": "Warning: 1 uncommitted change\nhttps://github.com/o/r/pull/12\n\n"}), Some("https://github.com/o/r/pull/12")),
+            (json!({"stdout": "https://github.com/o/r/pull/12\ndone\n"}), None),
+            (json!({"stdout": "see https://github.com/a/b/pull/7\n"}), None),
+            (json!({"stdout": "", "stderr": "https://github.com/o/r/pull/12"}), None),
+            (json!("https://github.com/o/r/pull/12"), Some("https://github.com/o/r/pull/12")),
+        ] {
+            assert_eq!(created_pr(&response).as_deref(), pr, "{response}");
+        }
     }
 
     #[test]
