@@ -271,6 +271,26 @@
         }
       }
     },
+    "Ask": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preguntar"
+          }
+        }
+      }
+    },
+    "Ask the node about this PR; the card stays in the inbox": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pregúntale al nodo sobre este PR; la tarjeta se queda en la bandeja"
+          }
+        }
+      }
+    },
     "Ask for Something New…": {
       "localizations": {
         "es": {

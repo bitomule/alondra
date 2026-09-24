@@ -242,6 +242,7 @@ impl Reader {
 
 pub enum Target {
     PrChanges { id: u64, title: String },
+    PrAsk { id: u64, title: String },
     Answer { id: u64, title: String, option: Option<String> },
     MoreContext { id: u64, title: String },
     ReplyReport { id: u64, session: String, name: String },
@@ -265,6 +266,7 @@ impl Target {
             Target::MoreContext { id, .. } => Some(format!("context:{id}")),
             Target::ReplyReport { id, .. } => Some(format!("reply:{id}")),
             Target::PrChanges { id, .. } => Some(format!("pr:{id}")),
+            Target::PrAsk { id, .. } => Some(format!("pr-ask:{id}")),
             Target::Message { session, .. } => Some(format!("message:{session}")),
             Target::NewRequest => Some("new".into()),
             Target::Comment { .. } | Target::General { .. } => None,
@@ -1234,6 +1236,11 @@ impl App {
                     self.compose(Target::PrChanges { id: p.pr.id, title: p.pr.title }, "");
                 }
             }
+            KeyCode::Char('p') => {
+                if let Some(p) = self.selected_pr() {
+                    self.compose(Target::PrAsk { id: p.pr.id, title: p.pr.title }, "");
+                }
+            }
             KeyCode::Char('v') => {
                 let attachments = match self.sel.and_then(|k| self.item(k)) {
                     Some(Item::Q(q)) => q.attachments.clone(),
@@ -1511,7 +1518,7 @@ impl App {
     fn submit(&mut self) {
         let Some(c) = self.composer.take() else { return };
         let text = c.input.text().trim().to_string();
-        let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest | Target::PrChanges { .. });
+        let needs_text = matches!(c.target, Target::Answer { .. } | Target::ReplyReport { .. } | Target::Message { .. } | Target::NewRequest | Target::PrChanges { .. } | Target::PrAsk { .. });
         if needs_text && text.is_empty() && c.chips.is_empty() {
             self.composer = Some(c);
             return;
@@ -1530,6 +1537,9 @@ impl App {
         match c.target {
             Target::PrChanges { id, .. } => {
                 self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text, "attachments": ids}))], tr!("Changes requested", "Cambios pedidos").to_string());
+            }
+            Target::PrAsk { id, .. } => {
+                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/ask"), json!({"text": text, "attachments": ids}))], tr!("Asked its node", "Preguntado a su nodo").to_string());
             }
             Target::Answer { id, option, .. } => {
                 self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref(), &ids))], trf!("#{id} answered", "#{id} contestada"));

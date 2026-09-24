@@ -1441,6 +1441,10 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             let t = md::one_line(title);
             trf!("{t} · what should change?", "{t} · ¿qué hay que cambiar?")
         }
+        Target::PrAsk { title, .. } => {
+            let t = md::one_line(title);
+            trf!("{t} · what do you want to ask?", "{t} · ¿qué quieres preguntar?")
+        }
         Target::MoreContext { id, title } => {
             let t = md::one_line(title);
             trf!("#{id} {t} · what do you need to know? (optional)", "#{id} {t} · ¿qué te falta saber? (opcional)")
@@ -1619,7 +1623,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             } else {
                 k(&format!("1-{}", p.methods().len()), tr!("merge", "fusionar"))
             };
-            let mut v = vec![pane, first, k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
+            let mut v = vec![pane, first, k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("p", tr!("ask", "preguntar")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }

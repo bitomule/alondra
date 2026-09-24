@@ -586,6 +586,16 @@ struct TriageCard: View {
                         try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
                     }
                 }
+                Button {
+                    ask(onPullRequest: pr)
+                } label: {
+                    Label("Ask", systemImage: "questionmark.bubble")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(minHeight: 30)
+                }
+                .buttonStyle(.plain)
+                .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
                 if pr.hasConflicts {
                     Button {
                         resolve(Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)) {
@@ -768,6 +778,22 @@ struct TriageCard: View {
         case .positive: Stamp(label: shown, symbol: "checkmark", tint: Palette.sage)
         case .negative: Stamp(label: shown, symbol: "xmark", tint: Palette.rose)
         case .neutral: Stamp(label: shown, symbol: "paperplane.fill", tint: kind.tint)
+        }
+    }
+
+    /// Unlike `resolve`, the PR's card stays live on the server (asking never parks it), so
+    /// this must not hide it locally: it just sends and clears the draft.
+    private func ask(onPullRequest pr: PullRequest) {
+        replyFocused = false
+        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            let ok = await fleet.perform { [attachments] client in
+                try await client.ask(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }
+            if ok {
+                reply = ""
+                attachments.removeAll()
+            }
         }
     }
 
