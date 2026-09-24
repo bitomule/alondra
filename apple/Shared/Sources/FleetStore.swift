@@ -50,13 +50,15 @@ public final class FleetStore {
     public private(set) var client: AlondraClient
     private let animated: Bool
     private let retryDelay: Duration
+    private let stuckAfter: Duration
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
 
-    public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2)) {
+    public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2), stuckAfter: Duration = .seconds(120)) {
         self.client = client
         self.animated = animated
         self.retryDelay = retryDelay
+        self.stuckAfter = stuckAfter
     }
 
     public var connected: Bool { connection == .online }
@@ -194,13 +196,15 @@ public final class FleetStore {
         } catch {}
     }
 
-    private func apply(_ fresh: Overview) {
-        let live = Set(fresh.openQuestions.map { "q\($0.id)" } + fresh.news.map { "r\($0.id)" })
+    public func apply(_ fresh: Overview) {
+        let live = Set(fresh.openQuestions.map { "q\($0.id)" } + fresh.news.map { "r\($0.id)" } + (fresh.prs ?? []).map { "p\($0.id)" })
+        let reconnected = connection != .online
         animate(.smooth(duration: 0.45)) {
             overview = fresh
             if !hidden.isSubset(of: live) { hidden.formIntersection(live) }
             connection = .online
         }
+        if reconnected { retryPendingSends() }
     }
 
     public func focus(_ item: InboxItem) {
@@ -260,14 +264,25 @@ public final class FleetStore {
     }
 
     /// What the user sent while alondrad could not be reached: kept and sent again with backoff
-    /// until it goes through or the server refuses it for a real reason.
+    /// until it goes through, the server answers it for a real reason, or `stuckAfter` passes.
     public struct PendingSend: Identifiable, Sendable {
         public let id = UUID()
         public let itemID: String?
+        let queuedAt: ContinuousClock.Instant
         let action: @Sendable (AlondraClient) async throws -> Void
     }
 
+    /// A send that got no answer from alondrad for `stuckAfter`: shown until the user dismisses it,
+    /// and its card is back in the inbox to be acted on again.
+    public struct StuckSend: Identifiable, Equatable, Sendable {
+        public let id: UUID
+        public let itemID: String?
+    }
+
     public private(set) var pendingSends: [PendingSend] = []
+    public private(set) var stuckSends: [StuckSend] = []
+    @ObservationIgnored private var retryLoop: Task<Void, Never>?
+    @ObservationIgnored private var retryPause: Task<Void, Never>?
 
     /// Backoff between retries of a pending send: doubling from `retryDelay`, capped at a minute.
     public nonisolated static func retryWait(attempt: Int, base: Duration) -> Duration {
@@ -275,30 +290,68 @@ public final class FleetStore {
     }
 
     private func queue(itemID: String?, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
-        let pending = PendingSend(itemID: itemID, action: action)
-        pendingSends.append(pending)
-        Task { await retry(pending) }
+        if let itemID {
+            pendingSends.removeAll { $0.itemID == itemID }
+            stuckSends.removeAll { $0.itemID == itemID }
+        }
+        pendingSends.append(PendingSend(itemID: itemID, queuedAt: .now, action: action))
+        startRetrying()
     }
 
-    private func retry(_ pending: PendingSend) async {
+    /// Sends what is pending now instead of waiting out the backoff: the connection is back or the
+    /// app came to the foreground.
+    public func retryPendingSends() {
+        guard !pendingSends.isEmpty else { return }
+        retryPause?.cancel()
+        startRetrying()
+    }
+
+    public func dismissStuckSends() {
+        stuckSends = []
+    }
+
+    private func startRetrying() {
+        guard retryLoop == nil else { return }
+        retryLoop = Task { [weak self] in
+            await self?.retryUntilDrained()
+        }
+    }
+
+    private func retryUntilDrained() async {
         var attempt = 0
-        while !Task.isCancelled {
-            try? await Task.sleep(for: Self.retryWait(attempt: attempt, base: retryDelay))
-            attempt += 1
-            do {
-                try await pending.action(client)
-            } catch where error.isTransient {
-                continue
-            } catch {
-                pendingSends.removeAll { $0.id == pending.id }
-                if let itemID = pending.itemID {
-                    animate(.spring(duration: 0.5, bounce: 0.2)) { _ = hidden.remove(itemID) }
-                }
-                report(error)
-                return
+        while let deadline = pendingSends.map({ $0.queuedAt + stuckAfter }).min() {
+            let wait = min(Self.retryWait(attempt: attempt, base: retryDelay), max(deadline - .now, .zero))
+            let pause = Task { _ = try? await Task.sleep(for: wait) }
+            retryPause = pause
+            await pause.value
+            attempt = pause.isCancelled ? 0 : attempt + 1
+            for pending in pendingSends {
+                await send(pending)
             }
+        }
+        retryLoop = nil
+        retryPause = nil
+    }
+
+    private func send(_ pending: PendingSend) async {
+        guard pendingSends.contains(where: { $0.id == pending.id }) else { return }
+        do {
+            try await pending.action(client)
             pendingSends.removeAll { $0.id == pending.id }
-            return
+        } catch where error.isTransient || error.isCancellation {
+            guard ContinuousClock.now - pending.queuedAt >= stuckAfter else { return }
+            settle(pending)
+            stuckSends.append(StuckSend(id: pending.id, itemID: pending.itemID))
+        } catch {
+            settle(pending)
+            report(error)
+        }
+    }
+
+    private func settle(_ pending: PendingSend) {
+        pendingSends.removeAll { $0.id == pending.id }
+        if let itemID = pending.itemID {
+            animate(.spring(duration: 0.5, bounce: 0.2)) { _ = hidden.remove(itemID) }
         }
     }
 
@@ -310,7 +363,9 @@ public final class FleetStore {
         if let refused = error as? CloseRefused {
             refusal = refused.message
         } else {
-            notice = Notice(String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle), failure: true)
+            let message = String(localized: "Couldn’t send: \(error.friendlyDescription)", table: "AlondraShared", bundle: #bundle)
+            notice = Notice(message, failure: true)
+            lastError = message
         }
     }
 

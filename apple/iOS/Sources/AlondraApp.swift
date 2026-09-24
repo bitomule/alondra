@@ -96,6 +96,7 @@ private struct RootView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
+            fleet.retryPendingSends()
             await push.refreshAuthorization()
         }
         .task(id: scenePhase) {
@@ -149,10 +150,33 @@ private struct NoticeToast: View {
                     .glassEffect(.regular, in: .capsule)
                     .transition(.opacity)
             }
+            if !fleet.stuckSends.isEmpty {
+                Button {
+                    fleet.dismissStuckSends()
+                } label: {
+                    HStack(spacing: 10) {
+                        Label(String(localized: "Couldn’t send \(fleet.stuckSends.count): Alondra didn’t answer for 2 minutes"), systemImage: "exclamationmark.triangle.fill")
+                            .lineLimit(2)
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .accessibilityHidden(true)
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Palette.rose)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 20))
+                .padding(.horizontal, 24)
+                .accessibilityHint(Text("Dismiss"))
+                .transition(.opacity)
+            }
         }
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: fleet.notice)
         .animation(.snappy, value: fleet.pendingSends.count)
+        .animation(.snappy, value: fleet.stuckSends)
         .sensoryFeedback(trigger: fleet.notice) { _, new in
             new?.failure == true ? .error : nil
         }
