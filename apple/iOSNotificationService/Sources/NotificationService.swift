@@ -56,7 +56,7 @@ private final class Delivery: Sendable {
 
 struct OptionQuestion: Sendable {
     static let maxOptions = 4
-    private static let origins: Set<String> = ["ask", "ask_user_question"]
+    private static let origins: Set<String> = ["ask", "ask_user_question", "elicitation"]
 
     let id: UInt64
     let options: [String]

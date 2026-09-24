@@ -353,6 +353,7 @@ pub enum QuestionOrigin {
     Permission,
     Plan,
     Classifier,
+    Elicitation,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -517,6 +518,8 @@ pub mod answer_option {
     pub const REQUEST_CHANGES: &str = "Request changes";
     pub const ALLOW: &str = "Allow";
     pub const DENY: &str = "Deny";
+    pub const ACCEPT: &str = "Accept";
+    pub const DECLINE: &str = "Decline";
     pub const MORE_CONTEXT: &str = "I need more context";
     pub const DONE: &str = "Done";
     pub const CANNOT: &str = "I can't / explain";

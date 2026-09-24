@@ -110,19 +110,25 @@ pub fn read_screen(short: &str) -> Result<String, String> {
     tmux(&["capture-pane", "-p", "-t", &session.0])
 }
 
-/// Presses one key in the node's terminal, as picking a menu option does, and fails if the
-/// menu is still on screen afterwards.
-pub fn press(short: &str, key: &str) -> Result<(), String> {
+/// Picks `label` in the menu on the node's screen, by its number or with the arrows and Enter,
+/// and fails if the menu is still on screen afterwards.
+pub fn press(short: &str, label: &str) -> Result<(), String> {
     let session = attach(short)?;
     std::thread::sleep(Duration::from_secs(2));
     let before = tmux(&["capture-pane", "-p", "-t", &session.0])?;
-    if crate::menus::parse_menu(&before).is_none() {
+    let Some(menu) = crate::menus::parse_menu(&before) else {
         return Err("the node is no longer on a menu".into());
+    };
+    let Some(keys) = crate::menus::key_for(&menu, label) else {
+        return Err(format!("the menu on screen no longer offers \"{label}\""));
+    };
+    for key in &keys {
+        tmux(&["send-keys", "-t", &session.0, key])?;
+        std::thread::sleep(Duration::from_millis(300));
     }
-    tmux(&["send-keys", "-t", &session.0, "-l", key])?;
     std::thread::sleep(Duration::from_secs(2));
     let after = tmux(&["capture-pane", "-p", "-t", &session.0])?;
-    if crate::menus::parse_menu(&after) == crate::menus::parse_menu(&before) {
+    if crate::menus::parse_menu(&after).is_some_and(|m| m.same_as(&menu)) {
         return Err("the menu did not take the key".into());
     }
     Ok(())
