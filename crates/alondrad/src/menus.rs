@@ -365,7 +365,6 @@ mod tests {
             kind: alondra_core::ReportKind::Notice,
             created_at: 2,
             read: true,
-            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         });

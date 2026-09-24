@@ -32,6 +32,7 @@ struct QuestionDetail: View {
     private var textAttachments: [Attachment] { question.attachments.filter(\.isText) }
     private var otherAttachments: [Attachment] { question.attachments.filter { !$0.isText } }
     private var feedback: String { draft.feedback(author: store.userName) }
+    private var canSend: Bool { !feedback.isEmpty || !draft.attachments.isEmpty }
 
     var body: some View {
         DetailScaffold {
@@ -87,14 +88,14 @@ struct QuestionDetail: View {
                     placeholder: placeholder,
                     text: $draft.general,
                     focus: $focus,
-                    sendTitle: sendTitle,
-                    canSend: !feedback.isEmpty || !draft.attachments.isEmpty,
+                    sendTitle: nil,
+                    canSend: canSend,
                     send: submit,
                     escape: { pendingOption = nil },
                     attachments: draft.attachments,
                     client: store.client
                 )
-                HStack(spacing: 12) {
+                CardActions {
                     Button {
                         let note = feedback
                         let attachments = draft.attachments
@@ -102,12 +103,13 @@ struct QuestionDetail: View {
                     } label: {
                         Label("I need more context", systemImage: "questionmark.bubble")
                     }
-                    .buttonStyle(.link)
                     .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
-                    Spacer()
-                    Hint(text: hint)
+                } trailing: {
+                    if let sendTitle, canSend {
+                        SendButton(title: sendTitle, action: submit)
+                    }
                 }
-                .font(.callout)
+                .animation(.snappy(duration: 0.18), value: canSend)
             }
             .animation(.snappy(duration: 0.2), value: draft.comments.count)
         }
@@ -142,17 +144,6 @@ struct QuestionDetail: View {
     private var sendTitle: String? {
         if let pendingOption { return AnswerOption.displayLabel(pendingOption) }
         return question.isPlan ? nil : String(localized: "Reply")
-    }
-
-    private var hint: String {
-        if focus == .reply { return String(localized: "↩ sends · ⌥↩ new line · esc leaves") }
-        if question.isPlan { return String(localized: "Hover over a block to comment on it · 1–2 decides") }
-        let count = question.options.count
-        switch count {
-        case 0: return String(localized: "R writes · ↩ sends")
-        case 1: return String(localized: "1 picks · R writes")
-        default: return String(localized: "1–\(min(count, 9)) picks · R writes")
-        }
     }
 
     private func handleKey(_ character: Character) -> Bool {
@@ -218,6 +209,7 @@ struct ReportDetail: View {
     private var textAttachments: [Attachment] { isDocument ? report.attachments.filter(\.isText) : [] }
     private var otherAttachments: [Attachment] { report.attachments.filter { !textAttachments.contains($0) } }
     private var feedback: String { draft.feedback(author: store.userName) }
+    private var canSend: Bool { !feedback.isEmpty || !draft.attachments.isEmpty }
 
     var body: some View {
         DetailScaffold {
@@ -272,54 +264,17 @@ struct ReportDetail: View {
         } bar: {
             VStack(alignment: .leading, spacing: 12) {
                 CommentsSummary(draft: draft)
-                HStack(alignment: .bottom, spacing: 8) {
-                    Composer(
-                        placeholder: isDocument ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…"),
-                        text: $draft.general,
-                        focus: $focus,
-                        sendTitle: isDocument ? String(localized: "Send Comments") : String(localized: "Reply"),
-                        canSend: !feedback.isEmpty || !draft.attachments.isEmpty,
-                        send: sendFeedback,
-                        attachments: draft.attachments,
-                        client: store.client
-                    )
-                    let node = report.closableNode(store.node(report.sessionId))
-                    let primary = report.primaryAction(nodeFound: node != nil)
-                    let closesFirst = primary == .readAndClose
-                    if primary == .review {
-                        Group {
-                            Button("Rescue Comments") { review(.comments) }
-                                .buttonStyle(.borderedProminent)
-                                .help("The node reads your comments on the artifact and applies them (C)")
-                            Button("Approve") { review(.approved) }
-                                .buttonStyle(.bordered)
-                                .help("Tell the node the artifact is approved (V)")
-                        }
-                        .controlSize(.large)
-                    }
-                    ReadButton(prominent: feedback.isEmpty && primary == .markRead, action: markRead)
-                    if let node {
-                        Group {
-                            if closesFirst && feedback.isEmpty {
-                                Button("Read and Close Node…") {
-                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                                }
-                                .buttonStyle(.borderedProminent)
-                            } else {
-                                Button("Read and Close Node…", role: .destructive) {
-                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
-                        .controlSize(.large)
-                        .help("Mark as read and close the node that sent it (claude rm)")
-                    }
-                }
-                HStack {
-                    Spacer()
-                    Hint(text: hint)
-                }
+                Composer(
+                    placeholder: isDocument ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…"),
+                    text: $draft.general,
+                    focus: $focus,
+                    sendTitle: nil,
+                    canSend: canSend,
+                    send: sendFeedback,
+                    attachments: draft.attachments,
+                    client: store.client
+                )
+                actions
             }
             .animation(.snappy(duration: 0.2), value: draft.comments.count)
         }
@@ -334,6 +289,43 @@ struct ReportDetail: View {
         }
     }
 
+    @ViewBuilder
+    private var actions: some View {
+        let node = report.closableNode(store.node(report.sessionId))
+        let primary = report.primaryAction(nodeFound: node != nil)
+        CardActions {
+            if let node {
+                Button("Read and Close Node…") {
+                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                }
+                .help("Mark as read and close the node that sent it (claude rm)")
+            }
+        } trailing: {
+            if primary == .review {
+                Button("Mark as Read", action: markRead)
+                    .help("Mark as read (L)")
+                Button("Approve") { review(.approved) }
+                    .help("Tell the node the artifact is approved (V)")
+                if canSend {
+                    SendButton(title: String(localized: "Send Comments"), action: sendFeedback)
+                } else {
+                    Button("Rescue Comments") { review(.comments) }
+                        .buttonStyle(.borderedProminent)
+                        .help("The node reads your comments on the artifact and applies them (C)")
+                }
+            } else if canSend {
+                Button("Mark as Read", action: markRead)
+                    .help("Mark as read (L)")
+                SendButton(title: isDocument ? String(localized: "Send Comments") : String(localized: "Reply"), action: sendFeedback)
+            } else {
+                Button("Mark as Read", action: markRead)
+                    .buttonStyle(.borderedProminent)
+                    .help("Mark as read (L)")
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: canSend)
+    }
+
     private func handleKey(_ character: Character) -> Bool {
         guard armed, draft.editing == nil else { return false }
         switch character {
@@ -344,13 +336,6 @@ struct ReportDetail: View {
         default: return false
         }
         return true
-    }
-
-    private var hint: String {
-        if focus == .reply { return String(localized: "↩ sends · ⌥↩ new line · esc leaves") }
-        if !report.artifacts.isEmpty { return String(localized: "C rescues your comments · V approves · L marks as read") }
-        if isDocument { return String(localized: "Hover over a block to comment on it · L marks as read") }
-        return String(localized: "L marks as read · R writes")
     }
 
     private func sendFeedback() {
@@ -374,33 +359,6 @@ struct ReportDetail: View {
         let key = key
         Task {
             if await action() { drafts.discard(key) }
-        }
-    }
-}
-
-struct ReadButton: View {
-    let prominent: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Group {
-            if prominent {
-                button.buttonStyle(.borderedProminent)
-            } else {
-                button.buttonStyle(.bordered)
-            }
-        }
-        .controlSize(.large)
-        .help("Mark as read (L)")
-    }
-
-    private var button: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Text("Mark as Read")
-                KeyCap(key: "L", onAccent: prominent)
-            }
-            .padding(.horizontal, 2)
         }
     }
 }

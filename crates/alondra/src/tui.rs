@@ -4,7 +4,6 @@ mod files;
 mod input;
 mod keys;
 mod md;
-mod work;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::stdout;
@@ -255,7 +254,6 @@ pub struct Composer {
     pub target: Target,
     pub input: TextInput,
     pub chips: Vec<Chip>,
-    pub form: Option<work::OptionsForm>,
 }
 
 impl Target {
@@ -305,8 +303,6 @@ enum Msg {
     Found { query: String, result: Result<(String, Vec<String>), String> },
     Uploaded { seq: u64, result: Result<String, String> },
     Preview { seq: u64, image: image::DynamicImage },
-    Options { project: Option<String>, result: Result<(Vec<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
-    Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
 }
 
 pub enum Flow {
@@ -871,19 +867,6 @@ impl App {
                     self.rebuild_reader();
                 }
             }
-            Msg::Options { project, result } => match result {
-                Ok((projects, specs, error)) => {
-                    if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
-                        f.loaded(project, projects, specs, error);
-                    }
-                }
-                Err(e) => self.fail(trf!("Could not load the options: {e}", "No se pudieron cargar las opciones: {e}")),
-            },
-            Msg::Issues(result) => {
-                if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
-                    f.issues_loaded(result);
-                }
-            }
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -1099,41 +1082,7 @@ impl App {
 
     fn compose(&mut self, target: Target, prefill: &str) {
         let (text, chips) = target.draft_key().and_then(|k| self.drafts.remove(&k)).unwrap_or_else(|| (prefill.to_string(), vec![]));
-        let form = matches!(target, Target::NewRequest).then(work::OptionsForm::default);
-        self.composer = Some(Composer { target, input: TextInput::with(&text), chips, form });
-        if self.composer.as_ref().is_some_and(|c| c.form.is_some()) {
-            self.load_options(None);
-        }
-    }
-
-    /// Asks alondrad for the open issues, which it keeps for ten minutes unless `refresh`.
-    fn load_issues(&self, refresh: bool) {
-        self.spawn(move |tx| {
-            let path = if refresh { "/v1/issues?refresh=1" } else { "/v1/issues" };
-            let result = Client::for_user(Duration::from_secs(40)).get::<Value>(path).map_err(|e| e.to_string()).and_then(|v| {
-                let issues = serde_json::from_value(v["issues"].clone()).map_err(|e| e.to_string())?;
-                Ok((issues, v["error"].as_str().map(str::to_string)))
-            });
-            let _ = tx.send(Msg::Issues(result));
-        });
-    }
-
-    /// Fetches the options for "New" once, when it opens or its project changes.
-    fn load_options(&self, project: Option<String>) {
-        self.spawn(move |tx| {
-            let client = Client::for_user(Duration::from_secs(10));
-            let query = project.as_deref().map(|p| format!("?project={}", urlencode(p))).unwrap_or_default();
-            let result = client
-                .get::<Value>(&format!("/v1/options{query}"))
-                .map_err(|e| e.to_string())
-                .and_then(|o| {
-                    let specs = serde_json::from_value(o["options"].clone()).map_err(|e| e.to_string())?;
-                    let projects = client.get::<Value>("/v1/projects").ok().and_then(|p| p["projects"].as_array().cloned()).unwrap_or_default();
-                    let names = projects.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
-                    Ok((names, specs, o["error"].as_str().map(str::to_string)))
-                });
-            let _ = tx.send(Msg::Options { project, result });
-        });
+        self.composer = Some(Composer { target, input: TextInput::with(&text), chips });
     }
 
     fn cancel_composer(&mut self) {
@@ -1379,14 +1328,6 @@ impl App {
 
     fn composer_key(&mut self, k: KeyEvent) {
         let Some(c) = self.composer.as_mut() else { return };
-        if let Some(form) = c.form.as_mut() {
-            match form.key(k) {
-                work::FormKey::Handled => return,
-                work::FormKey::Reload(project) => return self.load_options(project),
-                work::FormKey::LoadIssues(refresh) => return self.load_issues(refresh),
-                work::FormKey::NotMine => {}
-            }
-        }
         match k.code {
             KeyCode::Esc => self.cancel_composer(),
             KeyCode::Enter if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => {
@@ -1503,8 +1444,7 @@ impl App {
                 self.post(None, calls, trf!("Sent to {name}", "Enviado a {name}"));
             }
             Target::NewRequest => {
-                let body = c.form.as_ref().map(|f| f.body(&text, &ids)).unwrap_or_else(|| json!({"text": text, "attachments": ids}));
-                self.post(None, vec![("/v1/requests".into(), body)], tr!("Sent to the orchestrator: it will prepare the mission and launch the node", "Enviado al orquestador: preparará la misión y lanzará el nodo").into())
+                self.post(None, vec![("/v1/requests".into(), json!({"text": text, "attachments": ids}))], tr!("Sent to the orchestrator: it will prepare the mission and launch the node", "Enviado al orquestador: preparará la misión y lanzará el nodo").into())
             }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key) else { return };
@@ -1975,7 +1915,6 @@ pub(crate) mod tests {
             kind: ReportKind::Notice,
             created_at: 0,
             read: false,
-            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         }

@@ -191,50 +191,78 @@ struct Composer: View {
 
     private var field: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if let attachments {
-                AttachFilesButton(attachments: attachments, client: client)
+            HStack(alignment: .bottom, spacing: 4) {
+                TextField(placeholder, text: $text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...8)
+                    .focused(focus, equals: .reply)
+                    .onSubmit { if canSend { send() } }
+                    .onExitCommand {
+                        focus.wrappedValue = .pane
+                        escape()
+                    }
+                    .padding(.vertical, 5)
+                if let attachments {
+                    AttachFilesButton(attachments: attachments, client: client)
+                }
             }
-            TextField(placeholder, text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...8)
-                .focused(focus, equals: .reply)
-                .onSubmit { if canSend { send() } }
-                .onExitCommand {
-                    focus.wrappedValue = .pane
-                    escape()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.background, in: .rect(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(focus.wrappedValue == .reply ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.12))
-                }
+            .padding(.leading, 12)
+            .padding(.trailing, attachments == nil ? 12 : 4)
+            .padding(.vertical, 4)
+            .background(.background, in: .rect(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(focus.wrappedValue == .reply ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.12))
+            }
             if let sendTitle, canSend {
-                Button(action: send) {
-                    Label(sendTitle, systemImage: "arrow.up")
-                        .labelStyle(.titleAndIcon)
-                        .padding(.horizontal, 4)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut(.return, modifiers: .command)
-                .help(Text(verbatim: "\(sendTitle) (⌘↩)"))
-                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
+                SendButton(title: sendTitle, action: send)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
             }
         }
         .animation(.snappy(duration: 0.18), value: canSend)
     }
 }
 
-struct Hint: View {
-    let text: String
+/// Sends what was written: the card's primary action while there is something to send.
+struct SendButton: View {
+    let title: String
+    let action: () -> Void
 
     var body: some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
+        Button(action: action) {
+            Label(title, systemImage: "arrow.up")
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .keyboardShortcut(.return, modifiers: .command)
+        .help(Text(verbatim: "\(title) (⌘↩)"))
+    }
+}
+
+/// A card's decisions in one row: what is rare or destructive at the leading edge, apart from
+/// the rest, and the single primary action last, at the trailing edge. When the pane is too
+/// narrow for one row, the leading actions drop to a row of their own instead of truncating.
+struct CardActions<Leading: View, Trailing: View>: View {
+    @ViewBuilder let leading: Leading
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                leading
+                Spacer(minLength: 12)
+                trailing
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    trailing
+                }
+                leading
+            }
+        }
+        .controlSize(.large)
     }
 }
 

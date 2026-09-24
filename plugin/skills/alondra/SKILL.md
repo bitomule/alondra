@@ -14,9 +14,7 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - `ask`: a decision for the user. One question per decision, a one-line title (the
   notification shows it), all the context in `detail`, options, PRs in `links` and files in
   `attachments`. Alondra types the answer into this session, so end your turn after asking. A
-  question left in your last message is not seen. With `to_orchestrator: true` the same
-  question goes to the orchestrator instead of the user — use this only for a real decision
-  that needs an answer, arriving through the fleet digest (up to ~90s), never to hand off work.
+  question left in your last message is not seen.
 - `request_action`: something the user does outside Alondra (test on the iPhone, get a key,
   check App Store Connect), as a title, the steps in order and the links. The user answers
   "Done" or says why they cannot, and that is typed into this session.
@@ -26,12 +24,6 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
   in the title.
 - `report` with `kind: "document"`: something to read (plan, long report), with its path in
   `attachments`. To have it approved, send an `ask` with the document attached instead.
-- `report` with `to_orchestrator: true`: a handoff, not a result for the user — "someone should
-  continue this" (a follow-up, next steps, what you measured that the orchestrator should act
-  on). Use `kind: "final"` when you have nothing left of your own pending; you are done and the
-  orchestrator picks it up from its own inbox (the fleet digest, up to ~90s). This is not a
-  question: never use `ask` for a handoff, even with `to_orchestrator: true`, since that puts a
-  decision on the orchestrator you are not actually asking it to make.
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 - `ask` with `replaces`: a question of yours changed (rephrased, or new facts change it). The new
   question is recorded and the old one, given by its number, is withdrawn in the same step, so

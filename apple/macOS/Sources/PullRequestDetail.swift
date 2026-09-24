@@ -7,19 +7,10 @@ struct PullRequestDetail: View {
     let store: FleetStore
     let drafts: Drafts
     @Bindable var draft: ReviewDraft
-    @State private var method: String
     @State private var confirmingMerge = false
     @State private var files: [DiffFile]?
     @State private var diffError: String?
     @FocusState private var focus: DetailField?
-
-    init(pr: PullRequest, store: FleetStore, drafts: Drafts, draft: ReviewDraft) {
-        self.pr = pr
-        self.store = store
-        self.drafts = drafts
-        self.draft = draft
-        _method = State(initialValue: pr.methods.first ?? "merge")
-    }
 
     var body: some View {
         DetailScaffold {
@@ -61,55 +52,72 @@ struct PullRequestDetail: View {
             }
         } bar: {
             VStack(alignment: .leading, spacing: 12) {
-            CommentsSummary(draft: draft)
-            AttachmentStrip(draft.attachments, client: store.client)
-            HStack(alignment: .center, spacing: 10) {
-                AttachFilesButton(attachments: draft.attachments, client: store.client)
-                TextField("What should change?", text: $draft.general, axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focus, equals: .reply)
-                    .modifier(DropsFiles(attachments: draft.attachments, client: store.client))
-                Button(draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")) { requestChanges() }
-                    .disabled(review.isEmpty && draft.attachments.isEmpty)
-                    .controlSize(.large)
-                if pr.hasConflicts {
-                    Button("Resolve Conflicts") { resolveConflicts() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .help("Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged")
-                } else {
-                    Picker("Method", selection: $method) {
-                        ForEach(pr.methods, id: \.self) { m in
-                            Text(PullRequest.methodLabel(m)).tag(m)
-                        }
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("How to merge it; the method last used in this repo comes first")
-                    .disabled(pr.mergeBlockedReason != nil)
-                    if let reason = pr.mergeBlockedReason {
-                        Text(reason)
-                            .foregroundStyle(.secondary)
-                            .fixedSize()
-                    }
-                    Button("Merge…") { confirmingMerge = true }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(pr.mergeBlockedReason != nil)
-                }
-                Button("Set Aside") { setAside() }
-                    .controlSize(.large)
-                    .help("Take the card out of the inbox without merging")
-            }
+                CommentsSummary(draft: draft)
+                Composer(
+                    placeholder: String(localized: "What should change?"),
+                    text: $draft.general,
+                    focus: $focus,
+                    sendTitle: nil,
+                    canSend: false,
+                    send: requestChanges,
+                    attachments: draft.attachments,
+                    client: store.client
+                )
+                actions
             }
             .animation(.snappy(duration: 0.2), value: draft.comments.count)
         }
         .confirmationDialog("Merge PR #\(pr.number)?", isPresented: $confirmingMerge) {
-            Button("Merge (\(PullRequest.methodLabel(method)))") { merge() }
+            ForEach(pr.methods, id: \.self) { method in
+                Button("Merge (\(PullRequest.methodLabel(method)))") { merge(method) }
+            }
         } message: {
             Text(pr.summary)
         }
+    }
+
+    private var hasChanges: Bool { !review.isEmpty || !draft.attachments.isEmpty }
+
+    private var actions: some View {
+        CardActions {
+            Button("Set Aside") { setAside() }
+                .help("Take the card out of the inbox without merging")
+        } trailing: {
+            if !pr.hasConflicts, let reason = pr.mergeBlockedReason {
+                Text(reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            }
+            Group {
+                if hasChanges {
+                    Button(requestChangesTitle) { requestChanges() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(requestChangesTitle) { requestChanges() }
+                        .disabled(true)
+                }
+            }
+            .help("Send the node what should change; the card comes back when it pushes again")
+            if pr.hasConflicts {
+                Button("Resolve Conflicts") { resolveConflicts() }
+                    .buttonStyle(.borderedProminent)
+                    .help("Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged")
+            } else if hasChanges {
+                Button("Merge…") { confirmingMerge = true }
+                    .disabled(pr.mergeBlockedReason != nil)
+            } else {
+                Button("Merge…") { confirmingMerge = true }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(pr.mergeBlockedReason != nil)
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: hasChanges)
+    }
+
+    private var requestChangesTitle: String {
+        draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")
     }
 
     @ViewBuilder
@@ -141,8 +149,8 @@ struct PullRequestDetail: View {
         }
     }
 
-    private func merge() {
-        let (id, method) = (pr.id, method)
+    private func merge(_ method: String) {
+        let id = pr.id
         Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.mergePullRequest(id, method: method) } }
     }
 

@@ -100,9 +100,6 @@ pub struct PullRequest {
     /// The head commit when changes were last requested; empty when it was not known yet.
     #[serde(default)]
     pub changes_requested_on: Option<String>,
-    /// The user let the node that opened it merge it on its own: it is tracked, not a card.
-    #[serde(default)]
-    pub auto_merge: bool,
 }
 
 impl PullRequest {
@@ -131,7 +128,6 @@ impl PullRequest {
             fetched: false,
             head_sha: None,
             changes_requested_on: None,
-            auto_merge: false,
         })
     }
 

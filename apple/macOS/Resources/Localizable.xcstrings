@@ -241,26 +241,6 @@
         }
       }
     },
-    "1 picks · R writes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "1 elige · R escribe"
-          }
-        }
-      }
-    },
-    "1–%lld picks · R writes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "1–%lld elige · R escribe"
-          }
-        }
-      }
-    },
     "All caught up": {
       "localizations": {
         "es": {
@@ -581,42 +561,12 @@
         }
       }
     },
-    "Hover over a block to comment on it · 1–2 decides": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pasa el ratón por un bloque para comentarlo · 1–2 decide"
-          }
-        }
-      }
-    },
-    "Hover over a block to comment on it · L marks as read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pasa el ratón por un bloque para comentarlo · L leído"
-          }
-        }
-      }
-    },
     "Hover over a line to comment on it": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "Pasa el ratón por una línea para comentarla"
-          }
-        }
-      }
-    },
-    "How to merge it; the method last used in this repo comes first": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cómo fusionarlo; primero va el método usado la última vez en este repo"
           }
         }
       }
@@ -667,16 +617,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tecla %lld"
-          }
-        }
-      }
-    },
-    "L marks as read · R writes": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "L leído · R escribe"
           }
         }
       }
@@ -747,16 +687,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fusionar…"
-          }
-        }
-      }
-    },
-    "Method": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Método"
           }
         }
       }
@@ -1047,16 +977,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pregunta"
-          }
-        }
-      }
-    },
-    "R writes · ↩ sends": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "R escribe · ↩ envía"
           }
         }
       }
@@ -1611,26 +1531,6 @@
         }
       }
     },
-    "↩ sends · ⌥↩ new line · esc leaves": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "↩ envía · ⌥↩ nueva línea · esc sale"
-          }
-        }
-      }
-    },
-    "⌘↩ sends · esc cancels": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "⌘↩ envía · esc cancela"
-          }
-        }
-      }
-    },
     "Expand All Files": {
       "localizations": {
         "es": {
@@ -1731,16 +1631,6 @@
         }
       }
     },
-    "C rescues your comments · V approves · L marks as read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "C rescata tus comentarios · V aprueba · L marca como leído"
-          }
-        }
-      }
-    },
     "Attach Files…": {
       "localizations": {
         "es": {
@@ -1781,22 +1671,12 @@
         }
       }
     },
-    "Project": {
+    "Send the node what should change; the card comes back when it pushes again": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Proyecto"
-          }
-        }
-      }
-    },
-    "The orchestrator decides": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lo decide el orquestador"
+            "value": "Envía al nodo lo que hay que cambiar; la tarjeta vuelve cuando suba cambios"
           }
         }
       }

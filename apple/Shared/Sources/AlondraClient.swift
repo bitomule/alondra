@@ -114,16 +114,8 @@ public struct AlondraClient: Sendable {
         try await post("v1/activity", ["client": client])
     }
 
-    public func newRequest(_ body: NewRequestBody) async throws {
-        _ = try await perform("POST", "v1/requests", body: try JSONEncoder().encode(body), session: Self.session)
-    }
-
-    public func options(project: String?) async throws -> OptionsCatalog {
-        try Self.decoder.decode(OptionsCatalog.self, from: try await get("v1/options", query: project.map { [("project", $0)] } ?? []))
-    }
-
-    public func projects() async throws -> ProjectList {
-        try Self.decoder.decode(ProjectList.self, from: try await get("v1/projects"))
+    public func newRequest(_ text: String, attachments: [String] = []) async throws {
+        try await post("v1/requests", ["text": text, "attachments": attachments])
     }
 
     public func search(_ query: String) async throws -> SearchResult {

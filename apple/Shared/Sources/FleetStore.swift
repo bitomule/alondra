@@ -62,8 +62,8 @@ public final class FleetStore {
     }
 
     public var connected: Bool { connection == .online }
-    public var questions: [Question] { (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true } }
-    public var news: [Report] { (overview?.news ?? []).filter { $0.toOrchestrator != true } }
+    public var questions: [Question] { overview?.openQuestions ?? [] }
+    public var news: [Report] { overview?.news ?? [] }
     public var nodes: [Node] { overview?.nodes ?? [] }
     public var machine: Machine? { overview?.machine }
     public var usage: Usage? { overview?.usage }
@@ -447,11 +447,9 @@ public final class FleetStore {
         return false
     }
 
-    public func newRequest(_ body: NewRequestBody, attachments: Attachments? = nil) async -> Bool {
+    public func newRequest(_ text: String, attachments: Attachments? = nil) async -> Bool {
         do {
-            var body = body
-            body.attachments = try await attachments?.storedIDs(using: client) ?? []
-            try await client.newRequest(body)
+            try await client.newRequest(text, attachments: await attachments?.storedIDs(using: client) ?? [])
             return true
         } catch {
             lastError = error.localizedDescription

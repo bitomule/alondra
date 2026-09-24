@@ -78,10 +78,9 @@ pub fn watched(v: &View) -> impl Iterator<Item = &PullRequest> {
     v.prs.values().filter(|p| p.state == PrState::Open || (p.state == PrState::Dismissed && open(v).any(|up| v.stack_below(up).is_some_and(|b| b.id == p.id))))
 }
 
-/// Open cards that want the user now. One waiting for the node's next push stays out, and so
-/// does one the user let its node merge on its own.
+/// Open cards that want the user now; one waiting for the node's next push stays out.
 pub fn in_inbox(v: &View) -> impl Iterator<Item = &PullRequest> {
-    open(v).filter(|p| !p.awaiting_push() && !p.auto_merge)
+    open(v).filter(|p| !p.awaiting_push())
 }
 
 async fn gh_json(args: &[&str]) -> Option<Value> {
@@ -95,26 +94,6 @@ pub trait Gh: Sync {
     fn view(&self, url: &str) -> impl Future<Output = Option<Value>> + Send;
     /// Whether GitHub knows the PR.
     fn exists(&self, url: &str) -> impl Future<Output = bool> + Send;
-
-    fn search_issues(&self, owners: &[String]) -> impl Future<Output = Result<Value, String>> + Send {
-        let _ = owners;
-        async { Err("issue search is not available here".to_string()) }
-    }
-
-    fn issue_view(&self, repo: &str, number: u64) -> impl Future<Output = Result<Value, String>> + Send {
-        let _ = (repo, number);
-        async { Err("issues are not available here".to_string()) }
-    }
-}
-
-async fn gh_run(args: &[String]) -> Result<Value, String> {
-    let run = tokio::process::Command::new("gh").args(args).kill_on_drop(true).output();
-    match tokio::time::timeout(Duration::from_secs(30), run).await {
-        Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).map_err(|e| e.to_string()),
-        Ok(Ok(out)) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err("gh did not finish within 30 s".into()),
-    }
 }
 
 pub struct GhCli;
@@ -136,21 +115,6 @@ impl Gh for GhCli {
 
     async fn exists(&self, url: &str) -> bool {
         gh_json(&["pr", "view", url, "--json", "url,state,headRefName"]).await.is_some()
-    }
-
-    /// One search across every owner: a call per repo would cost one request each.
-    async fn search_issues(&self, owners: &[String]) -> Result<Value, String> {
-        let mut args: Vec<String> = ["search", "issues", "--state", "open", "--limit", "100"].map(String::from).into();
-        for o in owners {
-            args.extend(["--owner".to_string(), o.clone()]);
-        }
-        args.extend(["--json".into(), "repository,number,title,url,author,authorAssociation,labels,updatedAt,commentsCount".into()]);
-        gh_run(&args).await
-    }
-
-    async fn issue_view(&self, repo: &str, number: u64) -> Result<Value, String> {
-        let args = ["issue", "view", &number.to_string(), "-R", repo, "--json", "url,title,body,author,labels,comments"].map(String::from);
-        gh_run(&args).await
     }
 }
 
