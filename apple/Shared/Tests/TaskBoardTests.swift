@@ -98,6 +98,50 @@ import Testing
         #expect(shown.doing.last == "Bash cargo test", "what it does now reaches the open detail without a tick")
     }
 
+    /// Round 3: an open node's detail asked the node's whole detail every 10 s (53–350 KB on the
+    /// iPhone) to read only its threads.
+    @Test func aNodesThreadsComeFromItsLightRouteAndFromItsDetailOnAnOlderAlondrad() async throws {
+        let light = Data(#"{"activity":[{"agent_id":null,"tool":"Bash","summary":"make test","since":4}]}"#.utf8)
+        let newer = RoutesAsked()
+        let threads = try await AlondraClient.nodeThreads("s1") { path, query in
+            await newer.add(path, query)
+            return light
+        }
+        #expect(threads.activity?.map(\.doing) == ["Bash make test"])
+        #expect(await newer.paths == ["v1/nodes/s1/activity"], "the light route alone")
+
+        let detail = Data(#"{"node":{"session_id":"s1","activity":[{"agent_id":"a1","agent_type":"tester","tool":"mav","since":6}]},"timeline":[]}"#.utf8)
+        let older = RoutesAsked()
+        let fromDetail = try await AlondraClient.nodeThreads("s1") { path, query in
+            await older.add(path, query)
+            if path.hasSuffix("/activity") { throw AlondraError.unexpected(404) }
+            return detail
+        }
+        #expect(fromDetail.activity?.map(\.thread) == ["tester"])
+        #expect(await older.paths == ["v1/nodes/s1/activity", "v1/nodes/s1?limit=1"], "an alondrad without the route: its detail, cut to one event")
+
+        let gone = RoutesAsked()
+        await #expect(throws: AlondraError.self) {
+            try await AlondraClient.nodeThreads("s1") { path, query in
+                await gone.add(path, query)
+                throw AlondraError.server("Alondra no longer has it")
+            }
+        }
+        #expect(await gone.paths == ["v1/nodes/s1/activity"], "a node alondrad no longer has is asked once")
+    }
+
+    /// Round 3: one failed ask replaced the threads shown with the overview's main thread.
+    @MainActor @Test func aFailedAskKeepsTheThreadsTheRouteLastGave() async throws {
+        let store = FleetStore()
+        store.apply(try Self.decode(#"{"tick":1,"nodes":[\#(Self.node)],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine)}"#))
+        let node = try #require(store.node("s1"))
+        let tester: [NodeActivity] = try Self.decode(#"[{"agent_id":"a1","agent_type":"tester","tool":"mav","summary":"tap Save","since":6}]"#)
+        let down: (String) async throws -> [NodeActivity]? = { _ in throw URLError(.networkConnectionLost) }
+        #expect(await store.threads(of: node, asking: down).map(\.doing) == ["Bash make test"], "until the route answers, the overview's tool in flight")
+        #expect(await store.threads(of: node) { _ in tester }.map(\.thread) == ["tester"])
+        #expect(await store.threads(of: node, asking: down).map(\.thread) == ["tester"], "a failed ask keeps what the route last said")
+    }
+
     /// Round 2: a request the orchestrator never defined nor closed had no way out for the user.
     @MainActor @Test func onlyARequestStillBeingDefinedCanBeWithdrawn() async throws {
         let defining = try Self.request("r-1", tasks: [], state: "defining")
@@ -273,4 +317,13 @@ import Testing
 /// What a node's detail was shown, in order.
 @MainActor private final class Shown {
     var doing: [String?] = []
+}
+
+/// The routes a client asked, with their query, in order.
+private actor RoutesAsked {
+    var paths: [String] = []
+
+    func add(_ path: String, _ query: [(String, String)]) {
+        paths.append(([path] + query.map { "\($0.0)=\($0.1)" }).joined(separator: "?"))
+    }
 }

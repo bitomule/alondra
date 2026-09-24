@@ -288,6 +288,9 @@ fn plan(v: &View, d: &Definition, file: &OptionsFile, root: &Path, user: &str, n
         Some(id) if !v.board.requests.contains_key(id) => {
             return Err(refuse(StatusCode::NOT_FOUND, format!("request {id} does not exist: pass the request_id of {user}'s request, or text for one {user} made outside the apps")));
         }
+        Some(id) if v.board.requests.get(id).and_then(|r| r.closed.as_ref()).is_some_and(|c| c.withdrawn) => {
+            return Err(refuse(StatusCode::CONFLICT, format!("{user} withdrew {id}: do not define it")));
+        }
         Some(id) if v.board.requests.get(id).is_some_and(|r| r.closed.is_some()) => {
             return Err(refuse(StatusCode::CONFLICT, format!("request {id} is closed: if {user} wants the work after all, define it as a new request, with text")));
         }
@@ -504,22 +507,25 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
     }
 }
 
+/// Alondra's message to the orchestrator, when one is live.
+pub(crate) fn orchestrator_message(v: &View, text: String) -> Option<Event> {
+    let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
+    Some(Event::MessageQueued(Message {
+        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: o.session_id.clone(),
+        from: MessageFrom::Alondra,
+        text,
+        answers_question: None,
+        created_at: now_millis(),
+        handed_at: None,
+        delivered_at: None,
+        attachments: vec![],
+        about: None,
+    }))
+}
+
 pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
-    let told = hub.append_with(|v| {
-        let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
-        Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-            session_id: o.session_id.clone(),
-            from: MessageFrom::Alondra,
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            attachments: vec![],
-            about: None,
-        }))
-    });
+    let told = hub.append_with(|v| orchestrator_message(v, text));
     if let Err(e) = told {
         log!("could not tell the orchestrator: {e}");
     }

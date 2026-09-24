@@ -59,6 +59,8 @@ public final class FleetStore {
     private let stuckAfter: Duration
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
+    /// What a node's own route last said its threads do, kept for when asking it again fails.
+    @ObservationIgnored var threadsShown: (session: String, threads: [NodeActivity])?
 
     public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2), stuckAfter: Duration = .seconds(120)) {
         self.client = client
@@ -164,6 +166,7 @@ public final class FleetStore {
         hidden = []
         ring = InboxRing()
         documents = [:]
+        threadsShown = nil
         taskActionsUnavailable = false
         taskDetailUnavailable = false
         connection = .connecting

@@ -40,6 +40,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
+        .route("/v1/nodes/{key}/activity", get(node_activity))
         .route("/v1/nodes/{key}/close", post(close_node))
         .route("/v1/nodes/{key}/messages", post(send_message))
         .route("/v1/nodes/{key}/interrupt", post(interrupt))
@@ -1327,6 +1328,15 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
     Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
 }
 
+/// What each thread of the node does now, and nothing else of its detail: an open detail asks it
+/// every few seconds.
+async fn node_activity(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    match hub.read(|v| v.resolve_node(&key).map(|n| json!(v.activity(n)))) {
+        Some(activity) => Json(json!({"activity": activity})).into_response(),
+        None => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
+    }
+}
+
 /// A node as clients see it: whether its session is attached is the daemon's business, and its
 /// ledger reaches them as `activity`.
 fn client_node(n: &alondra_core::Node) -> Value {
@@ -2524,14 +2534,28 @@ pub(crate) struct CloseRequestBody {
     /// A short name for the request.
     #[serde(default)]
     title: Option<String>,
+    /// Who closes it: the orchestrator's tool says so; the apps are the user.
+    #[serde(default)]
+    from: Option<MessageFrom>,
 }
 
 fn trimmed(text: &Option<String>) -> Option<String> {
     text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
+/// What the orchestrator hears when the user withdraws a request from the apps.
+fn withdrawn_notice(user: &str, r: &alondra_core::tasks::Request) -> String {
+    let name = r.title.as_deref().or_else(|| r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())));
+    let about = name.map(|n| if n.chars().count() > 80 { format!("{}…", n.chars().take(79).collect::<String>()) } else { n.to_string() });
+    match about {
+        Some(n) => format!("[Alondra] {user} withdrew request {} (“{n}”).", r.id),
+        None => format!("[Alondra] {user} withdrew request {}.", r.id),
+    }
+}
+
 /// The orchestrator closes a request that needs no task: a question or a status check it
-/// answered, or one the user withdrew. A request with tasks is closed by finishing or
+/// answered, or one the user withdrew. The user withdraws one from the apps while it is being
+/// defined, and the orchestrator is told. A request with tasks is closed by finishing or
 /// cancelling them.
 pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CloseRequestBody>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_default();
@@ -2539,6 +2563,7 @@ pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<St
     if answer.is_none() && !b.withdrawn {
         return err(StatusCode::UNPROCESSABLE_ENTITY, format!("say in answer what you told {} (one line), or pass withdrawn: true if they withdrew it", hub.config.name));
     }
+    let by_user = b.from.unwrap_or(MessageFrom::User) == MessageFrom::User;
     let recorded = hub.append_all(|v| {
         let Some(request) = v.board.requests.get(&id) else { return Err(err(StatusCode::NOT_FOUND, format!("request {id} does not exist"))) };
         if request.closed.is_some() {
@@ -2550,6 +2575,9 @@ pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<St
         }
         let mut events: Vec<Event> = title.iter().map(|t| Event::RequestTitled { request_id: id.clone(), title: t.clone() }).collect();
         events.push(Event::RequestClosed { request_id: id.clone(), answer: answer.clone(), withdrawn: b.withdrawn });
+        if b.withdrawn && by_user {
+            events.extend(crate::orchestrate::orchestrator_message(v, withdrawn_notice(&hub.config.name, request)));
+        }
         Ok(events)
     });
     match recorded {
@@ -3667,6 +3695,32 @@ mod tests {
         assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("request_has_tasks")), "{said}");
         let replayed = hub_at_home_of(&hub);
         assert_eq!(replayed.read(|v| v.board.requests["r-1"].clone()), hub.read(|v| v.board.requests["r-1"].clone()), "a replay keeps the closure and the title");
+    }
+
+    /// Round 3: David withdrew a request from the apps and the orchestrator never heard of it; a
+    /// later define was refused with words that invited making it again.
+    #[tokio::test]
+    async fn the_orchestrator_hears_once_that_the_user_withdrew_a_request_and_may_not_define_it() {
+        let hub = started("withdrawn-request", &[]);
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "orch".into(), short_id: "orch".into(), name: Some("orchestrator".into()), ..Default::default() })).unwrap();
+        hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        request_sent(&hub, "r-1", "Arregla el menú\ncon sus secciones");
+        request_sent(&hub, "r-2", "En qué punto está BlurCamera?");
+        let close = |id: &str, b: Value| {
+            let b: CloseRequestBody = serde_json::from_value(b).unwrap();
+            close_request(State(hub.clone()), Path(id.to_string()), Some(Json(b)))
+        };
+        let told = || hub.read(|v| v.messages.values().filter(|m| m.session_id == "orch" && m.from == MessageFrom::Alondra).map(|m| m.text.clone()).collect::<Vec<_>>());
+        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::OK);
+        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::CONFLICT);
+        assert_eq!(told(), vec!["[Alondra] Ana withdrew request r-1 (“Arregla el menú”).".to_string()], "told once");
+        assert_eq!(status_and_body(close("r-2", json!({"withdrawn": true, "from": "orchestrator"})).await).await.0, StatusCode::OK);
+        assert_eq!(told().len(), 1, "the orchestrator is not told what it closed itself");
+
+        let cwd = hub.home.display().to_string();
+        let definition = json!({"request": "r-1", "tasks": [{"title": "Menú", "brief": "Arréglalo.", "assignee": "new", "cwd": cwd}]});
+        let refused = crate::orchestrate::define(&hub, serde_json::from_value(definition).unwrap()).unwrap_err();
+        assert_eq!((refused.status, refused.problems), (StatusCode::CONFLICT, vec!["Ana withdrew r-1: do not define it".to_string()]));
     }
 
     /// The apps showed a request's prompt, and a task a launch made its node's name, where the
@@ -5048,5 +5102,48 @@ mod archive_tests {
         let local = client.post(&url).header("content-type", "application/json").body("{}").send().await.unwrap();
         assert_eq!(local.status(), reqwest::StatusCode::OK, "the Mac itself, like every other route");
         assert_eq!(archived(&hub), ["t-done", "t-gone"]);
+    }
+
+    /// Round 3: an open node's “Right now” asked its whole detail every 10 s (53–350 KB of
+    /// timeline, messages, questions and reports, on the iPhone too) to read only its threads.
+    #[tokio::test]
+    async fn an_open_nodes_threads_have_a_light_route_behind_the_same_guard() {
+        let hub = temp_hub("node-activity");
+        let payloads = [
+            json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests"}}),
+            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
+        ];
+        for p in payloads {
+            hook(State(hub.clone()), Json(p)).await;
+        }
+        for id in 1..=30 {
+            let text = format!("{id} ").repeat(1000);
+            hub.append(Event::MessageQueued(Message {
+                id, session_id: "s".into(), from: MessageFrom::User, text, answers_question: None, created_at: id as i64, handed_at: None, delivered_at: None, attachments: vec![], about: None,
+            }))
+            .unwrap();
+        }
+        let auth = Arc::new(Auth::open(&hub.home).unwrap());
+        let push = Arc::new(Push::open(&hub.home).unwrap());
+        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
+        let client = reqwest::Client::new();
+        let get = |path: &str| client.get(format!("http://{addr}{path}"));
+
+        let light = get("/v1/nodes/s/activity").send().await.unwrap();
+        assert_eq!(light.status(), reqwest::StatusCode::OK);
+        let light = light.text().await.unwrap();
+        let full = get("/v1/nodes/s").send().await.unwrap().text().await.unwrap();
+        let (light_json, full_json): (Value, Value) = (serde_json::from_str(&light).unwrap(), serde_json::from_str(&full).unwrap());
+        assert_eq!(light_json, json!({"activity": full_json["node"]["activity"]}), "the threads and nothing else of the detail");
+        assert_eq!(light_json["activity"].as_array().map(Vec::len), Some(2), "{light}");
+        assert!(light.len() * 50 < full.len(), "{} bytes against the detail's {}", light.len(), full.len());
+        assert_eq!(get("/v1/nodes/nobody/activity").send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+        let remote = get("/v1/nodes/s/activity").header("x-forwarded-for", "203.0.113.9").send().await.unwrap();
+        assert_eq!(remote.status(), reqwest::StatusCode::UNAUTHORIZED, "paired devices only, like the node's detail");
     }
 }

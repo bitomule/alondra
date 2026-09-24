@@ -38,7 +38,8 @@ works each task. The user follows tasks, not nodes.
   `request`. Work sent with a bare `launch` or `send` never shows in the user's Tasks.
 - A request that needs no work (a question, a status check) is answered and then closed:
   answer it (`report`, or in the question you asked), then `close_request` with `answer`, what
-  you told the user in one line. One the user withdrew is closed with `withdrawn: true`. No
+  you told the user in one line. One the user withdrew is closed with `withdrawn: true`; one
+  they withdraw from the apps is already closed, and Alondra tells you: do not define it. No
   request stays defining: when your turn ends with one neither defined nor closed, Alondra
   tells you.
 - Give every request a short `title` (on `define` or `close_request`) and every task a short

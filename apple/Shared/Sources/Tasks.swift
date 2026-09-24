@@ -220,16 +220,24 @@ public struct TaskInFull: Decodable, Sendable {
     }
 }
 
-/// What `GET /v1/nodes/{key}` says each thread of the node does now; the overview leaves it out.
+/// What `GET /v1/nodes/{key}/activity` says each thread of the node does now, or the node inside
+/// `GET /v1/nodes/{key}` from an alondrad without that route; the overview leaves it out.
 public struct NodeThreads: Decodable, Sendable {
     private struct Detail: Decodable, Sendable {
         let activity: [NodeActivity]?
     }
 
-    private let node: Detail
+    private enum CodingKeys: String, CodingKey {
+        case activity, node
+    }
 
     /// Nil from an alondrad without the activity ledger.
-    public var activity: [NodeActivity]? { node.activity }
+    public let activity: [NodeActivity]?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        activity = try c.decodeIfPresent([NodeActivity].self, forKey: .activity) ?? c.decodeIfPresent(Detail.self, forKey: .node)?.activity
+    }
 }
 
 /// Whether a node works on something right now; its tasks carry everything else.

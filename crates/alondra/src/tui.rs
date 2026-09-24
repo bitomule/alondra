@@ -597,6 +597,17 @@ fn stored_ids(chips: &[Chip]) -> Vec<String> {
     }).collect()
 }
 
+/// What each thread of the node does now, from its light route; an alondrad without that route
+/// answers from the node's detail, cut to one timeline event. None when neither answers.
+fn node_threads(get: impl Fn(&str) -> Result<Value>, session: &str) -> Option<Vec<crate::client::Activity>> {
+    let key = urlencode(session);
+    let (answer, at) = match get(&format!("/v1/nodes/{key}/activity")) {
+        Err(e) if e.downcast_ref::<crate::client::NotFound>().is_some() => (get(&format!("/v1/nodes/{key}?limit=1")), "/node/activity"),
+        light => (light, "/activity"),
+    };
+    answer.ok().and_then(|v| serde_json::from_value(v.pointer(at)?.clone()).ok())
+}
+
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         App {
@@ -926,8 +937,8 @@ impl App {
         }
         self.threads_asked = Some((session.clone(), self.data.tick, now));
         self.spawn(move |tx| {
-            let detail = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/nodes/{}", urlencode(&session)));
-            let threads = detail.ok().and_then(|v| serde_json::from_value(v["node"]["activity"].clone()).ok());
+            let client = Client::for_user(Duration::from_secs(10));
+            let threads = node_threads(|path| client.get::<Value>(path), &session);
             let _ = tx.send(Msg::NodeThreads { session, threads });
         });
     }
@@ -2327,6 +2338,31 @@ pub(crate) mod tests {
         app.on_msg(Msg::NodeThreads { session: "s".into(), threads: Some(vec![main]) });
         app.on_msg(Msg::NodeThreads { session: "s".into(), threads: None });
         assert_eq!(app.threads.as_ref().map(|(s, t)| (s.as_str(), t.len())), Some(("s", 1)), "a failed ask keeps what was shown");
+    }
+
+    /// Round 3: every 10 s the open node's whole detail (53–350 KB) came over to read its threads.
+    #[test]
+    fn threads_come_from_the_light_route_and_from_the_detail_on_an_older_alondrad() {
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        let newer = |path: &str| -> Result<Value> {
+            asked.borrow_mut().push(path.to_string());
+            Ok(json!({"activity": [{"agent_id": null, "tool": "Bash", "summary": "make test", "since": 5}]}))
+        };
+        assert_eq!(node_threads(newer, "hive/one").map(|t| t.len()), Some(1));
+        assert_eq!(asked.take(), ["/v1/nodes/hive%2Fone/activity"], "the light route alone");
+
+        let older = |path: &str| -> Result<Value> {
+            asked.borrow_mut().push(path.to_string());
+            if path.ends_with("/activity") {
+                return Err(anyhow::Error::new(crate::client::NotFound));
+            }
+            Ok(json!({"node": {"activity": [{"tool": "Bash", "since": 5}, {"agent_id": "a1", "tool": "mav", "since": 6}]}, "timeline": []}))
+        };
+        assert_eq!(node_threads(older, "s").map(|t| t.len()), Some(2));
+        assert_eq!(asked.take(), ["/v1/nodes/s/activity", "/v1/nodes/s?limit=1"], "an alondrad without the route: its detail, cut to one event");
+
+        let down = |_: &str| -> Result<Value> { Err(anyhow::anyhow!("alondrad is not responding")) };
+        assert!(node_threads(down, "s").is_none(), "a failed ask leaves what was shown");
     }
 
     #[test]

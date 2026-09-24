@@ -57,8 +57,21 @@ extension FleetStore {
     /// What the node does now, per thread, asked of its own route: the overview does not carry
     /// it. An alondrad without the activity ledger gives only the main thread's tool in flight.
     public func threads(of node: Node) async -> [NodeActivity] {
-        let asked = try? await client.nodeThreads(node.sessionId).activity
-        return (asked ?? node.activity ?? node.toolThread).sorted { $0.since > $1.since }
+        await threads(of: node) { try await client.nodeThreads($0).activity }
+    }
+
+    /// As `threads(of:)`, with `asking` in place of the node's route. When asking fails, what the
+    /// route last said stays; until it has answered, the overview's tool in flight stands in.
+    public func threads(of node: Node, asking: (String) async throws -> [NodeActivity]?) async -> [NodeActivity] {
+        do {
+            let asked = try await asking(node.sessionId)
+            let threads = (asked ?? node.activity ?? node.toolThread).sorted { $0.since > $1.since }
+            threadsShown = (node.sessionId, threads)
+            return threads
+        } catch {
+            if let shown = threadsShown, shown.session == node.sessionId { return shown.threads }
+            return (node.activity ?? node.toolThread).sorted { $0.since > $1.since }
+        }
     }
 
     /// Moves when a node's detail asks its threads again from the start: the tick moved, so a

@@ -133,8 +133,20 @@ public struct AlondraClient: Sendable {
         try await post("v1/tasks/archive", ids.map { ["ids": $0] } ?? [:])
     }
 
+    /// What each thread of the node does now, from its light route; an alondrad without that
+    /// route answers from the node's detail, cut to one timeline event.
     public func nodeThreads(_ session: String) async throws -> NodeThreads {
-        try Self.decoder.decode(NodeThreads.self, from: try await get("v1/nodes/\(session)"))
+        try await Self.nodeThreads(session) { path, query in try await get(path, query: query) }
+    }
+
+    public static func nodeThreads(_ session: String, get: (String, [(String, String)]) async throws -> Data) async throws -> NodeThreads {
+        let answer: Data
+        do {
+            answer = try await get("v1/nodes/\(session)/activity", [])
+        } catch AlondraError.unexpected(404) {
+            answer = try await get("v1/nodes/\(session)", [("limit", "1")])
+        }
+        return try decoder.decode(NodeThreads.self, from: answer)
     }
 
     /// The task with its history and documents, which the overview leaves out.
