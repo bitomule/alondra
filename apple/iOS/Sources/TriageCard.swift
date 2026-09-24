@@ -510,7 +510,34 @@ struct TriageCard: View {
                     }
                 }
                 let node = report.closableNode(fleet.node(report.sessionId))
-                if report.primaryAction(nodeFound: node != nil) == .readAndClose, let node {
+                if report.primaryAction(nodeFound: node != nil) == .review {
+                    Button {
+                        review(report, .comments)
+                    } label: {
+                        Label("Rescue Comments", systemImage: "text.bubble")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(FilledStyle(tint: actionTint))
+                    HStack(spacing: 24) {
+                        Button {
+                            review(report, .approved)
+                        } label: {
+                            Label("Approve", systemImage: "checkmark.seal")
+                                .font(.subheadline.weight(.medium))
+                                .frame(minHeight: 30)
+                        }
+                        Button {
+                            markRead(report)
+                        } label: {
+                            Label("Mark as Read", systemImage: "checkmark")
+                                .font(.subheadline.weight(.medium))
+                                .frame(minHeight: 30)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                } else if report.primaryAction(nodeFound: node != nil) == .readAndClose, let node {
                     Button {
                         closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
                     } label: {
@@ -708,6 +735,14 @@ struct TriageCard: View {
 
     private func markRead(_ report: Report) {
         resolve(stamp(for: HandoffLabel.read)) { try await $0.markRead(report.id) }
+    }
+
+    private func review(_ report: Report, _ verdict: ReviewVerdict) {
+        let stamp = switch verdict {
+        case .comments: Stamp(label: String(localized: "Comments sent"), symbol: "text.bubble.fill", tint: Palette.sky)
+        case .approved: Stamp(label: String(localized: "Approved"), symbol: "checkmark.seal.fill", tint: actionTint)
+        }
+        resolve(stamp) { try await $0.review(report.id, verdict) }
     }
 
     private func readAndClose() {

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alondra_core::{
     Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
-    QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis, states,
+    QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::Extension;
@@ -50,6 +50,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/questions/{id}/more-context", post(more_context))
         .route("/v1/reports", post(report))
         .route("/v1/reports/{id}/read", post(report_read))
+        .route("/v1/reports/{id}/review", post(review_artifact))
         .route("/v1/waiting-machine", post(waiting_machine))
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
@@ -1718,6 +1719,66 @@ async fn report_read(State(hub): State<AppState>, Path(id): Path<u64>) -> Respon
 }
 
 #[derive(Deserialize)]
+struct ReviewBody {
+    verdict: ReviewVerdict,
+}
+
+/// What the node reads when David approves an artifact it sent, or asks it to take in his comments.
+/// Comments live on the artifact itself: Alondra cannot read them, the node can.
+fn review_text(verdict: ReviewVerdict, artifacts: &[String], user: &str) -> String {
+    let urls = artifacts.join(", ");
+    match verdict {
+        ReviewVerdict::Approved => format!("{user} approved {urls}. Nothing on it waits for review any more."),
+        ReviewVerdict::Comments => format!(
+            "{user} left comments on {urls}. They are the comment threads on the artifact: ArtifactComments with action read and \
+             its url lists them. Threads {user} sent to Claude can be answered and resolved there; the others stay open for {user}. \
+             The review goes on once the artifact is republished to the same url and a report with kind document links it again."
+        ),
+    }
+}
+
+/// David's verdict on the artifact a report sent for review. The report leaves the inbox and the
+/// verdict is typed into the node as David's own words; an approved artifact asks nothing of him again.
+async fn review_artifact(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ReviewBody>) -> Response {
+    let Some(report) = hub.read(|v| v.reports.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("report #{id} does not exist"));
+    };
+    let reachable = hub.read(|v| v.nodes.get(&report.session_id).is_some_and(|n| n.alive || n.in_daemon));
+    if report.read {
+        return refused(StatusCode::CONFLICT, "report_closed", format!("report #{id} was already reviewed or read"));
+    }
+    let artifacts = alondra_core::artifact::in_report(&report);
+    if artifacts.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("report #{id} links no artifact to review"));
+    }
+    if !reachable {
+        return refused(StatusCode::CONFLICT, "node_gone", format!("the node that sent report #{id} is gone: nobody would read the verdict"));
+    }
+    let text = review_text(b.verdict, &artifacts, &hub.config.name);
+    let queued = hub.append_with(|v| {
+        Some(Event::MessageQueued(Message {
+            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            session_id: report.session_id.clone(),
+            from: MessageFrom::User,
+            text: text.clone(),
+            answers_question: None,
+            created_at: now_millis(),
+            handed_at: None,
+            delivered_at: None,
+            about: Some(MessageAbout::ArtifactReview { report_id: id }),
+            attachments: vec![],
+        }))
+    });
+    if let Err(e) = queued {
+        return internal(e);
+    }
+    match hub.append(Event::ArtifactReviewed { report: id, verdict: b.verdict }) {
+        Ok(_) => Json(json!({"id": id, "verdict": b.verdict})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
 struct MessageBody {
     text: String,
     from: Option<MessageFrom>,
@@ -2929,6 +2990,35 @@ mod tests {
         let (_, job) = status_and_body(stop("job").await).await;
         assert!(job.get("hookSpecificOutput").is_none(), "wake types into background jobs: {job}");
         assert_eq!(hub.read(|v| v.pending_messages("job").count()), 1);
+    }
+
+    /// 24 Sep, alondra/maquina-de-estados: David commented on the state-machine artifact in the
+    /// browser and had no way to hand those comments to the node from its card.
+    #[tokio::test]
+    async fn reviewing_an_artifact_hands_the_verdict_to_its_node_and_answers_it_once() {
+        let hub = temp_hub("review");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let sent = |id: u64, links: Vec<Link>| Event::ReportPosted(Report {
+            related: vec![], id, session_id: "s".into(), node_name: None, title: "The plan".into(), body: Some("Read it".into()),
+            links, attachments: vec![], kind: ReportKind::Document, created_at: now_millis(), read: false, mission: None, looks_like_question: false,
+        });
+        hub.append(sent(1, vec![Link { url: "https://claude.ai/artifact/plan".into(), title: None }])).unwrap();
+        hub.append(sent(2, vec![])).unwrap();
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), ..Default::default() })).unwrap();
+        assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::WaitingMerge);
+
+        let review = |id: u64, verdict: &str| review_artifact(State(hub.clone()), Path(id), Json(serde_json::from_value(json!({"verdict": verdict})).unwrap()));
+        assert_eq!(review(2, "comments").await.status(), StatusCode::UNPROCESSABLE_ENTITY, "a report with no artifact");
+        assert_eq!(review(9, "comments").await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(review(1, "comments").await.status(), StatusCode::OK);
+        let said = hub.read(|v| v.pending_messages("s").map(|m| (m.from, m.text.clone())).collect::<Vec<_>>());
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0].0, MessageFrom::User, "David's own words, so they reach a done node too");
+        assert!(said[0].1.contains("ArtifactComments") && said[0].1.contains("https://claude.ai/artifact/plan"), "{}", said[0].1);
+        assert!(hub.read(|v| v.reports[&1].read), "the card leaves the inbox until the node sends the artifact again");
+        assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::WaitingMerge, "until the comments reach the node");
+        let (status, body) = status_and_body(review(1, "approved").await).await;
+        assert_eq!((status, body["kind"].as_str()), (StatusCode::CONFLICT, Some("report_closed")), "one verdict per round");
     }
 
     #[tokio::test]

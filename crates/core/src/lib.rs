@@ -11,7 +11,7 @@ pub mod states;
 pub mod usage;
 pub mod view;
 
-pub use event::{DaemonObservation, Event, HookEvent};
+pub use event::{DaemonObservation, Event, HookEvent, ReviewVerdict};
 pub use model::*;
 pub use view::View;
 

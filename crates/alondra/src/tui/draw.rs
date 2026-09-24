@@ -746,7 +746,14 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             let mut out = vec![];
             let artifacts = alondra_core::artifact::in_report(r).len();
             if artifacts > 0 {
-                let mut open = vec![keycap("b"), Span::styled(format!(" {}", i18n::open_in_browser()), Style::new().add_modifier(Modifier::BOLD))];
+                let mut open = vec![
+                    keycap("b"),
+                    Span::styled(format!(" {}  ", i18n::open_in_browser()), Style::new().add_modifier(Modifier::BOLD)),
+                    keycap("c"),
+                    Span::styled(format!(" {}  ", i18n::rescue_comments()), Style::new().add_modifier(Modifier::BOLD)),
+                    keycap("v"),
+                    Span::styled(format!(" {}", i18n::approve_artifact()), Style::new().add_modifier(Modifier::BOLD)),
+                ];
                 if artifacts > 1 {
                     open.push(Span::styled(trf!("  {artifacts} artifacts", "  {artifacts} artefactos"), Style::new().fg(DIM)));
                 }
@@ -1470,7 +1477,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         Some(Item::R(r)) => {
             let mut v = vec![pane];
             if !alondra_core::artifact::in_report(r).is_empty() {
-                v.push(k("b", i18n::open_in_browser()));
+                v.extend([k("b", i18n::open_in_browser()), k("c", i18n::rescue_comments()), k("v", i18n::approve_artifact())]);
             }
             v.extend([k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))]);
             if app.node(&r.session_id).is_some_and(|n| n.offers_close()) {
@@ -1563,6 +1570,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("1-9", tr!("choose one of the question's options", "elegir una opción de la pregunta")),
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
+        row("b · c · v", tr!("artifact: open in the browser · the node reads your comments on it · approve it", "artefacto: abrir en el navegador · el nodo lee tus comentarios · aprobarlo")),
         row("x", tr!("mark as read", "marcar como leído")),
         row("Shift+X", tr!("read and close the node that sent it (twice to confirm; never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; nunca el orquestador)")),
         row("Shift+J/Shift+K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
@@ -1673,8 +1681,11 @@ mod tests {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
         let s = screen(&mut app, 120, 30);
         assert!(s.contains("b Abrir en el navegador"), "{s}");
+        assert!(s.contains("c Rescatar comentarios") && s.contains("v Aprobar"), "{s}");
         press(&mut app, "b");
         assert_eq!(app.flash.as_ref().map(|f| f.text.as_str()), Some("Abierto en el navegador"));
+        press(&mut app, "c");
+        assert!(app.hidden.contains_key(&crate::tui::Key::R(1)), "the card leaves until the node sends the artifact again");
 
         let (mut plain, _rx) = app_with(vec![]);
         plain.loaded = true;

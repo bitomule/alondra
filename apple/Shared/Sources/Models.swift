@@ -16,7 +16,7 @@ public enum NodeState: String, Codable, Sendable {
         case .working: String(localized: "working", table: "AlondraShared", bundle: #bundle)
         case .waitingAnswer: String(localized: "waiting for an answer", table: "AlondraShared", bundle: #bundle)
         case .yourTurn: String(localized: "your turn", table: "AlondraShared", bundle: #bundle)
-        case .waitingMerge: String(localized: "waiting for your merge", table: "AlondraShared", bundle: #bundle)
+        case .waitingMerge: String(localized: "waiting for your review", table: "AlondraShared", bundle: #bundle)
         case .delivered: String(localized: "delivering results", table: "AlondraShared", bundle: #bundle)
         case .waitingMachine: String(localized: "waiting for the machine", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "done", table: "AlondraShared", bundle: #bundle)
@@ -245,10 +245,13 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public enum PrimaryAction: Sendable {
         case markRead
         case readAndClose
+        /// It sends an artifact for review: its node waits until David approves it or sends his comments.
+        case review
     }
 
     public func primaryAction(nodeFound: Bool) -> PrimaryAction {
-        isFinal && nodeFound ? .readAndClose : .markRead
+        if !artifacts.isEmpty { return .review }
+        return isFinal && nodeFound ? .readAndClose : .markRead
     }
 
     /// The node this card may offer to close: never the orchestrator, which Alondra keeps alive.

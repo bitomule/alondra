@@ -1690,6 +1690,56 @@
           }
         }
       }
+    },
+    "Rescue Comments": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rescatar comentarios"
+          }
+        }
+      }
+    },
+    "Approve": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprobar"
+          }
+        }
+      }
+    },
+    "The node reads your comments on the artifact and applies them (C)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo lee tus comentarios del artefacto y los aplica (C)"
+          }
+        }
+      }
+    },
+    "Tell the node the artifact is approved (V)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Decirle al nodo que el artefacto está aprobado (V)"
+          }
+        }
+      }
+    },
+    "C rescues your comments · V approves · L marks as read": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "C rescata tus comentarios · V aprueba · L marca como leído"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

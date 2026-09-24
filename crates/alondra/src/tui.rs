@@ -10,7 +10,7 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
-use alondra_core::{Node, Question, QuestionOption, QuestionOrigin, Report, now_millis};
+use alondra_core::{Node, Question, QuestionOption, QuestionOrigin, Report, ReviewVerdict, now_millis};
 use anyhow::Result;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -1214,6 +1214,13 @@ impl App {
             KeyCode::Char('c') => {
                 if let Some(q) = self.selected_question() {
                     self.compose(Target::MoreContext { id: q.id, title: q.title }, "");
+                } else if let Some(r) = self.selected_report() {
+                    self.review(&r, ReviewVerdict::Comments);
+                }
+            }
+            KeyCode::Char('v') => {
+                if let Some(r) = self.selected_report() {
+                    self.review(&r, ReviewVerdict::Approved);
                 }
             }
             KeyCode::Char('x') => {
@@ -1276,6 +1283,23 @@ impl App {
 
     fn mark_read(&mut self, r: &Report) {
         self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], { let t = md::truncate(&r.title, 60); trf!("Read: {t}", "Leído: {t}") });
+        self.reader = None;
+        self.hide(Key::R(r.id));
+    }
+
+    /// David's verdict on the artifact a report sent: the node reads his comments on it, or learns
+    /// it is approved. A report with no artifact has nothing to review.
+    fn review(&mut self, r: &Report, verdict: ReviewVerdict) {
+        if alondra_core::artifact::in_report(r).is_empty() {
+            self.fail(tr!("This report has no artifact to review", "Este informe no tiene ningún artefacto que revisar"));
+            return;
+        }
+        let name = who(&r.node_name, &r.session_id);
+        let done = match verdict {
+            ReviewVerdict::Comments => trf!("{name} will read your comments", "{name} leerá tus comentarios"),
+            ReviewVerdict::Approved => trf!("Approved for {name}", "Aprobado para {name}"),
+        };
+        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/review", r.id), json!({ "verdict": verdict }))], done);
         self.reader = None;
         self.hide(Key::R(r.id));
     }

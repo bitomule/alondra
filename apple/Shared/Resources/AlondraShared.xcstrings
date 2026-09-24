@@ -861,16 +861,6 @@
         }
       }
     },
-    "waiting for your merge": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "esperando tu merge"
-          }
-        }
-      }
-    },
     "it is the orchestrator, which Alondra keeps alive": {
       "localizations": {
         "es": {
@@ -1047,6 +1037,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Esta pregunta ya tenía respuesta"
+          }
+        }
+      }
+    },
+    "waiting for your review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "espera tu revisión"
           }
         }
       }

@@ -37,6 +37,16 @@ import Testing
         #expect(final.closableNode(nil) == nil)
     }
 
+    /// 24 Sep: David comments on an artifact in the browser; its card hands those comments to the node.
+    @Test(arguments: ["final", "document"])
+    func aReportThatSendsAnArtifactIsReviewed(kind: String) throws {
+        let json = """
+        {"id":1,"sessionId":"s1","title":"Plan","links":[{"url":"https://claude.ai/artifact/plan"}],"attachments":[],"kind":"\(kind)","createdAt":1}
+        """
+        let report = try JSONDecoder().decode(Report.self, from: Data(json.utf8))
+        #expect(report.primaryAction(nodeFound: true) == .review)
+    }
+
     @Test func markingAsReadStaysFirstOtherwise() throws {
         #expect(try report(kind: "final").primaryAction(nodeFound: false) == .markRead, "nothing to close")
         for kind in ["notice", "document", "progress"] {
