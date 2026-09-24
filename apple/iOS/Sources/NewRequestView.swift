@@ -44,7 +44,7 @@ struct NewRequestView: View {
             }
             .sheet(isPresented: $showingOptions) {
                 if let options {
-                    WorkOptionsSheet(model: options)
+                    WorkOptionsSheet(model: options, client: fleet.client)
                         .presentationDetents([.medium, .large])
                 }
             }
@@ -61,7 +61,7 @@ struct NewRequestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.options.project ?? String(localized: "The orchestrator picks the project"))
                         .font(.subheadline.weight(.semibold))
-                    Text(model.options.summary)
+                    Text(([model.options.issue].compactMap { $0 } + [model.options.summary]).joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -196,6 +196,7 @@ struct NewRequestView: View {
 
 private struct WorkOptionsSheet: View {
     @Bindable var model: WorkOptionsModel
+    let client: AlondraClient
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -205,6 +206,25 @@ private struct WorkOptionsSheet: View {
                     Picker("Project", selection: projectBinding) {
                         Text("The orchestrator picks").tag(String?.none)
                         ForEach(model.projects, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                    }
+                }
+                Section("Issue") {
+                    if let issue = model.options.issue {
+                        HStack {
+                            Label(issue, systemImage: "smallcircle.filled.circle")
+                                .foregroundStyle(Palette.sage)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                Task { await model.choose(issue: nil) }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    } else {
+                        NavigationLink("Choose an issue") {
+                            IssuePickerList(client: client) { issue in
+                                Task { await model.choose(issue: issue) }
+                            }
+                        }
                     }
                 }
                 Section {
@@ -236,5 +256,63 @@ private struct WorkOptionsSheet: View {
 
     private var projectBinding: Binding<String?> {
         Binding(get: { model.options.project }, set: { project in Task { await model.choose(project: project) } })
+    }
+}
+
+private struct IssuePickerList: View {
+    @State private var issues: IssuesModel
+    @Environment(\.dismiss) private var dismiss
+    let pick: (String) -> Void
+
+    init(client: AlondraClient, pick: @escaping (String) -> Void) {
+        _issues = State(initialValue: IssuesModel(client: client))
+        self.pick = pick
+    }
+
+    var body: some View {
+        List {
+            if let error = issues.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(Palette.rose)
+            }
+            if let pasted = issues.pasted {
+                Button {
+                    choose(pasted)
+                } label: {
+                    Label("Use \(pasted)", systemImage: "link")
+                }
+            }
+            ForEach(issues.visible) { issue in
+                Button {
+                    choose(issue.reference)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: issue.title)
+                            .foregroundStyle(.primary)
+                            .lineLimit(3)
+                        Text(verbatim: ([issue.reference] + issue.labels).joined(separator: " · "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .overlay {
+            if issues.loading && issues.issues.isEmpty {
+                ProgressView()
+            } else if issues.loaded && issues.visible.isEmpty && issues.pasted == nil {
+                ContentUnavailableView("No open issues match", systemImage: "magnifyingglass")
+            }
+        }
+        .searchable(text: $issues.query, prompt: Text("Filter, or paste an issue link"))
+        .refreshable { await issues.load(refresh: true) }
+        .navigationTitle("Issues")
+        .task { await issues.load() }
+    }
+
+    private func choose(_ reference: String) {
+        pick(reference)
+        dismiss()
     }
 }

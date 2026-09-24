@@ -40,7 +40,7 @@ struct NewRequestSheet: View {
                 .modifier(DropsFiles(attachments: attachments, client: store.client))
             AttachmentStrip(attachments, client: store.client)
             if let options {
-                WorkOptionsForm(model: options)
+                WorkOptionsForm(model: options, client: store.client)
             }
             HStack {
                 AttachFilesButton(attachments: attachments, client: store.client)
@@ -86,6 +86,8 @@ struct NewRequestSheet: View {
 
 private struct WorkOptionsForm: View {
     @Bindable var model: WorkOptionsModel
+    let client: AlondraClient
+    @State private var picking = false
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
@@ -99,6 +101,11 @@ private struct WorkOptionsForm: View {
                 }
                 .labelsHidden()
                 .fixedSize()
+            }
+            GridRow {
+                Text("Issue")
+                    .foregroundStyle(.secondary)
+                issueControl
             }
             ForEach(model.options.specs) { spec in
                 GridRow {
@@ -119,6 +126,32 @@ private struct WorkOptionsForm: View {
         }
         .opacity(model.loaded ? 1 : 0.4)
         .animation(.default, value: model.loaded)
+    }
+
+    @ViewBuilder
+    private var issueControl: some View {
+        if let issue = model.options.issue {
+            HStack(spacing: 6) {
+                Label(issue, systemImage: "smallcircle.filled.circle")
+                    .foregroundStyle(.green)
+                Button {
+                    Task { await model.choose(issue: nil) }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help(Text("Remove the issue"))
+                .accessibilityLabel(Text("Remove the issue"))
+            }
+        } else {
+            Button("From an issue…") { picking = true }
+                .popover(isPresented: $picking, arrowEdge: .bottom) {
+                    IssuePicker(client: client) { issue in
+                        picking = false
+                        Task { await model.choose(issue: issue) }
+                    }
+                }
+        }
     }
 
     private var projectBinding: Binding<String?> {
@@ -153,5 +186,77 @@ private struct OptionControl: View {
                 picker.pickerStyle(.menu)
             }
         }
+    }
+}
+
+private struct IssuePicker: View {
+    @State private var issues: IssuesModel
+    let pick: (String) -> Void
+
+    init(client: AlondraClient, pick: @escaping (String) -> Void) {
+        _issues = State(initialValue: IssuesModel(client: client))
+        self.pick = pick
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TextField("Filter, or paste an issue link", text: $issues.query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if let first = issues.pasted ?? issues.visible.first?.reference { pick(first) } }
+                Button {
+                    Task { await issues.load(refresh: true) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help(Text("Search GitHub again"))
+                .accessibilityLabel(Text("Search GitHub again"))
+                .disabled(issues.loading)
+            }
+            if let error = issues.error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+            List {
+                if let pasted = issues.pasted {
+                    Button {
+                        pick(pasted)
+                    } label: {
+                        Label("Use \(pasted)", systemImage: "link")
+                    }
+                    .buttonStyle(.plain)
+                }
+                ForEach(issues.visible) { issue in
+                    Button {
+                        pick(issue.reference)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: issue.title)
+                                .lineLimit(2)
+                            Text(verbatim: ([issue.reference] + issue.labels).joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if issues.loading && issues.issues.isEmpty {
+                    ProgressView()
+                } else if issues.loaded && issues.visible.isEmpty && issues.pasted == nil {
+                    Text("No open issues match")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 440, height: 360)
+        .task { await issues.load() }
     }
 }

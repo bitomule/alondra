@@ -114,12 +114,15 @@ public struct NewRequestBody: Encodable, Sendable, Equatable {
     public var attachments: [String] = []
     public let project: String?
     public let options: [String: OptionChoice]
+    public var issue: String?
 }
 
 /// What the user picked in "New". Only what differs from the defaults is kept, so alondrad
 /// fills in the rest and a default changed in `options.toml` applies to the next request.
 public struct WorkOptions: Sendable, Equatable {
     public var project: String?
+    /// `owner/repo#n` the work comes from; alondrad passes its text on and the node's PR closes it.
+    public var issue: String?
     public private(set) var specs: [OptionSpec] = []
     public private(set) var chosen: [String: OptionChoice] = [:]
     public private(set) var error: String?
@@ -147,7 +150,7 @@ public struct WorkOptions: Sendable, Equatable {
     }
 
     public func body(text: String) -> NewRequestBody {
-        NewRequestBody(text: text, project: project, options: chosen)
+        NewRequestBody(text: text, project: project, options: chosen, issue: issue)
     }
 
     public var summary: String {
@@ -182,5 +185,12 @@ public final class WorkOptionsModel {
     public func choose(project: String?) async {
         options.project = project
         await load()
+    }
+
+    /// Picks the issue, and its repo's project when the user has a checkout of that name.
+    public func choose(issue: String?) async {
+        options.issue = issue
+        guard let project = IssueSummary.project(of: issue, among: projects), project != options.project else { return }
+        await choose(project: project)
     }
 }
