@@ -352,8 +352,11 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
             m.session_id == session && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.starts_with(prefix) && about.is_none_or(|a| m.text.contains(a))
         })
     };
-    if !alondra_wrote(&node.session_id, NUDGE_PREFIX, None) {
-        return Some(StallMove::Nudge);
+    let nudge = view.messages.values().filter(|m| m.session_id == node.session_id && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.starts_with(NUDGE_PREFIX)).last();
+    let Some(nudge) = nudge else { return Some(StallMove::Nudge) };
+    let stopped_after_nudge = nudge.handed_at.zip(node.last_stop_at).is_some_and(|(handed, stop)| stop > handed);
+    if !stopped_after_nudge {
+        return None;
     }
     let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
     let tag = stalled_tag(node);
@@ -633,9 +636,15 @@ mod tests {
         let mut v = stalled();
         with_orchestrator(&mut v);
         alondra_says(&mut v, "s", nudge_text("Ana"), 60);
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the nudge has not reached the node yet");
+        let nudge = *v.messages.keys().next_back().unwrap();
+        v.apply(61, T0 + 61_000, &Event::MessageHanded { id: nudge });
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the nudge reached it and it has not stopped since");
+        v.apply(62, T0 + 62_000, &typed(&nudge_text("Ana")));
+        v.apply(63, T0 + 63_000, &hook("Stop"));
         assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::TellOrchestrator { orchestrator: "o".into() }), "stalled again after the nudge");
         let text = stalled_text(&v.nodes["s"], "Ana");
-        alondra_says(&mut v, "o", text, 61);
+        alondra_says(&mut v, "o", text, 64);
         assert_eq!(stall_move(&v, &v.nodes["s"]), None, "the orchestrator already has it");
 
         let mut v = stalled();
