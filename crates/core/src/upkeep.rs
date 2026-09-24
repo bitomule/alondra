@@ -14,16 +14,23 @@ const MINUTE: Millis = 60 * 1000;
 pub const RESUME_GRACE_MS: Millis = MINUTE;
 /// A node restarted this recently is not restarted again, even when its process ended again.
 pub const RESUME_BACKOFF_MS: Millis = 15 * MINUTE;
-/// Where the daemon leaves a session whose process it stopped because it sat idle: finished, or
-/// waiting for its next message. A reply brings it back, so nothing died.
-const IDLE_STOP_STATES: &[&str] = &["done", "blocked"];
+/// Where the daemon leaves a session whose process ended without dying: `done` or `blocked` when
+/// it stopped an idle one (a reply brings it back), `stopped` when someone stopped it on purpose.
+const NOT_DEAD_STATES: &[&str] = &["done", "blocked", STOPPED];
+const STOPPED: &str = "stopped";
 
 pub const RESUMED_PREFIX: &str = "[Alondra] Your process stopped";
 pub const RESUME_FAILED_PREFIX: &str = "[Alondra] Could not restart a node";
 
-/// The node's process ended while it was working, not because the daemon let an idle session go.
+/// The node's process ended while it was working: neither the daemon letting an idle session go
+/// nor someone stopping it.
 pub fn died_working(node: &Node) -> bool {
-    node.watched() && !node.alive && node.exited_at.is_some() && node.daemon_state.as_deref().is_some_and(|s| !IDLE_STOP_STATES.contains(&s))
+    node.watched() && !node.alive && node.exited_at.is_some() && node.daemon_state.as_deref().is_some_and(|s| !NOT_DEAD_STATES.contains(&s))
+}
+
+/// Someone stopped the node's session on purpose: Alondra neither restarts it nor types into it.
+pub fn stopped_on_purpose(node: &Node) -> bool {
+    node.watched() && !node.alive && node.daemon_state.as_deref() == Some(STOPPED)
 }
 
 /// The task a dead process leaves open: not finished, and not closed by the node's own final report.
@@ -159,20 +166,22 @@ mod tests {
     }
 
     fn died(after: &[Event]) -> Vec<Event> {
-        [&[seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("stopped", None)], after].concat()
+        [&[seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("working", None)], after].concat()
     }
 
     #[test]
     fn a_process_that_died_while_its_node_had_work_is_restarted_once_per_exit() {
         let exit = T0 + 2 * SEC;
         let later = exit + RESUME_GRACE_MS;
-        let again = [seen("working", Some(8)), exited(8), seen("stopped", None)];
+        let again = [seen("working", Some(8)), exited(8), seen("failed", None)];
         let cases: Vec<(&str, Vec<Event>, Millis, bool)> = vec![
             ("died while working, past the grace", died(&[]), later, true),
+            ("the daemon marked it failed", vec![seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("failed", None)], later, true),
+            ("someone stopped it on purpose", vec![seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("stopped", None)], later, false),
             ("within the grace the daemon may still restart it", died(&[]), exit + 30 * SEC, false),
             ("the daemon let it go after its turn", vec![seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("done", None)], later, false),
             ("the daemon let it go while it waits for an answer", vec![seen("working", Some(7)), hook("s", "UserPromptSubmit"), exited(7), seen("blocked", None)], later, false),
-            ("it reported final before", [&[seen("working", Some(7)), hook("s", "UserPromptSubmit"), final_report()][..], &[exited(7), seen("stopped", None)]].concat(), later, false),
+            ("it reported final before", [&[seen("working", Some(7)), hook("s", "UserPromptSubmit"), final_report()][..], &[exited(7), seen("working", None)]].concat(), later, false),
             ("its process came back", died(&[seen("working", Some(8))]), later, false),
             ("the user attached to it", died(&[Event::AttachChanged { session_id: "s".into(), attached: true }]), later, false),
             ("already restarted after this exit", died(&[resumed(true)]), exit + 3600 * SEC, false),

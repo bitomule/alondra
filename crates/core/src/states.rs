@@ -421,6 +421,7 @@ pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Tas
         && node.menu_waiting.is_none()
         && node.background.is_empty()
         && !crate::upkeep::died_working(node)
+        && !crate::upkeep::stopped_on_purpose(node)
         && !watching(view, node, now)
         && !works(view, node, now)
         && view.deliverable_messages(&node.session_id).next().is_none();
@@ -1293,7 +1294,8 @@ mod tests {
             ("a background task still runs", turn(&[hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])]), false),
             ("the user is typing in it", background(&[typed("what is left?"), hook("Stop")]), false),
             ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], false),
-            ("its process died while working: restarted instead", turn(&[hook("Stop"), exited(), seen_without_process("stopped")]), false),
+            ("its process died while working: restarted instead", turn(&[hook("Stop"), exited(), seen_without_process("working")]), false),
+            ("someone stopped it on purpose", turn(&[hook("Stop"), exited(), seen_without_process("stopped")]), false),
             ("the daemon let it go after its turn: the nudge brings it back", turn(&[hook("Stop"), exited(), seen_without_process("done")]), true),
         ];
         for (what, events, idle) in cases {

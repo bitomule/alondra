@@ -476,11 +476,12 @@ mod resume_tests {
     #[tokio::test]
     async fn a_node_that_died_with_work_is_respawned_once_and_told_to_carry_on() {
         let hub = hub("ok");
-        died(&hub, "deadnode-1", 7, "stopped");
+        died(&hub, "deadnode-1", 7, "working");
         died(&hub, "idlenode-1", 8, "done");
+        died(&hub, "stopnode-1", 9, "stopped");
         let claude = FakeClaude::new(None);
         resume_dead(&hub, &claude, now_millis() + 2 * MIN).await;
-        assert_eq!(claude.calls(), vec!["deadnode"], "only the one that died while working, not the one the daemon let go");
+        assert_eq!(claude.calls(), vec!["deadnode"], "only the one that died while working: not the one the daemon let go, nor the one someone stopped");
         assert_eq!(hub.read(|v| v.nodes["deadnode-1"].resumed.as_ref().map(|r| r.ok)), Some(true));
         assert_eq!(alondra_said(&hub, "deadnode-1", upkeep::RESUMED_PREFIX), 1);
 
@@ -490,7 +491,7 @@ mod resume_tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         hub.append(seen("deadnode-1", "working", Some(9))).unwrap();
         hub.append(Event::ProcessExited { session_id: "deadnode-1".into(), pid: 9 }).unwrap();
-        hub.append(seen("deadnode-1", "stopped", None)).unwrap();
+        hub.append(seen("deadnode-1", "failed", None)).unwrap();
         resume_dead(&hub, &claude, now_millis() + 2 * MIN).await;
         assert_eq!(claude.calls().len(), 1, "died again within the backoff");
         resume_dead(&hub, &claude, now_millis() + upkeep::RESUME_BACKOFF_MS + MIN).await;
@@ -500,7 +501,7 @@ mod resume_tests {
     #[tokio::test]
     async fn a_node_alondra_is_closing_is_not_brought_back() {
         let hub = hub("closing");
-        died(&hub, "deadnode-1", 7, "stopped");
+        died(&hub, "deadnode-1", 7, "working");
         let claude = FakeClaude::new(None);
         let closing = hub.closing("deadnode-1");
         resume_dead(&hub, &claude, now_millis() + 2 * MIN).await;
@@ -515,7 +516,7 @@ mod resume_tests {
         let hub = hub("fails");
         hub.append(Event::MarkedOrchestrator { session_id: "orchestr-1".into() }).unwrap();
         hub.append(Event::Hook(HookEvent { session_id: "orchestr-1".into(), event: "SessionStart".into(), ..Default::default() })).unwrap();
-        died(&hub, "deadnode-1", 7, "stopped");
+        died(&hub, "deadnode-1", 7, "working");
         let claude = FakeClaude::new(Some("No job matching deadnode"));
         resume_dead(&hub, &claude, now_millis() + 2 * MIN).await;
         resume_dead(&hub, &claude, now_millis() + 3 * MIN).await;
