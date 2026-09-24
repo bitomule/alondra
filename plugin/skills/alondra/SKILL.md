@@ -25,6 +25,10 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - `report` with `kind: "document"`: something to read (plan, long report), with its path in
   `attachments`. To have it approved, send an `ask` with the document attached instead.
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
+- `ask` with `replaces`: a question of yours changed (rephrased, or new facts change it). The new
+  question is recorded and the old one, given by its number, is withdrawn in the same step, so
+  the user never sees both. The replaced question needs no `related`, and what it carried passes
+  to the new one.
 - `withdraw`: a question of yours no longer needs an answer (settled in the terminal, its PR
   merged, you moved on). Alondra withdraws questions linked to a PR once that PR is merged or
   closed.

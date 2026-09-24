@@ -1003,6 +1003,9 @@ struct AskBody {
     /// The node's other open cards this one belongs with; required when it has any.
     #[serde(default)]
     related: Option<Vec<u64>>,
+    /// A question of the same node this one replaces: it is withdrawn once this one is recorded.
+    #[serde(default)]
+    replaces: Option<u64>,
 }
 
 fn yes() -> bool {
@@ -1056,16 +1059,30 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
             format!("A question needs a one-line title and a detail with all the context {} needs to answer without asking you anything.", hub.config.name),
         );
     }
+    if let Some(old) = b.replaces {
+        let (question, asker) = hub.read(|v| (v.questions.get(&old).cloned(), resolve_caller(v, &b.caller).map(|(sid, _)| sid)));
+        if let Some((status, why)) = withdraw_refusal(old, question.as_ref(), Some(asker.as_deref())) {
+            return err(status, format!("replaces: {why}. Nothing was recorded."));
+        }
+    }
     let related = match hub.read(|v| {
         let (sid, _) = resolve_caller(v, &b.caller)?;
         let urls: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
-        Some(related_cards(v, &sid, b.related.as_deref(), b.to_orchestrator || lands_in_a_pr_card(v, &urls), &hub.config.name))
+        Some(related_cards(v, &sid, b.related.as_deref(), b.replaces, b.to_orchestrator || lands_in_a_pr_card(v, &urls), &hub.config.name))
     }) {
         Some(Err((status, why))) => return err(status, why),
         Some(Ok(cards)) => cards,
         None => vec![],
     };
-    record_question(hub, b, false, related)
+    let replaces = b.replaces;
+    let recorded = record_question(hub.clone(), b, false, related);
+    if let Some(old) = replaces
+        && recorded.status().is_success()
+        && let Err(e) = hub.append(Event::QuestionClosed { id: old, status: QuestionStatus::Withdrawn, note: None })
+    {
+        log!("could not withdraw question #{old} replaced by a new one: {e}");
+    }
+    recorded
 }
 
 /// A new card that links a PR with a card (or one about to get one) lives inside that card, so
@@ -1078,18 +1095,30 @@ fn lands_in_a_pr_card(v: &View, texts: &[String]) -> bool {
 
 /// What a new `ask` or `report` of the node declares it belongs with. When the node already has
 /// open cards, it must say which of them this one goes with (`related`, possibly empty): Alondra
-/// never guesses it. Every id must be one of the node's own open cards.
-fn related_cards(v: &View, sid: &str, related: Option<&[u64]>, stays_out_of_the_inbox: bool, user: &str) -> Result<Vec<CardRef>, (StatusCode, String)> {
-    let own = v.own_open_cards(sid);
+/// never guesses it. Every id must be one of the node's own open cards. A question that replaces
+/// another is related to it: the one it replaces needs no declaration, and what that one carried
+/// passes to the new one.
+fn related_cards(
+    v: &View,
+    sid: &str,
+    related: Option<&[u64]>,
+    replaces: Option<u64>,
+    stays_out_of_the_inbox: bool,
+    user: &str,
+) -> Result<Vec<CardRef>, (StatusCode, String)> {
+    let replaced = replaces.map(CardRef::Question);
+    let own: Vec<CardRef> = v.own_open_cards(sid).into_iter().filter(|c| Some(*c) != replaced).collect();
+    let inherited: Vec<CardRef> = replaces.and_then(|id| v.questions.get(&id)).map(|q| q.related.clone()).unwrap_or_default();
     let number = |c: &CardRef| match c {
         CardRef::Question(id) | CardRef::Report(id) => *id,
     };
     let Some(ids) = related else {
-        if own.is_empty() || stays_out_of_the_inbox {
-            return Ok(vec![]);
+        let undeclared: Vec<&CardRef> = own.iter().filter(|c| !inherited.contains(c)).collect();
+        if undeclared.is_empty() || stays_out_of_the_inbox {
+            return Ok(inherited.into_iter().filter(|c| own.contains(c)).collect());
         }
-        let listed: Vec<String> = own
-            .iter()
+        let listed: Vec<String> = undeclared
+            .into_iter()
             .map(|c| match c {
                 CardRef::Question(id) => format!("- #{id} question: {}", v.questions[id].title),
                 CardRef::Report(id) => format!("- #{id} report ({}): {}", v.reports[id].kind.label(), v.reports[id].title),
@@ -1104,7 +1133,7 @@ fn related_cards(v: &View, sid: &str, related: Option<&[u64]>, stays_out_of_the_
             ),
         ));
     };
-    let mut cards = vec![];
+    let mut cards: Vec<CardRef> = inherited.into_iter().filter(|c| own.contains(c)).collect();
     for id in ids {
         let matching: Vec<CardRef> = own.iter().filter(|c| number(c) == *id).copied().collect();
         if matching.is_empty() {
@@ -1121,6 +1150,8 @@ fn related_cards(v: &View, sid: &str, related: Option<&[u64]>, stays_out_of_the_
         }
         cards.extend(matching);
     }
+    cards.sort_unstable();
+    cards.dedup();
     Ok(cards)
 }
 
@@ -1389,7 +1420,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         let (sid, _) = resolve_caller(v, &b.caller)?;
         let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
         texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
-        Some(related_cards(v, &sid, b.related.as_deref(), lands_in_a_pr_card(v, &texts), &hub.config.name))
+        Some(related_cards(v, &sid, b.related.as_deref(), None, lands_in_a_pr_card(v, &texts), &hub.config.name))
     }) {
         Some(Err((status, why))) => return err(status, why),
         Some(Ok(cards)) => cards,
@@ -2209,7 +2240,7 @@ mod tests {
                 let response = match kind {
                     NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
                         caller, title: "¿Sigo?".into(), detail: Some("Lo anterior está subido".into()), options: vec![], links, attachments: vec![],
-                        blocking: true, to_orchestrator: false, steps: vec![], related: c.related.clone(),
+                        blocking: true, to_orchestrator: false, steps: vec![], related: c.related.clone(), replaces: None,
                     })).await,
                     NewCard::Report => report(State(hub.clone()), Json(ReportBody {
                         caller, title: "Anexo".into(), body: Some("Más detalle".into()), kind: Some(ReportKind::Final), links, attachments: vec![],
@@ -2249,7 +2280,7 @@ mod tests {
         let body = AskBody {
             caller: Caller { session_id: Some("s".into()), pids: vec![] }, title: "¿Sigo con el salto de la TUI?".into(),
             detail: Some("Lo anterior está subido".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
-            to_orchestrator: false, steps: vec![], related: Some(vec![1]),
+            to_orchestrator: false, steps: vec![], related: Some(vec![1]), replaces: None,
         };
         let (status, said) = status_and_body(ask(State(hub.clone()), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
@@ -2257,6 +2288,77 @@ mod tests {
         let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert!(hub.read(|v| v.reports[&1].read), "answering reads the report inside the question");
+    }
+
+    /// Q#116 "¿Arranco las capturas del iPhone Duo?" and, a minute later, Q#117 "Apple no exige
+    /// capturas del iPhone Duo… ¿Las hago igual?" (ios27/rc-y-duo, 23 Sep): the second replaced the
+    /// first, and both stayed open.
+    #[tokio::test]
+    async fn a_question_can_replace_the_nodes_own_open_question() {
+        struct Case {
+            what: &'static str,
+            replaces: Option<u64>,
+            related: Option<Vec<u64>>,
+            another_open: bool,
+            status: StatusCode,
+            old: QuestionStatus,
+        }
+        let case = |what, replaces, related: Option<Vec<u64>>, another_open, status, old| Case { what, replaces, related, another_open, status, old };
+        let cases = [
+            case("replaces its only open question", Some(1), None, false, StatusCode::OK, QuestionStatus::Withdrawn),
+            case("replaces it while another card is open, undeclared", Some(1), None, true, StatusCode::UNPROCESSABLE_ENTITY, QuestionStatus::Open),
+            case("replaces it while another card is open, declared apart", Some(1), Some(vec![]), true, StatusCode::OK, QuestionStatus::Withdrawn),
+            case("replaces nothing while a card is open", None, None, false, StatusCode::UNPROCESSABLE_ENTITY, QuestionStatus::Open),
+            case("another node's question", Some(2), Some(vec![]), false, StatusCode::FORBIDDEN, QuestionStatus::Open),
+            case("an answered question", Some(3), Some(vec![]), false, StatusCode::CONFLICT, QuestionStatus::Open),
+            case("a question that does not exist", Some(99), Some(vec![]), false, StatusCode::NOT_FOUND, QuestionStatus::Open),
+        ];
+        for c in cases {
+            let what = c.what;
+            let hub = temp_hub("replaces");
+            for sid in ["mine", "other"] {
+                hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            }
+            hub.append(Event::ReportPosted(Report {
+                related: vec![], id: 1, session_id: "mine".into(), node_name: None, title: "Capturas del iPhone".into(), body: Some("Hechas".into()),
+                links: vec![], attachments: vec![], kind: ReportKind::Notice, created_at: 1, read: false, mission: None, looks_like_question: false,
+            })).unwrap();
+            let asked = |id: u64, sid: &str, related: Vec<CardRef>| Question {
+                related, id, session_id: sid.into(), node_name: None, title: "¿Arranco las capturas?".into(), detail: None, options: vec![], links: vec![],
+                attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
+                status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
+            };
+            hub.append(Event::QuestionAsked(asked(1, "mine", vec![CardRef::Report(1)]))).unwrap();
+            hub.append(Event::QuestionAsked(asked(2, "other", vec![]))).unwrap();
+            hub.append(Event::QuestionAsked(asked(3, "mine", vec![]))).unwrap();
+            hub.append(Event::QuestionAnswered { id: 3, answer: Answer { text: "Sí".into(), option: None, by: None, device: None, at: 2 } }).unwrap();
+            if c.another_open {
+                hub.append(Event::QuestionAsked(asked(4, "mine", vec![]))).unwrap();
+            }
+            let before = hub.read(|v| v.questions.len());
+            let body = AskBody {
+                caller: Caller { session_id: Some("mine".into()), pids: vec![] },
+                title: "Apple no exige capturas del iPhone Duo: ¿las hago igual?".into(),
+                detail: Some("No se pueden subir aún".into()),
+                options: vec![],
+                links: vec![],
+                attachments: vec![],
+                blocking: true,
+                to_orchestrator: false,
+                steps: vec![],
+                related: c.related.clone(),
+                replaces: c.replaces,
+            };
+            let (status, said) = status_and_body(ask(State(hub.clone()), Json(body)).await).await;
+            assert_eq!(status, c.status, "{what}: {said}");
+            assert_eq!(hub.read(|v| v.questions[&1].status), c.old, "{what}");
+            let after = hub.read(|v| v.questions.len());
+            assert_eq!(after - before, usize::from(status == StatusCode::OK), "{what}: a refused question records nothing");
+            if status == StatusCode::OK && c.replaces == Some(1) {
+                let carried = hub.read(|v| v.question_reports(&v.questions[&(after as u64)]));
+                assert_eq!(carried, [1], "{what}: the new question carries what the replaced one carried");
+            }
+        }
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {

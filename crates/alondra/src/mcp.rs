@@ -39,7 +39,8 @@ fn ask_schema(user: &str) -> Value {
             "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
             "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
             "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")},
-            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")},
+            "replaces": {"type": "integer", "description": "The number of an open question of yours that this one replaces (you rephrased it or the situation changed); it is withdrawn when this one is recorded"}
         },
         "required": ["title", "detail"]
     })
