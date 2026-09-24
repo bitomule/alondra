@@ -48,6 +48,10 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
      user.
    - A node inside one call far longer than usual (45 min; 2 h for a subagent): `interrupt`
      stops a hung call, then `send` moves the node on; a legitimately long call is left alone.
+   - A background task that may be hung, which arrives as "[Alondra] A background task may be
+     hung: …". Alondra already asked the node to stop the task 20 min earlier and it is still running. `interrupt`
+     does not stop background tasks: `send` the node what to do (stop it, or explain why it runs);
+     when you cannot tell whether it is legitimate, ask the user.
 4. Closing finished nodes. A node is finished when its work is on `origin/main` with nothing
    left unpushed; anything short of that is a question for the user.
 5. Failures across nodes. When several fail at once, the shared state is the first suspect.

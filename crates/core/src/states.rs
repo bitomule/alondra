@@ -7,7 +7,7 @@
 //! daemon record in the log that time has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    BackgroundItem, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
+    BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
 };
 use crate::view::View;
 
@@ -453,6 +453,80 @@ pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option
     })
 }
 
+pub const HUNG_PREFIX: &str = "[Alondra] A background task may be hung";
+/// How long a node has, after Alondra's message reached it, to stop a hung task before the
+/// orchestrator hears about it.
+pub const HUNG_REPLY_MS: Millis = 20 * MINUTE;
+
+fn hung_tag(node: &Node, item: &BackgroundItem) -> String {
+    format!("({} bg@{})", node.short_id, item.started_at)
+}
+
+fn kind_word(kind: BackgroundKind) -> &'static str {
+    match kind {
+        BackgroundKind::Agent => "subagent",
+        BackgroundKind::Shell => "shell",
+        BackgroundKind::Other => "task",
+    }
+}
+
+fn hung_node_text(item: &BackgroundItem, tag: &str, now: Millis) -> String {
+    format!(
+        "{HUNG_PREFIX}: your background {} \"{}\" {tag} has been running for {} min while you do nothing else. If it is \
+         stuck (a wait loop that can never end, a watcher on something that already finished), stop it with the tool that \
+         stops background tasks and carry on. If it is legitimately long, leave it.",
+        kind_word(item.kind),
+        item.label,
+        (now - item.started_at) / MINUTE
+    )
+}
+
+fn hung_orchestrator_text(node: &Node, item: &BackgroundItem, tag: &str, user: &str, now: Millis) -> String {
+    format!(
+        "{HUNG_PREFIX}: {} {tag} still has its background {} \"{}\" running after {} min, and Alondra asked it {} min ago \
+         to stop it if it is stuck. `send` tells the node what to do; `interrupt` does not stop background tasks. When you \
+         cannot tell whether it is legitimate, it is a question for {user}.",
+        node.display_name(),
+        kind_word(item.kind),
+        item.label,
+        (now - item.started_at) / MINUTE,
+        HUNG_REPLY_MS / MINUTE
+    )
+}
+
+/// The next message about a background task that may be hung: first to the node, then, if the
+/// task is still hung `HUNG_REPLY_MS` after that message reached the node, to the orchestrator.
+pub fn hung_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
+    if !node.alive || node.attached || node.is_orchestrator || watching(view, node, at) {
+        return None;
+    }
+    let wrote = |session: &str, tag: &str| {
+        view.messages.values().filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(HUNG_PREFIX) && m.text.contains(tag)).last()
+    };
+    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive);
+    let (session_id, text) = background(node, at).into_iter().filter(|b| b.suspect).find_map(|b| {
+        let tag = hung_tag(node, &b);
+        match wrote(&node.session_id, &tag) {
+            None => Some((node.session_id.clone(), hung_node_text(&b, &tag, at))),
+            Some(told) => {
+                let o = orchestrator?;
+                let ignored = told.handed_at.is_some_and(|handed| at - handed > HUNG_REPLY_MS);
+                (ignored && wrote(&o.session_id, &tag).is_none()).then(|| (o.session_id.clone(), hung_orchestrator_text(node, &b, &tag, user, at)))
+            }
+        }
+    })?;
+    Some(Message {
+        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id,
+        from: MessageFrom::Alondra,
+        text,
+        answers_question: None,
+        created_at: at,
+        handed_at: None,
+        delivered_at: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +717,36 @@ mod tests {
 
     fn harness(prompt: &str) -> Event {
         Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(prompt.into()), ..Default::default() })
+    }
+
+    #[test]
+    fn a_hung_background_task_is_raised_with_the_node_first_and_then_with_the_orchestrator() {
+        let min = 60_000;
+        let mut v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], None);
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        let next = |v: &View, at: Millis| hung_message(v, &v.nodes["s"], "Ana", at);
+
+        assert_eq!(next(&v, T0 + 20 * min), None, "not hung yet");
+        let to_node = next(&v, T0 + 40 * min).expect("hung after 30 idle min");
+        assert_eq!(to_node.session_id, "s");
+        assert!(to_node.text.starts_with(HUNG_PREFIX) && to_node.text.contains("shell \"wait for the build\""), "{}", to_node.text);
+        v.apply(52, T0 + 40 * min, &Event::MessageQueued(to_node.clone()));
+        assert_eq!(next(&v, T0 + 40 * min), None, "the node is told once");
+
+        v.apply(53, T0 + 41 * min, &Event::MessageHanded { id: to_node.id });
+        v.apply(54, T0 + 41 * min, &hook("UserPromptSubmit"));
+        v.apply(55, T0 + 42 * min, &hook("Stop"));
+        assert_eq!(next(&v, T0 + 60 * min), None, "the node worked on it recently");
+
+        let to_orchestrator = next(&v, T0 + 73 * min).expect("still hung 30 min after the node's last move");
+        assert_eq!(to_orchestrator.session_id, "o");
+        assert!(to_orchestrator.text.contains("Ana") && to_orchestrator.text.contains("bg@"), "{}", to_orchestrator.text);
+        v.apply(56, T0 + 73 * min, &Event::MessageQueued(to_orchestrator));
+        assert_eq!(next(&v, T0 + 90 * min), None, "the orchestrator is told once");
+
+        let fresh_start = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
+        assert_eq!(next(&fresh_start, T0 + 40 * min), None, "a stopped task raises nothing");
     }
 
     fn background(events: &[Event]) -> Vec<Event> {

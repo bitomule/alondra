@@ -47,6 +47,13 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     for session in stalled {
         hub.append_with(|v| v.nodes.get(&session).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued))?;
     }
+    let running: Vec<String> = hub.read(|v| v.nodes.values().filter(|n| n.watched() && !n.background.is_empty()).map(|n| n.session_id.clone()).collect());
+    for session in running {
+        while hub
+            .append_with(|v| v.nodes.get(&session).and_then(|n| states::hung_message(v, n, &user, now_millis())).map(Event::MessageQueued))?
+            .is_some()
+        {}
+    }
     let now = now_millis();
     let stale: Vec<u64> = hub.read(|v| {
         v.questions
@@ -177,7 +184,15 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 /// no reply of David's on its way. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node, now: i64) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::watching(v, node, now) || reply_on_its_way(v, node) {
+    let hung_task = node.evidence.as_ref().is_some_and(|e| e.signal == alondra_core::Signal::BackgroundSuspect);
+    if !node.watched()
+        || node.state != NodeState::Unclear
+        || hung_task
+        || node.waiting_permission
+        || asked_this_turn
+        || states::watching(v, node, now)
+        || reply_on_its_way(v, node)
+    {
         return false;
     }
     let key = key(node);
@@ -317,6 +332,21 @@ mod tests {
         for (name, message, line) in firsts {
             assert_eq!(first_line(message), line, "{name}");
         }
+    }
+
+    #[test]
+    fn a_node_left_with_only_a_hung_task_gets_no_card_from_its_terminal() {
+        let mut v = View::default();
+        let hook = |event: &str| Event::Hook(HookEvent { session_id: "s".into(), event: event.into(), last_message: Some(ASKS.into()), ..Default::default() });
+        let loop_left = alondra_core::BackgroundItem { kind: alondra_core::BackgroundKind::Shell, label: "until pgrep …".into(), started_at: 1000, suspect: false };
+        v.apply(1, 1000, &hook("UserPromptSubmit"));
+        v.apply(2, 2000, &hook("Stop"));
+        v.apply(3, 2500, &Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(42), tasks: Some(1), background: vec![loop_left], ..Default::default() }));
+        let later = 2500 + 40 * 60_000;
+        v.apply(4, later, &Event::Clock { machine_strained: false });
+        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert!(!needs_attention(&v, &v.nodes["s"], later), "the hung-task message handles it");
+        assert!(states::hung_message(&v, &v.nodes["s"], "Ana", later).is_some_and(|m| m.session_id == "s"));
     }
 
     #[test]
