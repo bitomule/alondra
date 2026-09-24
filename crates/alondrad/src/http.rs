@@ -982,7 +982,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         let open: Vec<Value> = v
             .questions
             .values()
-            .filter(|q| q.status.is_open())
+            .filter(|q| q.status.is_open() && !q.to_orchestrator)
             .map(|q| {
                 let mut value = serde_json::to_value(q).unwrap_or(Value::Null);
                 if let Some(pr) = v.question_pr(q) {
@@ -1371,7 +1371,7 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool, related: Vec<Car
         }))
     });
     match res {
-        Ok(Some((_, Event::QuestionAsked(q)))) => Json(json!({"id": q.id})).into_response(),
+        Ok(Some((_, Event::QuestionAsked(q)))) => Json(json!({"id": q.id, "to_orchestrator": q.to_orchestrator})).into_response(),
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown asking node: session_id is missing and no pid matches"),
         Err(e) => internal(e),
     }
@@ -1611,6 +1611,9 @@ struct ReportBody {
     /// The node's other open cards this report belongs with; required when it has any.
     #[serde(default, deserialize_with = "card_ids")]
     related: Option<Vec<u64>>,
+    /// true if the report is a handoff for the orchestrator, not for {user}.
+    #[serde(default)]
+    to_orchestrator: bool,
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
@@ -1673,6 +1676,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             kind: b.kind.unwrap_or(ReportKind::Notice),
             created_at: stamp,
             read: false,
+            to_orchestrator: b.to_orchestrator,
             mission: None,
             looks_like_question,
         }))
@@ -1680,7 +1684,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => {
             let card = hub.read(|v| v.report_pr(&r).and_then(|id| v.prs.get(&id)).map(|p| (p.id, p.number)));
-            let mut body = json!({"id": r.id});
+            let mut body = json!({"id": r.id, "to_orchestrator": r.to_orchestrator});
             if looks_like_question {
                 body["looks_like_question"] = json!(true);
                 body["note"] = json!(flagged_note(&hub.config.name));
@@ -2594,7 +2598,7 @@ mod tests {
         hub.append(Event::ReportPosted(Report {
             related: vec![],
             id: 1, session_id: "audit".into(), node_name: None, title: "Auditoría: 13 cosas".into(), body: Some("Detalle adjunto".into()),
-            links: vec![], attachments: vec![], kind: ReportKind::Document, created_at: now, read: false, mission: None, looks_like_question: false,
+            links: vec![], attachments: vec![], kind: ReportKind::Document, created_at: now, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
         })).unwrap();
         hub.append(Event::QuestionAsked(Question {
             related: vec![],
@@ -2633,6 +2637,7 @@ mod tests {
                 links,
                 attachments: vec![],
                 related: None,
+                to_orchestrator: false,
             };
             let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
             assert_eq!(status, StatusCode::OK, "{what}: {said}");
@@ -2641,6 +2646,53 @@ mod tests {
             let Json(o) = overview(State(hub.clone())).await;
             assert_eq!(o["news"][0]["pr_id"].as_u64(), card, "{what}: {}", o["news"]);
         }
+    }
+
+    /// #218 (blurcamera/redaccion-fase2-puerta): a handoff for the orchestrator landed in the
+    /// user's own inbox as a question, indistinguishable from a real one. `open_questions` (an
+    /// `ask`) and `news` (a `report`) must never carry a `to_orchestrator` item.
+    #[tokio::test]
+    async fn a_to_orchestrator_ask_or_report_never_reaches_the_users_inbox() {
+        let hub = temp_hub("to-orchestrator");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+
+        let ask_body = AskBody {
+            caller: Caller { session_id: Some("s".into()), pids: vec![] },
+            title: "Sigo con la fase 3?".into(),
+            detail: Some("Fase 2 medida; esto es lo que debería venir después".into()),
+            options: vec![],
+            links: vec![],
+            attachments: vec![],
+            blocking: true,
+            to_orchestrator: true,
+            steps: vec![],
+            related: None,
+            replaces: None,
+        };
+        let (status, asked) = status_and_body(ask(State(hub.clone()), Json(ask_body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{asked}");
+        assert_eq!(asked["to_orchestrator"], true, "{asked}");
+
+        let report_body = ReportBody {
+            caller: Caller { session_id: Some("s".into()), pids: vec![] },
+            title: "Fase 2 medida".into(),
+            body: Some("Nada pendiente de mi parte; el orquestador debería seguir con la fase 3".into()),
+            kind: Some(ReportKind::Final),
+            links: vec![],
+            attachments: vec![],
+            related: None,
+            to_orchestrator: true,
+        };
+        let (status, reported) = status_and_body(report(State(hub.clone()), Json(report_body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{reported}");
+        assert_eq!(reported["to_orchestrator"], true, "{reported}");
+
+        let Json(o) = overview(State(hub.clone())).await;
+        assert!(o["open_questions"].as_array().unwrap().is_empty(), "a to_orchestrator question must not reach the user's inbox: {}", o["open_questions"]);
+        assert!(o["news"].as_array().unwrap().is_empty(), "a to_orchestrator report must not reach the user's inbox: {}", o["news"]);
+
+        assert!(hub.read(|v| v.questions[&1].to_orchestrator));
+        assert!(hub.read(|v| v.reports[&1].to_orchestrator));
     }
 
     /// PR #54, 24 Sep: fase-1 moved while its card still offered merging, and the merge came back
@@ -2772,7 +2824,7 @@ mod tests {
                 let now = now_millis();
                 let posted = |id: u64, sid: &str| Report {
                     related: vec![], id, session_id: sid.into(), node_name: None, title: format!("Informe {id}"), body: Some("Hecho".into()),
-                    links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, mission: None, looks_like_question: false,
+                    links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
                 };
                 for (id, sid) in [(1, "s"), (2, "t"), (3, "s")] {
                     hub.append(Event::ReportPosted(posted(id, sid))).unwrap();
@@ -2790,7 +2842,7 @@ mod tests {
                     })).await,
                     NewCard::Report => report(State(hub.clone()), Json(ReportBody {
                         caller, title: "Anexo".into(), body: Some("Más detalle".into()), kind: Some(ReportKind::Final), links, attachments: vec![],
-                        related: c.related.clone(),
+                        related: c.related.clone(), to_orchestrator: false,
                     })).await,
                 };
                 let (status, said) = status_and_body(response).await;
@@ -2850,7 +2902,7 @@ mod tests {
         let now = now_millis();
         hub.append(Event::ReportPosted(Report {
             related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "Menús como tarjeta".into(), body: Some("Hecho".into()),
-            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, mission: None, looks_like_question: false,
+            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
         })).unwrap();
         let body = AskBody {
             caller: Caller { session_id: Some("s".into()), pids: vec![] }, title: "¿Sigo con el salto de la TUI?".into(),
@@ -2896,7 +2948,7 @@ mod tests {
             }
             hub.append(Event::ReportPosted(Report {
                 related: vec![], id: 1, session_id: "mine".into(), node_name: None, title: "Capturas del iPhone".into(), body: Some("Hechas".into()),
-                links: vec![], attachments: vec![], kind: ReportKind::Notice, created_at: 1, read: false, mission: None, looks_like_question: false,
+                links: vec![], attachments: vec![], kind: ReportKind::Notice, created_at: 1, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
             })).unwrap();
             let asked = |id: u64, sid: &str, related: Vec<CardRef>| Question {
                 related, id, session_id: sid.into(), node_name: None, title: "¿Arranco las capturas?".into(), detail: None, options: vec![], links: vec![],
@@ -3095,6 +3147,7 @@ mod tests {
                 })).await,
                 NewCard::Report => report(State(hub.clone()), Json(ReportBody {
                     caller, title: "Listo".into(), body: Some(text.clone()), kind: Some(ReportKind::Notice), links, attachments: vec![], related: None,
+                    to_orchestrator: false,
                 })).await,
             };
             let (status, said) = status_and_body(response).await;
@@ -3121,6 +3174,7 @@ mod tests {
                 links: vec![],
                 attachments: vec![],
                 related: None,
+                to_orchestrator: false,
             };
             let (status, said) = status_and_body(report(State(hub.clone()), Json(body("probe"))).await).await;
             assert_eq!(status, expected, "sandbox {sandbox}: {said}");
@@ -3225,7 +3279,7 @@ mod tests {
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         let sent = |id: u64, links: Vec<Link>| Event::ReportPosted(Report {
             related: vec![], id, session_id: "s".into(), node_name: None, title: "The plan".into(), body: Some("Read it".into()),
-            links, attachments: vec![], kind: ReportKind::Document, created_at: now_millis(), read: false, mission: None, looks_like_question: false,
+            links, attachments: vec![], kind: ReportKind::Document, created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false,
         });
         hub.append(sent(1, vec![Link { url: "https://claude.ai/artifact/plan".into(), title: None }])).unwrap();
         hub.append(sent(2, vec![])).unwrap();
@@ -3257,7 +3311,7 @@ mod tests {
         hub.append(Event::PrDismissed { id: 1 }).unwrap();
         hub.append(Event::ReportPosted(Report {
             related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "Hecho".into(), body: None,
-            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now_millis(), read: false, mission: None, looks_like_question: false,
+            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false,
         }))
         .unwrap();
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), ..Default::default() })).unwrap();

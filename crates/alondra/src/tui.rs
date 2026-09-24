@@ -1975,6 +1975,7 @@ pub(crate) mod tests {
             kind: ReportKind::Notice,
             created_at: 0,
             read: false,
+            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         }

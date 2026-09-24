@@ -698,13 +698,14 @@ impl View {
         let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
             let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
+            !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
         })
     }
 
-    /// A report another card can carry: unread, not progress, and not in a PR card (its home).
+    /// A report another card can carry: unread, not progress, not for the orchestrator, and not
+    /// in a PR card (its home).
     fn carriable(&self, r: &Report) -> bool {
-        !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none()
+        !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && self.report_pr(r).is_none()
     }
 
     /// The node's own cards still waiting on the user, outside PR cards: its open questions and
@@ -1036,6 +1037,7 @@ mod tests {
                 kind: ReportKind::Final,
                 created_at: 2000,
                 read: false,
+                to_orchestrator: false,
                 mission: None,
                 looks_like_question: false,
             })
@@ -1068,6 +1070,7 @@ mod tests {
             kind: ReportKind::Final,
             created_at: 2000,
             read: false,
+            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         }));
@@ -1323,6 +1326,7 @@ mod tests {
             kind,
             created_at: at,
             read: false,
+            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         })

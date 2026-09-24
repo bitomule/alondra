@@ -27,7 +27,11 @@ pub async fn run(hub: Arc<Hub>) {
             let now = now_millis();
             let watched = |session: &str| v.nodes.get(session).is_some_and(|n| alondra_core::states::watching(v, n, now));
             for r in v.reports.range(last_report + 1..).map(|(_, r)| r).filter(|r| r.session_id != orchestrator && !watched(&r.session_id)) {
-                lines.push(format!("- Report #{} from {}: {}", r.id, r.node_name.clone().unwrap_or_default(), r.title));
+                if r.to_orchestrator {
+                    lines.push(format!("- Handoff from {}: {}", r.node_name.clone().unwrap_or_default(), r.title));
+                } else {
+                    lines.push(format!("- Report #{} from {}: {}", r.id, r.node_name.clone().unwrap_or_default(), r.title));
+                }
             }
             for q in v.questions.range(last_question + 1..).map(|(_, q)| q).filter(|q| q.to_orchestrator && q.status.is_open()) {
                 lines.push(format!("- Question #{} for you from {}: {}", q.id, q.node_name.clone().unwrap_or_default(), q.title));

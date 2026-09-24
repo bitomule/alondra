@@ -164,6 +164,9 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let action: Bool?
     public let steps: [String]?
     public let mission: String?
+    /// A handoff for the orchestrator, not a decision for the user; the server already keeps
+    /// these out of `open_questions`, this is a defensive client-side guard.
+    public let toOrchestrator: Bool?
     /// The open PR card this question belongs to; it is shown inside that card.
     public let prId: UInt64?
     /// The report this question is about; the server keeps it out of the inbox and it is shown
@@ -219,6 +222,9 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let mission: String?
     /// The server's report gate thought it asks for something; it is delivered anyway, marked.
     public let looksLikeQuestion: Bool?
+    /// A handoff for the orchestrator, not a result for the user; the server already keeps
+    /// these out of `news`, this is a defensive client-side guard.
+    public let toOrchestrator: Bool?
     /// The open PR card this report is about; it is shown inside that card.
     public let prId: UInt64?
     /// The earlier unread reports of the same episode, oldest first; this card carries them and
