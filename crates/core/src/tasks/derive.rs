@@ -12,7 +12,7 @@ use crate::view::View;
 use super::{Assignee, Blocker, BlockerKind, Guards, Item, Launch, NewTask, Request, Task, TaskEvent, TaskOptions, TaskState};
 
 /// A launch and a node of the same name go together when the node appeared this close to it.
-const LAUNCH_WINDOW: Millis = 10 * 60 * 1000;
+pub const LAUNCH_WINDOW: Millis = 10 * 60 * 1000;
 
 /// Why a node's task moved without a card of it: the node is gone.
 pub const NODE_CLOSED: &str = "its node was closed";

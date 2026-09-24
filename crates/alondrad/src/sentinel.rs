@@ -133,7 +133,7 @@ async fn close_free_nodes(hub: &Hub, memory: &mut Memory, after: Duration) {
             .collect()
     });
     for (session, name) in free {
-        let response = crate::http::close(hub, &session, false).await;
+        let response = crate::http::close_with(hub, &session, false, Some(after), &crate::http::ClaudeAgents).await;
         if response.status().is_success() {
             log!("closed {name}: free for {} min with no task open", after.as_secs() / 60);
             continue;

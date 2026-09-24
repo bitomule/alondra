@@ -12,7 +12,7 @@ mod define;
 mod derive;
 
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
-pub use derive::{Before, CardTask, NODE_CLOSED, Pass, dependency_cancelled, task_id};
+pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

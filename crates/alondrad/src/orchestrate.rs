@@ -39,11 +39,11 @@ impl Launcher for ClaudeCli {
     async fn run(&self, cwd: &str, args: &[String]) -> Result<String, Refusal> {
         let mut cmd = tokio::process::Command::new("claude");
         cmd.current_dir(cwd).args(args).kill_on_drop(true);
-        match tokio::time::timeout(Duration::from_secs(60), cmd.output()).await {
+        match tokio::time::timeout(alondra_core::LAUNCH_TIMEOUT, cmd.output()).await {
             Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
             Ok(Ok(out)) => Err((StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).to_string())),
             Ok(Err(e)) => Err((StatusCode::BAD_GATEWAY, e.to_string())),
-            Err(_) => Err((StatusCode::GATEWAY_TIMEOUT, "claude --bg did not respond within 60 s".into())),
+            Err(_) => Err((StatusCode::GATEWAY_TIMEOUT, format!("claude --bg did not respond within {} s", alondra_core::LAUNCH_TIMEOUT.as_secs()))),
         }
     }
 }
@@ -102,9 +102,9 @@ fn node_name(v: &View, session_id: &str) -> String {
     v.nodes.get(session_id).map(|n| n.display_name().to_string()).unwrap_or_else(|| session_id.chars().take(8).collect())
 }
 
-/// Why a task cannot be handed to a node now: it waits for another, it is finished, or a live
-/// node other than `to` works on it.
-fn not_handable(v: &View, id: &str, to: Option<&str>) -> Option<Refusal> {
+/// Why a task cannot be handed to a node now: it waits for another, it is finished, a node was
+/// just launched for it and has not shown up yet, or a live node other than `to` works on it.
+fn not_handable(v: &View, id: &str, to: Option<&str>, now: Millis) -> Option<Refusal> {
     let Some(task) = v.board.tasks.get(id) else { return Some((StatusCode::NOT_FOUND, format!("task {id} does not exist"))) };
     let conflict = |why: String| Some((StatusCode::CONFLICT, why));
     match task.state {
@@ -115,6 +115,13 @@ fn not_handable(v: &View, id: &str, to: Option<&str>) -> Option<Refusal> {
         TaskState::Cancelled => return conflict(format!("{id} was cancelled: reopen it first")),
         TaskState::Done if to.is_none() => return conflict(format!("{id} is done: reopen it first")),
         _ => {}
+    }
+    let on_its_way = task.launched && task.assignee.is_none() && task.launched_at.is_some_and(|at| now - at < alondra_core::tasks::LAUNCH_WINDOW);
+    if on_its_way {
+        return conflict(format!(
+            "{id} was just launched in node {}, which takes it when it shows up (within 10 min): wait for it rather than giving the task to another node",
+            task.launch_name()
+        ));
     }
     match &task.assignee {
         Some(a) if Some(a.session_id.as_str()) != to && live(v, &a.session_id) => {
@@ -127,7 +134,7 @@ fn not_handable(v: &View, id: &str, to: Option<&str>) -> Option<Refusal> {
 /// What `launch` with a task needs: the options, the request and the prompt, which is the
 /// task's own start brief unless the orchestrator wrote one.
 pub fn task_launch(hub: &Hub, id: &str, prompt: &str, effort: Option<&str>) -> Result<(Resolved, Option<String>, String), Refusal> {
-    let task = hub.read(|v| match not_handable(v, id, None) {
+    let task = hub.read(|v| match not_handable(v, id, None, now_millis()) {
         Some(r) => Err(r),
         None => Ok(v.board.tasks[id].clone()),
     })?;
@@ -142,7 +149,10 @@ pub fn task_launch(hub: &Hub, id: &str, prompt: &str, effort: Option<&str>) -> R
 /// Gives the task to the node, when it is not its yet, and types it the text about it.
 pub fn hand(hub: &Hub, id: &str, session_id: &str, text: String, from: MessageFrom, attachments: Vec<Attachment>) -> Result<Message, Refusal> {
     let recorded = hub.append_all(|v| {
-        if let Some(r) = not_handable(v, id, Some(session_id)) {
+        if hub.is_closing(session_id) {
+            return Err((StatusCode::CONFLICT, format!("node {} is being closed: give {id} to another node, or launch one for it", node_name(v, session_id))));
+        }
+        if let Some(r) = not_handable(v, id, Some(session_id), now_millis()) {
             return Err(r);
         }
         let mut events = vec![];
@@ -513,12 +523,22 @@ fn built_on(v: &View, task: &Task, heads: &BTreeMap<u64, String>) -> String {
     if below.is_empty() { "on the default branch".into() } else { format!("on top of {}", below.join(", ")) }
 }
 
+/// The orchestrator heard that this start of the task failed: starting it again is its call.
+fn start_failure_told(v: &View, task: &Task) -> bool {
+    let about = format!("[Alondra] Task {} ", task.id);
+    v.messages.values().any(|m| m.from == MessageFrom::Alondra && m.created_at >= task.state_since && m.text.starts_with(&about) && m.text.contains(" could not start: "))
+}
+
 /// Starts every task that can start and has not: the ones just defined with nothing to wait
 /// for, and the ones whose dependencies now have their PR open or are done. A start that fails
-/// is left to the orchestrator, told once; `given_up` keeps those.
-pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_up: &mut HashSet<String>) -> Vec<String> {
+/// is left to the orchestrator, told once, until the task moves again (a reopen); `given_up`
+/// keeps those by task and since when it is in its state, and the orchestrator's messages keep
+/// them across a restart.
+pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_up: &mut HashSet<(String, Millis)>) -> Vec<String> {
     let _one_at_a_time = hub.starts.lock().await;
-    let due: Vec<Task> = hub.read(|v| v.tasks_to_start().into_iter().filter(|t| !given_up.contains(&t.id)).cloned().collect());
+    let due: Vec<Task> = hub.read(|v| {
+        v.tasks_to_start().into_iter().filter(|t| !given_up.contains(&(t.id.clone(), t.state_since)) && !start_failure_told(v, t)).cloned().collect()
+    });
     let mut started = vec![];
     for task in due {
         if !hub.read(|v| v.board.tasks.get(&task.id).is_some_and(Task::needs_start)) {
@@ -534,7 +554,7 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
             }
             Err(why) => {
                 log!("task {} could not start: {why}", task.id);
-                given_up.insert(task.id.clone());
+                given_up.insert((task.id.clone(), task.state_since));
                 tell_orchestrator(
                     hub,
                     format!("[Alondra] Task {} “{}” could not start: {why}. Start it with launch or send with task \"{}\", or cancel it.", task.id, task.title, task.id),
@@ -545,12 +565,45 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
     started
 }
 
+fn cancelled_with_text(task: &Task, dependency: &str) -> String {
+    format!(
+        "[Alondra] Task {} “{}” was cancelled: it waited for {dependency}, which was cancelled. If the work is still wanted, reopen {dependency} and then {}, or define it anew.",
+        task.id, task.title, task.id
+    )
+}
+
+/// The dependency a task was cancelled with, when the machine cancelled it for that.
+fn cancelled_with(task: &Task) -> Option<&str> {
+    let alondra_core::tasks::TaskEvent::Cancel { reason: Some(reason) } = &task.history.last()?.event else { return None };
+    task.depends_on.iter().find(|d| *reason == alondra_core::tasks::dependency_cancelled(d)).map(String::as_str)
+}
+
+/// Tells the orchestrator about each task cancelled because one it waited for was cancelled.
+/// Whether it heard is read from its messages, so a restart tells nothing twice.
+pub fn tell_cancelled_dependents(hub: &Hub) {
+    let due: Vec<String> = hub.read(|v| {
+        let Some(o) = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id)) else { return vec![] };
+        v.board
+            .tasks
+            .values()
+            .filter(|t| t.state == TaskState::Cancelled)
+            .filter_map(|t| cancelled_with(t).map(|d| (t, cancelled_with_text(t, d))))
+            .filter(|(t, text)| !v.messages.values().any(|m| m.session_id == o.session_id && m.created_at >= t.state_since && m.text == *text))
+            .map(|(_, text)| text)
+            .collect()
+    });
+    for text in due {
+        tell_orchestrator(hub, text);
+    }
+}
+
 pub async fn run(hub: Arc<Hub>) {
     let mut given_up = HashSet::new();
     loop {
-        let seen = hub.tick();
+        let seen = hub.changes();
         start_due(&hub, &ClaudeCli, &crate::prs::GhCli, &mut given_up).await;
-        hub.wait_change(seen, Duration::from_secs(30)).await;
+        tell_cancelled_dependents(&hub);
+        hub.wait_changes(seen, Duration::from_secs(30)).await;
     }
 }
 
@@ -776,6 +829,93 @@ mod tests {
         assert!(claude.prompt("app/model-2").starts_with("Split the model."), "without a prompt the node gets the task's brief");
         hub.append(seen("s3", "app/model-2")).unwrap();
         assert!(hub.read(|v| v.board.tasks[&model].is_assigned_to("s3")), "the new node takes the task its old node left");
+    }
+
+    fn send_task(hub: &Arc<Hub>, key: &str, task: &str) -> impl Future<Output = Response> + use<> {
+        let b: crate::http::MessageBody = serde_json::from_value(json!({"text": "Take this one.", "from": "orchestrator", "task": task})).unwrap();
+        crate::http::send_message(State(hub.clone()), UrlPath(key.to_string()), Json(b))
+    }
+
+    /// The start loop launched a node for the task; before that node showed up, `send` gave the
+    /// task to another node, and the Launched event then took it back: two nodes on one task.
+    #[tokio::test]
+    async fn a_task_launched_by_the_start_loop_goes_to_no_other_node_before_its_own_shows_up() {
+        let (hub, home) = fleet("launched");
+        let cwd = home.display().to_string();
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [{"title": "Model", "brief": "Split the model.", "assignee": "new", "cwd": cwd}]}))).ok().unwrap();
+        let model = d["tasks"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(start_due(&hub, &FakeClaude::default(), &FakeGithub, &mut HashSet::new()).await, [model.clone()]);
+
+        let (status, said) = body(send_task(&hub, "app/old", &model).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        assert!(said["error"].as_str().unwrap().contains("was just launched in node app/model"), "{said}");
+        let relaunch: crate::http::LaunchBody = serde_json::from_value(json!({"name": "app/model-2", "cwd": cwd, "task": model})).unwrap();
+        assert_eq!(body(crate::http::launch_with(&hub, relaunch, &FakeClaude::default()).await).await.0, StatusCode::CONFLICT, "nor a second launch");
+        assert_eq!(hub.read(|v| v.board.tasks[&model].assignee.clone()), None);
+
+        hub.append(seen("s1", "app/model")).unwrap();
+        assert!(hub.read(|v| v.board.tasks[&model].is_assigned_to("s1")), "its own node takes it");
+    }
+
+    /// A task handed to a node Alondra was closing (a free node closed on its own) was cancelled
+    /// by the close with nobody told.
+    #[tokio::test]
+    async fn a_task_is_not_handed_to_a_node_alondra_is_closing() {
+        let (hub, _home) = fleet("closing");
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [{"title": "Docs", "brief": "Document it.", "assignee": "new", "cwd": "/tmp"}]}))).ok().unwrap();
+        let docs = d["tasks"][0]["id"].as_str().unwrap().to_string();
+        let closing = hub.closing("s0");
+        let (status, said) = body(send_task(&hub, "app/old", &docs).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        assert!(said["error"].as_str().unwrap().contains("app/old is being closed"), "{said}");
+        drop(closing);
+        assert_eq!(body(send_task(&hub, "app/old", &docs).await).await.0, StatusCode::OK, "once the close is over");
+    }
+
+    /// A start that failed was kept in memory by task id: a reopen never started it again, and a
+    /// restart told the orchestrator again.
+    #[tokio::test]
+    async fn a_failed_start_waits_for_the_orchestrator_across_a_restart_and_is_tried_again_after_a_reopen() {
+        let (hub, home) = fleet("given-up");
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [{"title": "Model", "brief": "b", "assignee": "new", "cwd": home.display().to_string()}]}))).ok().unwrap();
+        let model = d["tasks"][0]["id"].as_str().unwrap().to_string();
+        let refusing = FakeClaude { refuse: Some("no such command"), ..Default::default() };
+        assert!(start_due(&hub, &refusing, &FakeGithub, &mut HashSet::new()).await.is_empty());
+        drop(hub);
+        let hub = hub_at(&home);
+        assert!(start_due(&hub, &refusing, &FakeGithub, &mut HashSet::new()).await.is_empty());
+        let told = |hub: &Hub| orchestrator_told(hub).into_iter().filter(|t| t.contains("could not start")).count();
+        assert_eq!(told(&hub), 1, "a restart does not tell it again");
+
+        let mut given_up = HashSet::new();
+        for event in [alondra_core::tasks::TaskEvent::Cancel { reason: None }, alondra_core::tasks::TaskEvent::Reopen] {
+            hub.append(Event::TaskMoved { task: model.clone(), event }).unwrap();
+        }
+        let claude = FakeClaude::default();
+        assert_eq!(start_due(&hub, &claude, &FakeGithub, &mut given_up).await, [model.clone()], "reopened, it starts again");
+        assert_eq!(claude.names(), ["app/model"]);
+    }
+
+    /// A task cancelled because the one it waited for was cancelled: the orchestrator hears it once.
+    #[tokio::test]
+    async fn the_orchestrator_hears_once_that_a_task_was_cancelled_with_the_one_it_waited_for() {
+        let (hub, home) = fleet("cascade");
+        let cwd = home.display().to_string();
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [
+            {"title": "Model", "brief": "Split the model.", "assignee": "new", "cwd": cwd},
+            {"title": "UI", "brief": "Show it.", "assignee": "new", "cwd": cwd, "depends_on": [0]},
+        ]}))).ok().unwrap();
+        let (model, ui) = (d["tasks"][0]["id"].as_str().unwrap().to_string(), d["tasks"][1]["id"].as_str().unwrap().to_string());
+        let (status, _) = body(crate::http::cancel_task(State(hub.clone()), UrlPath(model.clone()), None).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(hub.read(|v| v.board.tasks[&ui].state), TaskState::Cancelled);
+        tell_cancelled_dependents(&hub);
+        tell_cancelled_dependents(&hub);
+        let told: Vec<String> = orchestrator_told(&hub).into_iter().filter(|t| t.contains("was cancelled: it waited for")).collect();
+        assert_eq!(told, [format!("[Alondra] Task {ui} “UI” was cancelled: it waited for {model}, which was cancelled. If the work is still wanted, reopen {model} and then {ui}, or define it anew.")]);
+        drop(hub);
+        tell_cancelled_dependents(&hub_at(&home));
+        assert_eq!(orchestrator_told(&hub_at(&home)).into_iter().filter(|t| t.contains("was cancelled: it waited for")).count(), 1, "nor after a restart");
     }
 
     #[test]

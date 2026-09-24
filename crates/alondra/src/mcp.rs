@@ -188,7 +188,28 @@ fn report_reply(id: u64, to_orchestrator: bool, note: Option<&str>, user: &str) 
     }
 }
 
+/// Every call waits this long for alondrad.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a call waits for alondrad. `launch` and `send` wait for any start under way (up to a
+/// launch) and then launch, or hand the task, themselves: a shorter wait gave up on calls that
+/// went through, and the retry made a second node.
+fn call_timeout(tool: &str) -> Duration {
+    match tool {
+        "launch" | "send" => alondra_core::LAUNCH_TIMEOUT * 2 + CALL_TIMEOUT,
+        _ => CALL_TIMEOUT,
+    }
+}
+
 fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Result<String> {
+    let waiting;
+    let client = match call_timeout(name) {
+        CALL_TIMEOUT => client,
+        longer => {
+            waiting = Client::new(longer);
+            &waiting
+        }
+    };
     let who = caller();
     Ok(match name {
         "ask" => {
@@ -564,7 +585,7 @@ pub fn urlencode(s: &str) -> String {
 
 pub fn serve(role: Role) -> Result<()> {
     let user = crate::client::config().name.clone();
-    let client = Client::new(Duration::from_secs(30));
+    let client = Client::new(CALL_TIMEOUT);
     let mut registered = role != Role::Orchestrator;
     let mut register = |client: &Client| {
         if !registered {
@@ -616,6 +637,16 @@ pub fn serve(role: Role) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `launch` and `send` with a task wait for a start under way, then launch: the 30 s every
+    /// call had gave up first, and the orchestrator's retry made a second node.
+    #[test]
+    fn a_call_that_may_wait_for_a_launch_outlasts_it_and_the_one_before_it() {
+        for tool in ["launch", "send"] {
+            assert!(call_timeout(tool) > alondra_core::LAUNCH_TIMEOUT * 2, "{tool}: {:?}", call_timeout(tool));
+        }
+        assert_eq!(call_timeout("ask"), CALL_TIMEOUT);
+    }
 
     #[test]
     fn the_configured_name_reaches_every_text_a_node_reads() {

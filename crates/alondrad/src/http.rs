@@ -1156,7 +1156,6 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
                 value["background"] = json!(states::background(n, now));
-                value["activity"] = json!(v.activity(n));
                 value
             })
             .collect();
@@ -1173,6 +1172,50 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
     Json(body)
 }
 
+/// What the overview shows that a client acts on, leaving out what moves with every hook: the
+/// tool in flight, the last message and prompt, when a node was last seen, its activity. Clients
+/// refetch the overview when this changes (the hub bumps their tick then), not on every event.
+pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let text = |value: Value| value.to_string();
+    for n in v.nodes.values() {
+        (&n.session_id, &n.short_id, &n.name, n.project(), n.alive, n.in_daemon, n.is_orchestrator, n.has_plugin, n.created_at).hash(&mut h);
+        (text(json!(n.state)), text(json!(n.status)), text(json!(n.orchestrator_state)), n.waiting_permission, n.attached, n.menu_waiting.is_some(), &n.mission, n.usage_limited).hash(&mut h);
+        v.held_for_turn_end(&n.session_id).hash(&mut h);
+        for b in states::background(n, now) {
+            (text(json!(b.kind)), b.label).hash(&mut h);
+        }
+    }
+    for q in v.questions.values() {
+        (q.id, text(json!(q.status)), q.answer.as_ref().map(|a| &a.text), v.question_task(q).map(|t| &t.id)).hash(&mut h);
+        if q.status.is_open() {
+            (v.question_pr(q), v.question_reports(q)).hash(&mut h);
+        }
+    }
+    for r in v.reports.values() {
+        (r.id, r.read, r.looks_like_question, v.report_task(r).map(|t| &t.id)).hash(&mut h);
+    }
+    for r in v.inbox_reports() {
+        (r.id, v.report_pr(r), v.report_stack(r)).hash(&mut h);
+    }
+    if let Some(o) = v.nodes.values().find(|n| n.is_orchestrator) {
+        for m in v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20) {
+            (m.id, m.handed_at.is_some(), m.delivered_at.is_some()).hash(&mut h);
+        }
+    }
+    for p in v.in_train_order(crate::prs::in_inbox(v)) {
+        text(pr_card(v, p)).hash(&mut h);
+    }
+    for r in v.board.requests.values() {
+        text(client_request(v, r)).hash(&mut h);
+    }
+    for t in v.board.tasks.values() {
+        text(client_task(v, t, now)).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// A question as clients get it, with the task it belongs to.
 fn client_question(v: &View, q: &Question) -> Value {
     let mut value = serde_json::to_value(q).unwrap_or(Value::Null);
@@ -1187,17 +1230,24 @@ fn client_report(v: &View, r: &Report) -> Value {
     value
 }
 
-/// A request with the state its tasks give it and their ids.
+/// A request with the state its tasks give it and their ids. Its title is the orchestrator's, or
+/// its only task's.
 fn client_request(v: &View, r: &alondra_core::tasks::Request) -> Value {
     let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
+    let tasks: Vec<&alondra_core::tasks::Task> = v.board.tasks.values().filter(|t| t.request == r.id).collect();
     value["state"] = json!(v.board.request_state(&r.id));
-    value["tasks"] = json!(v.board.tasks.values().filter(|t| t.request == r.id).map(|t| t.id.as_str()).collect::<Vec<_>>());
+    value["tasks"] = json!(tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>());
+    let only = match tasks.as_slice() {
+        [one] => Some(one.title.as_str()),
+        _ => None,
+    };
+    value["title"] = json!(r.title.as_deref().or(only));
     value
 }
 
 /// A task as the overview lists it: its brief and its history are too long to send on every poll.
 /// `auto_merge_pending` says Alondra is waiting on GitHub to merge a PR of it, so its node is idle
-/// on purpose.
+/// on purpose; `last_change` moves with every transition, so a client knows to fetch its history.
 fn client_task(v: &View, t: &alondra_core::tasks::Task, now: alondra_core::Millis) -> Value {
     let mut value = serde_json::to_value(t).unwrap_or(Value::Null);
     if let Some(o) = value.as_object_mut() {
@@ -1206,6 +1256,7 @@ fn client_task(v: &View, t: &alondra_core::tasks::Task, now: alondra_core::Milli
         }
     }
     value["auto_merge_pending"] = json!(v.auto_merge_pending(t, now));
+    value["last_change"] = json!(t.last_change());
     value
 }
 
@@ -2107,9 +2158,28 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>, body: 
     close(&hub, &key, force).await
 }
 
+/// What closing a background session asks of Claude Code, so a test can stand in for it.
+pub(crate) trait Agents: Sync {
+    fn run(&self, args: &[&str]) -> impl Future<Output = Result<String, String>> + Send;
+}
+
+pub(crate) struct ClaudeAgents;
+
+impl Agents for ClaudeAgents {
+    async fn run(&self, args: &[&str]) -> Result<String, String> {
+        run_claude(args).await
+    }
+}
+
 /// Closes a node the way `claude rm` does, which keeps a worktree with work not yet saved
 /// elsewhere, and refuses while the node still has something pending.
 pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
+    close_with(hub, key, force, None, &ClaudeAgents).await
+}
+
+/// `close`, and with `still_free` (Alondra closing a node free that long by itself) only if it
+/// is still free once it is marked as closing: a task handed to it meanwhile keeps it.
+pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Option<Duration>, claude: &impl Agents) -> Response {
     let Some((short, session, busy, waiting_permission, in_daemon, name, orchestrator)) = hub.read(|v| {
         v.resolve_node(key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
     }) else {
@@ -2131,6 +2201,11 @@ pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
         let msg = reasons.iter().map(|r| r.detail.clone().unwrap_or_else(|| r.kind.to_string())).collect::<Vec<_>>().join("; ");
         return err_reasons(format!("{short} still has something pending, so it was not closed: {msg}"), reasons);
     }
+    if let Some(after) = still_free
+        && !hub.read_settled(|v| v.nodes.get(&session).is_some_and(|n| alondra_core::upkeep::free_to_close(v, n, now_millis(), after.as_millis() as i64)))
+    {
+        return err(StatusCode::CONFLICT, format!("{short} is no longer free, so it was not closed"));
+    }
     // The node's own open questions and actions are moot once the user has decided to close it.
     let own_open: Vec<u64> = hub.read(|v| v.questions.values().filter(|q| q.session_id == session && q.status.is_open()).map(|q| q.id).collect());
     for id in own_open {
@@ -2146,7 +2221,7 @@ pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
     let mut cleared_broken = false;
     let mut said = String::new();
     for _ in 0..3 {
-        match run_claude(&["rm", &short]).await {
+        match claude.run(&["rm", &short]).await {
             Ok(text) if text.contains(&format!("removed {short}")) => said = text,
             Ok(text) if !cleared_broken && text.contains("Git couldn't remove it") => {
                 let (Some(dir), Some(branch)) = (worktree.as_ref(), branch.as_deref()) else { return err(StatusCode::CONFLICT, text) };
@@ -2159,7 +2234,7 @@ pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
             Ok(text) => return err(StatusCode::CONFLICT, text),
             Err(e) => return err(StatusCode::BAD_GATEWAY, e),
         }
-        match run_claude(&["agents", "--json", "--all"]).await {
+        match claude.run(&["agents", "--json", "--all"]).await {
             Ok(list) if !listed(&list, &short) => {
                 if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
                     return err(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display()));
@@ -2469,28 +2544,37 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
     Json(json!({"via": "jev", "sessions": matches}))
 }
 
-/// A task whole, with the brief, history and anomalies the overview leaves out.
+/// A task whole, with the brief, history and anomalies the overview leaves out, and every report
+/// of it Alondra still keeps: the overview carries only the newest reports of the fleet.
 async fn task_detail(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
     let found = hub.read(|v| {
         let t = v.board.tasks.get(&id)?;
         let mut value = serde_json::to_value(t).unwrap_or(Value::Null);
         value["auto_merge_pending"] = json!(v.auto_merge_pending(t, now_millis()));
-        Some(value)
+        value["last_change"] = json!(t.last_change());
+        let filed = |r: &Report| t.documents.contains(&r.id) || t.notices.contains(&r.id) || t.final_report == Some(r.id);
+        let reports: Vec<Value> = v
+            .reports
+            .values()
+            .filter(|r| filed(r) || (r.kind != ReportKind::Progress && v.report_task(r).is_some_and(|rt| rt.id == t.id)))
+            .map(|r| client_report(v, r))
+            .collect();
+        Some((value, reports))
     });
     match found {
-        Some(task) => Json(json!({"task": task})).into_response(),
+        Some((task, reports)) => Json(json!({"task": task, "reports": reports})).into_response(),
         None => err(StatusCode::NOT_FOUND, format!("task {id} does not exist")),
     }
 }
 
 #[derive(Deserialize, Default)]
-struct CancelBody {
+pub(crate) struct CancelBody {
     #[serde(default)]
     reason: Option<String>,
 }
 
 /// David or the orchestrator drops a task. Refused with the machine's reason when it cannot be.
-async fn cancel_task(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CancelBody>>) -> Response {
+pub(crate) async fn cancel_task(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CancelBody>>) -> Response {
     let reason = body.and_then(|Json(b)| b.reason).map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
     move_task(&hub, &id, alondra_core::tasks::TaskEvent::Cancel { reason })
 }
@@ -3150,7 +3234,12 @@ mod tests {
         let Json(o) = overview(State(hub.clone())).await;
         let node = &o["nodes"][0];
         assert!(node.get("ledger").is_none(), "clients get it as activity: {node}");
-        let activity = node["activity"].as_array().expect("activity on every node");
+        assert!(node.get("activity").is_none(), "the overview carries states only; activity is the node's detail: {node}");
+        assert_eq!(node["tool"]["name"], "Agent", "today's tool field is untouched");
+        assert_eq!((&node["status"], &node["state"]), (&json!("busy"), &json!("working")));
+        let (_, detail) = status_and_body(node_detail(State(hub.clone()), Path("s".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
+        let node = &detail["node"];
+        let activity = node["activity"].as_array().expect("activity on the node's detail");
         let keys: Vec<std::collections::BTreeSet<&str>> = activity.iter().map(|a| a.as_object().unwrap().keys().map(String::as_str).collect()).collect();
         let shape = std::collections::BTreeSet::from(["agent_id", "agent_type", "since", "summary", "task", "tool"]);
         assert_eq!(keys, vec![shape; 2], "the shape the apps code against, nulls included");
@@ -3364,6 +3453,121 @@ mod tests {
             assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT], "round {round}");
             assert_eq!(hub.read(|v| (v.questions.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "round {round}: one question, nothing refused recorded");
         }
+    }
+
+    /// 24 Sep, 21:xx: 1,194 events in an hour, 991 of them hooks, and each one, and each machine
+    /// sample every 10 s, moved the tick every client waits on: each refetched the whole overview
+    /// ~1,500 times an hour.
+    #[tokio::test]
+    async fn clients_hear_of_a_change_only_when_what_they_show_changes() {
+        let hub = started("tick", &["s"]);
+        let tool = |event: &str| json!({"session_id": "s", "hook_event_name": event, "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}});
+        let before = hub.tick();
+        for event in ["PreToolUse", "PostToolUse", "PreToolUse"] {
+            hook(State(hub.clone()), Json(tool(event))).await;
+        }
+        assert_eq!(hub.tick(), before, "a tool starting and ending changes no state");
+        assert!(hub.changes() > 3, "Alondra's own loops still hear every event");
+
+        let (status, _) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Despliego?"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let asked = hub.tick();
+        assert!(asked > before, "a question is news");
+        let body = AnswerBody { text: "Sí".into(), option: None, by: None, attachments: vec![] };
+        assert_eq!(status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await.0, StatusCode::OK);
+        let answered = hub.tick();
+        assert!(answered > asked, "so is its answer, and the task it moves");
+
+        let machine = |available: u64| alondra_core::Machine { memory_total: 1000, memory_available: available, cpus: 8, disk_total: 1000, disk_available: 500, ..Default::default() };
+        hub.set_machine(machine(500), None);
+        let sampled = hub.tick();
+        hub.set_machine(machine(510), None);
+        assert_eq!(hub.tick(), sampled, "a sample that moves a gauge 1 % stays within its 5 % step");
+        hub.set_machine(machine(700), None);
+        assert!(hub.tick() > sampled, "one that crosses a step is news");
+
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["tick"].as_u64(), Some(hub.tick()), "the overview says which tick it shows");
+        let replayed = hub_at_home_of(&hub);
+        assert_eq!(replayed.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), hub.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), "a replay gives the same view");
+    }
+
+    fn hub_at_home_of(hub: &Hub) -> Arc<Hub> {
+        let config = alondra_core::config::Config::resolve(hub.home.clone(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        Arc::new(Hub::open(config, false).unwrap())
+    }
+
+    /// The overview left out when a task last changed, so a client showing its history could not
+    /// tell it had moved.
+    #[tokio::test]
+    async fn every_task_in_the_overview_says_when_it_last_changed() {
+        let hub = started("last-change", &["s"]);
+        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let last_change = |o: &Value| o["tasks"][0]["last_change"].as_i64();
+        let Json(first) = overview(State(hub.clone())).await;
+        assert!(last_change(&first).is_some(), "{}", first["tasks"][0]);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let (status, _) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Despliego?"))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let Json(after) = overview(State(hub.clone())).await;
+        assert!(last_change(&after) > last_change(&first), "{} then {}", first["tasks"][0], after["tasks"][0]);
+    }
+
+    /// The overview carries the fleet's newest 50 reports: a task's older ones were nowhere.
+    #[tokio::test]
+    async fn a_task_s_detail_carries_every_report_of_it() {
+        let hub = started("task-reports", &["s", "t"]);
+        for id in 1..=60u64 {
+            let sid = if id % 10 == 0 { "t" } else { "s" };
+            hub.append(Event::ReportPosted(Report {
+                id, session_id: sid.into(), node_name: None, title: format!("R{id}"), body: None, links: vec![], attachments: vec![],
+                kind: ReportKind::Notice, created_at: id as i64, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
+            }))
+            .unwrap();
+        }
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["reports"].as_array().map(Vec::len), Some(50));
+        let (status, said) = status_and_body(task_detail(State(hub.clone()), Path("t-s".into())).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<u64> = said["reports"].as_array().unwrap().iter().map(|r| r["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, (1..=60).filter(|i| i % 10 != 0).collect::<Vec<u64>>(), "all 54 of its reports, oldest first, none of another node's");
+        assert!(said["reports"].as_array().unwrap().iter().all(|r| r["task"] == "t-s"));
+    }
+
+    /// `claude rm` and `claude agents` as a test sees them: every close goes through.
+    #[derive(Default)]
+    struct FakeAgents(std::sync::Mutex<Vec<String>>);
+
+    impl Agents for FakeAgents {
+        async fn run(&self, args: &[&str]) -> Result<String, String> {
+            self.0.lock().unwrap().push(args.join(" "));
+            Ok(if args[0] == "rm" { format!("removed {}", args[1]) } else { "[]".into() })
+        }
+    }
+
+    /// The sentinel picked a free node on one look at the view and closed it later: a task handed
+    /// to it in between was cancelled by the close, with nobody told.
+    #[tokio::test]
+    async fn alondra_closes_a_node_on_its_own_only_while_it_is_still_free() {
+        let hub = temp_hub("auto-close");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
+            session_id: "zzfree00-1".into(), short_id: "zzfree00".into(), name: Some("app/idle".into()), pid: Some(1), ..Default::default()
+        }))
+        .unwrap();
+        hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
+            id: "t-x".into(), request: "r-1".into(), title: "Handed meanwhile".into(), brief: None, depends_on: vec![], options: Default::default(),
+            session_id: Some("zzfree00-1".into()), launched: false, launched_as: None, start: None,
+        }))
+        .unwrap();
+        let claude = FakeAgents::default();
+        let (status, said) = status_and_body(close_with(&hub, "zzfree00-1", false, Some(Duration::from_secs(3600)), &claude).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        assert!(claude.0.lock().unwrap().is_empty(), "claude rm never ran");
+        assert_eq!(hub.read(|v| v.board.tasks["t-x"].state), alondra_core::tasks::TaskState::Running);
+        let (status, said) = status_and_body(close_with(&hub, "zzfree00-1", false, None, &claude).await).await;
+        assert_eq!(status, StatusCode::OK, "David's own close still goes through: {said}");
+        assert_eq!(claude.0.lock().unwrap().first().map(String::as_str), Some("rm zzfree00"));
     }
 
     /// Holds every report it reads until the test lets it go.
