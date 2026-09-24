@@ -5,7 +5,7 @@
 //! the same rules: each session is one request with one task.
 
 use crate::event::{Event, ReviewVerdict};
-use crate::model::{MessageFrom, Millis, Question, QuestionOrigin, Report, ReportKind, TurnSignal};
+use crate::model::{MessageAbout, MessageFrom, Millis, Question, QuestionOrigin, Report, ReportKind, TurnSignal};
 use crate::pr::{CheckState, PrState, PullRequest};
 use crate::view::View;
 
@@ -99,7 +99,8 @@ fn may_move_tasks(event: &Event) -> bool {
         | Event::PrAsked { .. }
         | Event::NodeRemoved { .. }
         | Event::DaemonSeen(_)
-        | Event::Launched { .. } => true,
+        | Event::Launched { .. }
+        | Event::TaskCreated(_) => true,
         _ => false,
     }
 }
@@ -151,7 +152,7 @@ impl View {
         self.board
             .tasks
             .values()
-            .filter(|t| t.recorded && t.launched && t.assignee.is_none() && t.title == name && node.created_at >= t.created_at - LAUNCH_WINDOW)
+            .filter(|t| t.recorded && t.launched && t.assignee.is_none() && t.launch_name() == name && node.created_at >= t.created_at - LAUNCH_WINDOW)
             .max_by_key(|t| (t.created_at, t.id.clone()))
     }
 
@@ -172,6 +173,7 @@ impl View {
             options: TaskOptions { auto_merge: node.name.as_ref().is_some_and(|n| self.auto_merge_nodes.contains(n)), ..TaskOptions::default() },
             session_id: Some(session_id.to_string()),
             launched: false,
+            start: None,
         };
         Some((id, Event::TaskCreated(new)))
     }
@@ -210,7 +212,7 @@ impl View {
         self.reports.get(&report).is_some_and(|r| self.awaits_review(r))
     }
 
-    fn open_prs<'a>(&'a self, task: &'a Task) -> impl Iterator<Item = &'a PullRequest> {
+    pub(crate) fn open_prs<'a>(&'a self, task: &'a Task) -> impl Iterator<Item = &'a PullRequest> {
         task.prs.iter().filter_map(|id| self.prs.get(id)).filter(|p| p.state == PrState::Open)
     }
 
@@ -358,6 +360,13 @@ impl View {
             (Event::TaskMoved { task, event }, _) => {
                 self.apply_task_event(task, event.clone(), at);
             }
+            (Event::Launched { name, task: Some(task), .. }, _) => {
+                if let Some(t) = self.board.tasks.get_mut(task) {
+                    t.launched = true;
+                    t.launched_as = Some(name.clone());
+                    t.assignee = None;
+                }
+            }
             (Event::MarkedOrchestrator { session_id }, _) => self.drop_tasks(session_id),
             (Event::RequestSent { request_id, options, text, attachments }, _) => {
                 let request = self.board.requests.entry(request_id.clone()).or_insert_with(|| Request::new(request_id, at, false));
@@ -455,8 +464,12 @@ impl View {
             }
             (Event::ReportPosted(r), _) => moved.extend(self.report_posted(r.id, at)),
             (Event::MessageHanded { id }, _) => {
-                let from_someone = self.messages.get(id).filter(|m| m.from != MessageFrom::Alondra && m.about.is_none() && m.answers_question.is_none());
-                let task = from_someone.and_then(|m| self.session_task(&m.session_id)).map(|t| t.id.clone());
+                let from_someone = self.messages.get(id).filter(|m| m.from != MessageFrom::Alondra && m.answers_question.is_none());
+                let task = from_someone.and_then(|m| match &m.about {
+                    None => self.session_task(&m.session_id).map(|t| t.id.clone()),
+                    Some(MessageAbout::Task { task }) => self.board.tasks.get(task).filter(|t| t.is_assigned_to(&m.session_id)).map(|t| t.id.clone()),
+                    Some(_) => None,
+                });
                 if let Some(tid) = task {
                     moved.extend(self.written_to(&tid, Item::Message(*id), at));
                 }
@@ -490,9 +503,13 @@ impl View {
             (Event::ArtifactReviewed { report, verdict }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, Some((*report, *verdict)), at)),
             (Event::ReportRead { .. }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, None, at)),
             (Event::DaemonSeen(d), _) => self.bind_launch_of(&d.session_id),
-            (Event::Launched { name, request_id, auto_merge }, _) => self.launched(name, Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
+            (Event::Launched { name, request_id, auto_merge, task }, _) => match task {
+                Some(task) => self.launched_for(task),
+                None => self.launched(name, Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
+            },
             _ => {}
         }
+        moved.extend(self.dependencies_ready(at));
         for id in moved {
             self.raise_waiting_question(&id, at);
         }
@@ -517,6 +534,8 @@ impl View {
             created_at: at,
             final_report: None,
             launched: false,
+            launched_as: None,
+            start: None,
             recorded: false,
             history: vec![],
             anomalies: vec![],
@@ -700,6 +719,7 @@ impl View {
                 },
                 session_id: None,
                 launched: true,
+                start: None,
             };
             self.board.create(&new, launch.at);
             self.keep(Event::TaskCreated(new));
@@ -725,6 +745,31 @@ impl View {
                 self.board.launches.insert(name.to_string(), launch);
             }
         }
+    }
+
+    /// A node was launched for a task that already exists: a node of its name that is already
+    /// here takes it; otherwise the first one to show up does.
+    fn launched_for(&mut self, task: &str) {
+        if !self.recording() {
+            return;
+        }
+        let taker = self.nodes.values().find(|n| self.tasks_of(&n.session_id).next().is_none() && self.waiting_launch(&n.session_id).is_some_and(|t| t.id == task));
+        if let Some(sid) = taker.map(|n| n.session_id.clone()) {
+            self.assign(task, &sid);
+        }
+    }
+
+    /// Tasks whose every dependency now has its PR open or is done start: they build on top.
+    fn dependencies_ready(&mut self, at: Millis) -> Vec<String> {
+        let ready: Vec<(String, String)> = self
+            .board
+            .tasks
+            .values()
+            .filter(|t| t.state == TaskState::WaitingDependency && t.recorded == self.recording())
+            .filter(|t| self.task_guards(t).waiting_on.is_none())
+            .filter_map(|t| Some((t.id.clone(), t.depends_on.last()?.clone())))
+            .collect();
+        ready.into_iter().filter(|(id, dependency)| self.fact(id, TaskEvent::DependencyReady { task: dependency.clone() }, at)).map(|(id, _)| id).collect()
     }
 
     fn assign(&mut self, task: &str, session_id: &str) {
@@ -1005,7 +1050,7 @@ mod tests {
     #[test]
     fn an_auto_merge_task_does_not_wait_for_its_pr() {
         let mut run = Run::new();
-        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true }).on(seen("app/fix"));
+        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None }).on(seen("app/fix"));
         assert!(run.task().launched && run.task().options.auto_merge);
         run.on(opened()).on(report(1, ReportKind::Final, &[PR])).pr(|p| p.state = PrState::Merged);
         assert_eq!(run.states(), vec![Running, Done, Done]);
@@ -1018,7 +1063,7 @@ mod tests {
         let mut run = Run::new();
         run.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
         assert_eq!(run.view.board.request_state("r-1"), RequestState::Defining);
-        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false });
+        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None });
         let task = run.task();
         assert_eq!((task.request.as_str(), task.options.effort.as_deref(), task.options.project.as_deref()), ("r-1", Some("hard"), Some("app")));
         assert_eq!(run.view.board.requests.keys().collect::<Vec<_>>(), vec!["r-1"], "the made-up request is gone");
@@ -1184,7 +1229,7 @@ mod tests {
             let options = crate::options::Resolved { project: Some("app".into()), auto_merge: true, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None };
             let mut d = Daemon::new();
             d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
-            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None });
             let id = d.view.board.tasks.keys().next().cloned().expect("the launch made its task");
             assert_eq!(d.view.board.tasks[&id].assignee, None, "no node yet");
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
@@ -1363,7 +1408,7 @@ mod tests {
         fn a_node_with_several_open_tasks_says_which_one_a_card_is_for() {
             let mut d = Daemon::new();
             d.on(hook_of("s", UPS)).on(asked(1, "s", |_| {}));
-            let second = crate::tasks::NewTask { id: "t-2".into(), request: "r-1".into(), title: "Second".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false };
+            let second = crate::tasks::NewTask { id: "t-2".into(), request: "r-1".into(), title: "Second".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, start: None };
             d.on(Event::TaskCreated(second));
             assert_eq!(d.view.card_task("s", None, None), Err(CardTask::Several(vec!["t-2".into(), "t-s".into()])));
             assert_eq!(d.view.card_task("s", Some("t-2"), None), Ok("t-2".into()));

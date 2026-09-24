@@ -24,6 +24,8 @@ pub struct Hub {
     pub config: Config,
     pub hold_enabled: bool,
     pub pr_lookup: crate::prs::Lookup,
+    /// Held while a task is being started, so it is never started twice.
+    pub starts: tokio::sync::Mutex<()>,
 }
 
 impl Hub {
@@ -56,6 +58,7 @@ impl Hub {
             config,
             hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
+            starts: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -67,31 +70,42 @@ impl Hub {
     /// Records an event, and around it the task events it takes: the task a session's first card
     /// goes to before it, and what it moves after it (`View::record` without the store).
     pub fn append_with(&self, build: impl FnOnce(&View) -> Option<Event>) -> Result<Option<(u64, Event)>> {
+        let recorded = self.append_all(|v| build(v).map(|e| vec![e]).ok_or(()))?;
+        Ok(recorded.ok().and_then(|mut all| all.pop()))
+    }
+
+    /// Records several events built from one view, with nothing else recorded between them, or
+    /// records nothing when `build` refuses.
+    pub fn append_all<E>(&self, build: impl FnOnce(&View) -> std::result::Result<Vec<Event>, E>) -> Result<std::result::Result<Vec<(u64, Event)>, E>> {
         let mut store = self.writer.lock().expect("writer lock poisoned");
-        let event = {
+        let events = {
             let view = self.view.read().expect("view lock poisoned");
             match build(&view) {
-                Some(e) => e,
-                None => return Ok(None),
+                Ok(events) => events,
+                Err(e) => return Ok(Err(e)),
             }
         };
         let at = now_millis();
         let mut view = self.view.write().expect("view lock poisoned");
-        for e in view.tasks_before(&event) {
-            let s = store.append(at, &e)?;
-            view.apply(s, at, &e);
-        }
-        let before = view.before_tasks(&event);
-        let seq = store.append(at, &event)?;
-        view.apply(seq, at, &event);
-        for e in view.task_moves(at, &event, before) {
-            let s = store.append(at, &e)?;
-            view.apply(s, at, &e);
+        let mut recorded = vec![];
+        for event in events {
+            for e in view.tasks_before(&event) {
+                let s = store.append(at, &e)?;
+                view.apply(s, at, &e);
+            }
+            let before = view.before_tasks(&event);
+            let seq = store.append(at, &event)?;
+            view.apply(seq, at, &event);
+            for e in view.task_moves(at, &event, before) {
+                let s = store.append(at, &e)?;
+                view.apply(s, at, &e);
+            }
+            recorded.push((seq, event));
         }
         drop(view);
         drop(store);
         self.bump();
-        Ok(Some((seq, event)))
+        Ok(Ok(recorded))
     }
 
     pub fn compact(&self, retention: std::time::Duration) -> Result<usize> {
