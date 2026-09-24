@@ -770,6 +770,16 @@
           }
         }
       }
+    },
+    "Seems to ask for something": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parece pedir algo"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

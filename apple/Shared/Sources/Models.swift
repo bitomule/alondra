@@ -171,6 +171,14 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let kind: String
     public let createdAt: Int64
     public let mission: String?
+    /// The server's report gate thought it asks for something; it is delivered anyway, marked.
+    public let looksLikeQuestion: Bool?
+
+    public var seemsToAsk: Bool { looksLikeQuestion == true }
+
+    public static var seemsToAskLabel: String {
+        String(localized: "Seems to ask for something", table: "AlondraShared", bundle: #bundle)
+    }
 
     public var kindLabel: String {
         switch kind {

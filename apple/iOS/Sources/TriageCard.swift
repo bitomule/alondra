@@ -209,6 +209,11 @@ struct TriageCard: View {
                 nodeContext(context)
             }
         case .report(let report):
+            if report.seemsToAsk {
+                Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Palette.dawn)
+            }
             if let body = report.body, !body.isEmpty {
                 if report.attachments.isEmpty && body.count > 600 {
                     excerpt(body, cta: String(localized: "Read it all"))
