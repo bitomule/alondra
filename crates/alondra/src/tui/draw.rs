@@ -1344,7 +1344,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("x", tr!("mark as read", "marcar como leído")),
         row("X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
-        row("a", tr!("open the node's terminal (← on an empty line returns)", "abrir el terminal del nodo (← con la línea vacía vuelve)")),
+        row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
         section(tr!("Reading (after o)", "Lectura (tras o)")),
         row("j/k", tr!("next / previous block; long blocks scroll line by line", "bloque siguiente / anterior; los bloques largos avanzan línea a línea")),

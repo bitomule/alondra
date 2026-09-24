@@ -31,7 +31,7 @@ enum Cmd {
     Answer { id: u64, text: Vec<String> },
     #[command(about = tr!("Send a message to a node (name, short id or session_id)", "Manda un mensaje a un nodo (nombre, id corto o session_id)"))]
     Send { node: String, text: Vec<String> },
-    #[command(about = tr!("Open a node's terminal (← on an empty line returns)", "Abre el terminal de un nodo (← con la línea vacía vuelve)"))]
+    #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
     Attach { node: String },
     #[command(about = tr!(
         "Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code",

@@ -5,7 +5,6 @@ use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
-const LEFT_ARROWS: [&[u8]; 2] = [b"\x1b[D", b"\x1bOD"];
 const TAIL_BYTES: usize = 2048;
 
 /// Where the attach runs: over the TUI, which keeps its alternate screen so the plain terminal
@@ -101,61 +100,44 @@ fn window_size() -> libc::winsize {
     ws
 }
 
-#[derive(Default, Clone, Copy, PartialEq)]
-enum Esc {
-    #[default]
-    None,
-    Start,
-    Csi,
-    Ss3,
-    Str,
-    StrEnd,
+/// `claude attach` leaves a session on ← by exec'ing itself, same pid, into `claude agents`,
+/// Claude Code's own list of background sessions. Seen from Alondra that means the node was left.
+fn is_agent_view(argv: &[String]) -> bool {
+    argv.iter().skip(1).any(|a| a == "agents") && !argv.iter().any(|a| a == "attach")
 }
 
-/// Characters typed on the node's prompt line since it was last empty. Escape
-/// sequences (arrows, function keys, and the terminal's own replies to queries)
-/// do not count; Enter, Ctrl+U and Ctrl+C empty it.
-#[derive(Default)]
-struct LineTracker {
-    typed: usize,
-    esc: Esc,
+/// The argument list inside a `KERN_PROCARGS2` buffer: argc, the executable path, padding, then
+/// argv.
+fn procargs_argv(buf: &[u8]) -> Vec<String> {
+    let Some(argc) = buf.get(..4).map(|b| i32::from_ne_bytes([b[0], b[1], b[2], b[3]])) else {
+        return Vec::new();
+    };
+    let rest = &buf[4..];
+    let rest = &rest[rest.iter().position(|&b| b == 0).unwrap_or(rest.len())..];
+    let rest = &rest[rest.iter().position(|&b| b != 0).unwrap_or(rest.len())..];
+    rest.split(|&b| b == 0).take(argc.max(0) as usize).map(|a| String::from_utf8_lossy(a).into_owned()).collect()
 }
 
-impl LineTracker {
-    fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.esc = match self.esc {
-                Esc::Start => match b {
-                    b'[' => Esc::Csi,
-                    b'O' => Esc::Ss3,
-                    b'P' | b']' | b'_' | b'^' | b'X' => Esc::Str,
-                    _ => Esc::None,
-                },
-                Esc::Csi if (0x40..=0x7e).contains(&b) => Esc::None,
-                Esc::Csi => Esc::Csi,
-                Esc::Ss3 => Esc::None,
-                Esc::Str if b == 0x07 => Esc::None,
-                Esc::Str if b == 0x1b => Esc::StrEnd,
-                Esc::Str => Esc::Str,
-                Esc::StrEnd if b == b'\\' => Esc::None,
-                Esc::StrEnd => Esc::Str,
-                Esc::None => {
-                    match b {
-                        0x1b => {
-                            self.esc = Esc::Start;
-                            continue;
-                        }
-                        b'\r' | b'\n' | 0x15 | 0x03 => self.typed = 0,
-                        0x7f | 0x08 => self.typed = self.typed.saturating_sub(1),
-                        0x80..=0xbf => {}
-                        0x20.. => self.typed += 1,
-                        _ => {}
-                    }
-                    Esc::None
-                }
-            };
-        }
+#[cfg(target_os = "macos")]
+fn process_argv(pid: u32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return Vec::new();
     }
+    let mut buf = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } != 0 {
+        return Vec::new();
+    }
+    buf.truncate(size);
+    procargs_argv(&buf)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_argv(pid: u32) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|b| b.split(|&c| c == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+        .unwrap_or_default()
 }
 
 fn open_pty() -> Result<(Fd, RawFd, libc::winsize)> {
@@ -183,16 +165,14 @@ fn in_pty(cmd: &mut Command, slave: RawFd, stdout: Stdio) {
     }
 }
 
-/// Copies the child's screen to ours and our keys to it until it exits, or until ← on an empty
-/// prompt when `detach_on_left`. Returns whether it was left that way, and the last bytes it
-/// printed.
-fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, detach_on_left: bool) -> Result<(bool, Vec<u8>)> {
+/// Copies the child's screen to ours and our keys to it until it exits, or, when `until_agent_view`,
+/// until it turns into Claude Code's agent view, whose screen is never shown. Returns whether it
+/// ended that way, and the last bytes it printed.
+fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, until_agent_view: bool) -> Result<(bool, Vec<u8>)> {
     let mut screen = (over == Over::Tui).then(AltScreenFilter::default);
     let mut stdout = std::io::stdout();
-    let mut line = LineTracker::default();
     let mut buf = [0u8; 16 * 1024];
     let mut tail: Vec<u8> = Vec::new();
-    let mut log = std::env::var("ALONDRA_ATTACH_LOG").ok().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
     loop {
         let current = window_size();
         if current.ws_row != ws.ws_row || current.ws_col != ws.ws_col {
@@ -209,6 +189,9 @@ fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, deta
                 continue;
             }
             break;
+        }
+        if until_agent_view && is_agent_view(&process_argv(child.id())) {
+            return Ok((true, tail));
         }
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             let got = unsafe { libc::read(master.0, buf.as_mut_ptr().cast(), buf.len()) };
@@ -231,13 +214,6 @@ fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, deta
                 break;
             }
             let input = &buf[..got as usize];
-            if let Some(f) = log.as_mut() {
-                let _ = writeln!(f, "typed={} input={:?}", line.typed, input);
-            }
-            if detach_on_left && line.typed == 0 && LEFT_ARROWS.contains(&input) {
-                return Ok((true, tail));
-            }
-            line.feed(input);
             unsafe { libc::write(master.0, input.as_ptr().cast(), input.len()) };
         }
         if let Ok(Some(_)) = child.try_wait() {
@@ -258,7 +234,10 @@ pub fn attach(short_id: &str, over: Over) -> Result<()> {
     let raw = RawMode::enter(over)?;
     let (left_to_alondra, tail) = relay(&master, ws, &mut child, over, true)?;
     drop(raw);
-    if left_to_alondra || child.try_wait().ok().flatten().is_none() {
+    drop(master);
+    if left_to_alondra {
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+    } else if child.try_wait().ok().flatten().is_none() {
         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
     }
     match child.wait() {
@@ -341,18 +320,38 @@ mod tests {
     }
 
     #[test]
-    fn empty_line_after_enter_and_escape_sequences_do_not_count() {
-        let mut t = LineTracker::default();
-        t.feed(b"hola");
-        assert_eq!(t.typed, 4);
-        t.feed(b"\x1b[D\x1b[C");
-        assert_eq!(t.typed, 4);
-        t.feed(b"\x7f\x7f");
-        assert_eq!(t.typed, 2);
-        t.feed(b"\r");
-        assert_eq!(t.typed, 0);
-        t.feed("ñ".as_bytes());
-        assert_eq!(t.typed, 1);
+    fn only_the_agent_view_counts_as_leaving() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let cases: &[(&[&str], bool)] = &[
+            (&["/x/node_modules/.bin/claude", "attach", "7ab69216"], false),
+            (&["/x/claude-code/bin/claude.exe", "agents"], true),
+            (&["/usr/local/bin/node", "/x/cli.js", "agents"], true),
+            (&["/x/wrapper", "--flag", "/x/claude", "agents"], true),
+            (&["claude", "attach", "agents"], false),
+            (&["agents"], false),
+            (&["tuicr", "pr", "3"], false),
+            (&[], false),
+        ];
+        for (a, left) in cases {
+            assert_eq!(is_agent_view(&argv(a)), *left, "{a:?}");
+        }
+    }
+
+    #[test]
+    fn procargs_buffer_yields_argv() {
+        let mut buf = 2i32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/x/claude.exe\0\0\0\0claude\0agents\0PATH=/bin\0HOME=/h\0");
+        assert_eq!(procargs_argv(&buf), ["claude", "agents"]);
+        assert!(procargs_argv(b"\x01").is_empty());
+    }
+
+    #[test]
+    fn reads_a_live_process_argv() {
+        let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let argv = process_argv(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(argv, ["/bin/sleep", "5"]);
     }
 
     #[test]
@@ -360,14 +359,6 @@ mod tests {
         let out = b"\x1b[2J\x1b[1;31mError:\x1b[0m no session tui-poli\r\n\x1b[?25h";
         assert_eq!(last_words(out).as_deref(), Some("Error: no session tui-poli"));
         assert_eq!(last_words(b"\x1b[2J"), None);
-    }
-
-    #[test]
-    fn terminal_replies_are_not_typing() {
-        let mut t = LineTracker::default();
-        t.feed(b"\x1bP>|tmux 3.5a\x1b\\\x1b[?1;2;4c");
-        t.feed(b"\x1b]11;rgb:0000/0000/0000\x07");
-        assert_eq!(t.typed, 0);
     }
 }
 
