@@ -306,6 +306,7 @@ enum Msg {
     Uploaded { seq: u64, result: Result<String, String> },
     Preview { seq: u64, image: image::DynamicImage },
     Options { project: Option<String>, result: Result<(Vec<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
+    Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
 }
 
 pub enum Flow {
@@ -878,6 +879,11 @@ impl App {
                 }
                 Err(e) => self.fail(trf!("Could not load the options: {e}", "No se pudieron cargar las opciones: {e}")),
             },
+            Msg::Issues(result) => {
+                if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
+                    f.issues_loaded(result);
+                }
+            }
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -1098,6 +1104,18 @@ impl App {
         if self.composer.as_ref().is_some_and(|c| c.form.is_some()) {
             self.load_options(None);
         }
+    }
+
+    /// Asks alondrad for the open issues, which it keeps for ten minutes unless `refresh`.
+    fn load_issues(&self, refresh: bool) {
+        self.spawn(move |tx| {
+            let path = if refresh { "/v1/issues?refresh=1" } else { "/v1/issues" };
+            let result = Client::for_user(Duration::from_secs(40)).get::<Value>(path).map_err(|e| e.to_string()).and_then(|v| {
+                let issues = serde_json::from_value(v["issues"].clone()).map_err(|e| e.to_string())?;
+                Ok((issues, v["error"].as_str().map(str::to_string)))
+            });
+            let _ = tx.send(Msg::Issues(result));
+        });
     }
 
     /// Fetches the options for "New" once, when it opens or its project changes.
@@ -1365,6 +1383,7 @@ impl App {
             match form.key(k) {
                 work::FormKey::Handled => return,
                 work::FormKey::Reload(project) => return self.load_options(project),
+                work::FormKey::LoadIssues(refresh) => return self.load_issues(refresh),
                 work::FormKey::NotMine => {}
             }
         }
