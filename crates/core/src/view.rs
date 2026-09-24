@@ -332,6 +332,15 @@ impl View {
             }
             Event::PrAsked { id } => self.pr_node(*id),
             Event::TasksRecorded | Event::TaskCreated(_) | Event::TaskAssigned { .. } | Event::TaskMoved { .. } => None,
+            Event::TasksArchived(what) => {
+                self.board.archive(what, at);
+                None
+            }
+            Event::ArchivedPruned { before } => {
+                let keep = self.tasks_to_keep();
+                self.board.prune_archived(*before, |t| keep.contains(&t.id));
+                None
+            }
             Event::RequestSent { request_id, options, .. } => {
                 self.requests.insert(request_id.clone(), options.clone());
                 None

@@ -150,6 +150,10 @@ pub enum Event {
     },
     /// A task event applied to a recorded task, with the guards the view gives it then.
     TaskMoved { task: String, event: crate::tasks::TaskEvent },
+    /// David archived finished tasks, and requests that finished without tasks.
+    TasksArchived(crate::tasks::Archive),
+    /// Tasks archived before `before` are forgotten: `archived_tasks_days` went by.
+    ArchivedPruned { before: Millis },
     Clock {
         #[serde(default)]
         machine_strained: bool,
@@ -218,6 +222,8 @@ impl Event {
             Event::TaskCreated(_) => "task_created",
             Event::TaskAssigned { .. } => "task_assigned",
             Event::TaskMoved { .. } => "task_moved",
+            Event::TasksArchived(_) => "tasks_archived",
+            Event::ArchivedPruned { .. } => "archived_pruned",
             Event::Clock { .. } => "clock",
             Event::RequestSent { .. } => "request_sent",
             Event::Launched { .. } => "launched",

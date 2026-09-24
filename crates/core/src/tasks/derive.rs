@@ -543,6 +543,7 @@ impl View {
             recorded: false,
             history: vec![],
             anomalies: vec![],
+            archived_at: None,
         })
     }
 
@@ -1116,6 +1117,8 @@ mod tests {
         run.on(Event::Pruned { before: 0 });
         assert!(run.view.board.tasks.contains_key("t-s"), "within the retention window");
         run.on(Event::Pruned { before: 100_000 });
+        assert!(run.view.board.tasks.contains_key("t-s"), "finished: it stays until it is archived");
+        run.on(Event::TasksArchived(run.view.board.archivable(None))).on(Event::ArchivedPruned { before: 100_000 });
         assert!(run.view.board.tasks.is_empty() && run.view.board.requests.is_empty(), "its node is gone and nothing of it waits");
     }
 

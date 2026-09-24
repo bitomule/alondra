@@ -114,6 +114,8 @@ impl Hub {
         let now = alondra_core::now_millis();
         let before = now - retention.as_millis() as i64;
         self.append(Event::Pruned { before })?;
+        let archived_for = (self.config.archived_tasks_days * 86_400_000.0) as i64;
+        self.append(Event::ArchivedPruned { before: now - archived_for })?;
         let mut store = self.writer.lock().expect("writer lock poisoned");
         let view = self.view.read().expect("view lock poisoned").clone();
         store.compact(&view, now, before)

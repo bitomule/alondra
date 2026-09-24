@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Attachment, Millis};
 
+mod archive;
 mod define;
 mod derive;
 
+pub use archive::Archive;
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
 pub use derive::{Before, CardTask, NODE_CLOSED, Pass, task_id};
 
@@ -28,11 +30,15 @@ pub struct Request {
     /// Made up for a session no request of David's stands behind.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
+    /// David archived it once it was finished without tasks. One with tasks is archived when
+    /// all of them are (`Board::request_archived_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Millis>,
 }
 
 impl Request {
     fn new(id: &str, created_at: Millis, synthetic: bool) -> Self {
-        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic }
+        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic, archived_at: None }
     }
 }
 
@@ -478,6 +484,10 @@ pub struct Task {
     pub history: Vec<Transition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anomalies: Vec<Anomaly>,
+    /// David archived it once it was finished: it leaves the active list, and the board after
+    /// `archived_tasks_days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Millis>,
 }
 
 /// A task as the daemon records its creation: at a launch, or for a session on its first card.
@@ -580,6 +590,9 @@ impl Board {
                 if to != TaskState::NeedsYou {
                     task.blocker = None;
                 }
+                if !to.finished() {
+                    task.archived_at = None;
+                }
                 if to != from {
                     task.state = to;
                     task.state_since = at;
@@ -620,17 +633,20 @@ impl Board {
             recorded: true,
             history: vec![],
             anomalies: vec![],
+            archived_at: None,
         };
         self.tasks.entry(t.id.clone()).or_insert(task);
     }
 
     /// Forgets tasks nobody can act on any more: their node is gone, nothing of theirs waits for
-    /// David and nothing happened to them since `before`. Requests left without tasks, and
-    /// launches that never found their node, go with them.
+    /// David and nothing happened to them since `before`. A finished task stays until it is
+    /// archived (`prune_archived`). Requests left without tasks, and launches that never found
+    /// their node, go with them.
     pub(crate) fn prune(&mut self, before: Millis, keep: impl Fn(&Task) -> bool) {
-        self.tasks.retain(|_, t| keep(t) || t.last_change() >= before);
+        self.tasks.retain(|_, t| keep(t) || t.state.finished() || t.last_change() >= before);
+        let finished: std::collections::HashSet<String> = self.requests.keys().filter(|id| self.finished_without_tasks(id)).cloned().collect();
         let tasks = &self.tasks;
-        self.requests.retain(|id, r| r.created_at >= before || tasks.values().any(|t| &t.request == id));
+        self.requests.retain(|id, r| r.created_at >= before || finished.contains(id) || tasks.values().any(|t| &t.request == id));
         self.launches.retain(|_, l| l.at >= before);
     }
 }
@@ -813,6 +829,7 @@ mod tests {
             recorded: false,
             history: vec![],
             anomalies: vec![],
+            archived_at: None,
         }
     }
 

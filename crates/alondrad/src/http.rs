@@ -70,6 +70,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/tasks", post(define_tasks))
+        .route("/v1/tasks/archive", post(archive_tasks))
         .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -1068,6 +1069,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
                            "resume_dead_nodes": c.resume_dead_nodes,
                            "close_free_nodes_after_secs": c.close_free_nodes_after.map(|d| d.as_secs()),
+                           "archived_tasks_days": c.archived_tasks_days,
                            "home": c.home.display().to_string()}}))
 }
 
@@ -1166,6 +1168,7 @@ fn client_report(v: &View, r: &Report) -> Value {
 fn client_request(v: &View, r: &alondra_core::tasks::Request) -> Value {
     let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
     value["state"] = json!(v.board.request_state(&r.id));
+    value["archived_at"] = json!(v.board.request_archived_at(&r.id));
     value["tasks"] = json!(v.board.tasks.values().filter(|t| t.request == r.id).map(|t| t.id.as_str()).collect::<Vec<_>>());
     value
 }
@@ -2442,6 +2445,27 @@ async fn cancel_task(State(hub): State<AppState>, Path(id): Path<String>, body: 
 /// David or the orchestrator reopens a done or cancelled task.
 async fn reopen_task(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
     move_task(&hub, &id, alondra_core::tasks::TaskEvent::Reopen)
+}
+
+#[derive(Deserialize, Default)]
+struct ArchiveBody {
+    #[serde(default)]
+    ids: Option<Vec<String>>,
+}
+
+/// David archives what is finished: every done or cancelled task, and request that finished
+/// without tasks, or those of them `ids` names. Nothing unfinished is archived.
+async fn archive_tasks(State(hub): State<AppState>, body: Option<Json<ArchiveBody>>) -> Response {
+    let ids = body.and_then(|Json(b)| b.ids);
+    let recorded = hub.append_with(|v| {
+        let what = v.board.archivable(ids.as_deref());
+        (!what.is_empty()).then_some(Event::TasksArchived(what))
+    });
+    match recorded {
+        Ok(Some((_, Event::TasksArchived(what)))) => Json(json!({"tasks": what.tasks, "requests": what.requests})).into_response(),
+        Ok(_) => Json(json!({"tasks": [], "requests": []})).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 fn move_task(hub: &Hub, id: &str, event: alondra_core::tasks::TaskEvent) -> Response {
@@ -4399,5 +4423,111 @@ mod issue_tests {
         assert_eq!(status, StatusCode::OK);
         let message = hub.read(|v| v.messages.values().last().unwrap().text.clone());
         assert!(message.contains("Issue me/App#9: https://github.com/me/App/issues/9\nAlondra could not read it (HTTP 404)"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use super::tests::{status_and_body, temp_hub};
+    use alondra_core::tasks::{NewTask, TaskEvent, TaskOptions};
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer;
+
+    /// r-1 holds t-done (done) and t-gone (cancelled); r-2 holds t-run, still running.
+    fn with_tasks(tag: &str) -> Arc<Hub> {
+        let hub = temp_hub(tag);
+        let task = |id: &str, request: &str| {
+            Event::TaskCreated(NewTask {
+                id: id.into(), request: request.into(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
+                session_id: None, launched: false, start: None,
+            })
+        };
+        let moved = |id: &str, event: TaskEvent| Event::TaskMoved { task: id.into(), event };
+        for e in [
+            task("t-done", "r-1"),
+            task("t-gone", "r-1"),
+            task("t-run", "r-2"),
+            moved("t-done", TaskEvent::FinalReport { report: 1 }),
+            moved("t-gone", TaskEvent::Cancel { reason: None }),
+        ] {
+            hub.append(e).unwrap();
+        }
+        hub
+    }
+
+    fn named(ids: &[&str]) -> Option<Json<ArchiveBody>> {
+        Some(Json(ArchiveBody { ids: Some(ids.iter().map(|s| s.to_string()).collect()) }))
+    }
+
+    fn archived(hub: &Hub) -> Vec<String> {
+        hub.read(|v| v.board.tasks.values().filter(|t| t.archived_at.is_some()).map(|t| t.id.clone()).collect())
+    }
+
+    #[tokio::test]
+    async fn archiving_takes_finished_tasks_only_and_the_overview_flags_them() {
+        let hub = with_tasks("archive");
+        let seq = hub.read(|v| v.seq);
+        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), named(&["t-run"])).await).await;
+        assert_eq!((status, said), (StatusCode::OK, json!({"tasks": [], "requests": []})), "a running task is never archived");
+        assert_eq!(hub.read(|v| v.seq), seq, "nothing to archive records nothing");
+
+        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
+        assert_eq!((status, &said["tasks"]), (StatusCode::OK, &json!(["t-done", "t-gone"])), "{said}");
+        let Json(o) = overview(State(hub.clone())).await;
+        let find = |list: &str, id: &str| o[list].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
+        assert!(find("tasks", "t-done")["archived_at"].is_i64() && find("tasks", "t-gone")["archived_at"].is_i64());
+        assert!(find("tasks", "t-run").get("archived_at").is_none(), "an unarchived task has no archived_at");
+        assert_eq!(find("requests", "r-1")["archived_at"], find("tasks", "t-done")["archived_at"], "every task of r-1 is archived");
+        assert_eq!(find("requests", "r-2")["archived_at"], Value::Null);
+
+        let (_, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
+        assert_eq!(said["tasks"], json!([]), "nothing left to archive");
+        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
+    }
+
+    #[tokio::test]
+    async fn finished_and_archived_tasks_outlive_compaction_and_a_restart() {
+        let hub = with_tasks("archive-compact");
+        status_and_body(archive_tasks(State(hub.clone()), named(&["t-done"])).await).await;
+        hub.compact(Duration::ZERO).unwrap();
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let kept = reopened.read(|v| v.board.tasks.values().filter(|t| t.state.finished()).map(|t| (t.id.clone(), t.archived_at.is_some())).collect::<Vec<_>>());
+        assert_eq!(kept, [("t-done".to_string(), true), ("t-gone".to_string(), false)], "archived within its days, and finished waiting to be archived");
+        assert_eq!(archived(&reopened), ["t-done"]);
+    }
+
+    /// Mounted as alondrad mounts it: every route behind `auth::guard`.
+    #[tokio::test]
+    async fn archiving_needs_a_paired_device_from_outside_the_mac() {
+        let hub = with_tasks("archive-auth");
+        let auth = Arc::new(Auth::open(&hub.home).unwrap());
+        let push = Arc::new(Push::open(&hub.home).unwrap());
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let device = auth.pair(&auth.new_pairing_code(), "iPhone", &b64.encode(signing.verifying_key().to_sec1_bytes())).unwrap();
+        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/v1/tasks/archive");
+        let body = r#"{"ids":["t-done"]}"#;
+        let remote = || client.post(&url).header("x-forwarded-for", "203.0.113.9").header("content-type", "application/json").body(body);
+
+        let unsigned = remote().send().await.unwrap();
+        assert_eq!(unsigned.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let ts = now_millis().to_string();
+        let signature: p256::ecdsa::Signature = signing.sign(crate::auth::signed_message("POST", "/v1/tasks/archive", &ts, body.as_bytes()).as_bytes());
+        let stranger = remote().header("x-alondra-device", "nobody").header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
+        assert_eq!(stranger.send().await.unwrap().status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert!(archived(&hub).is_empty(), "nothing archived without a paired device");
+
+        let signed = remote().header("x-alondra-device", &device.id).header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
+        assert_eq!(signed.send().await.unwrap().status(), reqwest::StatusCode::OK);
+        assert_eq!(archived(&hub), ["t-done"]);
+        let local = client.post(&url).header("content-type", "application/json").body("{}").send().await.unwrap();
+        assert_eq!(local.status(), reqwest::StatusCode::OK, "the Mac itself, like every other route");
+        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
     }
 }
