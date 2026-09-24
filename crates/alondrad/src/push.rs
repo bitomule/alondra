@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use alondra_core::{Question, QuestionOrigin, Report, ReportKind, now_millis};
+use alondra_core::{Question, QuestionOrigin, Report, ReportKind, View, now_millis};
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -213,6 +213,48 @@ fn report_payload(r: &Report, badge: usize) -> Value {
     })
 }
 
+/// The iPhone translates the title from this key in the app's string catalog.
+const PR_READY_KEY: &str = "PR #%@ ready to review";
+
+/// A PR card ready for the user, announced once: by the first report inside it, or on its own
+/// when no report comes within `PR_GRACE_MS`. Tapping it opens the PR card.
+fn pr_payload(pr: &alondra_core::pr::PullRequest, report: Option<&Report>, badge: usize) -> Value {
+    let who = report.and_then(|r| r.node_name.clone()).or_else(|| pr.node_name.clone()).unwrap_or_else(|| "a node".into());
+    let what = report.map_or(pr.title.as_str(), |r| r.title.as_str());
+    json!({
+        "aps": {"alert": {"title": format!("PR #{} ready to review", pr.number), "title-loc-key": PR_READY_KEY,
+                          "title-loc-args": [pr.number.to_string()], "body": format!("{what} · {who}")},
+                "sound": "default", "thread-id": pr.session_id, "badge": badge},
+        "alondra": {"kind": "pr", "id": pr.id}
+    })
+}
+
+/// A PR card opened without a report waits this long for the node's report before it is
+/// announced on its own, so one PR makes one notification.
+const PR_GRACE_MS: i64 = 2 * 60 * 1000;
+
+/// What the new reports and PR cards push: a report inside an open PR card announces that PR;
+/// any other report pushes as a report; a PR card nobody reported on is announced once its
+/// grace passes.
+fn announcements(v: &View, reports: &[Report], announced: &mut std::collections::HashSet<u64>, now: i64, badge: usize) -> Vec<Value> {
+    let mut out = vec![];
+    for r in reports {
+        match v.report_pr(r).and_then(|id| v.prs.get(&id)) {
+            Some(pr) => {
+                announced.insert(pr.id);
+                out.push(pr_payload(pr, Some(r), badge));
+            }
+            None => out.push(report_payload(r, badge)),
+        }
+    }
+    for pr in crate::prs::in_inbox(v).filter(|p| p.fetched && now - p.opened_at >= PR_GRACE_MS) {
+        if announced.insert(pr.id) {
+            out.push(pr_payload(pr, None, badge));
+        }
+    }
+    out
+}
+
 fn kind_key(k: ReportKind) -> &'static str {
     match k {
         ReportKind::Notice => "notice",
@@ -234,12 +276,12 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
     if !push.enabled() {
         return;
     }
-    let (mut last_q, mut last_r) = hub.read(|v| {
-        (v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0))
+    let (mut last_q, mut last_r, mut announced) = hub.read(|v| {
+        (v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0), v.prs.keys().copied().collect())
     });
     loop {
         hub.wait_event(POLL).await;
-        let (questions, reports, badge, max_q, max_r) = hub.read(|v| {
+        let (questions, others, badge, max_q, max_r) = hub.read(|v| {
             let pending = v.questions.values().filter(|q| q.status.is_open() && !q.to_orchestrator).count()
                 + v.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).count();
             let now = alondra_core::now_millis();
@@ -252,7 +294,8 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
                 .collect();
             let rs: Vec<Report> =
                 v.reports.range(last_r + 1..).map(|(_, r)| r.clone()).filter(|r| r.kind != ReportKind::Progress && !r.read && awake(&r.session_id)).collect();
-            (qs, rs, pending, v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0))
+            let others = announcements(v, &rs, &mut announced, now, pending);
+            (qs, others, pending, v.questions.keys().next_back().copied().unwrap_or(0), v.reports.keys().next_back().copied().unwrap_or(0))
         });
         last_q = last_q.max(max_q);
         last_r = last_r.max(max_r);
@@ -262,8 +305,8 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
         for q in questions {
             push.broadcast(&question_payload(&q, badge), true).await;
         }
-        for r in reports {
-            push.broadcast(&report_payload(&r, badge), false).await;
+        for payload in others {
+            push.broadcast(&payload, false).await;
         }
     }
 }
@@ -287,6 +330,38 @@ mod tests {
             let activity = used.into_iter().map(|(c, at)| (c.to_string(), at)).collect();
             assert_eq!(in_a_client(&activity, now), silent, "{what}");
         }
+    }
+
+    /// PR #66, 24 Sep: the PR reached David's phone as the node's "Finished" report, and tapping
+    /// it opened the report, not the PR.
+    #[test]
+    fn a_pr_is_announced_as_a_pr_by_its_report_or_on_its_own_after_the_grace() {
+        use alondra_core::Event;
+        let min = 60_000;
+        let mut v = View::default();
+        for (seq, url) in [(1, "https://github.com/a/b/pull/66"), (2, "https://github.com/a/b/pull/67")] {
+            v.apply(seq, 0, &Event::PrOpened { url: url.into(), session_id: "s".into() });
+            let mut pr = v.prs[&seq].clone();
+            (pr.fetched, pr.title) = (true, format!("Title {seq}"));
+            v.apply(seq + 10, 0, &Event::PrUpdated(pr));
+        }
+        let report = |id: u64, url: Option<&str>| Report {
+            related: vec![], id, session_id: "s".into(), node_name: Some("alondra/x".into()), title: format!("Report {id}"), body: None,
+            links: url.map(|u| vec![alondra_core::Link { url: u.into(), title: None }]).unwrap_or_default(),
+            attachments: vec![], kind: ReportKind::Final, created_at: 0, read: false, mission: None, looks_like_question: false,
+        };
+        let shape = |p: &Value| (p["alondra"]["kind"].as_str().unwrap().to_string(), p["alondra"]["id"].as_u64().unwrap());
+        let mut announced = std::collections::HashSet::new();
+
+        let first = announcements(&v, &[report(5, Some("https://github.com/a/b/pull/66")), report(6, None)], &mut announced, min, 1);
+        assert_eq!(first.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 1), ("report".to_string(), 6)]);
+        assert_eq!(first[0]["aps"]["alert"]["title-loc-key"], PR_READY_KEY);
+        assert_eq!(first[0]["aps"]["alert"]["title-loc-args"], json!(["66"]));
+        assert_eq!(first[0]["aps"]["alert"]["body"], "Report 5 · alondra/x", "the report says what is in it");
+
+        let later = announcements(&v, &[], &mut announced, PR_GRACE_MS, 1);
+        assert_eq!(later.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 2)], "#67 never got a report: announced on its own, #66 not again");
+        assert!(announcements(&v, &[], &mut announced, 2 * PR_GRACE_MS, 1).is_empty(), "once");
     }
 
     #[test]
