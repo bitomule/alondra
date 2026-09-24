@@ -30,7 +30,7 @@ impl Hub {
         let store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
-        eprintln!("alondrad: {n} events replayed, {} nodes", view.nodes.len());
+        log!("{n} events replayed, {} nodes", view.nodes.len());
         let (tick, _) = watch::channel(0);
         Ok(Hub {
             writer: Mutex::new(store),

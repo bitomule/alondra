@@ -32,7 +32,7 @@ pub async fn run(hub: Arc<Hub>) {
         hub.wait_event(EVERY).await;
         tokio::time::sleep(DEBOUNCE).await;
         if let Err(e) = sweep(&hub, &mut memory).await {
-            eprintln!("alondrad: sentinel: {e}");
+            log!("sentinel: {e}");
         }
     }
 }

@@ -162,7 +162,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
-        eprintln!("alondrad: hook lost: {e}");
+        log!("hook lost: {e}");
         return Json(json!({})).into_response();
     }
     if event == "PostToolUse"
@@ -174,13 +174,13 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         let user = hub.config.name.clone();
         let moved = hub.append_with(|v| v.nodes.get(&session_id).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued));
         if let Err(e) = moved {
-            eprintln!("alondrad: could not act on a stalled node: {e}");
+            log!("could not act on a stalled node: {e}");
         }
     }
     if event == "PreToolUse"
         && let Some(reason) = forbidden_for_nodes(tool.as_deref(), p.get("tool_input"))
     {
-        eprintln!("alondrad: blocked a node from acting as the user: {reason}");
+        log!("blocked a node from acting as the user: {reason}");
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
             "permissionDecisionReason": reason}})).into_response();
     }
@@ -531,7 +531,7 @@ async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): Co
 fn note_prs(hub: &Hub, session_id: &str, texts: &[String]) {
     for url in texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)) {
         if let Err(e) = hub.append(Event::PrOpened { url, session_id: session_id.to_string() }) {
-            eprintln!("alondrad: could not record a PR: {e}");
+            log!("could not record a PR: {e}");
         }
     }
 }
@@ -563,7 +563,7 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
         Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr merge did not finish within 90 s"),
     }
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
-    eprintln!("alondrad: {} merged by {} from {who}", pr.url, hub.config.name);
+    log!("{} merged by {} from {who}", pr.url, hub.config.name);
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
@@ -588,7 +588,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     match tell_about_pr(&hub, &pr, text, MessageFrom::User) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
-                eprintln!("alondrad: changes sent on PR card #{id}, card not set aside: {e}");
+                log!("changes sent on PR card #{id}, card not set aside: {e}");
             }
             Json(json!({"id": id, "sent_to": to})).into_response()
         }
@@ -950,7 +950,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     };
     let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
     let text = if other_open { format!("About \"{}\": {reply}", q.title) } else { reply };
-    eprintln!("alondrad: answer to #{id} from {user} {provenance}");
+    log!("answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -1089,7 +1089,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         && let Some(session) = hub.read(|v| resolve_caller(v, &b.caller).map(|(s, _)| s))
         && let Some(left) = crate::worktree::leftovers(&session).await
     {
-        eprintln!("alondrad: final report refused, worktree not clean: {left}");
+        log!("final report refused, worktree not clean: {left}");
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
@@ -1104,7 +1104,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         let user = &hub.config.name;
         match crate::classify::judge_report(&text, user).await {
             crate::classify::ReportVerdict::Asks => {
-                eprintln!("alondrad: report gate: rejected a report that asks for something: {}", b.title);
+                log!("report gate: rejected a report that asks for something: {}", b.title);
                 keep_rejected(&hub.home, &b.title, b.body.as_deref());
                 return err(
                     StatusCode::UNPROCESSABLE_ENTITY,

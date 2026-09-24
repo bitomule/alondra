@@ -47,7 +47,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
         std::fs::read_to_string(&paths.imported).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     loop {
         if let Err(e) = sync(&hub, &paths, &mut imported).await {
-            eprintln!("alondrad: bridge to the old questions: {e}");
+            log!("bridge to the old questions: {e}");
         }
         tokio::time::sleep(POLL).await;
     }
@@ -156,7 +156,7 @@ async fn close_in_old_store(script: &Path, n: u64, answer: Option<&str>) {
         if let Ok(o) = out
             && !o.status.success()
         {
-            eprintln!("alondrad: questions.sh {}: {}", a.join(" "), String::from_utf8_lossy(&o.stderr).trim());
+            log!("questions.sh {}: {}", a.join(" "), String::from_utf8_lossy(&o.stderr).trim());
         }
     }
 }

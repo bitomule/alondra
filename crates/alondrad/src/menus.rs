@@ -40,7 +40,7 @@ pub async fn run(hub: Arc<Hub>) {
     loop {
         tokio::time::sleep(EVERY).await;
         if let Err(e) = sweep(&hub, &mut asked_at).await {
-            eprintln!("alondrad: menus: {e}");
+            log!("menus: {e}");
         }
     }
 }
@@ -83,7 +83,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
         let screen = match screen {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("alondrad: menus: could not read {short}'s screen: {e}");
+                log!("menus: could not read {short}'s screen: {e}");
                 continue;
             }
         };

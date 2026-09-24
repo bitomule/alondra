@@ -67,7 +67,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             let mut recorded = seen.get(&short).map_or(mtime, |s| s.recorded);
             if meaningful {
                 if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
-                    eprintln!("alondrad: could not save the observation of {short}");
+                    log!("could not save the observation of {short}");
                 }
                 recorded = mtime;
             }
@@ -449,7 +449,7 @@ fn spawn_pid_watcher(exits: mpsc::Sender<(String, i32)>) -> std::sync::mpsc::Sen
 fn kqueue_loop(rx: std::sync::mpsc::Receiver<(String, i32)>, exits: mpsc::Sender<(String, i32)>) {
     let kq = unsafe { libc::kqueue() };
     if kq < 0 {
-        eprintln!("alondrad: kqueue not available");
+        log!("kqueue not available");
         return;
     }
     let mut watched: HashMap<i32, String> = HashMap::new();
