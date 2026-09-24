@@ -117,12 +117,13 @@ impl View {
         mine().filter(|t| !t.state.finished()).max_by_key(newest).or_else(|| mine().max_by_key(newest))
     }
 
+    /// The task a card names, or for a card that names none, its session's own or current one.
     fn card_task_id(&self, named: Option<&String>, session_id: &str) -> Option<String> {
         match named {
             Some(id) => self.board.tasks.contains_key(id).then(|| id.clone()),
             None => {
                 let id = task_id(session_id);
-                self.board.tasks.contains_key(&id).then_some(id)
+                if self.board.tasks.contains_key(&id) { Some(id) } else { self.session_task(session_id).map(|t| t.id.clone()) }
             }
         }
     }
@@ -1190,8 +1191,8 @@ mod tests {
             let task = d.task("s");
             assert_eq!((task.id.as_str(), task.request.as_str(), task.options.auto_merge, task.options.effort.as_deref()), (id.as_str(), "r-1", true, Some("hard")));
             assert_eq!(d.view.board.tasks.len(), 1, "the node took the launched task instead of making its own");
-            assert_eq!(d.view.questions[&1].task, None, "the card was recorded before the daemon named tasks on it");
-            assert_eq!(d.view.question_task(&d.view.questions[&1]).map(|t| t.id.clone()), None, "and a card with no task goes to its session's own");
+            assert_eq!(d.view.question_task(&d.view.questions[&1]).map(|t| t.id.clone()), Some(id.clone()), "a card that names no task goes to its node's");
+            assert_eq!(d.task("s").state, NeedsYou);
         }
 
         #[test]
