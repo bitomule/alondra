@@ -746,9 +746,11 @@ impl View {
         ids
     }
 
-    /// The earlier unread reports the newest one carries, oldest first, when `r` is that newest
-    /// one: the reports joined to it by what the node declared related, in either direction.
-    /// Reports a question took in are not stacked.
+    /// The unread reports the head of a stack carries, oldest first, when `r` is that head: the
+    /// reports joined to it by what the node declared related, in either direction. The head is the
+    /// newest document in the stack, or the newest report when there is none, so a document stays
+    /// a card of its own and a short notice never hides it. Reports a question took in are not
+    /// stacked.
     pub fn report_stack(&self, r: &Report) -> Vec<u64> {
         self.stack_beside(r, &self.absorbed_reports())
     }
@@ -767,7 +769,9 @@ impl View {
             group.extend(joined);
             next += 1;
         }
-        if group.iter().max() != Some(&r.id) {
+        let document = |id: &&u64| self.reports[*id].kind == ReportKind::Document;
+        let head = group.iter().filter(document).max().or(group.iter().max());
+        if head != Some(&r.id) {
             return vec![];
         }
         group.retain(|id| *id != r.id);
@@ -1573,6 +1577,26 @@ mod tests {
             }
             assert_eq!(v.question_reports(&v.questions[&1]).contains(&7), carries, "{what}");
             assert_eq!(v.inbox_reports().any(|r| r.id == 7), !carries && !v.reports[&7].read, "{what}");
+        }
+    }
+
+    /// R#223 (document, with its attachment) and R#224 "Informe … entregado (#223)", a final report
+    /// declared related to it (alondra/estados-por-tarea, 24 Sep): the final report hid the document.
+    #[test]
+    fn a_document_heads_its_stack_and_short_notices_go_under_it() {
+        let cases = [
+            ("final after the document", [(ReportKind::Document, 1), (ReportKind::Final, 2)], 1, vec![2]),
+            ("notice after the document", [(ReportKind::Document, 1), (ReportKind::Notice, 2)], 1, vec![2]),
+            ("document after the notice", [(ReportKind::Notice, 1), (ReportKind::Document, 2)], 2, vec![1]),
+            ("two finals: the newest heads", [(ReportKind::Final, 1), (ReportKind::Final, 2)], 2, vec![1]),
+        ];
+        for (what, posted, head, under) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit")]);
+            let [(first, a), (second, b)] = posted;
+            v.apply(2, 2000, &report_about(a, "s", first, 2000, &[], "Estados por tarea", ""));
+            v.apply(3, 3000, &related(report_about(b, "s", second, 3000, &[], "Entregado", ""), &[CardRef::Report(a)]));
+            assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [head], "{what}");
+            assert_eq!(v.report_stack(&v.reports[&head]), under, "{what}");
         }
     }
 
