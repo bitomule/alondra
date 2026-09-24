@@ -2881,7 +2881,7 @@ mod tests {
         let m = hub.read(|v| v.pending_messages("job").next().cloned()).unwrap();
         let stored = m.attachments[0].stored_path.clone().unwrap();
         assert!(m.text.starts_with("Mira esto\n\n"), "{}", m.text);
-        assert!(m.text.contains(&format!("{stored} (image, 6 B)")), "{}", m.text);
+        assert!(m.text.contains(&format!("`{stored}` (image, 6 B)")), "{}", m.text);
         assert_eq!(std::fs::read(&stored).unwrap(), b"pixels");
         assert!(hub.read(|v| v.stored_files()).contains(&PathBuf::from(&stored)));
 

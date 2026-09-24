@@ -23,9 +23,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_head(f, app, head);
     let body = match app.composer.as_ref() {
         Some(c) => {
-            let h = composer_height(&c.input, body.width).min(body.height.saturating_sub(3));
+            let preview = c.chips.iter().rev().find(|c| app.previews.contains_key(&c.seq)).map(|c| c.seq);
+            let preview_h = if preview.is_some() { PREVIEW_ROWS } else { 0 };
+            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + preview_h).min(body.height.saturating_sub(3));
             let [main, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(body);
-            draw_composer(f, app, comp);
+            let preview_area = draw_composer(f, app, comp, preview_h);
+            if let (Some(seq), Some(area)) = (preview, preview_area)
+                && let Some(state) = app.previews.get_mut(&seq)
+            {
+                f.render_stateful_widget(ratatui_image::StatefulImage::default(), area, state);
+            }
             main
         }
         None => body,
@@ -1235,8 +1242,30 @@ fn composer_height(input: &super::input::TextInput, width: u16) -> u16 {
     lines.len().clamp(1, 8) as u16 + 2
 }
 
-fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
-    let Some(c) = app.composer.as_ref() else { return };
+fn chips_height(chips: &[super::dropped::Chip]) -> u16 {
+    u16::from(!chips.is_empty())
+}
+
+fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
+    let mut spans = vec![];
+    for chip in chips {
+        let icon = if chip.image() { "🖼" } else { "📄" };
+        let size = super::files::size(chip.bytes as usize);
+        let (label, style) = match chip.upload {
+            super::dropped::Upload::Sending => (format!(" {icon} {} · {size} · {} ", chip.name, tr!("copying…", "copiando…")), Style::new().fg(DIM)),
+            super::dropped::Upload::Stored(_) => (format!(" {icon} {} · {size} ", chip.name), Style::new().fg(Color::Black).bg(SOFT)),
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+    }
+    Line::from(spans)
+}
+
+const PREVIEW_ROWS: u16 = 6;
+
+/// Draws the composer and gives back where the preview of its image goes, if it has room.
+fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
+    let c = app.composer.as_ref()?;
     let title = match &c.target {
         Target::Answer { id, title, option: Some(o) } => {
             let t = md::one_line(title);
@@ -1274,6 +1303,12 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(1));
+    let preview_h = preview_h.min(text.height.saturating_sub(chips_h + 1));
+    let [preview, chips, text] = Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Min(1)]).areas(text);
+    if chips_h > 0 {
+        f.render_widget(Paragraph::new(chip_line(&c.chips)), chips);
+    }
     let (lines, (row, col)) = c.input.layout(text.width as usize);
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
     if c.input.text().is_empty() {
@@ -1282,6 +1317,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>()).scroll((scroll as u16, 0)), text);
     }
     f.set_cursor_position(Position { x: text.x + col as u16, y: text.y + (row - scroll) as u16 });
+    (preview_h > 0).then_some(preview)
 }
 
 fn composer_action(t: &Target) -> &'static str {
@@ -1300,6 +1336,11 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             k("Alt+⏎", tr!("new line", "nueva línea")),
             k("Ctrl+W", tr!("delete word", "borra palabra")),
             k("Ctrl+U", tr!("delete line", "borra línea")),
+            if c.chips.is_empty() {
+                k(tr!("drop a file", "arrastra un archivo"), tr!("attaches it", "lo adjunta"))
+            } else {
+                k(tr!("⌫ on empty", "⌫ en vacío"), tr!("removes the last attachment", "quita el último adjunto"))
+            },
             k("Esc", tr!("cancel", "cancela")),
         ];
     }
@@ -1521,6 +1562,26 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_composer_shows_its_attachments_as_chips_and_previews_the_image() {
+        use super::super::dropped::{Chip, Upload};
+        use super::super::{Msg, Target};
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let (mut app, _rx) = app_with(vec![question(1, alondra_core::QuestionOrigin::Ask, &[])]);
+        app.compose(Target::Answer { id: 1, title: "t".into(), option: None }, "");
+        let c = app.composer.as_mut().unwrap();
+        c.chips.push(Chip { seq: 7, name: "captura.png".into(), bytes: 240 * 1024, upload: Upload::Stored("0123456789abcdef".into()) });
+        c.chips.push(Chip { seq: 8, name: "informe.pdf".into(), bytes: 1_150_000, upload: Upload::Sending });
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("captura.png · 240 KB"), "{s}");
+        assert!(s.contains("informe.pdf · 1.1 MB · copying…") || s.contains("informe.pdf · 1.1 MB · copiando…"), "{s}");
+        assert!(!s.contains('▀') && !s.contains('▄'), "no preview before the image is decoded: {s}");
+        let image = image::load_from_memory(&super::super::files::png(40, 30)).unwrap();
+        app.on_msg(Msg::Preview { seq: 7, image });
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains('▀') || s.contains('▄'), "the image is previewed (half-blocks in tests): {s}");
     }
 
     #[test]

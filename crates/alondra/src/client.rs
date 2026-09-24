@@ -294,6 +294,20 @@ impl Client {
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
+    /// Copies a file into Alondra's storage; the answer carries the upload's id.
+    pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<Value> {
+        let path = format!("/v1/uploads?name={}", crate::mcp::urlencode(name));
+        let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/octet-stream");
+        if let Some(s) = &self.signer {
+            for (k, v) in s.sign("POST", &path, bytes) {
+                req = req.header(k, v);
+            }
+        }
+        let resp = req.send(bytes).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        let (_, text) = Self::check(resp)?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
     pub fn delete(&self, path: &str) -> Result<()> {
         let resp = self.signed(self.agent.delete(format!("{}{path}", self.base)), "DELETE", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp).map(|_| ())
