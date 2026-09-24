@@ -288,6 +288,12 @@ fn plan(v: &View, d: &Definition, file: &OptionsFile, root: &Path, user: &str, n
         Some(id) if !v.board.requests.contains_key(id) => {
             return Err(refuse(StatusCode::NOT_FOUND, format!("request {id} does not exist: pass the request_id of {user}'s request, or text for one {user} made outside the apps")));
         }
+        Some(id) if v.board.requests.get(id).and_then(|r| r.closed.as_ref()).is_some_and(|c| c.withdrawn) => {
+            return Err(refuse(StatusCode::CONFLICT, format!("{user} withdrew {id}: do not define it")));
+        }
+        Some(id) if v.board.requests.get(id).is_some_and(|r| r.closed.is_some()) => {
+            return Err(refuse(StatusCode::CONFLICT, format!("request {id} is closed: if {user} wants the work after all, define it as a new request, with text")));
+        }
         Some(id) => (id.to_string(), v.requests.get(id).cloned().unwrap_or_else(|| file.orchestrator_defaults(None, None)), None),
         None => {
             let Some(text) = d.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
@@ -501,22 +507,25 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
     }
 }
 
+/// Alondra's message to the orchestrator, when one is live.
+pub(crate) fn orchestrator_message(v: &View, text: String) -> Option<Event> {
+    let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
+    Some(Event::MessageQueued(Message {
+        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: o.session_id.clone(),
+        from: MessageFrom::Alondra,
+        text,
+        answers_question: None,
+        created_at: now_millis(),
+        handed_at: None,
+        delivered_at: None,
+        attachments: vec![],
+        about: None,
+    }))
+}
+
 pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
-    let told = hub.append_with(|v| {
-        let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
-        Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-            session_id: o.session_id.clone(),
-            from: MessageFrom::Alondra,
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            attachments: vec![],
-            about: None,
-        }))
-    });
+    let told = hub.append_with(|v| orchestrator_message(v, text));
     if let Err(e) = told {
         log!("could not tell the orchestrator: {e}");
     }
@@ -584,21 +593,27 @@ fn cancelled_with(task: &Task) -> Option<&str> {
     task.depends_on.iter().find(|d| *reason == alondra_core::tasks::dependency_cancelled(d)).map(String::as_str)
 }
 
+/// What the orchestrator has not heard of the tasks cancelled since `since` because one they
+/// waited for was cancelled. Whether it heard is read from its messages, so a restart tells
+/// nothing twice; those go with the retention window while a cancelled task stays until it is
+/// archived, so a cancel older than the window is never looked at: it was told, or went untold
+/// while the orchestrator was away, and is no news now.
+fn cancelled_dependents_untold(v: &View, since: Millis) -> Vec<String> {
+    let Some(o) = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id)) else { return vec![] };
+    v.board
+        .tasks
+        .values()
+        .filter(|t| t.state == TaskState::Cancelled && t.state_since >= since)
+        .filter_map(|t| cancelled_with(t).map(|d| (t, cancelled_with_text(t, d))))
+        .filter(|(t, text)| !v.messages.values().any(|m| m.session_id == o.session_id && m.created_at >= t.state_since && m.text == *text))
+        .map(|(_, text)| text)
+        .collect()
+}
+
 /// Tells the orchestrator about each task cancelled because one it waited for was cancelled.
-/// Whether it heard is read from its messages, so a restart tells nothing twice.
 pub fn tell_cancelled_dependents(hub: &Hub) {
-    let due: Vec<String> = hub.read(|v| {
-        let Some(o) = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id)) else { return vec![] };
-        v.board
-            .tasks
-            .values()
-            .filter(|t| t.state == TaskState::Cancelled)
-            .filter_map(|t| cancelled_with(t).map(|d| (t, cancelled_with_text(t, d))))
-            .filter(|(t, text)| !v.messages.values().any(|m| m.session_id == o.session_id && m.created_at >= t.state_since && m.text == *text))
-            .map(|(_, text)| text)
-            .collect()
-    });
-    for text in due {
+    let window = (hub.config.retention_hours * 3_600_000.0) as Millis;
+    for text in hub.read(|v| cancelled_dependents_untold(v, now_millis() - window)) {
         tell_orchestrator(hub, text);
     }
 }
@@ -707,6 +722,21 @@ mod tests {
         let status = r.status();
         let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// Round 2: define took a request the orchestrator had closed, whose tasks then ran under a
+    /// request shown as done.
+    #[test]
+    fn a_closed_request_is_not_defined_and_the_orchestrator_hears_to_make_a_new_one() {
+        let (hub, home) = fleet("closed-request");
+        let cwd = home.display().to_string();
+        hub.append(Event::RequestClosed { request_id: "r-1".into(), answer: Some("It is in review".into()), withdrawn: false }).unwrap();
+        let before = hub.read(|v| v.seq);
+        let refused = define(&hub, definition(json!({"request": "r-1", "tasks": [{"title": "Model", "brief": "Split the menu model.", "assignee": "new", "cwd": cwd}]}))).err().expect("refused");
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert_eq!(refused.problems, ["request r-1 is closed: if Ana wants the work after all, define it as a new request, with text"]);
+        assert_eq!(hub.read(|v| v.seq), before, "nothing recorded");
+        assert_eq!(hub.read(|v| v.board.request_state("r-1")), alondra_core::tasks::RequestState::Done);
     }
 
     #[test]
@@ -933,6 +963,45 @@ mod tests {
         drop(hub);
         tell_cancelled_dependents(&hub_at(&home));
         assert_eq!(orchestrator_told(&hub_at(&home)).into_iter().filter(|t| t.contains("was cancelled: it waited for")).count(), 1, "nor after a restart");
+    }
+
+    /// Round 2: the notice it was told with goes with the retention window, while the cancelled
+    /// task stays until archived: it was told again every 14 days.
+    #[test]
+    fn a_cascade_cancel_is_not_told_again_once_the_window_prunes_its_notice() {
+        const DAY: Millis = 86_400_000;
+        let task = |id: &str, depends_on: &[&str]| {
+            Event::TaskCreated(NewTask {
+                id: id.into(), request: "r-1".into(), title: id.into(), brief: Some("b".into()), depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+                options: TaskOptions::default(), session_id: None, launched: false, launched_as: None,
+                start: Some(Start::NewNode { name: format!("app/{id}"), cwd: "/tmp".into(), model: None }),
+            })
+        };
+        let options = OptionsFile::default().orchestrator_defaults(Some("app"), None);
+        let mut v = View::default();
+        for (at, e) in [
+            (1, Event::TasksRecorded),
+            (2, seen("orch", "orchestrator")),
+            (3, Event::MarkedOrchestrator { session_id: "orch".into() }),
+            (10, Event::RequestSent { request_id: "r-1".into(), options, text: Some("Menu".into()), attachments: vec![] }),
+            (20, task("t-a", &[])),
+            (21, task("t-b", &["t-a"])),
+            (30, Event::TaskMoved { task: "t-a".into(), event: alondra_core::tasks::TaskEvent::Cancel { reason: None } }),
+        ] {
+            v.record(at, &e);
+        }
+        assert_eq!(v.board.tasks["t-b"].state, TaskState::Cancelled);
+        let untold = cancelled_dependents_untold(&v, 0);
+        assert_eq!(untold.len(), 1, "{untold:?}");
+        let told = Message { id: 1, session_id: "orch".into(), from: MessageFrom::Alondra, text: untold[0].clone(), answers_question: None, created_at: 40, handed_at: Some(41), delivered_at: Some(42), attachments: vec![], about: None };
+        v.record(40, &Event::MessageQueued(told));
+        assert!(cancelled_dependents_untold(&v, 0).is_empty());
+
+        let (now, window) = (15 * DAY, 14 * DAY);
+        v.record(now, &Event::Pruned { before: now - window });
+        assert_eq!(v.board.tasks["t-b"].state, TaskState::Cancelled, "the cancelled task outlives the window until archived");
+        assert!(v.messages.is_empty(), "its notice does not");
+        assert!(cancelled_dependents_untold(&v, now - window).is_empty(), "so it is not told again");
     }
 
     #[test]

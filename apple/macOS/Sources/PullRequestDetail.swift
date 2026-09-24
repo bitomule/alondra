@@ -10,6 +10,7 @@ struct PullRequestDetail: View {
     @State private var confirmingMerge = false
     @State private var files: [DiffFile]?
     @State private var diffError: String?
+    @State private var asking = false
     @FocusState private var focus: DetailField?
 
     var body: some View {
@@ -91,7 +92,7 @@ struct PullRequestDetail: View {
                     .multilineTextAlignment(.trailing)
             }
             Button("Ask") { ask() }
-                .disabled(!hasChanges)
+                .disabled(!hasChanges || asking)
                 .help("Ask the node about this PR; the card stays in the inbox")
             Group {
                 if hasChanges {
@@ -198,13 +199,14 @@ struct PullRequestDetail: View {
     /// Unlike `requestChanges`, asking never parks the PR's card, so it must not go through
     /// `store.resolve` (which would hide it locally until the next full reload).
     private func ask() {
+        guard !asking else { return }
+        asking = true
         let (id, text, attachments) = (pr.id, review, draft.attachments)
         Task {
-            if await store.perform({ client in
-                try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
-            }) {
+            if await store.ask(onPullRequest: id, text: text, attachments: attachments) {
                 drafts.discard(InboxItem.pullRequest(pr).id)
             }
+            asking = false
         }
     }
 

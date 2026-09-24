@@ -81,12 +81,132 @@
         }
       }
     },
+    "%lld busy nodes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld busy node"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld busy nodes"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo ocupado"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos ocupados"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld cores": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "%lld núcleos"
+          }
+        }
+      }
+    },
+    "%lld free nodes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld free node"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld free nodes"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo libre"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos libres"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld nodes waiting for the machine": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld node waiting for the machine"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodes waiting for the machine"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo esperando la máquina"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos esperando la máquina"
+                }
+              }
+            }
           }
         }
       }
@@ -297,6 +417,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Aprobar"
+          }
+        }
+      }
+    },
+    "Archive Completed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivar terminadas"
+          }
+        }
+      }
+    },
+    "Archived (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivadas (%lld)"
           }
         }
       }
@@ -621,6 +761,16 @@
         }
       }
     },
+    "Finished without tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminada sin tareas"
+          }
+        }
+      }
+    },
     "Fleet": {
       "localizations": {
         "es": {
@@ -687,6 +837,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "GitHub está comprobando si se puede fusionar"
+          }
+        }
+      }
+    },
+    "Hides the archived tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oculta las tareas archivadas"
           }
         }
       }
@@ -1151,6 +1311,16 @@
         }
       }
     },
+    "PR handling": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gestión de PR"
+          }
+        }
+      }
+    },
     "Progress": {
       "localizations": {
         "es": {
@@ -1497,6 +1667,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ver más"
+          }
+        }
+      }
+    },
+    "Shows the archived tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra las tareas archivadas"
           }
         }
       }
@@ -2657,36 +2837,6 @@
         }
       }
     },
-    "Auto-merge": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Auto-merge"
-          }
-        }
-      }
-    },
-    "Alondra merges it alone when the checks pass": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alondra fusiona sola cuando pasan los checks"
-          }
-        }
-      }
-    },
-    "Review PR": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revisar PR"
-          }
-        }
-      }
-    },
     "Effort": {
       "localizations": {
         "es": {
@@ -2763,6 +2913,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tarea: %@"
+          }
+        }
+      }
+    },
+    "Withdraw Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirar petición"
+          }
+        }
+      }
+    },
+    "Withdraw this request?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Retirar esta petición?"
+          }
+        }
+      }
+    },
+    "It ends as done, without tasks, and the orchestrator can no longer define it.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
           }
         }
       }

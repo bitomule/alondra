@@ -34,6 +34,9 @@ pub struct Hub {
     pub report_judge: Box<dyn crate::classify::JudgesReports>,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
+    /// Runs once as clients are about to be told of a change, so a test can record something then.
+    #[cfg(test)]
+    before_telling: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Hub {
@@ -73,6 +76,8 @@ impl Hub {
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
             report_judge: Box::new(crate::classify::Jev),
             starts: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            before_telling: Mutex::new(None),
         })
     }
 
@@ -123,8 +128,8 @@ impl Hub {
         }
         let digest = crate::http::overview_digest(&view, at);
         drop(view);
-        drop(store);
         self.changed(Some(digest), None);
+        drop(store);
         Ok(Ok(recorded))
     }
 
@@ -139,6 +144,8 @@ impl Hub {
         let now = alondra_core::now_millis();
         let before = now - retention.as_millis() as i64;
         self.append(Event::Pruned { before })?;
+        let archived_for = (self.config.archived_tasks_days * 86_400_000.0) as i64;
+        self.append(Event::ArchivedPruned { before: now - archived_for })?;
         let mut store = self.writer.lock().expect("writer lock poisoned");
         let view = self.view.read().expect("view lock poisoned").clone();
         store.compact(&view, now, before)
@@ -193,6 +200,7 @@ impl Hub {
     pub fn set_machine(&self, m: Machine, usage: Option<&alondra_core::usage::Usage>) {
         let gauges = gauges_digest(&m, usage);
         *self.machine.write().expect("machine lock poisoned") = m;
+        let _store = self.writer.lock().expect("writer lock poisoned");
         let digest = self.read(|v| crate::http::overview_digest(v, now_millis()));
         self.changed(Some(digest), Some(gauges));
     }
@@ -201,7 +209,16 @@ impl Hub {
         self.machine.read().expect("machine lock poisoned").clone()
     }
 
+    /// Tells clients what they are shown now. Called with the writer held, so what one append or
+    /// sample worked out never lands after what a later one did.
     fn changed(&self, overview: Option<u64>, gauges: Option<u64>) {
+        #[cfg(test)]
+        {
+            let then = self.before_telling.lock().expect("hook lock poisoned").take();
+            if let Some(then) = then {
+                then();
+            }
+        }
         self.changes.send_modify(|c| *c += 1);
         let mut shown = self.shown.lock().expect("shown lock poisoned");
         let before = *shown;
@@ -309,5 +326,68 @@ pub struct Closing<'a> {
 impl Drop for Closing<'_> {
     fn drop(&mut self) {
         self.hub.closing.lock().expect("closing lock poisoned").remove(&self.session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    fn hub(tag: &str) -> Arc<Hub> {
+        let home = std::env::temp_dir().join(format!("alondra-hub-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
+        Arc::new(Hub::open(config, false).unwrap())
+    }
+
+    fn prompt(session: &str) -> Event {
+        Event::Hook(alondra_core::HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })
+    }
+
+    /// Records a new node from another thread just as `hub` is about to tell clients, and gives
+    /// that append the time to land there if nothing holds it back.
+    fn another_append_then(hub: &Arc<Hub>) -> std::thread::JoinHandle<()> {
+        let (landed, waited) = mpsc::channel();
+        let (go, started) = mpsc::channel::<()>();
+        let other = hub.clone();
+        let handle = std::thread::spawn(move || {
+            started.recv().unwrap();
+            other.append(prompt("b")).unwrap();
+            let _ = landed.send(());
+        });
+        *hub.before_telling.lock().unwrap() = Some(Box::new(move || {
+            go.send(()).unwrap();
+            let _ = waited.recv_timeout(Duration::from_millis(300));
+        }));
+        handle
+    }
+
+    fn shown_is_current(hub: &Hub) -> bool {
+        hub.shown.lock().unwrap().0 == hub.read(|v| crate::http::overview_digest(v, now_millis()))
+    }
+
+    /// Round 2: the digest was handed to clients after the writer was released, so a later
+    /// append could tell its digest first and this one's older digest stayed as what clients
+    /// were last shown: the next change back to it moved no tick.
+    #[test]
+    fn what_clients_were_last_shown_is_the_last_append_even_when_two_race() {
+        let hub = hub("race-append");
+        let other = another_append_then(&hub);
+        hub.append(prompt("a")).unwrap();
+        other.join().unwrap();
+        assert_eq!(hub.read(|v| v.nodes.len()), 2);
+        assert!(shown_is_current(&hub), "what clients were last told is the view as it is");
+    }
+
+    #[test]
+    fn a_machine_sample_never_tells_an_older_view_than_an_append_did() {
+        let hub = hub("race-sample");
+        hub.append(prompt("a")).unwrap();
+        let other = another_append_then(&hub);
+        hub.set_machine(Machine::default(), None);
+        other.join().unwrap();
+        assert!(shown_is_current(&hub), "what clients were last told is the view as it is");
     }
 }

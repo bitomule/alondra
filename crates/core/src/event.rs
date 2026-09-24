@@ -153,6 +153,10 @@ pub enum Event {
     },
     /// A task event applied to a recorded task, with the guards the view gives it then.
     TaskMoved { task: String, event: crate::tasks::TaskEvent },
+    /// David archived finished tasks, and requests that finished without tasks.
+    TasksArchived(crate::tasks::Archive),
+    /// Tasks archived before `before` are forgotten: `archived_tasks_days` went by.
+    ArchivedPruned { before: Millis },
     /// The orchestrator named a request.
     RequestTitled { request_id: String, title: String },
     /// The orchestrator closed a request that needed no task: it answered it, or David withdrew it.
@@ -231,6 +235,8 @@ impl Event {
             Event::TaskCreated(_) => "task_created",
             Event::TaskAssigned { .. } => "task_assigned",
             Event::TaskMoved { .. } => "task_moved",
+            Event::TasksArchived(_) => "tasks_archived",
+            Event::ArchivedPruned { .. } => "archived_pruned",
             Event::RequestTitled { .. } => "request_titled",
             Event::RequestClosed { .. } => "request_closed",
             Event::Clock { .. } => "clock",

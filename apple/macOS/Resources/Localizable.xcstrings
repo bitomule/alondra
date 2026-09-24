@@ -271,6 +271,26 @@
         }
       }
     },
+    "Archive Completed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivar terminadas"
+          }
+        }
+      }
+    },
+    "Archive every done or cancelled task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archiva todas las tareas hechas o descartadas"
+          }
+        }
+      }
+    },
     "Ask": {
       "localizations": {
         "es": {
@@ -517,6 +537,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Terminado"
+          }
+        }
+      }
+    },
+    "finished without tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "terminada sin tareas"
           }
         }
       }
@@ -957,6 +987,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Apunta la cámara a este código"
+          }
+        }
+      }
+    },
+    "PR handling": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gestión de PR"
           }
         }
       }
@@ -2061,26 +2101,6 @@
         }
       }
     },
-    "Auto-merge": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Auto-merge"
-          }
-        }
-      }
-    },
-    "Review PR": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revisar PR"
-          }
-        }
-      }
-    },
     "Effort": {
       "localizations": {
         "es": {
@@ -2177,6 +2197,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tarea: %@"
+          }
+        }
+      }
+    },
+    "Withdraw Request…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirar petición…"
+          }
+        }
+      }
+    },
+    "Withdraw Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retirar petición"
+          }
+        }
+      }
+    },
+    "Withdraw “%@”?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Retirar «%@»?"
+          }
+        }
+      }
+    },
+    "It ends as done, without tasks, and the orchestrator can no longer define it.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
           }
         }
       }

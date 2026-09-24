@@ -19,6 +19,8 @@ use crate::mcp::urlencode;
 pub enum TaskKey {
     Task(String),
     Request(String),
+    /// The header of the archived section, which opens and closes it.
+    Archived,
 }
 
 /// A task placed in its request's tree: depth 0 runs in parallel with its siblings, a deeper one
@@ -36,7 +38,10 @@ pub struct TreeRow {
 pub enum TaskListRow {
     Request(String),
     Task(TreeRow),
-    Defining(String),
+    /// A request with no task: still being defined, or finished without one.
+    Taskless(String),
+    /// The archived section's header, with how much it holds.
+    Archived(usize),
 }
 
 /// Each task under the dependency it goes after (the newest one when it has several); tasks with
@@ -166,15 +171,31 @@ impl App {
         all
     }
 
+    /// Each request with its tasks, then the archived section: the same requests with the tasks
+    /// that were archived, shown only while the section is open.
     pub fn task_rows(&self) -> Vec<TaskListRow> {
         let mut rows = vec![];
+        let mut archived = vec![];
         for r in self.ordered_requests() {
-            rows.push(TaskListRow::Request(r.id.clone()));
             let tasks = self.request_tasks(r);
             if tasks.is_empty() {
-                rows.push(TaskListRow::Defining(r.id.clone()));
-            } else {
-                rows.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
+                let into = if r.archived_at.is_some() { &mut archived } else { &mut rows };
+                into.extend([TaskListRow::Request(r.id.clone()), TaskListRow::Taskless(r.id.clone())]);
+                continue;
+            }
+            let (old, open): (Vec<&ClientTask>, Vec<&ClientTask>) = tasks.into_iter().partition(|t| t.archived_at.is_some());
+            for (into, tasks) in [(&mut rows, open), (&mut archived, old)] {
+                if !tasks.is_empty() {
+                    into.push(TaskListRow::Request(r.id.clone()));
+                    into.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
+                }
+            }
+        }
+        let n = self.archived_count();
+        if n > 0 {
+            rows.push(TaskListRow::Archived(n));
+            if self.archived_open {
+                rows.extend(archived);
             }
         }
         rows
@@ -185,10 +206,24 @@ impl App {
             .into_iter()
             .filter_map(|r| match r {
                 TaskListRow::Task(row) => Some(TaskKey::Task(row.id)),
-                TaskListRow::Defining(id) => Some(TaskKey::Request(id)),
+                TaskListRow::Taskless(id) => Some(TaskKey::Request(id)),
+                TaskListRow::Archived(_) => Some(TaskKey::Archived),
                 TaskListRow::Request(_) => None,
             })
             .collect()
+    }
+
+    /// Archived tasks, and requests archived without tasks.
+    pub fn archived_count(&self) -> usize {
+        let tasks = self.data.tasks.iter().filter(|t| t.archived_at.is_some()).count();
+        tasks + self.data.requests.iter().filter(|r| r.archived_at.is_some() && self.request_tasks(r).is_empty()).count()
+    }
+
+    /// What Shift+A archives: finished tasks, and requests that finished without tasks.
+    pub fn archivable_count(&self) -> usize {
+        let tasks = self.data.tasks.iter().filter(|t| t.state.finished() && t.archived_at.is_none()).count();
+        let taskless = self.data.requests.iter().filter(|r| r.state == RequestState::Done && r.archived_at.is_none() && self.request_tasks(r).is_empty());
+        tasks + taskless.count()
     }
 
     pub fn selected_task(&self) -> Option<&ClientTask> {
@@ -198,8 +233,17 @@ impl App {
         }
     }
 
+    /// The selected request while the orchestrator has not defined it: the user can withdraw it.
+    pub fn selected_defining_request(&self) -> Option<&ClientRequest> {
+        match &self.task_sel {
+            Some(TaskKey::Request(id)) => self.request(id).filter(|r| r.state == RequestState::Defining),
+            _ => None,
+        }
+    }
+
     pub fn tasks_on(&self, session: &str) -> Vec<&ClientTask> {
-        let mut tasks: Vec<&ClientTask> = self.data.tasks.iter().filter(|t| t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
+        let mut tasks: Vec<&ClientTask> =
+            self.data.tasks.iter().filter(|t| t.archived_at.is_none() && t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
         tasks.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         tasks
     }
@@ -209,11 +253,14 @@ impl App {
         self.data.tasks.iter().filter(|t| !t.state.finished()).count() + self.data.requests.iter().filter(|r| r.state == RequestState::Defining).count()
     }
 
-    /// The first line of what the user asked; a request made up for an older node takes its
-    /// first task's title.
+    /// The title the orchestrator gave it, else its only task's, else the first line of what the
+    /// user asked (all a request being defined has), else its first task's.
     pub fn request_title(&self, r: &ClientRequest) -> String {
+        let tasks = self.request_tasks(r);
+        let given = r.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        let only = (tasks.len() == 1).then(|| tasks[0].title.clone());
         let line = r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
-        line.or_else(|| self.request_tasks(r).first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
+        given.or(only).or(line).or_else(|| tasks.first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
     }
 
     pub fn task_project(&self, t: &ClientTask) -> Option<String> {
@@ -230,31 +277,15 @@ impl App {
         r.options.as_ref().and_then(|o| o.project.clone()).filter(|p| !p.is_empty() && p != alondra_core::OTHERS_PROJECT).or_else(|| self.request_tasks(r).iter().find_map(|t| self.task_project(t)))
     }
 
-    /// What the node does now, per thread; an alondrad without the activity ledger gives only the
-    /// main thread's tool in flight.
+    /// What the node does now, per thread, as its own route last said; until it answers,
+    /// or from an alondrad without the activity ledger, the main thread's tool in flight.
     pub fn node_activity(&self, n: &FleetNode) -> Vec<Activity> {
-        if let Some(a) = &n.activity {
-            let mut a = a.clone();
-            a.sort_by_key(|x| std::cmp::Reverse(x.since));
-            return a;
-        }
-        n.tool.as_ref().map(|t| vec![Activity { tool: Some(t.name.clone()), summary: t.summary.clone(), since: t.since, ..Default::default() }]).unwrap_or_default()
-    }
-
-    /// The threads that work on this task: those bound to it, or all of its node's while the node
-    /// has no other open task.
-    pub fn task_activity(&self, t: &ClientTask) -> Vec<Activity> {
-        let Some(n) = t.assignee.as_ref().and_then(|a| self.node(&a.session_id)) else { return vec![] };
-        let all = self.node_activity(n);
-        let mine: Vec<Activity> = all.iter().filter(|a| a.task.as_deref() == Some(t.id.as_str())).cloned().collect();
-        if !mine.is_empty() {
-            return mine;
-        }
-        let open: Vec<&str> = self.tasks_on(&n.session_id).into_iter().filter(|x| !x.state.finished()).map(|x| x.id.as_str()).collect();
-        if open != [t.id.as_str()] {
-            return vec![];
-        }
-        all.into_iter().filter(|a| a.task.is_none()).collect()
+        let asked = self.threads.as_ref().filter(|(s, _)| *s == n.session_id).map(|(_, t)| t.clone());
+        let mut a = asked.unwrap_or_else(|| {
+            n.tool.as_ref().map(|t| vec![Activity { tool: Some(t.name.clone()), summary: t.summary.clone(), since: t.since, ..Default::default() }]).unwrap_or_default()
+        });
+        a.sort_by_key(|x| std::cmp::Reverse(x.since));
+        a
     }
 
     pub fn task_prs(&self, t: &ClientTask) -> Vec<&PrCard> {
@@ -347,15 +378,10 @@ impl App {
                 }
                 let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
                 let title = &first.title;
-                Some(trf!("after «{title}»", "tras «{title}»"))
-            }
-            TaskState::Running => {
-                let latest = self.task_activity(t).into_iter().max_by_key(|a| a.since)?;
-                let doing = activity_doing(&latest);
-                if latest.is_main() { doing } else { Some([Some(latest.thread()), doing].into_iter().flatten().collect::<Vec<_>>().join(" · ")) }
+                Some(trf!("after “{title}”", "tras «{title}»"))
             }
             TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
-            TaskState::Done | TaskState::Cancelled => None,
+            TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
         }
     }
 
@@ -367,13 +393,19 @@ impl App {
         let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
         let (title, state) = (&first.title, crate::i18n::task_state(first.state));
         Some(trf!(
-            "It starts once «{title}» ({state}) has its PR open, builds on top of it, and its own PR merges after that one.",
+            "It starts once “{title}” ({state}) has its PR open, builds on top of it, and its own PR merges after that one.",
             "Empieza cuando «{title}» ({state}) tenga su PR abierto, se construye encima y su PR se fusiona después."
         ))
     }
 
     pub fn report_by_id(&self, id: u64) -> Option<&alondra_core::Report> {
-        self.data.news.iter().map(|n| &n.report).find(|r| r.id == id).or_else(|| self.data.reports.iter().find(|r| r.id == id))
+        self.data
+            .news
+            .iter()
+            .map(|n| &n.report)
+            .find(|r| r.id == id)
+            .or_else(|| self.data.reports.iter().find(|r| r.id == id))
+            .or_else(|| self.task_reports.values().flatten().find(|r| r.id == id))
     }
 
     pub(super) fn reconcile_tasks(&mut self) {
@@ -396,7 +428,7 @@ impl App {
 
     /// The selected task's history, which only its own endpoint carries; asked once per state.
     fn load_history(&mut self) {
-        let Some((id, since)) = self.selected_task().map(|t| (t.id.clone(), t.state_since)) else { return };
+        let Some((id, since)) = self.selected_task().map(|t| (t.id.clone(), t.last_change.unwrap_or(t.state_since))) else { return };
         if self.history_missing || self.histories.get(&id).is_some_and(|(at, _)| *at == since) || !self.history_asked.insert((id.clone(), since)) {
             return;
         }
@@ -404,8 +436,9 @@ impl App {
             let result = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/tasks/{}", urlencode(&id)));
             let history = match result {
                 Ok(v) => {
+                    let reports = serde_json::from_value::<Vec<alondra_core::Report>>(v["reports"].clone()).unwrap_or_default();
                     let task = if v.get("task").is_some() { v["task"].clone() } else { v };
-                    Ok(serde_json::from_value::<Vec<Transition>>(task["history"].clone()).unwrap_or_default())
+                    Ok((serde_json::from_value::<Vec<Transition>>(task["history"].clone()).unwrap_or_default(), reports))
                 }
                 Err(e) => Err(e.downcast_ref::<NotFound>().is_some()),
             };
@@ -413,12 +446,18 @@ impl App {
         });
     }
 
-    pub(super) fn history_loaded(&mut self, id: String, since: i64, history: Result<Vec<Transition>, bool>) {
+    pub(super) fn history_loaded(&mut self, id: String, since: i64, history: Result<(Vec<Transition>, Vec<alondra_core::Report>), bool>) {
         match history {
-            Ok(h) => {
+            Ok((h, reports)) => {
+                if !reports.is_empty() {
+                    self.task_reports.insert(id.clone(), reports);
+                }
                 self.histories.insert(id, (since, h));
             }
-            Err(missing) => self.history_missing |= missing,
+            Err(true) => self.history_missing = true,
+            Err(false) => {
+                self.history_asked.remove(&(id, since));
+            }
         }
     }
 
@@ -446,6 +485,7 @@ impl App {
             Cmd::Move(Motion::Top) => self.move_tasks(0),
             Cmd::Move(Motion::Bottom) => self.move_tasks(isize::MAX),
             Cmd::Move(m) => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             Cmd::Right if self.task_view.shown && !self.task_zoom => self.focus = Pane::Detail,
             Cmd::Right => self.task_zoom = self.task_sel.is_some(),
             Cmd::Expand => self.task_zoom = !self.task_zoom && self.task_sel.is_some(),
@@ -459,8 +499,11 @@ impl App {
         match k.code {
             KeyCode::Char('J') => self.task_detail_scroll = keys::by(self.task_detail_scroll, 5, self.task_view.h, self.task_view.total),
             KeyCode::Char('K') => self.task_detail_scroll = keys::by(self.task_detail_scroll, -5, self.task_view.h, self.task_view.total),
+            KeyCode::Char('x') if self.selected_defining_request().is_some() => self.withdraw_request(),
             KeyCode::Char('x') => self.cancel_task(),
             KeyCode::Char('R') => self.reopen_task(),
+            KeyCode::Char('A') => self.archive_finished(),
+            KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_task().and_then(|t| t.assignee.as_ref()).and_then(|a| self.node(&a.session_id)) {
                     let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string() };
@@ -490,11 +533,24 @@ impl App {
         let now = now_millis();
         if !self.pending_cancel.as_ref().is_some_and(|(p, until)| *p == id && now < *until) {
             self.pending_cancel = Some((id, now + 4000));
-            self.fail(trf!("Press x again to cancel «{title}»", "Pulsa x otra vez para descartar «{title}»"));
+            self.fail(trf!("Press x again to cancel “{title}”", "Pulsa x otra vez para descartar «{title}»"));
             return;
         }
         self.pending_cancel = None;
-        self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"));
+        self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"), Msg::TaskAction);
+    }
+
+    /// Closes a request the orchestrator never defined, as withdrawn: then it can be archived.
+    fn withdraw_request(&mut self) {
+        let Some((id, title)) = self.selected_defining_request().map(|r| (r.id.clone(), md::truncate(&self.request_title(r), 60))) else { return };
+        let now = now_millis();
+        if !self.pending_cancel.as_ref().is_some_and(|(p, until)| *p == id && now < *until) {
+            self.pending_cancel = Some((id, now + 4000));
+            self.fail(trf!("Press x again to withdraw “{title}”", "Pulsa x otra vez para retirar «{title}»"));
+            return;
+        }
+        self.pending_cancel = None;
+        self.post(None, vec![(format!("/v1/requests/{}/close", urlencode(&id)), json!({"withdrawn": true}))], trf!("Withdrawn: {title}", "Retirada: {title}"));
     }
 
     fn reopen_task(&mut self) {
@@ -507,10 +563,23 @@ impl App {
             self.fail(tr!("Only a done or cancelled task reopens", "Solo se reabre una tarea hecha o descartada"));
             return;
         }
-        self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"));
+        self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"), Msg::TaskAction);
     }
 
-    fn task_action(&self, path: String, ok: String) {
+    fn archive_finished(&mut self) {
+        if self.archive_missing {
+            self.fail(tr!("This alondrad cannot archive tasks yet", "Este alondrad todavía no sabe archivar tareas"));
+            return;
+        }
+        let n = self.archivable_count();
+        if n == 0 {
+            self.fail(tr!("Nothing finished to archive", "No hay nada terminado que archivar"));
+            return;
+        }
+        self.task_action("/v1/tasks/archive".into(), trf!("Archived: {n}", "Archivadas: {n}"), Msg::TasksArchived);
+    }
+
+    fn task_action(&self, path: String, ok: String, done: fn(Result<String, (String, bool)>) -> Msg) {
         #[cfg(test)]
         self.posted.borrow_mut().push((vec![path.clone()], ok.clone()));
         self.spawn(move |tx| {
@@ -518,8 +587,19 @@ impl App {
                 Ok(_) => Ok(ok),
                 Err(e) => Err((e.to_string(), e.downcast_ref::<NotFound>().is_some())),
             };
-            let _ = tx.send(Msg::TaskAction(result));
+            let _ = tx.send(done(result));
         });
+    }
+
+    pub(super) fn archive_done(&mut self, result: Result<String, (String, bool)>) {
+        match result {
+            Ok(text) => self.flash(text),
+            Err((_, true)) => {
+                self.archive_missing = true;
+                self.fail(tr!("This alondrad cannot archive tasks yet", "Este alondrad todavía no sabe archivar tareas"));
+            }
+            Err((e, false)) => self.fail(trf!("Not sent: {e}", "No se envió: {e}")),
+        }
     }
 
     pub(super) fn task_action_done(&mut self, result: Result<String, (String, bool)>) {

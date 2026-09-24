@@ -35,6 +35,14 @@ public struct WorkRequest: Codable, Identifiable, Hashable, Sendable {
     public let synthetic: Bool?
     public let state: State
     public let tasks: [String]?
+    /// The title the orchestrator gave it.
+    public let title: String?
+    /// When it left the Tasks list: every task of it is archived, or it finished without tasks
+    /// and was archived itself.
+    public let archivedAt: Int64?
+
+    /// The orchestrator has not defined it: the user can withdraw it, and it can then be archived.
+    public var canWithdraw: Bool { state == .defining }
 }
 
 /// One piece of work a request became, with its own state machine on the server.
@@ -125,10 +133,14 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     public let history: [Transition]?
     /// Alondra merges its PR by itself once the checks pass.
     public let autoMergePending: Bool?
+    /// When the user archived it, once it was finished.
+    public let archivedAt: Int64?
+    /// When anything last happened to it, its history included.
+    public let lastChange: Int64?
 
     private enum CodingKeys: String, CodingKey {
         case id, request, title, brief, dependsOn, options, assignee, prs, documents, blocker, notices, state, stateSince, createdAt, finalReport, history,
-            autoMergePending
+            autoMergePending, archivedAt, lastChange
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,9 +162,17 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
         finalReport = try c.decodeIfPresent(UInt64.self, forKey: .finalReport)
         history = try c.decodeIfPresent([Transition].self, forKey: .history)
         autoMergePending = try c.decodeIfPresent(Bool.self, forKey: .autoMergePending)
+        archivedAt = try c.decodeIfPresent(Int64.self, forKey: .archivedAt)
+        lastChange = try c.decodeIfPresent(Int64.self, forKey: .lastChange)
     }
 
     public var mergesAlone: Bool { autoMergePending == true }
+
+    public var isArchived: Bool { archivedAt != nil }
+
+    /// Moves when its history does, also when its state stays: an older alondrad only says when
+    /// the state changed.
+    public var historyKey: Int64 { lastChange ?? stateSince }
 
     /// Every report the task carries: documents, notices and its final report.
     public var reports: [UInt64] { documents + notices + (finalReport.map { [$0] } ?? []) }
@@ -179,6 +199,44 @@ public struct NodeActivity: Codable, Hashable, Sendable {
     public var doing: String? {
         let text = [tool, summary].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
         return text.isEmpty ? nil : text
+    }
+}
+
+/// A task as its own route gives it: with its history and, from a newer alondrad, its documents,
+/// which the overview only has among the newest reports.
+public struct TaskInFull: Decodable, Sendable {
+    public let task: WorkTask
+    public let documents: [Report]?
+
+    private enum CodingKeys: String, CodingKey {
+        case task
+        case documents = "reports"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        task = try c.decodeIfPresent(WorkTask.self, forKey: .task) ?? WorkTask(from: decoder)
+        documents = try c.decodeIfPresent([Report].self, forKey: .documents)
+    }
+}
+
+/// What `GET /v1/nodes/{key}/activity` says each thread of the node does now, or the node inside
+/// `GET /v1/nodes/{key}` from an alondrad without that route; the overview leaves it out.
+public struct NodeThreads: Decodable, Sendable {
+    private struct Detail: Decodable, Sendable {
+        let activity: [NodeActivity]?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activity, node
+    }
+
+    /// Nil from an alondrad without the activity ledger.
+    public let activity: [NodeActivity]?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        activity = try c.decodeIfPresent([NodeActivity].self, forKey: .activity) ?? c.decodeIfPresent(Detail.self, forKey: .node)?.activity
     }
 }
 
@@ -240,6 +298,8 @@ public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
         case task(WorkTask.State)
         case defining
+        /// Finished work the user archived, and requests archived without tasks.
+        case archived
     }
 
     public let kind: Kind
@@ -265,22 +325,34 @@ public struct TaskStateGroup: Identifiable, Hashable, Sendable {
         case .task(.closing): String(localized: "Closing", table: "AlondraShared", bundle: #bundle)
         case .task(.done): String(localized: "task-group.done", defaultValue: "Done", table: "AlondraShared", bundle: #bundle)
         case .task(.cancelled): String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)
+        case .archived: String(localized: "Archived", table: "AlondraShared", bundle: #bundle)
         }
     }
 
     public var isFinished: Bool {
-        if case .task(let state) = kind { return state.isFinished }
-        return false
+        switch kind {
+        case .task(let state): state.isFinished
+        case .archived: true
+        case .defining: false
+        }
     }
 
-    public static let order: [Kind] = [.task(.needsYou), .task(.inReview), .task(.running), .task(.closing), .task(.waitingDependency), .defining, .task(.done), .task(.cancelled)]
+    public static let order: [Kind] = [
+        .task(.needsYou), .task(.inReview), .task(.running), .task(.closing), .task(.waitingDependency), .defining, .task(.done), .task(.cancelled), .archived,
+    ]
 }
 
 /// Requests and tasks as the overview sends them, indexed for the apps.
 public struct TaskBoard: Sendable {
     public let requests: [WorkRequest]
     public let tasks: [String: WorkTask]
+    /// Every request with all its tasks.
     public let trees: [RequestTree]
+    /// The Tasks list: each request with the tasks not archived; a request with nothing left in
+    /// it is not here.
+    public let activeTrees: [RequestTree]
+    /// The archived section: each request with its archived tasks, or archived without tasks.
+    public let archivedTrees: [RequestTree]
 
     public static let empty = TaskBoard(requests: [], tasks: [])
 
@@ -288,10 +360,20 @@ public struct TaskBoard: Sendable {
         let byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
         self.requests = requests.sorted { ($0.createdAt, $0.id) > ($1.createdAt, $1.id) }
         self.tasks = byID
-        trees = self.requests.map { request in
+        let members = self.requests.map { request in
             let listed = (request.tasks ?? []).compactMap { byID[$0] }
-            let members = listed.isEmpty ? tasks.filter { $0.request == request.id } : listed
-            return RequestTree(request: request, rows: Self.tree(members))
+            return (request, listed.isEmpty ? tasks.filter { $0.request == request.id } : listed)
+        }
+        trees = members.map { RequestTree(request: $0, rows: Self.tree($1)) }
+        activeTrees = members.compactMap { request, all in
+            let open = all.filter { !$0.isArchived }
+            guard all.isEmpty ? request.archivedAt == nil : !open.isEmpty else { return nil }
+            return RequestTree(request: request, rows: Self.tree(open))
+        }
+        archivedTrees = members.compactMap { request, all in
+            let archived = all.filter(\.isArchived)
+            guard all.isEmpty ? request.archivedAt != nil : !archived.isEmpty else { return nil }
+            return RequestTree(request: request, rows: Self.tree(archived))
         }
     }
 
@@ -301,11 +383,20 @@ public struct TaskBoard: Sendable {
 
     public func tree(for request: String) -> RequestTree? { trees.first { $0.request.id == request } }
 
-    public var openTrees: [RequestTree] { trees.filter { $0.request.state != .done } }
-    public var doneTrees: [RequestTree] { trees.filter { $0.request.state == .done } }
+    public var openTrees: [RequestTree] { activeTrees.filter { $0.request.state != .done } }
+    public var doneTrees: [RequestTree] { activeTrees.filter { $0.request.state == .done } }
+
+    /// Archived tasks, and requests archived without tasks.
+    public var archivedCount: Int { archivedTrees.reduce(0) { $0 + max($1.rows.count, 1) } }
+
+    /// Something finished is not archived yet: a done or cancelled task, or a request that
+    /// finished without tasks.
+    public var hasArchivable: Bool {
+        tasks.values.contains { $0.state.isFinished && !$0.isArchived } || activeTrees.contains { $0.rows.isEmpty && $0.request.state == .done }
+    }
 
     public func tasks(onNode session: String) -> [WorkTask] {
-        tasks.values.filter { $0.assignee?.sessionId == session }.sorted(by: Self.creationOrder)
+        tasks.values.filter { $0.assignee?.sessionId == session && !$0.isArchived }.sorted(by: Self.creationOrder)
     }
 
     public func dependencies(of task: WorkTask) -> [WorkTask] {
@@ -339,11 +430,15 @@ public struct TaskBoard: Sendable {
 
     public var groups: [TaskStateGroup] {
         let defining = requests.filter { $0.state == .defining }
+        let taskless = activeTrees.filter { $0.rows.isEmpty && $0.request.state == .done }.map(\.request)
         let all = tasks.values.sorted(by: Self.creationOrder)
+        let active = all.filter { !$0.isArchived }
         return TaskStateGroup.order.compactMap { kind in
             let group: TaskStateGroup = switch kind {
             case .defining: TaskStateGroup(kind: kind, tasks: [], requests: defining)
-            case .task(let state): TaskStateGroup(kind: kind, tasks: all.filter { $0.state == state }, requests: [])
+            case .task(.done): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == .done }, requests: taskless)
+            case .task(let state): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == state }, requests: [])
+            case .archived: TaskStateGroup(kind: kind, tasks: all.filter(\.isArchived), requests: archivedTrees.filter(\.rows.isEmpty).map(\.request))
             }
             return group.count == 0 ? nil : group
         }

@@ -290,7 +290,9 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         "close_request" if role == Role::Orchestrator => {
             let request = args.get("request").and_then(Value::as_str).unwrap_or("");
-            let r = client.post(&format!("/v1/requests/{}/close", urlencode(request)), &pick(args, &["answer", "withdrawn", "title"]))?;
+            let mut body = pick(args, &["answer", "withdrawn", "title"]);
+            body["from"] = json!("orchestrator");
+            let r = client.post(&format!("/v1/requests/{}/close", urlencode(request)), &body)?;
             format!("{request} is {} now.", r.get("state").and_then(Value::as_str).unwrap_or("closed").replace('_', " "))
         }
         "cancel" | "reopen" if role == Role::Orchestrator => {

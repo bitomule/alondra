@@ -98,4 +98,30 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
         default: method
         }
     }
+
+    /// The PR's main button, on its card and in its full screen: conflicts go to its node before
+    /// anything can merge, and a merge waits for the PR under it.
+    public enum MainAction: Equatable, Sendable {
+        case resolveConflicts
+        case merge(methods: [String], blockedBy: String?)
+    }
+
+    public var mainAction: MainAction {
+        hasConflicts ? .resolveConflicts : .merge(methods: methods, blockedBy: mergeBlockedReason)
+    }
+
+    public func perform(_ outcome: PullRequestOutcome, using client: AlondraClient) async throws {
+        switch outcome {
+        case .merged(let method): try await client.mergePullRequest(id, method: method)
+        case .conflictsSent: try await client.resolveConflicts(onPullRequest: id)
+        case .setAside: try await client.dismissPullRequest(id)
+        }
+    }
+}
+
+/// How a PR's card leaves the inbox without going back to its node with changes.
+public enum PullRequestOutcome: Hashable, Sendable {
+    case merged(method: String)
+    case conflictsSent
+    case setAside
 }

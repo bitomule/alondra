@@ -44,6 +44,8 @@ public final class FleetStore {
     public private(set) var board = TaskBoard.empty
     /// alondrad answered 404 to a task action: it does not have them yet, so the apps disable them.
     public private(set) var taskActionsUnavailable = false
+    /// alondrad answered 404 to an archive: it cannot archive yet, so the apps disable it.
+    public private(set) var archiveUnavailable = false
     @ObservationIgnored private var taskDetailUnavailable = false
     private var pendingBySession: [String: Int] = [:]
     private var hidden: Set<String> = [] {
@@ -57,6 +59,8 @@ public final class FleetStore {
     private let stuckAfter: Duration
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
+    /// What a node's own route last said its threads do, kept for when asking it again fails.
+    @ObservationIgnored var threadsShown: (session: String, threads: [NodeActivity])?
 
     public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2), stuckAfter: Duration = .seconds(120)) {
         self.client = client
@@ -162,6 +166,7 @@ public final class FleetStore {
         hidden = []
         ring = InboxRing()
         documents = [:]
+        threadsShown = nil
         taskActionsUnavailable = false
         taskDetailUnavailable = false
         connection = .connecting
@@ -210,6 +215,7 @@ public final class FleetStore {
     public func apply(_ fresh: Overview) {
         let live = Set(fresh.openQuestions.map { "q\($0.id)" } + fresh.news.map { "r\($0.id)" } + (fresh.prs ?? []).map { "p\($0.id)" })
         let reconnected = connection != .online
+        if reconnected || fresh.tick < overview?.tick ?? 0 { forgetMissingRoutes() }
         animate(.smooth(duration: 0.45)) {
             overview = fresh
             if !hidden.isSubset(of: live) { hidden.formIntersection(live) }
@@ -483,6 +489,52 @@ public final class FleetStore {
         await taskAction { try await $0.reopenTask(task.id) }
     }
 
+    /// Withdraws a request the orchestrator has not defined, so it stops waiting to be and can be
+    /// archived.
+    @discardableResult
+    public func withdraw(_ request: WorkRequest) async -> Bool {
+        guard request.canWithdraw else { return false }
+        do {
+            try await client.withdrawRequest(request.id)
+            return true
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
+    public var canArchive: Bool { !archiveUnavailable && board.hasArchivable }
+
+    /// alondrad came back, maybe a newer one: the routes an older one lacked are tried again.
+    private func forgetMissingRoutes() {
+        taskActionsUnavailable = false
+        taskDetailUnavailable = false
+        archiveUnavailable = false
+    }
+
+    /// Asks the node about its PR. Asking never parks the card, so unlike `resolve` it stays
+    /// where it is.
+    @discardableResult
+    public func ask(onPullRequest id: UInt64, text: String, attachments: Attachments? = nil) async -> Bool {
+        await perform { [attachments] client in
+            try await client.ask(onPullRequest: id, text: text, attachments: try await attachments?.storedIDs(using: client) ?? [])
+        }
+    }
+
+    @discardableResult
+    public func archiveCompleted() async -> Bool {
+        do {
+            try await client.archiveCompletedTasks()
+            return true
+        } catch AlondraError.unexpected(404) {
+            archiveUnavailable = true
+            return false
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
     private func taskAction(_ action: @Sendable (AlondraClient) async throws -> Void) async -> Bool {
         do {
             try await action(client)
@@ -496,16 +548,17 @@ public final class FleetStore {
         }
     }
 
-    /// The task's history, which only its own endpoint carries; nil while alondrad has none.
-    public func history(of task: WorkTask) async -> [WorkTask.Transition]? {
-        guard !taskDetailUnavailable else { return nil }
+    /// The task in full, which only its own route carries; what was shown already when the route
+    /// fails or this alondrad has none.
+    public func details(of task: WorkTask, keeping shown: TaskInFull?) async -> TaskInFull? {
+        guard !taskDetailUnavailable else { return shown }
         do {
-            return try await client.task(task.id).history
+            return try await client.task(task.id)
         } catch AlondraError.unexpected(404) {
             taskDetailUnavailable = true
-            return nil
+            return shown
         } catch {
-            return nil
+            return shown
         }
     }
 

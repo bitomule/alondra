@@ -26,11 +26,7 @@ struct PRReviewView: View {
                 Text(pr.summary)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
-                if let stackedOn = pr.stackedOn {
-                    Label(stackedOn, systemImage: "square.stack.3d.up")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
+                PRStatus(pr: current)
                 ForEach(fleet.reports(forPullRequest: pr.id)) { report in
                     AttachedReport(report: report, showsBody: true)
                 }
@@ -109,6 +105,15 @@ struct PRReviewView: View {
         ReviewExport.text(comments: ReviewExport.ordered(comments, in: files ?? []), general: note)
     }
 
+    private var hasReview: Bool { !review.isEmpty || !attachments.isEmpty }
+
+    /// The PR as the inbox has it now: GitHub finishing its check, or the PR under it merging,
+    /// changes the main button while this screen is open.
+    private var current: PullRequest {
+        for case .pullRequest(let live) in fleet.inbox where live.id == pr.id { return live }
+        return pr
+    }
+
     private var bar: some View {
         VStack(spacing: 8) {
             AttachmentStrip(attachments, client: fleet.client)
@@ -126,7 +131,7 @@ struct PRReviewView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glass)
-                .disabled((review.isEmpty && attachments.isEmpty) || sending)
+                .disabled(!hasReview || sending)
                 Button {
                     send()
                 } label: {
@@ -134,12 +139,33 @@ struct PRReviewView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glassProminent)
-                .disabled((review.isEmpty && attachments.isEmpty) || sending)
+                .disabled(!hasReview || sending)
             }
+            Group {
+                PRMainAction(pr: current, placement: .bar(prominent: !hasReview), onOutcome: finish)
+                PRFooter(pr: current) { finish(.setAside) }
+                    .padding(.horizontal, 4)
+            }
+            .disabled(sending)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    /// As from the card: the screen closes, then the card stamps the outcome and files away.
+    private func finish(_ outcome: PullRequestOutcome) {
+        sending = true
+        let pr = current
+        let handoff = FleetStore.Handoff(itemID: InboxItem.pullRequest(pr).id, label: outcome.handoffLabel) {
+            try await pr.perform(outcome, using: $0)
+        }
+        let fleet = fleet
+        dismiss()
+        Task {
+            try? await Task.sleep(for: .milliseconds(320))
+            fleet.handoff = handoff
+        }
     }
 
     private func send() {
@@ -155,14 +181,12 @@ struct PRReviewView: View {
     }
 
     /// Unlike `send`, asking never parks the PR's card, so it must not go through `resolve`
-    /// (which would hide it locally until the next full reload); `perform` just sends it.
+    /// (which would hide it locally until the next full reload); `FleetStore.ask` just sends it.
     private func ask() {
         let (id, text) = (pr.id, review)
         sending = true
         Task {
-            let ok = await fleet.perform { [attachments] client in
-                try await client.ask(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
-            }
+            let ok = await fleet.ask(onPullRequest: id, text: text, attachments: attachments)
             sending = false
             if ok { dismiss() }
         }

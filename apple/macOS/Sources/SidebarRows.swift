@@ -190,13 +190,17 @@ struct DefiningRow: View {
             Text(store.title(of: request))
                 .fontWeight(.medium)
                 .lineLimit(2)
-            Text(verbatim: [store.project(of: request), String(localized: "the orchestrator is splitting it")].compactMap(\.self).joined(separator: " · "))
+            Text(verbatim: [store.project(of: request), whatHappens].compactMap(\.self).joined(separator: " · "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
+    }
+
+    private var whatHappens: String {
+        request.state == .done ? String(localized: "finished without tasks") : String(localized: "the orchestrator is splitting it")
     }
 }
 
@@ -241,6 +245,7 @@ extension TaskStateGroup.Kind {
         switch self {
         case .defining: .purple
         case .task(let state): state.color
+        case .archived: .gray
         }
     }
 }

@@ -313,9 +313,13 @@ enum Msg {
     Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
     /// A task's history, or whether alondrad has no route for it.
-    TaskHistory { id: String, since: i64, history: Result<Vec<alondra_core::tasks::Transition>, bool> },
+    TaskHistory { id: String, since: i64, history: Result<(Vec<alondra_core::tasks::Transition>, Vec<alondra_core::Report>), bool> },
     /// A cancel or reopen: what to flash, or why it failed and whether alondrad has no route for it.
     TaskAction(Result<String, (String, bool)>),
+    /// An archive of what is finished, told like a task action.
+    TasksArchived(Result<String, (String, bool)>),
+    /// What each thread of a node does, from its own route; none from an alondrad without it.
+    NodeThreads { session: String, threads: Option<Vec<crate::client::Activity>> },
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -355,6 +359,8 @@ pub struct App {
     /// What each post would have called and flashed on success, since tests never reach alondrad.
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<(Vec<String>, String)>>,
+    #[cfg(test)]
+    posted_keys: std::cell::RefCell<Vec<Option<Key>>>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -386,9 +392,17 @@ pub struct App {
     pub task_zoom: bool,
     /// Each task's history by id, with the `state_since` it was fetched at.
     pub histories: HashMap<String, (i64, Vec<alondra_core::tasks::Transition>)>,
+    pub task_reports: HashMap<String, Vec<alondra_core::Report>>,
     history_asked: HashSet<(String, i64)>,
     history_missing: bool,
     pub task_actions_missing: bool,
+    pub archive_missing: bool,
+    /// The Tasks list shows its archived section open.
+    pub archived_open: bool,
+    /// What each thread of the selected node does, as its own route last said.
+    pub threads: Option<(String, Vec<crate::client::Activity>)>,
+    /// The node, the tick and when its threads were last asked for.
+    threads_asked: Option<(String, u64, i64)>,
     pending_cancel: Option<(String, i64)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
@@ -399,6 +413,8 @@ pub struct App {
 const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const PREVIEW_PIXELS: u32 = 480;
 const ACTIVITY_EVERY_MS: i64 = 60_000;
+/// Threads move with every tool call, which does not move the tick: the open node asks again this often.
+const THREADS_EVERY_MS: i64 = 10_000;
 
 pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Msg>(64);
@@ -581,6 +597,17 @@ fn stored_ids(chips: &[Chip]) -> Vec<String> {
     }).collect()
 }
 
+/// What each thread of the node does now, from its light route; an alondrad without that route
+/// answers from the node's detail, cut to one timeline event. None when neither answers.
+fn node_threads(get: impl Fn(&str) -> Result<Value>, session: &str) -> Option<Vec<crate::client::Activity>> {
+    let key = urlencode(session);
+    let (answer, at) = match get(&format!("/v1/nodes/{key}/activity")) {
+        Err(e) if e.downcast_ref::<crate::client::NotFound>().is_some() => (get(&format!("/v1/nodes/{key}?limit=1")), "/node/activity"),
+        light => (light, "/activity"),
+    };
+    answer.ok().and_then(|v| serde_json::from_value(v.pointer(at)?.clone()).ok())
+}
+
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         App {
@@ -604,6 +631,8 @@ impl App {
             pending_merge: None,
             #[cfg(test)]
             posted: Default::default(),
+            #[cfg(test)]
+            posted_keys: Default::default(),
             search: None,
             composer: None,
             reader: None,
@@ -630,9 +659,14 @@ impl App {
             task_view: View::default(),
             task_zoom: false,
             histories: HashMap::new(),
+            task_reports: HashMap::new(),
             history_asked: HashSet::new(),
             history_missing: false,
             task_actions_missing: false,
+            archive_missing: false,
+            archived_open: false,
+            threads: None,
+            threads_asked: None,
             pending_cancel: None,
             cmdline: None,
             keymap: Keymap::default(),
@@ -807,6 +841,8 @@ impl App {
     fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
         #[cfg(test)]
         self.posted.borrow_mut().push((calls.iter().map(|(p, _)| p.clone()).collect(), ok.clone()));
+        #[cfg(test)]
+        self.posted_keys.borrow_mut().push(key);
         self.spawn(move |tx| {
             let client = Client::for_user(Duration::from_secs(15));
             let mut result = Ok(ok);
@@ -877,11 +913,42 @@ impl App {
             }
         }
         self.reconcile_tasks();
+        self.load_threads();
+    }
+
+    /// alondrad came back, maybe a newer one: the routes an older one lacked are tried again.
+    fn forget_missing_routes(&mut self) {
+        self.task_actions_missing = false;
+        self.archive_missing = false;
+        self.history_missing = false;
+        self.history_asked.clear();
+    }
+
+    /// Asks the selected node's own route what each of its threads does, which the overview does
+    /// not carry: when the node is opened, when the tick moves and every `THREADS_EVERY_MS`.
+    fn load_threads(&mut self) {
+        if self.screen != Screen::Fleet {
+            return;
+        }
+        let Some(session) = self.fleet_sel.clone() else { return };
+        let now = now_millis();
+        if self.threads_asked.as_ref().is_some_and(|(s, tick, at)| *s == session && *tick == self.data.tick && now - at < THREADS_EVERY_MS) {
+            return;
+        }
+        self.threads_asked = Some((session.clone(), self.data.tick, now));
+        self.spawn(move |tx| {
+            let client = Client::for_user(Duration::from_secs(10));
+            let threads = node_threads(|path| client.get::<Value>(path), &session);
+            let _ = tx.send(Msg::NodeThreads { session, threads });
+        });
     }
 
     fn on_msg(&mut self, m: Msg) {
         match m {
             Msg::Data(o) => {
+                if self.offline || o.tick < self.data.tick {
+                    self.forget_missing_routes();
+                }
                 self.data = *o;
                 self.connected = true;
                 self.loaded = true;
@@ -936,6 +1003,9 @@ impl App {
             }
             Msg::TaskHistory { id, since, history } => self.history_loaded(id, since, history),
             Msg::TaskAction(result) => self.task_action_done(result),
+            Msg::TasksArchived(result) => self.archive_done(result),
+            Msg::NodeThreads { session, threads: Some(threads) } => self.threads = Some((session, threads)),
+            Msg::NodeThreads { threads: None, .. } => {}
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -961,6 +1031,7 @@ impl App {
         if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
             dirty = true;
         }
+        self.load_threads();
         let wants_remote = self.search.as_ref().and_then(|s| {
             let q = s.query();
             let idle = matches!(&s.remote, Remote::Idle);
@@ -1096,7 +1167,9 @@ impl App {
         self.focus = Pane::List;
         self.fleet_zoom = false;
         self.task_zoom = false;
+        self.threads_asked = None;
         self.reconcile_tasks();
+        self.load_threads();
     }
 
     fn message_orchestrator(&mut self) {
@@ -1595,7 +1668,7 @@ impl App {
                 self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/changes"), json!({"text": text, "attachments": ids}))], tr!("Changes requested", "Cambios pedidos").to_string());
             }
             Target::PrAsk { id, .. } => {
-                self.post(Some(Key::P(id)), vec![(format!("/v1/prs/{id}/ask"), json!({"text": text, "attachments": ids}))], tr!("Asked its node", "Preguntado a su nodo").to_string());
+                self.post(None, vec![(format!("/v1/prs/{id}/ask"), json!({"text": text, "attachments": ids}))], tr!("Asked its node", "Preguntado a su nodo").to_string());
             }
             Target::Answer { id, option, .. } => {
                 self.post(Some(Key::Q(id)), vec![(format!("/v1/questions/{id}/answer"), answer_body(&text, option.as_deref(), &ids))], trf!("#{id} answered", "#{id} contestada"));
@@ -1939,6 +2012,7 @@ impl App {
         }
         self.fleet_idx = idx;
         self.fleet_sel = Some(sessions[idx].clone());
+        self.load_threads();
     }
 
     fn fleet_cmd(&mut self, cmd: Cmd) {
@@ -2108,7 +2182,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn alive_node(session: &str) -> crate::client::FleetNode {
-        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None, activity: None }
+        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None }
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
@@ -2218,6 +2292,88 @@ pub(crate) mod tests {
         rv.comments.push(Comment { block: 0, quote: "b".into(), text: "y".into() });
         rv.comments.sort_by_key(|c| c.block);
         assert!(rv.feedback().starts_with(&format!("Comments from {}:\n\n1. On \"b\":", crate::client::config().name)));
+    }
+
+    #[test]
+    fn asking_on_a_pr_keeps_the_comments_drafted_in_its_reader() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.reviews.insert(Key::P(4), Review { comments: vec![Comment { block: 0, quote: "a".into(), text: "why this?".into() }], ..Default::default() });
+        app.compose(Target::PrAsk { id: 4, title: "t".into() }, "");
+        app.composer.as_mut().unwrap().input.insert_str("Does it build?");
+        app.submit();
+        assert_eq!(app.posted.borrow().last().map(|(p, _)| p.clone()), Some(vec!["/v1/prs/4/ask".to_string()]));
+        let key = app.posted_keys.borrow().last().cloned().flatten();
+        app.on_msg(Msg::Posted { key, result: Ok("Asked its node".into()) });
+        assert_eq!(app.reviews.get(&Key::P(4)).map(|r| r.comments.len()), Some(1), "the Ask sent none of them");
+    }
+
+    /// Round 2: the open node's threads were asked for once, when it was opened, and never again
+    /// while it stayed open: the overview no longer carries them.
+    #[test]
+    fn the_open_nodes_threads_are_asked_again_when_the_tick_moves_and_every_few_seconds() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.nodes = vec![alive_node("s")];
+        app.data.tick = 1;
+        app.show(Screen::Fleet);
+        app.reconcile();
+        let asked = |app: &App| app.threads_asked.clone().map(|(s, tick, _)| (s, tick));
+        assert_eq!(asked(&app), Some(("s".to_string(), 1)));
+
+        let mut moved = app.data.clone();
+        moved.tick = 2;
+        app.on_msg(Msg::Data(Box::new(moved)));
+        app.reconcile();
+        assert_eq!(asked(&app), Some(("s".to_string(), 2)), "a state changed: asked again");
+
+        let before = app.threads_asked.as_ref().map(|(_, _, at)| *at).unwrap();
+        app.on_timers();
+        assert_eq!(app.threads_asked.as_ref().map(|(_, _, at)| *at), Some(before), "nothing moved: not asked again yet");
+        if let Some((_, _, at)) = app.threads_asked.as_mut() {
+            *at -= THREADS_EVERY_MS;
+        }
+        app.on_timers();
+        assert!(app.threads_asked.as_ref().is_some_and(|(_, _, at)| *at >= before), "tool calls move threads without the tick: asked again");
+
+        let main = crate::client::Activity { tool: Some("Bash".into()), summary: Some("make test".into()), since: 5, ..Default::default() };
+        app.on_msg(Msg::NodeThreads { session: "s".into(), threads: Some(vec![main]) });
+        app.on_msg(Msg::NodeThreads { session: "s".into(), threads: None });
+        assert_eq!(app.threads.as_ref().map(|(s, t)| (s.as_str(), t.len())), Some(("s", 1)), "a failed ask keeps what was shown");
+    }
+
+    /// Round 3: every 10 s the open node's whole detail (53–350 KB) came over to read its threads.
+    #[test]
+    fn threads_come_from_the_light_route_and_from_the_detail_on_an_older_alondrad() {
+        let asked = std::cell::RefCell::new(Vec::<String>::new());
+        let newer = |path: &str| -> Result<Value> {
+            asked.borrow_mut().push(path.to_string());
+            Ok(json!({"activity": [{"agent_id": null, "tool": "Bash", "summary": "make test", "since": 5}]}))
+        };
+        assert_eq!(node_threads(newer, "hive/one").map(|t| t.len()), Some(1));
+        assert_eq!(asked.take(), ["/v1/nodes/hive%2Fone/activity"], "the light route alone");
+
+        let older = |path: &str| -> Result<Value> {
+            asked.borrow_mut().push(path.to_string());
+            if path.ends_with("/activity") {
+                return Err(anyhow::Error::new(crate::client::NotFound));
+            }
+            Ok(json!({"node": {"activity": [{"tool": "Bash", "since": 5}, {"agent_id": "a1", "tool": "mav", "since": 6}]}, "timeline": []}))
+        };
+        assert_eq!(node_threads(older, "s").map(|t| t.len()), Some(2));
+        assert_eq!(asked.take(), ["/v1/nodes/s/activity", "/v1/nodes/s?limit=1"], "an alondrad without the route: its detail, cut to one event");
+
+        let down = |_: &str| -> Result<Value> { Err(anyhow::anyhow!("alondrad is not responding")) };
+        assert!(node_threads(down, "s").is_none(), "a failed ask leaves what was shown");
+    }
+
+    #[test]
+    fn what_an_older_alondrad_lacked_is_tried_again_once_it_is_back() {
+        let (mut app, _rx) = app_with(vec![]);
+        (app.task_actions_missing, app.archive_missing, app.history_missing) = (true, true, true);
+        app.on_msg(Msg::Data(Box::new(app.data.clone())));
+        assert!(app.task_actions_missing && app.archive_missing, "the same alondrad still lacks them");
+        app.on_msg(Msg::Offline);
+        app.on_msg(Msg::Data(Box::new(app.data.clone())));
+        assert!(!app.task_actions_missing && !app.archive_missing && !app.history_missing);
     }
 
     pub(super) fn press(app: &mut App, keys: &str) -> Flow {
@@ -2467,7 +2623,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![]);
         let mut node = alondra_core::model::Node::new("s1", 0);
         node.cwd = Some(repo.display().to_string());
-        app.data.nodes = vec![crate::client::FleetNode { node, project: None, activity: None }];
+        app.data.nodes = vec![crate::client::FleetNode { node, project: None }];
         app.data.prs = vec![pr_card(None)];
         app.reconcile();
         app.settle_until = 0;

@@ -5,7 +5,7 @@ struct TaskDetail: View {
     let taskID: String
 
     @Environment(FleetStore.self) private var fleet
-    @State private var history: [WorkTask.Transition]?
+    @State private var details: TaskInFull?
     @State private var confirmingCancel = false
     @State private var acting = false
     @State private var done = 0
@@ -22,9 +22,9 @@ struct TaskDetail: View {
         .background(DawnBackground(glow: task?.tint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .task(id: task?.stateSince) {
+        .task(id: task?.historyKey) {
             guard let task else { return }
-            history = await fleet.history(of: task)
+            details = await fleet.details(of: task, keeping: details)
         }
         .confirmationDialog("Cancel this task?", isPresented: $confirmingCancel, titleVisibility: .visible) {
             Button("Cancel Task", role: .destructive) {
@@ -208,7 +208,7 @@ struct TaskDetail: View {
 
     @ViewBuilder
     private func documents(_ task: WorkTask) -> some View {
-        let reports = task.documents.compactMap(fleet.report)
+        let reports = fleet.documents(of: task, in: details)
         if !reports.isEmpty {
             DetailSection(title: String(localized: "Documents"), symbol: "doc.text") {
                 VStack(spacing: 0) {
@@ -258,23 +258,16 @@ struct TaskDetail: View {
     }
 
     private func options(_ task: WorkTask) -> some View {
-        let alone = task.options?.mergesAlone ?? false
-        return DetailSection(title: String(localized: "Options"), symbol: "slider.horizontal.3") {
+        DetailSection(title: String(localized: "Options"), symbol: "slider.horizontal.3") {
             VStack(spacing: 0) {
-                Toggle(isOn: .constant(alone)) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-merge")
-                        Text("Alondra merges it alone when the checks pass")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                HStack {
+                    Text("PR handling")
+                    Spacer()
+                    Text(OptionSpec.prHandling(autoMerge: task.options?.mergesAlone ?? false))
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                Palette.hairline.frame(height: 1).padding(.leading, 16)
-                Toggle("Review PR", isOn: .constant(!alone))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 11)
+                .padding(.vertical, 13)
                 if let effort = task.options?.effort {
                     Palette.hairline.frame(height: 1).padding(.leading, 16)
                     HStack {
@@ -287,10 +280,10 @@ struct TaskDetail: View {
                     .padding(.vertical, 13)
                 }
             }
-            .disabled(true)
-            .tint(Palette.sage)
         }
     }
+
+    private var history: [WorkTask.Transition]? { details?.task.history }
 
     @ViewBuilder
     private var timeline: some View {
@@ -425,7 +418,7 @@ private struct FlowChecks: View {
 
     @ViewBuilder
     private var marks: some View {
-        ForEach(checks, id: \.name) { check in
+        ForEach(checks, id: \.self) { check in
             Label(check.name, systemImage: check.passed ? "checkmark" : check.failed ? "xmark" : "clock")
                 .foregroundStyle(check.passed ? Palette.sage : check.failed ? Palette.rose : Palette.dawn)
                 .lineLimit(1)

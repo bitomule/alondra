@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
+pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
 
 /// What `config.toml` says. Every key is optional: a missing key falls back to the default,
 /// and an environment variable beats the file.
@@ -34,6 +35,9 @@ pub struct FileConfig {
     /// How long a node stays free before Alondra closes it, as `30m`, `2h` or `1d`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_free_nodes_after: Option<String>,
+    /// Days an archived task is kept before Alondra forgets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_tasks_days: Option<f64>,
 }
 
 impl FileConfig {
@@ -54,7 +58,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, archived_tasks_days);
         self
     }
 }
@@ -94,6 +98,7 @@ pub struct Config {
     pub resume_dead_nodes: bool,
     /// Close a node once it has been free this long. Off unless set.
     pub close_free_nodes_after: Option<Duration>,
+    pub archived_tasks_days: f64,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -162,6 +167,10 @@ impl Config {
             close_free_nodes_after: var("ALONDRA_CLOSE_FREE_NODES_AFTER")
                 .and_then(|v| parse_duration(&v).ok())
                 .or_else(|| file.close_free_nodes_after.as_deref().and_then(|v| parse_duration(v).ok())),
+            archived_tasks_days: var("ALONDRA_ARCHIVED_TASKS_DAYS")
+                .and_then(|v| v.parse().ok())
+                .or(file.archived_tasks_days)
+                .unwrap_or(DEFAULT_ARCHIVED_TASKS_DAYS),
             home,
         }
     }
@@ -288,6 +297,16 @@ mod tests {
         assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7200)), "a broken env value falls through to the file");
 
         assert!(FileConfig::parse("close_free_nodes_after = \"2 hours\"").unwrap_err().contains("close_free_nodes_after"), "a typo in the file is an error, not silently off");
+        assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
+    }
+
+    #[test]
+    fn archived_tasks_are_kept_thirty_days_unless_the_config_says_otherwise() {
+        assert_eq!(resolve(&FileConfig::default(), &[]).archived_tasks_days, DEFAULT_ARCHIVED_TASKS_DAYS);
+        let file = FileConfig::parse("archived_tasks_days = 7\n").unwrap();
+        assert_eq!(resolve(&file, &[]).archived_tasks_days, 7.0);
+        assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "0.5")]).archived_tasks_days, 0.5);
+        assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "soon")]).archived_tasks_days, 7.0, "a broken env value falls through to the file");
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 

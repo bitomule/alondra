@@ -22,6 +22,8 @@ import Testing
         (409, #"{"error":"https://github.com/a/b/pull/54 is no longer open","kind":"pr_not_open"}"#, AlondraError.server("This PR is no longer open")),
         (409, #"{"error":"question #7 is no longer open","kind":"question_closed"}"#, AlondraError.server("This question was already answered")),
         (409, #"{"error":"question #7 is no longer open"}"#, AlondraError.server("question #7 is no longer open")),
+        (409, #"{"error":"the task is already done","kind":"task_refused"}"#, AlondraError.server("The task’s state does not allow that now")),
+        (404, #"{"error":"task t-9 does not exist"}"#, AlondraError.server("Alondra no longer has it")),
         (500, cloudflare, AlondraError.unexpected(500)),
         (404, "", AlondraError.unexpected(404)),
         (422, "not json at all", AlondraError.unexpected(422)),
@@ -174,14 +176,16 @@ import Testing
     }
 
     /// pr-card-ask review, 24 Sep: asking about a PR never parks its card, so sending it through
-    /// `resolve` (which hides the card until the next full reload) undid the fix. `perform` must
-    /// leave a still-live card exactly where it was.
-    @Test func performingAnActionNeverHidesACardUnlikeResolving() async throws {
-        let fleet = FleetStore(retryDelay: .seconds(30), stuckAfter: .seconds(600))
+    /// `resolve` (which hides the card until the next full reload) undid the fix. The one Ask every
+    /// screen uses must leave a still-live card exactly where it was, even while it waits to go out.
+    @Test func askingAboutAPullRequestNeverHidesItsCard() async throws {
+        let nowhere = AlondraClient(base: try #require(URL(string: "http://127.0.0.1:9")))
+        let fleet = FleetStore(client: nowhere, retryDelay: .seconds(30), stuckAfter: .seconds(600))
         let item = try pullRequest()
         fleet.apply(try overview())
-        let ok = await fleet.perform { _ in }
-        #expect(ok)
+        guard case .pullRequest(let pr) = item else { return }
+        let ok = await fleet.ask(onPullRequest: pr.id, text: "Does it build?")
+        #expect(ok, "kept to send again, not lost")
         #expect(!fleet.isHidden(item.id))
         #expect(fleet.inbox.contains { $0.id == item.id })
     }

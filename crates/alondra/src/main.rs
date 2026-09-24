@@ -136,6 +136,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("service_label", c.service_label.clone()),
         ("resume_dead_nodes", c.resume_dead_nodes.to_string()),
         ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
+        ("archived_tasks_days", c.archived_tasks_days.to_string()),
     ];
     match get {
         Some(key) => match rows.iter().find(|(k, _)| *k == key) {

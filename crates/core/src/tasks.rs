@@ -8,9 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Attachment, Millis};
 
+mod archive;
 mod define;
 mod derive;
 
+pub use archive::Archive;
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
 pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
 
@@ -28,6 +30,10 @@ pub struct Request {
     /// Made up for a session no request of David's stands behind.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub synthetic: bool,
+    /// David archived it once it was finished without tasks. One with tasks is archived when
+    /// all of them are (`Board::request_archived_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Millis>,
     /// The short name the orchestrator gave it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -50,7 +56,7 @@ pub struct RequestClosure {
 
 impl Request {
     fn new(id: &str, created_at: Millis, synthetic: bool) -> Self {
-        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic, title: None, closed: None }
+        Request { id: id.to_string(), text: None, attachments: vec![], options: None, created_at, synthetic, archived_at: None, title: None, closed: None }
     }
 }
 
@@ -525,6 +531,10 @@ pub struct Task {
     pub history: Vec<Transition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anomalies: Vec<Anomaly>,
+    /// David archived it once it was finished: it leaves the active list, and the board after
+    /// `archived_tasks_days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<Millis>,
 }
 
 /// A task as the daemon records its creation: at a launch, or for a session on its first card.
@@ -604,12 +614,11 @@ pub struct Board {
 }
 
 impl Board {
+    /// Its tasks give it its state; a request closed with none is done.
     pub fn request_state(&self, id: &str) -> RequestState {
         let mut tasks = self.tasks.values().filter(|t| t.request == id).peekable();
-        if self.requests.get(id).is_some_and(|r| r.closed.is_some()) {
-            RequestState::Done
-        } else if tasks.peek().is_none() {
-            RequestState::Defining
+        if tasks.peek().is_none() {
+            if self.requests.get(id).is_some_and(|r| r.closed.is_some()) { RequestState::Done } else { RequestState::Defining }
         } else if tasks.all(|t| t.state.finished()) {
             RequestState::Done
         } else {
@@ -635,6 +644,9 @@ impl Board {
                 }
                 if to != TaskState::NeedsYou {
                     task.blocker = None;
+                }
+                if !to.finished() {
+                    task.archived_at = None;
                 }
                 if to != from {
                     task.state = to;
@@ -678,17 +690,20 @@ impl Board {
             recorded: true,
             history: vec![],
             anomalies: vec![],
+            archived_at: None,
         };
         self.tasks.entry(t.id.clone()).or_insert(task);
     }
 
-    /// Forgets tasks nobody can act on any more: their node is gone, nothing of theirs waits for
-    /// David and nothing happened to them since `before`. Requests left without tasks, and
-    /// launches that never found their node, go with them.
+    /// Forgets what an older log left behind: a task read from a node's events once its node is
+    /// gone, nothing of it waits for the user and nothing happened to it since `before`, and the
+    /// request made up for it. A recorded task stays until it finishes and is archived, a finished
+    /// one until it is archived (`prune_archived`), and a request the user sent until it is
+    /// archived. Launches that never found their node go too.
     pub(crate) fn prune(&mut self, before: Millis, keep: impl Fn(&Task) -> bool) {
-        self.tasks.retain(|_, t| keep(t) || t.last_change() >= before);
+        self.tasks.retain(|_, t| keep(t) || t.recorded || t.state.finished() || t.last_change() >= before);
         let tasks = &self.tasks;
-        self.requests.retain(|id, r| r.created_at >= before || tasks.values().any(|t| &t.request == id));
+        self.requests.retain(|id, r| !r.synthetic || r.created_at >= before || tasks.values().any(|t| &t.request == id));
         self.launches.retain(|_, l| l.at >= before);
     }
 }
@@ -880,6 +895,7 @@ mod tests {
             recorded: false,
             history: vec![],
             anomalies: vec![],
+            archived_at: None,
         }
     }
 

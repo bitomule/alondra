@@ -1491,7 +1491,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
         Target::NewRequest => tr!("New work: the orchestrator prepares the mission and launches the node", "Trabajo nuevo: el orquestador prepara la misión y lanza el nodo").into(),
         Target::Comment { quote, .. } => {
             let q = md::one_line(quote);
-            trf!("Comment on «{q}»", "Comentario sobre «{q}»")
+            trf!("Comment on “{q}”", "Comentario sobre «{q}»")
         }
         Target::General { send: true } if app.reader.as_ref().is_some_and(|r| r.approval.is_some()) => tr!("What changes do you want? (⏎ sends them)", "¿Qué cambios pides? (⏎ los envía)").into(),
         Target::General { send: true } => tr!("Your comments (⏎ sends them)", "Tus comentarios (⏎ los envía)").into(),
@@ -1608,8 +1608,13 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
         }
         let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel")), k("o", tr!("expand", "expandir")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
-        if !app.task_actions_missing {
+        if app.selected_defining_request().is_some() {
+            v.push(k("x", tr!("withdraw", "retirar")));
+        } else if !app.task_actions_missing {
             v.extend([k("x", tr!("cancel", "descartar")), k("Shift+R", tr!("reopen", "reabrir"))]);
+        }
+        if !app.archive_missing {
+            v.push(k("Shift+A", tr!("archive finished", "archivar terminadas")));
         }
         v.extend([k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
         return v;
@@ -1766,6 +1771,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r · ⏎", tr!("message its node · its node's terminal", "mensaje a su nodo · el terminal de su nodo")),
         row("x", tr!("cancel the task (twice to confirm)", "descartar la tarea (dos veces para confirmar)")),
         row("Shift+R", tr!("reopen a done or cancelled task", "reabrir una tarea hecha o descartada")),
+        row("Shift+A", tr!("archive every done or cancelled task", "archivar todas las tareas hechas o descartadas")),
+        row("⏎ · o", tr!("on Archived: show or hide the archived tasks", "en Archivadas: mostrar u ocultar las archivadas")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
         row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),

@@ -40,6 +40,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
+        .route("/v1/nodes/{key}/activity", get(node_activity))
         .route("/v1/nodes/{key}/close", post(close_node))
         .route("/v1/nodes/{key}/messages", post(send_message))
         .route("/v1/nodes/{key}/interrupt", post(interrupt))
@@ -71,6 +72,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/tasks", post(define_tasks))
+        .route("/v1/tasks/archive", post(archive_tasks))
         .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -1094,6 +1096,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
                            "resume_dead_nodes": c.resume_dead_nodes,
                            "close_free_nodes_after_secs": c.close_free_nodes_after.map(|d| d.as_secs()),
+                           "archived_tasks_days": c.archived_tasks_days,
                            "home": c.home.display().to_string()}}))
 }
 
@@ -1176,6 +1179,8 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
 /// What the overview shows that a client acts on, leaving out what moves with every hook: the
 /// tool in flight, the last message and prompt, when a node was last seen, its activity. Clients
 /// refetch the overview when this changes (the hub bumps their tick then), not on every event.
+/// What time alone moves (a background item turning possibly hung, an auto-merge wait) is in
+/// it, and the machine sample every 10 s looks at it again.
 pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1185,7 +1190,7 @@ pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
         (text(json!(n.state)), text(json!(n.status)), text(json!(n.orchestrator_state)), n.waiting_permission, n.attached, n.menu_waiting.is_some(), &n.mission, n.usage_limited).hash(&mut h);
         v.held_for_turn_end(&n.session_id).hash(&mut h);
         for b in states::background(n, now) {
-            (text(json!(b.kind)), b.label).hash(&mut h);
+            (text(json!(b.kind)), b.label, b.suspect).hash(&mut h);
         }
     }
     for q in v.questions.values() {
@@ -1237,6 +1242,7 @@ fn client_request(v: &View, r: &alondra_core::tasks::Request) -> Value {
     let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
     let tasks: Vec<&alondra_core::tasks::Task> = v.board.tasks.values().filter(|t| t.request == r.id).collect();
     value["state"] = json!(v.board.request_state(&r.id));
+    value["archived_at"] = json!(v.board.request_archived_at(&r.id));
     value["tasks"] = json!(tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>());
     let only = match tasks.as_slice() {
         [one] => Some(one.title.as_str()),
@@ -1320,6 +1326,15 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
         .collect();
     Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
+}
+
+/// What each thread of the node does now, and nothing else of its detail: an open detail asks it
+/// every few seconds.
+async fn node_activity(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    match hub.read(|v| v.resolve_node(&key).map(|n| json!(v.activity(n)))) {
+        Some(activity) => Json(json!({"activity": activity})).into_response(),
+        None => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
+    }
 }
 
 /// A node as clients see it: whether its session is attached is the daemon's business, and its
@@ -2519,14 +2534,28 @@ pub(crate) struct CloseRequestBody {
     /// A short name for the request.
     #[serde(default)]
     title: Option<String>,
+    /// Who closes it: the orchestrator's tool says so; the apps are the user.
+    #[serde(default)]
+    from: Option<MessageFrom>,
 }
 
 fn trimmed(text: &Option<String>) -> Option<String> {
     text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
+/// What the orchestrator hears when the user withdraws a request from the apps.
+fn withdrawn_notice(user: &str, r: &alondra_core::tasks::Request) -> String {
+    let name = r.title.as_deref().or_else(|| r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())));
+    let about = name.map(|n| if n.chars().count() > 80 { format!("{}…", n.chars().take(79).collect::<String>()) } else { n.to_string() });
+    match about {
+        Some(n) => format!("[Alondra] {user} withdrew request {} (“{n}”).", r.id),
+        None => format!("[Alondra] {user} withdrew request {}.", r.id),
+    }
+}
+
 /// The orchestrator closes a request that needs no task: a question or a status check it
-/// answered, or one the user withdrew. A request with tasks is closed by finishing or
+/// answered, or one the user withdrew. The user withdraws one from the apps while it is being
+/// defined, and the orchestrator is told. A request with tasks is closed by finishing or
 /// cancelling them.
 pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CloseRequestBody>>) -> Response {
     let b = body.map(|Json(b)| b).unwrap_or_default();
@@ -2534,6 +2563,7 @@ pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<St
     if answer.is_none() && !b.withdrawn {
         return err(StatusCode::UNPROCESSABLE_ENTITY, format!("say in answer what you told {} (one line), or pass withdrawn: true if they withdrew it", hub.config.name));
     }
+    let by_user = b.from.unwrap_or(MessageFrom::User) == MessageFrom::User;
     let recorded = hub.append_all(|v| {
         let Some(request) = v.board.requests.get(&id) else { return Err(err(StatusCode::NOT_FOUND, format!("request {id} does not exist"))) };
         if request.closed.is_some() {
@@ -2545,6 +2575,9 @@ pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<St
         }
         let mut events: Vec<Event> = title.iter().map(|t| Event::RequestTitled { request_id: id.clone(), title: t.clone() }).collect();
         events.push(Event::RequestClosed { request_id: id.clone(), answer: answer.clone(), withdrawn: b.withdrawn });
+        if b.withdrawn && by_user {
+            events.extend(crate::orchestrate::orchestrator_message(v, withdrawn_notice(&hub.config.name, request)));
+        }
         Ok(events)
     });
     match recorded {
@@ -2629,6 +2662,27 @@ pub(crate) async fn cancel_task(State(hub): State<AppState>, Path(id): Path<Stri
 /// David or the orchestrator reopens a done or cancelled task.
 async fn reopen_task(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
     move_task(&hub, &id, alondra_core::tasks::TaskEvent::Reopen)
+}
+
+#[derive(Deserialize, Default)]
+struct ArchiveBody {
+    #[serde(default)]
+    ids: Option<Vec<String>>,
+}
+
+/// David archives what is finished: every done or cancelled task, and request that finished
+/// without tasks, or those of them `ids` names. Nothing unfinished is archived.
+async fn archive_tasks(State(hub): State<AppState>, body: Option<Json<ArchiveBody>>) -> Response {
+    let ids = body.and_then(|Json(b)| b.ids);
+    let recorded = hub.append_with(|v| {
+        let what = v.board.archivable(ids.as_deref());
+        (!what.is_empty()).then_some(Event::TasksArchived(what))
+    });
+    match recorded {
+        Ok(Some((_, Event::TasksArchived(what)))) => Json(json!({"tasks": what.tasks, "requests": what.requests})).into_response(),
+        Ok(_) => Json(json!({"tasks": [], "requests": []})).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 fn move_task(hub: &Hub, id: &str, event: alondra_core::tasks::TaskEvent) -> Response {
@@ -3539,6 +3593,30 @@ mod tests {
         assert_eq!(replayed.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), hub.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), "a replay gives the same view");
     }
 
+    /// Round 2: the digest hashed a background item by kind and label only, so the possibly-hung
+    /// badge, which time alone raises, reached the apps only when something else moved the tick.
+    #[tokio::test]
+    async fn a_background_item_turning_possibly_hung_moves_the_tick_at_the_next_machine_sample() {
+        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
+        let hub = temp_hub("suspect-tick");
+        let started_at = now_millis() - states::BACKGROUND_SUSPECT_MS + 300;
+        hub.append(Event::DaemonSeen(DaemonObservation {
+            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(1),
+            background: vec![BackgroundItem { kind: BackgroundKind::Shell, label: "until pgrep".into(), started_at, suspect: false }],
+            ..Default::default()
+        })).unwrap();
+        let machine = alondra_core::Machine { memory_total: 1000, memory_available: 500, cpus: 8, disk_total: 1000, disk_available: 500, ..Default::default() };
+        hub.set_machine(machine.clone(), None);
+        let Json(before) = overview(State(hub.clone())).await;
+        assert_eq!(before["nodes"][0]["background"][0].get("suspect"), None, "not yet: {}", before["nodes"][0]["background"]);
+        let shown = hub.tick();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        hub.set_machine(machine, None);
+        let Json(after) = overview(State(hub.clone())).await;
+        assert_eq!(after["nodes"][0]["background"][0]["suspect"], true);
+        assert!(hub.tick() > shown, "the badge the apps paint changed, so they hear of it");
+    }
+
     fn hub_at_home_of(hub: &Hub) -> Arc<Hub> {
         let config = alondra_core::config::Config::resolve(hub.home.clone(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
         Arc::new(Hub::open(config, false).unwrap())
@@ -3617,6 +3695,32 @@ mod tests {
         assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("request_has_tasks")), "{said}");
         let replayed = hub_at_home_of(&hub);
         assert_eq!(replayed.read(|v| v.board.requests["r-1"].clone()), hub.read(|v| v.board.requests["r-1"].clone()), "a replay keeps the closure and the title");
+    }
+
+    /// Round 3: David withdrew a request from the apps and the orchestrator never heard of it; a
+    /// later define was refused with words that invited making it again.
+    #[tokio::test]
+    async fn the_orchestrator_hears_once_that_the_user_withdrew_a_request_and_may_not_define_it() {
+        let hub = started("withdrawn-request", &[]);
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "orch".into(), short_id: "orch".into(), name: Some("orchestrator".into()), ..Default::default() })).unwrap();
+        hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        request_sent(&hub, "r-1", "Arregla el menú\ncon sus secciones");
+        request_sent(&hub, "r-2", "En qué punto está BlurCamera?");
+        let close = |id: &str, b: Value| {
+            let b: CloseRequestBody = serde_json::from_value(b).unwrap();
+            close_request(State(hub.clone()), Path(id.to_string()), Some(Json(b)))
+        };
+        let told = || hub.read(|v| v.messages.values().filter(|m| m.session_id == "orch" && m.from == MessageFrom::Alondra).map(|m| m.text.clone()).collect::<Vec<_>>());
+        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::OK);
+        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::CONFLICT);
+        assert_eq!(told(), vec!["[Alondra] Ana withdrew request r-1 (“Arregla el menú”).".to_string()], "told once");
+        assert_eq!(status_and_body(close("r-2", json!({"withdrawn": true, "from": "orchestrator"})).await).await.0, StatusCode::OK);
+        assert_eq!(told().len(), 1, "the orchestrator is not told what it closed itself");
+
+        let cwd = hub.home.display().to_string();
+        let definition = json!({"request": "r-1", "tasks": [{"title": "Menú", "brief": "Arréglalo.", "assignee": "new", "cwd": cwd}]});
+        let refused = crate::orchestrate::define(&hub, serde_json::from_value(definition).unwrap()).unwrap_err();
+        assert_eq!((refused.status, refused.problems), (StatusCode::CONFLICT, vec!["Ana withdrew r-1: do not define it".to_string()]));
     }
 
     /// The apps showed a request's prompt, and a task a launch made its node's name, where the
@@ -4892,5 +4996,154 @@ mod issue_tests {
         assert_eq!(status, StatusCode::OK);
         let message = hub.read(|v| v.messages.values().last().unwrap().text.clone());
         assert!(message.contains("Issue me/App#9: https://github.com/me/App/issues/9\nAlondra could not read it (HTTP 404)"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use super::tests::{status_and_body, temp_hub};
+    use alondra_core::tasks::{NewTask, TaskEvent, TaskOptions};
+    use base64::Engine as _;
+    use p256::ecdsa::signature::Signer;
+
+    /// r-1 holds t-done (done) and t-gone (cancelled); r-2 holds t-run, still running.
+    fn with_tasks(tag: &str) -> Arc<Hub> {
+        let hub = temp_hub(tag);
+        let task = |id: &str, request: &str| {
+            Event::TaskCreated(NewTask {
+                id: id.into(), request: request.into(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
+                session_id: None, launched: false, start: None, launched_as: None,
+            })
+        };
+        let moved = |id: &str, event: TaskEvent| Event::TaskMoved { task: id.into(), event };
+        for e in [
+            task("t-done", "r-1"),
+            task("t-gone", "r-1"),
+            task("t-run", "r-2"),
+            moved("t-done", TaskEvent::FinalReport { report: 1 }),
+            moved("t-gone", TaskEvent::Cancel { reason: None }),
+        ] {
+            hub.append(e).unwrap();
+        }
+        hub
+    }
+
+    fn named(ids: &[&str]) -> Option<Json<ArchiveBody>> {
+        Some(Json(ArchiveBody { ids: Some(ids.iter().map(|s| s.to_string()).collect()) }))
+    }
+
+    fn archived(hub: &Hub) -> Vec<String> {
+        hub.read(|v| v.board.tasks.values().filter(|t| t.archived_at.is_some()).map(|t| t.id.clone()).collect())
+    }
+
+    #[tokio::test]
+    async fn archiving_takes_finished_tasks_only_and_the_overview_flags_them() {
+        let hub = with_tasks("archive");
+        let seq = hub.read(|v| v.seq);
+        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), named(&["t-run"])).await).await;
+        assert_eq!((status, said), (StatusCode::OK, json!({"tasks": [], "requests": []})), "a running task is never archived");
+        assert_eq!(hub.read(|v| v.seq), seq, "nothing to archive records nothing");
+
+        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
+        assert_eq!((status, &said["tasks"]), (StatusCode::OK, &json!(["t-done", "t-gone"])), "{said}");
+        let Json(o) = overview(State(hub.clone())).await;
+        let find = |list: &str, id: &str| o[list].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
+        assert!(find("tasks", "t-done")["archived_at"].is_i64() && find("tasks", "t-gone")["archived_at"].is_i64());
+        assert!(find("tasks", "t-run").get("archived_at").is_none(), "an unarchived task has no archived_at");
+        assert_eq!(find("requests", "r-1")["archived_at"], find("tasks", "t-done")["archived_at"], "every task of r-1 is archived");
+        assert_eq!(find("requests", "r-2")["archived_at"], Value::Null);
+
+        let (_, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
+        assert_eq!(said["tasks"], json!([]), "nothing left to archive");
+        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
+    }
+
+    #[tokio::test]
+    async fn finished_and_archived_tasks_outlive_compaction_and_a_restart() {
+        let hub = with_tasks("archive-compact");
+        status_and_body(archive_tasks(State(hub.clone()), named(&["t-done"])).await).await;
+        hub.compact(Duration::ZERO).unwrap();
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let kept = reopened.read(|v| v.board.tasks.values().filter(|t| t.state.finished()).map(|t| (t.id.clone(), t.archived_at.is_some())).collect::<Vec<_>>());
+        assert_eq!(kept, [("t-done".to_string(), true), ("t-gone".to_string(), false)], "archived within its days, and finished waiting to be archived");
+        assert_eq!(archived(&reopened), ["t-done"]);
+    }
+
+    /// Mounted as alondrad mounts it: every route behind `auth::guard`.
+    #[tokio::test]
+    async fn archiving_needs_a_paired_device_from_outside_the_mac() {
+        let hub = with_tasks("archive-auth");
+        let auth = Arc::new(Auth::open(&hub.home).unwrap());
+        let push = Arc::new(Push::open(&hub.home).unwrap());
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let device = auth.pair(&auth.new_pairing_code(), "iPhone", &b64.encode(signing.verifying_key().to_sec1_bytes())).unwrap();
+        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/v1/tasks/archive");
+        let body = r#"{"ids":["t-done"]}"#;
+        let remote = || client.post(&url).header("x-forwarded-for", "203.0.113.9").header("content-type", "application/json").body(body);
+
+        let unsigned = remote().send().await.unwrap();
+        assert_eq!(unsigned.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let ts = now_millis().to_string();
+        let signature: p256::ecdsa::Signature = signing.sign(crate::auth::signed_message("POST", "/v1/tasks/archive", &ts, body.as_bytes()).as_bytes());
+        let stranger = remote().header("x-alondra-device", "nobody").header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
+        assert_eq!(stranger.send().await.unwrap().status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert!(archived(&hub).is_empty(), "nothing archived without a paired device");
+
+        let signed = remote().header("x-alondra-device", &device.id).header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
+        assert_eq!(signed.send().await.unwrap().status(), reqwest::StatusCode::OK);
+        assert_eq!(archived(&hub), ["t-done"]);
+        let local = client.post(&url).header("content-type", "application/json").body("{}").send().await.unwrap();
+        assert_eq!(local.status(), reqwest::StatusCode::OK, "the Mac itself, like every other route");
+        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
+    }
+
+    /// Round 3: an open node's “Right now” asked its whole detail every 10 s (53–350 KB of
+    /// timeline, messages, questions and reports, on the iPhone too) to read only its threads.
+    #[tokio::test]
+    async fn an_open_nodes_threads_have_a_light_route_behind_the_same_guard() {
+        let hub = temp_hub("node-activity");
+        let payloads = [
+            json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests"}}),
+            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
+        ];
+        for p in payloads {
+            hook(State(hub.clone()), Json(p)).await;
+        }
+        for id in 1..=30 {
+            let text = format!("{id} ").repeat(1000);
+            hub.append(Event::MessageQueued(Message {
+                id, session_id: "s".into(), from: MessageFrom::User, text, answers_question: None, created_at: id as i64, handed_at: None, delivered_at: None, attachments: vec![], about: None,
+            }))
+            .unwrap();
+        }
+        let auth = Arc::new(Auth::open(&hub.home).unwrap());
+        let push = Arc::new(Push::open(&hub.home).unwrap());
+        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
+        let client = reqwest::Client::new();
+        let get = |path: &str| client.get(format!("http://{addr}{path}"));
+
+        let light = get("/v1/nodes/s/activity").send().await.unwrap();
+        assert_eq!(light.status(), reqwest::StatusCode::OK);
+        let light = light.text().await.unwrap();
+        let full = get("/v1/nodes/s").send().await.unwrap().text().await.unwrap();
+        let (light_json, full_json): (Value, Value) = (serde_json::from_str(&light).unwrap(), serde_json::from_str(&full).unwrap());
+        assert_eq!(light_json, json!({"activity": full_json["node"]["activity"]}), "the threads and nothing else of the detail");
+        assert_eq!(light_json["activity"].as_array().map(Vec::len), Some(2), "{light}");
+        assert!(light.len() * 50 < full.len(), "{} bytes against the detail's {}", light.len(), full.len());
+        assert_eq!(get("/v1/nodes/nobody/activity").send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+        let remote = get("/v1/nodes/s/activity").header("x-forwarded-for", "203.0.113.9").send().await.unwrap();
+        assert_eq!(remote.status(), reqwest::StatusCode::UNAUTHORIZED, "paired devices only, like the node's detail");
     }
 }

@@ -112,16 +112,28 @@ fn list_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Option<(usize, us
                 let meta = [app.request_project(r), Some(i18n::request_state(r.state).to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                 lines.push(spread(vec![Span::styled(format!(" {}", md::one_line(&app.request_title(r))), Style::new().bold())], vec![Span::styled(meta, Style::new().fg(DIM))], width));
             }
-            TaskListRow::Defining(id) => {
+            TaskListRow::Taskless(id) => {
                 let Some(r) = app.request(&id) else { continue };
                 let selected = app.task_sel == Some(TaskKey::Request(id.clone()));
-                let (glyph, color) = DEFINING;
+                let ((glyph, color), what) = taskless(r);
                 let start = lines.len();
                 lines.push(spread(
-                    vec![bar(selected), Span::styled(format!(" {glyph} "), Style::new().fg(color).bold()), Span::raw(tr!("the orchestrator is splitting it into tasks", "el orquestador la reparte en tareas"))],
-                    vec![Span::styled(format!("{:<w$}", i18n::request_state(RequestState::Defining), w = STATE_W), Style::new().fg(color)), Span::styled(format!("{:>5}", ago(r.created_at)), Style::new().fg(DIM))],
+                    vec![bar(selected), Span::styled(format!(" {glyph} "), Style::new().fg(color).bold()), Span::raw(what)],
+                    vec![Span::styled(format!("{:<w$}", i18n::request_state(r.state), w = STATE_W), Style::new().fg(color)), Span::styled(format!("{:>5}", ago(r.created_at)), Style::new().fg(DIM))],
                     width,
                 ));
+                if selected {
+                    sel = Some((start, lines.len()));
+                }
+            }
+            TaskListRow::Archived(n) => {
+                let selected = app.task_sel == Some(TaskKey::Archived);
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                let start = lines.len();
+                let arrow = if app.archived_open { "▾" } else { "▸" };
+                lines.push(fit(vec![bar(selected), Span::styled(format!("{arrow} "), Style::new().fg(DIM)), Span::styled(trf!("Archived ({n})", "Archivadas ({n})"), Style::new().fg(DIM).bold())], width));
                 if selected {
                     sel = Some((start, lines.len()));
                 }
@@ -154,6 +166,15 @@ fn list_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Option<(usize, us
     (lines, sel)
 }
 
+/// How a request with no task shows: still being defined, or finished without tasks.
+fn taskless(r: &ClientRequest) -> ((&'static str, Color), &'static str) {
+    if r.state == RequestState::Done {
+        (state_glyph(TaskState::Done), tr!("finished without tasks", "terminada sin tareas"))
+    } else {
+        (DEFINING, tr!("the orchestrator is splitting it into tasks", "el orquestador la reparte en tareas"))
+    }
+}
+
 fn section(lines: &mut Vec<Line<'static>>, title: &str) {
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(title.to_string(), Style::new().fg(DIM).bold())));
@@ -170,6 +191,7 @@ fn draw_task_detail(f: &mut Frame, app: &mut App, area: Rect) {
             Some(r) => (app.request_title(r), request_lines(app, r, area.width.saturating_sub(4) as usize)),
             None => (String::new(), vec![]),
         },
+        Some(TaskKey::Archived) => (tr!("Archived", "Archivadas").to_string(), archived_lines(app, area.width.saturating_sub(4) as usize)),
         None => (String::new(), vec![]),
     };
     if lines.is_empty() {
@@ -279,13 +301,7 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
         }
     }
     section(&mut lines, tr!(" Options", " Opciones"));
-    let yes_no = |b: bool| if b { tr!("yes", "sí") } else { tr!("no", "no") };
-    let mut options = vec![
-        Span::styled(tr!(" auto-merge ", " auto-merge "), Style::new().fg(DIM)),
-        Span::raw(yes_no(t.options.auto_merge)),
-        Span::styled(tr!(" · review PR ", " · revisar PR "), Style::new().fg(DIM)),
-        Span::raw(yes_no(!t.options.auto_merge)),
-    ];
+    let mut options = vec![Span::styled(tr!(" PR handling ", " gestión de PR "), Style::new().fg(DIM)), Span::raw(super::super::work::pr_handling(t.options.auto_merge))];
     if let Some(effort) = &t.options.effort {
         options.push(Span::styled(tr!(" · effort ", " · esfuerzo "), Style::new().fg(DIM)));
         options.push(Span::raw(effort.clone()));
@@ -307,8 +323,23 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+fn archived_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let n = app.archived_count();
+    let mut lines = vec![Line::from(Span::styled(trf!("{n} archived", "{n} archivadas"), Style::new().bold())), Line::default()];
+    lines.extend(wrap(
+        vec![Span::raw(tr!(
+            "Finished work you archived: it left the list above. ⏎ shows or hides it here. Alondra deletes it once the days in archived_tasks_days (30 unless changed) are over.",
+            "Trabajo terminado que archivaste: salió de la lista de arriba. ⏎ lo muestra u oculta aquí. Alondra lo borra cuando pasan los días de archived_tasks_days (30 si no lo cambias)."
+        ))],
+        width,
+        vec![],
+        vec![],
+    ));
+    lines
+}
+
 fn request_lines(app: &App, r: &ClientRequest, width: usize) -> Vec<Line<'static>> {
-    let (glyph, color) = DEFINING;
+    let ((glyph, color), _) = taskless(r);
     let mut lines = vec![fit(
         vec![Span::styled(format!("{glyph} {}", i18n::request_state(r.state)), Style::new().fg(color).bold()), Span::styled(format!(" · {}", since_phrase(r.created_at)), Style::new().fg(DIM))],
         width,
@@ -317,7 +348,12 @@ fn request_lines(app: &App, r: &ClientRequest, width: usize) -> Vec<Line<'static
         lines.push(Line::from(Span::styled(p, Style::new().fg(DIM))));
     }
     lines.push(Line::default());
-    lines.extend(wrap(vec![Span::raw(tr!("The orchestrator is splitting it into tasks.", "El orquestador la está repartiendo en tareas."))], width, vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))], vec![Span::raw("  ")]));
+    let now = if r.state == RequestState::Done {
+        tr!("It finished without tasks: the orchestrator answered it.", "Terminó sin tareas: el orquestador la respondió.")
+    } else {
+        tr!("The orchestrator is splitting it into tasks.", "El orquestador la está repartiendo en tareas.")
+    };
+    lines.extend(wrap(vec![Span::raw(now)], width, vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))], vec![Span::raw("  ")]));
     if let Some(text) = r.text.clone().filter(|t| !t.trim().is_empty()) {
         section(&mut lines, tr!(" Request", " Petición"));
         lines.extend(md::render(&md::parse(&text), width).lines);
@@ -339,7 +375,7 @@ fn activity_line(a: &Activity, indent: &str, width: usize, bar: Span<'static>) -
     fit(spans, width)
 }
 
-/// A node's tasks under its row in the fleet and, for those running, what each thread does.
+/// A node's tasks under its row in the fleet, each with its state.
 pub fn node_task_lines(app: &App, n: &FleetNode, width: usize, selected: bool) -> Vec<Line<'static>> {
     if n.is_orchestrator {
         return vec![];
@@ -352,11 +388,6 @@ pub fn node_task_lines(app: &App, n: &FleetNode, width: usize, selected: bool) -
             vec![bar(), Span::raw("    "), Span::styled(format!("{g} "), Style::new().fg(c).bold()), Span::raw(md::one_line(&t.title)), Span::styled(format!(" · {}", i18n::task_state(t.state)), Style::new().fg(c))],
             width,
         ));
-        if t.state == TaskState::Running {
-            for a in app.task_activity(t) {
-                lines.push(activity_line(&a, "      ", width, bar()));
-            }
-        }
     }
     lines
 }
@@ -387,7 +418,7 @@ pub fn node_detail_lines(app: &App, n: &FleetNode, width: usize) -> Vec<Line<'st
             lines.push(activity_line(a, "", width, Span::raw("")));
             if let Some(task) = a.task.as_deref().and_then(|id| app.task(id)).filter(|_| !a.is_main()) {
                 let title = md::one_line(&task.title);
-                lines.push(fit(vec![Span::raw(" ".repeat(11)), Span::styled(trf!("subagent of «{title}»", "subagente de «{title}»"), Style::new().fg(DIM))], width));
+                lines.push(fit(vec![Span::raw(" ".repeat(11)), Span::styled(trf!("subagent of “{title}”", "subagente de «{title}»"), Style::new().fg(DIM))], width));
             }
         }
     }
@@ -402,7 +433,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use serde_json::json;
 
-    use super::super::super::tests::{alive_node, app_with, code, pr_card, press, question};
+    use super::super::super::tests::{alive_node, app_with, code, pr_card, press, question, report};
     use super::super::super::{App, Screen};
     use crate::i18n::{Lang, set_for_this_thread};
 
@@ -440,11 +471,6 @@ mod tests {
         let mut busy = alive_node("s2");
         busy.node.state = alondra_core::NodeState::Working;
         busy.project = Some("App".into());
-        busy.activity = serde_json::from_value(json!([
-            {"agent_id": null, "task": "t-3", "tool": "Bash", "summary": "bazel build //ios:App", "since": now - 60_000},
-            {"agent_id": "a1", "agent_type": "tester", "task": "t-3", "tool": "mav", "summary": "tap Save", "since": now - 20_000},
-        ]))
-        .unwrap();
         app.data.nodes = vec![free, busy];
         let mut pr = pr_card(None);
         pr.pr.number = 150;
@@ -497,15 +523,30 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_lists_each_node_free_or_busy_with_its_tasks_and_what_each_thread_does() {
+    fn the_fleet_lists_each_node_with_its_tasks_states_and_only_the_opened_node_says_what_each_thread_does() {
         let (mut app, _rx) = app_with(vec![]);
         set_for_this_thread(Lang::Es);
         board(&mut app);
         press(&mut app, "f");
         let s = screen(&mut app, 130, 33);
-        for text in ["libre", "ocupado", "⇄ Editor covers readable text · en revisión", "◌ Album and Siri · esperando a otra", "principal  Bash bazel build //ios:App", "tester     mav tap Save"] {
+        for text in ["libre", "ocupado", "⇄ Editor covers readable text · en revisión", "◌ Album and Siri · esperando a otra", "Measure on the iPhone · en marcha"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
+        press(&mut app, "j");
+        let now = now_millis();
+        let threads = serde_json::from_value(json!([
+            {"agent_id": null, "task": "t-3", "tool": "Bash", "summary": "bazel build //ios:App", "since": now - 60_000},
+            {"agent_id": "a1", "agent_type": "tester", "task": "t-3", "tool": "mav", "summary": "tap Save", "since": now - 20_000},
+        ]))
+        .unwrap();
+        app.on_msg(super::super::super::Msg::NodeThreads { session: "s2".into(), threads: Some(threads) });
+        let s = screen(&mut app, 130, 33);
+        for text in ["principal  Bash bazel build //ios:App", "tester     mav tap Save"] {
+            assert!(s.contains(text), "{text}:\n{s}");
+        }
+        assert_eq!(s.matches("bazel build").count(), 1, "in the opened node's detail, not under its row:\n{s}");
+        code(&mut app, KeyCode::BackTab);
+        assert!(!screen(&mut app, 130, 33).contains("bazel build"), "a running task shows its state, not what its node does");
     }
 
     #[test]
@@ -524,6 +565,24 @@ mod tests {
         assert!(!s.contains("x cancel"), "{s}");
         press(&mut app, "R");
         assert_eq!(app.posted.borrow().len(), 1, "nothing more is sent once alondrad said it has no route");
+    }
+
+    /// Round 2: a request the orchestrator never defined nor closed stayed defining for good,
+    /// with nothing the user could do about it.
+    #[test]
+    fn a_request_left_defining_is_withdrawn_with_a_second_press() {
+        let (mut app, _rx) = app_with(vec![]);
+        set_for_this_thread(Lang::En);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        let at = app.task_keys().iter().position(|k| *k == super::super::super::tasks::TaskKey::Request("r-2".into())).expect("the defining request is listed");
+        app.move_tasks(at as isize);
+        assert!(screen(&mut app, 130, 33).contains("x withdraw"));
+        press(&mut app, "x");
+        assert!(app.posted.borrow().is_empty(), "the first press only asks");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press x again to withdraw “Import lists from Notes”")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        press(&mut app, "x");
+        assert_eq!(app.posted.borrow().last().map(|(paths, ok)| (paths.clone(), ok.clone())), Some((vec!["/v1/requests/r-2/close".to_string()], "Withdrawn: Import lists from Notes".to_string())));
     }
 
     #[test]
@@ -548,5 +607,123 @@ mod tests {
         let decoded: crate::client::Overview = serde_json::from_value(new).unwrap();
         assert_eq!(decoded.tasks.iter().map(|t| (t.id.as_str(), t.auto_merge_pending)).collect::<Vec<_>>(), [("t-1", true)]);
         assert_eq!(decoded.requests[0].tasks, ["t-1", "t-2"]);
+    }
+
+    /// The board plus finished work: r-3's task is done and r-4 finished without tasks.
+    fn finished(app: &mut App, archived_at: Option<i64>) {
+        let now = now_millis();
+        app.data.requests.extend(serde_json::from_value::<Vec<crate::client::ClientRequest>>(json!([
+            {"id": "r-3", "text": "Old work", "created_at": now - 9_000_000, "state": "done", "tasks": ["t-4"], "archived_at": archived_at},
+            {"id": "r-4", "text": "How is it going?", "created_at": now - 8_000_000, "state": "done", "tasks": [], "archived_at": archived_at},
+        ]))
+        .unwrap());
+        app.data.tasks.push(
+            serde_json::from_value(json!({"id": "t-4", "request": "r-3", "title": "Shipped fix", "state": "done", "state_since": now - 60_000, "created_at": now - 9_000_000, "archived_at": archived_at}))
+                .unwrap(),
+        );
+        app.reconcile();
+    }
+
+    #[test]
+    fn shift_a_archives_what_is_finished_and_a_404_hides_it() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "A");
+        assert!(app.posted.borrow().is_empty(), "nothing finished yet");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Nothing finished")));
+
+        finished(&mut app, None);
+        let s = screen(&mut app, 150, 40);
+        for text in ["Shipped fix", "How is it going?", "finished without tasks", "Shift+A archive finished"] {
+            assert!(s.contains(text), "{text}:\n{s}");
+        }
+        assert!(!s.contains("Archived ("), "nothing archived yet:\n{s}");
+        press(&mut app, "A");
+        assert_eq!(app.posted.borrow().last().cloned(), Some((vec!["/v1/tasks/archive".to_string()], "Archived: 2".to_string())));
+
+        app.archive_done(Err(("not found".into(), true)));
+        assert!(!screen(&mut app, 150, 40).contains("Shift+A"));
+        press(&mut app, "A");
+        assert_eq!(app.posted.borrow().len(), 1, "nothing more is sent once alondrad said it has no route");
+    }
+
+    #[test]
+    fn archived_work_leaves_the_list_for_a_closed_section_that_enter_opens() {
+        let (mut app, _rx) = app_with(vec![]);
+        set_for_this_thread(Lang::Es);
+        board(&mut app);
+        finished(&mut app, Some(now_millis()));
+        code(&mut app, KeyCode::Tab);
+        let s = screen(&mut app, 150, 40);
+        assert!(s.contains("▸ Archivadas (2)"), "{s}");
+        for gone in ["Old work", "Shipped fix", "How is it going?"] {
+            assert!(!s.contains(gone), "{gone} is archived:\n{s}");
+        }
+        press(&mut app, "G");
+        assert!(app.task_sel == Some(super::super::super::tasks::TaskKey::Archived));
+        code(&mut app, KeyCode::Enter);
+        let s = screen(&mut app, 150, 40);
+        for shown in ["▾ Archivadas (2)", "Shipped fix", "How is it going?", "terminada sin tareas"] {
+            assert!(s.contains(shown), "{shown}:\n{s}");
+        }
+        assert!(app.archivable_count() == 0, "archived work is not archived again");
+        press(&mut app, "o");
+        assert!(!screen(&mut app, 150, 40).contains("Shipped fix"), "o closes it again");
+    }
+
+    #[test]
+    fn a_tasks_history_is_asked_again_when_the_task_changes_or_the_fetch_failed() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
+        assert!(app.history_asked.contains(&(id.clone(), since)));
+        app.history_loaded(id.clone(), since, Ok((vec![], vec![])));
+        let later = since + 5;
+        app.data.tasks.iter_mut().find(|t| t.id == id).unwrap().last_change = Some(later);
+        app.reconcile();
+        assert!(app.history_asked.contains(&(id.clone(), later)), "a move that kept its state still reaches its history");
+        app.history_loaded(id.clone(), later, Err(false));
+        app.reconcile();
+        assert!(app.history_asked.contains(&(id.clone(), later)) && !app.history_missing, "a failed fetch is asked again");
+    }
+
+    #[test]
+    fn a_document_older_than_the_overviews_reports_comes_from_its_task() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
+        assert!(app.report_by_id(9_001).is_none(), "the overview does not carry it");
+        app.history_loaded(id, since, Ok((vec![], vec![report(9_001)])));
+        assert_eq!(app.report_by_id(9_001).map(|r| r.id), Some(9_001));
+    }
+
+    #[test]
+    fn a_request_goes_by_its_title_then_its_only_tasks_then_what_the_user_wrote() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        finished(&mut app, None);
+        let title = |app: &App, id: &str| app.request_title(app.request(id).unwrap());
+        assert_eq!(title(&app, "r-2"), "Import lists from Notes", "still defined: what the user wrote");
+        assert_eq!(title(&app, "r-3"), "Shipped fix", "its only task's title, not the prompt");
+        assert_eq!(title(&app, "r-1"), "Strike-through phase 2", "three tasks and no title from an older alondrad");
+        let given: crate::client::ClientRequest = serde_json::from_value(json!({"id": "r-1", "created_at": 1, "state": "in_progress", "tasks": ["t-1"], "title": "Strike-through, phase 2"})).unwrap();
+        app.data.requests[0] = given;
+        assert_eq!(title(&app, "r-1"), "Strike-through, phase 2", "the orchestrator's title wins");
+    }
+
+    #[test]
+    fn a_task_shows_how_its_prs_are_handled_once() {
+        let (mut app, _rx) = app_with(vec![]);
+        board(&mut app);
+        code(&mut app, KeyCode::Tab);
+        press(&mut app, "j");
+        let s = screen(&mut app, 130, 40);
+        assert!(s.contains("PR handling review each one"), "{s}");
+        assert!(!s.contains("review PR") && !s.contains("auto-merge no"), "one setting, one row:\n{s}");
     }
 }

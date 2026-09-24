@@ -9,6 +9,7 @@ struct NodeDetail: View {
     let openTask: (String) -> Void
     @FocusState private var focus: DetailField?
     @State private var closing: CloseRequest?
+    @State private var threads: [NodeActivity] = []
 
     var body: some View {
         let draft = drafts.draft(for: "n\(node.sessionId)")
@@ -69,7 +70,6 @@ struct NodeDetail: View {
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                     }
                 }
-                let threads = store.activity(of: node)
                 if !threads.isEmpty {
                     section(String(localized: "Right now")) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -123,6 +123,9 @@ struct NodeDetail: View {
             let store = store
             let node = node
             Task { await store.close(node) }
+        }
+        .task(id: store.threadsKey(of: node.sessionId)) {
+            await store.followThreads(of: node.sessionId) { threads = $0 }
         }
     }
 

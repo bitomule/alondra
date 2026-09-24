@@ -358,6 +358,15 @@ impl View {
             }
             Event::PrAsked { id } => self.pr_node(*id),
             Event::TasksRecorded | Event::TaskCreated(_) | Event::TaskAssigned { .. } | Event::TaskMoved { .. } | Event::RequestTitled { .. } | Event::RequestClosed { .. } => None,
+            Event::TasksArchived(what) => {
+                self.board.archive(what, at);
+                None
+            }
+            Event::ArchivedPruned { before } => {
+                let keep = self.tasks_to_keep();
+                self.board.prune_archived(*before, |t| keep.contains(&t.id));
+                None
+            }
             Event::RequestSent { request_id, options, .. } => {
                 self.requests.insert(request_id.clone(), options.clone());
                 None
@@ -1219,6 +1228,11 @@ mod tests {
         assert!(!v.nodes.contains_key("s"), "a late event of a closed node is still ignored");
         v.apply(6, 9_000, &Event::Pruned { before: 5_000 });
         assert!(v.removed.is_empty(), "{:?}", v.removed);
+        assert!(v.requests.contains_key("r-3000"), "a request still defining keeps its options past the window");
+        v.apply(7, 9_500, &Event::RequestClosed { request_id: "r-3000".into(), answer: Some("Answered".into()), withdrawn: false });
+        v.apply(8, 9_600, &Event::TasksArchived(crate::tasks::Archive { tasks: vec![], requests: vec!["r-3000".into()] }));
+        v.apply(9, 9_700, &Event::ArchivedPruned { before: 9_650 });
+        v.apply(10, 9_800, &Event::Pruned { before: 9_700 });
         assert!(v.requests.is_empty(), "{:?}", v.requests.keys().collect::<Vec<_>>());
         let legacy: View = serde_json::from_value(serde_json::json!({"seq": 1, "nodes": {}, "questions": {}, "reports": {}, "messages": {}, "removed": ["old"]})).unwrap();
         assert_eq!(legacy.removed.get("old"), Some(&0), "a snapshot from before keeps its closed nodes until the next prune");
