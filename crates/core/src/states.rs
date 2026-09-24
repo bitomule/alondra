@@ -1,15 +1,16 @@
-//! The node state machine: one table of (state, trigger, evidence) → state.
-//!
-//! A node's state is never set directly. Events update the facts kept on the node (hooks, the
-//! Claude daemon's job state, declarations, questions and reports), and then the first row of
-//! the table whose columns all match decides the state. Time only enters through the `now` the
-//! caller passes: the reducer passes the time of the event it applies, and `Event::Clock` lets the
-//! daemon record in the log that time has moved, so a replay reaches exactly the same states.
+//! What a node shows. The node itself is only free, busy or waiting for the machine: the first
+//! row of `NODE_TABLE` whose evidence is present decides it. Whatever else today's clients read in
+//! its `state` (waiting for an answer, in review, done, stalled…) comes from its tasks
+//! (`from_tasks`). Time only enters through the `now` the caller passes: the reducer passes the
+//! time of the event it applies, and `Event::Clock` lets the daemon record in the log that time
+//! has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
+    BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
+    TurnSignal,
 };
-use crate::tasks::{Task, TaskState};
+use crate::pr::PrState;
+use crate::tasks::{BlockerKind, Task, TaskState};
 use crate::view::View;
 
 const MINUTE: Millis = 60 * 1000;
@@ -70,11 +71,10 @@ const fn row<S>(name: &'static str, when: Signal, to: S) -> Row<S> {
 
 const WORKING: &[NodeState] = &[NodeState::Working];
 
-/// Rows are tried in order; the first one that matches wins. The last row always matches.
+/// The node's own evidence, tried in order; the first row that matches wins and the last one
+/// always does. A row that ends in `unclear` leaves the node free.
 pub const NODE_TABLE: &[Row<NodeState>] = &[
-    row("an open question waits for the user", Signal::OpenQuestion, NodeState::WaitingAnswer),
     row("a permission prompt is on screen", Signal::PermissionPrompt, NodeState::WaitingAnswer),
-    row("an action waits for the user", Signal::ActionRequested, NodeState::YourTurn),
     row("a single call ran far longer than usual", Signal::CallStuck, NodeState::Stalled),
     row("a tool is in flight", Signal::ToolInFlight, NodeState::Working),
     row("a recent hook inside a turn", Signal::Hook, NodeState::Working),
@@ -83,13 +83,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
-    row("a PR of the node waits for the user's merge, or its merge has yet to reach it", Signal::PrAwaitingUser, NodeState::WaitingMerge),
-    row("an artifact of the node waits for the user's review, or the review has yet to reach it", Signal::ReviewAwaitingUser, NodeState::WaitingMerge),
-    row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
-    row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
-    row("a report the node delivered", Signal::Report, NodeState::Delivered),
     row("only possibly hung background tasks remain: handed to the sentinel", Signal::BackgroundSuspect, NodeState::Unclear),
-    row("a turn ended without a declaration", Signal::TurnEndedUndeclared, NodeState::Stalled),
     Row {
         name: "working evidence went stale: handed to the sentinel",
         from: WORKING,
@@ -162,14 +156,6 @@ pub fn background(node: &Node, now: Millis) -> Vec<BackgroundItem> {
         .collect()
 }
 
-/// The daemon's job state contradicts a report when, written after it, it says the node is
-/// blocked on something.
-fn daemon_contradicts(node: &Node, since: Millis) -> bool {
-    node.daemon_state.as_deref() == Some("blocked")
-        && node.daemon_needs.as_deref().is_some_and(|n| !n.trim().is_empty())
-        && node.daemon_updated_at.or(node.daemon_seen_at).is_some_and(|at| at > since)
-}
-
 pub fn facts(view: &View, node: &Node, now: Millis) -> Facts {
     facts_with(view, node, now, view.machine_strained)
 }
@@ -188,17 +174,8 @@ fn reopened(view: &View, node: &Node) -> bool {
 
 fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> Facts {
     let mut f = Facts::default();
-    let open = view.questions.values().filter(|q| {
-        q.session_id == node.session_id && q.status == QuestionStatus::Open && q.blocking && !q.to_orchestrator
-    });
-    let (mut question, mut action) = (None, None);
-    for q in open {
-        let slot = if q.action { &mut action } else { &mut question };
-        *slot = Some(slot.map_or(q.asked_at, |at: Millis| at.max(q.asked_at)));
-    }
-    f.add(Signal::OpenQuestion, question);
+    f.add(Signal::OpenQuestion, open_questions(view, node, false).map(|q| q.asked_at).max());
     f.add(Signal::PermissionPrompt, (node.waiting_permission || node.menu_waiting.is_some()).then_some(node.last_seen));
-    f.add(Signal::ActionRequested, action);
 
     let live = reopened(view, node);
     f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| live && node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
@@ -222,23 +199,6 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         let holds = machine_strained || now - quiet_since <= MACHINE_WAIT_QUIET_MS;
         f.add(Signal::DeclaredWait, holds.then_some(declared));
     }
-    let awaiting = view.prs_awaiting_user().filter(|p| p.session_id == node.session_id).map(|p| p.opened_at).max();
-    f.add(Signal::PrAwaitingUser, awaiting.max(view.merge_notice_due(&node.session_id)));
-    let reviewing = view.reviews_awaiting_user().filter(|r| r.session_id == node.session_id).map(|r| r.created_at).max();
-    f.add(Signal::ReviewAwaitingUser, reviewing.max(view.review_reply_due(&node.session_id)));
-    let agreed = !daemon_contradicts(node, declared);
-    match node.turn_signal {
-        Some(TurnSignal::Finished) if agreed && node.has_plugin => f.add(Signal::FinalReport, Some(declared)),
-        Some(TurnSignal::Finished | TurnSignal::Delivered) if agreed => {
-            f.add(Signal::Reviewed, node.acknowledged_at.filter(|&read| read >= declared));
-            f.add(Signal::Report, Some(declared));
-        }
-        _ => {}
-    }
-
-    let undeclared = node.watched() && node.has_plugin && node.turn_signal.is_none() && node.last_work_at.is_some() && !watching(view, node, now);
-    f.add(Signal::TurnEndedUndeclared, node.last_stop_at.filter(|stop| undeclared && *stop >= node.episode_since));
-
     f.add(Signal::NoProcess, (!node.alive).then_some(node.last_seen));
     f.add(Signal::Nothing, Some(node.last_seen));
     f
@@ -259,6 +219,7 @@ fn first<S: Copy + PartialEq>(table: &'static [Row<S>], facts: &Facts, current: 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub state: NodeState,
+    pub status: NodeStatus,
     pub orchestrator: Option<OrchestratorState>,
     pub evidence: Evidence,
     /// The tool the node opened is stale and nothing says it still runs: stop showing it.
@@ -277,18 +238,101 @@ pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, ma
         && facts.at(Signal::CallStuck).is_none()
         && facts.at(Signal::DaemonActive).is_none()
         && facts.at(Signal::BackgroundTask).is_none();
+    let (own, own_at) = first(NODE_TABLE, &facts, node.state, trigger);
+    let status = match own.to {
+        NodeState::Working | NodeState::Stalled | NodeState::WaitingAnswer => NodeStatus::Busy,
+        NodeState::WaitingMachine => NodeStatus::WaitingMachine,
+        _ => NodeStatus::Free,
+    };
     if node.is_orchestrator {
         let current = node.orchestrator_state.unwrap_or(OrchestratorState::OnDuty);
         let (row, at) = first(ORCHESTRATOR_TABLE, &facts, current, trigger);
         return Outcome {
             state: row.to.node_state(),
+            status,
             orchestrator: Some(row.to),
             evidence: Evidence { row: row.name.to_string(), signal: row.when, at },
             drop_tool,
         };
     }
-    let (row, at) = first(NODE_TABLE, &facts, node.state, trigger);
-    Outcome { state: row.to, orchestrator: None, evidence: Evidence { row: row.name.to_string(), signal: row.when, at }, drop_tool }
+    let (state, evidence) = from_tasks(view, node, now, own, own_at).unwrap_or_else(|| (own.to, Evidence { row: own.name.to_string(), signal: own.when, at: own_at }));
+    Outcome { state, status, orchestrator: None, evidence, drop_tool }
+}
+
+fn open_questions<'a>(view: &'a View, node: &'a Node, action: bool) -> impl Iterator<Item = &'a crate::model::Question> + 'a {
+    view.questions
+        .values()
+        .filter(move |q| q.session_id == node.session_id && q.status == QuestionStatus::Open && q.blocking && !q.to_orchestrator && q.action == action)
+}
+
+pub const TASK_ASKS: &str = "a task of the node waits for the user's answer";
+pub const TASK_ACTION: &str = "a task of the node waits for the user's action";
+pub const MERGE_NOTICE_DUE: &str = "the merge of its PR has yet to reach it";
+pub const REVIEW_REPLY_DUE: &str = "the user's review has yet to reach it";
+pub const TASK_IDLE: &str = "a task of the node should move and its turn ended without a declaration";
+pub const TASK_AUTO_MERGING: &str = "Alondra waits on GitHub to merge a PR of its task";
+pub const TASK_DELIVERED: &str = "its task runs and it delivered a report";
+pub const TASK_IN_REVIEW: &str = "a task of the node waits for the user's review";
+pub const TASK_WAITING: &str = "its task waits for another task";
+pub const TASKS_FINISHED: &str = "every task of the node is finished";
+/// Every row `from_tasks` can give, in the order it tries them.
+pub const TASK_ROWS: &[&str] =
+    &[TASK_ASKS, TASK_ACTION, MERGE_NOTICE_DUE, REVIEW_REPLY_DUE, TASK_IDLE, TASK_AUTO_MERGING, TASK_DELIVERED, TASK_IN_REVIEW, TASK_WAITING, TASKS_FINISHED];
+
+/// What the node's tasks make of it, over what it shows of its own: waiting for the user's
+/// answer or action (its task's blocker, or an open card the machine could not take), and, when
+/// it is free, in review, done, or stalled when a task of it should move and it said nothing.
+/// `None` leaves the node's own row.
+fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_at: Millis) -> Option<(NodeState, Evidence)> {
+    let said = |state: NodeState, row: &str, signal: Signal, at: Millis| Some((state, Evidence { row: row.to_string(), signal, at }));
+    let tasks: Vec<&Task> = view.tasks_of(&node.session_id).collect();
+    let blocked = |action: bool| {
+        let by_task = tasks.iter().filter(|t| t.state == TaskState::NeedsYou).filter_map(|t| t.blocker).filter(|b| (b.kind == BlockerKind::Action) == action).map(|b| b.since).max();
+        by_task.max(open_questions(view, node, action).map(|q| q.asked_at).max())
+    };
+    if let Some(at) = blocked(false) {
+        return said(NodeState::WaitingAnswer, TASK_ASKS, Signal::OpenQuestion, at);
+    }
+    if own.when == Signal::PermissionPrompt {
+        return None;
+    }
+    if let Some(at) = blocked(true) {
+        return said(NodeState::YourTurn, TASK_ACTION, Signal::ActionRequested, at);
+    }
+    if own.to != NodeState::Unclear {
+        return None;
+    }
+    if let Some(at) = view.merge_notice_due(&node.session_id) {
+        return said(NodeState::WaitingMerge, MERGE_NOTICE_DUE, Signal::PrAwaitingUser, at);
+    }
+    if let Some(at) = view.review_reply_due(&node.session_id) {
+        return said(NodeState::WaitingMerge, REVIEW_REPLY_DUE, Signal::ReviewAwaitingUser, at);
+    }
+    let since = |states: &[TaskState]| tasks.iter().filter(|t| states.contains(&t.state)).map(|t| t.state_since).max();
+    if let Some(at) = since(&[TaskState::Running, TaskState::Closing]) {
+        return if idle_task(view, node, now).is_some() {
+            said(NodeState::Stalled, TASK_IDLE, Signal::TurnEndedUndeclared, node.last_stop_at.unwrap_or(at))
+        } else if tasks.iter().any(|t| view.auto_merge_pending(t, now)) {
+            said(NodeState::WaitingMerge, TASK_AUTO_MERGING, Signal::PrAwaitingUser, at)
+        } else if matches!(node.turn_signal, Some(TurnSignal::Delivered | TurnSignal::Finished)) {
+            said(NodeState::Delivered, TASK_DELIVERED, Signal::Report, node.signal_at.unwrap_or(at))
+        } else {
+            None
+        };
+    }
+    if let Some(at) = since(&[TaskState::InReview]) {
+        let pr_open = tasks.iter().filter(|t| t.state == TaskState::InReview).flat_map(|t| &t.prs).filter_map(|id| view.prs.get(id)).any(|p| p.state == PrState::Open);
+        let signal = if pr_open { Signal::PrAwaitingUser } else { Signal::ReviewAwaitingUser };
+        return said(NodeState::WaitingMerge, TASK_IN_REVIEW, signal, at);
+    }
+    if let Some(at) = since(&[TaskState::WaitingDependency]) {
+        return said(NodeState::WaitingMerge, TASK_WAITING, Signal::PrAwaitingUser, at);
+    }
+    if !tasks.is_empty() && tasks.iter().all(|t| t.state.finished()) {
+        let at = since(&[TaskState::Done, TaskState::Cancelled]).unwrap_or(own_at);
+        return said(NodeState::Done, TASKS_FINISHED, Signal::FinalReport, at);
+    }
+    None
 }
 
 /// Whether the node shows work right now, ignoring what it is waiting for.
@@ -317,13 +361,16 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
         let reported = |kinds: &[ReportKind]| {
             view.reports.values().any(|r| &r.session_id == sid && r.created_at >= node.episode_since && kinds.contains(&r.kind))
         };
+        let blocked = |action: bool| {
+            view.tasks_of(sid).any(|t| t.state == TaskState::NeedsYou && t.blocker.is_some_and(|b| (b.kind == BlockerKind::Action) == action))
+        };
         let missing = match node.state {
             NodeState::Working => !works(view, node, now),
-            NodeState::WaitingAnswer => !open(false) && !node.waiting_permission && node.menu_waiting.is_none(),
-            NodeState::YourTurn => !open(true),
+            NodeState::WaitingAnswer => !open(false) && !blocked(false) && !node.waiting_permission && node.menu_waiting.is_none(),
+            NodeState::YourTurn => !open(true) && !blocked(true),
             NodeState::WaitingMerge => !matches!(outcome.evidence.signal, Signal::PrAwaitingUser | Signal::ReviewAwaitingUser),
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
-            NodeState::Done => !reported(&[ReportKind::Final]),
+            NodeState::Done => !view.tasks_of(sid).all(|t| t.state.finished()),
             NodeState::Delivered => !reported(&[ReportKind::Final, ReportKind::Notice, ReportKind::Document]),
             NodeState::Unclear | NodeState::Stalled => false,
         };
@@ -401,8 +448,8 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
     nudge_then_orchestrator(view, node)
 }
 
-/// The running task of a node idle when it should work: its turn ended, it shows no work and it
-/// declared nothing. A task whose auto-merge PR Alondra is waiting on GitHub to merge waits on
+/// The running (or closing: after its merge) task of a node idle when it should work: its turn
+/// ended, it shows no work and it declared nothing. A task whose auto-merge PR Alondra is waiting on GitHub to merge waits on
 /// GitHub, not on its node; a node whose process died is restarted instead (`upkeep`).
 pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
     let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
@@ -418,11 +465,11 @@ pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Tas
         && !crate::upkeep::stopped_on_purpose(node)
         && !watching(view, node, now)
         && !works(view, node, now)
-        && view.deliverable_messages(&node.session_id).next().is_none();
+        && !view.deliverable_messages(&node.session_id).any(|m| m.from != MessageFrom::Alondra || view.is_merge_notice(m));
     if !idle {
         return None;
     }
-    view.tasks_of(&node.session_id).find(|t| t.state == TaskState::Running && !view.auto_merge_pending(t, now))
+    view.tasks_of(&node.session_id).find(|t| matches!(t.state, TaskState::Running | TaskState::Closing) && !view.auto_merge_pending(t, now))
 }
 
 /// What Alondra does about a node idle when it should work: what it does about a stalled one,
@@ -498,7 +545,7 @@ pub fn stalled_text(node: &Node, user: &str) -> String {
 pub fn idle_text(node: &Node, task: &Task, user: &str) -> String {
     let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
     format!(
-        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything while its task \"{}\" is running, and \
+        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything while its task “{}” is running, and \
          Alondra already nudged it once. Its last message:\n\n{said}\n\n`send` moves it on when that message tells you what \
          comes next; otherwise it is a question for {user}.",
         node.display_name(),
@@ -510,17 +557,11 @@ pub fn idle_text(node: &Node, task: &Task, user: &str) -> String {
 /// The message a stall move, or a move on a node idle when it should work, puts in a session.
 pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
     let stuck = node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck);
-    let (session_id, text) = match stall_move(view, node) {
-        Some(StallMove::Nudge) => (node.session_id.clone(), nudge_text(user)),
-        Some(StallMove::TellOrchestrator { orchestrator }) if stuck => (orchestrator, stuck_text(node, user, at)?),
-        Some(StallMove::TellOrchestrator { orchestrator }) => (orchestrator, stalled_text(node, user)),
-        None => {
-            let task = idle_task(view, node, at)?;
-            match nudge_then_orchestrator(view, node)? {
-                StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
-                StallMove::TellOrchestrator { orchestrator } => (orchestrator, idle_text(node, task, user)),
-            }
-        }
+    let task = idle_task(view, node, at);
+    let (session_id, text) = match stall_move(view, node).or_else(|| task.and_then(|_| nudge_then_orchestrator(view, node)))? {
+        StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
+        StallMove::TellOrchestrator { orchestrator } if stuck => (orchestrator, stuck_text(node, user, at)?),
+        StallMove::TellOrchestrator { orchestrator } => (orchestrator, task.map_or_else(|| stalled_text(node, user), |t| idle_text(node, t, user))),
     };
     view.alondra_message(&session_id, text, at)
 }
@@ -595,6 +636,7 @@ mod tests {
     use super::*;
     use crate::event::{DaemonObservation, Event, HookEvent};
     use crate::model::{BackgroundKind, Message, MessageFrom, Question, QuestionOrigin, Report};
+    use crate::pr::CheckState;
 
     const T0: Millis = 1_000_000;
 
@@ -719,6 +761,15 @@ mod tests {
         row: &'static str,
     }
 
+    fn auto_merging(checks: CheckState) -> Vec<Event> {
+        let named = Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("n".into()), pid: Some(7), ..Default::default() });
+        let mut pr = crate::pr::PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", Some("n".into()), T0).unwrap();
+        pr.fetched = true;
+        pr.checks = vec![crate::pr::Check { name: "ci".into(), state: checks, url: None }];
+        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true };
+        vec![launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop"), Event::PrUpdated(pr)]
+    }
+
     fn row_named(to: NodeState, signal: Signal) -> &'static str {
         NODE_TABLE.iter().find(|r| r.to == to && r.when == signal && r.on.is_empty()).map(|r| r.name).unwrap()
     }
@@ -727,10 +778,12 @@ mod tests {
         let min = 60_000;
         let stale = NODE_TABLE.iter().find(|r| !r.on.is_empty()).unwrap().name;
         let [queued, handed] = message(MessageFrom::Alondra);
+        let [notice, _] = merge_notice();
+        let comments = verdict(1, crate::event::ReviewVerdict::Comments, 9);
         vec![
-            Case { what: "an open ask", events: vec![hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::OpenQuestion) },
+            Case { what: "an open ask", events: vec![hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: TASK_ASKS },
             Case { what: "a permission prompt", events: vec![hook("UserPromptSubmit"), hook("PermissionRequest")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PermissionPrompt) },
-            Case { what: "an action for the user", events: vec![daemon("done", "idle", 0, None), question(true, QuestionOrigin::Classifier)], sweep: None, state: NodeState::YourTurn, row: row_named(NodeState::YourTurn, Signal::ActionRequested) },
+            Case { what: "an action for the user", events: vec![daemon("done", "idle", 0, None), question(true, QuestionOrigin::Classifier)], sweep: None, state: NodeState::YourTurn, row: TASK_ACTION },
             Case { what: "a long tool, no hook for 10 min", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((10 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::ToolInFlight) },
             Case { what: "a hook a minute ago", events: vec![hook("UserPromptSubmit")], sweep: Some((min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::Hook) },
             Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
@@ -740,16 +793,19 @@ mod tests {
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
-            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: row_named(NodeState::WaitingMerge, Signal::PrAwaitingUser) },
-            Case { what: "an artifact sent for review", events: vec![hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: row_named(NodeState::WaitingMerge, Signal::ReviewAwaitingUser) },
-            Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
-            Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
-            Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
-            Case { what: "a handoff final report, nothing else pending", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
-            Case { what: "a handoff notice, still working", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
+            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
+            Case { what: "an artifact sent for review", events: vec![hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: TASK_IN_REVIEW },
+            Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: TASKS_FINISHED },
+            Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
+            Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
+            Case { what: "a handoff final report, nothing else pending", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: TASKS_FINISHED },
+            Case { what: "a handoff notice, still working", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: TASK_DELIVERED },
             Case { what: "a background call past its limit", events: background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), sweep: Some((46 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::CallStuck) },
             Case { what: "a foreground tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((46 * min, false)), state: NodeState::Unclear, row: stale },
-            Case { what: "a background node that ended its turn without declaring", events: vec![daemon("working", "active", 0, None), hook("UserPromptSubmit"), hook("Stop")], sweep: Some((30 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::TurnEndedUndeclared) },
+            Case { what: "a background node that ended its turn without declaring", events: vec![daemon("working", "active", 0, None), hook("UserPromptSubmit"), hook("Stop")], sweep: Some((30 * min, false)), state: NodeState::Stalled, row: TASK_IDLE },
+            Case { what: "merged, the notice on its way", events: background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice, merged()]), sweep: None, state: NodeState::WaitingMerge, row: MERGE_NOTICE_DUE },
+            Case { what: "the user's comments on their way", events: [&[hook("UserPromptSubmit"), sent_for_review(1, ReportKind::Document), hook("Stop")][..], &comments[..2]].concat(), sweep: None, state: NodeState::WaitingMerge, row: REVIEW_REPLY_DUE },
+            Case { what: "an auto-merge PR waiting on its checks", events: auto_merging(CheckState::Running), sweep: None, state: NodeState::WaitingMerge, row: TASK_AUTO_MERGING },
             Case { what: "a turn that ended with nothing", events: vec![hook("UserPromptSubmit"), hook("Stop")], sweep: None, state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::Nothing) },
         ]
     }
@@ -763,8 +819,32 @@ mod tests {
             assert_eq!(n.state, c.state, "{}", c.what);
             assert_eq!(n.evidence.as_ref().map(|e| e.row.as_str()), Some(c.row), "{}", c.what);
         }
-        for r in NODE_TABLE {
-            assert!(cases.iter().any(|c| c.row == r.name), "no case reaches the row {:?}", r.name);
+        let mut waiting = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+        waiting.board.tasks.get_mut("t-s").expect("the node's task").state = TaskState::WaitingDependency;
+        waiting.apply(99, T0 + 60_000, &Event::Clock { machine_strained: false });
+        let n = &waiting.nodes["s"];
+        assert_eq!((n.state, n.evidence.as_ref().map(|e| e.row.as_str())), (NodeState::WaitingMerge, Some(TASK_WAITING)), "a task waiting for another");
+        let reached = |name: &str| name == TASK_WAITING || cases.iter().any(|c| c.row == name);
+        for name in NODE_TABLE.iter().map(|r| r.name).chain(TASK_ROWS.iter().copied()) {
+            assert!(reached(name), "no case reaches the row {name:?}");
+        }
+    }
+
+    #[test]
+    fn the_node_itself_is_only_free_busy_or_waiting_for_the_machine() {
+        let min = 60_000;
+        let cases: Vec<(&str, Vec<Event>, Option<(Millis, bool)>, NodeStatus, NodeState)> = vec![
+            ("inside a turn", vec![hook("UserPromptSubmit")], None, NodeStatus::Busy, NodeState::Working),
+            ("on a permission prompt", vec![hook("UserPromptSubmit"), hook("PermissionRequest")], None, NodeStatus::Busy, NodeState::WaitingAnswer),
+            ("inside a call past its limit", background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), Some((46 * min, false)), NodeStatus::Busy, NodeState::Stalled),
+            ("stopped by a usage limit", vec![hook("UserPromptSubmit"), usage_limit()], None, NodeStatus::WaitingMachine, NodeState::WaitingMachine),
+            ("its question waits for the user", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), hook("Stop")]), None, NodeStatus::Free, NodeState::WaitingAnswer),
+            ("its task is done", vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], None, NodeStatus::Free, NodeState::Done),
+            ("its task should move", background(&[hook("UserPromptSubmit"), hook("Stop")]), None, NodeStatus::Free, NodeState::Stalled),
+        ];
+        for (what, events, sweep, status, state) in cases {
+            let n = run(&events, sweep).nodes["s"].clone();
+            assert_eq!((n.status, n.state), (status, state), "{what}");
         }
     }
 
@@ -1075,9 +1155,9 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_daemon_after_the_final_report_contradicts_it() {
+    fn a_finished_task_is_not_undone_by_what_the_daemon_guesses() {
         let v = run(&[daemon("working", "active", 0, None), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop"), daemon("blocked", "blocked", 0, Some("decide"))], None);
-        assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+        assert_eq!(v.nodes["s"].state, NodeState::Done, "the node's own final report finished its task");
     }
 
     #[test]
@@ -1205,7 +1285,8 @@ mod tests {
             ("merged, the notice on its way", with_pr(&[notice.clone(), merged()]), NodeState::WaitingMerge),
             ("merged, the notice typed in", with_pr(&[notice.clone(), merged(), notice_handed.clone()]), NodeState::Working),
             ("merged, acted on it and reported final", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
-            ("merged, acted on it and stopped without a word", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("merged after its final report, acted on the notice all the same", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Done),
+            ("merged with work left after it, stopped without a word", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop"), notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
             ("merged on GitHub, nobody to tell", with_pr(&[merged()]), NodeState::Done),
             ("done", then(&[]), NodeState::Done),
             ("done, David writes to it", then(&[from_user, user_handed]), NodeState::Working),
@@ -1309,7 +1390,6 @@ mod tests {
         let mut v = run(&[launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop")], None);
         v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
         v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
-        use crate::pr::CheckState;
         let checks = |v: &mut View, seq: u64, state: CheckState| {
             let mut pr = v.prs[&1].clone();
             pr.fetched = true;
@@ -1321,9 +1401,10 @@ mod tests {
 
         checks(&mut v, 52, CheckState::Running);
         assert_eq!(idle_task(&v, &v.nodes["s"], at(52)), None, "its PR waits on its checks, not on the node");
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingMerge, "Alondra waits on GitHub");
         checks(&mut v, 53, CheckState::Failed);
-        assert_eq!(v.nodes["s"].state, NodeState::WaitingMerge, "the node table still shows it waiting for a merge");
-        assert_eq!(stall_move(&v, &v.nodes["s"]), None);
+        assert_eq!(v.nodes["s"].state, NodeState::Stalled, "its task should move, and what the apps read says so");
+        assert_eq!(stall_move(&v, &v.nodes["s"]), Some(StallMove::Nudge));
         assert_eq!(idle_move(&v, &v.nodes["s"], at(53)), Some(StallMove::Nudge), "failed checks are the node's to fix");
         let nudge = stall_message(&v, &v.nodes["s"], "Ana", at(53)).unwrap();
         assert_eq!((nudge.session_id.as_str(), nudge.text.clone()), ("s", nudge_text("Ana")));
@@ -1335,7 +1416,7 @@ mod tests {
         v.apply(57, at(57), &hook("Stop"));
         let handed_on = stall_message(&v, &v.nodes["s"], "Ana", at(57)).unwrap();
         assert_eq!(handed_on.session_id, "o", "idle again after the nudge");
-        assert!(handed_on.text.starts_with(STALLED_PREFIX) && handed_on.text.contains("while its task \"n\" is running"), "{}", handed_on.text);
+        assert!(handed_on.text.starts_with(STALLED_PREFIX) && handed_on.text.contains("while its task “n” is running"), "{}", handed_on.text);
         v.apply(58, at(58), &Event::MessageQueued(handed_on));
         assert_eq!(stall_message(&v, &v.nodes["s"], "Ana", at(58)), None, "the orchestrator already has it");
     }

@@ -181,6 +181,26 @@ mod tests {
         out
     }
 
+    /// A node shows done while a task of it is open, waits for a review nobody has to give, is
+    /// stalled with nothing to move, or shows a delivered result over a task in review or finished.
+    fn contradicts(v: &View, n: &alondra_core::Node, now: Millis) -> bool {
+        use alondra_core::NodeState;
+        use alondra_core::tasks::TaskState;
+        let tasks: Vec<_> = v.tasks_of(&n.session_id).collect();
+        let any = |states: &[TaskState]| tasks.iter().any(|t| states.contains(&t.state));
+        let finished = !tasks.is_empty() && tasks.iter().all(|t| t.state.finished());
+        match n.state {
+            NodeState::Done => !tasks.is_empty() && !finished,
+            NodeState::WaitingMerge => {
+                let due = v.merge_notice_due(&n.session_id).is_some() || v.review_reply_due(&n.session_id).is_some();
+                !due && !any(&[TaskState::InReview, TaskState::WaitingDependency]) && !tasks.iter().any(|t| v.auto_merge_pending(t, now))
+            }
+            NodeState::Stalled => n.evidence.as_ref().is_none_or(|e| e.signal != alondra_core::Signal::CallStuck) && !any(&[TaskState::Running, TaskState::Closing]),
+            NodeState::Delivered => any(&[TaskState::InReview]) || finished,
+            _ => false,
+        }
+    }
+
     /// Replays a copy of the real log and prints the tasks it gives. Never point it at the live
     /// file: `cp ~/.alondra/alondra.db* /tmp/` and
     /// `ALONDRA_REPLAY_DB=/tmp/alondra.db cargo test --release -p alondrad replay_a_copy_of_the_real_log -- --ignored --nocapture`.
@@ -194,7 +214,9 @@ mod tests {
         let first: i64 = s.conn.query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0)).unwrap();
         let mut sessions = std::collections::BTreeSet::new();
         let mut full = View::default();
-        let (mut idle_by_task_only, mut resumes, mut closable, mut threads) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), 0usize);
+        let (mut idle, mut resumes, mut closable, mut threads) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), 0usize);
+        let (mut shown, mut entered) = (std::collections::HashMap::new(), std::collections::BTreeMap::<&str, usize>::new());
+        let mut contradicted = std::collections::BTreeMap::<&str, usize>::new();
         let two_hours = 2 * 3600 * 1000;
         let n = s.replay(0, |seq, at, e| {
             if let Some(sid) = e.session_id() {
@@ -203,8 +225,14 @@ mod tests {
             full.apply(seq, at, &e);
             let touched: Vec<String> = e.session_id().map_or_else(|| full.nodes.keys().cloned().collect(), |s| vec![s.to_string()]);
             for n in touched.iter().filter_map(|sid| full.nodes.get(sid)) {
-                if states::stall_move(&full, n).is_none() && states::idle_move(&full, n, at).is_some() {
-                    idle_by_task_only.insert((n.session_id.clone(), n.episode_since));
+                if shown.insert(n.session_id.clone(), n.state) != Some(n.state) {
+                    *entered.entry(n.state.label()).or_default() += 1;
+                }
+                if contradicts(&full, n, at) {
+                    *contradicted.entry(n.state.label()).or_default() += 1;
+                }
+                if states::idle_move(&full, n, at).is_some() {
+                    idle.insert((n.session_id.clone(), n.episode_since));
                 }
                 if upkeep::resume_due(&full, n, at).is_some() {
                     resumes.insert((n.session_id.clone(), n.exited_at));
@@ -217,9 +245,16 @@ mod tests {
         }).unwrap();
         println!("whole log: {n} events from seq {first}, {} sessions, {} nodes, {} removed", sessions.len(), full.nodes.len(), full.removed.len());
         println!("{}", summary(&full));
+        let mut last = std::collections::BTreeMap::<&str, usize>::new();
+        for n in full.nodes.values() {
+            *last.entry(n.state.label()).or_default() += 1;
+        }
+        let statuses: Vec<String> = full.nodes.values().map(|n| format!("{:?}", n.status)).collect();
+        println!("states entered: {entered:?}\nstates at the end: {last:?}\nstatus at the end: {statuses:?}");
+        println!("events after which a node showed a state its tasks contradict: {contradicted:?}");
         println!(
-            "idle by their running task but not stalled: {} episodes {idle_by_task_only:?}\nprocesses Alondra would restart: {} {resumes:?}\nnodes free for 2 h it could close: {}\nmost threads in one node: {threads}",
-            idle_by_task_only.len(),
+            "episodes idle with a task to move: {}\nprocesses Alondra would restart: {} {resumes:?}\nnodes free for 2 h it could close: {}\nmost threads in one node: {threads}",
+            idle.len(),
             resumes.len(),
             closable.len()
         );

@@ -3058,6 +3058,10 @@ mod tests {
             assert!(got["since"].as_i64().is_some_and(|s| s > 0), "{got}");
         }
         assert_eq!(node["tool"]["name"], "Agent", "today's tool field is untouched");
+        assert_eq!((&node["status"], &node["state"]), (&json!("busy"), &json!("working")));
+        let (_, detail) = status_and_body(node_detail(State(hub.clone()), Path("s".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
+        assert_eq!(detail["node"]["status"], "busy");
+        assert_eq!(detail["node"]["activity"].as_array().map(Vec::len), Some(2));
     }
 
     /// The MCP call does not say which subagent makes it; its `PreToolUse`, which reaches Alondra

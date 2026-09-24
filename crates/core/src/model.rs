@@ -177,6 +177,17 @@ pub struct BackgroundItem {
     pub suspect: bool,
 }
 
+/// What the node itself is doing, whatever its tasks wait on: working, stopped for the machine,
+/// or free. Everything else a node used to show is a state of its tasks.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeStatus {
+    #[default]
+    Free,
+    Busy,
+    WaitingMachine,
+}
+
 /// One line of work in a node: its main conversation (`agent_id` none) or a subagent running now.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Thread {
@@ -243,9 +254,12 @@ pub struct Node {
     /// on load.
     #[serde(default)]
     pub created_at: Millis,
+    /// What today's clients show: read from the node's tasks and its `status`.
     pub state: NodeState,
     pub state_since: Millis,
     pub state_source: StateSource,
+    #[serde(default)]
+    pub status: NodeStatus,
     pub busy: bool,
     pub tool: Option<ToolInFlight>,
     pub waiting_permission: bool,
@@ -339,6 +353,7 @@ impl Node {
             state: NodeState::Working,
             state_since: at,
             state_source: StateSource::Watcher,
+            status: NodeStatus::Busy,
             busy: false,
             tool: None,
             waiting_permission: false,

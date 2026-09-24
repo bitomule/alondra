@@ -119,22 +119,15 @@ fn auditoria_an_ask_that_was_closed_explains_nothing() {
     assert!(between(&states, 1823, 4206).iter().all(|s| *s != NodeState::Working), "withdrawn at 10:12, idle until 13:46");
 }
 
-/// Its final report at 13:46:50 was contradicted two seconds after the turn ended: the Claude
-/// daemon wrote that it was blocked on a decision.
+/// Its final report at 13:46:50 finished its task. Two seconds after the turn ended the Claude
+/// daemon wrote that it was blocked on a decision, and at 13:47 a turn nobody typed began: the
+/// task stays done until the user writes to it (14:02).
 #[test]
-fn auditoria_a_final_report_the_daemon_contradicts_is_not_done() {
+fn auditoria_a_final_report_finishes_the_task_whatever_the_daemon_guesses() {
     let (_, states) = replay(AUDITORIA, AUDITORIA_SID);
     assert_eq!(at_seq(&states, 4220), NodeState::Done, "Stop after the final report");
-    assert_eq!(at_seq(&states, 4222), NodeState::Unclear, "daemon: blocked, needs a decision");
-}
-
-/// At 13:48:01 and 14:09:18 it reported final and its turn went on until 13:48:09 and 14:09:25.
-#[test]
-fn auditoria_a_final_report_while_the_turn_goes_on_is_working() {
-    let (_, states) = replay(AUDITORIA, AUDITORIA_SID);
-    assert_eq!(at_seq(&states, 4282), NodeState::Working);
-    assert_eq!(at_seq(&states, 4285), NodeState::Done);
-    assert_eq!(at_seq(&states, 4695), NodeState::Working);
+    assert_eq!(between(&states, 4222, 4558), vec![NodeState::Done], "the daemon's guess, a turn nobody typed and another final report");
+    assert_eq!(at_seq(&states, 4558), NodeState::Working, "the user's message reopened it");
     assert_eq!(between(&states, 4697, 4772), vec![NodeState::Done]);
 }
 

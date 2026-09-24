@@ -53,7 +53,7 @@ pub fn resume_due<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Ta
 
 pub fn resumed_text(task: &Task) -> String {
     format!(
-        "{RESUMED_PREFIX} while your task \"{}\" was still open, and Alondra restarted it. Carry on where you left off. \
+        "{RESUMED_PREFIX} while your task “{}” was still open, and Alondra restarted it. Carry on where you left off. \
          If you had already finished, say so through Alondra (`report` with kind final).",
         task.title
     )
@@ -83,7 +83,7 @@ pub fn resume_failed_message(view: &View, node: &Node, user: &str, at: Millis) -
     }
     let task = open_task(view, node)?;
     let text = format!(
-        "{RESUME_FAILED_PREFIX}: {} {tag} stopped while its task \"{}\" was open, and `claude respawn` failed: {}. \
+        "{RESUME_FAILED_PREFIX}: {} {tag} stopped while its task “{}” was open, and `claude respawn` failed: {}. \
          Writing to it with `send` restarts it too; if that fails as well, it is a question for {user}.",
         node.display_name(),
         task.title,
@@ -202,7 +202,7 @@ mod tests {
     fn a_restarted_node_is_told_to_carry_on_and_a_failed_restart_reaches_the_orchestrator_once() {
         let v = run(&died(&[resumed(true)]));
         let m = resumed_message(&v, "s", T0 + 90 * SEC).unwrap();
-        assert!(m.session_id == "s" && m.text.starts_with(RESUMED_PREFIX) && m.text.contains("\"n\""), "{}", m.text);
+        assert!(m.session_id == "s" && m.text.starts_with(RESUMED_PREFIX) && m.text.contains("“n”"), "{}", m.text);
 
         let mut v = run(&[&orchestrator()[..], &died(&[resumed(false)])].concat());
         let at = T0 + 90 * SEC;
