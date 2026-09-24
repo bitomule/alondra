@@ -15,7 +15,7 @@ exports_files(glob(["fixtures/*.jsonl"]))
 
 rust_test(
     name = "alondra_core_test",
-    compile_data = glob(["fixtures/*.jsonl"]),
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]),
     crate = ":alondra_core",
     edition = "2024",
 )

@@ -151,6 +151,63 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn summary(view: &View) -> String {
+        let mut out = String::new();
+        let mut states: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for t in view.board.tasks.values() {
+            *states.entry(t.state.name()).or_default() += 1;
+        }
+        let requests = view.board.requests.keys().map(|id| format!("{:?}", view.board.request_state(id)));
+        let mut by_state: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for r in requests {
+            *by_state.entry(r).or_default() += 1;
+        }
+        out += &format!("tasks: {} {states:?}\nrequests: {} {by_state:?}\n", view.board.tasks.len(), view.board.requests.len());
+        out += &format!("anomalies: {} {:?}\n", view.board.anomalies.values().sum::<u64>(), view.board.anomalies);
+        let mut first: Vec<(&str, &alondra_core::tasks::Anomaly)> = view.board.tasks.values().flat_map(|t| t.anomalies.iter().map(move |a| (t.title.as_str(), a))).collect();
+        first.sort_by_key(|(_, a)| a.at);
+        for (title, a) in first.iter().take(10) {
+            out += &format!("  {} {title}: {} + {} — {}\n", a.at, a.state.name(), serde_json::to_string(&a.event).unwrap_or_default(), a.reason);
+        }
+        let mut moves: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for h in view.board.tasks.values().flat_map(|t| &t.history) {
+            *moves.entry(format!("{}->{} {}", h.from.name(), h.to.name(), h.event.name())).or_default() += 1;
+        }
+        out += &format!("transitions: {moves:#?}\n");
+        let history: usize = view.board.tasks.values().map(|t| serde_json::to_string(&t.history).map_or(0, |s| s.len())).sum();
+        let briefs: usize = view.board.tasks.values().map(|t| t.brief.as_ref().map_or(0, String::len)).sum();
+        out += &format!("board JSON: {} bytes ({history} of history, {briefs} of briefs)\n", serde_json::to_string(&view.board).map_or(0, |s| s.len()));
+        out
+    }
+
+    /// Replays a copy of the real log and prints the tasks it gives. Never point it at the live
+    /// file: `cp ~/.alondra/alondra.db* /tmp/` and
+    /// `ALONDRA_REPLAY_DB=/tmp/alondra.db cargo test --release -p alondrad replay_a_copy_of_the_real_log -- --ignored --nocapture`.
+    /// In release, as the daemon runs: the log of 22-24 Sep trips the debug-only limbo check of
+    /// `View::apply` on two nodes, with or without tasks.
+    #[test]
+    #[ignore]
+    fn replay_a_copy_of_the_real_log() {
+        let path = std::env::var("ALONDRA_REPLAY_DB").expect("ALONDRA_REPLAY_DB names a copy of alondra.db");
+        let s = Store::open(Path::new(&path)).unwrap();
+        let first: i64 = s.conn.query_row("SELECT COALESCE(MIN(seq), 0) FROM events", [], |r| r.get(0)).unwrap();
+        let mut sessions = std::collections::BTreeSet::new();
+        let mut full = View::default();
+        let n = s.replay(0, |seq, at, e| {
+            if let Some(sid) = e.session_id() {
+                sessions.insert(sid.to_string());
+            }
+            full.apply(seq, at, &e);
+        }).unwrap();
+        println!("whole log: {n} events from seq {first}, {} sessions, {} nodes, {} removed", sessions.len(), full.nodes.len(), full.removed.len());        println!("{}", summary(&full));
+        if let Some((after, mut resumed)) = s.latest_snapshot().unwrap() {
+            resumed.backfill_created_at();
+            resumed.backfill_tasks();
+            let n = s.replay(after, |seq, at, e| resumed.apply(seq, at, &e)).unwrap();
+            println!("from the snapshot at seq {after} and {n} events after it:\n{}", summary(&resumed));
+        }
+    }
+
     #[test]
     fn compaction_keeps_what_replay_needs_and_drops_old_events() {
         let dir = std::env::temp_dir().join(format!("alondra-compact-{}", std::process::id()));

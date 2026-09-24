@@ -1033,10 +1033,31 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
             "prs": v.in_train_order(crate::prs::in_inbox(v)).into_iter().map(|p| pr_card(v, p)).collect::<Vec<Value>>(),
+            "requests": v.board.requests.values().map(|r| client_request(v, r)).collect::<Vec<Value>>(),
+            "tasks": v.board.tasks.values().map(client_task).collect::<Vec<Value>>(),
             "user": hub.config.name,
         })
     });
     Json(body)
+}
+
+/// A request with the state its tasks give it and their ids.
+fn client_request(v: &View, r: &alondra_core::tasks::Request) -> Value {
+    let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
+    value["state"] = json!(v.board.request_state(&r.id));
+    value["tasks"] = json!(v.board.tasks.values().filter(|t| t.request == r.id).map(|t| t.id.as_str()).collect::<Vec<_>>());
+    value
+}
+
+/// A task as the overview lists it: its brief and its history are too long to send on every poll.
+fn client_task(t: &alondra_core::tasks::Task) -> Value {
+    let mut value = serde_json::to_value(t).unwrap_or(Value::Null);
+    if let Some(o) = value.as_object_mut() {
+        for heavy in ["brief", "history", "anomalies"] {
+            o.remove(heavy);
+        }
+    }
+    value
 }
 
 /// A PR card as clients get it: the PR, the method last used in its repo and where it sits in
@@ -2160,7 +2181,8 @@ async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::G
         None => None,
     };
     let request_id = format!("r-{}", now_millis());
-    if let Err(e) = hub.append(Event::RequestSent { request_id: request_id.clone(), options: resolved.clone() }) {
+    let sent = Event::RequestSent { request_id: request_id.clone(), options: resolved.clone(), text: Some(b.text.clone()), attachments: attachments.clone() };
+    if let Err(e) = hub.append(sent) {
         return internal(e);
     }
     let text = request_text(
@@ -2760,6 +2782,21 @@ mod tests {
         assert_eq!(detail["node"]["background"][0]["suspect"], true);
         assert!(o["nodes"][0].get("alive").is_none() && detail["node"].get("alive").is_none(), "clients never see alive");
         assert!(hub.read(|v| serde_json::to_value(v).unwrap())["nodes"]["job"]["alive"] == true, "the stored snapshot keeps it");
+    }
+
+    #[tokio::test]
+    async fn the_overview_lists_each_request_with_its_tasks_next_to_the_nodes() {
+        let hub = temp_hub("tasks");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/54".into(), session_id: "s".into() }).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["nodes"][0]["session_id"], "s", "the nodes are still there");
+        assert_eq!(o["requests"][0]["id"], "r-s");
+        assert_eq!(o["requests"][0]["state"], "in_progress");
+        assert_eq!(o["requests"][0]["tasks"], json!(["t-s"]));
+        let task = &o["tasks"][0];
+        assert_eq!((&task["id"], &task["state"], &task["prs"]), (&json!("t-s"), &json!("in_review"), &json!([1])));
+        assert!(task.get("history").is_none(), "{task}");
     }
 
     #[derive(Clone, Copy, Debug)]
