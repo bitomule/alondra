@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -230,102 +230,103 @@ fn pr_payload(pr: &alondra_core::pr::PullRequest, report: Option<&Report>, badge
     })
 }
 
-/// A PR a task put up for review waits this long for the node's report before it is announced
-/// on its own, so one PR makes one notification.
+/// A PR card opened without a report waits this long for the node's report before it is
+/// announced on its own, so one PR makes one notification.
 const PR_GRACE_MS: i64 = 2 * 60 * 1000;
 
 /// What the push loop has already looked at.
-#[derive(Default)]
 struct Seen {
-    /// Per task, how many of its moves.
-    moves: HashMap<String, usize>,
     last_q: u64,
     last_r: u64,
-    /// PR cards a task just put up for review, by when: the first report inside one announces
-    /// it, or it is announced on its own once `PR_GRACE_MS` passes.
-    waiting: HashMap<u64, i64>,
+    /// PR cards already announced.
+    announced: HashSet<u64>,
+    /// Per task, how many of its moves.
+    moves: HashMap<String, usize>,
 }
 
 impl Seen {
     fn all_of(v: &View) -> Self {
         Seen {
-            moves: v.board.tasks.values().map(|t| (t.id.clone(), t.history.len())).collect(),
             last_q: v.questions.keys().next_back().copied().unwrap_or(0),
             last_r: v.reports.keys().next_back().copied().unwrap_or(0),
-            waiting: HashMap::new(),
+            announced: v.prs.keys().copied().collect(),
+            moves: v.board.tasks.values().map(|t| (t.id.clone(), t.history.len())).collect(),
         }
     }
 }
 
-/// What a round pushes, each with whether it sounds. They come from the tasks: one that needs
-/// David pushes its blocker, and a PR it puts up for review pushes the PR, again each time the
-/// node answers or pushes on it; a document pushes when it arrives. A task finishing, and its
-/// notices, are silent. Cards of no task (the orchestrator's) push as they always did.
-fn pushes(v: &View, seen: &mut Seen, now: i64, badge: usize) -> Vec<(Value, bool)> {
-    let awake = |session: &str| v.nodes.get(session).is_none_or(|n| n.alive && !alondra_core::states::watching(v, n, now));
+/// A final report of a task whose PR David merged, or whose document he approved, before it:
+/// he already acted on what it reports.
+fn after_davids_merge(v: &View, r: &Report) -> bool {
+    let Some(t) = v.report_task(r).filter(|_| r.kind == ReportKind::Final) else { return false };
+    let finished = t.history.iter().position(|h| h.to == TaskState::Done && matches!(h.event, TaskEvent::FinalReport { report } if report == r.id));
+    let merged = t.history.iter().position(|h| matches!(h.event, TaskEvent::Merged { .. }));
+    matches!((merged, finished), (Some(m), Some(f)) if m < f)
+}
+
+/// PR cards whose task went back to review since the last round because the node pushed new
+/// commits after David asked for changes: David is told again.
+fn back_in_review(v: &View, moves: &mut HashMap<String, usize>) -> Vec<u64> {
+    moves.retain(|id, _| v.board.tasks.contains_key(id));
     let mut out = vec![];
     for t in v.board.tasks.values() {
-        let from = seen.moves.insert(t.id.clone(), t.history.len()).unwrap_or(0).min(t.history.len());
+        let from = moves.insert(t.id.clone(), t.history.len()).unwrap_or(0).min(t.history.len());
         for m in &t.history[from..] {
-            match (&m.event, m.to) {
-                (TaskEvent::BlockerRaised { blocker, .. }, TaskState::NeedsYou) => {
-                    if let Some(q) = v.questions.get(&blocker.question).filter(|q| q.status.is_open() && !q.to_orchestrator && awake(&q.session_id)) {
-                        out.push((question_payload(q, badge), true));
-                    }
-                }
-                (TaskEvent::PrOpened { pr }, TaskState::InReview) => {
-                    seen.waiting.insert(*pr, now);
-                }
-                (TaskEvent::NodeUpdated { on }, TaskState::InReview) if m.from != TaskState::InReview => {
-                    let report = match on {
-                        Item::Report(id) => v.reports.get(id),
-                        Item::Pr(_) | Item::Message(_) | Item::Terminal => None,
-                    };
-                    let pr = match on {
-                        Item::Pr(id) => Some(*id),
-                        _ => report.and_then(|r| v.report_pr(r)),
-                    };
-                    if let Some(pr) = pr.and_then(|id| v.prs.get(&id)).filter(|p| awake(&p.session_id)) {
-                        seen.waiting.remove(&pr.id);
-                        out.push((pr_payload(pr, report, badge), false));
-                    }
-                }
-                _ => {}
+            if let TaskEvent::NodeUpdated { on: Item::Pr(pr) } = m.event
+                && m.to == TaskState::InReview
+                && m.from != TaskState::InReview
+            {
+                out.push(pr);
             }
         }
     }
-    for r in v.reports.range(seen.last_r + 1..).map(|(_, r)| r).filter(|r| r.kind != ReportKind::Progress && !r.read && !r.to_orchestrator && awake(&r.session_id)) {
-        let home = v.report_pr(r).and_then(|id| v.prs.get(&id));
-        if v.report_task(r).is_none() {
-            out.push(match home {
-                Some(pr) => (pr_payload(pr, Some(r), badge), false),
-                None => (report_payload(r, badge), false),
-            });
-        } else if let Some(pr) = home.filter(|p| seen.waiting.remove(&p.id).is_some()) {
-            out.push((pr_payload(pr, Some(r), badge), false));
-        } else if r.kind == ReportKind::Document || v.awaits_review(r) {
-            out.push((report_payload(r, badge), false));
+    out
+}
+
+/// What the new reports and PR cards push: a report inside an open PR card announces that PR;
+/// any other report pushes as a report; a PR card nobody reported on is announced once its
+/// grace passes, and again when the node pushes after David asked for changes, unless a report
+/// of it just did.
+fn announcements(v: &View, reports: &[Report], announced: &mut HashSet<u64>, now: i64, badge: usize, back: &[u64]) -> Vec<Value> {
+    let mut out = vec![];
+    let mut by_report = HashSet::new();
+    for r in reports {
+        match v.report_pr(r).and_then(|id| v.prs.get(&id)) {
+            Some(pr) => {
+                announced.insert(pr.id);
+                by_report.insert(pr.id);
+                out.push(pr_payload(pr, Some(r), badge));
+            }
+            None => out.push(report_payload(r, badge)),
         }
     }
-    for q in v.questions.range(seen.last_q + 1..).map(|(_, q)| q).filter(|q| q.status.is_open() && !q.to_orchestrator && awake(&q.session_id)) {
-        if v.question_task(q).is_none() {
-            out.push((question_payload(q, badge), true));
+    for pr in back.iter().filter(|id| !by_report.contains(*id)).filter_map(|id| crate::prs::in_inbox(v).find(|p| p.id == *id)) {
+        out.push(pr_payload(pr, None, badge));
+    }
+    for pr in crate::prs::in_inbox(v).filter(|p| p.fetched && now - p.opened_at >= PR_GRACE_MS) {
+        if announced.insert(pr.id) {
+            out.push(pr_payload(pr, None, badge));
         }
     }
-    let due: Vec<u64> = seen.waiting.iter().filter(|(_, since)| now - **since >= PR_GRACE_MS).map(|(id, _)| *id).collect();
-    for id in due {
-        let Some(pr) = v.prs.get(&id) else {
-            seen.waiting.remove(&id);
-            continue;
-        };
-        if !pr.fetched {
-            continue;
-        }
-        seen.waiting.remove(&id);
-        if crate::prs::in_inbox(v).any(|p| p.id == id) && awake(&pr.session_id) {
-            out.push((pr_payload(pr, None, badge), false));
-        }
-    }
+    out
+}
+
+/// A round's pushes, each with whether it sounds: every new open question for David, and what
+/// `announcements` makes of the new reports. The one push the task model drops is the final
+/// report of a task David already merged or approved.
+fn pushes(v: &View, seen: &mut Seen, now: i64, badge: usize) -> Vec<(Value, bool)> {
+    let awake = |session: &str| v.nodes.get(session).is_none_or(|n| n.alive && !alondra_core::states::watching(v, n, now));
+    let questions = v.questions.range(seen.last_q + 1..).map(|(_, q)| q).filter(|q| q.status.is_open() && !q.to_orchestrator && awake(&q.session_id));
+    let mut out: Vec<(Value, bool)> = questions.map(|q| (question_payload(q, badge), true)).collect();
+    let reports: Vec<Report> = v
+        .reports
+        .range(seen.last_r + 1..)
+        .map(|(_, r)| r)
+        .filter(|r| r.kind != ReportKind::Progress && !r.read && awake(&r.session_id) && !after_davids_merge(v, r))
+        .cloned()
+        .collect();
+    let back: Vec<u64> = back_in_review(v, &mut seen.moves).into_iter().filter(|id| v.prs.get(id).is_some_and(|p| awake(&p.session_id))).collect();
+    out.extend(announcements(v, &reports, &mut seen.announced, now, badge, &back).into_iter().map(|p| (p, false)));
     seen.last_q = seen.last_q.max(v.questions.keys().next_back().copied().unwrap_or(0));
     seen.last_r = seen.last_r.max(v.reports.keys().next_back().copied().unwrap_or(0));
     out
@@ -392,12 +393,6 @@ mod tests {
         }
     }
 
-    fn recorded() -> View {
-        let mut v = View::default();
-        v.record(0, &Event::TasksRecorded);
-        v
-    }
-
     fn report(id: u64, sid: &str, kind: ReportKind, url: Option<&str>) -> Report {
         Report {
             related: vec![], id, session_id: sid.into(), node_name: Some("alondra/x".into()), title: format!("Report {id}"), body: None,
@@ -406,8 +401,23 @@ mod tests {
         }
     }
 
+    fn question(id: u64, sid: &str, blocking: bool) -> Question {
+        Question {
+            id, session_id: sid.into(), node_name: None, title: format!("Q{id}"), detail: None, options: vec![], links: vec![], attachments: vec![],
+            blocking, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
+            status: alondra_core::QuestionStatus::Open, answer: None, asked_at: 0, action: false, steps: vec![], mission: None, related: vec![], task: None, replaces: None,
+        }
+    }
+
     fn shape(p: &(Value, bool)) -> (String, u64, bool) {
         (p.0["alondra"]["kind"].as_str().unwrap().to_string(), p.0["alondra"]["id"].as_u64().unwrap(), p.1)
+    }
+
+    fn started() -> View {
+        let mut v = View::default();
+        v.record(0, &Event::TasksRecorded);
+        v.record(0, &Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
+        v
     }
 
     fn fetched(v: &mut View, id: u64, f: impl FnOnce(&mut alondra_core::pr::PullRequest)) {
@@ -417,69 +427,95 @@ mod tests {
         v.record(0, &Event::PrUpdated(pr));
     }
 
+    fn round(v: &View, seen: &mut Seen) -> Vec<(String, u64, bool)> {
+        pushes(v, seen, 1, 1).iter().map(shape).collect()
+    }
+
     /// PR #66, 24 Sep: the PR reached David's phone as the node's "Finished" report, and tapping
     /// it opened the report, not the PR.
     #[test]
     fn a_pr_is_announced_as_a_pr_by_its_report_or_on_its_own_after_the_grace() {
         let min = 60_000;
-        let mut v = recorded();
-        v.record(0, &Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
-        let mut seen = Seen::all_of(&v);
-        for (id, url) in [(1, "https://github.com/a/b/pull/66"), (2, "https://github.com/a/b/pull/67")] {
-            v.record(0, &Event::PrOpened { url: url.into(), session_id: "s".into(), task: None });
-            fetched(&mut v, id, |_| {});
+        let mut v = View::default();
+        for (seq, url) in [(1, "https://github.com/a/b/pull/66"), (2, "https://github.com/c/d/pull/67")] {
+            v.apply(seq + 20, 0, &Event::Hook(alondra_core::HookEvent { session_id: format!("s{seq}"), event: "UserPromptSubmit".into(), ..Default::default() }));
+            v.apply(seq, 0, &Event::PrOpened { url: url.into(), session_id: format!("s{seq}"), task: None });
+            let mut pr = v.prs[&seq].clone();
+            (pr.fetched, pr.title) = (true, format!("Title {seq}"));
+            v.apply(seq + 10, 0, &Event::PrUpdated(pr));
         }
-        v.record(0, &Event::ReportPosted(report(5, "s", ReportKind::Final, Some("https://github.com/a/b/pull/66"))));
-        let first = pushes(&v, &mut seen, min, 1);
-        assert_eq!(first.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 1, false)]);
-        assert_eq!(first[0].0["aps"]["alert"]["title-loc-key"], PR_READY_KEY);
-        assert_eq!(first[0].0["aps"]["alert"]["title-loc-args"], json!(["66"]));
-        assert_eq!(first[0].0["aps"]["alert"]["body"], "Report 5 · alondra/x", "the report says what is in it");
+        let shape = |p: &Value| (p["alondra"]["kind"].as_str().unwrap().to_string(), p["alondra"]["id"].as_u64().unwrap());
+        let mut announced = HashSet::new();
 
-        let later = pushes(&v, &mut seen, min + PR_GRACE_MS, 1);
-        assert_eq!(later.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 2, false)], "#67 got no report: announced on its own, #66 not again");
-        assert!(pushes(&v, &mut seen, min + 2 * PR_GRACE_MS, 1).is_empty(), "once");
+        let first = announcements(&v, &[report(5, "s1", ReportKind::Final, Some("https://github.com/a/b/pull/66")), report(6, "t", ReportKind::Final, None)], &mut announced, min, 1, &[]);
+        assert_eq!(first.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 1), ("report".to_string(), 6)]);
+        assert_eq!(first[0]["aps"]["alert"]["title-loc-key"], PR_READY_KEY);
+        assert_eq!(first[0]["aps"]["alert"]["title-loc-args"], json!(["66"]));
+        assert_eq!(first[0]["aps"]["alert"]["body"], "Report 5 · alondra/x", "the report says what is in it");
+
+        let later = announcements(&v, &[], &mut announced, PR_GRACE_MS, 1, &[]);
+        assert_eq!(later.iter().map(shape).collect::<Vec<_>>(), [("pr".to_string(), 2)], "#67 never got a report: announced on its own, #66 not again");
+        assert!(announcements(&v, &[], &mut announced, 2 * PR_GRACE_MS, 1, &[]).is_empty(), "once");
     }
 
     #[test]
-    fn pushes_come_from_what_the_tasks_do() {
-        let hook = |sid: &str| Event::Hook(alondra_core::HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() });
-        let question = |id: u64, sid: &str| Question {
-            id, session_id: sid.into(), node_name: None, title: format!("Q{id}"), detail: None, options: vec![], links: vec![], attachments: vec![],
-            blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
-            status: alondra_core::QuestionStatus::Open, answer: None, asked_at: 0, action: false, steps: vec![], mission: None, related: vec![], task: None, replaces: None,
-        };
-        let mut v = recorded();
-        v.record(0, &hook("s"));
-        v.record(0, &Event::MarkedOrchestrator { session_id: "o".into() });
+    fn every_question_notice_document_and_final_report_pushes_as_before() {
+        let mut v = started();
         let mut seen = Seen::all_of(&v);
-        let round = |v: &View, seen: &mut Seen| pushes(v, seen, 1, 1).iter().map(shape).collect::<Vec<_>>();
-
-        v.record(0, &Event::QuestionAsked(question(1, "s")));
-        v.record(0, &Event::QuestionAsked(question(2, "s")));
-        assert_eq!(round(&v, &mut seen), [("question".into(), 1, true)], "the task needs David: its one blocker");
+        v.record(0, &Event::QuestionAsked(question(1, "s", true)));
+        v.record(0, &Event::QuestionAsked(question(2, "s", false)));
+        assert_eq!(round(&v, &mut seen), [("question".into(), 1, true), ("question".into(), 2, true)], "a question that blocks nothing pushes too");
         let answer = alondra_core::Answer { text: "Sí".into(), option: None, by: None, device: None, at: 0 };
         v.record(0, &Event::QuestionAnswered { id: 1, answer });
-        assert_eq!(round(&v, &mut seen), [("question".into(), 2, true)], "the one that waited is next");
-        v.record(0, &Event::QuestionClosed { id: 2, status: alondra_core::QuestionStatus::Withdrawn, note: None });
+        for (id, kind) in [(1, ReportKind::Notice), (2, ReportKind::Document), (3, ReportKind::Final)] {
+            v.record(0, &Event::ReportPosted(report(id, "s", kind, None)));
+        }
+        assert_eq!(round(&v, &mut seen), [("report".into(), 1, false), ("report".into(), 2, false), ("report".into(), 3, false)], "a notice, a document and a final report push");
+    }
 
+    /// 23-24 Sep: nodes reported final again after David merged their PR; he had already acted.
+    #[test]
+    fn a_final_report_after_david_merged_the_tasks_pr_is_silent() {
+        let mut v = started();
+        v.record(0, &Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None });
+        fetched(&mut v, 1, |_| {});
+        v.record(0, &Event::PrMerged { id: 1, method: alondra_core::pr::MergeMethod::Squash });
+        let mut seen = Seen::all_of(&v);
         v.record(0, &Event::ReportPosted(report(1, "s", ReportKind::Notice, None)));
         v.record(0, &Event::ReportPosted(report(2, "s", ReportKind::Final, None)));
-        assert!(round(&v, &mut seen).is_empty(), "notices and a finished task are silent");
-        v.record(0, &Event::MessageQueued(alondra_core::Message { id: 1, session_id: "s".into(), from: alondra_core::MessageFrom::User, text: "one more".into(), answers_question: None, created_at: 0, handed_at: None, delivered_at: None, attachments: vec![], about: None }));
-        v.record(0, &Event::MessageHanded { id: 1 });
-        v.record(0, &Event::ReportPosted(report(3, "s", ReportKind::Document, None)));
-        assert_eq!(round(&v, &mut seen), [("report".into(), 3, false)], "a document to read");
+        assert_eq!(round(&v, &mut seen), [("report".into(), 1, false)], "the notice pushes, the final report after the merge does not");
 
+        let mut auto = View::default();
+        auto.record(0, &Event::TasksRecorded);
+        auto.record(0, &Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true });
+        auto.record(0, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), pid: Some(1), ..Default::default() }));
+        auto.record(0, &Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None });
+        fetched(&mut auto, 1, |p| p.state = alondra_core::pr::PrState::Merged);
+        let mut seen = Seen::all_of(&auto);
+        auto.record(0, &Event::ReportPosted(report(1, "s", ReportKind::Final, None)));
+        assert_eq!(round(&auto, &mut seen), [("report".into(), 1, false)], "David did not merge an auto-merged PR: its final report pushes");
+    }
+
+    /// A report of a task goes into its open PR card and pushes that PR as ready, once; the node
+    /// pushing new commits after changes were requested tells David again.
+    #[test]
+    fn a_report_in_a_pr_card_pushes_the_pr_once_and_new_commits_push_it_again() {
+        let mut v = started();
         v.record(0, &Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None });
         fetched(&mut v, 1, |p| p.head_sha = Some("a1".into()));
-        assert!(round(&v, &mut seen).is_empty(), "the PR waits for the node's report");
+        let mut seen = Seen::all_of(&v);
+        v.record(0, &Event::ReportPosted(report(1, "s", ReportKind::Final, None)));
+        assert_eq!(round(&v, &mut seen), [("pr".into(), 1, false)], "the report inside the card pushes the PR, not itself");
+        assert!(pushes(&v, &mut seen, 1 + PR_GRACE_MS, 1).is_empty(), "the PR is not announced again after the grace");
+
         v.record(0, &Event::PrChangesRequested { id: 1 });
         fetched(&mut v, 1, |p| p.head_sha = Some("b2".into()));
-        assert_eq!(round(&v, &mut seen), [("pr".into(), 1, false)], "the node pushed: David is told again");
+        assert_eq!(round(&v, &mut seen), [("pr".into(), 1, false)], "new commits: David is told again");
 
-        v.record(0, &Event::QuestionAsked(question(3, "o")));
-        assert_eq!(round(&v, &mut seen), [("question".into(), 3, true)], "the orchestrator's questions work on no task and push as always");
+        v.record(0, &Event::PrChangesRequested { id: 1 });
+        fetched(&mut v, 1, |p| p.head_sha = Some("c3".into()));
+        v.record(0, &Event::ReportPosted(report(2, "s", ReportKind::Notice, Some("https://github.com/a/b/pull/7"))));
+        assert_eq!(round(&v, &mut seen), [("pr".into(), 1, false)], "new commits and a report about them push once");
     }
 
     #[test]
