@@ -207,6 +207,9 @@ impl View {
                     }
                 }
                 if let Some(t) = task {
+                    if t.is_assigned_to(&n.session_id) {
+                        why.push(format!("works on {} itself", t.id));
+                    }
                     for m in mine.iter().filter(|m| m.id != t.id) {
                         if t.depends_on.contains(&m.id) {
                             why.push(format!("works on {} “{}”, which {} builds on", m.id, m.title, t.id));

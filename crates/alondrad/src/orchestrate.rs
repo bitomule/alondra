@@ -440,9 +440,13 @@ async fn heads(hub: &Hub, task: &Task, gh: &impl Gh) -> BTreeMap<u64, String> {
 }
 
 /// Starts one task as it was defined: launches its node, or hands it to the node it was given to.
-async fn start(hub: &Hub, task: &Task, launcher: &impl Launcher, gh: &impl Gh) -> Result<String, String> {
+async fn start(hub: &Hub, task: &Task, launcher: &impl Launcher, gh: &impl Gh) -> Result<(String, String), String> {
     let heads = heads(hub, task, gh).await;
-    let brief = hub.read(|v| v.start_brief(task, &heads));
+    let (brief, place) = hub.read(|v| (v.start_brief(task, &heads), built_on(v, task, &heads)));
+    start_with(hub, task, launcher, brief).await.map(|how| (how, place))
+}
+
+async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: String) -> Result<String, String> {
     match &task.start {
         Some(Start::NewNode { name, cwd, model }) => {
             let waiting = hub.read(|v| v.nodes.values().any(|n| n.name.as_deref() == Some(name) && live(v, &n.session_id) && v.tasks_of(&n.session_id).next().is_none()));
@@ -499,8 +503,9 @@ fn tell_orchestrator(hub: &Hub, text: String) {
 }
 
 /// Where a started task builds, for the orchestrator.
-fn built_on(v: &View, task: &Task) -> String {
-    let below: Vec<String> = v.stacked_on(task).into_iter().map(|(d, p)| format!("PR #{} of {d_id}{branch}", p.number, d_id = d.id, branch = p.head.as_ref().map(|h| format!(" (`{h}`)")).unwrap_or_default())).collect();
+fn built_on(v: &View, task: &Task, heads: &BTreeMap<u64, String>) -> String {
+    let branch = |p: &alondra_core::pr::PullRequest| heads.get(&p.id).or(p.head.as_ref()).map(|h| format!(" (`{h}`)")).unwrap_or_default();
+    let below: Vec<String> = v.stacked_on(task).into_iter().map(|(d, p)| format!("PR #{} of {}{}", p.number, d.id, branch(p))).collect();
     if below.is_empty() { "on the default branch".into() } else { format!("on top of {}", below.join(", ")) }
 }
 
@@ -516,10 +521,9 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
             continue;
         }
         match start(hub, &task, launcher, gh).await {
-            Ok(how) => {
-                log!("task {} started {how}", task.id);
+            Ok((how, place)) => {
+                log!("task {} started {how}, {place}", task.id);
                 if !task.depends_on.is_empty() {
-                    let place = hub.read(|v| built_on(v, &task));
                     tell_orchestrator(hub, format!("[Alondra] Task {} “{}” started {how}, {place}: what it depended on ({}) has its PR open or is done.", task.id, task.title, task.depends_on.join(", ")));
                 }
                 started.push(task.id.clone());
