@@ -1106,24 +1106,15 @@ impl App {
                 }
             }
             KeyCode::Char('x') => {
-                let now = now_millis();
-                if let Some((session, until)) = self.pending_close.clone()
-                    && now < until
-                {
-                    self.pending_close = None;
-                    let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
-                    self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
-                } else if let Some(p) = self.selected_pr() {
+                if let Some(p) = self.selected_pr() {
                     let number = p.pr.number;
                     self.post(Some(Key::P(p.pr.id)), vec![(format!("/v1/prs/{}/dismiss", p.pr.id), json!({}))], trf!("PR #{number} set aside", "PR #{number} apartado"));
                     self.hide(Key::P(p.pr.id));
                 } else if let Some(r) = self.selected_report() {
-                    let name = who(&r.node_name, &r.session_id);
                     self.mark_read(&r);
-                    self.pending_close = Some((r.session_id.clone(), now + 4000));
-                    self.flash(trf!("Read. Press x again to also close {name}", "Leído. Pulsa x otra vez para cerrar también {name}"));
                 }
             }
+            KeyCode::Char('X') => self.read_and_close(),
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(q) = self.selected_question() {
                     self.choose(&q, c as usize - '1' as usize);
@@ -1176,6 +1167,28 @@ impl App {
         self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], { let t = md::truncate(&r.title, 60); trf!("Read: {t}", "Leído: {t}") });
         self.reader = None;
         self.hide(Key::R(r.id));
+    }
+
+    /// Reads the selected report and closes the node that sent it, same as the fleet's own
+    /// close: a second `X` within a few seconds confirms it, since closing cannot be undone.
+    fn read_and_close(&mut self) {
+        let now = now_millis();
+        if let Some((session, until)) = self.pending_close.clone()
+            && now < until
+        {
+            self.pending_close = None;
+            let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
+            self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+            return;
+        }
+        let Some(r) = self.selected_report() else { return };
+        if !self.node(&r.session_id).is_some_and(|n| n.alive) {
+            return;
+        }
+        let name = who(&r.node_name, &r.session_id);
+        self.mark_read(&r);
+        self.pending_close = Some((r.session_id.clone(), now + 4000));
+        self.flash(trf!("Read. Press X again to close {name}", "Leído. Pulsa X otra vez para cerrar {name}"));
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
@@ -1385,6 +1398,7 @@ impl App {
                     self.mark_read(&rep);
                 }
             }
+            KeyCode::Char('X') if matches!(key, Key::R(_)) => self.read_and_close(),
             KeyCode::Char(c @ '1'..='9') if matches!(key, Key::Q(_)) => {
                 if let Some(q) = self.data.open_questions.iter().find(|q| Key::Q(q.id) == key).cloned() {
                     self.settle_until = 0;
@@ -1672,7 +1686,7 @@ fn new_reader(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use alondra_core::{QuestionOption, QuestionStatus};
+    use alondra_core::{QuestionOption, QuestionStatus, ReportKind};
 
     pub(super) fn question(id: u64, origin: QuestionOrigin, options: &[&str]) -> Question {
         Question {
@@ -1696,6 +1710,26 @@ pub(crate) mod tests {
             steps: vec![],
             mission: None,
         }
+    }
+
+    pub(super) fn report(id: u64) -> Report {
+        Report {
+            id,
+            session_id: "s1".into(),
+            node_name: Some("demo".into()),
+            title: format!("Report {id}"),
+            body: None,
+            links: vec![],
+            attachments: vec![],
+            kind: ReportKind::Notice,
+            created_at: 0,
+            read: false,
+            mission: None,
+        }
+    }
+
+    pub(super) fn alive_node(session: &str) -> crate::client::FleetNode {
+        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None }
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
@@ -2059,5 +2093,58 @@ pub(crate) mod tests {
         assert_eq!(app.help_scroll, 2);
         press(&mut app, "x");
         assert!(!app.help);
+    }
+
+    #[test]
+    fn x_only_marks_a_report_read_and_never_closes_its_node() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1)];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        assert_eq!(app.sel, Some(Key::R(1)));
+        press(&mut app, "x");
+        assert!(app.hidden.contains_key(&Key::R(1)), "x marks the report read");
+        assert!(app.pending_close.is_none(), "x alone never arms a close");
+    }
+
+    #[test]
+    fn shift_x_reads_and_arms_a_close_that_a_second_press_confirms() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1)];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        press(&mut app, "X");
+        assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report immediately");
+        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        press(&mut app, "X");
+        assert!(app.pending_close.is_none(), "the second X consumes the confirmation");
+    }
+
+    #[test]
+    fn shift_x_does_nothing_for_a_report_whose_node_is_no_longer_alive() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1)];
+        let mut node = alive_node("s1");
+        node.node.alive = false;
+        app.data.nodes = vec![node];
+        app.reconcile();
+        press(&mut app, "X");
+        assert!(!app.hidden.contains_key(&Key::R(1)), "a dead node's report is not touched by X");
+        assert!(app.pending_close.is_none());
+    }
+
+    #[test]
+    fn shift_x_also_works_from_reading_mode() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1)];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        press(&mut app, "o");
+        assert!(app.reader.as_ref().is_some_and(|r| r.key == Key::R(1)));
+        press(&mut app, "X");
+        assert!(app.reader.is_none(), "reading and closing leaves the reader");
+        assert!(app.hidden.contains_key(&Key::R(1)));
+        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
     }
 }
