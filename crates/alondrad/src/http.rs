@@ -69,6 +69,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
+        .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/v1/tasks/{id}/reopen", post(reopen_task))
         .route("/v1/file", get(file))
@@ -2388,6 +2389,20 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
     Json(json!({"via": "jev", "sessions": matches}))
 }
 
+/// A task whole, with the brief, history and anomalies the overview leaves out.
+async fn task_detail(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
+    let found = hub.read(|v| {
+        let t = v.board.tasks.get(&id)?;
+        let mut value = serde_json::to_value(t).unwrap_or(Value::Null);
+        value["auto_merge_pending"] = json!(v.auto_merge_pending(t, now_millis()));
+        Some(value)
+    });
+    match found {
+        Some(task) => Json(json!({"task": task})).into_response(),
+        None => err(StatusCode::NOT_FOUND, format!("task {id} does not exist")),
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct CancelBody {
     #[serde(default)]
@@ -3150,6 +3165,13 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let events: Vec<&str> = hub.read(|v| v.board.tasks["t-s"].history.iter().map(|h| h.event.name()).collect());
         assert_eq!(events, ["blocker_raised", "cancel", "reopen"]);
+        let (status, said) = status_and_body(task_detail(State(hub.clone()), Path("t-s".into())).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(said["task"]["history"].as_array().map(Vec::len), Some(3), "the whole task, history included: {said}");
+        assert_eq!(said["task"]["history"][1]["event"], json!({"kind": "cancel", "reason": "ya no hace falta"}));
+        assert_eq!(said["task"]["auto_merge_pending"], false);
+        let (status, _) = status_and_body(task_detail(State(hub.clone()), Path("t-9".into())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
