@@ -1,3 +1,4 @@
+pub mod artifact;
 pub mod config;
 pub mod event;
 pub mod keeper;

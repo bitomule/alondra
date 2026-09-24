@@ -693,7 +693,17 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             if pending > 0 {
                 spans.push(Span::styled(trf!("  ✎{pending} unsent", "  ✎{pending} sin enviar"), Style::new().fg(COMMENT)));
             }
-            vec![hint(spans)]
+            let mut out = vec![];
+            let artifacts = alondra_core::artifact::in_report(r).len();
+            if artifacts > 0 {
+                let mut open = vec![keycap("b"), Span::styled(format!(" {}", i18n::open_in_browser()), Style::new().add_modifier(Modifier::BOLD))];
+                if artifacts > 1 {
+                    open.push(Span::styled(trf!("  {artifacts} artifacts", "  {artifacts} artefactos"), Style::new().fg(DIM)));
+                }
+                out.push(fit(open, width));
+            }
+            out.push(hint(spans));
+            out
         }
     }
 }
@@ -1326,7 +1336,11 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v
         }
         Some(Item::R(r)) => {
-            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))];
+            let mut v = vec![pane];
+            if !alondra_core::artifact::in_report(r).is_empty() {
+                v.push(k("b", i18n::open_in_browser()));
+            }
+            v.extend([k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))]);
             if app.node(&r.session_id).is_some_and(|n| n.offers_close()) {
                 v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
             }
@@ -1491,6 +1505,29 @@ mod tests {
         assert!(detail.contains("subagente Revisar el PR · 1h") && detail.contains("shell bazelisk build · 1h · ¿colgada?"), "{detail}");
         n.node.background.clear();
         assert!(!row(&n).contains("shell"));
+    }
+
+    #[test]
+    fn a_report_with_an_artifact_offers_opening_it_in_the_browser() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let mut r = report(1);
+        r.body = Some("El plan está en https://claude.ai/code/artifact/0f1e2d3c-4b5a.".into());
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.news = vec![r.into()];
+        app.reconcile();
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let s = screen(&mut app, 120, 30);
+        assert!(s.contains("b Abrir en el navegador"), "{s}");
+        press(&mut app, "b");
+        assert_eq!(app.flash.as_ref().map(|f| f.text.as_str()), Some("Abierto en el navegador"));
+
+        let (mut plain, _rx) = app_with(vec![]);
+        plain.loaded = true;
+        plain.data.news = vec![report(2).into()];
+        plain.reconcile();
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        assert!(!screen(&mut plain, 120, 30).contains("Abrir en el navegador"));
     }
 
     #[test]

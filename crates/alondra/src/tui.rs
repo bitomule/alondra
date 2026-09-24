@@ -497,6 +497,14 @@ fn has_comments(export: &str) -> bool {
 }
 
 /// Where to open a PR's repo: the node's own checkout, else `~/Projects/<name>`.
+/// The default browser, through macOS `open`. Tests never open one.
+fn open_in_browser(url: &str) {
+    if cfg!(test) {
+        return;
+    }
+    let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+}
+
 fn clone_of(node_cwd: Option<&str>, repo: &str) -> Option<std::path::PathBuf> {
     let is_repo = |p: &std::path::Path| p.join(".git").exists();
     if let Some(cwd) = node_cwd.map(std::path::PathBuf::from).filter(|p| is_repo(p)) {
@@ -1101,6 +1109,17 @@ impl App {
                     self.compose(Target::ReplyReport { id: r.id, session: r.session_id, name }, "");
                 } else if let Some(p) = self.selected_pr() {
                     self.compose(Target::PrChanges { id: p.pr.id, title: p.pr.title }, "");
+                }
+            }
+            KeyCode::Char('b') => {
+                if let Some(r) = self.selected_report() {
+                    let artifacts = alondra_core::artifact::in_report(&r);
+                    if artifacts.is_empty() {
+                        self.fail(tr!("This report has no artifact to open", "Este informe no tiene ningún artefacto que abrir"));
+                    } else {
+                        artifacts.iter().for_each(|url| open_in_browser(url));
+                        self.flash(tr!("Opened in the browser", "Abierto en el navegador"));
+                    }
                 }
             }
             KeyCode::Char('w') => {
