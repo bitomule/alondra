@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public struct AlondraClient: Sendable {
     public let base: URL
@@ -201,17 +202,14 @@ public struct AlondraClient: Sendable {
 
     private static func check(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse, http.statusCode >= 400 else { return }
-        if http.statusCode == 401 { throw AlondraError.unauthorized }
-        let body = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
-        if let reasons = body?["reasons"] as? [[String: Any]], !reasons.isEmpty {
-            let lines = reasons.map { closeReasonMessage(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String) }
-            throw AlondraError.server(lines.count == 1 ? lines[0] : lines.map { "- \($0)" }.joined(separator: "\n"))
+        let error = AlondraError.from(status: http.statusCode, body: data)
+        if case .server = error {} else {
+            log.error("HTTP \(http.statusCode, privacy: .public) from \(response.url?.path() ?? "", privacy: .public): \(String(decoding: data.prefix(2000), as: UTF8.self), privacy: .public)")
         }
-        let json = body?["error"] as? String
-        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = json ?? (text.isEmpty || text.hasPrefix("{") ? nil : text)
-        throw AlondraError.server(message ?? String(localized: "The server responded \(http.statusCode)", table: "AlondraShared", bundle: #bundle))
+        throw error
     }
+
+    private static let log = Logger(subsystem: "com.bitomule.alondra", category: "client")
 }
 
 /// Why `POST /v1/nodes/{key}/close` refused, in the user's language and without the server's
@@ -282,13 +280,37 @@ public struct PushRegistration: Encodable, Hashable, Sendable {
 }
 
 public enum AlondraError: LocalizedError, Equatable {
+    /// alondrad's own JSON error, meant for the user.
     case server(String)
     case unauthorized
+    /// A gateway answered instead of alondrad (the tunnel is up, alondrad is not): worth retrying.
+    case unreachable
+    /// Any other failure whose body is not alondrad's JSON; the body only goes to the log.
+    case unexpected(Int)
+
+    public static let longestMessage = 300
+
+    /// Only alondrad's JSON errors reach the user as text; a proxy's HTML page never does.
+    public static func from(status: Int, body: Data) -> AlondraError {
+        if status == 401 { return .unauthorized }
+        if [502, 503, 504].contains(status) { return .unreachable }
+        let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        if let reasons = json?["reasons"] as? [[String: Any]], !reasons.isEmpty {
+            let lines = reasons.map { closeReasonMessage(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String) }
+            return .server(lines.count == 1 ? lines[0] : lines.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        if let message = (json?["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+            return .server(message.count > longestMessage ? String(message.prefix(longestMessage)) + "…" : message)
+        }
+        return .unexpected(status)
+    }
 
     public var errorDescription: String? {
         switch self {
         case .server(let message): message
         case .unauthorized: String(localized: "This device is not paired", table: "AlondraShared", bundle: #bundle)
+        case .unreachable: String(localized: "Alondra isn’t responding right now", table: "AlondraShared", bundle: #bundle)
+        case .unexpected(let status): String(localized: "The server responded \(status)", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
@@ -303,6 +325,14 @@ extension Error {
     public var isCancellation: Bool {
         if self is CancellationError { return true }
         return (self as? URLError)?.code == .cancelled
+    }
+
+    /// A failure that says nothing about the request itself (alondrad down, restarting, the
+    /// network gone): sending the same thing again later is the right answer.
+    public var isTransient: Bool {
+        if let error = self as? AlondraError { return error == .unreachable }
+        guard let code = (self as? URLError)?.code else { return false }
+        return [.timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet, .dnsLookupFailed].contains(code)
     }
 
     public var friendlyDescription: String {

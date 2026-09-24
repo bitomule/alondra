@@ -102,7 +102,7 @@ private struct RootView: View {
             guard scenePhase == .active, pairing.isPaired else { return }
             await reportActivity()
         }
-        .overlay(alignment: .top) { NoticeToast() }
+        .overlay(alignment: .bottom) { NoticeToast() }
         .closeRefusalAlert(fleet)
         .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
             guard scenePhase != .background else { return }
@@ -119,25 +119,40 @@ private struct NoticeToast: View {
     @Environment(FleetStore.self) private var fleet
 
     var body: some View {
-        ZStack {
+        VStack(spacing: 8) {
             if let notice = fleet.notice {
                 Label(notice.text, systemImage: notice.failure ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                     .foregroundStyle(notice.failure ? Palette.rose : Palette.ink)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
-                    .glassEffect(.regular, in: .capsule)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 22))
                     .padding(.horizontal, 24)
-                    .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
+                    .transition(.move(edge: .bottom).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
                     .onTapGesture { dismiss() }
+                    .accessibilityAction(named: "Dismiss") { dismiss() }
                     .task(id: notice.id) {
                         try? await Task.sleep(for: .seconds(notice.failure ? 4 : 2.2))
                         dismiss()
                     }
                     .id(notice.id)
             }
+            if !fleet.pendingSends.isEmpty {
+                Label(String(localized: "Alondra isn’t responding; \(fleet.pendingSends.count) pending, retrying"), systemImage: "arrow.clockwise")
+                    .font(.footnote.weight(.medium))
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: .capsule)
+                    .transition(.opacity)
+            }
         }
+        .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: fleet.notice)
+        .animation(.snappy, value: fleet.pendingSends.count)
         .sensoryFeedback(trigger: fleet.notice) { _, new in
             new?.failure == true ? .error : nil
         }

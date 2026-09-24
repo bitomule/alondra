@@ -230,6 +230,9 @@ public final class FleetStore {
         do {
             try await action(client)
             return true
+        } catch where error.isTransient {
+            queue(itemID: item.id, action)
+            return true
         } catch {
             animate(.spring(duration: 0.5, bounce: 0.2)) {
                 _ = hidden.remove(item.id)
@@ -243,10 +246,60 @@ public final class FleetStore {
         do {
             try await action(client)
             return true
+        } catch where error.isTransient {
+            queue(itemID: nil, action)
+            return true
         } catch {
             report(error)
             return false
         }
+    }
+
+    /// What the user sent while alondrad could not be reached: kept and sent again with backoff
+    /// until it goes through or the server refuses it for a real reason.
+    public struct PendingSend: Identifiable, Sendable {
+        public let id = UUID()
+        public let itemID: String?
+        let action: @Sendable (AlondraClient) async throws -> Void
+    }
+
+    public private(set) var pendingSends: [PendingSend] = []
+
+    /// Backoff between retries of a pending send: doubling from `retryDelay`, capped at a minute.
+    public nonisolated static func retryWait(attempt: Int, base: Duration) -> Duration {
+        min(base * (1 << min(attempt, 10)), .seconds(60))
+    }
+
+    private func queue(itemID: String?, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+        let pending = PendingSend(itemID: itemID, action: action)
+        pendingSends.append(pending)
+        Task { await retry(pending) }
+    }
+
+    private func retry(_ pending: PendingSend) async {
+        var attempt = 0
+        while !Task.isCancelled {
+            try? await Task.sleep(for: Self.retryWait(attempt: attempt, base: retryDelay))
+            attempt += 1
+            do {
+                try await pending.action(client)
+            } catch where error.isTransient {
+                continue
+            } catch {
+                pendingSends.removeAll { $0.id == pending.id }
+                if let itemID = pending.itemID {
+                    animate(.spring(duration: 0.5, bounce: 0.2)) { _ = hidden.remove(itemID) }
+                }
+                report(error)
+                return
+            }
+            pendingSends.removeAll { $0.id == pending.id }
+            return
+        }
+    }
+
+    public func isHidden(_ itemID: String) -> Bool {
+        hidden.contains(itemID)
     }
 
     private func report(_ error: any Error) {
@@ -257,10 +310,13 @@ public final class FleetStore {
         }
     }
 
-    private func resolving(_ id: String, _ work: () async throws -> Void) async -> Bool {
+    private func resolving(_ id: String, _ work: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
         hidden.insert(id)
         do {
-            try await work()
+            try await work(client)
+            return true
+        } catch where error.isTransient {
+            queue(itemID: id, work)
             return true
         } catch {
             hidden.remove(id)
@@ -271,21 +327,21 @@ public final class FleetStore {
 
     @discardableResult
     public func answer(_ question: Question, text: String, option: String? = nil) async -> Bool {
-        await resolving("q\(question.id)") {
+        await resolving("q\(question.id)") { client in
             try await client.answer(question.id, text: text, option: option)
         }
     }
 
     @discardableResult
     public func moreContext(_ question: Question, note: String) async -> Bool {
-        await resolving("q\(question.id)") {
+        await resolving("q\(question.id)") { client in
             try await client.moreContext(question.id, note: note)
         }
     }
 
     @discardableResult
     public func reply(to report: Report, text: String) async -> Bool {
-        await resolving("r\(report.id)") {
+        await resolving("r\(report.id)") { client in
             try await client.send(to: report.sessionId, text: text)
             try await client.markRead(report.id)
         }
@@ -293,7 +349,7 @@ public final class FleetStore {
 
     @discardableResult
     public func markRead(_ report: Report) async -> Bool {
-        await resolving("r\(report.id)") {
+        await resolving("r\(report.id)") { client in
             try await client.markRead(report.id)
         }
     }
