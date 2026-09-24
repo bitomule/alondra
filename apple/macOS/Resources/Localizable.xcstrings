@@ -1740,6 +1740,46 @@
           }
         }
       }
+    },
+    "Attach Files…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adjuntar archivos…"
+          }
+        }
+      }
+    },
+    "Attach files (or drop them here)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adjunta archivos (o suéltalos aquí)"
+          }
+        }
+      }
+    },
+    "Couldn’t Attach": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo adjuntar"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -79,14 +79,14 @@ public struct AlondraClient: Sendable {
         _ = try await get("v1/changes", query: [("after", String(tick)), ("wait", "50")], session: Self.longPoll)
     }
 
-    public func answer(_ question: UInt64, text: String, option: String?) async throws {
-        var body = ["text": text, "device": device]
+    public func answer(_ question: UInt64, text: String, option: String?, attachments: [String] = []) async throws {
+        var body: [String: Any] = ["text": text, "device": device, "attachments": attachments]
         body["option"] = option
         try await post("v1/questions/\(question)/answer", body)
     }
 
-    public func moreContext(_ question: UInt64, note: String) async throws {
-        try await post("v1/questions/\(question)/more-context", ["note": note])
+    public func moreContext(_ question: UInt64, note: String, attachments: [String] = []) async throws {
+        try await post("v1/questions/\(question)/more-context", ["note": note, "attachments": attachments])
     }
 
     /// `gh pr merge` may take up to 90 s on alondrad; giving up sooner sends the merge twice.
@@ -94,8 +94,8 @@ public struct AlondraClient: Sendable {
         _ = try await perform("POST", "v1/prs/\(id)/merge", body: try JSONSerialization.data(withJSONObject: ["method": method]), session: Self.slow)
     }
 
-    public func requestChanges(onPullRequest id: UInt64, text: String) async throws {
-        try await post("v1/prs/\(id)/changes", ["text": text])
+    public func requestChanges(onPullRequest id: UInt64, text: String, attachments: [String] = []) async throws {
+        try await post("v1/prs/\(id)/changes", ["text": text, "attachments": attachments])
     }
 
     public func resolveConflicts(onPullRequest id: UInt64) async throws {
@@ -114,8 +114,8 @@ public struct AlondraClient: Sendable {
         try await post("v1/activity", ["client": client])
     }
 
-    public func newRequest(_ text: String) async throws {
-        try await post("v1/requests", ["text": text])
+    public func newRequest(_ text: String, attachments: [String] = []) async throws {
+        try await post("v1/requests", ["text": text, "attachments": attachments])
     }
 
     public func search(_ query: String) async throws -> SearchResult {
@@ -154,8 +154,29 @@ public struct AlondraClient: Sendable {
         try await post("v1/nodes/\(session)/ack", [:])
     }
 
-    public func send(to session: String, text: String) async throws {
-        try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david"])
+    public func send(to session: String, text: String, attachments: [String] = []) async throws {
+        try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david", "attachments": attachments])
+    }
+
+    /// Copies a file into Alondra's storage and gives back its id; `progress` goes from 0 to 1 as
+    /// the bytes leave the device.
+    public func upload(_ data: Data, name: String, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> String {
+        var components = URLComponents(url: base.appending(path: "v1/uploads"), resolvingAgainstBaseURL: false)!
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        components.percentEncodedQuery = "name=" + (name.addingPercentEncoding(withAllowedCharacters: unreserved) ?? "attachment")
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        if let signer {
+            var signed = request
+            signed.httpBody = data
+            try RequestSignature.sign(&signed, with: signer)
+            request.allHTTPHeaderFields = signed.allHTTPHeaderFields
+        }
+        let (body, response) = try await Self.uploads.upload(for: request, from: data, delegate: UploadProgress(progress))
+        try Self.check(body, response)
+        struct Stored: Decodable { let id: String }
+        return try JSONDecoder().decode(Stored.self, from: body).id
     }
 
     public func registerPush(_ registration: PushRegistration) async throws {
@@ -191,7 +212,13 @@ public struct AlondraClient: Sendable {
         try await perform("GET", path, query: query, session: session)
     }
 
-    private func post(_ path: String, _ body: [String: String]) async throws {
+    private static let uploads: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        return URLSession(configuration: config)
+    }()
+
+    private func post(_ path: String, _ body: [String: Any]) async throws {
         _ = try await perform("POST", path, body: try JSONSerialization.data(withJSONObject: body), session: Self.session)
     }
 
@@ -376,5 +403,18 @@ extension Error {
         case .timedOut: return String(localized: "The server isn’t responding", table: "AlondraShared", bundle: #bundle)
         default: return urlError.localizedDescription
         }
+    }
+}
+
+private final class UploadProgress: NSObject, URLSessionTaskDelegate, Sendable {
+    let report: @Sendable (Double) -> Void
+
+    init(_ report: @escaping @Sendable (Double) -> Void) {
+        self.report = report
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        report(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 }

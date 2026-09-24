@@ -62,13 +62,16 @@ struct PullRequestDetail: View {
         } bar: {
             VStack(alignment: .leading, spacing: 12) {
             CommentsSummary(draft: draft)
+            AttachmentStrip(draft.attachments, client: store.client)
             HStack(alignment: .center, spacing: 10) {
+                AttachFilesButton(attachments: draft.attachments, client: store.client)
                 TextField("What should change?", text: $draft.general, axis: .vertical)
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .reply)
+                    .modifier(DropsFiles(attachments: draft.attachments, client: store.client))
                 Button(draft.comments.isEmpty ? String(localized: "Request Changes") : String(localized: "Request Changes (\(draft.comments.count))")) { requestChanges() }
-                    .disabled(review.isEmpty)
+                    .disabled(review.isEmpty && draft.attachments.isEmpty)
                     .controlSize(.large)
                 if pr.hasConflicts {
                     Button("Resolve Conflicts") { resolveConflicts() }
@@ -182,9 +185,11 @@ struct PullRequestDetail: View {
     }
 
     private func requestChanges() {
-        let (id, text) = (pr.id, review)
+        let (id, text, attachments) = (pr.id, review, draft.attachments)
         Task {
-            if await store.resolve(.pullRequest(pr), { try await $0.requestChanges(onPullRequest: id, text: text) }) {
+            if await store.resolve(.pullRequest(pr), { client in
+                try await client.requestChanges(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }) {
                 drafts.discard(InboxItem.pullRequest(pr).id)
             }
         }

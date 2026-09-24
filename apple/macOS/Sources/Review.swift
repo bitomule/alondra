@@ -9,6 +9,7 @@ final class ReviewDraft {
     var general = ""
     var editing: String?
     var editorText = ""
+    var attachments = Attachments()
     @ObservationIgnored private var positions: [String: String] = [:]
 
     func feedback(author: String) -> String {

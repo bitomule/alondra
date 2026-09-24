@@ -8,6 +8,7 @@ struct AttachedQuestion: View {
 
     @Environment(FleetStore.self) private var fleet
     @State private var reply = ""
+    @State private var attachments = Attachments()
     @State private var picked: QuestionOption?
     @State private var sending = false
     @FocusState private var replyFocused: Bool
@@ -50,21 +51,31 @@ struct AttachedQuestion: View {
     }
 
     private var replyField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AttachmentStrip(attachments, client: fleet.client)
+            replyBox
+        }
+    }
+
+    private var replyBox: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            AttachButton(attachments: attachments)
+                .padding(.leading, 4)
+                .padding(.bottom, 2)
             TextField(picked?.displayDescription ?? String(localized: "Answer in your own words…"), text: $reply, axis: .vertical)
                 .lineLimit(1...4)
                 .focused($replyFocused)
-                .padding(.horizontal, 14)
+                .padding(.trailing, 14)
                 .padding(.vertical, 10)
             Button(action: submit) {
                 Image(systemName: "arrow.up")
                     .font(.body.weight(.bold))
                     .foregroundStyle(Palette.onAccent)
                     .frame(width: 32, height: 32)
-                    .background(text.isEmpty ? Palette.slate.opacity(0.4) : Palette.dawn, in: .circle)
+                    .background(text.isEmpty && attachments.isEmpty ? Palette.slate.opacity(0.4) : Palette.dawn, in: .circle)
             }
             .buttonStyle(PressStyle())
-            .disabled(text.isEmpty)
+            .disabled(text.isEmpty && attachments.isEmpty)
             .padding(4)
             .accessibilityLabel("Send")
         }
@@ -82,7 +93,7 @@ struct AttachedQuestion: View {
     }
 
     private func submit() {
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !attachments.isEmpty else { return }
         answer(text, option: picked?.label)
     }
 
@@ -91,7 +102,9 @@ struct AttachedQuestion: View {
         replyFocused = false
         sending = true
         Task {
-            let answered = await fleet.resolve(.question(question)) { try await $0.answer(id, text: text, option: option) }
+            let answered = await fleet.resolve(.question(question)) { [attachments] client in
+                try await client.answer(id, text: text, option: option, attachments: try await attachments.storedIDs(using: client))
+            }
             if !answered { sending = false }
         }
     }

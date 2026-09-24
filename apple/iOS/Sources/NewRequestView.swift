@@ -4,6 +4,7 @@ import SwiftUI
 struct NewRequestView: View {
     @Environment(FleetStore.self) private var fleet
     @State private var text = ""
+    @State private var attachments = Attachments()
     @State private var sending = false
     @State private var sentCount = 0
     @FocusState private var focused: Bool
@@ -57,11 +58,17 @@ struct NewRequestView: View {
                     .padding(.vertical, 8)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $text)
-                .font(.display(.title3, weight: .regular))
-                .scrollContentBackground(.hidden)
-                .focused($focused)
-                .frame(minHeight: 240)
+            VStack(alignment: .leading, spacing: 10) {
+                TextEditor(text: $text)
+                    .font(.display(.title3, weight: .regular))
+                    .scrollContentBackground(.hidden)
+                    .focused($focused)
+                    .frame(minHeight: 240)
+                HStack(alignment: .center, spacing: 8) {
+                    AttachButton(attachments: attachments)
+                    AttachmentStrip(attachments, client: fleet.client)
+                }
+            }
         }
         .padding(16)
         .background(Palette.card, in: .rect(cornerRadius: 28, style: .continuous))
@@ -125,10 +132,13 @@ struct NewRequestView: View {
         let request = trimmed
         sending = true
         Task {
-            let ok = await fleet.perform { try await $0.newRequest(request) }
+            let ok = await fleet.perform { [attachments] client in
+                try await client.newRequest(request, attachments: try await attachments.storedIDs(using: client))
+            }
             sending = false
             if ok {
                 withAnimation(.spring(duration: 0.4)) { text = "" }
+                attachments = Attachments()
                 focused = false
                 sentCount += 1
                 fleet.notice = Notice(String(localized: "Sent to the orchestrator"))

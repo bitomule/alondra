@@ -2040,6 +2040,96 @@
           }
         }
       }
+    },
+    "Photos": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fotos"
+          }
+        }
+      }
+    },
+    "Camera": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cámara"
+          }
+        }
+      }
+    },
+    "Files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivos"
+          }
+        }
+      }
+    },
+    "Attach": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adjuntar"
+          }
+        }
+      }
+    },
+    "Couldn’t Attach": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo adjuntar"
+          }
+        }
+      }
+    },
+    "OK": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "That photo could not be read. If it is in iCloud, try again once it has downloaded.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo leer esa foto. Si está en iCloud, vuelve a probar cuando se haya descargado."
+          }
+        }
+      }
+    },
+    "Photo %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto %@"
+          }
+        }
+      }
+    },
+    "Photo %lld": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Foto %lld"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

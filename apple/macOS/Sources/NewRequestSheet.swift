@@ -5,6 +5,7 @@ struct NewRequestSheet: View {
     let store: FleetStore
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
+    @State private var attachments = Attachments()
     @State private var sending = false
     @FocusState private var focused: Bool
 
@@ -35,7 +36,10 @@ struct NewRequestSheet: View {
                     }
                 }
                 .focused($focused)
+                .modifier(DropsFiles(attachments: attachments, client: store.client))
+            AttachmentStrip(attachments, client: store.client)
             HStack {
+                AttachFilesButton(attachments: attachments, client: store.client)
                 Hint(text: String(localized: "⌘↩ sends · esc cancels"))
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -51,7 +55,7 @@ struct NewRequestSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(sending || trimmed.isEmpty)
+                .disabled(sending || (trimmed.isEmpty && attachments.isEmpty))
             }
         }
         .padding(22)
@@ -60,10 +64,10 @@ struct NewRequestSheet: View {
 
     private func send() {
         let request = trimmed
-        guard !request.isEmpty else { return }
+        guard !request.isEmpty || !attachments.isEmpty else { return }
         sending = true
         Task {
-            if await store.newRequest(request) {
+            if await store.newRequest(request, attachments: attachments) {
                 dismiss()
             }
             sending = false

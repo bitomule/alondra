@@ -11,6 +11,7 @@ struct PRReviewView: View {
     @State private var failure: String?
     @State private var comments: [String: String] = [:]
     @State private var note = ""
+    @State private var attachments = Attachments()
     @State private var commenting: DiffLine?
     @State private var collapsed: Set<String> = []
     @State private var sending = false
@@ -110,9 +111,13 @@ struct PRReviewView: View {
 
     private var bar: some View {
         VStack(spacing: 8) {
-            TextField("A note for the node (optional)", text: $note, axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
+            AttachmentStrip(attachments, client: fleet.client)
+            HStack(spacing: 6) {
+                AttachButton(attachments: attachments)
+                TextField("A note for the node (optional)", text: $note, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+            }
             Button {
                 send()
             } label: {
@@ -120,7 +125,7 @@ struct PRReviewView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
-            .disabled(review.isEmpty || sending)
+            .disabled((review.isEmpty && attachments.isEmpty) || sending)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -131,7 +136,9 @@ struct PRReviewView: View {
         let (id, text) = (pr.id, review)
         sending = true
         Task {
-            let ok = await fleet.resolve(.pullRequest(pr)) { try await $0.requestChanges(onPullRequest: id, text: text) }
+            let ok = await fleet.resolve(.pullRequest(pr)) { [attachments] client in
+                try await client.requestChanges(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }
             sending = false
             if ok { dismiss() }
         }

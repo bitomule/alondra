@@ -6,13 +6,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alondra uses the camera to read the QR code that pairs this iPhone with your Mac."
+            "value": "Alondra uses the camera to read the QR code that pairs this iPhone with your Mac, and to take photos you attach to a message."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alondra usa la cámara para leer el código QR con el que vinculas este iPhone a tu Mac."
+            "value": "Alondra usa la cámara para leer el código QR con el que vinculas este iPhone a tu Mac, y para hacer las fotos que adjuntas a un mensaje."
           }
         }
       }

@@ -37,13 +37,16 @@ struct AttachedQuestion: View {
                 text: $draft.general,
                 focus: $focus,
                 sendTitle: pendingOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"),
-                canSend: !feedback.isEmpty,
+                canSend: !feedback.isEmpty || !draft.attachments.isEmpty,
                 send: submit,
-                escape: { pendingOption = nil }
+                escape: { pendingOption = nil },
+                attachments: draft.attachments,
+                client: store.client
             )
             Button {
                 let note = feedback
-                resolve { await store.moreContext(question, note: note) }
+                let attachments = draft.attachments
+                resolve { await store.moreContext(question, note: note, attachments: attachments) }
             } label: {
                 Label("I need more context", systemImage: "questionmark.bubble")
             }
@@ -76,12 +79,13 @@ struct AttachedQuestion: View {
 
     private func submit() {
         let text = feedback
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !draft.attachments.isEmpty else { return }
         answer(text, option: pendingOption)
     }
 
     private func answer(_ text: String, option: String?) {
-        resolve { await store.answer(question, text: text, option: option) }
+        let attachments = draft.attachments
+        resolve { await store.answer(question, text: text, option: option, attachments: attachments) }
     }
 
     private func resolve(_ action: @escaping @MainActor () async -> Bool) {

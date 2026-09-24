@@ -12,6 +12,7 @@ struct ReviewView: View {
     @State private var loaded = false
     @State private var comments: [String: String] = [:]
     @State private var general = ""
+    @State private var attachments = Attachments()
     @State private var composing: MarkdownBlock?
     @State private var sending = false
     @State private var closing: CloseRequest?
@@ -32,7 +33,7 @@ struct ReviewView: View {
     }
 
     private var hasFeedback: Bool {
-        !commentedBlocks.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !commentedBlocks.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
     var body: some View {
@@ -191,6 +192,10 @@ struct ReviewView: View {
                 .padding(14)
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
+            HStack(alignment: .center, spacing: 8) {
+                AttachButton(attachments: attachments)
+                AttachmentStrip(attachments, client: fleet.client)
+            }
         }
     }
 
@@ -290,14 +295,18 @@ struct ReviewView: View {
         switch item {
         case .question(let question):
             let change = changeOption(question)
-            finish(change ?? HandoffLabel.answered) { try await $0.answer(question.id, text: text, option: change) }
+            finish(change ?? HandoffLabel.answered) { [attachments] client in
+                try await client.answer(question.id, text: text, option: change, attachments: try await attachments.storedIDs(using: client))
+            }
         case .report(let report):
-            finish(HandoffLabel.sent) { client in
-                try await client.send(to: report.sessionId, text: text)
+            finish(HandoffLabel.sent) { [attachments] client in
+                try await client.send(to: report.sessionId, text: text, attachments: try await attachments.storedIDs(using: client))
                 try await client.markRead(report.id)
             }
         case .pullRequest(let pr):
-            finish(HandoffLabel.sent) { try await $0.requestChanges(onPullRequest: pr.id, text: text) }
+            finish(HandoffLabel.sent) { [attachments] client in
+                try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
+            }
         }
     }
 
@@ -311,7 +320,9 @@ struct ReviewView: View {
             return
         }
         let text = hasFeedback ? feedbackText : option.label
-        finish(option.label) { try await $0.answer(question.id, text: text, option: option.label) }
+        finish(option.label) { [attachments] client in
+            try await client.answer(question.id, text: text, option: option.label, attachments: try await attachments.storedIDs(using: client))
+        }
     }
 
     private func approveOption(_ question: Question) -> String? {
