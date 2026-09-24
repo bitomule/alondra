@@ -55,6 +55,27 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - Once your task is done (your final report), the user gets no new questions from it: if there is
   more to do, ask the orchestrator (`to_orchestrator: true`) or hand it over with
   `report(kind: final, to_orchestrator: true)`.
+- A task that builds on another comes with the branch to start from and to open your PR
+  against; follow it, not the default branch. Your PR merges after the one below it.
+
+## Several tasks
+
+The orchestrator can give you another task while you work: Alondra types it in as
+"[Alondra] A new task for you, from the orchestrator: t-… “…”", and a message about one of your
+tasks starts with "[Task t-… “…”]".
+- Work each task in a subagent of its own (Agent tool), named after the task (`name: "t-12"`),
+  with the task's brief as its prompt, so the tasks never share a context. Subagents have
+  Alondra's tools: the subagent asks, reports and opens its PR itself, passing `task` on every
+  `ask`, `request_action`, `report` and `withdraw`.
+- A task on a different branch gets its own worktree. A subagent's automatic worktree always
+  starts from the default branch, so create it with git when the task names a base
+  (`git worktree add .claude/worktrees/t-12 -b <branch> origin/<base>`) and have the subagent
+  work there.
+- A subagent that asked the user ends its turn. The user's answer, and anything the orchestrator
+  sends about a task, arrives in this main session: pass it to that task's subagent with
+  `SendMessage` (to: its name or agent ID), which continues it with its context. Do not answer
+  for it, and do not relay one task's answer to another task's subagent.
+- Each task ends with its own final report, with `task`; the others go on.
 
 ## Your PR
 
