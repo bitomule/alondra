@@ -156,12 +156,19 @@ pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
     match kind {
         "busy" => tr!("it is working; wait until it stops", "está trabajando; espera a que termine").to_string(),
         "permission" => {
-            tr!("it has a permission pending on a tool call that is running", "tiene un permiso pendiente en una llamada a herramienta en marcha").to_string()
+            tr!(
+                "it has a permission pending on a tool call that is running; answer it and close again",
+                "tiene un permiso pendiente en una llamada a herramienta en marcha; respóndelo y vuelve a cerrarlo"
+            )
+            .to_string()
         }
         "orchestrator" => tr!("it is the orchestrator, which Alondra keeps alive", "es el orquestador, que Alondra mantiene vivo").to_string(),
         "worktree" => {
             let detail = detail.unwrap_or_default();
-            trf!("it has changes not pushed in {detail}", "tiene cambios sin subir en {detail}")
+            trf!(
+                "its worktree has work that is not pushed ({detail}); commit and push it, or discard it, and close again",
+                "su worktree tiene trabajo sin subir ({detail}); haz commit y push, o descártalo, y vuelve a cerrarlo"
+            )
         }
         _ => detail.unwrap_or(kind).to_string(),
     }
@@ -275,8 +282,11 @@ mod tests {
     fn close_reasons_read_in_the_user_language_without_a_status_code() {
         set_for_this_thread(Lang::Es);
         assert_eq!(close_reason("busy", None), "está trabajando; espera a que termine");
-        assert_eq!(close_reason("permission", None), "tiene un permiso pendiente en una llamada a herramienta en marcha");
-        assert_eq!(close_reason("worktree", Some("2 commit(s) not pushed in /tmp/x")), "tiene cambios sin subir en 2 commit(s) not pushed in /tmp/x");
+        assert_eq!(close_reason("permission", None), "tiene un permiso pendiente en una llamada a herramienta en marcha; respóndelo y vuelve a cerrarlo");
+        assert_eq!(
+            close_reason("worktree", Some("2 commit(s) not pushed in /tmp/x")),
+            "su worktree tiene trabajo sin subir (2 commit(s) not pushed in /tmp/x); haz commit y push, o descártalo, y vuelve a cerrarlo"
+        );
         set_for_this_thread(Lang::En);
         assert_eq!(close_reason("busy", None), "it is working; wait until it stops");
         for kind in ["busy", "permission", "worktree"] {
