@@ -426,25 +426,32 @@ public final class FleetStore {
 
     @discardableResult
     public func readAndClose(_ report: Report) async -> Bool {
-        guard await close(session: report.sessionId, force: false) else { return false }
-        return await markRead(report)
+        let outcome = await close(session: report.sessionId, force: false)
+        guard outcome != .failed else { return false }
+        let read = await markRead(report)
+        return outcome == .closed && read
     }
 
     @discardableResult
     public func close(_ node: Node) async -> Bool {
-        await close(session: node.sessionId, force: true)
+        await close(session: node.sessionId, force: true) == .closed
     }
 
-    private func close(session: String, force: Bool) async -> Bool {
+    enum CloseOutcome { case closed, refused, failed }
+
+    /// A refusal is alondrad's answer about the node, shown as `refusal`; a failure means the
+    /// request itself did not get through.
+    private func close(session: String, force: Bool) async -> CloseOutcome {
         do {
             try await client.closeNode(session, force: force)
-            return true
+            return .closed
         } catch let refused as CloseRefused {
             refusal = refused.message
+            return .refused
         } catch {
             lastError = error.localizedDescription
+            return .failed
         }
-        return false
     }
 
     public func newRequest(_ body: NewRequestBody, attachments: Attachments? = nil) async -> Bool {

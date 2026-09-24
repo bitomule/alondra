@@ -158,9 +158,20 @@ public struct AlondraClient: Sendable {
         }
     }
 
+    /// The report is read even when alondrad refuses the close: the user has read it, and the
+    /// refusal says what to do about the node.
     public func readAndClose(_ report: Report) async throws {
-        try await closeNode(report.sessionId)
-        try await markRead(report.id)
+        try await Self.readAndClose(close: { try await closeNode(report.sessionId) }, markRead: { try await markRead(report.id) })
+    }
+
+    public static func readAndClose(close: () async throws -> Void, markRead: () async throws -> Void) async throws {
+        do {
+            try await close()
+        } catch let refused as CloseRefused {
+            try await markRead()
+            throw refused
+        }
+        try await markRead()
     }
 
     public func acknowledge(_ session: String) async throws {
@@ -278,11 +289,11 @@ func closeReasonMessage(kind: String, detail: String?) -> String {
     case "busy":
         return String(localized: "it is working; wait until it stops", table: "AlondraShared", bundle: #bundle)
     case "permission":
-        return String(localized: "it has a permission pending on a tool call that is running", table: "AlondraShared", bundle: #bundle)
+        return String(localized: "it has a permission pending on a tool call that is running; answer it and close again", table: "AlondraShared", bundle: #bundle)
     case "orchestrator":
         return String(localized: "it is the orchestrator, which Alondra keeps alive", table: "AlondraShared", bundle: #bundle)
     case "worktree":
-        return String(localized: "it has changes not pushed in \(detail ?? "")", table: "AlondraShared", bundle: #bundle)
+        return String(localized: "its worktree has work that is not pushed (\(detail ?? "")); commit and push it, or discard it, and close again", table: "AlondraShared", bundle: #bundle)
     default:
         return detail ?? kind
     }
@@ -390,6 +401,10 @@ public enum AlondraError: LocalizedError, Equatable {
 
 public struct CloseRefused: LocalizedError, Equatable {
     public let message: String
+
+    public init(message: String) {
+        self.message = message
+    }
 
     public var errorDescription: String? { message }
 }

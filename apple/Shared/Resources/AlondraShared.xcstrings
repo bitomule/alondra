@@ -881,22 +881,22 @@
         }
       }
     },
-    "it has a permission pending on a tool call that is running": {
+    "it has a permission pending on a tool call that is running; answer it and close again": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "tiene un permiso pendiente en una llamada a herramienta en marcha"
+            "value": "tiene un permiso pendiente en una llamada a herramienta en marcha; respóndelo y vuelve a cerrarlo"
           }
         }
       }
     },
-    "it has changes not pushed in %@": {
+    "its worktree has work that is not pushed (%@); commit and push it, or discard it, and close again": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "tiene cambios sin subir en %@"
+            "value": "su worktree tiene trabajo sin subir (%@); haz commit y push, o descártalo, y vuelve a cerrarlo"
           }
         }
       }

@@ -301,12 +301,21 @@ enum Msg {
     Data(Box<Overview>),
     Offline,
     Posted { key: Option<Key>, result: Result<String, String> },
+    Closed { name: String, result: Result<Closed, String> },
     File { path: String, result: Result<files::FileBody, String> },
     Found { query: String, result: Result<(String, Vec<String>), String> },
     Uploaded { seq: u64, result: Result<String, String> },
     Preview { seq: u64, image: image::DynamicImage },
     Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
+}
+
+/// How a close that alondrad accepted ended: a background job is gone; an interactive session
+/// only left the fleet and its terminal is still open.
+#[derive(Debug, PartialEq)]
+enum Closed {
+    Removed,
+    LeftFleet,
 }
 
 pub enum Flow {
@@ -335,6 +344,9 @@ pub struct App {
     pub fleet_detail_scroll: usize,
     pending_close: Option<(String, i64)>,
     pending_merge: Option<(u64, alondra_core::pr::MergeMethod, i64)>,
+    /// What each post would have called and flashed on success, since tests never reach alondrad.
+    #[cfg(test)]
+    posted: std::cell::RefCell<Vec<(Vec<String>, String)>>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -570,6 +582,8 @@ impl App {
             fleet_detail_scroll: 0,
             pending_close: None,
             pending_merge: None,
+            #[cfg(test)]
+            posted: Default::default(),
             search: None,
             composer: None,
             reader: None,
@@ -760,6 +774,8 @@ impl App {
     }
 
     fn post(&self, key: Option<Key>, calls: Vec<(String, Value)>, ok: String) {
+        #[cfg(test)]
+        self.posted.borrow_mut().push((calls.iter().map(|(p, _)| p.clone()).collect(), ok.clone()));
         self.spawn(move |tx| {
             let client = Client::for_user(Duration::from_secs(15));
             let mut result = Ok(ok);
@@ -855,6 +871,7 @@ impl App {
                 }
                 self.fail(trf!("Not sent: {e}", "No se envió: {e}"));
             }
+            Msg::Closed { name, result } => self.closed(&name, result),
             Msg::Uploaded { seq, result } => self.uploaded(seq, result),
             Msg::Preview { seq, image } => {
                 if let Some(p) = self.picker.as_ref() {
@@ -1338,9 +1355,41 @@ impl App {
     }
 
     fn mark_read(&mut self, r: &Report) {
-        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], { let t = md::truncate(&r.title, 60); trf!("Read: {t}", "Leído: {t}") });
+        let done = { let t = md::truncate(&r.title, 60); trf!("Read: {t}", "Leído: {t}") };
+        self.mark_read_saying(r, done);
+    }
+
+    /// `done` is what the flash says once alondrad has it, which replaces whatever the flash
+    /// said in between.
+    fn mark_read_saying(&mut self, r: &Report, done: String) {
+        self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/read", r.id), json!({}))], done);
         self.reader = None;
         self.hide(Key::R(r.id));
+    }
+
+    /// `claude rm` plus its check can take several seconds, so the answer comes back as its own
+    /// message and a refusal reads as a close that did not happen, not as a message not sent.
+    fn close(&mut self, session: &str, name: &str, force: bool) {
+        let path = format!("/v1/nodes/{}/close", urlencode(session));
+        let name = name.to_string();
+        self.flash(trf!("Closing {name}…", "Cerrando {name}…"));
+        self.spawn(move |tx| {
+            let result = Client::for_user(Duration::from_secs(90)).post(&path, &json!({ "force": force })).map_err(|e| e.to_string()).map(|v| {
+                if v.get("interactive").and_then(Value::as_bool) == Some(true) { Closed::LeftFleet } else { Closed::Removed }
+            });
+            let _ = tx.send(Msg::Closed { name, result });
+        });
+    }
+
+    fn closed(&mut self, name: &str, result: Result<Closed, String>) {
+        match result {
+            Ok(Closed::Removed) => self.flash(trf!("{name} closed", "{name} cerrado")),
+            Ok(Closed::LeftFleet) => self.flash(trf!(
+                "{name} left the fleet; it is an interactive session, so close its terminal with /exit",
+                "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit"
+            )),
+            Err(why) => self.fail(trf!("{name} was not closed: {why}", "{name} no se cerró: {why}")),
+        }
     }
 
     /// David's verdict on the artifact a report sent: the node reads his comments on it, or learns
@@ -1362,6 +1411,7 @@ impl App {
 
     /// Reads the selected report and closes the node that sent it, same as the fleet's own
     /// close: a second `X` within a few seconds confirms it, since closing cannot be undone.
+    /// The report is read on the first press whether or not the node can be closed.
     fn read_and_close(&mut self) {
         let now = now_millis();
         if let Some((session, until)) = self.pending_close.clone()
@@ -1369,17 +1419,21 @@ impl App {
         {
             self.pending_close = None;
             let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
-            self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({}))], trf!("{name} closed", "{name} cerrado"));
+            self.close(&session, &name, false);
             return;
         }
         let Some(r) = self.selected_report() else { return };
-        if !self.node(&r.session_id).is_some_and(|n| n.offers_close()) {
-            return;
-        }
         let name = who(&r.node_name, &r.session_id);
-        self.mark_read(&r);
-        self.pending_close = Some((r.session_id.clone(), now + 4000));
-        self.flash(trf!("Read. Press Shift+X again to close {name}", "Leído. Pulsa Shift+X otra vez para cerrar {name}"));
+        let (arm, hint) = match self.node(&r.session_id) {
+            Some(n) if n.offers_close() => (true, trf!("Read. Press Shift+X again to close {name}", "Leído. Pulsa Shift+X otra vez para cerrar {name}")),
+            Some(_) => (false, trf!("Read. {name} is the orchestrator, which Alondra keeps alive: close it from the fleet if you mean to", "Leído. {name} es el orquestador, que Alondra mantiene vivo: ciérralo desde la flota si de verdad quieres")),
+            None => (false, trf!("Read. {name} is no longer in the fleet, nothing to close", "Leído. {name} ya no está en la flota, no hay nada que cerrar")),
+        };
+        self.mark_read_saying(&r, hint.clone());
+        if arm {
+            self.pending_close = Some((r.session_id.clone(), now + 4000));
+        }
+        self.flash(hint);
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
@@ -1853,7 +1907,7 @@ impl App {
                 if let Some(n) = self.selected_node() {
                     let (session, name) = (n.session_id.clone(), n.display_name().to_string());
                     if self.confirm_close(&session, &name) {
-                        self.post(None, vec![(format!("/v1/nodes/{}/close", urlencode(&session)), json!({"force": true}))], trf!("{name} closed", "{name} cerrado"));
+                        self.close(&session, &name, true);
                     }
                 }
             }
@@ -2477,6 +2531,60 @@ pub(crate) mod tests {
         assert!(app.pending_close.is_none(), "x alone never arms a close");
     }
 
+    /// 24 Sep: David pressed Shift+X, saw «Leído: …» and the node stayed. alondrad confirming
+    /// the read replaced the «press Shift+X again» hint milliseconds after it appeared.
+    #[test]
+    fn the_hint_to_press_shift_x_again_outlives_alondrad_confirming_the_read() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1).into()];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        press(&mut app, "X");
+        let (paths, answer) = app.posted.borrow().last().cloned().expect("X posts the read");
+        assert_eq!(paths, ["/v1/reports/1/read"]);
+        app.on_msg(Msg::Posted { key: Some(Key::R(1)), result: Ok(answer) });
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        press(&mut app, "X");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.starts_with("Closing ")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+    }
+
+    #[test]
+    fn the_second_shift_x_closes_the_node_even_when_a_question_took_the_selection() {
+        let (mut app, _rx) = app_with(vec![question(7, QuestionOrigin::Ask, &[])]);
+        app.data.news = vec![report(1).into()];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        press(&mut app, "j");
+        assert_eq!(app.sel, Some(Key::R(1)));
+        press(&mut app, "X");
+        assert_eq!(app.sel, Some(Key::Q(7)), "the read report leaves the inbox");
+        press(&mut app, "X");
+        assert!(app.pending_close.is_none());
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.starts_with("Closing ")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+    }
+
+    #[test]
+    fn a_close_answer_says_in_one_line_what_happened() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.on_msg(Msg::Closed { name: "demo".into(), result: Ok(Closed::Removed) });
+        assert_eq!(app.flash.as_ref().map(|f| (f.text.as_str(), f.error)), Some(("demo closed", false)));
+        app.on_msg(Msg::Closed { name: "demo".into(), result: Ok(Closed::LeftFleet) });
+        assert!(app.flash.as_ref().is_some_and(|f| !f.error && f.text.contains("close its terminal with /exit")));
+        app.on_msg(Msg::Closed { name: "demo".into(), result: Err(i18n::close_reason("busy", None)) });
+        assert_eq!(app.flash.as_ref().map(|f| (f.text.as_str(), f.error)), Some(("demo was not closed: it is working; wait until it stops", true)));
+    }
+
+    #[test]
+    fn shift_x_on_a_report_whose_node_is_gone_reads_it_and_says_so() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.news = vec![report(1).into()];
+        app.reconcile();
+        press(&mut app, "X");
+        assert!(app.hidden.contains_key(&Key::R(1)));
+        assert!(app.pending_close.is_none());
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("demo is no longer in the fleet")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+    }
+
     #[test]
     fn shift_x_reads_and_arms_a_close_that_a_second_press_confirms() {
         let (mut app, _rx) = app_with(vec![]);
@@ -2493,7 +2601,7 @@ pub(crate) mod tests {
 
     /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never close it.
     #[test]
-    fn shift_x_never_closes_the_orchestrator_but_x_still_marks_its_report_read() {
+    fn shift_x_never_closes_the_orchestrator_but_reads_its_report_and_says_why() {
         for (orchestrator, arms) in [(false, true), (true, false)] {
             let (mut app, _rx) = app_with(vec![]);
             app.data.news = vec![report(1).into()];
@@ -2503,10 +2611,10 @@ pub(crate) mod tests {
             app.reconcile();
             press(&mut app, "X");
             assert_eq!(app.pending_close.is_some(), arms, "orchestrator={orchestrator}");
-            assert_eq!(app.hidden.contains_key(&Key::R(1)), arms, "orchestrator={orchestrator}: X reads only when it may close");
-            app.pending_close = None;
-            press(&mut app, "x");
-            assert!(app.hidden.contains_key(&Key::R(1)), "orchestrator={orchestrator}: x marks the report read");
+            assert!(app.hidden.contains_key(&Key::R(1)), "orchestrator={orchestrator}: X reads the report either way");
+            if orchestrator {
+                assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("demo is the orchestrator")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+            }
         }
     }
 

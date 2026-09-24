@@ -10,6 +10,32 @@ import Testing
         return try JSONDecoder().decode(Report.self, from: Data(json.utf8))
     }
 
+    /// 24 Sep: David's «Leer y cerrar» has to leave the report read even when alondrad refuses
+    /// the close; the refusal alert then says what to do about the node.
+    @Test(arguments: [
+        (nil, ["close", "read"], nil),
+        (CloseRefused(message: "está trabajando; espera a que termine") as (any Error)?, ["close", "read"], "está trabajando; espera a que termine"),
+        (URLError(.notConnectedToInternet) as (any Error)?, ["close"], nil),
+    ])
+    func readAndCloseReadsTheReportUnlessTheCloseNeverReachedAlondrad(failure: (any Error)?, calls: [String], refusal: String?) async {
+        let log = CallLog()
+        var thrown: (any Error)?
+        do {
+            try await AlondraClient.readAndClose(
+                close: {
+                    await log.add("close")
+                    if let failure { throw failure }
+                },
+                markRead: { await log.add("read") }
+            )
+        } catch {
+            thrown = error
+        }
+        #expect(await log.calls == calls)
+        #expect((thrown as? CloseRefused)?.message == refusal)
+        #expect((thrown == nil) == (failure == nil))
+    }
+
     @Test func aFinishedNodeIsClosedByDefault() throws {
         #expect(try report(kind: "final").primaryAction(nodeFound: true) == .readAndClose)
     }
@@ -52,5 +78,13 @@ import Testing
         for kind in ["notice", "document", "progress"] {
             #expect(try report(kind: kind).primaryAction(nodeFound: true) == .markRead)
         }
+    }
+}
+
+private actor CallLog {
+    var calls: [String] = []
+
+    func add(_ call: String) {
+        calls.append(call)
     }
 }
