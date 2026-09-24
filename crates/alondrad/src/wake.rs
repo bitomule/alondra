@@ -146,18 +146,62 @@ fn attach(short: &str) -> Result<TmuxSession, String> {
     }
 }
 
+/// A menu replaces the prompt box at the bottom of the screen, so only what follows the
+/// second-to-last rule counts. The node's own text above it can quote a menu's words.
+fn menu_on_screen(screen: &str) -> Option<(&'static str, String)> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let is_rule = |l: &&str| l.trim().chars().count() > 20 && l.trim().chars().all(|c| c == '─');
+    let rules: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_rule(l)).map(|(i, _)| i).collect();
+    let from = match rules.as_slice() {
+        [.., before_last, _] => before_last + 1,
+        [only] => only + 1,
+        [] => 0,
+    };
+    lines[from.min(lines.len())..]
+        .iter()
+        .find_map(|l| MENU_MARKERS.iter().find(|m| l.contains(*m)).map(|m| (*m, l.trim().to_string())))
+}
+
 fn type_into(short: &str, text: &str) -> Result<(), String> {
     let session = attach(short)?;
     std::thread::sleep(Duration::from_secs(2));
     let screen = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
-    if MENU_MARKERS.iter().any(|m| screen.contains(m)) {
-        return Err("the node is in a menu; not typing over it".into());
+    if let Some((marker, line)) = menu_on_screen(&screen) {
+        return Err(format!("the node is in a menu ({marker:?} in {line:?}); not typing over it"));
     }
     tmux(&["send-keys", "-t", &session.0, "-l", text])?;
     std::thread::sleep(Duration::from_millis(600));
     tmux(&["send-keys", "-t", &session.0, "Enter"])?;
     std::thread::sleep(Duration::from_secs(2));
     Ok(())
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    const RULE: &str = "────────────────────────────────────────────────────────────";
+
+    #[test]
+    fn only_the_bottom_of_the_screen_can_hold_a_menu() {
+        let idle_quoting_a_menu = format!(
+            "⏺ Two options, pick one to navigate:\n ❯ 1. Valoraciones\n   2. Popularidad\n Enter to confirm\n{RULE}\n❯ \n{RULE}\n  ? for shortcuts\n"
+        );
+        let permission = format!(
+            "⏺ Running 1 shell command…\n{RULE}\n Bash command\n\n   touch /tmp/x\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n"
+        );
+        let picker = format!("{RULE}\n Select model\n ❯ 1. Opus\n   2. Sonnet\n Enter to select · ↑/↓ to navigate\n{RULE}\n");
+        let cases = [
+            ("an idle node whose text quotes a menu's words", idle_quoting_a_menu.as_str(), None),
+            ("a permission prompt", permission.as_str(), Some("Do you want to proceed")),
+            ("a menu between two rules", picker.as_str(), Some("❯ 1.")),
+            ("a bare trust prompt with no rules", "Do you trust this folder?\n ❯ 1. Yes, proceed\n", Some("trust this folder")),
+            ("an empty screen", "", None),
+        ];
+        for (what, screen, marker) in cases {
+            assert_eq!(menu_on_screen(screen).map(|(m, _)| m), marker, "{what}");
+        }
+    }
 }
 
 #[cfg(test)]
