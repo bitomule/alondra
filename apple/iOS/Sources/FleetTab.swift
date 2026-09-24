@@ -187,11 +187,9 @@ struct StateGlyph: View {
     }
 }
 
-/// A node's tasks under it, and for those running, what each of its threads does.
+/// A node's tasks under it, each with its state.
 struct NodeTasks: View {
     let tasks: [WorkTask]
-
-    @Environment(FleetStore.self) private var fleet
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -199,43 +197,11 @@ struct NodeTasks: View {
                 HStack(alignment: .top, spacing: 8) {
                     Glyph(task: task, size: .tiny)
                         .padding(.top, 1)
-                    VStack(alignment: .leading, spacing: 5) {
-                        (Text(task.title).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
-                            + Text(verbatim: " · \(task.state.label)").font(.caption.weight(.semibold)).foregroundStyle(task.tint))
-                            .lineLimit(2)
-                        if task.state == .running {
-                            let threads = fleet.activity(for: task)
-                            if !threads.isEmpty {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
-                                        ActivityLine(activity: thread)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    (Text(task.title).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
+                        + Text(verbatim: " · \(task.state.label)").font(.caption.weight(.semibold)).foregroundStyle(task.tint))
+                        .lineLimit(2)
                 }
             }
-        }
-    }
-}
-
-struct ActivityLine: View {
-    let activity: NodeActivity
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: activity.isMainThread ? "terminal" : "person.2")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-                .accessibilityHidden(true)
-            (Text(activity.thread).fontWeight(.semibold).foregroundStyle(Palette.ink.opacity(0.8))
-                + Text(verbatim: " ")
-                + Text(activity.doing ?? "").font(.mono(.caption2)).foregroundStyle(Palette.sky)
-                + Text(verbatim: " · \(ago(activity.since))").foregroundStyle(.secondary))
-                .font(.caption)
-                .lineLimit(2)
         }
     }
 }
@@ -250,6 +216,7 @@ struct NodeDetail: View {
     @State private var attachments = Attachments()
     @State private var sending = false
     @State private var sentCount = 0
+    @State private var threads: [NodeActivity] = []
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -259,6 +226,10 @@ struct NodeDetail: View {
             } else {
                 ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
+        }
+        .task(id: session) {
+            guard let node = fleet.node(session) else { return }
+            threads = await fleet.threads(of: node)
         }
         .background(DawnBackground(glow: fleet.node(session)?.glyphTint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
@@ -341,7 +312,6 @@ struct NodeDetail: View {
                     }
                 }
 
-                let threads = fleet.activity(of: node)
                 if !threads.isEmpty {
                     section(String(localized: "Right now"), symbol: "wrench.and.screwdriver") {
                         VStack(alignment: .leading, spacing: 12) {

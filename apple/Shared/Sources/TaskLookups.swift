@@ -45,24 +45,12 @@ extension FleetStore {
         board.request(task.request)
     }
 
-    /// What the node does now, per thread; an alondrad without the activity ledger gives only the
-    /// main thread's tool in flight.
-    public func activity(of node: Node) -> [NodeActivity] {
-        if let activity = node.activity { return activity.sorted { $0.since > $1.since } }
-        guard let tool = node.tool else { return [] }
-        return [NodeActivity(agentId: nil, agentType: nil, task: nil, tool: tool.name, summary: tool.summary, since: tool.since)]
-    }
-
-    /// The threads that work on this task: those bound to it, or all of its node's while the node
-    /// has no other open task.
-    public func activity(for task: WorkTask) -> [NodeActivity] {
-        guard let node = node(of: task) else { return [] }
-        let entries = activity(of: node)
-        let mine = entries.filter { $0.task == task.id }
-        if !mine.isEmpty { return mine }
-        let open = board.tasks(onNode: node.sessionId).filter { !$0.state.isFinished }
-        guard open.map(\.id) == [task.id] else { return [] }
-        return entries.filter { $0.task == nil }
+    /// What the node does now, per thread, asked of its own route when its detail opens: the
+    /// overview does not carry it. An alondrad without the activity ledger gives only the main
+    /// thread's tool in flight.
+    public func threads(of node: Node) async -> [NodeActivity] {
+        let asked = try? await client.nodeThreads(node.sessionId).activity
+        return (asked ?? node.activity ?? node.toolThread).sorted { $0.since > $1.since }
     }
 
     /// One line on what is happening to the task right now, or nil when there is nothing to add
@@ -86,13 +74,9 @@ extension FleetStore {
             }
             guard let first = board.dependencies(of: task).first(where: { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }) else { return nil }
             return String(localized: "after “\(first.title)”", table: "AlondraShared", bundle: #bundle)
-        case .running:
-            guard let latest = activity(for: task).max(by: { $0.since < $1.since }) else { return nil }
-            let doing = latest.doing ?? ""
-            return latest.isMainThread ? latest.doing : [latest.thread, doing].filter { !$0.isEmpty }.joined(separator: " · ")
         case .closing:
             return String(localized: "merged; the node does what the merge unblocks", table: "AlondraShared", bundle: #bundle)
-        case .done, .cancelled:
+        case .running, .done, .cancelled:
             return nil
         }
     }
@@ -107,6 +91,14 @@ extension FleetStore {
 
     private static func named(_ project: String) -> String? {
         project.isEmpty || project == "others" ? nil : project
+    }
+}
+
+extension Node {
+    /// The main thread's tool in flight: all an alondrad without the activity ledger says.
+    public var toolThread: [NodeActivity] {
+        guard let tool else { return [] }
+        return [NodeActivity(agentId: nil, agentType: nil, task: nil, tool: tool.name, summary: tool.summary, since: tool.since)]
     }
 }
 

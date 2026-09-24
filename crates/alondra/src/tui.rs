@@ -318,6 +318,8 @@ enum Msg {
     TaskAction(Result<String, (String, bool)>),
     /// An archive of what is finished, told like a task action.
     TasksArchived(Result<String, (String, bool)>),
+    /// What each thread of a node does, from its own route; none from an alondrad without it.
+    NodeThreads { session: String, threads: Option<Vec<crate::client::Activity>> },
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -394,6 +396,9 @@ pub struct App {
     pub archive_missing: bool,
     /// The Tasks list shows its archived section open.
     pub archived_open: bool,
+    /// What each thread of the selected node does, as its own route said when it was opened.
+    pub threads: Option<(String, Vec<crate::client::Activity>)>,
+    threads_asked: Option<String>,
     pending_cancel: Option<(String, i64)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
@@ -640,6 +645,8 @@ impl App {
             task_actions_missing: false,
             archive_missing: false,
             archived_open: false,
+            threads: None,
+            threads_asked: None,
             pending_cancel: None,
             cmdline: None,
             keymap: Keymap::default(),
@@ -884,6 +891,25 @@ impl App {
             }
         }
         self.reconcile_tasks();
+        self.load_threads();
+    }
+
+    /// Asks the selected node's own route what each of its threads does, once each time the node
+    /// is opened: the overview does not carry it.
+    fn load_threads(&mut self) {
+        if self.screen != Screen::Fleet {
+            return;
+        }
+        let Some(session) = self.fleet_sel.clone() else { return };
+        if self.threads_asked.as_ref() == Some(&session) {
+            return;
+        }
+        self.threads_asked = Some(session.clone());
+        self.spawn(move |tx| {
+            let detail = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/nodes/{}", urlencode(&session)));
+            let threads = detail.ok().and_then(|v| serde_json::from_value(v["node"]["activity"].clone()).ok());
+            let _ = tx.send(Msg::NodeThreads { session, threads });
+        });
     }
 
     fn on_msg(&mut self, m: Msg) {
@@ -944,6 +970,7 @@ impl App {
             Msg::TaskHistory { id, since, history } => self.history_loaded(id, since, history),
             Msg::TaskAction(result) => self.task_action_done(result),
             Msg::TasksArchived(result) => self.archive_done(result),
+            Msg::NodeThreads { session, threads } => self.threads = threads.map(|t| (session, t)),
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -1104,7 +1131,9 @@ impl App {
         self.focus = Pane::List;
         self.fleet_zoom = false;
         self.task_zoom = false;
+        self.threads_asked = None;
         self.reconcile_tasks();
+        self.load_threads();
     }
 
     fn message_orchestrator(&mut self) {
@@ -1947,6 +1976,7 @@ impl App {
         }
         self.fleet_idx = idx;
         self.fleet_sel = Some(sessions[idx].clone());
+        self.load_threads();
     }
 
     fn fleet_cmd(&mut self, cmd: Cmd) {
@@ -2116,7 +2146,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn alive_node(session: &str) -> crate::client::FleetNode {
-        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None, activity: None }
+        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None }
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
@@ -2475,7 +2505,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![]);
         let mut node = alondra_core::model::Node::new("s1", 0);
         node.cwd = Some(repo.display().to_string());
-        app.data.nodes = vec![crate::client::FleetNode { node, project: None, activity: None }];
+        app.data.nodes = vec![crate::client::FleetNode { node, project: None }];
         app.data.prs = vec![pr_card(None)];
         app.reconcile();
         app.settle_until = 0;

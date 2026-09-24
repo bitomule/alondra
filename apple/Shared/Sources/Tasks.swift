@@ -190,6 +190,18 @@ public struct NodeActivity: Codable, Hashable, Sendable {
     }
 }
 
+/// What `GET /v1/nodes/{key}` says each thread of the node does now; the overview leaves it out.
+public struct NodeThreads: Decodable, Sendable {
+    private struct Detail: Decodable, Sendable {
+        let activity: [NodeActivity]?
+    }
+
+    private let node: Detail
+
+    /// Nil from an alondrad without the activity ledger.
+    public var activity: [NodeActivity]? { node.activity }
+}
+
 /// Whether a node works on something right now; its tasks carry everything else.
 public enum NodeOccupancy: Hashable, Sendable {
     case busy

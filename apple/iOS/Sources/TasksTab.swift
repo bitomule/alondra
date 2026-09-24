@@ -243,7 +243,6 @@ private struct TaskTreeRowView: View {
         let task = row.task
         let pending = fleet.items(forTask: task).count
         let now = fleet.now(for: task)
-        let live = task.state == .running && !fleet.activity(for: task).isEmpty
         NavigationLink(value: TaskLink(id: task.id)) {
             HStack(spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
@@ -256,7 +255,7 @@ private struct TaskTreeRowView: View {
                             .multilineTextAlignment(.leading)
                         StateLine(label: task.state.label, tint: task.tint, since: task.stateSince)
                         if let now {
-                            NowLine(text: now, live: live)
+                            NowLine(text: now)
                                 .padding(.top, 1)
                         }
                     }
@@ -283,25 +282,13 @@ private struct TaskTreeRowView: View {
 
 struct NowLine: View {
     let text: String
-    var live = false
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            if live {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 7))
-                    .foregroundStyle(Palette.sky)
-                    .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-                    .accessibilityHidden(true)
-            }
-            Text(text)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-        }
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
     }
 }
 

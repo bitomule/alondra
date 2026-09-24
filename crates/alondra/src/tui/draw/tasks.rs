@@ -381,7 +381,7 @@ fn activity_line(a: &Activity, indent: &str, width: usize, bar: Span<'static>) -
     fit(spans, width)
 }
 
-/// A node's tasks under its row in the fleet and, for those running, what each thread does.
+/// A node's tasks under its row in the fleet, each with its state.
 pub fn node_task_lines(app: &App, n: &FleetNode, width: usize, selected: bool) -> Vec<Line<'static>> {
     if n.is_orchestrator {
         return vec![];
@@ -394,11 +394,6 @@ pub fn node_task_lines(app: &App, n: &FleetNode, width: usize, selected: bool) -
             vec![bar(), Span::raw("    "), Span::styled(format!("{g} "), Style::new().fg(c).bold()), Span::raw(md::one_line(&t.title)), Span::styled(format!(" · {}", i18n::task_state(t.state)), Style::new().fg(c))],
             width,
         ));
-        if t.state == TaskState::Running {
-            for a in app.task_activity(t) {
-                lines.push(activity_line(&a, "      ", width, bar()));
-            }
-        }
     }
     lines
 }
@@ -482,11 +477,6 @@ mod tests {
         let mut busy = alive_node("s2");
         busy.node.state = alondra_core::NodeState::Working;
         busy.project = Some("App".into());
-        busy.activity = serde_json::from_value(json!([
-            {"agent_id": null, "task": "t-3", "tool": "Bash", "summary": "bazel build //ios:App", "since": now - 60_000},
-            {"agent_id": "a1", "agent_type": "tester", "task": "t-3", "tool": "mav", "summary": "tap Save", "since": now - 20_000},
-        ]))
-        .unwrap();
         app.data.nodes = vec![free, busy];
         let mut pr = pr_card(None);
         pr.pr.number = 150;
@@ -539,15 +529,30 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_lists_each_node_free_or_busy_with_its_tasks_and_what_each_thread_does() {
+    fn the_fleet_lists_each_node_with_its_tasks_states_and_only_the_opened_node_says_what_each_thread_does() {
         let (mut app, _rx) = app_with(vec![]);
         set_for_this_thread(Lang::Es);
         board(&mut app);
         press(&mut app, "f");
         let s = screen(&mut app, 130, 33);
-        for text in ["libre", "ocupado", "⇄ Editor covers readable text · en revisión", "◌ Album and Siri · esperando a otra", "principal  Bash bazel build //ios:App", "tester     mav tap Save"] {
+        for text in ["libre", "ocupado", "⇄ Editor covers readable text · en revisión", "◌ Album and Siri · esperando a otra", "Measure on the iPhone · en marcha"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
+        press(&mut app, "j");
+        let now = now_millis();
+        let threads = serde_json::from_value(json!([
+            {"agent_id": null, "task": "t-3", "tool": "Bash", "summary": "bazel build //ios:App", "since": now - 60_000},
+            {"agent_id": "a1", "agent_type": "tester", "task": "t-3", "tool": "mav", "summary": "tap Save", "since": now - 20_000},
+        ]))
+        .unwrap();
+        app.on_msg(super::super::super::Msg::NodeThreads { session: "s2".into(), threads: Some(threads) });
+        let s = screen(&mut app, 130, 33);
+        for text in ["principal  Bash bazel build //ios:App", "tester     mav tap Save"] {
+            assert!(s.contains(text), "{text}:\n{s}");
+        }
+        assert_eq!(s.matches("bazel build").count(), 1, "in the opened node's detail, not under its row:\n{s}");
+        code(&mut app, KeyCode::BackTab);
+        assert!(!screen(&mut app, 130, 33).contains("bazel build"), "a running task shows its state, not what its node does");
     }
 
     #[test]

@@ -266,31 +266,15 @@ impl App {
         r.options.as_ref().and_then(|o| o.project.clone()).filter(|p| !p.is_empty() && p != alondra_core::OTHERS_PROJECT).or_else(|| self.request_tasks(r).iter().find_map(|t| self.task_project(t)))
     }
 
-    /// What the node does now, per thread; an alondrad without the activity ledger gives only the
-    /// main thread's tool in flight.
+    /// What the node does now, per thread, as its own route said when it was opened; until then,
+    /// or from an alondrad without the activity ledger, the main thread's tool in flight.
     pub fn node_activity(&self, n: &FleetNode) -> Vec<Activity> {
-        if let Some(a) = &n.activity {
-            let mut a = a.clone();
-            a.sort_by_key(|x| std::cmp::Reverse(x.since));
-            return a;
-        }
-        n.tool.as_ref().map(|t| vec![Activity { tool: Some(t.name.clone()), summary: t.summary.clone(), since: t.since, ..Default::default() }]).unwrap_or_default()
-    }
-
-    /// The threads that work on this task: those bound to it, or all of its node's while the node
-    /// has no other open task.
-    pub fn task_activity(&self, t: &ClientTask) -> Vec<Activity> {
-        let Some(n) = t.assignee.as_ref().and_then(|a| self.node(&a.session_id)) else { return vec![] };
-        let all = self.node_activity(n);
-        let mine: Vec<Activity> = all.iter().filter(|a| a.task.as_deref() == Some(t.id.as_str())).cloned().collect();
-        if !mine.is_empty() {
-            return mine;
-        }
-        let open: Vec<&str> = self.tasks_on(&n.session_id).into_iter().filter(|x| !x.state.finished()).map(|x| x.id.as_str()).collect();
-        if open != [t.id.as_str()] {
-            return vec![];
-        }
-        all.into_iter().filter(|a| a.task.is_none()).collect()
+        let asked = self.threads.as_ref().filter(|(s, _)| *s == n.session_id).map(|(_, t)| t.clone());
+        let mut a = asked.unwrap_or_else(|| {
+            n.tool.as_ref().map(|t| vec![Activity { tool: Some(t.name.clone()), summary: t.summary.clone(), since: t.since, ..Default::default() }]).unwrap_or_default()
+        });
+        a.sort_by_key(|x| std::cmp::Reverse(x.since));
+        a
     }
 
     pub fn task_prs(&self, t: &ClientTask) -> Vec<&PrCard> {
@@ -385,13 +369,8 @@ impl App {
                 let title = &first.title;
                 Some(trf!("after «{title}»", "tras «{title}»"))
             }
-            TaskState::Running => {
-                let latest = self.task_activity(t).into_iter().max_by_key(|a| a.since)?;
-                let doing = activity_doing(&latest);
-                if latest.is_main() { doing } else { Some([Some(latest.thread()), doing].into_iter().flatten().collect::<Vec<_>>().join(" · ")) }
-            }
             TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
-            TaskState::Done | TaskState::Cancelled => None,
+            TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
         }
     }
 

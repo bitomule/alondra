@@ -128,6 +128,10 @@ public struct AlondraClient: Sendable {
         try await post("v1/tasks/archive", ids.map { ["ids": $0] } ?? [:])
     }
 
+    public func nodeThreads(_ session: String) async throws -> NodeThreads {
+        try Self.decoder.decode(NodeThreads.self, from: try await get("v1/nodes/\(session)"))
+    }
+
     /// The task with its history, which the overview leaves out.
     public func task(_ id: String) async throws -> WorkTask {
         let data = try await get("v1/tasks/\(id)")

@@ -32,7 +32,7 @@ import Testing
         let store = FleetStore()
         store.apply(overview)
         #expect(store.board.trees.isEmpty)
-        #expect(store.activity(of: store.nodes[0]).map(\.doing) == ["Bash make test"], "the tool in flight stands in for the ledger")
+        #expect(store.nodes[0].toolThread.map(\.doing) == ["Bash make test"], "the tool in flight stands in for the ledger")
     }
 
     @MainActor @Test func requestsTasksCardTasksAndActivityDecode() throws {
@@ -53,8 +53,24 @@ import Testing
         store.apply(overview)
         #expect(store.task(for: .question(overview.openQuestions[0]))?.id == "t-1")
         #expect(store.now(for: decoded) == "question: Which one?")
-        #expect(store.activity(for: decoded).count == 2)
         #expect(store.project(of: decoded) == "alondra")
+    }
+
+    /// The overview no longer carries what each thread does; a running task shows its state, and
+    /// the node's own route says what its threads do when its detail opens.
+    @MainActor @Test func aRunningTaskShowsItsStateAndTheNodeRouteCarriesItsThreads() throws {
+        let task = #"{"id":"t-1","request":"r-1","title":"Build it","assignee":{"session_id":"s1"},"state":"running","state_since":1,"created_at":1}"#
+        let overview: Overview = try Self.decode(#"{"tick":1,"nodes":[\#(Self.node)],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":[],"tasks":[\#(task)]}"#)
+        #expect(overview.nodes[0].activity == nil)
+        let store = FleetStore()
+        store.apply(overview)
+        let running = try #require(store.board.task("t-1"))
+        #expect(store.now(for: running) == nil, "the row shows “running”, not the tool in flight")
+        let detail: NodeThreads = try Self.decode(#"{"node":{"session_id":"s1","activity":[{"agent_id":null,"task":"t-1","tool":"Bash","summary":"make test","since":4},{"agent_id":"a1","agent_type":"tester","tool":"mav","since":6}]},"questions":[],"timeline":[]}"#)
+        #expect(detail.activity?.map(\.thread) == ["main", "tester"])
+        #expect(detail.activity?.first?.doing == "Bash make test")
+        let older: NodeThreads = try Self.decode(#"{"node":{"session_id":"s1"}}"#)
+        #expect(older.activity == nil)
     }
 
     @Test func aCardWithoutItsTaskIsFoundThroughWhatTheTaskCarries() throws {

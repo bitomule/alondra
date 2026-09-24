@@ -22,9 +22,6 @@ pub struct FleetNode {
     pub node: Node,
     #[serde(default)]
     pub project: Option<String>,
-    /// What each of its threads does now; an older alondrad sends none.
-    #[serde(default)]
-    pub activity: Option<Vec<Activity>>,
 }
 
 /// One thread of a node, the main one (no `agent_id`) or a subagent, and what it does now.
