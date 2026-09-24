@@ -1,40 +1,59 @@
 import AlondraShared
 import SwiftUI
 
+struct MarkdownSegmentView: View {
+    let segment: MarkdownSegment
+
+    var body: some View {
+        switch segment {
+        case .block(let block):
+            MarkdownBlockView(block: block)
+        case .table(let rows):
+            TableBlock(rows: rows)
+        }
+    }
+}
+
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
 
     var body: some View {
+        content
+            .padding(.leading, CGFloat(block.depth) * 18)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch block.kind {
         case .heading(let level):
-            Text(MarkdownBlock.inline(block.text))
+            Text(block.content)
                 .font(headingFont(level))
                 .foregroundStyle(Palette.ink)
                 .padding(.top, level <= 2 ? 10 : 4)
                 .accessibilityAddTraits(.isHeader)
         case .paragraph:
-            Text(MarkdownBlock.inline(flowing))
+            Text(block.content)
                 .font(.body)
                 .lineSpacing(3)
-        case .listItem(.bullet, let depth):
-            listRow(indent: depth) {
+        case .listItem(.bullet):
+            listRow {
                 Circle().fill(Palette.dawn).frame(width: 6, height: 6).padding(.top, 8)
             }
-        case .listItem(.number(let marker), let depth):
-            listRow(indent: depth) {
+        case .listItem(.number(let marker)):
+            listRow {
                 Text(verbatim: "\(marker).")
                     .font(.body.monospacedDigit().weight(.semibold))
                     .foregroundStyle(Palette.dawn)
             }
-        case .listItem(.task(let done), let depth):
-            listRow(indent: depth) {
+        case .listItem(.task(let done)):
+            listRow {
                 Image(systemName: done ? "checkmark.square.fill" : "square")
                     .foregroundStyle(done ? Palette.sage : .secondary)
             }
         case .quote:
             HStack(alignment: .top, spacing: 12) {
                 Capsule().fill(Palette.slate.opacity(0.5)).frame(width: 3)
-                Text(MarkdownBlock.inline(flowing))
+                Text(block.content)
                     .font(.body.italic())
                     .foregroundStyle(.secondary)
             }
@@ -48,7 +67,7 @@ struct MarkdownBlockView: View {
                         .foregroundStyle(.tertiary)
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Text(block.text)
+                    Text(block.plainText)
                         .font(.mono(.callout))
                         .fixedSize()
                 }
@@ -56,15 +75,11 @@ struct MarkdownBlockView: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.night.opacity(0.7), in: .rect(cornerRadius: 12))
-        case .table(let header, let rows):
-            TableBlock(rows: [header] + rows)
+        case .tableRow:
+            TableBlock(rows: [block])
         case .rule:
             Rectangle().fill(Palette.hairline).frame(height: 1).padding(.vertical, 6)
         }
-    }
-
-    private var flowing: String {
-        block.text.replacingOccurrences(of: "\n", with: " ")
     }
 
     private func headingFont(_ level: Int) -> Font {
@@ -76,39 +91,80 @@ struct MarkdownBlockView: View {
         }
     }
 
-    private func listRow<Marker: View>(indent: Int, @ViewBuilder marker: () -> Marker) -> some View {
+    private func listRow<Marker: View>(@ViewBuilder marker: () -> Marker) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             marker()
                 .frame(minWidth: 18, alignment: .leading)
-            Text(MarkdownBlock.inline(flowing))
+            Text(block.content)
                 .font(.body)
                 .lineSpacing(3)
         }
-        .padding(.leading, CGFloat(indent) * 18)
     }
 }
 
-private struct TableBlock: View {
-    let rows: [[String]]
+struct TableBlock<Cell: View, Below: View>: View {
+    let rows: [MarkdownBlock]
+    @ViewBuilder let cell: (MarkdownBlock, TableCell) -> Cell
+    @ViewBuilder let below: (MarkdownBlock) -> Below
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(MarkdownBlock.inline(cell))
-                                .font(index == 0 ? .subheadline.weight(.semibold) : .subheadline)
-                                .frame(maxWidth: 260, alignment: .leading)
+            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                ForEach(rows) { block in
+                    if let row = block.tableRow {
+                        GridRow {
+                            ForEach(row.cells.indices, id: \.self) { column in
+                                cell(block, TableCell(text: row.cells[column], alignment: row.alignment(of: column), isHeader: row.isHeader))
+                            }
                         }
-                    }
-                    if index == 0 {
-                        Divider().gridCellUnsizedAxes(.horizontal)
+                        if row.isHeader {
+                            Divider().gridCellUnsizedAxes(.horizontal)
+                        }
+                        below(block)
                     }
                 }
             }
-            .padding(14)
+            .padding(6)
         }
         .background(Palette.night.opacity(0.5), in: .rect(cornerRadius: 12))
+        .padding(.leading, CGFloat(rows.first?.depth ?? 0) * 18)
+    }
+}
+
+extension TableBlock where Cell == TableCell, Below == EmptyView {
+    init(rows: [MarkdownBlock]) {
+        self.init(rows: rows, cell: { _, cell in cell }, below: { _ in EmptyView() })
+    }
+}
+
+struct TableCell: View {
+    let text: AttributedString
+    let alignment: MarkdownBlock.ColumnAlignment
+    let isHeader: Bool
+
+    var body: some View {
+        Text(text)
+            .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+            .multilineTextAlignment(textAlignment)
+            .frame(maxWidth: 260, alignment: Alignment(horizontal: horizontalAlignment, vertical: .top))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .gridColumnAlignment(horizontalAlignment)
+    }
+
+    private var textAlignment: TextAlignment {
+        switch alignment {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private var horizontalAlignment: HorizontalAlignment {
+        switch alignment {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
     }
 }

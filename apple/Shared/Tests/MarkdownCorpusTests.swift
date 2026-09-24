@@ -4,19 +4,7 @@ import Testing
 
 @Suite struct MarkdownCorpusTests {
     /// Fixtures `MarkdownParser` still gets wrong. Remove a name when its fixture starts passing.
-    static let knownBroken: Set<String> = [
-        "card_apple_ads_steps",
-        "card_blurcamera_pr_body",
-        "code_in_list",
-        "fence_long",
-        "inline_mix",
-        "nested_lists",
-        "pipe_not_table",
-        "quote_nested",
-        "setext_headings",
-        "table_align_code",
-        "table_no_outer_pipes",
-    ]
+    static let knownBroken: Set<String> = []
 
     struct Fixture: CustomTestStringConvertible {
         let name: String
@@ -52,29 +40,37 @@ import Testing
 
     static func outline(_ blocks: [MarkdownBlock]) -> [String] {
         func escaped(_ text: String) -> String { text.replacingOccurrences(of: "\n", with: "\\n") }
-        func cell(_ text: String) -> String { String(MarkdownBlock.inline(text).characters) }
-        return blocks.flatMap { block -> [String] in
+        return blocks.map { block -> String in
+            let text = escaped(block.plainText)
             switch block.kind {
             case .heading(let level):
-                return ["heading:\(level) 0 | \(escaped(block.plainText))"]
+                return "heading:\(level) \(block.depth) | \(text)"
             case .paragraph:
-                return ["para 0 | \(escaped(block.plainText))"]
-            case .listItem(let marker, let depth):
+                return "para \(block.depth) | \(text)"
+            case .listItem(let marker):
                 let symbol = switch marker {
                 case .bullet: "-"
                 case .number(let n): "\(n)."
                 case .task(let done): done ? "[x]" : "[ ]"
                 }
-                return ["item \(depth) | \(symbol) \(escaped(block.plainText))"]
+                return "item \(block.depth) | \(symbol) \(text)"
             case .code(let language):
-                return ["code\(language.map { ":\($0)" } ?? "") 0 | \(escaped(block.text))"]
+                return "code\(language.map { ":\($0)" } ?? "") \(block.depth) | \(text)"
             case .quote:
-                return ["quote 0 | \(escaped(block.plainText))"]
-            case .table(let header, let rows):
-                let head = "head:\(String(repeating: "l", count: header.count)) 0 | \(header.map(cell).joined(separator: " · "))"
-                return [head] + rows.enumerated().map { "row \($0.offset + 1) | \($0.element.map(cell).joined(separator: " · "))" }
+                return "quote \(block.depth) | \(text)"
+            case .tableRow(let row):
+                let cells = row.cells.map { escaped(String($0.characters)) }.joined(separator: " · ")
+                guard row.isHeader else { return "row \(row.index) | \(cells)" }
+                let alignments = row.alignments.map { alignment in
+                    switch alignment {
+                    case .leading: "l"
+                    case .center: "c"
+                    case .trailing: "r"
+                    }
+                }
+                return "head:\(alignments.joined()) \(block.depth) | \(cells)"
             case .rule:
-                return ["rule 0 |"]
+                return "rule \(block.depth) |"
             }
         }
         .map { $0.trimmingCharacters(in: .whitespaces) }
