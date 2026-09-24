@@ -79,11 +79,13 @@ impl Store {
         Ok(count)
     }
 
-    pub fn session_timeline(&self, session: &str, limit: usize) -> Result<Vec<(u64, Millis, String)>> {
+    /// The session's newest `limit` events before `before` (all of them when it is `None`), newest first.
+    pub fn session_timeline(&self, session: &str, limit: usize, before: Option<u64>) -> Result<Vec<(u64, Millis, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT seq, at, body FROM events WHERE session = ?1 ORDER BY seq DESC LIMIT ?2",
+            "SELECT seq, at, body FROM events WHERE session = ?1 AND seq < ?3 ORDER BY seq DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![session, limit as i64], |r| {
+        let before = before.map_or(i64::MAX, |b| b as i64);
+        let rows = stmt.query_map(params![session, limit as i64, before], |r| {
             Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
         })?;
         Ok(rows.filter_map(Result::ok).collect())
@@ -107,6 +109,26 @@ mod tests {
         let mut seen = vec![];
         s.replay(0, |q, at, e| seen.push((q, at, e))).unwrap();
         assert_eq!(seen, vec![(seq, 5, ev)]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_session_timeline_pages_back_from_a_sequence_number() {
+        let dir = std::env::temp_dir().join(format!("alondra-timeline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut s = Store::open(&path).unwrap();
+        let hook = |session: &str| Event::Hook(HookEvent { session_id: session.into(), event: "Stop".into(), ..Default::default() });
+        let mut mine = vec![];
+        for i in 0..5 {
+            mine.push(s.append(i, &hook("s")).unwrap());
+            s.append(i, &hook("other")).unwrap();
+        }
+        let seqs = |limit, before| s.session_timeline("s", limit, before).unwrap().into_iter().map(|(seq, _, _)| seq).collect::<Vec<_>>();
+        assert_eq!(seqs(2, None), vec![mine[4], mine[3]], "newest first");
+        assert_eq!(seqs(2, Some(mine[3])), vec![mine[2], mine[1]]);
+        assert_eq!(seqs(10, Some(mine[1])), vec![mine[0]]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

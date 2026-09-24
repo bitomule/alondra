@@ -101,8 +101,8 @@ impl Hub {
         f(&self.view.read().expect("view lock poisoned"))
     }
 
-    pub fn timeline(&self, session: &str, limit: usize) -> Result<Vec<(u64, i64, String)>> {
-        self.writer.lock().expect("writer lock poisoned").session_timeline(session, limit)
+    pub fn timeline(&self, session: &str, limit: usize, before: Option<u64>) -> Result<Vec<(u64, i64, String)>> {
+        self.writer.lock().expect("writer lock poisoned").session_timeline(session, limit, before)
     }
 
     pub fn set_machine(&self, m: Machine) {

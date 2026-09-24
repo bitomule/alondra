@@ -890,7 +890,16 @@ async fn changes(State(hub): State<AppState>, Query(q): Query<ChangesQuery>) -> 
     Json(json!({ "tick": tick }))
 }
 
-async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+#[derive(Deserialize)]
+struct TimelineQuery {
+    limit: Option<usize>,
+    before: Option<u64>,
+}
+
+const TIMELINE_DEFAULT: usize = 40;
+const TIMELINE_MAX: usize = 2000;
+
+async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query(q): Query<TimelineQuery>) -> Response {
     let found = hub.read(|v| {
         let n = v.resolve_node(&key)?.clone();
         let sid = n.session_id.clone();
@@ -903,7 +912,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
-        .timeline(&node.session_id, 40)
+        .timeline(&node.session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
         .unwrap_or_default()
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
@@ -1179,7 +1188,7 @@ fn action_reply(answer: &Answer, user: &str) -> String {
 fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool) -> Option<String> {
     let u = usage.filter(|u| u.over_pace && !over_pace_ok)?;
     Some(format!(
-        "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left). Do not launch: tell the user, and launch with over_pace_ok only if they say so.",
+        "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left), so the launch was refused. over_pace_ok launches anyway once the user says so.",
         u.today_spent.unwrap_or(0.0),
         u.today_share.unwrap_or(0.0),
         u.week_percent,
