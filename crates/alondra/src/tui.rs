@@ -316,6 +316,8 @@ enum Msg {
     TaskHistory { id: String, since: i64, history: Result<Vec<alondra_core::tasks::Transition>, bool> },
     /// A cancel or reopen: what to flash, or why it failed and whether alondrad has no route for it.
     TaskAction(Result<String, (String, bool)>),
+    /// An archive of what is finished, told like a task action.
+    TasksArchived(Result<String, (String, bool)>),
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -389,6 +391,9 @@ pub struct App {
     history_asked: HashSet<(String, i64)>,
     history_missing: bool,
     pub task_actions_missing: bool,
+    pub archive_missing: bool,
+    /// The Tasks list shows its archived section open.
+    pub archived_open: bool,
     pending_cancel: Option<(String, i64)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
@@ -633,6 +638,8 @@ impl App {
             history_asked: HashSet::new(),
             history_missing: false,
             task_actions_missing: false,
+            archive_missing: false,
+            archived_open: false,
             pending_cancel: None,
             cmdline: None,
             keymap: Keymap::default(),
@@ -936,6 +943,7 @@ impl App {
             }
             Msg::TaskHistory { id, since, history } => self.history_loaded(id, since, history),
             Msg::TaskAction(result) => self.task_action_done(result),
+            Msg::TasksArchived(result) => self.archive_done(result),
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {

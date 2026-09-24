@@ -1611,6 +1611,9 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         if !app.task_actions_missing {
             v.extend([k("x", tr!("cancel", "descartar")), k("Shift+R", tr!("reopen", "reabrir"))]);
         }
+        if !app.archive_missing {
+            v.push(k("Shift+A", tr!("archive finished", "archivar terminadas")));
+        }
         v.extend([k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
         return v;
     }
@@ -1766,6 +1769,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r · ⏎", tr!("message its node · its node's terminal", "mensaje a su nodo · el terminal de su nodo")),
         row("x", tr!("cancel the task (twice to confirm)", "descartar la tarea (dos veces para confirmar)")),
         row("Shift+R", tr!("reopen a done or cancelled task", "reabrir una tarea hecha o descartada")),
+        row("Shift+A", tr!("archive every done or cancelled task", "archivar todas las tareas hechas o descartadas")),
+        row("⏎ · o", tr!("on Archived: show or hide the archived tasks", "en Archivadas: mostrar u ocultar las archivadas")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
         row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),

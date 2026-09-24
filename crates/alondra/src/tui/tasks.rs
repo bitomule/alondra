@@ -19,6 +19,8 @@ use crate::mcp::urlencode;
 pub enum TaskKey {
     Task(String),
     Request(String),
+    /// The header of the archived section, which opens and closes it.
+    Archived,
 }
 
 /// A task placed in its request's tree: depth 0 runs in parallel with its siblings, a deeper one
@@ -36,7 +38,10 @@ pub struct TreeRow {
 pub enum TaskListRow {
     Request(String),
     Task(TreeRow),
-    Defining(String),
+    /// A request with no task: still being defined, or finished without one.
+    Taskless(String),
+    /// The archived section's header, with how much it holds.
+    Archived(usize),
 }
 
 /// Each task under the dependency it goes after (the newest one when it has several); tasks with
@@ -166,15 +171,31 @@ impl App {
         all
     }
 
+    /// Each request with its tasks, then the archived section: the same requests with the tasks
+    /// that were archived, shown only while the section is open.
     pub fn task_rows(&self) -> Vec<TaskListRow> {
         let mut rows = vec![];
+        let mut archived = vec![];
         for r in self.ordered_requests() {
-            rows.push(TaskListRow::Request(r.id.clone()));
             let tasks = self.request_tasks(r);
             if tasks.is_empty() {
-                rows.push(TaskListRow::Defining(r.id.clone()));
-            } else {
-                rows.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
+                let into = if r.archived_at.is_some() { &mut archived } else { &mut rows };
+                into.extend([TaskListRow::Request(r.id.clone()), TaskListRow::Taskless(r.id.clone())]);
+                continue;
+            }
+            let (old, open): (Vec<&ClientTask>, Vec<&ClientTask>) = tasks.into_iter().partition(|t| t.archived_at.is_some());
+            for (into, tasks) in [(&mut rows, open), (&mut archived, old)] {
+                if !tasks.is_empty() {
+                    into.push(TaskListRow::Request(r.id.clone()));
+                    into.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
+                }
+            }
+        }
+        let n = self.archived_count();
+        if n > 0 {
+            rows.push(TaskListRow::Archived(n));
+            if self.archived_open {
+                rows.extend(archived);
             }
         }
         rows
@@ -185,10 +206,24 @@ impl App {
             .into_iter()
             .filter_map(|r| match r {
                 TaskListRow::Task(row) => Some(TaskKey::Task(row.id)),
-                TaskListRow::Defining(id) => Some(TaskKey::Request(id)),
+                TaskListRow::Taskless(id) => Some(TaskKey::Request(id)),
+                TaskListRow::Archived(_) => Some(TaskKey::Archived),
                 TaskListRow::Request(_) => None,
             })
             .collect()
+    }
+
+    /// Archived tasks, and requests archived without tasks.
+    pub fn archived_count(&self) -> usize {
+        let tasks = self.data.tasks.iter().filter(|t| t.archived_at.is_some()).count();
+        tasks + self.data.requests.iter().filter(|r| r.archived_at.is_some() && self.request_tasks(r).is_empty()).count()
+    }
+
+    /// What Shift+A archives: finished tasks, and requests that finished without tasks.
+    pub fn archivable_count(&self) -> usize {
+        let tasks = self.data.tasks.iter().filter(|t| t.state.finished() && t.archived_at.is_none()).count();
+        let taskless = self.data.requests.iter().filter(|r| r.state == RequestState::Done && r.archived_at.is_none() && self.request_tasks(r).is_empty());
+        tasks + taskless.count()
     }
 
     pub fn selected_task(&self) -> Option<&ClientTask> {
@@ -199,7 +234,8 @@ impl App {
     }
 
     pub fn tasks_on(&self, session: &str) -> Vec<&ClientTask> {
-        let mut tasks: Vec<&ClientTask> = self.data.tasks.iter().filter(|t| t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
+        let mut tasks: Vec<&ClientTask> =
+            self.data.tasks.iter().filter(|t| t.archived_at.is_none() && t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
         tasks.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         tasks
     }
@@ -446,6 +482,7 @@ impl App {
             Cmd::Move(Motion::Top) => self.move_tasks(0),
             Cmd::Move(Motion::Bottom) => self.move_tasks(isize::MAX),
             Cmd::Move(m) => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             Cmd::Right if self.task_view.shown && !self.task_zoom => self.focus = Pane::Detail,
             Cmd::Right => self.task_zoom = self.task_sel.is_some(),
             Cmd::Expand => self.task_zoom = !self.task_zoom && self.task_sel.is_some(),
@@ -461,6 +498,8 @@ impl App {
             KeyCode::Char('K') => self.task_detail_scroll = keys::by(self.task_detail_scroll, -5, self.task_view.h, self.task_view.total),
             KeyCode::Char('x') => self.cancel_task(),
             KeyCode::Char('R') => self.reopen_task(),
+            KeyCode::Char('A') => self.archive_finished(),
+            KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_task().and_then(|t| t.assignee.as_ref()).and_then(|a| self.node(&a.session_id)) {
                     let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string() };
@@ -494,7 +533,7 @@ impl App {
             return;
         }
         self.pending_cancel = None;
-        self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"));
+        self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"), Msg::TaskAction);
     }
 
     fn reopen_task(&mut self) {
@@ -507,10 +546,23 @@ impl App {
             self.fail(tr!("Only a done or cancelled task reopens", "Solo se reabre una tarea hecha o descartada"));
             return;
         }
-        self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"));
+        self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"), Msg::TaskAction);
     }
 
-    fn task_action(&self, path: String, ok: String) {
+    fn archive_finished(&mut self) {
+        if self.archive_missing {
+            self.fail(tr!("This alondrad cannot archive tasks yet", "Este alondrad todavía no sabe archivar tareas"));
+            return;
+        }
+        let n = self.archivable_count();
+        if n == 0 {
+            self.fail(tr!("Nothing finished to archive", "No hay nada terminado que archivar"));
+            return;
+        }
+        self.task_action("/v1/tasks/archive".into(), trf!("Archived: {n}", "Archivadas: {n}"), Msg::TasksArchived);
+    }
+
+    fn task_action(&self, path: String, ok: String, done: fn(Result<String, (String, bool)>) -> Msg) {
         #[cfg(test)]
         self.posted.borrow_mut().push((vec![path.clone()], ok.clone()));
         self.spawn(move |tx| {
@@ -518,8 +570,19 @@ impl App {
                 Ok(_) => Ok(ok),
                 Err(e) => Err((e.to_string(), e.downcast_ref::<NotFound>().is_some())),
             };
-            let _ = tx.send(Msg::TaskAction(result));
+            let _ = tx.send(done(result));
         });
+    }
+
+    pub(super) fn archive_done(&mut self, result: Result<String, (String, bool)>) {
+        match result {
+            Ok(text) => self.flash(text),
+            Err((_, true)) => {
+                self.archive_missing = true;
+                self.fail(tr!("This alondrad cannot archive tasks yet", "Este alondrad todavía no sabe archivar tareas"));
+            }
+            Err((e, false)) => self.fail(trf!("Not sent: {e}", "No se envió: {e}")),
+        }
     }
 
     pub(super) fn task_action_done(&mut self, result: Result<String, (String, bool)>) {
