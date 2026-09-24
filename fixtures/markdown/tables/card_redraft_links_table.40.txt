@@ -1,0 +1,73 @@
+PR #134 está mergeada y desplegada: la
+copia que usan los runs semanales ya
+lleva las reglas nuevas y la
+comprobación de Apple Ads. Lo he
+confirmado leyendo el fichero en main y
+en la copia instalada.
+
+Redraft, dónde está
+
+En la tienda sigue la 4.4.2. La 4.5.0
+(build 190) está subida y validada desde
+el 21-sep, pero nadie la ha enviado a
+revisión.
+
+Tres PR abiertos, todos esperándote:
+
+PR          │ Qué hace      │ ¿Bloquea
+            │               │ la 4.5.0?
+────────────┼───────────────┼───────────
+Redraft     │ Textos de     │ Sí. Sin
+#255        │ tienda de la  │ estos
+            │ 4.5.0: alemán │ textos no
+            │ tuteando, el  │ se puede
+            │ promocional   │ lanzar
+            │ sin "4.3" y   │ /appstore
+            │ el término    │
+            │ "duplicado"   │
+            │ en chino      │
+────────────┼───────────────┼───────────
+Redraft     │ Pedir         │ No, pero
+#256        │ valoración a  │ es la
+            │ partir de 48  │ mejora de
+            │ horas y no de │ ASO con
+            │ 7 días. Hoy   │ más
+            │ no se le pide │ impacto
+            │ a nadie       │
+────────────┼───────────────┼───────────
+RedraftWeb  │ Enlaces       │ No, va
+#33         │ internos del  │ aparte
+            │ blog hacia    │
+            │ las 3 páginas │
+            │ desde las que │
+            │ más se        │
+            │ descarga      │
+
+La decisión que queda: el #256 es código
+y el build 190 no lo lleva. Hay dos
+opciones:
+
+• Publicar la 4.5.0 tal cual (build
+  190): sale ya, pero el arreglo de las
+  valoraciones espera a la versión
+  siguiente. Mientras tanto, EE. UU.
+  sigue sin estrellas.
+• Mergear el #256 y subir un build 191
+  de la 4.5.0: unas horas más de
+  trabajo, y el arreglo sale en esta
+  misma versión.
+
+Mi recomendación es la segunda. EE. UU.
+es el 40% de las búsquedas y no tiene ni
+una estrella, y los runs llevan semanas
+sin encontrar nada que pese más en la
+tienda.
+
+Me dijiste que aún estabas cerrando la
+4.5. Cuando termines, dime cuál de las
+dos y lo hago: merge, build, /appstore.
+
+Aparte, en agent-skills queda la PR #135
+(github.com), que hace que git ignore
+los restos de instalar skills. No es de
+Redraft y no corre prisa.

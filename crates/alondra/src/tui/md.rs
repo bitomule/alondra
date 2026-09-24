@@ -1,3 +1,4 @@
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -5,48 +6,75 @@ pub const QUOTE_MAX: usize = 200;
 const CODE: Color = Color::Indexed(180);
 const ACCENT: Color = Color::LightYellow;
 const DIM: Color = Color::DarkGray;
+const CELL_WORD_MAX: usize = 20;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Heading(u8),
     Para,
-    Item { depth: usize, marker: String },
-    Code,
+    Item(String),
+    Code(Option<String>),
     Quote,
-    Row { header: bool },
+    Row { header: bool, aligns: Vec<Alignment> },
     Rule,
     Label,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct Fmt {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+    link: bool,
+    host: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Run {
+    text: String,
+    fmt: Fmt,
+}
+
+pub type Text = Vec<Run>;
+
+/// `lines` holds a text split at its hard breaks, the lines of a code block, or the cells of a table row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub kind: Kind,
-    pub lines: Vec<String>,
+    pub depth: usize,
+    pub lines: Vec<Text>,
 }
 
 impl Block {
-    fn new(kind: Kind, line: &str) -> Self {
-        Block { kind, lines: vec![line.to_string()] }
+    fn new(kind: Kind, depth: usize) -> Self {
+        let lines = if matches!(kind, Kind::Row { .. } | Kind::Rule) { vec![] } else { vec![vec![]] };
+        Block { kind, depth, lines }
+    }
+
+    fn plain_text(kind: Kind, text: &str) -> Self {
+        Block { kind, depth: 0, lines: vec![vec![Run { text: text.to_string(), fmt: Fmt::default() }]] }
     }
 
     pub fn label(text: &str) -> Self {
-        Block::new(Kind::Label, text)
+        Block::plain_text(Kind::Label, text)
     }
 
     pub fn para(text: &str) -> Self {
-        Block::new(Kind::Para, text)
+        Block::plain_text(Kind::Para, text)
     }
 
     pub fn plain(&self) -> String {
-        let joined = match self.kind {
-            Kind::Row { .. } => cells(&self.lines[0]).join(" | "),
-            _ => self.lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" "),
+        let (sep, lines): (&str, Vec<String>) = match self.kind {
+            Kind::Row { .. } => (" | ", self.lines.iter().map(|c| one_line(&plain(c))).collect()),
+            Kind::Code(_) => (" ", self.lines.iter().map(|l| one_line(&plain(l))).collect()),
+            _ => ("\n", self.lines.iter().map(|l| one_line(&plain(l))).collect()),
         };
-        strip_inline(&joined).split_whitespace().collect::<Vec<_>>().join(" ")
+        lines.join(sep).trim().to_string()
     }
 
     pub fn quote(&self) -> String {
-        clip(&self.plain(), QUOTE_MAX)
+        clip(&one_line(&self.plain()), QUOTE_MAX)
     }
 
     pub fn commentable(&self) -> bool {
@@ -54,228 +82,240 @@ impl Block {
     }
 }
 
+fn plain(text: &[Run]) -> String {
+    text.iter().filter(|r| !r.fmt.host).map(|r| r.text.as_str()).collect()
+}
+
 pub fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max { s.to_string() } else { format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>()) }
 }
 
+fn host(url: &str) -> Option<&str> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?.rsplit('@').next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    (!host.is_empty()).then_some(host)
+}
+
+#[derive(Default)]
+struct Builder {
+    out: Vec<Block>,
+    cur: Option<Block>,
+    item_text: bool,
+    lists: Vec<Option<u64>>,
+    quotes: usize,
+    aligns: Vec<Alignment>,
+    emphasis: usize,
+    strong: usize,
+    strike: usize,
+    links: Vec<(String, usize)>,
+    code: Option<String>,
+}
+
+impl Builder {
+    fn nesting(&self) -> usize {
+        self.lists.len() + self.quotes
+    }
+
+    fn flush(&mut self) {
+        if let Some(b) = self.cur.take() {
+            self.out.push(b);
+        }
+        self.item_text = false;
+    }
+
+    fn open(&mut self, kind: Kind, depth: usize) {
+        self.flush();
+        self.cur = Some(Block::new(kind, depth));
+    }
+
+    fn open_text(&mut self) {
+        if self.item_text {
+            self.item_text = false;
+            return;
+        }
+        match self.quotes {
+            0 => self.open(Kind::Para, self.nesting()),
+            _ => self.open(Kind::Quote, self.nesting() - 1),
+        }
+    }
+
+    fn current_line(&self) -> String {
+        self.cur.as_ref().and_then(|b| b.lines.last()).map(|l| plain(l)).unwrap_or_default()
+    }
+
+    fn push(&mut self, text: &str, host: bool) {
+        self.push_fmt(text, Fmt { host, ..Fmt::default() });
+    }
+
+    fn push_fmt(&mut self, text: &str, extra: Fmt) {
+        if self.cur.is_none() {
+            self.open_text();
+        }
+        let fmt = Fmt {
+            bold: self.strong > 0,
+            italic: self.emphasis > 0,
+            strike: self.strike > 0,
+            link: !self.links.is_empty() && !extra.host,
+            ..extra
+        };
+        let Some(b) = self.cur.as_mut() else { return };
+        if b.lines.is_empty() {
+            b.lines.push(vec![]);
+        }
+        let line = b.lines.last_mut().expect("a line was just ensured");
+        match line.last_mut() {
+            Some(r) if r.fmt == fmt => r.text.push_str(text),
+            _ => line.push(Run { text: text.to_string(), fmt }),
+        }
+    }
+
+    fn event(&mut self, event: Event) {
+        match event {
+            Event::Start(tag) => self.start(tag),
+            Event::End(tag) => self.end(tag),
+            Event::Text(t) => match self.code.as_mut() {
+                Some(code) => code.push_str(&t),
+                None => self.push(&t, false),
+            },
+            Event::Code(t) => self.push_fmt(&t, Fmt { code: true, ..Fmt::default() }),
+            Event::InlineHtml(t) | Event::Html(t) | Event::InlineMath(t) | Event::DisplayMath(t) | Event::FootnoteReference(t) => self.push(&t, false),
+            Event::SoftBreak => self.push(" ", false),
+            Event::HardBreak => match self.cur.as_mut() {
+                Some(b) if !matches!(b.kind, Kind::Row { .. }) => b.lines.push(vec![]),
+                _ => self.push(" ", false),
+            },
+            Event::Rule => {
+                self.open(Kind::Rule, self.nesting());
+                self.flush();
+            }
+            Event::TaskListMarker(done) => {
+                if let Some(Block { kind: Kind::Item(marker), .. }) = self.cur.as_mut() {
+                    *marker = if done { "☑" } else { "☐" }.into();
+                }
+            }
+        }
+    }
+
+    fn start(&mut self, tag: Tag) {
+        match tag {
+            Tag::Paragraph => self.open_text(),
+            Tag::Heading { level, .. } => self.open(Kind::Heading(level as u8), self.nesting()),
+            Tag::BlockQuote(_) => {
+                self.flush();
+                self.quotes += 1;
+            }
+            Tag::CodeBlock(kind) => {
+                let lang = match kind {
+                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().map(str::to_string),
+                    CodeBlockKind::Indented => None,
+                };
+                self.open(Kind::Code(lang), self.nesting());
+                self.code = Some(String::new());
+            }
+            Tag::HtmlBlock => self.open(Kind::Para, self.nesting()),
+            Tag::List(start) => {
+                self.flush();
+                self.lists.push(start);
+            }
+            Tag::Item => {
+                let marker = match self.lists.last_mut() {
+                    Some(Some(n)) => {
+                        *n += 1;
+                        format!("{}.", *n - 1)
+                    }
+                    _ => "•".into(),
+                };
+                self.open(Kind::Item(marker), self.nesting().saturating_sub(1));
+                self.item_text = true;
+            }
+            Tag::Table(aligns) => {
+                self.flush();
+                self.aligns = aligns;
+            }
+            Tag::TableHead | Tag::TableRow => self.open(Kind::Row { header: tag == Tag::TableHead, aligns: self.aligns.clone() }, self.nesting()),
+            Tag::TableCell => {
+                if let Some(b) = self.cur.as_mut() {
+                    b.lines.push(vec![]);
+                }
+            }
+            Tag::Emphasis => self.emphasis += 1,
+            Tag::Strong => self.strong += 1,
+            Tag::Strikethrough => self.strike += 1,
+            Tag::Link { link_type, dest_url, .. } | Tag::Image { link_type, dest_url, .. } => {
+                let dest = if matches!(link_type, LinkType::Autolink | LinkType::Email) { String::new() } else { dest_url.to_string() };
+                self.links.push((dest, self.current_line().len()));
+            }
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::HtmlBlock | TagEnd::Item | TagEnd::TableHead | TagEnd::TableRow => self.flush(),
+            TagEnd::CodeBlock => {
+                let code = self.code.take().unwrap_or_default();
+                let code = code.strip_suffix('\n').unwrap_or(&code);
+                if let Some(b) = self.cur.as_mut() {
+                    let fmt = Fmt { code: true, ..Fmt::default() };
+                    b.lines = code.split('\n').map(|l| vec![Run { text: l.replace('\t', "    "), fmt }]).collect();
+                }
+                self.flush();
+            }
+            TagEnd::BlockQuote(_) => {
+                self.flush();
+                self.quotes = self.quotes.saturating_sub(1);
+            }
+            TagEnd::List(_) => {
+                self.flush();
+                self.lists.pop();
+            }
+            TagEnd::Emphasis => self.emphasis = self.emphasis.saturating_sub(1),
+            TagEnd::Strong => self.strong = self.strong.saturating_sub(1),
+            TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
+            TagEnd::Link | TagEnd::Image => {
+                let Some((dest, at)) = self.links.pop() else { return };
+                let line = self.current_line();
+                let text = line.get(at..).unwrap_or_default().trim();
+                if let Some(h) = host(&dest).filter(|h| text != dest && text != *h) {
+                    self.push(&format!(" ({h})"), true);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn parse(text: &str) -> Vec<Block> {
-    let mut out = vec![];
-    let mut cur: Option<Block> = None;
-    let mut fence: Option<&str> = None;
-    for raw in text.lines() {
-        let line = raw.trim_end();
-        let t = line.trim_start();
-        if let Some(f) = fence {
-            if t.starts_with(f) {
-                fence = None;
-                flush(&mut cur, &mut out);
-            } else if let Some(b) = cur.as_mut() {
-                b.lines.push(line.replace('\t', "    "));
-            }
-            continue;
-        }
-        let depth = (line.len() - t.len()) / 2;
-        if t.starts_with("```") || t.starts_with("~~~") {
-            flush(&mut cur, &mut out);
-            fence = Some(if t.starts_with("```") { "```" } else { "~~~" });
-            cur = Some(Block { kind: Kind::Code, lines: vec![] });
-            continue;
-        }
-        if t.is_empty() {
-            flush(&mut cur, &mut out);
-            continue;
-        }
-        if let Some(level) = heading_level(t) {
-            flush(&mut cur, &mut out);
-            out.push(Block::new(Kind::Heading(level as u8), t[level..].trim().trim_end_matches('#').trim_end()));
-            continue;
-        }
-        if is_rule(t) {
-            flush(&mut cur, &mut out);
-            out.push(Block { kind: Kind::Rule, lines: vec![] });
-            continue;
-        }
-        if t.starts_with('|') {
-            flush(&mut cur, &mut out);
-            if is_table_separator(t) {
-                if let Some(Block { kind: Kind::Row { header }, .. }) = out.last_mut() {
-                    *header = true;
-                }
-            } else {
-                out.push(Block::new(Kind::Row { header: false }, t));
-            }
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix('>') {
-            let rest = rest.strip_prefix(' ').unwrap_or(rest);
-            match cur.as_mut() {
-                Some(b) if b.kind == Kind::Quote => b.lines.push(rest.to_string()),
-                _ => {
-                    flush(&mut cur, &mut out);
-                    cur = Some(Block::new(Kind::Quote, rest));
-                }
-            }
-            continue;
-        }
-        if let Some((marker, rest)) = list_marker(t) {
-            flush(&mut cur, &mut out);
-            cur = Some(Block::new(Kind::Item { depth, marker }, rest));
-            continue;
-        }
-        match cur.as_mut() {
-            Some(b) if matches!(b.kind, Kind::Para | Kind::Item { .. } | Kind::Quote) => b.lines.push(t.to_string()),
-            _ => {
-                flush(&mut cur, &mut out);
-                cur = Some(Block::para(t));
-            }
+    let mut b = Builder::default();
+    for event in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH) {
+        b.event(event);
+    }
+    b.flush();
+    b.out
+}
+
+fn style(fmt: Fmt, base: Style) -> Style {
+    let mut s = base;
+    for (on, m) in [(fmt.bold, Modifier::BOLD), (fmt.italic, Modifier::ITALIC), (fmt.strike, Modifier::CROSSED_OUT)] {
+        if on {
+            s = s.add_modifier(m);
         }
     }
-    flush(&mut cur, &mut out);
-    out
-}
-
-fn flush(cur: &mut Option<Block>, out: &mut Vec<Block>) {
-    if let Some(b) = cur.take() {
-        out.push(b);
+    if fmt.code {
+        s = s.fg(CODE);
     }
-}
-
-fn heading_level(t: &str) -> Option<usize> {
-    let level = t.chars().take_while(|&c| c == '#').count();
-    ((1..=6).contains(&level) && t[level..].starts_with(' ')).then_some(level)
-}
-
-fn is_rule(t: &str) -> bool {
-    let chars: Vec<char> = t.chars().filter(|c| !c.is_whitespace()).collect();
-    chars.len() >= 3 && ['-', '*', '_'].iter().any(|&m| chars.iter().all(|&c| c == m))
-}
-
-fn is_table_separator(t: &str) -> bool {
-    t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
-}
-
-fn list_marker(t: &str) -> Option<(String, &str)> {
-    let bullet = ["- ", "* ", "+ "].iter().find_map(|m| t.strip_prefix(m));
-    if let Some(rest) = bullet {
-        let rest = rest.trim_start();
-        for (box_, mark) in [("[ ] ", "☐"), ("[x] ", "☑"), ("[X] ", "☑")] {
-            if let Some(r) = rest.strip_prefix(box_) {
-                return Some((mark.into(), r));
-            }
-        }
-        return Some(("•".into(), rest));
+    if fmt.link {
+        s = s.fg(Color::LightBlue).add_modifier(Modifier::UNDERLINED);
     }
-    let digits = t.chars().take_while(char::is_ascii_digit).count();
-    if digits == 0 || digits > 3 {
-        return None;
+    if fmt.host {
+        s = s.fg(DIM);
     }
-    let after = &t[digits..];
-    let rest = after.strip_prefix(". ").or_else(|| after.strip_prefix(") "))?;
-    Some((format!("{}.", &t[..digits]), rest.trim_start()))
+    s
 }
 
-pub fn cells(row: &str) -> Vec<String> {
-    let t = row.trim();
-    let t = t.strip_prefix('|').unwrap_or(t);
-    let t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|').map(|c| c.trim().to_string()).collect()
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Fmt {
-    Plain,
-    Bold,
-    Italic,
-    Code,
-    Link,
-}
-
-fn find(chars: &[char], from: usize, pat: &[char]) -> Option<usize> {
-    if chars.len() < pat.len() {
-        return None;
-    }
-    (from..=chars.len() - pat.len()).find(|&j| chars[j..j + pat.len()] == *pat)
-}
-
-fn inline_parts(s: &str) -> Vec<(String, Fmt)> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out: Vec<(String, Fmt)> = vec![];
-    let mut buf = String::new();
-    let mut i = 0;
-    let emit = |buf: &mut String, out: &mut Vec<(String, Fmt)>, text: String, fmt: Fmt| {
-        if !buf.is_empty() {
-            out.push((std::mem::take(buf), Fmt::Plain));
-        }
-        out.push((text, fmt));
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if c == '\\'
-            && let Some(n) = next.filter(char::is_ascii_punctuation)
-        {
-            buf.push(n);
-            i += 2;
-            continue;
-        }
-        if c == '`'
-            && let Some(end) = find(&chars, i + 1, &['`'])
-        {
-            emit(&mut buf, &mut out, chars[i + 1..end].iter().collect(), Fmt::Code);
-            i = end + 1;
-            continue;
-        }
-        if (c == '*' || c == '_')
-            && next == Some(c)
-            && let Some(end) = find(&chars, i + 2, &[c, c])
-            && end > i + 2
-        {
-            emit(&mut buf, &mut out, chars[i + 2..end].iter().collect(), Fmt::Bold);
-            i = end + 2;
-            continue;
-        }
-        if c == '*'
-            && next.is_some_and(|n| !n.is_whitespace() && n != '*')
-            && let Some(end) = find(&chars, i + 1, &['*'])
-            && !chars[end - 1].is_whitespace()
-        {
-            emit(&mut buf, &mut out, chars[i + 1..end].iter().collect(), Fmt::Italic);
-            i = end + 1;
-            continue;
-        }
-        if c == '['
-            && let Some(close) = find(&chars, i + 1, &[']'])
-            && chars.get(close + 1) == Some(&'(')
-            && let Some(paren) = find(&chars, close + 2, &[')'])
-        {
-            emit(&mut buf, &mut out, chars[i + 1..close].iter().collect(), Fmt::Link);
-            i = paren + 1;
-            continue;
-        }
-        buf.push(c);
-        i += 1;
-    }
-    if !buf.is_empty() {
-        out.push((buf, Fmt::Plain));
-    }
-    out
-}
-
-pub fn strip_inline(s: &str) -> String {
-    inline_parts(s).into_iter().map(|(t, fmt)| if matches!(fmt, Fmt::Plain | Fmt::Code) { t } else { strip_inline(&t) }).collect()
-}
-
-pub fn inline(s: &str, base: Style) -> Vec<Span<'static>> {
-    inline_parts(s)
-        .into_iter()
-        .flat_map(|(t, fmt)| match fmt {
-            Fmt::Plain => vec![Span::styled(t, base)],
-            Fmt::Code => vec![Span::styled(t, base.fg(CODE))],
-            Fmt::Bold => inline(&t, base.add_modifier(Modifier::BOLD)),
-            Fmt::Italic => inline(&t, base.add_modifier(Modifier::ITALIC)),
-            Fmt::Link => inline(&t, base.fg(Color::LightBlue).add_modifier(Modifier::UNDERLINED)),
-        })
-        .collect()
+fn spans(text: &[Run], base: Style, hosts: bool) -> Vec<Span<'static>> {
+    text.iter().filter(|r| hosts || !r.fmt.host).map(|r| Span::styled(r.text.clone(), style(r.fmt, base))).collect()
 }
 
 pub fn char_width(c: char) -> usize {
@@ -410,36 +450,100 @@ pub struct Rendered {
 }
 
 fn joins_previous(prev: &Kind, cur: &Kind) -> bool {
-    matches!((prev, cur), (Kind::Item { .. }, Kind::Item { .. }) | (Kind::Row { .. }, Kind::Row { .. }))
+    matches!((prev, cur), (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. }))
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub enum Mode {
+    #[default]
+    Grid,
+    Wrapped,
+    Records,
 }
 
 #[derive(Default)]
 struct Table {
     widths: Vec<usize>,
     header: Option<Vec<String>>,
+    mode: Mode,
+    ruled: bool,
 }
 
-fn table_at(blocks: &[Block], start: usize) -> Table {
-    let header = match &blocks[start] {
-        Block { kind: Kind::Row { header: true }, lines } => Some(cells(&lines[0])),
-        _ => None,
-    };
-    Table { widths: table_widths(blocks, start), header }
-}
-
-fn table_widths(blocks: &[Block], start: usize) -> Vec<usize> {
-    let mut widths: Vec<usize> = vec![];
-    for b in blocks[start..].iter().take_while(|b| matches!(b.kind, Kind::Row { .. })) {
-        for (i, c) in cells(&b.lines[0]).iter().enumerate() {
-            let w = str_width(&strip_inline(c));
-            if i >= widths.len() {
-                widths.push(w);
-            } else {
-                widths[i] = widths[i].max(w);
-            }
+fn table_at(blocks: &[Block], start: usize, width: usize) -> Table {
+    let rows: Vec<&Block> = blocks[start..].iter().take_while(|b| matches!(b.kind, Kind::Row { .. })).collect();
+    let columns = rows.iter().map(|r| r.lines.len()).max().unwrap_or(0);
+    let (mut natural, mut min) = (vec![0; columns], vec![0; columns]);
+    for r in &rows {
+        for (i, c) in r.lines.iter().enumerate() {
+            let text = plain(c);
+            let w = str_width(&text);
+            let word = text.split_whitespace().map(str_width).max().unwrap_or(0).min(CELL_WORD_MAX).max(w.min(4));
+            natural[i] = natural[i].max(w);
+            min[i] = min[i].max(word);
         }
     }
+    let gaps = 3 * columns.saturating_sub(1);
+    let fits = |w: &[usize]| w.iter().sum::<usize>() + gaps <= width;
+    let header = match rows.first() {
+        Some(Block { kind: Kind::Row { header: true, .. }, lines, .. }) => Some(lines.iter().map(|c| one_line(&plain(c))).collect()),
+        _ => None,
+    };
+    let (mode, widths) = if fits(&natural) {
+        (Mode::Grid, natural)
+    } else if fits(&min) {
+        (Mode::Wrapped, share(&natural, min, width - gaps))
+    } else {
+        (Mode::Records, natural)
+    };
+    let ruled = mode == Mode::Wrapped && rows.iter().any(|r| matches!(r.kind, Kind::Row { header: false, .. }) && row_cells(r, &widths, Style::new()).iter().any(|c| c.len() > 1));
+    Table { widths, header, mode, ruled }
+}
+
+/// Spare width goes to each column in proportion to its natural width, never past it.
+fn share(natural: &[usize], mut widths: Vec<usize>, avail: usize) -> Vec<usize> {
+    let mut spare = avail.saturating_sub(widths.iter().sum());
+    while spare > 0 {
+        let open: Vec<usize> = (0..widths.len()).filter(|&i| widths[i] < natural[i]).collect();
+        let total: usize = open.iter().map(|&i| natural[i]).sum();
+        if open.is_empty() || total == 0 {
+            break;
+        }
+        let mut given = 0;
+        for &i in &open {
+            let add = (spare * natural[i] / total).min(natural[i] - widths[i]);
+            widths[i] += add;
+            given += add;
+        }
+        if given == 0 {
+            for &i in open.iter().take(spare) {
+                widths[i] += 1;
+                given += 1;
+            }
+        }
+        spare -= given;
+    }
     widths
+}
+
+fn row_cells(b: &Block, widths: &[usize], base: Style) -> Vec<Vec<Line<'static>>> {
+    b.lines.iter().zip(widths).map(|(c, &w)| if w == 0 { vec![Line::default()] } else { wrap(spans(c, base, false), w, vec![], vec![]) }).collect()
+}
+
+fn pad(line: Line<'static>, width: usize, align: Alignment) -> Vec<Span<'static>> {
+    let gap = width.saturating_sub(line.width());
+    let (before, after) = match align {
+        Alignment::Right => (gap, 0),
+        Alignment::Center => (gap / 2, gap - gap / 2),
+        Alignment::Left | Alignment::None => (0, gap),
+    };
+    let mut out = vec![Span::raw(" ".repeat(before))];
+    out.extend(line.spans);
+    out.push(Span::raw(" ".repeat(after)));
+    out
+}
+
+fn separator(widths: &[usize]) -> Line<'static> {
+    Line::styled(widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─"), Style::new().fg(DIM))
 }
 
 pub fn render(blocks: &[Block], width: usize) -> Rendered {
@@ -448,35 +552,52 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
     let mut ranges = vec![];
     let mut table = Table::default();
     for (i, b) in blocks.iter().enumerate() {
+        let indent = if matches!(b.kind, Kind::Item(_)) { 0 } else { 2 * b.depth };
+        let inner = width.saturating_sub(indent).max(8);
+        let row = |k: &Kind| matches!(k, Kind::Row { header: false, .. });
         if i > 0 && !joins_previous(&blocks[i - 1].kind, &b.kind) {
             lines.push(Line::default());
+        } else if i > 0 && table.ruled && row(&blocks[i - 1].kind) && row(&b.kind) {
+            lines.push(indented(separator(&table.widths), indent));
         }
         if matches!(b.kind, Kind::Row { .. }) && (i == 0 || !matches!(blocks[i - 1].kind, Kind::Row { .. })) {
-            table = table_at(blocks, i);
+            table = table_at(blocks, i, inner);
         }
         let start = lines.len();
-        lines.extend(render_block(b, width, &table));
+        lines.extend(render_block(b, inner, &table).into_iter().map(|l| indented(l, indent)));
         ranges.push((start, lines.len()));
     }
     Rendered { lines, ranges }
 }
 
+fn indented(line: Line<'static>, indent: usize) -> Line<'static> {
+    if indent == 0 {
+        return line;
+    }
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    spans.extend(line.spans);
+    Line::from(spans).style(line.style)
+}
+
 /// A table too wide for the screen reads as one record per row, each cell under its column name.
-fn record(cs: &[String], header: Option<&[String]>, width: usize) -> Vec<Line<'static>> {
+fn record(cs: &[Text], header: Option<&[String]>, width: usize) -> Vec<Line<'static>> {
     let mut out = vec![];
     for (i, c) in cs.iter().enumerate() {
         let lead = if i == 0 { "▸ " } else { "  " };
         let mut first = vec![Span::styled(lead, Style::new().fg(ACCENT))];
         if let Some(name) = header.and_then(|h| h.get(i)).filter(|n| !n.trim().is_empty()) {
-            first.push(Span::styled(format!("{}: ", strip_inline(name)), Style::new().fg(DIM).add_modifier(Modifier::BOLD)));
+            first.push(Span::styled(format!("{name}: "), Style::new().fg(DIM).add_modifier(Modifier::BOLD)));
         }
-        out.extend(wrap(inline(c, Style::new()), width, first, vec![Span::raw("    ")]));
+        out.extend(wrap(spans(c, Style::new(), false), width, first, vec![Span::raw("    ")]));
     }
     out
 }
 
+fn wrap_text(b: &Block, base: Style, width: usize, first: Vec<Span<'static>>, rest: Vec<Span<'static>>) -> Vec<Line<'static>> {
+    b.lines.iter().enumerate().flat_map(|(k, l)| wrap(spans(l, base, true), width, if k == 0 { first.clone() } else { rest.clone() }, rest.clone())).collect()
+}
+
 fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
-    let text = b.lines.join(" ");
     match &b.kind {
         Kind::Heading(level) => {
             let style = match level {
@@ -484,55 +605,57 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
                 2 => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
                 _ => Style::new().add_modifier(Modifier::BOLD),
             };
-            wrap(inline(&text, style), width, vec![], vec![])
+            wrap_text(b, style, width, vec![], vec![])
         }
-        Kind::Para => wrap(inline(&text, Style::new()), width, vec![], vec![]),
-        Kind::Item { depth, marker } => {
-            let indent = "  ".repeat(*depth);
+        Kind::Para => wrap_text(b, Style::new(), width, vec![], vec![]),
+        Kind::Item(marker) => {
+            let indent = "  ".repeat(b.depth);
             let color = if marker.ends_with('.') { ACCENT } else { DIM };
             let first = vec![Span::raw(indent.clone()), Span::styled(format!("{marker} "), Style::new().fg(color))];
             let rest = vec![Span::raw(format!("{indent}{}", " ".repeat(str_width(marker) + 1)))];
-            wrap(inline(&text, Style::new()), width, first, rest)
+            wrap_text(b, Style::new(), width, first, rest)
         }
         Kind::Quote => {
             let bar = || vec![Span::styled("▎ ", Style::new().fg(DIM))];
-            wrap(inline(&text, Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC)), width, bar(), bar())
+            wrap_text(b, Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC), width, bar(), bar())
         }
-        Kind::Code => {
+        Kind::Code(lang) => {
             let prefix = Span::styled("│ ", Style::new().fg(DIM));
-            let lines = if b.lines.is_empty() { vec![String::new()] } else { b.lines.clone() };
-            lines.iter().flat_map(|l| hard_wrap(l, width, prefix.clone(), Style::new().fg(CODE))).collect()
+            let mut out: Vec<Line<'static>> = lang.iter().map(|l| Line::styled(truncate(l, width), Style::new().fg(DIM))).collect();
+            let lines = if b.lines.is_empty() { vec![String::new()] } else { b.lines.iter().map(|l| plain(l)).collect() };
+            out.extend(lines.iter().flat_map(|l| hard_wrap(l, width, prefix.clone(), Style::new().fg(CODE))));
+            out
         }
-        Kind::Row { header } => {
-            let cs = cells(&b.lines[0]);
-            let widths = &table.widths;
-            let total: usize = widths.iter().sum::<usize>() + 3 * widths.len().saturating_sub(1);
-            let base = if *header { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
-            if total > width || widths.len() < cs.len() {
+        Kind::Row { header, aligns } => {
+            if table.mode == Mode::Records || table.widths.len() < b.lines.len() {
                 return match (header, table.header.as_deref()) {
                     (true, Some(_)) => vec![],
-                    (_, names) => record(&cs, names, width),
+                    (_, names) => record(&b.lines, names, width),
                 };
             }
-            let mut spans = vec![];
-            for (i, c) in cs.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" │ ", Style::new().fg(DIM)));
+            let base = if *header { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+            let mut cells = row_cells(b, &table.widths, base);
+            let height = cells.iter().map(Vec::len).max().unwrap_or(1);
+            let mut out = vec![];
+            for k in 0..height {
+                let mut spans = vec![];
+                for (i, w) in table.widths.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" │ ", Style::new().fg(DIM)));
+                    }
+                    let line = cells.get_mut(i).and_then(|c| c.get_mut(k)).map(std::mem::take).unwrap_or_default();
+                    spans.extend(pad(line, *w, aligns.get(i).copied().unwrap_or(Alignment::None)));
                 }
-                let cell = inline(c, base);
-                let w: usize = cell.iter().map(Span::width).sum();
-                spans.extend(cell);
-                spans.push(Span::raw(" ".repeat(widths[i].saturating_sub(w))));
+                out.push(Line::from(spans));
             }
-            let mut out = vec![Line::from(spans)];
             if *header {
-                let sep = widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─");
-                out.push(Line::styled(sep, Style::new().fg(DIM)));
+                out.push(separator(&table.widths));
             }
             out
         }
         Kind::Rule => vec![Line::styled("─".repeat(width), Style::new().fg(DIM))],
         Kind::Label => {
+            let text = b.plain();
             let head = format!("── {} ", truncate(&text, width.saturating_sub(4)));
             let fill = width.saturating_sub(str_width(&head));
             vec![Line::styled(format!("{head}{}", "─".repeat(fill)), Style::new().fg(Color::Cyan))]
@@ -565,29 +688,34 @@ mod tests {
         l.spans.iter().map(|s| s.content.to_string()).collect()
     }
 
+    fn rendered(md: &str, width: usize) -> Vec<String> {
+        render(&parse(md), width).lines.iter().map(|l| text_of(l).trim_end().to_string()).collect()
+    }
+
     #[test]
     fn parses_the_blocks_a_plan_is_made_of() {
         let md = "# Plan\n\nFirst paragraph\ncontinues here.\n\n- one\n  continues one\n- [x] two\n  1. nested\n\n```rust\nfn main() {}\n\n```\n\n> long\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n";
         let b = parse(md);
-        let kinds: Vec<&Kind> = b.iter().map(|b| &b.kind).collect();
+        let kinds: Vec<(&Kind, usize)> = b.iter().map(|b| (&b.kind, b.depth)).collect();
+        let row = |header| Kind::Row { header, aligns: vec![Alignment::None; 2] };
         assert_eq!(
             kinds,
             vec![
-                &Kind::Heading(1),
-                &Kind::Para,
-                &Kind::Item { depth: 0, marker: "•".into() },
-                &Kind::Item { depth: 0, marker: "☑".into() },
-                &Kind::Item { depth: 1, marker: "1.".into() },
-                &Kind::Code,
-                &Kind::Quote,
-                &Kind::Row { header: true },
-                &Kind::Row { header: false },
-                &Kind::Rule,
+                (&Kind::Heading(1), 0),
+                (&Kind::Para, 0),
+                (&Kind::Item("•".into()), 0),
+                (&Kind::Item("☑".into()), 0),
+                (&Kind::Item("1.".into()), 1),
+                (&Kind::Code(Some("rust".into())), 0),
+                (&Kind::Quote, 0),
+                (&row(true), 0),
+                (&row(false), 0),
+                (&Kind::Rule, 0),
             ]
         );
         assert_eq!(b[1].plain(), "First paragraph continues here.");
         assert_eq!(b[2].plain(), "one continues one");
-        assert_eq!(b[5].lines, vec!["fn main() {}".to_string(), String::new()]);
+        assert_eq!(b[5].lines.iter().map(|l| plain(l)).collect::<Vec<_>>(), vec!["fn main() {}".to_string(), String::new()]);
         assert_eq!(b[7].plain(), "a | b");
     }
 
@@ -595,26 +723,81 @@ mod tests {
     const WIDE: &str = "## Tabla\n\n| Lo que traen | ¿Lo tenemos? | ¿Cambia lo que haríamos? |\n|---|---|---|\n| **Fuente de datos = Appeeky** (API/MCP de pago, 8 $/mes) para volumen y rankings | No, y a propósito | **No.** Sin esa clave sus skills no tienen dato: recomiendan de memoria |\n| Fórmula de oportunidad | Parecido | **No.** Un número inventado ordena peor que un juicio explícito |\n";
 
     #[test]
-    fn a_table_that_fits_is_a_grid_and_one_that_does_not_is_one_record_per_row() {
-        let blocks = parse(WIDE);
-        let wide: Vec<String> = render(&blocks, 200).lines.iter().map(text_of).collect();
+    fn a_table_is_a_grid_then_a_wrapped_grid_then_one_record_per_row() {
+        let wide = rendered(WIDE, 200);
         assert!(wide.iter().any(|l| l.starts_with("Lo que traen") && l.contains(" │ ¿Lo tenemos?")), "{wide:#?}");
-        assert!(wide.iter().any(|l| l.contains("─┼─")));
+        assert_eq!(wide.iter().filter(|l| l.contains("─┼─")).count(), 1, "{wide:#?}");
 
-        let narrow: Vec<String> = render(&blocks, 60).lines.iter().map(text_of).collect();
-        assert!(narrow.iter().all(|l| !l.contains(" │ ") && str_width(l) <= 60), "{narrow:#?}");
+        let wrapped = rendered(WIDE, 60);
+        assert!(wrapped.iter().all(|l| str_width(l) <= 60), "{wrapped:#?}");
+        assert!(wrapped.iter().any(|l| l.starts_with("Fuente de datos") && l.contains(" │ No, y a ")), "{wrapped:#?}");
+        assert_eq!(wrapped.iter().filter(|l| l.contains("─┼─")).count(), 2, "header rule and one rule between the two rows: {wrapped:#?}");
+
+        let narrow = rendered(WIDE, 36);
+        assert!(narrow.iter().all(|l| !l.contains(" │ ") && str_width(l) <= 36), "{narrow:#?}");
         let records: Vec<&String> = narrow.iter().filter(|l| l.starts_with("▸ ")).collect();
         assert_eq!(records.len(), 2, "{narrow:#?}");
         assert!(records[0].starts_with("▸ Lo que traen: Fuente de datos"), "{narrow:#?}");
-        assert!(narrow.iter().any(|l| l.starts_with("  ¿Lo tenemos?: No, y a propósito")), "{narrow:#?}");
+        assert!(narrow.iter().any(|l| l.starts_with("  ¿Lo tenemos?: No, y a")), "{narrow:#?}");
         assert!(narrow.iter().any(|l| l.starts_with("  ¿Cambia lo que haríamos?: No.")), "{narrow:#?}");
     }
 
     #[test]
-    fn a_wide_table_without_a_header_still_reads_row_by_row() {
-        let narrow: Vec<String> = render(&parse("| aaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccc |\n"), 20).lines.iter().map(text_of).collect();
+    fn a_wide_table_with_an_empty_header_still_reads_row_by_row() {
+        let narrow = rendered("| | | |\n|---|---|---|\n| aaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccc |\n", 20);
         assert_eq!(narrow.iter().filter(|l| l.starts_with("▸ ")).count(), 1, "{narrow:#?}");
-        assert!(narrow.iter().all(|l| !l.contains(" │ ")), "{narrow:#?}");
+        assert!(narrow.iter().all(|l| !l.contains(" │ ") && !l.contains(": ")), "{narrow:#?}");
+    }
+
+    #[test]
+    fn cells_follow_the_alignment_of_the_separator_row() {
+        let lines = rendered("| left | right | mid |\n|:--|--:|:-:|\n| a | b | c |\n", 40);
+        assert_eq!(lines, vec!["left │ right │ mid", "─────┼───────┼────", "a    │     b │  c"]);
+    }
+
+    #[test]
+    fn inline_styles_become_span_styles() {
+        let line = &render(&parse("**b** *i* ***bi*** ~~s~~ `c` [t](https://docs.rs/x)"), 80).lines[0];
+        let style_of = |text: &str| line.spans.iter().find(|s| s.content == text).unwrap_or_else(|| panic!("{text} in {line:?}")).style;
+        let cases = [
+            ("b", Modifier::BOLD),
+            ("i", Modifier::ITALIC),
+            ("bi", Modifier::BOLD | Modifier::ITALIC),
+            ("s", Modifier::CROSSED_OUT),
+            ("t", Modifier::UNDERLINED),
+        ];
+        for (text, m) in cases {
+            assert!(style_of(text).add_modifier.contains(m), "{text}: {:?}", style_of(text));
+        }
+        assert_eq!(style_of("c").fg, Some(CODE));
+        assert_eq!(style_of("(docs.rs)").fg, Some(DIM));
+    }
+
+    #[test]
+    fn a_link_shows_its_host_unless_the_text_already_is_the_url() {
+        let cases = [
+            ("[the guide](https://www.docs.rs/a?b)", "the guide (docs.rs)"),
+            ("<https://example.com>", "https://example.com"),
+            ("[https://x.y](https://x.y)", "https://x.y"),
+            ("[x.y](https://x.y/z)", "x.y"),
+            ("[notes](notes.md)", "notes"),
+            ("| a |\n|---|\n| [cell](https://x.y) |", "cell"),
+        ];
+        for (md, shown) in cases {
+            let lines = rendered(md, 80);
+            assert_eq!(lines.last().map(String::as_str), Some(shown), "{md}");
+        }
+    }
+
+    #[test]
+    fn a_hard_break_starts_a_new_line_under_the_same_prefix() {
+        assert_eq!(rendered("- one  \n  two\\\n  three", 40), vec!["• one", "  two", "  three"]);
+        assert_eq!(parse("one  \ntwo")[0].quote(), "one two");
+    }
+
+    #[test]
+    fn code_shows_its_language_above_it() {
+        assert_eq!(rendered("```bash\nls\n```", 40), vec!["bash", "│ ls"]);
     }
 
     #[test]
@@ -628,8 +811,8 @@ mod tests {
 
     #[test]
     fn snake_case_and_lone_asterisks_stay_literal() {
-        assert_eq!(strip_inline("my_var_x and 2 * 3 * 4"), "my_var_x and 2 * 3 * 4");
-        assert_eq!(strip_inline(r"52\. two \*not\*"), "52. two *not*");
+        assert_eq!(parse("my_var_x and 2 * 3 * 4")[0].plain(), "my_var_x and 2 * 3 * 4");
+        assert_eq!(parse(r"52\. two \*not\*")[0].plain(), "52. two *not*");
     }
 
     #[test]
