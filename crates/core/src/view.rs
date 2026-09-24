@@ -370,7 +370,7 @@ impl View {
         let Some(pr) = self.prs.get(&pr_id) else { return };
         let target = (pr.repo.clone(), pr.number);
         for q in self.questions.values_mut() {
-            if q.status == QuestionStatus::Open && q.links.iter().any(|l| crate::pr::parse_url(&l.url).as_ref() == Some(&target)) {
+            if q.status == QuestionStatus::Open && !q.action && q.links.iter().any(|l| crate::pr::parse_url(&l.url).as_ref() == Some(&target)) {
                 q.status = QuestionStatus::Withdrawn;
             }
         }
@@ -1380,6 +1380,7 @@ mod tests {
         };
         let cases: Vec<(&str, &str, Box<dyn Fn(&View) -> Event>, QuestionStatus)> = vec![
             ("merged from a card", "https://github.com/a/b/pull/24", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Withdrawn),
+            ("an action to do once it is merged", "action https://github.com/a/b/pull/24", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Open),
             ("merged on GitHub", "https://github.com/a/b/pull/24/files", Box::new(closed(PrState::Merged)), QuestionStatus::Withdrawn),
             ("closed on GitHub", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Closed)), QuestionStatus::Withdrawn),
             ("still open", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Open)), QuestionStatus::Open),
@@ -1390,11 +1391,19 @@ mod tests {
             let mut v = run(&[hook("s", "UserPromptSubmit")]);
             v.apply(2, 2000, &Event::PrOpened { url: "https://github.com/a/b/pull/24".into(), session_id: "s".into() });
             let mut q = question(1, "s", QuestionOrigin::Ask);
+            let (action, link) = match link.strip_prefix("action ") {
+                Some(url) => (true, url),
+                None => (false, link),
+            };
+            q.action = action;
             q.links = vec![Link { url: link.into(), title: None }];
             v.apply(3, 3000, &Event::QuestionAsked(q));
             let e = event(&v);
             v.apply(4, 4000, &e);
             assert_eq!(v.questions[&1].status, expected, "{name}");
+            if action {
+                assert_eq!(v.nodes["s"].state, crate::model::NodeState::YourTurn, "{name}: the node waits on the user, it is not stalled");
+            }
         }
     }
 
