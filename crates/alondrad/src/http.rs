@@ -2533,7 +2533,7 @@ mod tests {
         hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/54".into(), session_id: "s".into() }).unwrap();
         let card = |mergeable: &str, head: &str| {
             let mut pr = hub.read(|v| v.prs[&1].clone());
-            (pr.mergeable, pr.base, pr.head_sha, pr.fetched) = (Some(mergeable.into()), Some("fase-1".into()), Some(head.into()), true);
+            (pr.mergeable, pr.base, pr.head_sha, pr.fetched) = (Some(mergeable.into()), Some("main".into()), Some(head.into()), true);
             pr
         };
         hub.append(Event::PrUpdated(card("CONFLICTING", "abc"))).unwrap();
@@ -2542,14 +2542,14 @@ mod tests {
         let (status, said) = status_and_body(merge_pr(State(hub.clone()), None, Path(1), Json(MergeBody { method: MergeMethod::Merge })).await).await;
         assert_eq!(status, StatusCode::CONFLICT, "{said}");
         assert_eq!(said["conflicts"], true);
-        assert_eq!(said["error"], "PR #54 conflicts with fase-1: resolve the conflicts first.");
+        assert_eq!(said["error"], "PR #54 conflicts with main: resolve the conflicts first.");
         assert_eq!(hub.read(|v| v.prs[&1].state), alondra_core::pr::PrState::Open);
 
         let (status, said) = status_and_body(resolve_pr_conflicts(State(hub.clone()), Path(1)).await).await;
         assert_eq!((status, said["sent_to"].as_str()), (StatusCode::OK, Some("s")), "{said}");
         let told = hub.read(|v| v.messages.values().last().map(|m| (m.session_id.clone(), m.text.clone()))).unwrap();
         assert_eq!(told.0, "s");
-        assert!(told.1.contains("resolve the conflicts of https://github.com/a/b/pull/54 with fase-1"), "{}", told.1);
+        assert!(told.1.contains("resolve the conflicts of https://github.com/a/b/pull/54 with main"), "{}", told.1);
         assert_eq!(in_inbox(&hub), 0, "the card waits for the node's push");
 
         hub.append(Event::PrUpdated(card("MERGEABLE", "def"))).unwrap();

@@ -5,7 +5,7 @@ import Testing
 @Suite struct PullRequestTests {
     private func pr(_ extra: String) throws -> PullRequest {
         let json = """
-        {"id":4,"url":"https://github.com/a/b/pull/12","repo":"a/b","number":12,"session_id":"s","title":"Menus","state":"open","opened_at":1,"base":"fase-1","head":"menus","additions":120,"deletions":8,"changed_files":5\(extra)}
+        {"id":4,"url":"https://github.com/a/b/pull/12","repo":"a/b","number":12,"session_id":"s","title":"Menus","state":"open","opened_at":1,"base":"main","head":"menus","additions":120,"deletions":8,"changed_files":5\(extra)}
         """
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -53,7 +53,7 @@ import Testing
 
     @Test func aCardSaysWhereItGoesAndHowBigItIs() throws {
         let p = try pr(#","checks":[{"name":"test","state":"failed","url":null}],"mergeable":"CONFLICTING""#)
-        #expect(p.summary == "a/b #12 · fase-1 ← menus · +120 −8 in 5 files")
+        #expect(p.summary == "a/b #12 · main ← menus · +120 −8 in 5 files")
         #expect(p.hasConflicts)
         #expect(p.checks?.first?.failed == true)
         #expect(InboxItem.pullRequest(p).id == "p4")
