@@ -194,6 +194,9 @@ pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
     if let (Some(base), Some(head)) = (&pr.base, &pr.head) {
         s.push_str(&format!(" · {base} ← {head}"));
     }
+    if let Some(below) = p.below_number {
+        s.push_str(&trf!(" · on top of PR #{below}", " · va encima del PR #{below}"));
+    }
     if pr.fetched {
         let (a, d, n) = (pr.additions, pr.deletions, pr.changed_files);
         s.push_str(&trf!(" · +{a} −{d} in {n} files", " · +{a} −{d} en {n} ficheros"));
@@ -387,6 +390,9 @@ fn item_lines(app: &App, key: Key, width: usize, selected: bool, nested: bool) -
             meta.push(Span::styled(format!(" · {} #{} ", p.pr.repo, p.pr.number), Style::new().fg(DIM)));
             if !p.pr.checks.is_empty() {
                 meta.push(Span::styled(mark, Style::new().fg(color)));
+            }
+            if let Some(below) = p.below_number {
+                meta.push(Span::styled(trf!(" ↑ on top of PR #{below}", " ↑ va encima del PR #{below}"), Style::new().fg(DIM)));
             }
         }
     }
@@ -629,9 +635,28 @@ fn mission_excerpt(mission: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
+fn pr_keys(width: usize) -> Line<'static> {
+    fit(
+        vec![
+            keycap("d"),
+            Span::styled(tr!(" diff and comment (tuicr)  ", " diff y comentarios (tuicr)  "), Style::new().fg(SOFT)),
+            keycap("r"),
+            Span::styled(tr!(" request changes  ", " pedir cambios  "), Style::new().fg(SOFT)),
+            keycap("w"),
+            Span::styled(" GitHub  ", Style::new().fg(SOFT)),
+            keycap("x"),
+            Span::styled(tr!(" set aside", " apartar"), Style::new().fg(SOFT)),
+        ],
+        width,
+    )
+}
+
 fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let hint = |spans: Vec<Span<'static>>| fit(spans, width);
     match item {
+        Item::P(p) if p.merge_blocked().is_some() => {
+            vec![hint(vec![Span::styled(p.merge_blocked().unwrap_or_default(), Style::new().fg(DIM))]), pr_keys(width)]
+        }
         Item::P(p) => {
             let mut out: Vec<Line> = vec![];
             if p.pr.conflicts() {
@@ -657,16 +682,7 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 }
                 fit(spans, width)
             }));
-            out.push(hint(vec![
-                keycap("d"),
-                Span::styled(tr!(" diff and comment (tuicr)  ", " diff y comentarios (tuicr)  "), Style::new().fg(SOFT)),
-                keycap("r"),
-                Span::styled(tr!(" request changes  ", " pedir cambios  "), Style::new().fg(SOFT)),
-                keycap("w"),
-                Span::styled(" GitHub  ", Style::new().fg(SOFT)),
-                keycap("x"),
-                Span::styled(tr!(" set aside", " apartar"), Style::new().fg(SOFT)),
-            ]));
+            out.push(pr_keys(width));
             out
         }
         Item::Q(q) => {
@@ -1383,12 +1399,14 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v
         }
         Some(Item::P(p)) => {
-            let first = if p.pr.conflicts() {
+            let first = if let Some(reason) = p.merge_blocked() {
+                k("", &reason)
+            } else if p.pr.conflicts() {
                 k("1", tr!("resolve conflicts", "resolver conflictos"))
             } else {
                 k(&format!("1-{}", p.methods().len()), tr!("merge", "fusionar"))
             };
-            let mut v = vec![pane, first,k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
+            let mut v = vec![pane, first, k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("w", "GitHub"), k("x", tr!("set aside", "apartar")), k("a", tr!("its terminal", "su terminal"))];
             v.extend(tail);
             v
         }
@@ -1513,7 +1531,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::tests::{alive_node, app_with, ctrl, pr_card, press, question, report};
+    use super::super::tests::{alive_node, app_with, ctrl, pr_card, press, question, report, train_card};
     use super::*;
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -1617,6 +1635,28 @@ mod tests {
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
         assert!(at("WAITING FOR YOU 1") < at("PULL REQUESTS 1"), "{s}");
         assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
+    }
+
+    #[test]
+    fn a_train_is_drawn_bottom_first_and_its_upper_card_cannot_be_merged() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.prs = vec![train_card(3, "Top of train", 1, 2, 10), pr_card(None), train_card(2, "Middle of train", 1, 1, 20), train_card(1, "Bottom of train", 1, 0, 300)];
+        app.reconcile();
+        app.settle_until = 0;
+        let s = screen(&mut app, 140, 40);
+        let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at(&s, "Menus become cards") < at(&s, "Bottom of train"), "{s}");
+        assert!(at(&s, "Bottom of train") < at(&s, "Middle of train") && at(&s, "Middle of train") < at(&s, "Top of train"), "{s}");
+        assert!(s.contains("↑ on top of PR #12"), "{s}");
+        press(&mut app, "jj");
+        let s = screen(&mut app, 140, 40);
+        assert!(s.contains("Merge PR #11 first"), "{s}");
+        assert!(!s.contains("merge: "), "no merge key on a card on top of an open PR\n{s}");
+        assert!(s.contains("request changes") && s.contains("set aside"), "{s}");
+        press(&mut app, "k");
+        let s = screen(&mut app, 140, 40);
+        assert!(s.contains("merge: "), "the bottom card merges\n{s}");
     }
 
     #[test]

@@ -112,9 +112,35 @@ pub struct PrCard {
     pub pr: alondra_core::pr::PullRequest,
     #[serde(default)]
     pub preferred_method: Option<alondra_core::pr::MergeMethod>,
+    /// The number of the open PR this one is stacked on, which has to be merged first.
+    #[serde(default)]
+    pub below_number: Option<u64>,
+    #[serde(default)]
+    pub below_set_aside: bool,
+    #[serde(default)]
+    pub stack_bottom: Option<u64>,
+    #[serde(default)]
+    pub stack_opened_at: Option<i64>,
+    #[serde(default)]
+    pub stack_position: usize,
 }
 
 impl PrCard {
+    /// Why it cannot be merged yet: the PR under it is still open on GitHub.
+    pub fn merge_blocked(&self) -> Option<String> {
+        let below = self.below_number?;
+        Some(if self.below_set_aside {
+            trf!("PR #{below} is still open on GitHub: merge or close it first", "El PR #{below} sigue abierto en GitHub: fusiónalo o ciérralo antes")
+        } else {
+            trf!("Merge PR #{below} first", "Fusiona antes el PR #{below}")
+        })
+    }
+
+    /// Sorts trains together, bottom card first, trains by when their bottom card was opened.
+    pub fn train_place(&self) -> (i64, u64, usize, u64) {
+        (self.stack_opened_at.unwrap_or(self.pr.opened_at), self.stack_bottom.unwrap_or(self.pr.id), self.stack_position, self.pr.id)
+    }
+
     /// The methods offered, the repo's preferred one first; all three when the repo was not read.
     pub fn methods(&self) -> Vec<alondra_core::pr::MergeMethod> {
         use alondra_core::pr::MergeMethod;

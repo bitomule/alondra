@@ -727,6 +727,9 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     if !pr.merge_methods.is_empty() && !pr.merge_methods.contains(&b.method) {
         return err(StatusCode::UNPROCESSABLE_ENTITY, format!("{} does not allow {}", pr.repo, b.method.label()));
     }
+    if let Some(reason) = hub.read(|v| merge_blocked(v, id)) {
+        return refused(StatusCode::CONFLICT, "stacked", reason);
+    }
     if pr.conflicts() {
         return conflicts(&pr);
     }
@@ -759,12 +762,26 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     }
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
     log!("{} merged by {} from {who}", pr.url, hub.config.name);
+    let plan = hub.read(|v| v.retarget_plan(id));
     let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
     let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }), vec![]);
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
+    let moved = crate::prs::retarget(&hub, &plan, &crate::prs::GhCli).await;
+    if !moved.is_empty() {
+        let hub = hub.clone();
+        tokio::spawn(async move { crate::prs::settle(&hub, &moved, &crate::prs::GhCli, Duration::from_secs(5), 12).await });
+    }
     Json(json!({"id": id, "merged": true})).into_response()
+}
+
+/// Why a PR card cannot be merged yet: the PR under it in its train is still open on GitHub.
+fn merge_blocked(v: &View, id: u64) -> Option<String> {
+    v.merge_blocked_by(id).map(|below| match below.state {
+        alondra_core::pr::PrState::Dismissed => format!("PR #{} is still open on GitHub: merge or close it first", below.number),
+        _ => format!("merge PR #{} first", below.number),
+    })
 }
 
 /// What `gh pr merge` says when the branch conflicts with its base.
@@ -846,7 +863,7 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
 
 /// A message about a PR goes to the node that opened it, or to the orchestrator once that node is
 /// gone, or when the message is Alondra's and the node is done.
-fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>, attachments: Vec<Attachment>) -> anyhow::Result<String> {
+pub(crate) fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>, attachments: Vec<Attachment>) -> anyhow::Result<String> {
     let text = format!("{text}{}", uploads::delivery_note(&hub.config.name, &attachments));
     let res = hub.append_with(|v| {
         let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
@@ -1003,15 +1020,26 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
-            "prs": crate::prs::in_inbox(v).map(|p| {
-                let mut value = serde_json::to_value(p).unwrap_or(Value::Null);
-                value["preferred_method"] = serde_json::to_value(v.merge_methods.get(&p.repo)).unwrap_or(Value::Null);
-                value
-            }).collect::<Vec<Value>>(),
+            "prs": v.in_train_order(crate::prs::in_inbox(v)).into_iter().map(|p| pr_card(v, p)).collect::<Vec<Value>>(),
             "user": hub.config.name,
         })
     });
     Json(body)
+}
+
+/// A PR card as clients get it: the PR, the method last used in its repo and where it sits in
+/// its train, so every client lists trains alike.
+fn pr_card(v: &View, p: &alondra_core::pr::PullRequest) -> Value {
+    let place = v.stack_place(p);
+    let mut value = serde_json::to_value(p).unwrap_or(Value::Null);
+    value["preferred_method"] = serde_json::to_value(v.merge_methods.get(&p.repo)).unwrap_or(Value::Null);
+    value["below"] = json!(place.below.map(|b| b.id));
+    value["below_number"] = json!(place.below.map(|b| b.number));
+    value["below_set_aside"] = json!(place.below.is_some_and(|b| b.state == alondra_core::pr::PrState::Dismissed));
+    value["stack_bottom"] = json!(place.bottom.id);
+    value["stack_opened_at"] = json!(place.bottom.opened_at);
+    value["stack_position"] = json!(place.position);
+    value
 }
 
 #[derive(Deserialize)]
@@ -2086,6 +2114,34 @@ mod tests {
 
     fn decision(origin: QuestionOrigin, a: &Answer) -> Value {
         hold_decision(origin, a, json!({"plan": "p"}), "Ana")
+    }
+
+    #[test]
+    fn a_pr_on_top_of_an_open_pr_waits_for_it_to_be_merged() {
+        use alondra_core::pr::{PrState, PullRequest};
+        let mut v = View::default();
+        for (id, base, head) in [(1, "main", "x"), (2, "x", "y"), (3, "main", "z")] {
+            let mut pr = PullRequest::opened(id, &format!("https://github.com/a/b/pull/{}", id + 40), "s", None, 0).unwrap();
+            (pr.base, pr.head) = (Some(base.into()), Some(head.into()));
+            v.prs.insert(id, pr);
+        }
+        let cases = [(1, None), (2, Some("merge PR #41 first")), (3, None), (9, None)];
+        for (id, refusal) in cases {
+            assert_eq!(merge_blocked(&v, id).as_deref(), refusal, "card {id}");
+        }
+        let card = pr_card(&v, &v.prs[&2]);
+        assert_eq!((card["below"].as_u64(), card["below_number"].as_u64(), card["stack_bottom"].as_u64(), card["stack_position"].as_u64()), (Some(1), Some(41), Some(1), Some(1)));
+        assert_eq!(v.prs_awaiting_user().count(), 3, "a stacked PR still waits for the user");
+        let cases = [
+            (PrState::Dismissed, Some("PR #41 is still open on GitHub: merge or close it first"), true),
+            (PrState::Merged, None, false),
+            (PrState::Closed, None, false),
+        ];
+        for (lower, refusal, set_aside) in cases {
+            v.prs.get_mut(&1).unwrap().state = lower;
+            assert_eq!(merge_blocked(&v, 2).as_deref(), refusal, "lower PR {lower:?}");
+            assert_eq!(pr_card(&v, &v.prs[&2])["below_set_aside"].as_bool(), Some(set_aside), "lower PR {lower:?}");
+        }
     }
 
     #[test]

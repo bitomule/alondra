@@ -122,7 +122,7 @@ public final class FleetStore {
         grouping = InboxGrouping(questions: questions, reports: news, pullRequests: overview?.prs ?? [])
         let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
         let reports = grouping.looseReports.map(InboxItem.report).sorted { $0.date > $1.date }
-        let prs = (overview?.prs ?? []).map(InboxItem.pullRequest).sorted { $0.date > $1.date }
+        let prs = (overview?.prs ?? []).sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
         let visible = (questions + prs + reports).filter { !hidden.contains($0.id) }
         inbox = visible
         pendingBySession = visible.reduce(into: [:]) { $0[$1.sessionId, default: 0] += 1 }

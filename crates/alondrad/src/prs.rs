@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alondra_core::pr::{Check, CheckState, MergeMethod, PrState, PullRequest};
-use alondra_core::{Event, View};
+use alondra_core::stack::Retarget;
+use alondra_core::{Event, MessageFrom, View};
 use serde_json::Value;
 
 use crate::hub::Hub;
@@ -53,11 +54,11 @@ fn merged_per_repo(v: &View) -> HashMap<String, usize> {
     out
 }
 
-/// Open cards to ask GitHub about now: never fetched, not fetched for `REFRESH`, still waiting
+/// Watched cards to ask GitHub about now: never fetched, not fetched for `REFRESH`, still waiting
 /// for GitHub to work out whether they merge, or in a repo where a PR merged since their last
 /// fetch, which may have left them in conflict.
 fn due(v: &View, fetched: &HashMap<u64, Instant>, base_moved: &HashMap<String, Instant>, now: Instant) -> Vec<PullRequest> {
-    open(v)
+    watched(v)
         .filter(|p| {
             let Some(last) = fetched.get(&p.id).filter(|_| p.fetched) else { return true };
             now.duration_since(*last) >= REFRESH || p.mergeability_unknown() || base_moved.get(&p.repo).is_some_and(|moved| moved > last)
@@ -70,6 +71,12 @@ pub fn open(v: &View) -> impl Iterator<Item = &PullRequest> {
     v.prs.values().filter(|p| p.state == PrState::Open)
 }
 
+/// Cards kept in step with GitHub: the open ones, and a set-aside one while an open card sits on
+/// it, so merging or closing it on GitHub releases the card above.
+pub fn watched(v: &View) -> impl Iterator<Item = &PullRequest> {
+    v.prs.values().filter(|p| p.state == PrState::Open || (p.state == PrState::Dismissed && open(v).any(|up| v.stack_below(up).is_some_and(|b| b.id == p.id))))
+}
+
 /// Open cards that want the user now; one waiting for the node's next push stays out.
 pub fn in_inbox(v: &View) -> impl Iterator<Item = &PullRequest> {
     open(v).filter(|p| !p.awaiting_push())
@@ -78,6 +85,80 @@ pub fn in_inbox(v: &View) -> impl Iterator<Item = &PullRequest> {
 async fn gh_json(args: &[&str]) -> Option<Value> {
     let out = tokio::time::timeout(Duration::from_secs(30), tokio::process::Command::new("gh").args(args).kill_on_drop(true).output()).await.ok()?.ok()?;
     out.status.success().then(|| serde_json::from_slice(&out.stdout).ok()).flatten()
+}
+
+/// What Alondra asks of GitHub about a PR, so the train steps can run against a fake.
+pub trait Gh: Sync {
+    fn edit_base(&self, url: &str, base: &str) -> impl Future<Output = Result<(), String>> + Send;
+    fn view(&self, url: &str) -> impl Future<Output = Option<Value>> + Send;
+}
+
+pub struct GhCli;
+
+impl Gh for GhCli {
+    async fn edit_base(&self, url: &str, base: &str) -> Result<(), String> {
+        let edit = tokio::process::Command::new("gh").args(["pr", "edit", url, "--base", base]).kill_on_drop(true).output();
+        match tokio::time::timeout(Duration::from_secs(30), edit).await {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("gh pr edit did not finish within 30 s".into()),
+        }
+    }
+
+    async fn view(&self, url: &str) -> Option<Value> {
+        gh_json(&["pr", "view", url, "--json", FIELDS]).await
+    }
+}
+
+/// Moves each PR of the plan onto its new base and returns the ones GitHub accepted. GitHub
+/// only does this itself when the merged branch is deleted, and Alondra's merge keeps it.
+pub async fn retarget(hub: &Hub, plan: &[Retarget], gh: &impl Gh) -> Vec<Retarget> {
+    let mut moved = vec![];
+    for r in plan {
+        match gh.edit_base(&r.url, &r.base).await {
+            Ok(()) => {
+                log!("{} now goes into {}", r.url, r.base);
+                let _ = hub.append_with(|v| v.prs.get(&r.id).map(|p| Event::PrUpdated(PullRequest { base: Some(r.base.clone()), mergeable: None, ..p.clone() })));
+                moved.push(r.clone());
+            }
+            Err(e) => log!("could not move {} onto {}: {e}", r.url, r.base),
+        }
+    }
+    moved
+}
+
+/// Refreshes each moved card until GitHub has worked out whether it still merges cleanly, and
+/// asks the node that opened it to rebase when it no longer does.
+pub async fn settle(hub: &Hub, moved: &[Retarget], gh: &impl Gh, pause: Duration, tries: usize) {
+    for r in moved {
+        for _ in 0..tries {
+            tokio::time::sleep(pause).await;
+            let Some(pr) = hub.read(|v| v.prs.get(&r.id).cloned()) else { break };
+            let Some(view) = gh.view(&pr.url).await else { continue };
+            let updated = refreshed(&pr, &view, None);
+            if updated != pr {
+                let _ = hub.append(Event::PrUpdated(updated.clone()));
+            }
+            if let Some(text) = rebase_request(&updated, &r.base) {
+                if let Err(e) = crate::http::tell_about_pr(hub, &updated, text, MessageFrom::Alondra, None, vec![]) {
+                    log!("{} conflicts after moving onto {}: {e}", updated.url, r.base);
+                }
+                break;
+            }
+            if updated.mergeable.as_deref().is_some_and(|m| m != "UNKNOWN") {
+                break;
+            }
+        }
+    }
+}
+
+/// What the node hears when its PR, moved onto `base`, no longer merges cleanly.
+pub fn rebase_request(pr: &PullRequest, base: &str) -> Option<String> {
+    (pr.state == PrState::Open && pr.conflicts()).then(|| {
+        let branch = pr.head.as_deref().unwrap_or("your branch");
+        format!("[Alondra] The PR under {} was merged, so {} now goes into {base} and conflicts with it. Rebase {branch} onto origin/{base}, resolve the conflicts and push.", pr.url, pr.url)
+    })
 }
 
 /// The card as GitHub describes the PR now (`gh pr view --json`) and the repo's allowed merge
@@ -194,5 +275,87 @@ mod tests {
         let moved = HashMap::from([("a/b".to_string(), t0 + Duration::from_secs(10))]);
         assert_eq!(ids(&moved), vec![1, 2, 3], "a merge in a/b can put every open a/b card in conflict");
         assert_eq!(due(&v, &fetched, &HashMap::new(), t0 + REFRESH).len(), 4);
+    }
+
+    struct FakeGh {
+        refuses: bool,
+        edits: std::sync::Mutex<Vec<(String, String)>>,
+        mergeable: std::sync::Mutex<std::collections::VecDeque<&'static str>>,
+    }
+
+    impl Gh for FakeGh {
+        async fn edit_base(&self, url: &str, base: &str) -> Result<(), String> {
+            self.edits.lock().unwrap().push((url.into(), base.into()));
+            if self.refuses { Err("no permission".into()) } else { Ok(()) }
+        }
+
+        async fn view(&self, _url: &str) -> Option<Value> {
+            let m = self.mergeable.lock().unwrap().pop_front()?;
+            Some(json!({"title": "Upper", "state": "OPEN", "baseRefName": "main", "headRefName": "y", "mergeable": m}))
+        }
+    }
+
+    fn hub(tag: &str) -> Hub {
+        let home = std::env::temp_dir().join(format!("alondra-train-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
+        Hub::open(config, false).unwrap()
+    }
+
+    #[tokio::test]
+    async fn merging_the_lower_pr_moves_the_next_one_and_asks_for_a_rebase_only_on_conflicts() {
+        let cases: &[(&str, bool, &[&'static str], &str, bool)] = &[
+            ("merges cleanly", false, &["UNKNOWN", "MERGEABLE", "MERGEABLE"], "main", false),
+            ("conflicts", false, &["UNKNOWN", "CONFLICTING"], "main", true),
+            ("gh refuses the move", true, &["CONFLICTING"], "x", false),
+        ];
+        for (i, &(what, refuses, mergeable, base, told)) in cases.iter().enumerate() {
+            let hub = hub(&i.to_string());
+            hub.append(Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            for (n, base, head) in [(1, "main", "x"), (2, "x", "y")] {
+                hub.append(Event::PrOpened { url: format!("https://github.com/a/b/pull/{n}"), session_id: "s".into() }).unwrap();
+                let mut pr = hub.read(|v| v.prs[&n].clone());
+                (pr.base, pr.head) = (Some(base.into()), Some(head.into()));
+                hub.append(Event::PrUpdated(pr)).unwrap();
+            }
+            let gh = FakeGh { refuses, edits: Default::default(), mergeable: std::sync::Mutex::new(mergeable.iter().copied().collect()) };
+            let plan = hub.read(|v| v.retarget_plan(1));
+            hub.append(Event::PrMerged { id: 1, method: MergeMethod::Merge }).unwrap();
+            let moved = retarget(&hub, &plan, &gh).await;
+            settle(&hub, &moved, &gh, Duration::ZERO, 5).await;
+            assert_eq!(*gh.edits.lock().unwrap(), [("https://github.com/a/b/pull/2".to_string(), "main".to_string())], "{what}");
+            assert_eq!(hub.read(|v| v.prs[&2].base.clone()).as_deref(), Some(base), "{what}");
+            let asked = hub.read(|v| v.messages.values().any(|m| m.session_id == "s" && m.text.contains("Rebase y onto origin/main")));
+            assert_eq!(asked, told, "{what}");
+            assert!(!refuses || gh.mergeable.lock().unwrap().len() == mergeable.len(), "{what}: nothing refreshed after a refused move");
+        }
+    }
+
+    #[test]
+    fn a_set_aside_pr_under_an_open_one_is_still_followed_until_github_merges_it() {
+        let mut v = View::default();
+        for (n, base, head, state) in [(1, "main", "x", PrState::Dismissed), (2, "x", "y", PrState::Open), (3, "main", "z", PrState::Dismissed)] {
+            let mut pr = PullRequest::opened(n, &format!("https://github.com/a/b/pull/{n}"), "s", None, 0).unwrap();
+            (pr.base, pr.head, pr.state) = (Some(base.into()), Some(head.into()), state);
+            v.prs.insert(n, pr);
+        }
+        assert_eq!(watched(&v).map(|p| p.id).collect::<Vec<_>>(), [1, 2], "the set-aside PR holding up another, not the one alone");
+        let still_open = refreshed(&v.prs[&1], &json!({"state": "OPEN", "baseRefName": "main", "headRefName": "x"}), None);
+        v.apply(1, 1, &Event::PrUpdated(still_open));
+        assert_eq!(v.merge_blocked_by(2).map(|p| p.id), Some(1), "still open on GitHub");
+        let merged = refreshed(&v.prs[&1], &json!({"state": "MERGED", "baseRefName": "main", "headRefName": "x"}), None);
+        v.apply(2, 2, &Event::PrUpdated(merged));
+        assert_eq!(v.merge_blocked_by(2), None, "merged on GitHub");
+        assert_eq!(watched(&v).map(|p| p.id).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn only_a_conflicting_open_pr_is_asked_to_rebase() {
+        let mut pr = PullRequest::opened(2, "https://github.com/a/b/pull/2", "s", None, 0).unwrap();
+        pr.head = Some("y".into());
+        for (mergeable, state, asked) in [("CONFLICTING", PrState::Open, true), ("MERGEABLE", PrState::Open, false), ("UNKNOWN", PrState::Open, false), ("CONFLICTING", PrState::Merged, false)] {
+            (pr.mergeable, pr.state) = (Some(mergeable.into()), state);
+            assert_eq!(rebase_request(&pr, "main").is_some(), asked, "{mergeable} {state:?}");
+        }
     }
 }
