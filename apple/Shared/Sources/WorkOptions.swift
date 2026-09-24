@@ -85,7 +85,7 @@ public struct OptionSpec: Decodable, Identifiable, Hashable, Sendable {
         guard builtin else { return value.description }
         switch value.id {
         case "review": return String(localized: "Each PR is a card for you; the node waits for your merge", table: "AlondraShared", bundle: #bundle)
-        case "auto_merge": return String(localized: "The node merges its own PR once its checks pass", table: "AlondraShared", bundle: #bundle)
+        case "auto_merge": return String(localized: "Alondra merges the node’s PR once its checks pass", table: "AlondraShared", bundle: #bundle)
         case "auto": return String(localized: "The orchestrator picks the model and effort from the task", table: "AlondraShared", bundle: #bundle)
         case "light": return String(localized: "A quick, cheaper model for small, clear work", table: "AlondraShared", bundle: #bundle)
         case "normal": return String(localized: "Claude’s default model and effort", table: "AlondraShared", bundle: #bundle)

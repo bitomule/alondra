@@ -23,7 +23,7 @@ fn instructions(role: Role, user: &str) -> String {
          Write every question, report and message for {user} in {language}, whatever language this conversation is in."
     );
     match role {
-        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never to hand off work); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. A PR you open gets its own card where {user} decides the merge, and you count as waiting for that merge until then, even after a final report; when the merge notice arrives, do what it unblocks and report final again. An `ask` about merging would be a second card for the same decision. A report that links the PR is shown inside that card, so the PR being ready needs no report of its own. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
+        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never to hand off work); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. Your work is a task in Alondra: its questions, reports and PR show as one card, and it puts one question at a time in front of {user} (another is refused until that one is answered, unless it `replaces` it); if you work on several tasks, name it with `task`. A PR you open gets its own card where {user} decides the merge; with auto-merge Alondra merges it once its checks pass. If nothing is left for you after the merge, report final with the PR in links: the merge then finishes your task and no notice comes. If something is left (deploy, verify), do not report final yet: the merge notice is typed into this session. An `ask` about merging would be a second card for the same decision. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
         Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`launch`, `send`, `interrupt`). The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
     }
 }
@@ -39,8 +39,8 @@ fn ask_schema(user: &str) -> Value {
             "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
             "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
             "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")},
-            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")},
-            "replaces": {"type": "integer", "description": "The number of an open question of yours that this one replaces (you rephrased it or the situation changed); it is withdrawn when this one is recorded"}
+            "replaces": {"type": "integer", "description": "The number of an open question of yours that this one replaces (you rephrased it or the situation changed); it is withdrawn when this one is recorded. A task has one open question at a time, so a new one while another is open needs this"},
+            "task": {"type": "string", "description": "The id of the task this is for (t-…). Only needed when you work on several tasks; Alondra lists them if it cannot tell"}
         },
         "required": ["title", "detail"]
     })
@@ -53,7 +53,9 @@ fn action_schema(user: &str) -> Value {
             "title": {"type": "string", "description": format!("What {user} has to do, in one line: it is what {user} sees in the notification")},
             "steps": {"type": "array", "items": {"type": "string"}, "description": format!("The steps, in order, each one something {user} can do without asking you anything")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "Where to do it: consoles, PRs, builds"},
-            "detail": {"type": "string", "description": "Why it is needed and what you do once it is done (markdown, optional)"}
+            "detail": {"type": "string", "description": "Why it is needed and what you do once it is done (markdown, optional)"},
+            "replaces": {"type": "integer", "description": "The number of your open question or action this one replaces; a task has one open at a time"},
+            "task": {"type": "string", "description": "The id of the task this is for (t-…). Only needed when you work on several tasks; Alondra lists them if it cannot tell"}
         },
         "required": ["title", "steps"]
     })
@@ -68,7 +70,7 @@ fn report_schema(user: &str) -> Value {
             "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("final: you are done and nothing is pending (the usual kind). notice: a short result or finding {user} should know now. document: something for {user} to read (plan, long report), with its path in attachments, or a claude.ai artifact URL in links for {user} to review, which keeps you waiting for that review. A report is for reading: a decision, approval or task for {user} goes through ask or request_action.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"},
-            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")},
+            "task": {"type": "string", "description": "The id of the task this is for (t-…). Only needed when you work on several tasks; Alondra lists them if it cannot tell"},
             "to_orchestrator": {"type": "boolean", "description": format!("true if this is a handoff for the orchestrator (someone should continue this), not a result for {user}. Combine with kind: final when you have nothing left of your own pending.")}
         },
         "required": ["title", "body", "kind"]
@@ -80,7 +82,7 @@ fn tools(role: Role, user: &str) -> Value {
         json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)}),
         json!({"name": "request_action", "description": format!("Hand {user} something to do outside Alondra (test on the iPhone, get a key, check App Store Connect). {user} sees a \"Your turn\" card with the steps and answers \"Done\" or explains why they cannot; Alondra types that into this session."), "inputSchema": action_schema(user)}),
         json!({"name": "report", "description": format!("Tell {user} you are done (kind final) or give {user} a result, finding or document to read. With to_orchestrator: true it is a handoff for the orchestrator instead — use it for \"someone should continue this\" when you have nothing left of your own pending. Alondra rejects reports that only give progress. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
-        json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}}, "required": ["id"]}}),
+        json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}, "task": {"type": "string", "description": "The task the question is for, when you work on several"}}, "required": ["id"]}}),
         json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
     if role == Role::Orchestrator {
@@ -178,7 +180,7 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         "withdraw" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("id is required"))?;
-            client.post(&format!("/v1/questions/{id}/withdraw"), &who)?;
+            client.post(&format!("/v1/questions/{id}/withdraw"), &merge(pick(args, &["task"]), &who))?;
             format!("Question #{id} withdrawn; its card is gone.")
         }
         "wait_for_machine" => {
