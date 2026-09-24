@@ -376,8 +376,8 @@ pub fn stuck_text(node: &Node, user: &str, now: Millis) -> Option<String> {
     let minutes = (now - tool.since) / MINUTE;
     let call = format!("{} {}", tool.name, tool.summary.as_deref().unwrap_or("")).trim().to_string();
     Some(format!(
-        "{STALLED_PREFIX}: {} {} has been inside one call for {minutes} min: {call}. If it is hung, stop it with \
-         `interrupt` and send it on with `send`; if the call is legitimately long, leave it. If you cannot tell, ask {user} with `ask`.",
+        "{STALLED_PREFIX}: {} {} has been inside one call for {minutes} min: {call}. If it is hung, `interrupt` \
+         stops the call and `send` moves the node on; a legitimately long call is left alone. When you cannot tell, it is a question for {user}.",
         node.display_name(),
         stuck_tag(node, tool.since)
     ))
@@ -386,11 +386,10 @@ pub fn stuck_text(node: &Node, user: &str, now: Millis) -> Option<String> {
 pub fn nudge_text(user: &str) -> String {
     format!(
         "{NUDGE_PREFIX} {user} anything through Alondra, so they cannot tell whether you are \
-         waiting on them. What you write in your terminal does not reach them. Declare your state with an Alondra tool: \
-         `ask` if you need a decision (one question per decision, with options), `request_action` if {user} has to do \
-         something outside Alondra, `report` with kind final if you are done, or `wait_for_machine` if you are waiting \
-         for resources. If you are still working on your own (a build, an upload, a review, a long command), send \
-         nothing: do not report that you do not need {user}, that is noise."
+         waiting on them; your terminal does not reach them. The Alondra tools declare your state: `ask` for a decision \
+         (one question per decision, with options), `request_action` for something {user} does outside Alondra, \
+         `report` with kind final when you are done, `wait_for_machine` when you are waiting for resources. If you are \
+         still working on your own (a build, an upload, a review, a long command), there is nothing to send."
     )
 }
 
@@ -398,8 +397,8 @@ pub fn stalled_text(node: &Node, user: &str) -> String {
     let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
     format!(
         "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything, and Alondra already nudged it once. \
-         Its last message:\n\n{said}\n\nSend it on with `send` if you can tell what it should do next; if you cannot, \
-         ask {user} with `ask`.",
+         Its last message:\n\n{said}\n\n`send` moves it on when that message tells you what comes next; otherwise it is \
+         a question for {user}.",
         node.display_name(),
         stalled_tag(node)
     )
