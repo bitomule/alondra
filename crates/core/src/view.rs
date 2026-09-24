@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{DaemonObservation, Event, HookEvent};
 use crate::model::{
-    Answer, Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
+    Answer, CardRef, Millis, Node, Question, QuestionOrigin, QuestionStatus, ReportKind, Signal, StateSource, ToolInFlight,
     TurnSignal,
 };
 use crate::model::{Message, MessageFrom, Report};
@@ -193,6 +193,12 @@ impl View {
                 Some((sid, Trigger::Report))
             }
             Event::ReportRead { id } => {
+                let earlier = self.reports.get(id).map(|r| self.report_stack(r)).unwrap_or_default();
+                for e in earlier {
+                    if let Some(r) = self.reports.get_mut(&e) {
+                        r.read = true;
+                    }
+                }
                 let session = self.reports.get_mut(id).map(|r| {
                     r.read = true;
                     r.session_id.clone()
@@ -516,6 +522,7 @@ impl View {
         node.daemon_state = d.state.clone();
         node.daemon_tempo = d.tempo.clone();
         node.daemon_tasks = d.tasks.unwrap_or(0);
+        node.background = if node.daemon_tasks == 0 { vec![] } else { d.background.clone() };
         node.daemon_seen_at = Some(at);
         if d.intent.is_some() {
             node.mission = d.intent.clone();
@@ -594,10 +601,85 @@ impl View {
     /// a PR card that waits off the inbox for new commits.
     pub fn inbox_reports(&self) -> impl Iterator<Item = &Report> {
         let absorbed = self.absorbed_reports();
+        let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
             let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !parked
+            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
         })
+    }
+
+    /// A report another card can carry: unread, not progress, and not in a PR card (its home).
+    fn carriable(&self, r: &Report) -> bool {
+        !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none()
+    }
+
+    /// The node's own cards still waiting on the user, outside PR cards: its open questions and
+    /// actions (not the ones for the orchestrator) and its unread reports. A new `ask` or `report`
+    /// from the node has to say which of them it belongs with (`related`).
+    pub fn own_open_cards(&self, session_id: &str) -> Vec<CardRef> {
+        let questions = self.questions.values().filter(|q| {
+            q.session_id == session_id && q.status.is_open() && q.origin == QuestionOrigin::Ask && !q.to_orchestrator && self.question_pr(q).is_none()
+        });
+        let reports = self.reports.values().filter(|r| r.session_id == session_id && self.carriable(r));
+        questions.map(|q| CardRef::Question(q.id)).chain(reports.map(|r| CardRef::Report(r.id))).collect()
+    }
+
+    /// The reports an open question takes in: the one it cites or links (`question_report`), the
+    /// reports the node declared it related to, and the reports declared related to it. They are
+    /// shown inside the question and answering it reads them.
+    pub fn question_reports(&self, q: &Question) -> Vec<u64> {
+        if !q.status.is_open() {
+            return vec![];
+        }
+        let declared = q.related.iter().filter_map(|c| match c {
+            CardRef::Report(id) => self.reports.get(id),
+            CardRef::Question(_) => None,
+        });
+        let pointing = self.reports.values().filter(|r| r.related.contains(&CardRef::Question(q.id)));
+        let mut ids: Vec<u64> = declared
+            .chain(pointing)
+            .filter(|r| r.session_id == q.session_id && self.carriable(r))
+            .map(|r| r.id)
+            .chain(self.question_report(q))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// The earlier unread reports the newest one carries, oldest first, when `r` is that newest
+    /// one: the reports joined to it by what the node declared related, in either direction.
+    /// Reports a question took in are not stacked.
+    pub fn report_stack(&self, r: &Report) -> Vec<u64> {
+        self.stack_beside(r, &self.absorbed_reports())
+    }
+
+    fn stack_beside(&self, r: &Report, absorbed: &std::collections::HashSet<u64>) -> Vec<u64> {
+        let candidate = |x: &Report| x.session_id == r.session_id && self.carriable(x) && !absorbed.contains(&x.id);
+        if !candidate(r) {
+            return vec![];
+        }
+        let linked = |a: &Report, b: &Report| a.related.contains(&CardRef::Report(b.id)) || b.related.contains(&CardRef::Report(a.id));
+        let mut group: Vec<u64> = vec![r.id];
+        let mut next = 0;
+        while next < group.len() {
+            let current = &self.reports[&group[next]];
+            let joined: Vec<u64> = self.reports.values().filter(|x| candidate(x) && !group.contains(&x.id) && linked(current, x)).map(|x| x.id).collect();
+            group.extend(joined);
+            next += 1;
+        }
+        if group.iter().max() != Some(&r.id) {
+            return vec![];
+        }
+        group.retain(|id| *id != r.id);
+        group.sort_unstable();
+        group
+    }
+
+    /// Reports carried by a newer report they were declared related to: they leave the inbox with it.
+    pub fn stacked_reports(&self) -> std::collections::HashSet<u64> {
+        let absorbed = self.absorbed_reports();
+        self.reports.values().filter(|r| !r.read && r.kind != ReportKind::Progress).flat_map(|r| self.stack_beside(r, &absorbed)).collect()
     }
 
     /// The unread report an open question takes in, so the two are one card. Deliberately narrow:
@@ -625,7 +707,7 @@ impl View {
 
     /// Reports some open question has taken in: they leave the inbox while it is open.
     pub fn absorbed_reports(&self) -> std::collections::HashSet<u64> {
-        self.open_questions().filter_map(|q| self.question_report(q)).collect()
+        self.open_questions().flat_map(|q| self.question_reports(q)).collect()
     }
 
     pub fn open_questions(&self) -> impl Iterator<Item = &Question> {
@@ -703,6 +785,7 @@ mod tests {
 
     fn question(id: u64, sid: &str, origin: QuestionOrigin) -> Question {
         Question {
+            related: vec![],
             id,
             session_id: sid.into(),
             node_name: None,
@@ -786,6 +869,7 @@ mod tests {
     fn final_report_then_exit_is_done_not_down() {
         let mut v = run(&[hook("s", "UserPromptSubmit")]);
         v.apply(2, 2000, &Event::ReportPosted(Report {
+            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,
@@ -968,6 +1052,7 @@ mod tests {
         let mut v = View::default();
         v.apply(1, 1000, &hook("s", "Stop"));
         let q = |id: u64, status: QuestionStatus, at: Millis| Question {
+            related: vec![],
             id,
             session_id: "s".into(),
             node_name: None,
@@ -1035,6 +1120,7 @@ mod tests {
 
     fn report(id: u64, sid: &str, kind: ReportKind, at: Millis) -> Event {
         Event::ReportPosted(Report {
+            related: vec![],
             id,
             session_id: sid.into(),
             node_name: None,
@@ -1208,6 +1294,104 @@ mod tests {
             assert_eq!(v.report_pr(&v.reports[&7]), c.inside, "{}", c.what);
             assert_eq!(v.inbox_reports().any(|r| r.id == 7), c.in_inbox, "{}", c.what);
         }
+    }
+
+    fn related(e: Event, cards: &[CardRef]) -> Event {
+        match e {
+            Event::ReportPosted(mut r) => {
+                r.related = cards.to_vec();
+                Event::ReportPosted(r)
+            }
+            Event::QuestionAsked(mut q) => {
+                q.related = cards.to_vec();
+                Event::QuestionAsked(q)
+            }
+            other => other,
+        }
+    }
+
+    #[test]
+    fn a_nodes_open_cards_are_its_own_asks_and_unread_reports_outside_pr_cards() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        let asked = |id: u64, sid: &str, f: fn(&mut Question)| {
+            let mut q = question(id, sid, QuestionOrigin::Ask);
+            f(&mut q);
+            Event::QuestionAsked(q)
+        };
+        let cases: Vec<(&str, Vec<Event>, Vec<CardRef>)> = vec![
+            ("an open ask", vec![asked(1, "s", |_| {})], vec![CardRef::Question(1)]),
+            ("an open action", vec![asked(1, "s", |q| q.action = true)], vec![CardRef::Question(1)]),
+            ("an answered ask", vec![asked(1, "s", |q| q.status = QuestionStatus::Delivered)], vec![]),
+            ("a question for the orchestrator", vec![asked(1, "s", |q| q.to_orchestrator = true)], vec![]),
+            ("an ask inside its PR card", vec![asked(1, "s", |q| q.links = vec![crate::model::Link { url: PR.into(), title: None }])], vec![]),
+            ("a card built from the terminal", vec![Event::QuestionAsked(question(1, "s", QuestionOrigin::Classifier))], vec![]),
+            ("another node's ask", vec![asked(1, "t", |_| {})], vec![]),
+            ("an unread report", vec![report(7, "s", ReportKind::Final, 3000)], vec![CardRef::Report(7)]),
+            ("a read report", vec![report(7, "s", ReportKind::Final, 3000), Event::ReportRead { id: 7 }], vec![]),
+            ("progress", vec![report(7, "s", ReportKind::Progress, 3000)], vec![]),
+            ("a report inside its PR card", vec![report_about(7, "s", ReportKind::Final, 3000, &[PR], "Listo", "")], vec![]),
+        ];
+        for (what, events, open) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
+            v.apply(3, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+            for (i, e) in events.iter().enumerate() {
+                v.apply(10 + i as u64, 3000, e);
+            }
+            assert_eq!(v.own_open_cards("s"), open, "{what}");
+        }
+    }
+
+    /// R#113 "Los menús que Alondra no veía ya llegan como tarjeta…" and then Q#123 "Siguiente:
+    /// ¿uso de la suscripción…?" (23 Sep): two cards. David's rule (24 Sep): the node says what goes
+    /// together, Alondra never infers it.
+    #[test]
+    fn a_question_carries_only_the_reports_the_node_declared_related() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        let q = |cards: &[CardRef]| related(Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask)), cards);
+        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
+            ("nothing declared", vec![report(7, "s", ReportKind::Final, 3000), q(&[])], false),
+            ("the question names the report", vec![report(7, "s", ReportKind::Final, 3000), q(&[CardRef::Report(7)])], true),
+            ("the report names the question", vec![q(&[]), related(report(7, "s", ReportKind::Final, 3000), &[CardRef::Question(1)])], true),
+            ("another node's report", vec![report(7, "t", ReportKind::Final, 3000), q(&[CardRef::Report(7)])], false),
+            ("a read report", vec![report(7, "s", ReportKind::Final, 3000), Event::ReportRead { id: 7 }, q(&[CardRef::Report(7)])], false),
+            ("a report inside its PR card", vec![report_about(7, "s", ReportKind::Final, 3000, &[PR], "Listo", ""), q(&[CardRef::Report(7)])], false),
+        ];
+        for (what, events, carries) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
+            v.apply(3, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+            for (i, e) in events.iter().enumerate() {
+                v.apply(10 + i as u64, 3000, e);
+            }
+            assert_eq!(v.question_reports(&v.questions[&1]).contains(&7), carries, "{what}");
+            assert_eq!(v.inbox_reports().any(|r| r.id == 7), !carries && !v.reports[&7].read, "{what}");
+        }
+    }
+
+    /// R#29 "Auditoría de jev rehecha…" and R#30 "Annex to the jev audit…" (23 Sep): one delivery,
+    /// two cards.
+    #[test]
+    fn reports_stack_only_where_the_node_declared_it() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &report_about(1, "s", ReportKind::Final, 2000, &[], "Auditoría", ""));
+        v.apply(3, 3000, &related(report_about(2, "s", ReportKind::Final, 3000, &[], "Anexo", ""), &[CardRef::Report(1)]));
+        v.apply(4, 3500, &related(report_about(3, "s", ReportKind::Notice, 3500, &[], "Otra cosa", ""), &[]));
+        let inbox = |v: &View| v.inbox_reports().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(inbox(&v), [3, 2], "the annex carries the audit; the unrelated notice stays apart");
+        assert_eq!(v.report_stack(&v.reports[&2]), [1]);
+        assert!(v.report_stack(&v.reports[&1]).is_empty(), "only the newest carries the others");
+
+        v.apply(5, 4000, &related(report_about(4, "s", ReportKind::Notice, 4000, &[], "Otro anexo", ""), &[CardRef::Report(2)]));
+        assert_eq!(inbox(&v), [4, 3], "a chain of declarations is one card");
+        assert_eq!(v.report_stack(&v.reports[&4]), [1, 2]);
+
+        let mut older = v.clone();
+        older.apply(6, 5000, &Event::ReportRead { id: 1 });
+        assert!(!older.reports[&4].read, "reading an earlier report does not read the newest");
+
+        v.apply(6, 5000, &Event::ReportRead { id: 4 });
+        assert!(v.reports[&1].read && v.reports[&2].read, "reading the newest reads the ones it carries");
+        assert!(!v.reports[&3].read);
+        assert_eq!(inbox(&v), [3]);
     }
 
     #[test]

@@ -458,6 +458,14 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     scrollbar(f, inner, total, app.list_scroll);
 }
 
+fn carried_report(r: &Report, width: usize) -> Vec<Line<'static>> {
+    let mut lines = wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]);
+    if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
+        lines.extend(md::render(&md::parse(body), width).lines);
+    }
+    lines
+}
+
 fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
     let (glyph, kind, color) = item_glyph(item);
     let mut lines = vec![];
@@ -550,14 +558,24 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         }
     }
     if let Item::Q(q) = item
-        && let Some(r) = app.data.open_questions.iter().find(|o| o.id == q.id).and_then(|o| o.report.as_ref())
+        && let Some(o) = app.data.open_questions.iter().find(|o| o.id == q.id)
+    {
+        for r in o.about() {
+            lines.push(Line::default());
+            let id = r.id;
+            lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
+            lines.extend(carried_report(r, width));
+        }
+    }
+    if let Item::R(r) = item
+        && let Some(n) = app.data.news.iter().find(|n| n.id == r.id).filter(|n| !n.earlier.is_empty())
     {
         lines.push(Line::default());
-        let id = r.id;
-        lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
-        lines.extend(wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]));
-        if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
-            lines.extend(md::render(&md::parse(body), width).lines);
+        let count = n.earlier.len();
+        lines.push(Line::from(trf!("Earlier in this delivery ({count})", "Antes en esta entrega ({count})").fg(DIM).bold()));
+        for e in &n.earlier {
+            lines.push(Line::default());
+            lines.extend(carried_report(e, width));
         }
     }
     if let Item::Q(q) = item
@@ -656,7 +674,7 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
                 tr!(" read all  ", " leer entero  ")
             };
             let close = [keycap("Shift+X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
-            let closable = app.node(&r.session_id).is_some_and(|n| n.alive);
+            let closable = app.node(&r.session_id).is_some_and(|n| n.offers_close());
             let mut spans = vec![];
             if closable && r.kind == ReportKind::Final {
                 spans.extend(close.clone());
@@ -744,17 +762,53 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// "2 subagentes · 1 shell", in the warning colour and marked when one may be hung.
+fn background_badge(n: &FleetNode) -> Option<(String, Style)> {
+    let text = i18n::background_badge(&n.background)?;
+    if n.background.iter().any(|b| b.suspect) {
+        Some((format!("{text} · {}", i18n::possibly_hung()), Style::new().fg(Color::LightRed)))
+    } else {
+        Some((text, Style::new().fg(DIM)))
+    }
+}
+
+fn background_lines(n: &FleetNode, width: usize) -> Vec<Line<'static>> {
+    if n.background.is_empty() {
+        return vec![];
+    }
+    let mut lines = vec![Line::default(), Line::from(tr!("Running in the background", "En marcha en segundo plano").fg(DIM).bold())];
+    for b in &n.background {
+        let color = if b.suspect { Color::LightRed } else { ACCENT };
+        let mut tail = vec![Span::styled(format!(" · {}", ago(b.started_at)), Style::new().fg(DIM))];
+        if b.suspect {
+            tail.push(Span::styled(format!(" · {}", i18n::possibly_hung()), Style::new().fg(Color::LightRed)));
+        }
+        let mut spans = vec![Span::raw(md::one_line(&b.label))];
+        spans.extend(tail);
+        lines.extend(wrap(spans, width, vec![Span::styled(format!("{} ", i18n::background_kind(b.kind)), Style::new().fg(color))], vec![]));
+    }
+    lines
+}
+
 fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let bar = if selected { Span::styled("▌", Style::new().fg(ACCENT)) } else { Span::raw(" ") };
     let dot = if n.alive { "●" } else { "○" };
     let state_w = if width >= 64 { 20 } else { 0 };
     let since = ago(n.state_since);
-    let name_w = width.saturating_sub(4 + state_w + 5);
+    let room = width.saturating_sub(4 + state_w + 5);
     let short = if n.is_orchestrator { format!("★ {}", n.display_name()) } else { n.display_name().to_string() };
-    let name = truncate(&md::one_line(&short), name_w);
+    let short = md::one_line(&short);
+    let badge_room = room.saturating_sub(str_width(&short).min(room / 2));
+    let badge = background_badge(n).map(|(text, style)| (truncate(&format!(" {text}"), badge_room), style));
+    let name_w = room.saturating_sub(badge.as_ref().map_or(0, |(t, _)| str_width(t)));
+    let name = truncate(&short, name_w);
     let pad = name_w.saturating_sub(str_width(&name));
     let name_style = if n.alive { Style::new() } else { Style::new().fg(SOFT) };
-    let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style), Span::raw(" ".repeat(pad))];
+    let mut spans = vec![bar, Span::styled(format!(" {dot} "), Style::new().fg(state_color(n.state))), Span::styled(name, name_style)];
+    if let Some((text, style)) = badge {
+        spans.push(Span::styled(text, style));
+    }
+    spans.push(Span::raw(" ".repeat(pad)));
     if state_w > 0 {
         spans.push(Span::styled(format!(" {:<19}", truncate(i18n::node_state(n), 19)), Style::new().fg(state_color(n.state))));
     }
@@ -903,6 +957,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
             vec![],
         ));
     }
+    lines.extend(background_lines(&n, width));
     if let Some(needs) = &n.daemon_needs {
         lines.push(Line::default());
         lines.extend(wrap(vec![Span::styled(needs.clone(), Style::new().fg(Color::Yellow))], width, vec![Span::styled(tr!("Needs: ", "Necesita: "), Style::new().fg(DIM))], vec![]));
@@ -1234,7 +1289,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 v.push(k("s", tr!("send to node", "enviar al nodo")));
                 v.push(k("x", tr!("mark read", "leído")));
                 if let Some(Item::R(rep)) = app.item(r.key)
-                    && app.node(&rep.session_id).is_some_and(|n| n.alive)
+                    && app.node(&rep.session_id).is_some_and(|n| n.offers_close())
                 {
                     v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
                 }
@@ -1282,7 +1337,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         }
         Some(Item::R(r)) => {
             let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))];
-            if app.node(&r.session_id).is_some_and(|n| n.alive) {
+            if app.node(&r.session_id).is_some_and(|n| n.offers_close()) {
                 v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
             }
             v.extend([k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))]);
@@ -1371,7 +1426,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("x", tr!("mark as read", "marcar como leído")),
-        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; alive nodes only, never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo, nunca el orquestador)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -1381,7 +1436,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
-        row("Shift+X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node (twice to confirm; alive nodes only, never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo, nunca el orquestador)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -1431,6 +1486,24 @@ mod tests {
     }
 
     #[test]
+    fn a_node_row_counts_what_runs_in_the_background_and_the_detail_lists_it() {
+        use alondra_core::{BackgroundItem, BackgroundKind};
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let mut n = alive_node("s");
+        let item = |kind, label: &str, suspect| BackgroundItem { kind, label: label.into(), started_at: now_millis() - 3_600_000, suspect };
+        n.node.background = vec![item(BackgroundKind::Agent, "Revisar el PR", false), item(BackgroundKind::Agent, "Auditar", false), item(BackgroundKind::Shell, "bazelisk build", false)];
+        let row = |n: &FleetNode| node_row(n, 90, false).spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert!(row(&n).contains("2 subagentes · 1 shell"), "{}", row(&n));
+        assert!(!row(&n).contains("¿colgada?"));
+        n.node.background[2].suspect = true;
+        assert!(row(&n).contains("2 subagentes · 1 shell · ¿colgada?"), "{}", row(&n));
+        let detail: String = background_lines(&n, 60).iter().flat_map(|l| l.spans.iter().map(|s| s.content.to_string())).collect();
+        assert!(detail.contains("subagente Revisar el PR · 1h") && detail.contains("shell bazelisk build · 1h · ¿colgada?"), "{detail}");
+        n.node.background.clear();
+        assert!(!row(&n).contains("shell"));
+    }
+
+    #[test]
     fn a_notice_the_gate_flagged_is_marked_as_asking() {
         let mut r = report(1);
         r.kind = ReportKind::Notice;
@@ -1469,7 +1542,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
         q.title = "Merge it before the release?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None, reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1487,7 +1560,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut r = report(2);
         r.title = "PR ready: leaving a node returns to Alondra".into();
-        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4) });
+        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4), earlier: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1508,12 +1581,59 @@ mod tests {
         .unwrap();
         let mut q = question(2, QuestionOrigin::Ask, &["Launch it"]);
         q.title = "Launch a node to fix the audit?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report) });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report), reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 40);
         assert!(s.contains("Launch a node to fix the audit?"), "{s}");
         assert!(s.contains("About report #7"), "{s}");
         assert!(s.contains("Audit: 13 things left") && s.contains("The worst three are in iOS."), "{s}");
+    }
+
+    fn delivered(id: u64, title: &str) -> alondra_core::Report {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "session_id": "s1", "node_name": "alondra/plan", "title": title, "kind": "final", "created_at": id
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_question_shows_every_report_it_takes_in() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        let mut q = question(2, QuestionOrigin::Ask, &["Yes"]);
+        q.title = "Go on with the TUI jump?".into();
+        let reports = vec![delivered(7, "Menus become cards"), delivered(8, "Subscription usage")];
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: reports.last().cloned(), reports });
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at("About report #7") < at("About report #8"), "{s}");
+        assert!(s.contains("Subscription usage"), "{s}");
+    }
+
+    #[test]
+    fn a_report_card_carries_the_earlier_reports_of_its_delivery() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.news = vec![crate::client::NewsReport { report: delivered(2, "Annex to the audit"), pr_id: None, earlier: vec![delivered(1, "Audit redone")] }];
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("TO READ 1"), "{s}");
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(at("Earlier in this delivery (1)") < at("Audit redone"), "{s}");
+    }
+
+    #[test]
+    fn the_overview_carries_a_questions_reports_and_a_cards_earlier_ones() {
+        let q = serde_json::json!({
+            "id": 2, "session_id": "s1", "title": "Go on?", "options": [], "links": [], "attachments": [], "blocking": true,
+            "origin": "ask", "status": "open", "asked_at": 3, "reports": [{"id": 1, "session_id": "s1", "title": "A", "kind": "final", "created_at": 1}]
+        });
+        let q: crate::client::OpenQuestion = serde_json::from_value(q).unwrap();
+        assert_eq!(q.about().iter().map(|r| r.id).collect::<Vec<_>>(), [1]);
+        let r = serde_json::json!({"id": 2, "session_id": "s1", "title": "B", "kind": "final", "created_at": 2, "earlier": [{"id": 1, "session_id": "s1", "title": "A", "kind": "final", "created_at": 1}]});
+        let r: crate::client::NewsReport = serde_json::from_value(r).unwrap();
+        assert_eq!(r.earlier.len(), 1);
     }
 
     #[test]
@@ -1644,6 +1764,26 @@ mod tests {
         app.data.nodes[0].node.alive = false;
         let s = screen(&mut app, 250, 24);
         assert!(!s.contains("read and close node"), "{s}");
+    }
+
+    /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never offer to close it.
+    #[test]
+    fn the_orchestrators_reports_never_offer_read_and_close() {
+        for (orchestrator, offered) in [(false, true), (true, false)] {
+            let (mut app, _rx) = app_with(vec![]);
+            app.loaded = true;
+            let mut r = report(1);
+            r.kind = ReportKind::Final;
+            app.data.news = vec![r.into()];
+            app.data.nodes = vec![alive_node("s1")];
+            app.data.nodes[0].node.is_orchestrator = orchestrator;
+            app.reconcile();
+            let s = screen(&mut app, 250, 30);
+            assert_eq!(s.contains("read and close node"), offered, "orchestrator={orchestrator}\n{s}");
+            press(&mut app, "o");
+            let s = screen(&mut app, 250, 30);
+            assert_eq!(s.contains("read and close node"), offered, "reading, orchestrator={orchestrator}\n{s}");
+        }
     }
 
     /// 24 Sep: David found read-and-close only in the footer, not among the report's own actions.

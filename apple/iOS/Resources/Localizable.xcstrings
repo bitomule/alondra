@@ -1991,6 +1991,16 @@
         }
       }
     },
+    "Earlier in this delivery (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antes en esta entrega (%lld)"
+          }
+        }
+      }
+    },
     "About report #%llu": {
       "localizations": {
         "es": {

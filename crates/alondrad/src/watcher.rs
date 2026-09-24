@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use alondra_core::{DaemonObservation, Event};
+use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation, Event};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -170,6 +170,7 @@ fn differs(a: &DaemonObservation, b: &DaemonObservation) -> bool {
         || a.last_text != b.last_text
         || a.tasks != b.tasks
         || a.task_kinds != b.task_kinds
+        || a.background != b.background
 }
 
 fn transcript_path(cache: &mut HashMap<String, PathBuf>, projects: &Path, session_id: &str) -> Option<PathBuf> {
@@ -363,6 +364,45 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(obs.tasks, Some(2));
         assert_eq!(obs.task_kinds, vec!["local_bash", "local_agent"]);
+        assert!(obs.background.is_empty(), "a job state without a fan lists nothing");
+    }
+
+    const REAL_FAN: &str = r#"{"sessionId":"s","inFlight":{"tasks":2,"queued":0,"kinds":["local_bash"],"drainableMonitors":0},
+        "fan":[{"id":"a1ceb183712a76908","kind":"agent","label":"iOS fixes: PR card, diff, comment, close","startedAt":1790236267138,"doneAt":1790238241015},
+               {"id":"b14mhd8w6","kind":"shell","label":"until [ -z \"$(pgrep -f 'bazelisk build //apple:AlondraiOS')\" ]; do sleep 5; done","startedAt":1790237431201}]}"#;
+
+    #[test]
+    fn running_background_items_come_from_the_fan_entries_not_done() {
+        let v: Value = serde_json::from_str(REAL_FAN).unwrap();
+        let items = running(&v, 2, 0);
+        assert_eq!(items.len(), 1);
+        assert_eq!((items[0].kind, items[0].started_at), (BackgroundKind::Shell, 1790237431201));
+        assert!(running(&v, 0, 0).is_empty(), "nothing in flight means nothing runs");
+        let long = format!("until   [ -z x ];\n{}", "do sleep 5; ".repeat(10));
+        let fan = serde_json::json!({"fan": [
+            {"kind": "shell", "label": long, "startedAt": 30},
+            {"kind": "monitor", "label": "tail -f log", "startedAt": 20},
+            {"kind": "agent", "label": "old", "startedAt": 10},
+            {"kind": "shell", "label": "no start"},
+            "x"
+        ]});
+        let items = running(&fan, 2, 1);
+        assert_eq!(items.iter().map(|b| b.kind).collect::<Vec<_>>(), vec![BackgroundKind::Agent, BackgroundKind::Other, BackgroundKind::Shell]);
+        assert!(items[2].label.chars().count() <= 80, "{}", items[2].label);
+        assert!(items[2].label.starts_with("until [ -z x ]; do sleep 5;") && items[2].label.ends_with('…'));
+        assert_eq!(running(&fan, 2, 0).iter().map(|b| b.started_at).collect::<Vec<_>>(), vec![20, 30], "only the newest the daemon counts");
+    }
+
+    #[test]
+    fn the_job_state_carries_the_running_items() {
+        let dir = std::env::temp_dir().join(format!("alondra-fan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, REAL_FAN).unwrap();
+        let obs = read_state(&path, "s").unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(obs.tasks, Some(2));
+        assert_eq!(obs.background.iter().map(|b| (b.kind, b.started_at)).collect::<Vec<_>>(), vec![(BackgroundKind::Shell, 1790237431201)]);
     }
 }
 
@@ -413,6 +453,8 @@ fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).filter(|x| !x.is_empty());
     let in_flight = v.get("inFlight");
+    let count = |k: &str| in_flight.and_then(|f| f.get(k)).and_then(Value::as_u64).unwrap_or(0) as usize;
+    let background = running(&v, count("tasks"), count("queued"));
     Some(DaemonObservation {
         session_id: s("sessionId")?,
         short_id: short.to_string(),
@@ -434,7 +476,46 @@ fn read_state(p: &Path, short: &str) -> Option<DaemonObservation> {
             .and_then(Value::as_array)
             .map(|k| k.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default(),
+        background,
     })
+}
+
+const LABEL_LIMIT: usize = 80;
+
+/// The daemon's `fan` entries still running (no `doneAt`), newest last. Only as many as the
+/// daemon counts in flight or queued: with none, nothing runs whatever the list says.
+fn running(v: &Value, tasks: usize, queued: usize) -> Vec<BackgroundItem> {
+    if tasks == 0 {
+        return vec![];
+    }
+    let mut items: Vec<BackgroundItem> = v
+        .get("fan")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.get("doneAt").is_none_or(Value::is_null))
+        .filter_map(|e| {
+            let kind = match e.get("kind").and_then(Value::as_str) {
+                Some("agent") => BackgroundKind::Agent,
+                Some("shell") => BackgroundKind::Shell,
+                _ => BackgroundKind::Other,
+            };
+            let label = e.get("label").and_then(Value::as_str).unwrap_or_default();
+            Some(BackgroundItem { kind, label: short_label(label), started_at: e.get("startedAt")?.as_i64()?, suspect: false })
+        })
+        .collect();
+    items.sort_by_key(|b| b.started_at);
+    let keep = items.len().min(tasks + queued);
+    items.split_off(items.len() - keep)
+}
+
+fn short_label(label: &str) -> String {
+    let flat = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= LABEL_LIMIT {
+        return flat;
+    }
+    let cut: String = flat.chars().take(LABEL_LIMIT - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 fn spawn_pid_watcher(exits: mpsc::Sender<(String, i32)>) -> std::sync::mpsc::Sender<(String, i32)> {

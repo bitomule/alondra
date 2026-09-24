@@ -7,7 +7,7 @@
 //! daemon record in the log that time has moved, so a replay reaches exactly the same states.
 
 use crate::model::{
-    Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
+    BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
 };
 use crate::view::View;
 
@@ -28,6 +28,9 @@ pub const DAEMON_FRESH_MS: Millis = 30 * MINUTE;
 /// A background task (a Bash run in the background, a subagent, a monitor) reported by the
 /// Claude daemon counts for this long after it was last observed.
 pub const BACKGROUND_TASK_FRESH_MS: Millis = 120 * MINUTE;
+/// A background task running this long, while the node shows no other work for as long, may be
+/// hung (a wait loop that never ends): it is flagged and no longer counts as work.
+pub const BACKGROUND_SUSPECT_MS: Millis = 30 * MINUTE;
 /// A declared wait for the machine lapses when nothing happens for this long and the machine
 /// is fine.
 pub const MACHINE_WAIT_QUIET_MS: Millis = 20 * MINUTE;
@@ -83,6 +86,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
     row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
+    row("only possibly hung background tasks remain: handed to the sentinel", Signal::BackgroundSuspect, NodeState::Unclear),
     row("a turn ended without a declaration", Signal::TurnEndedUndeclared, NodeState::Stalled),
     Row {
         name: "working evidence went stale: handed to the sentinel",
@@ -129,6 +133,33 @@ fn fresh(at: Option<Millis>, now: Millis, window: Millis) -> Option<Millis> {
     at.filter(|at| now - at <= window)
 }
 
+fn after_stop(node: &Node) -> impl Fn(&Millis) -> bool + '_ {
+    |at| node.last_stop_at.is_none_or(|stop| *at > stop)
+}
+
+fn daemon_active(node: &Node, now: Millis) -> Option<Millis> {
+    let active = node.alive && node.daemon_tempo.as_deref() == Some("active");
+    fresh(node.daemon_seen_at.filter(|_| active).filter(after_stop(node)), now, DAEMON_FRESH_MS)
+}
+
+/// Work the node shows besides its background tasks: a call in flight, a hook or a typed
+/// message within the suspect window, or the daemon reporting it active.
+fn other_work(node: &Node, now: Millis) -> bool {
+    node.tool.as_ref().is_some_and(|t| now - t.since <= call_limit(&t.name))
+        || fresh(node.last_work_at, now, BACKGROUND_SUSPECT_MS).is_some()
+        || fresh(node.handed_at.filter(after_stop(node)), now, BACKGROUND_SUSPECT_MS).is_some()
+        || daemon_active(node, now).is_some()
+}
+
+/// What the node has running in the background at `now`, each flagged when it may be hung.
+pub fn background(node: &Node, now: Millis) -> Vec<BackgroundItem> {
+    let idle = !other_work(node, now);
+    node.background
+        .iter()
+        .map(|b| BackgroundItem { suspect: idle && now - b.started_at > BACKGROUND_SUSPECT_MS, ..b.clone() })
+        .collect()
+}
+
 /// The daemon's job state contradicts a report when, written after it, it says the node is
 /// blocked on something.
 fn daemon_contradicts(node: &Node, since: Millis) -> bool {
@@ -158,14 +189,12 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
     f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| now - t.since <= call_limit(&t.name)).map(|t| t.since));
     f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| node.busy), now, HOOK_FRESH_MS));
-    let after_stop = |at: &Millis| node.last_stop_at.is_none_or(|stop| *at > stop);
-    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop), now, HOOK_FRESH_MS));
-    let daemon_active = node.alive && node.daemon_tempo.as_deref() == Some("active");
-    f.add(Signal::DaemonActive, fresh(node.daemon_seen_at.filter(|_| daemon_active).filter(after_stop), now, DAEMON_FRESH_MS));
-    f.add(
-        Signal::BackgroundTask,
-        fresh(node.daemon_seen_at.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS),
-    );
+    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)), now, HOOK_FRESH_MS));
+    f.add(Signal::DaemonActive, daemon_active(node, now));
+    let tasks_seen = fresh(node.daemon_seen_at.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS);
+    let all_suspect = !node.background.is_empty() && background(node, now).iter().all(|b| b.suspect);
+    f.add(Signal::BackgroundTask, tasks_seen.filter(|_| !all_suspect));
+    f.add(Signal::BackgroundSuspect, tasks_seen.filter(|_| all_suspect));
 
     f.add(Signal::UsageLimit, fresh(node.usage_limited_at.filter(|_| node.usage_limited), now, USAGE_LIMIT_WAIT_MS));
     let declared = node.signal_at.unwrap_or(node.episode_since);
@@ -424,11 +453,85 @@ pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option
     })
 }
 
+pub const HUNG_PREFIX: &str = "[Alondra] A background task may be hung";
+/// How long a node has, after Alondra's message reached it, to stop a hung task before the
+/// orchestrator hears about it.
+pub const HUNG_REPLY_MS: Millis = 20 * MINUTE;
+
+fn hung_tag(node: &Node, item: &BackgroundItem) -> String {
+    format!("({} bg@{})", node.short_id, item.started_at)
+}
+
+fn kind_word(kind: BackgroundKind) -> &'static str {
+    match kind {
+        BackgroundKind::Agent => "subagent",
+        BackgroundKind::Shell => "shell",
+        BackgroundKind::Other => "task",
+    }
+}
+
+fn hung_node_text(item: &BackgroundItem, tag: &str, now: Millis) -> String {
+    format!(
+        "{HUNG_PREFIX}: your background {} \"{}\" {tag} has been running for {} min while you do nothing else. If it is \
+         stuck (a wait loop that can never end, a watcher on something that already finished), stop it with the tool that \
+         stops background tasks and carry on. If it is legitimately long, leave it.",
+        kind_word(item.kind),
+        item.label,
+        (now - item.started_at) / MINUTE
+    )
+}
+
+fn hung_orchestrator_text(node: &Node, item: &BackgroundItem, tag: &str, user: &str, now: Millis) -> String {
+    format!(
+        "{HUNG_PREFIX}: {} {tag} still has its background {} \"{}\" running after {} min, and Alondra asked it {} min ago \
+         to stop it if it is stuck. `send` tells the node what to do; `interrupt` does not stop background tasks. When you \
+         cannot tell whether it is legitimate, it is a question for {user}.",
+        node.display_name(),
+        kind_word(item.kind),
+        item.label,
+        (now - item.started_at) / MINUTE,
+        HUNG_REPLY_MS / MINUTE
+    )
+}
+
+/// The next message about a background task that may be hung: first to the node, then, if the
+/// task is still hung `HUNG_REPLY_MS` after that message reached the node, to the orchestrator.
+pub fn hung_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
+    if !node.alive || node.attached || node.is_orchestrator || watching(view, node, at) {
+        return None;
+    }
+    let wrote = |session: &str, tag: &str| {
+        view.messages.values().filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(HUNG_PREFIX) && m.text.contains(tag)).last()
+    };
+    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive);
+    let (session_id, text) = background(node, at).into_iter().filter(|b| b.suspect).find_map(|b| {
+        let tag = hung_tag(node, &b);
+        match wrote(&node.session_id, &tag) {
+            None => Some((node.session_id.clone(), hung_node_text(&b, &tag, at))),
+            Some(told) => {
+                let o = orchestrator?;
+                let ignored = told.handed_at.is_some_and(|handed| at - handed > HUNG_REPLY_MS);
+                (ignored && wrote(&o.session_id, &tag).is_none()).then(|| (o.session_id.clone(), hung_orchestrator_text(node, &b, &tag, user, at)))
+            }
+        }
+    })?;
+    Some(Message {
+        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id,
+        from: MessageFrom::Alondra,
+        text,
+        answers_question: None,
+        created_at: at,
+        handed_at: None,
+        delivered_at: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::{DaemonObservation, Event, HookEvent};
-    use crate::model::{Message, MessageFrom, Question, QuestionOrigin, Report};
+    use crate::model::{BackgroundKind, Message, MessageFrom, Question, QuestionOrigin, Report};
 
     const T0: Millis = 1_000_000;
 
@@ -453,8 +556,15 @@ mod tests {
         })
     }
 
+    fn daemon_running(items: &[(BackgroundKind, Millis)]) -> Event {
+        let background = items.iter().map(|&(kind, started_at)| BackgroundItem { kind, label: "wait for the build".into(), started_at, suspect: false }).collect();
+        let Event::DaemonSeen(d) = daemon("working", "idle", items.len() as u32, None) else { unreachable!() };
+        Event::DaemonSeen(DaemonObservation { background, ..d })
+    }
+
     fn question(action: bool, origin: QuestionOrigin) -> Event {
         Event::QuestionAsked(Question {
+            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,
@@ -483,6 +593,7 @@ mod tests {
 
     fn report(kind: ReportKind) -> Event {
         Event::ReportPosted(Report {
+            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,
@@ -550,6 +661,7 @@ mod tests {
             Case { what: "a nudge typed into an idle session", events: vec![hook("UserPromptSubmit"), hook("Stop"), queued, handed], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::MessageHanded) },
             Case { what: "the daemon says active after the Stop", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "active", 0, None)], sweep: None, state: NodeState::Working, row: row_named(NodeState::Working, Signal::DaemonActive) },
             Case { what: "a build left running in the background", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon("working", "idle", 1, None)], sweep: Some((90 * min, false)), state: NodeState::Working, row: row_named(NodeState::Working, Signal::BackgroundTask) },
+            Case { what: "a wait loop left alone for 40 min", events: vec![hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], sweep: Some((40 * min, false)), state: NodeState::Unclear, row: row_named(NodeState::Unclear, Signal::BackgroundSuspect) },
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
@@ -578,8 +690,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_background_task_is_suspect_only_when_old_and_nothing_else_moves() {
+        let min = 60_000;
+        let started = [hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0), (BackgroundKind::Agent, T0 + 25 * min)])];
+        let suspects = |v: &View, at: Millis| super::background(&v.nodes["s"], at).iter().map(|b| b.suspect).collect::<Vec<_>>();
+        let v = run(&started, None);
+        assert_eq!(suspects(&v, T0 + 40 * min), vec![true, false], "only the one past 30 min");
+        assert_eq!(suspects(&v, T0 + 20 * min), vec![false, false], "nothing is old yet");
+        let mut hooked = v.clone();
+        hooked.apply(9, T0 + 35 * min, &hook("PreToolUse"));
+        assert_eq!(suspects(&hooked, T0 + 40 * min), vec![false, false], "a hook 5 min ago is work");
+        let swept = run(&started, Some((40 * min, false)));
+        assert_eq!(swept.nodes["s"].state, NodeState::Working, "a young task still counts as work");
+        let v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
+        assert!(v.nodes["s"].background.is_empty(), "no task in flight means nothing runs, whatever the list says");
+    }
+
+    #[test]
+    fn events_and_nodes_recorded_before_the_background_list_still_load() {
+        let old = r#"{"type":"daemon_seen","session_id":"s","short_id":"s","tasks":2,"task_kinds":["local_bash"]}"#;
+        let Event::DaemonSeen(d) = serde_json::from_str::<Event>(old).unwrap() else { panic!("not a daemon event") };
+        assert!(d.background.is_empty());
+        let mut node = serde_json::to_value(Node::new("s", T0)).unwrap();
+        node.as_object_mut().unwrap().remove("background");
+        assert!(serde_json::from_value::<Node>(node).unwrap().background.is_empty());
+    }
+
     fn harness(prompt: &str) -> Event {
         Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(prompt.into()), ..Default::default() })
+    }
+
+    #[test]
+    fn a_hung_background_task_is_raised_with_the_node_first_and_then_with_the_orchestrator() {
+        let min = 60_000;
+        let mut v = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])], None);
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        let next = |v: &View, at: Millis| hung_message(v, &v.nodes["s"], "Ana", at);
+
+        assert_eq!(next(&v, T0 + 20 * min), None, "not hung yet");
+        let to_node = next(&v, T0 + 40 * min).expect("hung after 30 idle min");
+        assert_eq!(to_node.session_id, "s");
+        assert!(to_node.text.starts_with(HUNG_PREFIX) && to_node.text.contains("shell \"wait for the build\""), "{}", to_node.text);
+        v.apply(52, T0 + 40 * min, &Event::MessageQueued(to_node.clone()));
+        assert_eq!(next(&v, T0 + 40 * min), None, "the node is told once");
+
+        v.apply(53, T0 + 41 * min, &Event::MessageHanded { id: to_node.id });
+        v.apply(54, T0 + 41 * min, &hook("UserPromptSubmit"));
+        v.apply(55, T0 + 42 * min, &hook("Stop"));
+        assert_eq!(next(&v, T0 + 60 * min), None, "the node worked on it recently");
+
+        let to_orchestrator = next(&v, T0 + 73 * min).expect("still hung 30 min after the node's last move");
+        assert_eq!(to_orchestrator.session_id, "o");
+        assert!(to_orchestrator.text.contains("Ana") && to_orchestrator.text.contains("bg@"), "{}", to_orchestrator.text);
+        v.apply(56, T0 + 73 * min, &Event::MessageQueued(to_orchestrator));
+        assert_eq!(next(&v, T0 + 90 * min), None, "the orchestrator is told once");
+
+        let fresh_start = run(&[hook("UserPromptSubmit"), hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)]), daemon("working", "idle", 0, None)], None);
+        assert_eq!(next(&fresh_start, T0 + 40 * min), None, "a stopped task raises nothing");
     }
 
     fn background(events: &[Event]) -> Vec<Event> {

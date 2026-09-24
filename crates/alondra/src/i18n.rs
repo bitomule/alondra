@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
-use alondra_core::{Node, NodeState, OrchestratorState, ReportKind};
+use alondra_core::{BackgroundItem, BackgroundKind, Node, NodeState, OrchestratorState, ReportKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
@@ -145,6 +145,7 @@ pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
         "permission" => {
             tr!("it has a permission pending on a tool call that is running", "tiene un permiso pendiente en una llamada a herramienta en marcha").to_string()
         }
+        "orchestrator" => tr!("it is the orchestrator, which Alondra keeps alive", "es el orquestador, que Alondra mantiene vivo").to_string(),
         "worktree" => {
             let detail = detail.unwrap_or_default();
             trf!("it has changes not pushed in {detail}", "tiene cambios sin subir en {detail}")
@@ -162,9 +163,59 @@ pub fn comments(n: usize) -> String {
     }
 }
 
+pub fn background_kind(k: BackgroundKind) -> &'static str {
+    match k {
+        BackgroundKind::Agent => tr!("subagent", "subagente"),
+        BackgroundKind::Shell => tr!("shell", "shell"),
+        BackgroundKind::Other => tr!("task", "tarea"),
+    }
+}
+
+fn background_count(k: BackgroundKind, n: usize) -> String {
+    match (lang(), k, n) {
+        (_, _, 1) => format!("1 {}", background_kind(k)),
+        (Lang::En, BackgroundKind::Agent, n) => format!("{n} subagents"),
+        (Lang::En, BackgroundKind::Shell, n) => format!("{n} shells"),
+        (Lang::En, BackgroundKind::Other, n) => format!("{n} tasks"),
+        (Lang::Es, BackgroundKind::Agent, n) => format!("{n} subagentes"),
+        (Lang::Es, BackgroundKind::Shell, n) => format!("{n} shells"),
+        (Lang::Es, BackgroundKind::Other, n) => format!("{n} tareas"),
+    }
+}
+
+pub fn possibly_hung() -> &'static str {
+    tr!("hung?", "¿colgada?")
+}
+
+/// "2 subagentes · 1 shell": what the node runs in the background, by kind, or nothing.
+pub fn background_badge(items: &[BackgroundItem]) -> Option<String> {
+    let parts: Vec<String> = [BackgroundKind::Agent, BackgroundKind::Shell, BackgroundKind::Other]
+        .into_iter()
+        .filter_map(|k| {
+            let n = items.iter().filter(|b| b.kind == k).count();
+            (n > 0).then(|| background_count(k, n))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_background_badge_counts_each_kind_in_the_user_language() {
+        let item = |kind| BackgroundItem { kind, label: String::new(), started_at: 0, suspect: false };
+        let items = [item(BackgroundKind::Agent), item(BackgroundKind::Shell), item(BackgroundKind::Agent), item(BackgroundKind::Other)];
+        set_for_this_thread(Lang::Es);
+        assert_eq!(background_badge(&items).as_deref(), Some("2 subagentes · 1 shell · 1 tarea"));
+        assert_eq!(background_badge(&items[1..2]).as_deref(), Some("1 shell"));
+        assert_eq!(background_badge(&[item(BackgroundKind::Shell), item(BackgroundKind::Shell)]).as_deref(), Some("2 shells"));
+        assert_eq!(background_badge(&[]), None);
+        set_for_this_thread(Lang::En);
+        assert_eq!(background_badge(&items).as_deref(), Some("2 subagents · 1 shell · 1 task"));
+        assert_eq!(background_badge(&items[..1]).as_deref(), Some("1 subagent"));
+    }
 
     #[test]
     fn action_options_read_in_the_user_language() {

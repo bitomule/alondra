@@ -52,6 +52,15 @@ struct NodeDetail: View {
                         }
                     }
                 }
+                if !node.running.isEmpty {
+                    section(BackgroundItem.sectionTitle) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(node.running, id: \.self) { item in
+                                BackgroundRow(item: item)
+                            }
+                        }
+                    }
+                }
                 if let needs = node.daemonNeeds, !needs.isEmpty {
                     section(String(localized: "What it needs")) {
                         Text(needs).textSelection(.enabled)

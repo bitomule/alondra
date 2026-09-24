@@ -55,11 +55,22 @@ pub struct OpenQuestion {
     /// The report this question is about; it is shown inside the question, not as its own card.
     #[serde(default)]
     pub report: Option<Report>,
+    /// Every report the question takes in, oldest first: the one it cites and the node's earlier
+    /// reports of the same episode.
+    #[serde(default)]
+    pub reports: Vec<Report>,
+}
+
+impl OpenQuestion {
+    /// The reports shown inside the question; an older alondrad sends only `report`.
+    pub fn about(&self) -> Vec<&Report> {
+        if self.reports.is_empty() { self.report.iter().collect() } else { self.reports.iter().collect() }
+    }
 }
 
 impl From<Question> for OpenQuestion {
     fn from(question: Question) -> Self {
-        OpenQuestion { question, pr_id: None, report: None }
+        OpenQuestion { question, pr_id: None, report: None, reports: vec![] }
     }
 }
 
@@ -77,11 +88,14 @@ pub struct NewsReport {
     pub report: Report,
     #[serde(default)]
     pub pr_id: Option<u64>,
+    /// The earlier unread reports of the same episode, oldest first; this card carries them.
+    #[serde(default)]
+    pub earlier: Vec<Report>,
 }
 
 impl From<Report> for NewsReport {
     fn from(report: Report) -> Self {
-        NewsReport { report, pr_id: None }
+        NewsReport { report, pr_id: None, earlier: vec![] }
     }
 }
 

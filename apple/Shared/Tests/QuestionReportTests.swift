@@ -17,4 +17,33 @@ import Testing
         #expect(try question(report).report?.title == "Auditoría: 13 cosas")
         #expect(try question("").report == nil)
     }
+
+    private static func report(_ id: Int, earlier: String = "") -> String {
+        #"{"id":\#(id),"session_id":"s","title":"R\#(id)","links":[],"attachments":[],"kind":"final","created_at":\#(id)\#(earlier)}"#
+    }
+
+    struct Case: Sendable, CustomTestStringConvertible {
+        let name: String
+        let extra: String
+        let about: [UInt64]
+        var testDescription: String { name }
+    }
+
+    @Test(arguments: [
+        Case(name: "every report the question takes in, oldest first", extra: #","report":\#(report(2)),"reports":[\#(report(1)),\#(report(2))]"#, about: [1, 2]),
+        Case(name: "an older alondrad sends only one report", extra: #","report":\#(report(2))"#, about: [2]),
+        Case(name: "no report", extra: "", about: []),
+    ])
+    func aQuestionShowsEveryReportItTakesIn(_ c: Case) throws {
+        #expect(try question(c.extra).aboutReports.map(\.id) == c.about)
+    }
+
+    @Test func aReportCardCarriesTheEarlierReportsOfItsDelivery() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = Self.report(2, earlier: #","earlier":[\#(Self.report(1))]"#)
+        let card = try decoder.decode(Report.self, from: Data(json.utf8))
+        #expect(card.earlier?.map(\.id) == [1])
+        #expect(try decoder.decode(Report.self, from: Data(Self.report(1).utf8)).earlier == nil)
+    }
 }

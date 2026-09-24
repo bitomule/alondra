@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{
-    Answer, Attachment, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
+    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -302,6 +302,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
     };
     Question {
+        related: vec![],
         id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: h.session_id.clone(),
         node_name: node.map(|n| n.name.clone().unwrap_or_else(|| n.short_id.clone())),
@@ -879,6 +880,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
 }
 
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
+    let now = now_millis();
     let machine = hub.machine();
     let usage = crate::usage::current(&crate::watcher::claude_home());
     let body = hub.read(|v| {
@@ -893,8 +895,10 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 if let Some(pr) = v.question_pr(q) {
                     value["pr_id"] = json!(pr);
                 }
-                if let Some(report) = v.question_report(q).and_then(|id| v.reports.get(&id)) {
-                    value["report"] = json!(report);
+                let reports: Vec<&Report> = v.question_reports(q).iter().filter_map(|id| v.reports.get(id)).collect();
+                if let Some(newest) = reports.last() {
+                    value["report"] = json!(newest);
+                    value["reports"] = json!(reports);
                 }
                 value
             })
@@ -907,6 +911,10 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 let mut value = serde_json::to_value(r).unwrap_or(Value::Null);
                 if let Some(pr) = v.report_pr(r) {
                     value["pr_id"] = json!(pr);
+                }
+                let earlier: Vec<&Report> = v.report_stack(r).iter().filter_map(|id| v.reports.get(id)).collect();
+                if !earlier.is_empty() {
+                    value["earlier"] = json!(earlier);
                 }
                 value
             })
@@ -923,6 +931,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
+                value["background"] = json!(states::background(n, now));
                 value
             })
             .collect();
@@ -969,13 +978,15 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        Some((n, questions, reports, messages, v.held_for_turn_end(&sid)))
+        let mut node = serde_json::to_value(&n).unwrap_or(Value::Null);
+        node["background"] = json!(states::background(&n, now_millis()));
+        Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
-    let Some((node, questions, reports, messages, held)) = found else {
+    let Some((node, session_id, questions, reports, messages, held)) = found else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
-        .timeline(&node.session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
+        .timeline(&session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
         .unwrap_or_default()
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
@@ -1038,6 +1049,9 @@ struct AskBody {
     to_orchestrator: bool,
     #[serde(default)]
     steps: Vec<String>,
+    /// The node's other open cards this one belongs with; required when it has any.
+    #[serde(default)]
+    related: Option<Vec<u64>>,
 }
 
 fn yes() -> bool {
@@ -1091,7 +1105,72 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
             format!("A question needs a one-line title and a detail with all the context {} needs to answer without asking you anything.", hub.config.name),
         );
     }
-    record_question(hub, b, false)
+    let related = match hub.read(|v| {
+        let (sid, _) = resolve_caller(v, &b.caller)?;
+        let urls: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
+        Some(related_cards(v, &sid, b.related.as_deref(), b.to_orchestrator || lands_in_a_pr_card(v, &urls), &hub.config.name))
+    }) {
+        Some(Err((status, why))) => return err(status, why),
+        Some(Ok(cards)) => cards,
+        None => vec![],
+    };
+    record_question(hub, b, false, related)
+}
+
+/// A new card that links a PR with a card (or one about to get one) lives inside that card, so
+/// it adds nothing loose to the inbox.
+fn lands_in_a_pr_card(v: &View, texts: &[String]) -> bool {
+    texts.iter().flat_map(|t| alondra_core::pr::urls_in(t)).filter_map(|u| alondra_core::pr::parse_url(&u)).any(|(repo, number)| {
+        v.prs.values().find(|p| p.repo == repo && p.number == number).is_none_or(|p| p.state == alondra_core::pr::PrState::Open)
+    })
+}
+
+/// What a new `ask` or `report` of the node declares it belongs with. When the node already has
+/// open cards, it must say which of them this one goes with (`related`, possibly empty): Alondra
+/// never guesses it. Every id must be one of the node's own open cards.
+fn related_cards(v: &View, sid: &str, related: Option<&[u64]>, stays_out_of_the_inbox: bool, user: &str) -> Result<Vec<CardRef>, (StatusCode, String)> {
+    let own = v.own_open_cards(sid);
+    let number = |c: &CardRef| match c {
+        CardRef::Question(id) | CardRef::Report(id) => *id,
+    };
+    let Some(ids) = related else {
+        if own.is_empty() || stays_out_of_the_inbox {
+            return Ok(vec![]);
+        }
+        let listed: Vec<String> = own
+            .iter()
+            .map(|c| match c {
+                CardRef::Question(id) => format!("- #{id} question: {}", v.questions[id].title),
+                CardRef::Report(id) => format!("- #{id} report ({}): {}", v.reports[id].kind.label(), v.reports[id].title),
+            })
+            .collect();
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "Nothing was recorded: you already have open cards for {user}:\n{}\nSend it again with `related` set to the ids of the cards this one \
+                 belongs with, or `[]` if none; they are shown together as one card.",
+                listed.join("\n")
+            ),
+        ));
+    };
+    let mut cards = vec![];
+    for id in ids {
+        let matching: Vec<CardRef> = own.iter().filter(|c| number(c) == *id).copied().collect();
+        if matching.is_empty() {
+            let q = v.questions.get(id).map(|q| q.session_id.as_str());
+            let r = v.reports.get(id).map(|r| r.session_id.as_str());
+            let why = if q == Some(sid) || r == Some(sid) {
+                (StatusCode::CONFLICT, format!("related: #{id} is no longer open. Nothing was recorded."))
+            } else if q.is_some() || r.is_some() {
+                (StatusCode::FORBIDDEN, format!("related: #{id} is not yours. Nothing was recorded."))
+            } else {
+                (StatusCode::NOT_FOUND, format!("related: #{id} does not exist. Nothing was recorded."))
+            };
+            return Err(why);
+        }
+        cards.extend(matching);
+    }
+    Ok(cards)
 }
 
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
@@ -1108,10 +1187,10 @@ async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>)
     b.options = vec![];
     b.blocking = true;
     b.to_orchestrator = false;
-    record_question(hub, b, true)
+    record_question(hub, b, true, vec![])
 }
 
-fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
+fn record_question(hub: AppState, mut b: AskBody, action: bool, related: Vec<CardRef>) -> Response {
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
@@ -1124,6 +1203,7 @@ fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Response {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         let ctx = v.nodes.get(&sid).and_then(|n| n.tool.as_ref().map(|t| format!("{} {}", t.name, t.summary.clone().unwrap_or_default())).or(n.last_message.clone()));
         Some(Event::QuestionAsked(Question {
+            related: related.clone(),
             id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: sid,
             node_name: name,
@@ -1193,14 +1273,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
     let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
-    let absorbed = hub.read(|v| v.question_report(&q));
+    let absorbed = hub.read(|v| v.question_reports(&q));
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
     }
-    if let Some(report) = absorbed
-        && let Err(e) = hub.append(Event::ReportRead { id: report })
-    {
-        log!("could not mark report #{report} read with question #{id}: {e}");
+    for report in absorbed {
+        if let Err(e) = hub.append(Event::ReportRead { id: report }) {
+            log!("could not mark report #{report} read with question #{id}: {e}");
+        }
     }
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
@@ -1339,6 +1419,9 @@ struct ReportBody {
     links: Vec<Link>,
     #[serde(default)]
     attachments: Vec<String>,
+    /// The node's other open cards this report belongs with; required when it has any.
+    #[serde(default)]
+    related: Option<Vec<u64>>,
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
@@ -1351,6 +1434,16 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             format!("A report needs a title that states the result and a body with what {} should know: what changed, what was measured, what is left.", hub.config.name),
         );
     }
+    let related = match hub.read(|v| {
+        let (sid, _) = resolve_caller(v, &b.caller)?;
+        let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
+        texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
+        Some(related_cards(v, &sid, b.related.as_deref(), lands_in_a_pr_card(v, &texts), &hub.config.name))
+    }) {
+        Some(Err((status, why))) => return err(status, why),
+        Some(Ok(cards)) => cards,
+        None => vec![],
+    };
     if b.kind == Some(ReportKind::Final)
         && let Some(session) = hub.read(|v| resolve_caller(v, &b.caller).map(|(s, _)| s))
         && let Some(left) = crate::worktree::leftovers(&session).await
@@ -1382,6 +1475,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     let res = hub.append_with(|v| {
         let (sid, name) = resolve_caller(v, &b.caller)?;
         Some(Event::ReportPosted(Report {
+            related: related.clone(),
             id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: sid,
             node_name: name,
@@ -1514,12 +1608,21 @@ fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Optio
     reasons
 }
 
-async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session, busy, waiting_permission, in_daemon, name)) = hub.read(|v| {
-        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string()))
+/// The orchestrator is kept alive on purpose, so only the fleet's explicit close, which sends
+/// `{"force": true}`, may close it; a card's read-and-close never does.
+async fn close_node(State(hub): State<AppState>, Path(key): Path<String>, body: axum::body::Bytes) -> Response {
+    let force = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.get("force").and_then(Value::as_bool)).unwrap_or(false);
+    let Some((short, session, busy, waiting_permission, in_daemon, name, orchestrator)) = hub.read(|v| {
+        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
     }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
+    if orchestrator && !force {
+        return err_reasons(
+            format!("{name} is the orchestrator, which Alondra keeps alive; close it from the fleet if you really mean to"),
+            vec![CloseReason { kind: "orchestrator", detail: None }],
+        );
+    }
     if !in_daemon {
         return forget_interactive(&hub, &session, &name);
     }
@@ -2037,10 +2140,12 @@ mod tests {
         hub.append(Event::Hook(HookEvent { session_id: "audit".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         let now = now_millis();
         hub.append(Event::ReportPosted(Report {
+            related: vec![],
             id: 1, session_id: "audit".into(), node_name: None, title: "Auditoría: 13 cosas".into(), body: Some("Detalle adjunto".into()),
             links: vec![], attachments: vec![], kind: ReportKind::Document, created_at: now, read: false, mission: None, looks_like_question: false,
         })).unwrap();
         hub.append(Event::QuestionAsked(Question {
+            related: vec![],
             id: 1, session_id: "orq".into(), node_name: None, title: "¿Lanzo un nodo que lo arregle?".into(),
             detail: Some("La auditoría (informe #1) encontró 13 cosas".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
             origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
@@ -2075,6 +2180,7 @@ mod tests {
                 kind: Some(ReportKind::Final),
                 links,
                 attachments: vec![],
+                related: None,
             };
             let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
             assert_eq!(status, StatusCode::OK, "{what}: {said}");
@@ -2119,6 +2225,132 @@ mod tests {
         assert!(!hub.read(|v| v.prs[&1].conflicts()));
     }
 
+    #[tokio::test]
+    async fn the_overview_and_the_node_detail_list_what_runs_and_flag_the_possibly_hung() {
+        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
+        let hub = temp_hub("background");
+        let now = now_millis();
+        let item = |kind, label: &str, started_at| BackgroundItem { kind, label: label.into(), started_at, suspect: false };
+        hub.append(Event::DaemonSeen(DaemonObservation {
+            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(2),
+            background: vec![item(BackgroundKind::Shell, "until pgrep", now - 2 * 3600 * 1000), item(BackgroundKind::Agent, "Review", now - 60_000)],
+            ..Default::default()
+        })).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        let listed = &o["nodes"][0]["background"];
+        assert_eq!(listed[0]["kind"], "shell");
+        assert_eq!(listed[0]["suspect"], true);
+        assert_eq!(listed[1]["kind"], "agent");
+        assert!(listed[1].get("suspect").is_none(), "{listed}");
+        let (status, detail) = status_and_body(node_detail(State(hub.clone()), Path("job".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["node"]["background"][0]["suspect"], true);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum NewCard {
+        Ask,
+        Report,
+    }
+
+    /// David's rule (24 Sep): Alondra never infers which cards go together. A node that already has
+    /// open cards declares it with `related`; without it nothing is recorded.
+    #[tokio::test]
+    async fn a_node_with_open_cards_says_what_a_new_one_belongs_with() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        struct Case {
+            what: &'static str,
+            open_card: bool,
+            related: Option<Vec<u64>>,
+            links_pr: bool,
+            status: StatusCode,
+            grouped: bool,
+        }
+        let case = |what, open_card, related: Option<Vec<u64>>, status, grouped| Case { what, open_card, related, links_pr: false, status, grouped };
+        let cases = [
+            case("no open cards, nothing declared", false, None, StatusCode::OK, false),
+            case("open cards, nothing declared", true, None, StatusCode::UNPROCESSABLE_ENTITY, false),
+            case("open cards, declared unrelated", true, Some(vec![]), StatusCode::OK, false),
+            case("open cards, declared related", true, Some(vec![1]), StatusCode::OK, true),
+            case("another node's card", true, Some(vec![2]), StatusCode::FORBIDDEN, false),
+            case("a card already read", true, Some(vec![3]), StatusCode::CONFLICT, false),
+            case("a card that does not exist", true, Some(vec![99]), StatusCode::NOT_FOUND, false),
+            Case { links_pr: true, ..case("it goes inside a PR card", true, None, StatusCode::OK, false) },
+        ];
+        for kind in [NewCard::Ask, NewCard::Report] {
+            for c in &cases {
+                let what = format!("{kind:?}: {}", c.what);
+                let hub = temp_hub("related");
+                for sid in ["s", "t"] {
+                    hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+                }
+                let now = now_millis();
+                let posted = |id: u64, sid: &str| Report {
+                    related: vec![], id, session_id: sid.into(), node_name: None, title: format!("Informe {id}"), body: Some("Hecho".into()),
+                    links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, mission: None, looks_like_question: false,
+                };
+                for (id, sid) in [(1, "s"), (2, "t"), (3, "s")] {
+                    hub.append(Event::ReportPosted(posted(id, sid))).unwrap();
+                }
+                hub.append(Event::ReportRead { id: 3 }).unwrap();
+                if !c.open_card {
+                    hub.append(Event::ReportRead { id: 1 }).unwrap();
+                }
+                let links = if c.links_pr { vec![Link { url: PR.into(), title: None }] } else { vec![] };
+                let caller = Caller { session_id: Some("s".into()), pids: vec![] };
+                let response = match kind {
+                    NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
+                        caller, title: "¿Sigo?".into(), detail: Some("Lo anterior está subido".into()), options: vec![], links, attachments: vec![],
+                        blocking: true, to_orchestrator: false, steps: vec![], related: c.related.clone(),
+                    })).await,
+                    NewCard::Report => report(State(hub.clone()), Json(ReportBody {
+                        caller, title: "Anexo".into(), body: Some("Más detalle".into()), kind: Some(ReportKind::Final), links, attachments: vec![],
+                        related: c.related.clone(),
+                    })).await,
+                };
+                let (status, said) = status_and_body(response).await;
+                assert_eq!(status, c.status, "{what}: {said}");
+                let recorded = hub.read(|v| match kind {
+                    NewCard::Ask => v.questions.len(),
+                    NewCard::Report => v.reports.len() - 3,
+                });
+                assert_eq!(recorded, usize::from(status == StatusCode::OK), "{what}: a refused card is not recorded");
+                if status == StatusCode::UNPROCESSABLE_ENTITY {
+                    let msg = said.to_string();
+                    assert!(msg.contains("#1 report (finished): Informe 1") && msg.contains("`related`") && msg.contains("`[]`"), "{what}: {msg}");
+                }
+                let Json(o) = overview(State(hub.clone())).await;
+                let carried = match kind {
+                    NewCard::Ask => o["open_questions"][0]["reports"].as_array().is_some_and(|r| r.iter().any(|r| r["id"] == 1)),
+                    NewCard::Report => o["news"].as_array().unwrap().iter().any(|n| n["earlier"].as_array().is_some_and(|e| e.iter().any(|r| r["id"] == 1))),
+                };
+                assert_eq!(carried, c.grouped, "{what}: {o}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn answering_a_question_reads_the_reports_it_carries() {
+        let hub = temp_hub("related-answer");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let now = now_millis();
+        hub.append(Event::ReportPosted(Report {
+            related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "Menús como tarjeta".into(), body: Some("Hecho".into()),
+            links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now, read: false, mission: None, looks_like_question: false,
+        })).unwrap();
+        let body = AskBody {
+            caller: Caller { session_id: Some("s".into()), pids: vec![] }, title: "¿Sigo con el salto de la TUI?".into(),
+            detail: Some("Lo anterior está subido".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
+            to_orchestrator: false, steps: vec![], related: Some(vec![1]),
+        };
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let body = AnswerBody { text: "Sí".into(), option: None, by: None };
+        let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reports[&1].read), "answering reads the report inside the question");
+    }
+
     fn temp_hub(tag: &str) -> Arc<Hub> {
         hub_with(tag, false)
     }
@@ -2146,6 +2378,7 @@ mod tests {
                 kind: Some(ReportKind::Final),
                 links: vec![],
                 attachments: vec![],
+                related: None,
             };
             let (status, said) = status_and_body(report(State(hub.clone()), Json(body("probe"))).await).await;
             assert_eq!(status, expected, "sandbox {sandbox}: {said}");
@@ -2172,16 +2405,45 @@ mod tests {
         let hub = temp_hub("close");
         hub.append(Event::Hook(HookEvent { session_id: "1234abcd-interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::QuestionAsked(Question {
+            related: vec![],
             id: 1, session_id: "1234abcd-interactive".into(), node_name: None, title: "t".into(), detail: None, options: vec![], links: vec![],
             attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
             status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
         })).unwrap();
-        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into())).await).await;
+        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into()), axum::body::Bytes::from_static(b"{}")).await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["interactive"], true);
         assert!(body["output"].as_str().unwrap().contains("left the terminal session itself open"), "{body}");
         assert!(hub.read(|v| !v.nodes.contains_key("1234abcd-interactive")));
         assert!(hub.read(|v| !v.questions[&1].status.is_open()));
+    }
+
+    /// 24 Sep: David keeps the orchestrator alive on purpose; only the fleet's explicit close
+    /// (`force`) may close it, never a card's read-and-close.
+    #[tokio::test]
+    async fn the_orchestrator_is_closed_only_by_an_explicit_force() {
+        for (orchestrator, body, closed) in [
+            (true, &b"{}"[..], false),
+            (true, &b""[..], false),
+            (true, &br#"{"force": true}"#[..], true),
+            (false, &b"{}"[..], true),
+            (false, &br#"{"force": true}"#[..], true),
+        ] {
+            let hub = temp_hub("close-orch");
+            hub.append(Event::Hook(HookEvent { session_id: "orch".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+            if orchestrator {
+                hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+            }
+            let (status, reply) = status_and_body(close_node(State(hub.clone()), Path("orch".into()), axum::body::Bytes::copy_from_slice(body)).await).await;
+            let case = format!("orchestrator={orchestrator} body={}", String::from_utf8_lossy(body));
+            if closed {
+                assert_eq!(status, StatusCode::OK, "{case}: {reply}");
+            } else {
+                assert_eq!(status, StatusCode::CONFLICT, "{case}: {reply}");
+                assert_eq!(reply["reasons"][0]["kind"], "orchestrator", "{case}: {reply}");
+            }
+            assert_eq!(hub.read(|v| v.nodes.contains_key("orch")), !closed, "{case}");
+        }
     }
 
     #[tokio::test]
@@ -2258,6 +2520,7 @@ mod tests {
     #[test]
     fn a_node_withdraws_only_its_own_open_questions() {
         let mut open = alondra_core::model::Question {
+            related: vec![],
             id: 7,
             session_id: "mine".into(),
             node_name: None,

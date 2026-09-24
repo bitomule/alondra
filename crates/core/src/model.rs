@@ -102,6 +102,7 @@ pub enum Signal {
     MessageHanded,
     DaemonActive,
     BackgroundTask,
+    BackgroundSuspect,
     UsageLimit,
     DeclaredWait,
     PrAwaitingUser,
@@ -147,6 +148,27 @@ pub struct ToolInFlight {
     pub name: String,
     pub summary: Option<String>,
     pub since: Millis,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundKind {
+    Agent,
+    Shell,
+    #[serde(other)]
+    Other,
+}
+
+/// A subagent or background shell the node left running, as the Claude daemon's job state
+/// lists it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BackgroundItem {
+    pub kind: BackgroundKind,
+    pub label: String,
+    pub started_at: Millis,
+    /// Running for long while the node shows no other work. Only the server's views set it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspect: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -203,6 +225,8 @@ pub struct Node {
     pub daemon_seen_at: Option<Millis>,
     #[serde(default)]
     pub daemon_tasks: u32,
+    #[serde(default)]
+    pub background: Vec<BackgroundItem>,
     #[serde(default)]
     pub usage_limited_at: Option<Millis>,
     #[serde(default)]
@@ -265,6 +289,7 @@ impl Node {
             daemon_tempo: None,
             daemon_seen_at: None,
             daemon_tasks: 0,
+            background: vec![],
             usage_limited_at: None,
             signal_at: None,
             episode_since: 0,
@@ -317,6 +342,12 @@ impl Node {
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.short_id)
     }
+
+    /// Whether a card from this node may offer to close it. The orchestrator never: Alondra
+    /// keeps it alive on purpose.
+    pub fn offers_close(&self) -> bool {
+        self.alive && !self.is_orchestrator
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -359,6 +390,14 @@ pub enum QuestionOrigin {
     Plan,
     Classifier,
     Elicitation,
+}
+
+/// One of a node's cards, named by what it is and its number.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CardRef {
+    Question(u64),
+    Report(u64),
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -423,6 +462,9 @@ pub struct Question {
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<String>,
+    /// The node's other open cards it declared this question belongs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<CardRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -470,6 +512,9 @@ pub struct Report {
     /// The report gate thinks it asks the user for something that should have been a question.
     #[serde(default)]
     pub looks_like_question: bool,
+    /// The node's other open cards it declared this report belongs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<CardRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

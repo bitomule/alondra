@@ -38,7 +38,8 @@ fn ask_schema(user: &str) -> Value {
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "Relevant PRs, commits or URLs"},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
             "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
-            "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")}
+            "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")},
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
         },
         "required": ["title", "detail"]
     })
@@ -65,7 +66,8 @@ fn report_schema(user: &str) -> Value {
             "body": {"type": "string", "description": "The report (markdown), short: what was measured, what changes and what is left"},
             "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("final: you are done and nothing is pending (the usual kind). notice: a short result or finding {user} should know now. document: something for {user} to read (plan, long report), with its path in attachments. A report is for reading: a decision, approval or task for {user} goes through ask or request_action.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"}
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"},
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
         },
         "required": ["title", "body", "kind"]
     })
@@ -81,7 +83,7 @@ fn tools(role: Role, user: &str) -> Value {
     ];
     if role == Role::Orchestrator {
         list.extend([
-            json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something; open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
+            json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells; `suspect` when possibly hung); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
@@ -204,6 +206,11 @@ fn pick(v: &Value, keys: &[&str]) -> Value {
     Value::Object(keys.iter().filter_map(|k| v.get(*k).filter(|x| !x.is_null()).map(|x| (k.to_string(), x.clone()))).collect())
 }
 
+/// The subagents and shells a node runs, when it runs any.
+fn running(n: &Value) -> Option<Value> {
+    n.get("background").filter(|b| b.as_array().is_some_and(|a| !a.is_empty())).cloned()
+}
+
 fn list(v: &Value, key: &str) -> Vec<Value> {
     v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
 }
@@ -225,7 +232,11 @@ fn fleet_summary(o: &Value, all: bool) -> Value {
         } else if !all && !present {
             gone += 1;
         } else {
-            nodes.push(pick(&n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive", "in_daemon", "undeliverable_messages"]));
+            let mut row = pick(&n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive", "in_daemon", "undeliverable_messages"]);
+            if let Some(b) = running(&n) {
+                row["background"] = b;
+            }
+            nodes.push(row);
         }
     }
     let questions: Vec<Value> = open.iter().map(|q| pick(q, &["id", "title", "node_name", "origin", "to_orchestrator", "action", "asked_at"])).collect();
@@ -340,11 +351,14 @@ fn distinct_events(timeline: &[Value]) -> Vec<Value> {
 /// message, and pages through the events. No text appears twice in one response.
 fn node_view(d: &Value, page: Page) -> Value {
     let history = page != Page::Recent;
-    let node = pick(
+    let mut node = pick(
         d.get("node").unwrap_or(&Value::Null),
         &["name", "short_id", "cwd", "state", "state_since", "alive", "in_daemon", "is_orchestrator", "busy", "tool", "waiting_permission",
           "menu_waiting", "mission", "daemon_needs", "usage_limited", "evidence", "last_prompt", "last_prompt_at", "last_message", "last_message_at"],
     );
+    if let Some(b) = d.get("node").and_then(running) {
+        node["background"] = b;
+    }
     let questions = list(d, "questions");
     let is_open = |q: &Value| q.get("status").and_then(Value::as_str) == Some("open");
     let open: Vec<Value> = questions
@@ -655,5 +669,16 @@ mod tests {
         assert_eq!(v["nodes"].as_array().unwrap().len(), 6);
         assert_eq!(v["orchestrator_messages"].as_array().unwrap().len(), 2);
         assert!(v.get("hidden").is_none());
+    }
+
+    #[test]
+    fn the_fleet_lists_what_a_node_runs_only_when_it_runs_something() {
+        let o = json!({"nodes": [
+            {"name": "a", "state": "working", "alive": true, "background": [{"kind": "shell", "label": "until pgrep", "started_at": 1, "suspect": true}]},
+            {"name": "b", "state": "working", "alive": true, "background": []}
+        ]});
+        let f = fleet_summary(&o, false);
+        assert_eq!(f["nodes"][0]["background"][0]["suspect"], true);
+        assert!(f["nodes"][1].get("background").is_none());
     }
 }
