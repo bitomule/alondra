@@ -928,7 +928,28 @@ fn store_attachments(home: &std::path::Path, prefix: &str, paths: &[String]) -> 
         .collect()
 }
 
+const PROBE_PREFIX: &str = "test/";
+
+fn probe_refused(name: Option<&str>, sandbox: bool) -> Option<Response> {
+    let name = name.filter(|n| n.starts_with(PROBE_PREFIX) && !sandbox)?;
+    Some(err(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "{name} is a test node and this is the user's real Alondra, so its reports and questions would land in their inbox. \
+             Run probes against a sandbox instead: `make e2e-sandbox` in the Alondra repo starts one and prints how to point a node at it."
+        ),
+    ))
+}
+
+fn caller_probe_refused(hub: &Hub, caller: &Caller) -> Option<Response> {
+    let name = hub.read(|v| resolve_caller(v, caller).and_then(|(_, name)| name));
+    probe_refused(name.as_deref(), hub.config.sandbox)
+}
+
 async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     if b.title.trim().is_empty() || b.detail.as_deref().is_none_or(|d| d.trim().is_empty()) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -939,6 +960,9 @@ async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
 }
 
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     b.steps.retain(|s| !s.trim().is_empty());
     if b.title.trim().is_empty() || b.steps.is_empty() {
         return err(
@@ -1177,6 +1201,9 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
+    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+        return r;
+    }
     if b.kind != Some(ReportKind::Progress) && (b.title.trim().is_empty() || b.body.as_deref().is_none_or(|t| t.trim().is_empty())) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1831,9 +1858,43 @@ mod tests {
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {
+        hub_with(tag, false)
+    }
+
+    fn hub_with(tag: &str, sandbox: bool) -> Arc<Hub> {
         let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
-        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        let env = move |k: &str| (sandbox && k == "ALONDRA_SANDBOX").then(|| "1".to_string());
+        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), env, || Some("Ana".into()));
         Arc::new(Hub::open(config, false).unwrap())
+    }
+
+    /// test/menu-probe, 24 Sep: a probe run against the real alondrad posted reports #111 and #112
+    /// into the user's inbox.
+    #[tokio::test]
+    async fn test_nodes_reach_only_a_sandbox() {
+        for (sandbox, expected) in [(false, StatusCode::UNPROCESSABLE_ENTITY), (true, StatusCode::OK)] {
+            let hub = hub_with(if sandbox { "sandbox" } else { "real" }, sandbox);
+            for (sid, name) in [("probe", "test/menu-probe"), ("real", "lumo/permiso-camara")] {
+                hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), ..Default::default() })).unwrap();
+            }
+            let body = |sid: &str| ReportBody {
+                caller: Caller { session_id: Some(sid.into()), pids: vec![] },
+                title: "Menú leído".into(),
+                body: Some("La sonda leyó el menú".into()),
+                kind: Some(ReportKind::Final),
+                links: vec![],
+                attachments: vec![],
+            };
+            let (status, said) = status_and_body(report(State(hub.clone()), Json(body("probe"))).await).await;
+            assert_eq!(status, expected, "sandbox {sandbox}: {said}");
+            if !sandbox {
+                assert!(said["error"].as_str().unwrap().contains("make e2e-sandbox"), "{said}");
+            }
+            assert_eq!(status_and_body(report(State(hub.clone()), Json(body("real"))).await).await.0, StatusCode::OK, "sandbox {sandbox}: ordinary nodes still report");
+        }
+        assert!(probe_refused(Some("test/x"), false).is_some());
+        assert!(probe_refused(Some("hive/test/x"), false).is_none());
+        assert!(probe_refused(None, false).is_none());
     }
 
     async fn status_and_body(r: Response) -> (StatusCode, Value) {

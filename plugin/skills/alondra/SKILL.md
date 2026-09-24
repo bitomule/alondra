@@ -46,3 +46,13 @@ What you write in your terminal does not reach the user; only Alondra's tools do
 - **Questions inside a report.** If a report asks the user to decide, approve, test or fetch
   something, Alondra delivers it flagged and the question gets lost among the reading: send it as
   `ask` (or `request_action` if it is something to do).
+
+## Probes and end-to-end tests
+
+- **Never run a probe or an end-to-end test against the real alondrad** (port 47800): whatever
+  it reports or asks lands in the user's inbox. Alondra refuses `report`, `ask` and
+  `request_action` from nodes whose name starts with `test/` unless it runs as a sandbox.
+- Start a sandbox with `make e2e-sandbox` in the Alondra repo: it runs a throwaway alondrad with
+  its own data directory and port, and prints the `claude --bg --name test/<probe> --plugin-dir …
+  --settings …` line that points a probe node at it instead of the real one. Name probes
+  `test/<something>`, close them with `claude rm` and stop the sandbox when done.
