@@ -348,7 +348,7 @@ mod tests {
         let report = |id: u64, url: Option<&str>| Report {
             related: vec![], id, session_id: "s".into(), node_name: Some("alondra/x".into()), title: format!("Report {id}"), body: None,
             links: url.map(|u| vec![alondra_core::Link { url: u.into(), title: None }]).unwrap_or_default(),
-            attachments: vec![], kind: ReportKind::Final, created_at: 0, read: false, mission: None, looks_like_question: false,
+            attachments: vec![], kind: ReportKind::Final, created_at: 0, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
         };
         let shape = |p: &Value| (p["alondra"]["kind"].as_str().unwrap().to_string(), p["alondra"]["id"].as_u64().unwrap());
         let mut announced = std::collections::HashSet::new();

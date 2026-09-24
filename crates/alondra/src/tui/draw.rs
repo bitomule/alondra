@@ -25,7 +25,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Some(c) => {
             let preview = c.chips.iter().rev().find(|c| app.previews.contains_key(&c.seq)).map(|c| c.seq);
             let preview_h = if preview.is_some() { PREVIEW_ROWS } else { 0 };
-            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + preview_h).min(body.height.saturating_sub(3));
+            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + form_height(c.form.as_ref()) + preview_h).min(body.height.saturating_sub(3));
             let [main, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(body);
             let preview_area = draw_composer(f, app, comp, preview_h);
             if let (Some(seq), Some(area)) = (preview, preview_area)
@@ -44,6 +44,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Screen::Inbox => draw_inbox(f, app, body),
             Screen::Fleet => draw_fleet(f, app, body),
         }
+    }
+    if let Some(form) = app.composer.as_ref().and_then(|c| c.form.as_ref()) {
+        draw_form_popup(f, form, body);
     }
     draw_foot(f, app, foot);
     draw_flash(f, app, body);
@@ -1310,6 +1313,100 @@ fn chips_height(chips: &[super::dropped::Chip]) -> u16 {
     u16::from(!chips.is_empty())
 }
 
+fn form_height(form: Option<&super::work::OptionsForm>) -> u16 {
+    form.map_or(0, |f| if f.loaded { f.rows_shown().len() as u16 } else { 1 })
+}
+
+fn form_lines(form: &super::work::OptionsForm) -> Vec<Line<'static>> {
+    if !form.loaded {
+        return vec![Line::from(tr!("Loading the options…", "Cargando las opciones…").fg(DIM))];
+    }
+    let width = form.rows_shown().iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+    let mut lines: Vec<Line<'static>> = form
+        .rows_shown()
+        .into_iter()
+        .map(|(label, value, focused)| {
+            let (marker, style) = if focused { ("▸ ", Style::new().fg(Color::Black).bg(ACCENT)) } else { ("  ", Style::new()) };
+            Line::from(vec![Span::styled(marker, Style::new().fg(ACCENT)), Span::styled(format!("{label:<width$}  "), Style::new().fg(DIM)), Span::styled(value, style)])
+        })
+        .collect();
+    if let (Some(e), Some(first)) = (&form.error, lines.first_mut()) {
+        first.spans.push(Span::styled(format!("   ⚠ {e}"), Style::new().fg(Color::Red)));
+    }
+    lines
+}
+
+/// The list a row of "New" opens, drawn over the screen above the composer.
+fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
+    use super::work::Popup;
+    let Some(popup) = form.popup.as_ref() else { return };
+    let (title, hint, lines): (String, &str, Vec<Line<'static>>) = match popup {
+        Popup::Issues(p) => {
+            let mut lines = vec![Line::from(vec![Span::styled("/ ", Style::new().fg(DIM)), Span::raw(p.query.clone())])];
+            if p.loading {
+                lines.push(Line::from(tr!("Asking GitHub…", "Preguntando a GitHub…").fg(DIM)));
+            }
+            if let Some(e) = &p.error {
+                lines.push(Line::from(Span::styled(format!("⚠ {e}"), Style::new().fg(Color::Red))));
+            }
+            let visible = p.visible();
+            if visible.is_empty() && !p.loading {
+                lines.push(Line::from(tr!("No open issues match", "Ninguna issue abierta coincide").fg(DIM)));
+            }
+            let room = (area.height as usize).saturating_sub(lines.len() + 2).max(1);
+            let start = p.sel.saturating_sub(room - 1);
+            for (i, issue) in visible.iter().enumerate().skip(start).take(room) {
+                let style = if i == p.sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+                let labels = if issue.labels.is_empty() { String::new() } else { format!("  [{}]", issue.labels.join(", ")) };
+                let text = truncate(&format!("{}  {}{labels}", issue.reference(), issue.title), area.width.saturating_sub(4) as usize);
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+            let hint = tr!(" type to filter · ↑↓ · ⏎ picks · Ctrl+R searches GitHub again · Esc ", " escribe para filtrar · ↑↓ · ⏎ elige · Ctrl+R busca de nuevo en GitHub · Esc ");
+            (tr!("Issues", "Issues").to_string(), hint, lines)
+        }
+        Popup::Projects { query, sel } => {
+            let mut lines = vec![Line::from(vec![Span::styled("/ ", Style::new().fg(DIM)), Span::raw(query.clone())])];
+            let choices = form.project_choices(query);
+            if choices.is_empty() {
+                lines.push(Line::from(tr!("No project matches", "Ningún proyecto coincide").fg(DIM)));
+            }
+            let sel = (*sel).min(choices.len().saturating_sub(1));
+            let room = (area.height as usize).saturating_sub(lines.len() + 2).max(1);
+            let start = sel.saturating_sub(room - 1);
+            for (i, choice) in choices.iter().enumerate().skip(start).take(room) {
+                let style = if i == sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+                let (name, note) = match choice {
+                    None => (tr!("The orchestrator decides", "Lo decide el orquestador").to_string(), String::new()),
+                    Some(p) if form.suggested.as_ref() == Some(p) => (p.clone(), tr!("  · this directory", "  · este directorio").to_string()),
+                    Some(p) => (p.clone(), String::new()),
+                };
+                lines.push(Line::from(vec![Span::styled(name, style), Span::styled(note, Style::new().fg(DIM))]));
+            }
+            let hint = tr!(" type to filter · ↑↓ · ⏎ picks · Esc ", " escribe para filtrar · ↑↓ · ⏎ elige · Esc ");
+            (tr!("Project", "Proyecto").to_string(), hint, lines)
+        }
+        Popup::Values { spec, sel } => {
+            let title = form.specs.get(*spec).map(super::work::label).unwrap_or_default();
+            let mut lines = vec![];
+            for (i, e) in form.entries(*spec).into_iter().enumerate() {
+                let style = if i == *sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new().bold() };
+                lines.push(Line::from(Span::styled(format!(" {} ", e.label), style)));
+                if let Some(d) = e.description {
+                    lines.push(Line::from(Span::styled(format!("   {}", truncate(&d, area.width.saturating_sub(8) as usize)), Style::new().fg(DIM))));
+                }
+            }
+            (title, tr!(" ↑↓ · ⏎ picks · Esc ", " ↑↓ · ⏎ elige · Esc "), lines)
+        }
+    };
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let area = Rect { y: area.y + area.height - height, height, ..area };
+    let block = panel(Line::from(Span::styled(format!(" {title} "), Style::new().fg(ACCENT).bold())), true).title_bottom(Line::from(hint.fg(DIM)).right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
     let mut spans = vec![];
     for chip in chips {
@@ -1367,11 +1464,16 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
-    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(1));
-    let preview_h = preview_h.min(text.height.saturating_sub(chips_h + 1));
-    let [preview, chips, text] = Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Min(1)]).areas(text);
+    let form_h = form_height(c.form.as_ref()).min(text.height.saturating_sub(1));
+    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(form_h + 1));
+    let preview_h = preview_h.min(text.height.saturating_sub(form_h + chips_h + 1));
+    let [preview, chips, form, text] =
+        Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Length(form_h), Constraint::Min(1)]).areas(text);
     if chips_h > 0 {
         f.render_widget(Paragraph::new(chip_line(&c.chips)), chips);
+    }
+    if let Some(o) = c.form.as_ref().filter(|_| form_h > 0) {
+        f.render_widget(Paragraph::new(form_lines(o)), form);
     }
     let (lines, (row, col)) = c.input.layout(text.width as usize);
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
@@ -1395,6 +1497,28 @@ fn composer_action(t: &Target) -> &'static str {
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
     if let Some(c) = app.composer.as_ref() {
+        if let Some(form) = c.form.as_ref() {
+            if form.popup.is_some() {
+                return vec![k("↑/↓", tr!("move", "mover")), k("⏎", tr!("picks", "elige")), k("Esc", tr!("closes the list", "cierra la lista"))];
+            }
+            if form.focus.is_some() {
+                return vec![
+                    k("↑/↓", tr!("setting", "ajuste")),
+                    k("⏎", tr!("shows its values", "muestra sus valores")),
+                    k("p", tr!("project", "proyecto")),
+                    k("i", tr!("issue", "issue")),
+                    k("x", tr!("drop the issue", "quita la issue")),
+                    k("Tab", tr!("back to the text", "vuelve al texto")),
+                ];
+            }
+            return vec![
+                k("⏎", composer_action(&c.target)),
+                k("Tab", tr!("project, issue and options", "proyecto, issue y opciones")),
+                k("Alt+⏎", tr!("new line", "nueva línea")),
+                k(tr!("drop a file", "arrastra un archivo"), tr!("attaches it", "lo adjunta")),
+                k("Esc", tr!("cancel", "cancela")),
+            ];
+        }
         return vec![
             k("⏎", composer_action(&c.target)),
             k("Alt+⏎", tr!("new line", "nueva línea")),
@@ -1649,6 +1773,33 @@ mod tests {
         app.on_msg(Msg::Preview { seq: 7, image });
         let s = screen(&mut app, 120, 40);
         assert!(s.contains('▀') || s.contains('▄'), "the image is previewed (half-blocks in tests): {s}");
+    }
+
+    #[test]
+    fn new_shows_one_row_per_setting_and_a_row_opens_its_values_with_descriptions() {
+        use super::super::{Msg, Target};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let (mut app, _rx) = app_with(vec![]);
+        app.compose(Target::NewRequest, "");
+        let specs = alondra_core::options::OptionsFile::default().catalog(None);
+        app.on_msg(Msg::Options { project: None, result: Ok((vec!["App".into(), "Lib".into()], Some("Lib".into()), specs, None)) });
+        let s = screen(&mut app, 120, 40);
+        for row in ["Project  the orchestrator decides", "Issue    none", "PRs      review each one", "Effort   auto", "Tab project, issue and options"] {
+            assert!(s.contains(row), "{row}: {s}");
+        }
+        let key = |app: &mut App, code| app.composer_key(KeyEvent::new(code, KeyModifiers::NONE));
+        for code in [KeyCode::Tab, KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter] {
+            key(&mut app, code);
+        }
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("The orchestrator picks the model and effort from the task"), "{s}");
+        assert!(s.contains("The strongest model and the most effort"), "{s}");
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('p'));
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("Lib  · this directory"), "{s}");
+        assert!(s.find("Lib  · this directory") < s.find("App"), "this directory's project comes first: {s}");
     }
 
     #[test]

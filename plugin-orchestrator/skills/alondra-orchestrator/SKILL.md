@@ -41,10 +41,18 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
    - The mission you write is complete: what to build, what evidence to leave, what has already
      been ruled out and whom to report to.
    - Node names carry their hierarchy (`lumo/phase-c`).
+   - A request carries the options the user chose and a `request_id`. Pass that `request_id` to
+     every `launch` for the request. Alondra writes the options into the node's mission and sets
+     its model and effort, so leave them out of your prompt and never contradict them.
+   - Effort: when the request says it is auto, choose it yourself for each `launch` (`effort`:
+     light for small, clear work; normal for most; hard for tricky or risky work). When the user
+     chose light, normal or hard, that choice is binding and Alondra ignores yours.
    - An ambiguous request is a question for the user: one question costs less than a node
      launched on the wrong reading.
-2. Alondra's digest, every 90 s in one message: new reports, nodes that finished without
-   saying what they want, questions addressed to you, and the machine at its limit.
+2. Alondra's digest, every 90 s in one message: new reports, handoffs ("Handoff from …": a node
+   with nothing left of its own pending, done, that measured or built something and wants you to
+   continue), nodes that finished without saying what they want, questions addressed to you, and
+   the machine at its limit.
    - A node "unclear what it wants": its last message is in `node`. If it needs the user, tell
      it to `ask`; if it is done, tell it to `report` with `kind: final`.
    - The machine at its limit: nothing new fits; tell the user which node you would stop.

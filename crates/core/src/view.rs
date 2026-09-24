@@ -31,6 +31,12 @@ pub struct View {
     /// Artifacts David approved, with when: a later report about one of them asks nothing of him.
     #[serde(default)]
     pub approved_artifacts: BTreeMap<String, Millis>,
+    /// The options of each request for new work, by request id.
+    #[serde(default)]
+    pub requests: BTreeMap<String, crate::options::Resolved>,
+    /// Names of nodes launched with auto-merge.
+    #[serde(default)]
+    pub auto_merge_nodes: std::collections::BTreeSet<String>,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -284,7 +290,9 @@ impl View {
                 if !known {
                     let id = self.prs.keys().next_back().copied().unwrap_or(0) + 1;
                     let name = self.nodes.get(session_id).and_then(|n| n.name.clone());
-                    if let Some(pr) = crate::pr::PullRequest::opened(id, url, session_id, name, at) {
+                    let auto_merge = name.as_ref().is_some_and(|n| self.auto_merge_nodes.contains(n));
+                    if let Some(mut pr) = crate::pr::PullRequest::opened(id, url, session_id, name, at) {
+                        pr.auto_merge = auto_merge;
                         self.prs.insert(id, pr);
                     }
                 }
@@ -298,8 +306,10 @@ impl View {
                 if let Some(known) = self.prs.get_mut(&pr.id) {
                     let dismissed = known.state == crate::pr::PrState::Dismissed && pr.state == crate::pr::PrState::Open;
                     let requested = known.changes_requested_on.take();
+                    let auto_merge = known.auto_merge;
                     *known = pr.clone();
                     known.changes_requested_on = requested;
+                    known.auto_merge = auto_merge;
                     if dismissed {
                         known.state = crate::pr::PrState::Dismissed;
                     }
@@ -330,6 +340,18 @@ impl View {
                     pr.changes_requested_on = Some(pr.head_sha.clone().unwrap_or_default());
                 }
                 self.pr_node(*id)
+            }
+            Event::RequestSent { request_id, options } => {
+                self.requests.insert(request_id.clone(), options.clone());
+                None
+            }
+            Event::Launched { name, auto_merge, .. } => {
+                if *auto_merge {
+                    self.auto_merge_nodes.insert(name.clone());
+                } else {
+                    self.auto_merge_nodes.remove(name);
+                }
+                None
             }
             Event::OrchestratorLaunched { .. } => {
                 self.orchestrator_launched_at = Some(at);
@@ -676,13 +698,14 @@ impl View {
         let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
             let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
+            !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
         })
     }
 
-    /// A report another card can carry: unread, not progress, and not in a PR card (its home).
+    /// A report another card can carry: unread, not progress, not for the orchestrator, and not
+    /// in a PR card (its home).
     fn carriable(&self, r: &Report) -> bool {
-        !r.read && r.kind != ReportKind::Progress && self.report_pr(r).is_none()
+        !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && self.report_pr(r).is_none()
     }
 
     /// The node's own cards still waiting on the user, outside PR cards: its open questions and
@@ -1014,6 +1037,7 @@ mod tests {
                 kind: ReportKind::Final,
                 created_at: 2000,
                 read: false,
+                to_orchestrator: false,
                 mission: None,
                 looks_like_question: false,
             })
@@ -1046,6 +1070,7 @@ mod tests {
             kind: ReportKind::Final,
             created_at: 2000,
             read: false,
+            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         }));
@@ -1301,6 +1326,7 @@ mod tests {
             kind,
             created_at: at,
             read: false,
+            to_orchestrator: false,
             mission: None,
             looks_like_question: false,
         })

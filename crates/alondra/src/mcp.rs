@@ -23,7 +23,7 @@ fn instructions(role: Role, user: &str) -> String {
          Write every question, report and message for {user} in {language}, whatever language this conversation is in."
     );
     match role {
-        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user}; end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. A PR you open gets its own card where {user} decides the merge, and you count as waiting for that merge until then, even after a final report; when the merge notice arrives, do what it unblocks and report final again. An `ask` about merging would be a second card for the same decision. A report that links the PR is shown inside that card, so the PR being ready needs no report of its own. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
+        Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never to hand off work); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. A PR you open gets its own card where {user} decides the merge, and you count as waiting for that merge until then, even after a final report; when the merge notice arrives, do what it unblocks and report final again. An `ask` about merging would be a second card for the same decision. A report that links the PR is shown inside that card, so the PR being ready needs no report of its own. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
         Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`launch`, `send`, `interrupt`). The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
     }
 }
@@ -68,7 +68,8 @@ fn report_schema(user: &str) -> Value {
             "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("final: you are done and nothing is pending (the usual kind). notice: a short result or finding {user} should know now. document: something for {user} to read (plan, long report), with its path in attachments, or a claude.ai artifact URL in links for {user} to review, which keeps you waiting for that review. A report is for reading: a decision, approval or task for {user} goes through ask or request_action.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"},
-            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")},
+            "to_orchestrator": {"type": "boolean", "description": format!("true if this is a handoff for the orchestrator (someone should continue this), not a result for {user}. Combine with kind: final when you have nothing left of your own pending.")}
         },
         "required": ["title", "body", "kind"]
     })
@@ -76,9 +77,9 @@ fn report_schema(user: &str) -> Value {
 
 fn tools(role: Role, user: &str) -> Value {
     let mut list = vec![
-        json!({"name": "ask", "description": format!("Structured question to {user} (or to the orchestrator). Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)}),
+        json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)}),
         json!({"name": "request_action", "description": format!("Hand {user} something to do outside Alondra (test on the iPhone, get a key, check App Store Connect). {user} sees a \"Your turn\" card with the steps and answers \"Done\" or explains why they cannot; Alondra types that into this session."), "inputSchema": action_schema(user)}),
-        json!({"name": "report", "description": format!("Tell {user} you are done (kind final) or give {user} a result, finding or document to read. Alondra rejects reports that only give progress. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
+        json!({"name": "report", "description": format!("Tell {user} you are done (kind final) or give {user} a result, finding or document to read. With to_orchestrator: true it is a handoff for the orchestrator instead — use it for \"someone should continue this\" when you have nothing left of your own pending. Alondra rejects reports that only give progress. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
         json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}}, "required": ["id"]}}),
         json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
     ];
@@ -89,7 +90,7 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string"}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd", "prompt"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("The request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Yours to choose from the task when the request's effort is auto or there is no request: light for small clear work, normal for most, hard for tricky or risky work. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd", "prompt"]}}),
         ]);
     }
     Value::Array(list)
@@ -130,13 +131,39 @@ fn merge(mut a: Value, b: &Value) -> Value {
     a
 }
 
+/// The `ask` reply text: who it actually reached, per the server's own echo of
+/// `to_orchestrator` (the source of truth), not the outgoing args.
+fn ask_reply(id: u64, to_orchestrator: bool, user: &str) -> String {
+    if to_orchestrator {
+        format!("Question #{id} recorded and sent to the orchestrator, not {user}: it arrives in its session through the fleet digest (up to ~90s), not instantly. End your turn when you have nothing else to do.")
+    } else {
+        format!("Question #{id} recorded and sent to {user}. End your turn when you have nothing else to do: Alondra will type the answer into this session.")
+    }
+}
+
+/// The `report` reply text: who it actually reached, per the server's own echo of
+/// `to_orchestrator`, plus any note the server attached (e.g. shown in a PR card, flagged as a
+/// question).
+fn report_reply(id: u64, to_orchestrator: bool, note: Option<&str>, user: &str) -> String {
+    let delivered = if to_orchestrator {
+        format!("Report #{id} handed off to the orchestrator, not {user}: it arrives in its session through the fleet digest (up to ~90s), not instantly.")
+    } else {
+        format!("Report #{id} delivered to {user}.")
+    };
+    match note {
+        Some(note) => format!("{delivered} {note}"),
+        None => delivered,
+    }
+}
+
 fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Result<String> {
     let who = caller();
     Ok(match name {
         "ask" => {
             let r = client.post("/v1/questions", &merge(args.clone(), &who))?;
             let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
-            format!("Question #{id} recorded and sent to {user}. End your turn when you have nothing else to do: Alondra will type the answer into this session.")
+            let to_orchestrator = r.get("to_orchestrator").and_then(Value::as_bool).unwrap_or(false);
+            ask_reply(id, to_orchestrator, user)
         }
         "request_action" => {
             let r = client.post("/v1/actions", &merge(args.clone(), &who))?;
@@ -145,11 +172,9 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
-            let delivered = format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0));
-            match r.get("note").and_then(Value::as_str) {
-                Some(note) => format!("{delivered} {note}"),
-                None => delivered,
-            }
+            let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
+            let to_orchestrator = r.get("to_orchestrator").and_then(Value::as_bool).unwrap_or(false);
+            report_reply(id, to_orchestrator, r.get("note").and_then(Value::as_str), user)
         }
         "withdraw" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("id is required"))?;
@@ -501,6 +526,42 @@ mod tests {
             let text = format!("{} {}", instructions(role, "Mostafa"), tools(role, "Mostafa"));
             assert!(text.contains("Mostafa") && !text.contains("David"), "{text}");
         }
+    }
+
+    /// #218 (blurcamera/redaccion-fase2-puerta): a handoff for the orchestrator was reported back
+    /// to the node as "sent to David", even though it never reached David. The reply must name
+    /// the true recipient, taken from the server's own echo of `to_orchestrator`.
+    #[test]
+    fn ask_and_report_replies_name_the_true_recipient() {
+        let cases: [(bool, &str, &str); 4] = [
+            (false, "sent to Mostafa", "not Mostafa"),
+            (true, "sent to the orchestrator", "sent to Mostafa"),
+            (false, "delivered to Mostafa", "handed off to the orchestrator"),
+            (true, "handed off to the orchestrator", "delivered to Mostafa"),
+        ];
+        let ask = ask_reply(1, cases[0].0, "Mostafa");
+        assert!(ask.contains(cases[0].1), "{ask}");
+        assert!(!ask.contains(cases[0].2), "{ask}");
+
+        let ask_to_orch = ask_reply(2, cases[1].0, "Mostafa");
+        assert!(ask_to_orch.contains(cases[1].1), "{ask_to_orch}");
+        assert!(!ask_to_orch.contains(cases[1].2), "{ask_to_orch}");
+
+        let report = report_reply(3, cases[2].0, None, "Mostafa");
+        assert!(report.contains(cases[2].1), "{report}");
+        assert!(!report.contains(cases[2].2), "{report}");
+
+        let report_to_orch = report_reply(4, cases[3].0, None, "Mostafa");
+        assert!(report_to_orch.contains(cases[3].1), "{report_to_orch}");
+        assert!(!report_to_orch.contains(cases[3].2), "{report_to_orch}");
+    }
+
+    #[test]
+    fn report_reply_keeps_the_servers_note() {
+        let with_note = report_reply(5, false, Some("Shown in PR #24."), "Mostafa");
+        assert!(with_note.ends_with("Shown in PR #24."), "{with_note}");
+        let without = report_reply(6, false, None, "Mostafa");
+        assert!(!without.contains("Shown in"), "{without}");
     }
 
     const SAID: &str = "Phase 1 is merged and deployed; the TUI, the Mac and the iPhone show notices inside their PR card.";

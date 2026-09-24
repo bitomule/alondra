@@ -1671,6 +1671,116 @@
         }
       }
     },
+    "Project": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proyecto"
+          }
+        }
+      }
+    },
+    "The orchestrator decides": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lo decide el orquestador"
+          }
+        }
+      }
+    },
+    "Issue": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Issue"
+          }
+        }
+      }
+    },
+    "Remove the issue": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar la issue"
+          }
+        }
+      }
+    },
+    "From an issue…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desde una issue…"
+          }
+        }
+      }
+    },
+    "Filter, or paste an issue link": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtra, o pega el enlace de una issue"
+          }
+        }
+      }
+    },
+    "Search GitHub again": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar de nuevo en GitHub"
+          }
+        }
+      }
+    },
+    "Use %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar %@"
+          }
+        }
+      }
+    },
+    "No open issues match": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ninguna issue abierta coincide"
+          }
+        }
+      }
+    },
+    "Filter projects": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtrar proyectos"
+          }
+        }
+      }
+    },
+    "No project matches": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún proyecto coincide"
+          }
+        }
+      }
+    },
     "Send the node what should change; the card comes back when it pushes again": {
       "localizations": {
         "es": {
