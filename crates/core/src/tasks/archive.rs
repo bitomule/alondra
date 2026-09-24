@@ -95,11 +95,20 @@ mod tests {
 
     const DAY: Millis = 24 * 60 * 60 * 1000;
 
-    fn created(id: &str, request: &str, session: Option<&str>) -> Event {
-        Event::TaskCreated(NewTask {
+    fn new_task(id: &str, request: &str, session: Option<&str>) -> NewTask {
+        NewTask {
             id: id.into(), request: request.into(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
             session_id: session.map(str::to_string), launched: false, start: None,
-        })
+        }
+    }
+
+    fn created(id: &str, request: &str, session: Option<&str>) -> Event {
+        Event::TaskCreated(new_task(id, request, session))
+    }
+
+    fn sent(id: &str) -> Event {
+        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
+        Event::RequestSent { request_id: id.into(), options, text: Some("How is it going?".into()), attachments: vec![] }
     }
 
     fn moved(id: &str, event: TaskEvent) -> Event {
@@ -197,8 +206,6 @@ mod tests {
     #[test]
     fn a_request_archived_without_tasks_goes_after_its_days_too() {
         let mut v = replay(&log());
-        let options = crate::options::Resolved { project: None, auto_merge: false, effort: "normal".into(), flags: Default::default(), picked: vec![], issue: None };
-        let sent = |id: &str| Event::RequestSent { request_id: id.into(), options: options.clone(), text: Some("How is it going?".into()), attachments: vec![] };
         apply(&mut v, 7, sent("r-answered"));
         apply(&mut v, 8, sent("r-defining"));
         v.board.requests.get_mut("r-answered").unwrap().archived_at = Some(9);
@@ -213,6 +220,25 @@ mod tests {
         let mut v = replay(&log());
         apply(&mut v, 100 * DAY, Event::Pruned { before: 99 * DAY });
         assert!(v.board.tasks.contains_key("t-done") && v.board.tasks.contains_key("t-gone") && v.board.requests.contains_key("r-1"));
-        assert!(!v.board.tasks.contains_key("t-run"), "an unfinished task nobody works on still goes with the window");
+    }
+
+    /// Only what an older log left behind goes with the window: a task read from a node's events,
+    /// and the request made up for it, once the node is gone.
+    #[test]
+    fn unfinished_recorded_tasks_and_the_users_requests_outlive_the_window() {
+        let mut v = replay(&log());
+        let start = crate::tasks::Start::NewNode { name: "later".into(), cwd: "/tmp".into(), model: None };
+        apply(&mut v, 7, Event::TaskCreated(NewTask { depends_on: vec!["t-run".into()], start: Some(start), ..new_task("t-wait", "r-2", None) }));
+        apply(&mut v, 8, sent("r-defining"));
+        apply(&mut v, 100 * DAY, Event::Pruned { before: 99 * DAY });
+        assert_eq!(v.board.tasks.get("t-wait").map(|t| t.state), Some(TaskState::WaitingDependency), "it waits for t-run");
+        assert!(v.board.tasks.contains_key("t-run") && v.board.requests.contains_key("r-2"), "running, with no node yet");
+        assert!(v.board.requests.contains_key("r-defining"), "the orchestrator has not defined it yet");
+
+        let mut older = View::default();
+        older.apply(1, 1, &Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
+        assert!(older.board.tasks.get("t-s").is_some_and(|t| !t.recorded));
+        older.apply(2, 100 * DAY, &Event::Pruned { before: 99 * DAY });
+        assert!(older.board.tasks.is_empty() && older.board.requests.is_empty(), "its node went silent: its task and the request made up for it go");
     }
 }

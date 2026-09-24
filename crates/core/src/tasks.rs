@@ -638,15 +638,15 @@ impl Board {
         self.tasks.entry(t.id.clone()).or_insert(task);
     }
 
-    /// Forgets tasks nobody can act on any more: their node is gone, nothing of theirs waits for
-    /// David and nothing happened to them since `before`. A finished task stays until it is
-    /// archived (`prune_archived`). Requests left without tasks, and launches that never found
-    /// their node, go with them.
+    /// Forgets what an older log left behind: a task read from a node's events once its node is
+    /// gone, nothing of it waits for the user and nothing happened to it since `before`, and the
+    /// request made up for it. A recorded task stays until it finishes and is archived, a finished
+    /// one until it is archived (`prune_archived`), and a request the user sent until it is
+    /// archived. Launches that never found their node go too.
     pub(crate) fn prune(&mut self, before: Millis, keep: impl Fn(&Task) -> bool) {
-        self.tasks.retain(|_, t| keep(t) || t.state.finished() || t.last_change() >= before);
-        let finished: std::collections::HashSet<String> = self.requests.keys().filter(|id| self.finished_without_tasks(id)).cloned().collect();
+        self.tasks.retain(|_, t| keep(t) || t.recorded || t.state.finished() || t.last_change() >= before);
         let tasks = &self.tasks;
-        self.requests.retain(|id, r| r.created_at >= before || finished.contains(id) || tasks.values().any(|t| &t.request == id));
+        self.requests.retain(|id, r| !r.synthetic || r.created_at >= before || tasks.values().any(|t| &t.request == id));
         self.launches.retain(|_, l| l.at >= before);
     }
 }
