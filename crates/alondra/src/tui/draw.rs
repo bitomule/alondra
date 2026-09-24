@@ -142,6 +142,7 @@ fn state_color(s: NodeState) -> Color {
     match s {
         NodeState::WaitingAnswer => Color::Yellow,
         NodeState::YourTurn => Color::LightYellow,
+        NodeState::WaitingMerge => Color::LightGreen,
         NodeState::Unclear => Color::Magenta,
         NodeState::Stalled => Color::LightRed,
         NodeState::Delivered => Color::Cyan,

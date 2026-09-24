@@ -82,7 +82,7 @@ pub const NODE_TABLE: &[Row<NodeState>] = &[
     row("a background task of the node is still running", Signal::BackgroundTask, NodeState::Working),
     row("a usage limit stopped the node", Signal::UsageLimit, NodeState::WaitingMachine),
     row("the node declared it waits for the machine", Signal::DeclaredWait, NodeState::WaitingMachine),
-    row("a PR of the node waits for the user on its card", Signal::PrAwaitingUser, NodeState::WaitingAnswer),
+    row("a PR of the node waits for the user's merge, or its merge has yet to reach it", Signal::PrAwaitingUser, NodeState::WaitingMerge),
     row("the node reported final and nothing contradicts it", Signal::FinalReport, NodeState::Done),
     row("the user reviewed what the node delivered", Signal::Reviewed, NodeState::Done),
     row("a report the node delivered", Signal::Report, NodeState::Delivered),
@@ -172,6 +172,12 @@ pub fn facts(view: &View, node: &Node, now: Millis) -> Facts {
     facts_with(view, node, now, view.machine_strained)
 }
 
+/// A message typed into a done node moves it only when David or the orchestrator wrote it.
+fn reopened(view: &View, node: &Node) -> bool {
+    node.state != NodeState::Done
+        || view.messages.values().filter(|m| m.session_id == node.session_id && m.handed_at.is_some()).max_by_key(|m| m.handed_at).is_some_and(|m| m.from != MessageFrom::Alondra)
+}
+
 fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> Facts {
     let mut f = Facts::default();
     let open = view.questions.values().filter(|q| {
@@ -189,7 +195,7 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
     f.add(Signal::CallStuck, node.tool.as_ref().filter(|t| node.watched() && now - t.since > call_limit(&t.name)).map(|t| t.since));
     f.add(Signal::ToolInFlight, node.tool.as_ref().filter(|t| now - t.since <= call_limit(&t.name)).map(|t| t.since));
     f.add(Signal::Hook, fresh(node.last_work_at.filter(|_| node.busy), now, HOOK_FRESH_MS));
-    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)), now, HOOK_FRESH_MS));
+    f.add(Signal::MessageHanded, fresh(node.handed_at.filter(after_stop(node)).filter(|_| reopened(view, node)), now, HOOK_FRESH_MS));
     f.add(Signal::DaemonActive, daemon_active(node, now));
     let tasks_seen = fresh(node.daemon_seen_at.filter(|_| node.alive && node.daemon_tasks > 0), now, BACKGROUND_TASK_FRESH_MS);
     let all_suspect = !node.background.is_empty() && background(node, now).iter().all(|b| b.suspect);
@@ -203,7 +209,8 @@ fn facts_with(view: &View, node: &Node, now: Millis, machine_strained: bool) -> 
         let holds = machine_strained || now - quiet_since <= MACHINE_WAIT_QUIET_MS;
         f.add(Signal::DeclaredWait, holds.then_some(declared));
     }
-    f.add(Signal::PrAwaitingUser, view.prs_awaiting_user().filter(|p| p.session_id == node.session_id).map(|p| p.opened_at).max());
+    let awaiting = view.prs_awaiting_user().filter(|p| p.session_id == node.session_id).map(|p| p.opened_at).max();
+    f.add(Signal::PrAwaitingUser, awaiting.max(view.merge_notice_due(&node.session_id)));
     let agreed = !daemon_contradicts(node, declared);
     match node.turn_signal {
         Some(TurnSignal::Finished) if agreed && node.has_plugin => f.add(Signal::FinalReport, Some(declared)),
@@ -299,6 +306,7 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
             NodeState::Working => !works(view, node, now),
             NodeState::WaitingAnswer => !open(false) && !node.waiting_permission && node.menu_waiting.is_none(),
             NodeState::YourTurn => !open(true),
+            NodeState::WaitingMerge => outcome.evidence.signal != Signal::PrAwaitingUser,
             NodeState::WaitingMachine => !matches!(outcome.evidence.signal, Signal::UsageLimit | Signal::DeclaredWait),
             NodeState::Done => !reported(&[ReportKind::Final]),
             NodeState::Delivered => !reported(&[ReportKind::Final, ReportKind::Notice, ReportKind::Document]),
@@ -441,16 +449,7 @@ pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option
         StallMove::TellOrchestrator { orchestrator } if stuck => (orchestrator, stuck_text(node, user, at)?),
         StallMove::TellOrchestrator { orchestrator } => (orchestrator, stalled_text(node, user)),
     };
-    Some(Message {
-        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
-        session_id,
-        from: MessageFrom::Alondra,
-        text,
-        answers_question: None,
-        created_at: at,
-        handed_at: None,
-        delivered_at: None,
-    })
+    view.alondra_message(&session_id, text, at)
 }
 
 pub const HUNG_PREFIX: &str = "[Alondra] A background task may be hung";
@@ -515,16 +514,7 @@ pub fn hung_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<
             }
         }
     })?;
-    Some(Message {
-        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
-        session_id,
-        from: MessageFrom::Alondra,
-        text,
-        answers_question: None,
-        created_at: at,
-        handed_at: None,
-        delivered_at: None,
-    })
+    view.alondra_message(&session_id, text, at)
 }
 
 #[cfg(test)]
@@ -665,7 +655,7 @@ mod tests {
             Case { what: "a usage limit", events: vec![hook("UserPromptSubmit"), usage_limit()], sweep: None, state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::UsageLimit) },
             Case { what: "a declared wait", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((10 * min, false)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
             Case { what: "a declared wait on a strained machine", events: vec![hook("UserPromptSubmit"), wait(), hook("Stop")], sweep: Some((3 * 60 * min, true)), state: NodeState::WaitingMachine, row: row_named(NodeState::WaitingMachine, Signal::DeclaredWait) },
-            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingAnswer, row: row_named(NodeState::WaitingAnswer, Signal::PrAwaitingUser) },
+            Case { what: "an open PR card after the turn", events: vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::WaitingMerge, row: row_named(NodeState::WaitingMerge, Signal::PrAwaitingUser) },
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
@@ -767,7 +757,7 @@ mod tests {
             ("handed the user an action", background(&[hook("UserPromptSubmit"), question(true, QuestionOrigin::Ask), hook("Stop")]), NodeState::YourTurn),
             ("reported final", background(&[hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
             ("declared a machine wait", background(&[hook("UserPromptSubmit"), wait(), hook("Stop")]), NodeState::WaitingMachine),
-            ("opened a PR, which has its card", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop")]), NodeState::WaitingAnswer),
+            ("opened a PR, which has its card", background(&[hook("UserPromptSubmit"), pr_opened(), hook("Stop")]), NodeState::WaitingMerge),
             ("its PR was merged", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }, hook("Stop")]), NodeState::Stalled),
             ("changes were requested on its PR", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrChangesRequested { id: 1 }, hook("Stop")]), NodeState::Stalled),
             ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Unclear),
@@ -1012,6 +1002,85 @@ mod tests {
         v.apply(10, T0 + 10_000, &daemon("done", "idle", 0, None));
         assert_eq!(v.nodes["s"].turn, 1);
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+    }
+
+    fn merge_notice() -> [Event; 2] {
+        let m = Message {
+            id: 9,
+            session_id: "s".into(),
+            from: MessageFrom::Alondra,
+            text: "[Alondra] Ana merged https://github.com/a/b/pull/7 (merge commit).".into(),
+            answers_question: None,
+            created_at: T0,
+            handed_at: None,
+            delivered_at: None,
+        };
+        [Event::MessageQueued(m), Event::MessageHanded { id: 9 }]
+    }
+
+    fn merged() -> Event {
+        Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }
+    }
+
+    #[test]
+    fn done_is_final_and_nothing_pending_ends_in_done() {
+        let finished = || vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")];
+        let then = |more: &[Event]| background(&[finished(), more.to_vec()].concat());
+        let with_pr = |more: &[Event]| background(&[vec![hook("UserPromptSubmit"), pr_opened(), report(ReportKind::Final), hook("Stop")], more.to_vec()].concat());
+        let [notice, notice_handed] = merge_notice();
+        let [from_user, user_handed] = message(MessageFrom::User);
+        let [from_orchestrator, orchestrator_handed] = message(MessageFrom::Orchestrator);
+        let [from_alondra, alondra_handed] = message(MessageFrom::Alondra);
+        let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
+            ("final report with its PR open", with_pr(&[]), NodeState::WaitingMerge),
+            ("final report with a question open", background(&[hook("UserPromptSubmit"), question(false, QuestionOrigin::Ask), report(ReportKind::Final), hook("Stop")]), NodeState::WaitingAnswer),
+            ("final report with an action open", background(&[hook("UserPromptSubmit"), question(true, QuestionOrigin::Ask), report(ReportKind::Final), hook("Stop")]), NodeState::YourTurn),
+            ("final report with its PR and a question open", background(&[hook("UserPromptSubmit"), pr_opened(), question(false, QuestionOrigin::Ask), report(ReportKind::Final), hook("Stop")]), NodeState::WaitingAnswer),
+            ("merged, the notice on its way", with_pr(&[notice.clone(), merged()]), NodeState::WaitingMerge),
+            ("merged, the notice typed in", with_pr(&[notice.clone(), merged(), notice_handed.clone()]), NodeState::Working),
+            ("merged, acted on it and reported final", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), NodeState::Done),
+            ("merged, acted on it and stopped without a word", with_pr(&[notice.clone(), merged(), notice_handed.clone(), hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
+            ("merged on GitHub, nobody to tell", with_pr(&[merged()]), NodeState::Done),
+            ("done", then(&[]), NodeState::Done),
+            ("done, David writes to it", then(&[from_user, user_handed]), NodeState::Working),
+            ("done, the orchestrator sends it on", then(&[from_orchestrator, orchestrator_handed]), NodeState::Working),
+            ("done, David types in its terminal", then(&[typed("one more thing")]), NodeState::Working),
+            ("done, an Alondra message typed in all the same", then(&[from_alondra, alondra_handed]), NodeState::Done),
+        ];
+        for (what, events, state) in cases {
+            assert_eq!(run(&events, None).nodes["s"].state, state, "{what}");
+        }
+    }
+
+    #[test]
+    fn every_alondra_message_refuses_a_done_node() {
+        let min = 60_000;
+        let mut v = run(&background(&[daemon_running(&[(BackgroundKind::Shell, T0)]), hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")]), Some((40 * min, false)));
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        let at = T0 + 40 * min;
+        let node = v.nodes["s"].clone();
+        assert_eq!(node.state, NodeState::Done);
+        assert!(super::background(&node, at).iter().all(|b| b.suspect), "a hung task would be raised on a live node");
+        assert!(!v.may_alondra_write(&node));
+        assert_eq!(v.alondra_message("s", nudge_text("Ana"), at), None, "a nudge");
+        assert_eq!(hung_message(&v, &node, "Ana", at), None, "a hung task");
+        assert_eq!(stall_message(&v, &node, "Ana", at), None, "a stall move");
+        assert!(v.alondra_message("o", "[Alondra] Fleet updates".into(), at).is_some(), "the orchestrator still hears from Alondra");
+
+        let mut v = run(&background(&[hook("UserPromptSubmit"), hook("Stop")]), None);
+        assert_eq!(v.nodes["s"].state, NodeState::Stalled);
+        let nudge = v.alondra_message("s", nudge_text("Ana"), T0 + 10_000).expect("a stalled node is nudged");
+        v.apply(10, T0 + 10_000, &Event::MessageQueued(nudge));
+        v.apply(11, T0 + 11_000, &report(ReportKind::Final));
+        assert_eq!(v.nodes["s"].state, NodeState::Done);
+        assert_eq!(v.deliverable_messages("s").count(), 0, "the nudge queued before it finished is not typed in");
+        let [from_user, user_handed] = message(MessageFrom::User);
+        v.apply(12, T0 + 12_000, &from_user);
+        assert_eq!(v.deliverable_messages("s").map(|m| m.from).collect::<Vec<_>>(), [MessageFrom::User]);
+        v.apply(13, T0 + 13_000, &user_handed);
+        assert_eq!(v.nodes["s"].state, NodeState::Working, "David reopened it");
+        assert_eq!(v.deliverable_messages("s").count(), 0, "the old nudge stays void once it is reopened");
     }
 
     #[test]

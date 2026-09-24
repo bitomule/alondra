@@ -88,7 +88,7 @@ private struct ProjectHeader: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Palette.sky)
             }
-            let waiting = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn }.count
+            let waiting = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMerge }.count
             if waiting > 0 {
                 Label(String(waiting), systemImage: "hand.raised.fill")
                     .font(.caption.weight(.semibold))

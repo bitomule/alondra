@@ -45,7 +45,7 @@ pub async fn run(hub: Arc<Hub>) {
                 .filter(|n| n.in_daemon)
                 .filter_map(|n| {
                     let msgs: Pending = v
-                        .pending_messages(&n.session_id)
+                        .deliverable_messages(&n.session_id)
                         .map(|m| (m.id, m.text.clone(), m.answers_question))
                         .collect();
                     (!msgs.is_empty()).then(|| (n.session_id.clone(), n.short_id.clone(), msgs))
