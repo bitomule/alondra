@@ -639,14 +639,23 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             } else {
                 tr!(" read all  ", " leer entero  ")
             };
-            let mut spans = vec![
+            let close = [keycap("X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
+            let closable = app.node(&r.session_id).is_some_and(|n| n.alive);
+            let mut spans = vec![];
+            if closable && r.kind == ReportKind::Final {
+                spans.extend(close.clone());
+            }
+            spans.extend([
                 keycap("o"),
                 Span::styled(read, Style::new().fg(SOFT)),
                 keycap("x"),
                 Span::styled(tr!(" mark read  ", " leído  "), Style::new().fg(SOFT)),
                 keycap("r"),
-                Span::styled(tr!(" reply", " responder"), Style::new().fg(SOFT)),
-            ];
+                Span::styled(tr!(" reply  ", " responder  "), Style::new().fg(SOFT)),
+            ]);
+            if closable && r.kind != ReportKind::Final {
+                spans.extend(close);
+            }
             if pending > 0 {
                 spans.push(Span::styled(trf!("  ✎{pending} unsent", "  ✎{pending} sin enviar"), Style::new().fg(COMMENT)));
             }
@@ -1598,5 +1607,28 @@ mod tests {
         app.data.nodes[0].node.alive = false;
         let s = screen(&mut app, 250, 24);
         assert!(!s.contains("read and close node"), "{s}");
+    }
+
+    /// 24 Sep: David found read-and-close only in the footer, not among the report's own actions.
+    #[test]
+    fn a_report_offers_read_and_close_among_its_own_actions_first_when_it_is_final() {
+        let actions = |kind: ReportKind, alive: bool| {
+            let (mut app, _rx) = app_with(vec![]);
+            app.loaded = true;
+            let mut r = report(1);
+            r.kind = kind;
+            app.data.news = vec![r];
+            app.data.nodes = vec![alive_node("s1")];
+            app.data.nodes[0].node.alive = alive;
+            app.reconcile();
+            let s = screen(&mut app, 250, 30);
+            s.lines().find(|l| l.contains("read all") && l.contains("reply")).map(str::to_string).unwrap_or_else(|| panic!("no actions row\n{s}"))
+        };
+        let final_row = actions(ReportKind::Final, true);
+        let at = |row: &str, t: &str| row.find(t).unwrap_or_else(|| panic!("{t} missing: {row}"));
+        assert!(at(&final_row, "read and close node") < at(&final_row, "read all"), "{final_row}");
+        let notice_row = actions(ReportKind::Notice, true);
+        assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
+        assert!(!actions(ReportKind::Final, false).contains("read and close node"), "a dead node cannot be closed");
     }
 }
