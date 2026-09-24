@@ -203,9 +203,12 @@ private struct WorkOptionsSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Project", selection: projectBinding) {
-                        Text("The orchestrator picks").tag(String?.none)
-                        ForEach(model.projects, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                    NavigationLink {
+                        ProjectPickerList(projects: model.projects, current: model.options.project) { project in
+                            Task { await model.choose(project: project) }
+                        }
+                    } label: {
+                        LabeledContent("Project", value: model.options.project ?? String(localized: "The orchestrator picks"))
                     }
                 }
                 Section("Issue") {
@@ -234,8 +237,19 @@ private struct WorkOptionsSheet: View {
                             Toggle(spec.title, isOn: Binding(get: { model.options.current(spec) == .toggle(true) }, set: { model.options.set(spec, to: .toggle($0)) }))
                         case .choice:
                             Picker(spec.title, selection: Binding(get: { model.options.current(spec) }, set: { model.options.set(spec, to: $0) })) {
-                                ForEach(spec.values) { Text(verbatim: spec.title(of: $0)).tag(OptionChoice.value($0.id)) }
+                                ForEach(spec.choices, id: \.self) { value in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(verbatim: spec.title(of: value))
+                                        if let description = spec.description(of: value) {
+                                            Text(verbatim: description)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .tag(value)
+                                }
                             }
+                            .pickerStyle(.navigationLink)
                         }
                     }
                 } footer: {
@@ -254,9 +268,6 @@ private struct WorkOptionsSheet: View {
         }
     }
 
-    private var projectBinding: Binding<String?> {
-        Binding(get: { model.options.project }, set: { project in Task { await model.choose(project: project) } })
-    }
 }
 
 private struct IssuePickerList: View {
@@ -314,5 +325,48 @@ private struct IssuePickerList: View {
     private func choose(_ reference: String) {
         pick(reference)
         dismiss()
+    }
+}
+
+/// The projects, most recently used first, filtered as you type.
+private struct ProjectPickerList: View {
+    let projects: [String]
+    let current: String?
+    let pick: (String?) -> Void
+    @State private var query = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let shown = ProjectList.filter(projects, query: query)
+        List {
+            if query.isEmpty {
+                row(nil, title: String(localized: "The orchestrator picks"))
+            }
+            ForEach(shown, id: \.self) { row($0, title: $0) }
+        }
+        .overlay {
+            if shown.isEmpty && !query.isEmpty {
+                ContentUnavailableView.search(text: query)
+            }
+        }
+        .searchable(text: $query, prompt: Text("Filter projects"))
+        .navigationTitle("Project")
+    }
+
+    private func row(_ project: String?, title: String) -> some View {
+        Button {
+            pick(project)
+            dismiss()
+        } label: {
+            HStack {
+                Text(verbatim: title)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if project == current {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Palette.ember)
+                }
+            }
+        }
     }
 }

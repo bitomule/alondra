@@ -11,7 +11,8 @@ pub const PR: &str = "pr";
 pub const EFFORT: &str = "effort";
 pub const REVIEW: &str = "review";
 pub const AUTO_MERGE: &str = "auto_merge";
-const EFFORTS: [&str; 3] = ["light", "normal", "hard"];
+pub const AUTO: &str = "auto";
+const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -44,6 +45,9 @@ pub struct OptionValue {
     pub label: String,
     #[serde(default)]
     pub mission: String,
+    /// One line the clients show under the value; the mission text when absent.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -107,6 +111,8 @@ pub struct Spec {
 pub struct SpecValue {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// One option as chosen for a request, carrying the text it adds to the node's mission.
@@ -147,13 +153,16 @@ fn builtin_effort(level: &str) -> EffortFlags {
 }
 
 fn builtins() -> [Spec; 2] {
-    let v = |id: &str, label: &str| SpecValue { id: id.into(), label: label.into() };
+    let v = |id: &str, label: &str, description: &str| SpecValue { id: id.into(), label: label.into(), description: Some(description.into()) };
     [
         Spec {
             id: PR.into(),
             label: "PR handling".into(),
             kind: Kind::Choice,
-            values: vec![v(REVIEW, "review each PR"), v(AUTO_MERGE, "auto-merge")],
+            values: vec![
+                v(REVIEW, "review each PR", "Each PR the node opens is a card for you; the node waits for your merge"),
+                v(AUTO_MERGE, "auto-merge", "The node merges its own PR once its checks pass"),
+            ],
             default: Choice::Value(REVIEW.into()),
             builtin: true,
         },
@@ -161,8 +170,13 @@ fn builtins() -> [Spec; 2] {
             id: EFFORT.into(),
             label: "Effort".into(),
             kind: Kind::Choice,
-            values: EFFORTS.iter().map(|e| v(e, e)).collect(),
-            default: Choice::Value("normal".into()),
+            values: vec![
+                v(AUTO, "auto", "The orchestrator picks the model and effort from the task"),
+                v("light", "light", "A quick, cheaper model for small, clear work"),
+                v("normal", "normal", "Claude's default model and effort"),
+                v("hard", "hard", "The strongest model and the most effort"),
+            ],
+            default: Choice::Value(AUTO.into()),
             builtin: true,
         },
     ]
@@ -174,7 +188,15 @@ impl UserOption {
             id: self.id.clone(),
             label: self.label.clone(),
             kind: self.kind,
-            values: self.values.iter().map(|v| SpecValue { id: v.id.clone(), label: v.label.clone() }).collect(),
+            values: self
+                .values
+                .iter()
+                .map(|v| SpecValue {
+                    id: v.id.clone(),
+                    label: v.label.clone(),
+                    description: v.description.clone().or_else(|| Some(v.mission.trim().to_string()).filter(|m| !m.is_empty())),
+                })
+                .collect(),
             default: self.default.clone().unwrap_or_else(|| match self.kind {
                 Kind::Toggle => Choice::Toggle(false),
                 Kind::Choice => Choice::Value(self.values.first().map(|v| v.id.clone()).unwrap_or_default()),
@@ -261,8 +283,8 @@ impl OptionsFile {
 
     fn check(&self) -> Result<(), String> {
         for (level, flags) in &self.effort {
-            if !EFFORTS.contains(&level.as_str()) {
-                return Err(format!("effort {level}: the levels are light, normal and hard"));
+            if !MAPPED.contains(&level.as_str()) {
+                return Err(format!("effort {level}: the levels with a mapping are light, normal and hard; auto leaves the choice to the orchestrator"));
             }
             if let Some(e) = flags.effort.as_deref().filter(|e| !EFFORT_LEVELS.contains(e)) {
                 return Err(format!("effort {level}: {e} is not one of {}", EFFORT_LEVELS.join(", ")));
@@ -349,7 +371,7 @@ impl OptionsFile {
         let auto_merge = value(PR) == Some(Choice::Value(AUTO_MERGE.into()));
         let effort = match value(EFFORT) {
             Some(Choice::Value(e)) => e,
-            _ => "normal".into(),
+            _ => AUTO.into(),
         };
         let users: Vec<&UserOption> = self.user_options(project).collect();
         let picked = catalog
@@ -367,7 +389,7 @@ impl OptionsFile {
     /// only the user may let a node merge without review.
     pub fn orchestrator_defaults(&self, project: Option<&str>, effort: Option<&str>) -> Resolved {
         let mut chosen = BTreeMap::from([(PR.to_string(), Choice::Value(REVIEW.into()))]);
-        if let Some(e) = effort.filter(|e| EFFORTS.contains(e)) {
+        if let Some(e) = effort.filter(|e| MAPPED.contains(e)) {
             chosen.insert(EFFORT.into(), Choice::Value(e.into()));
         }
         self.resolve(project, &chosen).unwrap_or_else(|_| OptionsFile::default().resolve(None, &chosen).expect("built-ins resolve"))
@@ -398,6 +420,43 @@ pub fn projects(root: &Path) -> Vec<(String, PathBuf)> {
         .filter_map(|p| Some((p.file_name()?.to_string_lossy().to_string(), p)))
         .collect();
     out.sort_by_key(|(n, _)| n.to_lowercase());
+    out
+}
+
+/// A project as the pickers list it: how recently and how often its nodes ran.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ProjectEntry {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default)]
+    pub last_used: Option<crate::Millis>,
+    #[serde(default)]
+    pub nodes: usize,
+}
+
+/// The checkouts, most recently used first, then the most used, then by name. `used` gives,
+/// per project, when each of its nodes started.
+pub fn ranked(projects: Vec<(String, PathBuf)>, used: &BTreeMap<String, Vec<crate::Millis>>) -> Vec<ProjectEntry> {
+    let mut out: Vec<ProjectEntry> = projects
+        .into_iter()
+        .map(|(name, path)| {
+            let starts = used.get(&name).map(Vec::as_slice).unwrap_or_default();
+            ProjectEntry { last_used: starts.iter().copied().max(), nodes: starts.len(), name, path }
+        })
+        .collect();
+    out.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(b.nodes.cmp(&a.nodes)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out
+}
+
+/// What a project picker shows for what the user typed: every word in the name, in the ranked
+/// order, with the suggested project (the one the client runs in) first.
+pub fn filter_projects(ranked: &[String], query: &str, suggested: Option<&str>) -> Vec<String> {
+    let q = query.to_lowercase();
+    let mut out: Vec<String> = ranked.iter().filter(|n| q.split_whitespace().all(|w| n.to_lowercase().contains(w))).cloned().collect();
+    if let Some(i) = suggested.and_then(|s| out.iter().position(|n| n == s)) {
+        let s = out.remove(i);
+        out.insert(0, s);
+    }
     out
 }
 
@@ -434,6 +493,26 @@ impl Resolved {
         lines.push(String::new());
         lines.push("When you reach this point, send `report` kind final: the orchestrator closes you.".into());
         lines.join("\n")
+    }
+
+    /// With effort auto the orchestrator picks it per launch; an effort the user chose is binding.
+    pub fn with_orchestrator_effort(mut self, file: &OptionsFile, effort: Option<&str>) -> Resolved {
+        if self.effort == AUTO
+            && let Some(e) = effort.filter(|e| MAPPED.contains(e))
+        {
+            self.flags = file.effort_flags(e);
+            self.effort = e.to_string();
+        }
+        self
+    }
+
+    /// What the orchestrator is told about effort alongside the request.
+    pub fn effort_note(&self, user: &str) -> String {
+        if self.effort == AUTO {
+            "Effort is auto: for each launch, choose light, normal or hard from the task and pass it as effort.".into()
+        } else {
+            format!("Effort {} was chosen by {user} and is binding: do not pass effort.", self.effort)
+        }
     }
 
     /// `claude` flags for the effort; a model the orchestrator named explicitly wins.
@@ -508,8 +587,8 @@ on = "Run /review-loop before the merge."
         assert_eq!(ids, [PR, EFFORT]);
         let r = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
         assert!(!r.auto_merge);
-        assert_eq!(r.effort, "normal");
-        assert_eq!(r.launch_flags(None), Vec::<String>::new(), "normal leaves claude's own defaults");
+        assert_eq!(r.effort, AUTO);
+        assert_eq!(r.launch_flags(None), Vec::<String>::new(), "auto passes no flags: the orchestrator decides");
     }
 
     #[test]
@@ -608,6 +687,44 @@ on = "Run /review-loop before the merge."
         ] {
             assert_eq!(flags(effort, model), expected, "{effort} {model:?}");
         }
+    }
+
+    #[test]
+    fn projects_rank_by_recent_use_then_by_use_then_by_name() {
+        let checkouts = ["alpha", "Beta", "gamma", "delta"].map(|n| (n.to_string(), PathBuf::from(format!("/p/{n}")))).to_vec();
+        let used = BTreeMap::from([("gamma".to_string(), vec![100, 900]), ("delta".to_string(), vec![900]), ("alpha".to_string(), vec![50])]);
+        let order: Vec<String> = ranked(checkouts, &used).into_iter().map(|p| p.name).collect();
+        assert_eq!(order, ["gamma", "delta", "alpha", "Beta"], "same last use: more nodes first; never used: by name");
+        for (query, suggested, shown) in [
+            ("", None, vec!["gamma", "delta", "alpha", "Beta"]),
+            ("", Some("Beta"), vec!["Beta", "gamma", "delta", "alpha"]),
+            ("a", Some("Beta"), vec!["Beta", "gamma", "delta", "alpha"]),
+            ("ta", None, vec!["delta", "Beta"]),
+            ("BE", Some("gamma"), vec!["Beta"]),
+            ("zz", Some("gamma"), vec![]),
+        ] {
+            assert_eq!(filter_projects(&order, query, suggested), shown, "{query:?} {suggested:?}");
+        }
+    }
+
+    #[test]
+    fn with_effort_auto_the_orchestrator_chooses_and_an_explicit_effort_binds_it() {
+        let f = OptionsFile::parse("[effort]\nhard = { model = \"big\", effort = \"max\" }\n").unwrap();
+        for (what, user, orchestrator, effort, flags) in [
+            ("auto, orchestrator picks hard", None, Some("hard"), "hard", vec!["--model", "big", "--effort", "max"]),
+            ("auto, orchestrator picks light", None, Some("light"), "light", vec!["--model", "sonnet", "--effort", "medium"]),
+            ("auto, orchestrator says nothing", None, None, AUTO, vec![]),
+            ("auto, orchestrator names no level", None, Some("auto"), AUTO, vec![]),
+            ("user chose light", Some("light"), Some("hard"), "light", vec!["--model", "sonnet", "--effort", "medium"]),
+            ("user chose normal", Some("normal"), Some("hard"), "normal", vec![]),
+        ] {
+            let chosen = user.map(|u| chosen(&[(EFFORT, val(u))])).unwrap_or_default();
+            let r = f.resolve(None, &chosen).unwrap().with_orchestrator_effort(&f, orchestrator);
+            assert_eq!((r.effort.as_str(), r.launch_flags(None)), (effort, flags.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{what}");
+        }
+        assert!(f.resolve(None, &BTreeMap::new()).unwrap().effort_note("Ana").starts_with("Effort is auto"));
+        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass effort.");
+        assert!(OptionsFile::parse("[effort]\nauto = { model = \"m\" }\n").unwrap_err().contains("auto leaves the choice"));
     }
 
     #[test]

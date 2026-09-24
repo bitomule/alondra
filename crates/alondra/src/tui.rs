@@ -305,7 +305,7 @@ enum Msg {
     Found { query: String, result: Result<(String, Vec<String>), String> },
     Uploaded { seq: u64, result: Result<String, String> },
     Preview { seq: u64, image: image::DynamicImage },
-    Options { project: Option<String>, result: Result<(Vec<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
+    Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
 }
 
@@ -872,8 +872,9 @@ impl App {
                 }
             }
             Msg::Options { project, result } => match result {
-                Ok((projects, specs, error)) => {
+                Ok((projects, suggested, specs, error)) => {
                     if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
+                        f.suggested = suggested;
                         f.loaded(project, projects, specs, error);
                     }
                 }
@@ -1128,9 +1129,13 @@ impl App {
                 .map_err(|e| e.to_string())
                 .and_then(|o| {
                     let specs = serde_json::from_value(o["options"].clone()).map_err(|e| e.to_string())?;
-                    let projects = client.get::<Value>("/v1/projects").ok().and_then(|p| p["projects"].as_array().cloned()).unwrap_or_default();
+                    let listed = client.get::<Value>("/v1/projects").ok();
+                    let projects = listed.as_ref().and_then(|p| p["projects"].as_array().cloned()).unwrap_or_default();
                     let names = projects.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
-                    Ok((names, specs, o["error"].as_str().map(str::to_string)))
+                    let root = listed.as_ref().and_then(|p| p["root"].as_str().map(std::path::PathBuf::from));
+                    let here = std::env::current_dir().ok();
+                    let suggested = root.zip(here).and_then(|(root, here)| alondra_core::options::project_of(&root, &here));
+                    Ok((names, suggested, specs, o["error"].as_str().map(str::to_string)))
                 });
             let _ = tx.send(Msg::Options { project, result });
         });

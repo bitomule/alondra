@@ -2260,6 +2260,16 @@
           }
         }
       }
+    },
+    "Filter projects": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtrar proyectos"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

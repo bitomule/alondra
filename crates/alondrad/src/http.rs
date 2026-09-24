@@ -2062,7 +2062,14 @@ async fn options_catalog(State(hub): State<AppState>, Query(q): Query<OptionsQue
 async fn projects(State(hub): State<AppState>) -> Json<Value> {
     let loaded = crate::options::load(&hub);
     let root = loaded.file.projects_root(&crate::options::user_home());
-    let list: Vec<Value> = alondra_core::options::projects(&root).into_iter().map(|(name, path)| json!({"name": name, "path": path})).collect();
+    let used = hub.read(|v| {
+        let mut used: std::collections::BTreeMap<String, Vec<i64>> = Default::default();
+        for n in v.nodes.values().filter(|n| !n.is_orchestrator) {
+            used.entry(n.project()).or_default().push(n.created_at);
+        }
+        used
+    });
+    let list = alondra_core::options::ranked(alondra_core::options::projects(&root), &used);
     Json(json!({"root": root, "projects": list, "error": loaded.error}))
 }
 
@@ -2084,8 +2091,9 @@ fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_
     let pass_on = if attached { " Put the attached files' paths in the node's mission so it can open them." } else { "" };
     let issue = issue.map(|i| format!("\n\n{i}")).unwrap_or_default();
     format!(
-        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nPass request_id \"{request_id}\" to launch: Alondra writes these options into the node's mission and sets its model and effort, so do not restate them.\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
-        options.summary()
+        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nPass request_id \"{request_id}\" to launch: Alondra writes these options into the node's mission and sets its model and effort, so do not restate them. {}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
+        options.summary(),
+        options.effort_note(user)
     )
 }
 
@@ -2248,12 +2256,13 @@ fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error
 /// it. Only a request the user sent can let a node merge on its own.
 fn launch_options(hub: &Hub, b: &LaunchBody) -> Result<alondra_core::options::Resolved, Response> {
     let request = b.request_id.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let file = crate::options::load(hub).file;
     match request {
         Some(id) => hub
             .read(|v| v.requests.get(id).cloned())
+            .map(|r| r.with_orchestrator_effort(&file, b.effort.as_deref()))
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unknown request_id {id}: pass the one in the user's request, or none"))),
         None => {
-            let file = crate::options::load(hub).file;
             let project = crate::options::project_of(&file, std::path::Path::new(&b.cwd));
             Ok(file.orchestrator_defaults(project.as_deref(), b.effort.as_deref()))
         }
@@ -3574,6 +3583,23 @@ defaults = { pr = "auto_merge" }
         assert_eq!(status, StatusCode::BAD_REQUEST, "{said}");
         let alone = launch_options(&hub, &launch_body(None, "/tmp", Some("hard"))).unwrap();
         assert_eq!((alone.effort.as_str(), alone.project.as_deref()), ("hard", None));
+    }
+
+    #[tokio::test]
+    async fn the_orchestrator_picks_the_effort_only_when_the_request_left_it_on_auto() {
+        let hub = hub_with_options("launch-effort", None);
+        for (what, user_effort, orchestrator, expected) in [
+            ("auto, orchestrator picks hard", json!({}), Some("hard"), "hard"),
+            ("auto, orchestrator silent", json!({}), None, "auto"),
+            ("user chose light", json!({"effort": "light"}), Some("hard"), "light"),
+        ] {
+            let (_, said) = status_and_body(new_request(State(hub.clone()), request("x", None, user_effort)).await).await;
+            let id = said["request_id"].as_str().unwrap().to_string();
+            let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
+            assert_eq!(text.contains("Effort is auto: for each launch, choose"), expected != "light", "{what}: {text}");
+            let resolved = launch_options(&hub, &launch_body(Some(&id), "/tmp", orchestrator)).unwrap_or_else(|_| panic!("{what}"));
+            assert_eq!(resolved.effort, expected, "{what}");
+        }
     }
 
     #[test]

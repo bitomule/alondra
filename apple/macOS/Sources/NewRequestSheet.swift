@@ -88,6 +88,7 @@ private struct WorkOptionsForm: View {
     @Bindable var model: WorkOptionsModel
     let client: AlondraClient
     @State private var picking = false
+    @State private var choosingProject = false
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
@@ -95,12 +96,22 @@ private struct WorkOptionsForm: View {
                 Text("Project")
                     .foregroundStyle(.secondary)
                     .gridColumnAlignment(.trailing)
-                Picker("Project", selection: projectBinding) {
-                    Text("The orchestrator decides").tag(String?.none)
-                    ForEach(model.projects, id: \.self) { Text(verbatim: $0).tag(String?.some($0)) }
+                Button {
+                    choosingProject = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(model.options.project ?? String(localized: "The orchestrator decides"))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .labelsHidden()
-                .fixedSize()
+                .popover(isPresented: $choosingProject, arrowEdge: .bottom) {
+                    ProjectPicker(projects: model.projects, current: model.options.project) { project in
+                        choosingProject = false
+                        Task { await model.choose(project: project) }
+                    }
+                }
             }
             GridRow {
                 Text("Issue")
@@ -154,38 +165,86 @@ private struct WorkOptionsForm: View {
         }
     }
 
-    private var projectBinding: Binding<String?> {
-        Binding(get: { model.options.project }, set: { project in Task { await model.choose(project: project) } })
-    }
-
     private func choiceBinding(_ spec: OptionSpec) -> Binding<OptionChoice> {
         Binding(get: { model.options.current(spec) }, set: { model.options.set(spec, to: $0) })
     }
 }
 
+/// The option's current value; its menu lists every value with the line that explains it.
 private struct OptionControl: View {
     let spec: OptionSpec
     @Binding var choice: OptionChoice
 
     var body: some View {
-        switch spec.kind {
-        case .toggle:
-            Toggle(spec.title, isOn: Binding(get: { choice == .toggle(true) }, set: { choice = .toggle($0) }))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-        case .choice:
-            let picker = Picker(spec.title, selection: $choice) {
-                ForEach(spec.values) { Text(verbatim: spec.title(of: $0)).tag(OptionChoice.value($0.id)) }
+        Menu {
+            ForEach(spec.choices, id: \.self) { value in
+                Button {
+                    choice = value
+                } label: {
+                    if value == choice {
+                        Image(systemName: "checkmark")
+                    }
+                    Text(verbatim: spec.title(of: value))
+                    if let description = spec.description(of: value) {
+                        Text(verbatim: description)
+                    }
+                }
             }
-            .labelsHidden()
-            .fixedSize()
-            if spec.values.count <= 4 {
-                picker.pickerStyle(.segmented)
-            } else {
-                picker.pickerStyle(.menu)
+        } label: {
+            Text(verbatim: spec.title(of: choice))
+        }
+        .menuStyle(.button)
+        .fixedSize()
+    }
+}
+
+/// The projects, most recently used first, filtered as you type.
+private struct ProjectPicker: View {
+    let projects: [String]
+    let current: String?
+    let pick: (String?) -> Void
+    @State private var query = ""
+
+    private var shown: [String] { ProjectList.filter(projects, query: query) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Filter projects", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { if let first = shown.first { pick(first) } }
+            List {
+                if query.isEmpty {
+                    row(nil, title: String(localized: "The orchestrator decides"))
+                }
+                ForEach(shown, id: \.self) { row($0, title: $0) }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if shown.isEmpty && !query.isEmpty {
+                    Text("No project matches")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .padding(12)
+        .frame(width: 320, height: 340)
+    }
+
+    private func row(_ project: String?, title: String) -> some View {
+        Button {
+            pick(project)
+        } label: {
+            HStack {
+                Text(verbatim: title)
+                Spacer()
+                if project == current {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -1870,6 +1870,26 @@
           }
         }
       }
+    },
+    "Filter projects": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Filtrar proyectos"
+          }
+        }
+      }
+    },
+    "No project matches": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ningún proyecto coincide"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
