@@ -286,12 +286,20 @@ pub fn limbo(view: &View, now: Millis) -> Vec<(String, &'static str)> {
     found
 }
 
+/// What Claude Code itself types into a session: a background task or subagent finishing, a
+/// message from another session, a reminder. Nobody is at the terminal because of them.
+const HARNESS_PROMPTS: &[&str] = &["<task-notification>", "<agent-message", "<cross-session-message", "<system-reminder>"];
+
 /// The user typed the node's last prompt in its own terminal: they are talking with it and
-/// have its answer on screen. Prompts Alondra typed, and the launch mission, do not count.
+/// have its answer on screen. Prompts Alondra or Claude Code typed, and the launch mission, do
+/// not count.
 pub fn talking_with_user(v: &View, node: &Node) -> bool {
     let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
     let Some(prompt) = node.last_prompt.as_deref().map(squash).filter(|p| !p.is_empty()) else { return false };
-    if prompt.starts_with("[Alondra]") || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt) {
+    if prompt.starts_with("[Alondra]")
+        || HARNESS_PROMPTS.iter().any(|h| prompt.starts_with(h))
+        || node.mission.as_deref().map(squash).is_some_and(|m| m == prompt)
+    {
         return false;
     }
     let typed_by_alondra = v.messages.values().filter(|m| m.session_id == node.session_id).any(|m| {
@@ -567,6 +575,10 @@ mod tests {
         }
     }
 
+    fn harness(prompt: &str) -> Event {
+        Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), prompt: Some(prompt.into()), ..Default::default() })
+    }
+
     fn background(events: &[Event]) -> Vec<Event> {
         let mut all = vec![daemon("working", "active", 0, None)];
         all.extend_from_slice(events);
@@ -587,6 +599,8 @@ mod tests {
             ("its PR was merged", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrMerged { id: 1, method: crate::pr::MergeMethod::Merge }, hook("Stop")]), NodeState::Stalled),
             ("changes were requested on its PR", background(&[hook("UserPromptSubmit"), pr_opened(), Event::PrChangesRequested { id: 1 }, hook("Stop")]), NodeState::Stalled),
             ("the user is typing in its terminal", background(&[typed, hook("Stop")]), NodeState::Unclear),
+            ("Claude Code typed a subagent's notice", background(&[harness("<task-notification>\n<task-id>a1</task-id>"), hook("Stop")]), NodeState::Stalled),
+            ("another session's message arrived", background(&[harness("<agent-message from=\"x\">done</agent-message>"), hook("Stop")]), NodeState::Stalled),
             ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], NodeState::Unclear),
             ("declared, then got a new message and stopped silently", background(&[hook("UserPromptSubmit"), wait(), hook("Stop"), queued, handed, hook("UserPromptSubmit"), hook("Stop")]), NodeState::Stalled),
         ];
