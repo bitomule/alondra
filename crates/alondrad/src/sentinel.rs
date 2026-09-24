@@ -127,8 +127,23 @@ fn what_it_said(node: &Node) -> Option<String> {
     message.or(needs).map(str::to_string)
 }
 
+/// The node already reported since the last message reached it: its own words stand, and a
+/// report Alondra builds from its terminal would only repeat or contradict them.
+fn reported_this_episode(v: &View, node: &Node) -> bool {
+    v.reports.values().any(|r| r.session_id == node.session_id && r.created_at >= node.episode_since)
+}
+
+/// Something David said is on its way to the node: an answer not yet delivered, or a message from
+/// him or the orchestrator not yet typed in. What the node shows now is from before it.
+fn reply_on_its_way(v: &View, node: &Node) -> bool {
+    let sid = &node.session_id;
+    v.questions.values().any(|q| &q.session_id == sid && q.status == QuestionStatus::Answered)
+        || v.pending_messages(sid).any(|m| m.from != MessageFrom::Alondra)
+}
+
 fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
     match expects {
+        Expects::Finished | Expects::HandedOff if reported_this_episode(v, node) => None,
         Expects::Finished => {
             let report = finished_report(v, node);
             let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
@@ -156,11 +171,11 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
     !node.in_daemon || states::works(v, node, now) || q.tool_use_id.as_deref() != Some(key(node).as_str())
 }
 
-/// Only nodes the state machine handed over: idle, with no work in sight and nothing in the
-/// inbox. A node with fresh evidence of work never reaches jev.
+/// Only nodes the state machine handed over: idle, with no work in sight, nothing in the inbox and
+/// no reply of David's on its way. A node with fresh evidence of work never reaches jev.
 fn needs_attention(v: &View, node: &Node, now: i64) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
-    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::watching(v, node, now) {
+    if !node.watched() || node.state != NodeState::Unclear || node.waiting_permission || asked_this_turn || states::watching(v, node, now) || reply_on_its_way(v, node) {
         return false;
     }
     let key = key(node);
@@ -441,6 +456,87 @@ mod tests {
         assert!(!moved_on(&v, &v.nodes["s"], &q, 4000));
         v.apply(5, 5000, &Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() }));
         assert!(moved_on(&v, &v.nodes["s"], &q, 5000));
+    }
+
+    fn message(id: u64, from: MessageFrom, at: i64) -> Event {
+        Event::MessageQueued(Message { id, session_id: "s".into(), from, text: "Sí".into(), answers_question: None, created_at: at, handed_at: None, delivered_at: None })
+    }
+
+    fn asked(id: u64) -> Question {
+        Question {
+            id,
+            session_id: "s".into(),
+            node_name: None,
+            title: "¿Recupero las dos notas?".into(),
+            detail: None,
+            options: vec![],
+            links: vec![],
+            attachments: vec![],
+            blocking: false,
+            origin: QuestionOrigin::Ask,
+            tool_use_id: None,
+            to_orchestrator: false,
+            node_context: None,
+            status: QuestionStatus::Open,
+            answer: None,
+            asked_at: 2100,
+            action: false,
+            steps: vec![],
+            mission: None,
+        }
+    }
+
+    /// Q#94 (mav/find-goto, 23 Sep): David answered Q#91 and, before the answer reached the
+    /// node, the sentinel built a card from the node's "waiting for David" line.
+    #[test]
+    fn no_card_while_a_reply_of_the_user_is_on_its_way() {
+        let answer = || Event::QuestionAnswered { id: 1, answer: alondra_core::Answer { text: "Sí".into(), option: None, by: None, device: None, at: 2200 } };
+        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
+            ("nothing pending", vec![], true),
+            ("an answer not yet delivered", vec![Event::QuestionAsked(asked(1)), answer()], false),
+            ("an answer already delivered", vec![Event::QuestionAsked(asked(1)), answer(), Event::QuestionDelivered { id: 1 }], true),
+            ("a message from the user not yet typed in", vec![message(1, MessageFrom::User, 2200)], false),
+            ("a message from the orchestrator not yet typed in", vec![message(1, MessageFrom::Orchestrator, 2200)], false),
+            ("only Alondra's own nudge pending", vec![message(1, MessageFrom::Alondra, 2200)], true),
+        ];
+        for (what, events, attends) in cases {
+            let mut v = waiting_view(ASKS);
+            for (i, e) in events.iter().enumerate() {
+                v.apply(10 + i as u64, 2200, e);
+            }
+            assert_eq!(v.nodes["s"].state, NodeState::Unclear, "{what}");
+            assert_eq!(needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen), attends, "{what}");
+        }
+    }
+
+    /// R#31 (hive/auditoria-jev-alondra, 23 Sep): "Looks finished" three minutes after the node's
+    /// own final reports R#29 and R#30.
+    #[test]
+    fn no_terminal_report_over_the_nodes_own() {
+        let own = |kind: ReportKind, at: i64| {
+            Event::ReportPosted(Report {
+                id: 1, session_id: "s".into(), node_name: None, title: "Auditoría rehecha".into(), body: Some("Detalle".into()),
+                links: vec![], attachments: vec![], kind, created_at: at, read: false, mission: None, looks_like_question: false,
+            })
+        };
+        let handed = |at: i64| vec![message(1, MessageFrom::User, at), Event::MessageHanded { id: 1 }];
+        let cases: Vec<(&str, Vec<Event>, Expects, bool)> = vec![
+            ("the node reported nothing", vec![], Expects::Finished, true),
+            ("the node reported final", vec![own(ReportKind::Final, 2200)], Expects::Finished, false),
+            ("the node sent a notice", vec![own(ReportKind::Notice, 2200)], Expects::Finished, false),
+            ("handed off after its own report", vec![own(ReportKind::Final, 2200)], Expects::HandedOff, false),
+            ("its report was before the last message", [vec![own(ReportKind::Final, 2200)], handed(2600)].concat(), Expects::Finished, true),
+        ];
+        for (what, events, expects, posts) in cases {
+            let mut v = waiting_view("Task complete.");
+            for (i, e) in events.iter().enumerate() {
+                v.apply(10 + i as u64, 2200 + i as i64 * 400, e);
+            }
+            assert_eq!(matches!(settle(&v, &v.nodes["s"], expects), Some(Event::ReportPosted(_))), posts, "{what}");
+        }
+        let mut v = waiting_view(ASKS);
+        v.apply(10, 2200, &own(ReportKind::Final, 2200));
+        assert!(matches!(settle(&v, &v.nodes["s"], Expects::Decide), Some(Event::QuestionAsked(_))), "a question is still built from the terminal");
     }
 
     fn replay(fixture: &str, mut each: impl FnMut(u64, &View)) {
