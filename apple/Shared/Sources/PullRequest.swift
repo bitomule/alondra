@@ -78,7 +78,7 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
         return (lhs.trainPosition, lhs.id) < (rhs.trainPosition, rhs.id)
     }
 
-    /// "bitomule/alondra #12 · fase-1 ← menus · +120 −8 in 5 files"
+    /// "bitomule/alondra #12 · main ← menus · +120 −8 in 5 files"
     public var summary: String {
         var parts = ["\(repo) #\(number)"]
         if let base, let head { parts.append("\(base) ← \(head)") }

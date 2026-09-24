@@ -193,7 +193,7 @@ pub(super) fn pr_glyph() -> (&'static str, &'static str, Color) {
     ("⇄", "PR", Color::LightGreen)
 }
 
-/// `bitomule/alondra #12 · fase-1 ← menus · +120 −8 in 5 files · checks 2✓ 1✗ 1…`
+/// `bitomule/alondra #12 · main ← menus · +120 −8 in 5 files · checks 2✓ 1✗ 1…`
 pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
     use alondra_core::pr::CheckState;
     let pr = &p.pr;

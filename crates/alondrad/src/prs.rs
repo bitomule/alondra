@@ -221,7 +221,7 @@ mod tests {
     fn a_card_takes_what_github_says_about_the_pr() {
         let pr = PullRequest::opened(1, "https://github.com/a/b/pull/7", "s", None, 0).unwrap();
         let view = json!({
-            "title": "Menus become cards", "body": "What and why", "baseRefName": "fase-1", "headRefName": "menus",
+            "title": "Menus become cards", "body": "What and why", "baseRefName": "main", "headRefName": "menus",
             "additions": 120, "deletions": 8, "changedFiles": 5, "mergeable": "MERGEABLE", "state": "OPEN", "headRefOid": "abc123",
             "statusCheckRollup": [
                 {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://x/1"},
@@ -232,7 +232,7 @@ mod tests {
         });
         let repo = json!({"allow_merge_commit": true, "allow_squash_merge": false, "allow_rebase_merge": true});
         let r = refreshed(&pr, &view, Some(&repo));
-        assert_eq!((r.title.as_str(), r.base.as_deref(), r.changed_files, r.fetched), ("Menus become cards", Some("fase-1"), 5, true));
+        assert_eq!((r.title.as_str(), r.base.as_deref(), r.changed_files, r.fetched), ("Menus become cards", Some("main"), 5, true));
         assert_eq!(r.checks.iter().map(|c| (c.name.as_str(), c.state)).collect::<Vec<_>>(), [
             ("test", CheckState::Passed),
             ("lint", CheckState::Failed),
