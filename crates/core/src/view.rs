@@ -670,6 +670,7 @@ mod tests {
             created_at: 2000,
             read: false,
             mission: None,
+            looks_like_question: false,
         }));
         v.apply(3, 3000, &hook("s", "Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Done);
@@ -918,6 +919,7 @@ mod tests {
             created_at: at,
             read: false,
             mission: None,
+            looks_like_question: false,
         })
     }
 

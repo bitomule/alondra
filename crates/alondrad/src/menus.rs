@@ -364,6 +364,7 @@ mod tests {
             created_at: 2,
             read: true,
             mission: None,
+            looks_like_question: false,
         });
         let hook = |e: &str| Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: e.into(), tool_name: Some("Bash".into()), ..Default::default() });
         let cases: Vec<(&str, Vec<Event>, bool)> = vec![

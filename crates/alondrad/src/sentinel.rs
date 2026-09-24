@@ -221,6 +221,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
         created_at: now_millis(),
         read: false,
         mission: node.mission.clone(),
+        looks_like_question: false,
     }
 }
 

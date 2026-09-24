@@ -141,7 +141,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
-            format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
+            let delivered = format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0));
+            match r.get("note").and_then(Value::as_str) {
+                Some(note) => format!("{delivered} {note}"),
+                None => delivered,
+            }
         }
         "withdraw" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("id is required"))?;

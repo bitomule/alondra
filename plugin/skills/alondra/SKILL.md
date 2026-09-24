@@ -44,4 +44,5 @@ What you write in your terminal does not reach the user; only Alondra's tools do
   (including waiting for a build, an upload or a review), send nothing. Alondra rejects these
   reports, and you lose a turn.
 - **Questions inside a report.** If a report asks the user to decide, approve, test or fetch
-  something, Alondra rejects it: send it as `ask` (or `request_action` if it is something to do).
+  something, Alondra delivers it flagged and the question gets lost among the reading: send it as
+  `ask` (or `request_action` if it is something to do).

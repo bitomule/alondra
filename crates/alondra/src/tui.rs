@@ -1729,6 +1729,7 @@ pub(crate) mod tests {
             created_at: 0,
             read: false,
             mission: None,
+            looks_like_question: false,
         }
     }
 

@@ -495,6 +495,7 @@ mod tests {
             created_at: T0,
             read: false,
             mission: None,
+            looks_like_question: false,
         })
     }
 

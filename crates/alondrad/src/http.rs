@@ -91,12 +91,25 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
-fn keep_rejected(home: &std::path::Path, title: &str, body: Option<&str>) {
+fn keep_flagged(home: &std::path::Path, title: &str, body: Option<&str>) {
     use std::io::Write;
     let line = json!({"at": now_millis(), "title": title, "body": body}).to_string();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("rejected-reports.jsonl")) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("flagged-reports.jsonl")) {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// Final reports and the orchestrator's notices skip the report gate: they close a node or
+/// relay what the orchestrator checked, and a false positive cost the user exactly those.
+fn gated(kind: Option<ReportKind>, from_orchestrator: bool) -> bool {
+    !from_orchestrator && !matches!(kind, Some(ReportKind::Progress | ReportKind::Final))
+}
+
+fn flagged_note(user: &str) -> String {
+    format!(
+        "Delivered, marked as possibly asking {user} for something. If it does, send each decision as its own question \
+         with ask (a one-line title, context in detail, options); if that question is already open, do not repeat it."
+    )
 }
 
 pub const USER_KEY_FILE: &str = "tui-key.pem";
@@ -1183,24 +1196,12 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             ),
         );
     }
-    if b.kind != Some(ReportKind::Progress) {
-        let text = format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or(""));
-        let user = &hub.config.name;
-        match crate::classify::judge_report(&text, user).await {
-            crate::classify::ReportVerdict::Asks => {
-                log!("report gate: rejected a report that asks for something: {}", b.title);
-                keep_rejected(&hub.home, &b.title, b.body.as_deref());
-                return err(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!(
-                        "This report asks {user} to decide or do something, and a report is only for reading. Send each \
-                         decision as its own question with ask (a one-line title, context in detail, options) and keep \
-                         only the informative part in report. If the question is already open in Alondra, do not repeat it."
-                    ),
-                );
-            }
-            crate::classify::ReportVerdict::Fine => {}
-        }
+    let from_orchestrator = hub.read(|v| resolve_caller(v, &b.caller).and_then(|(s, _)| v.nodes.get(&s)).is_some_and(|n| n.is_orchestrator));
+    let looks_like_question = gated(b.kind, from_orchestrator)
+        && crate::classify::judge_report(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
+    if looks_like_question {
+        log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
+        keep_flagged(&hub.home, &b.title, b.body.as_deref());
     }
     let stamp = now_millis();
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
@@ -1218,6 +1219,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             created_at: stamp,
             read: false,
             mission: None,
+            looks_like_question,
         }))
     });
     match res {
@@ -1225,6 +1227,9 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             let mut texts: Vec<String> = r.links.iter().map(|l| l.url.clone()).collect();
             texts.extend([r.title.clone(), r.body.clone().unwrap_or_default()]);
             note_prs(&hub, &r.session_id, &texts);
+            if looks_like_question {
+                return Json(json!({"id": r.id, "looks_like_question": true, "note": flagged_note(&hub.config.name)})).into_response();
+            }
             Json(json!({"id": r.id})).into_response()
         }
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
@@ -1791,6 +1796,31 @@ mod tests {
         for (command, expected) in cases {
             assert_eq!(destructive(command), expected, "{command}");
         }
+    }
+
+    /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
+    #[test]
+    fn final_reports_and_the_orchestrator_skip_the_report_gate() {
+        let cases = [
+            ("BlurCamera: tachado de texto delicado en main y probado; nodo listo para cerrar, fase 2 pasada al orquestador", Some(ReportKind::Final), false, false),
+            ("Terminado: no queda nada pendiente mío; tus mensajes del iPhone llegaron, pero tarde", Some(ReportKind::Final), false, false),
+            ("Quill no ha recibido tu petición de cambios del PR #88: Alondra cree que tiene un menú abierto y no lo tiene. Arreglo en el PR #33", Some(ReportKind::Notice), false, true),
+            ("Las respuestas de Quill no están verificadas todavía", Some(ReportKind::Notice), true, false),
+            ("Sigo con la fase 3", Some(ReportKind::Progress), false, false),
+            ("Un aviso sin tipo", None, false, true),
+        ];
+        for (what, kind, orchestrator, expected) in cases {
+            assert_eq!(gated(kind, orchestrator), expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn reports_stored_before_the_flag_replay_unflagged() {
+        let old = r#"{"id":1,"session_id":"s","node_name":null,"title":"t","kind":"notice","created_at":1,"read":false}"#;
+        assert!(!serde_json::from_str::<Report>(old).unwrap().looks_like_question);
+        let flagged = Report { looks_like_question: true, ..serde_json::from_str::<Report>(old).unwrap() };
+        let back: Report = serde_json::from_str(&serde_json::to_string(&flagged).unwrap()).unwrap();
+        assert!(back.looks_like_question);
     }
 
     #[test]

@@ -163,6 +163,9 @@ pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color
 }
 
 pub(super) fn report_glyph(r: &Report) -> (&'static str, &'static str, Color) {
+    if r.looks_like_question && r.kind != ReportKind::Final {
+        return ("?", tr!("notice that asks", "aviso que pregunta"), Color::LightYellow);
+    }
     match r.kind {
         ReportKind::Document => ("▤", i18n::report_kind(r.kind), Color::Cyan),
         ReportKind::Final => ("✓", i18n::report_kind(r.kind), Color::LightGreen),
@@ -1385,6 +1388,17 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_notice_the_gate_flagged_is_marked_as_asking() {
+        let mut r = report(1);
+        r.kind = ReportKind::Notice;
+        assert_eq!(report_glyph(&r).0, "•");
+        r.looks_like_question = true;
+        assert_eq!(report_glyph(&r).0, "?");
+        r.kind = ReportKind::Final;
+        assert_eq!(report_glyph(&r).0, "✓");
     }
 
     #[test]

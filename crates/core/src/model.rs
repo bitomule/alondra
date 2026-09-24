@@ -462,6 +462,9 @@ pub struct Report {
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<String>,
+    /// The report gate thinks it asks the user for something that should have been a question.
+    #[serde(default)]
+    pub looks_like_question: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
