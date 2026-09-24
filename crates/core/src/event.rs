@@ -118,8 +118,15 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<crate::model::Attachment>,
     },
-    /// A node was launched with these options; `auto_merge` keeps its PRs out of the inbox.
-    Launched { name: String, request_id: Option<String>, auto_merge: bool },
+    /// A node was launched with these options; `auto_merge` keeps its PRs out of the inbox. With
+    /// `task` it was launched for that task, which it takes when it shows up.
+    Launched {
+        name: String,
+        request_id: Option<String>,
+        auto_merge: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+    },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
     /// alondrad restarted a node whose process ended while it still had work, or failed to.

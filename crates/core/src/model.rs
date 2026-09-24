@@ -654,13 +654,15 @@ pub struct Message {
     pub about: Option<MessageAbout>,
 }
 
-/// What a message Alondra queued stands for, when the state machine has to know.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// What a message stands for, when the state machine has to know.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageAbout {
     PrMerged { pr_id: u64 },
     /// David's verdict on an artifact the node sent for review: its comments to read, or approval.
     ArtifactReview { report_id: u64 },
+    /// The orchestrator wrote to the node about one of its tasks, or handed it a new one.
+    Task { task: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

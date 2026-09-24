@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Attachment, Millis};
 
+mod define;
 mod derive;
 
+pub use define::{Candidate, CandidateTask, Dependency, dependencies};
 pub use derive::{Before, CardTask, NODE_CLOSED, Pass, task_id};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
@@ -386,6 +388,20 @@ pub struct TaskOptions {
     pub issue: Option<String>,
 }
 
+/// How a task the orchestrator defined starts once nothing holds it back: in a node Alondra
+/// launches for it, or on a live node it was given to.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "on", rename_all = "snake_case")]
+pub enum Start {
+    NewNode {
+        name: String,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    Node { session_id: String },
+}
+
 /// Who works on a task: a node, and the subagent of it when one does.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Assignee {
@@ -447,6 +463,13 @@ pub struct Task {
     /// A launch was matched to the task's node.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
+    /// The name of the node launched for it, when that is not its title: the node that shows up
+    /// under it takes the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_as: Option<String>,
+    /// How Alondra starts it, for a task the orchestrator defined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Start>,
     /// Made by a `TaskCreated` event: everything that moves it is in the log as `TaskMoved`, and
     /// nothing is read into it from other events.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -475,11 +498,24 @@ pub struct NewTask {
     /// Made by a launch: the node that shows up under its title takes it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
+    /// Defined by the orchestrator: how Alondra starts it. It waits while a dependency does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Start>,
 }
 
 impl Task {
     pub fn is_assigned_to(&self, session_id: &str) -> bool {
         self.assignee.as_ref().is_some_and(|a| a.session_id == session_id)
+    }
+
+    /// Alondra has yet to start it: it may start, and no node took it nor was launched for it.
+    pub fn needs_start(&self) -> bool {
+        self.recorded && self.start.is_some() && self.state == TaskState::Running && self.assignee.is_none() && !self.launched
+    }
+
+    /// The name the node launched for it goes by.
+    pub fn launch_name(&self) -> &str {
+        self.launched_as.as_deref().unwrap_or(&self.title)
     }
 
     fn last_change(&self) -> Millis {
@@ -574,11 +610,13 @@ impl Board {
             documents: vec![],
             blocker: None,
             notices: vec![],
-            state: TaskState::Running,
+            state: if t.depends_on.is_empty() { TaskState::Running } else { TaskState::WaitingDependency },
             state_since: at,
             created_at: at,
             final_report: None,
             launched: t.launched,
+            launched_as: None,
+            start: t.start.clone(),
             recorded: true,
             history: vec![],
             anomalies: vec![],
@@ -770,6 +808,8 @@ mod tests {
             created_at: 0,
             final_report: None,
             launched: false,
+            launched_as: None,
+            start: None,
             recorded: false,
             history: vec![],
             anomalies: vec![],

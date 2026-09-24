@@ -487,7 +487,7 @@ mod tests {
 
         let mut auto = View::default();
         auto.record(0, &Event::TasksRecorded);
-        auto.record(0, &Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true });
+        auto.record(0, &Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None });
         auto.record(0, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), pid: Some(1), ..Default::default() }));
         auto.record(0, &Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None });
         fetched(&mut auto, 1, |p| p.state = alondra_core::pr::PrState::Merged);

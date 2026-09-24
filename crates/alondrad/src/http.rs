@@ -69,6 +69,8 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
+        .route("/v1/tasks", post(define_tasks))
+        .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/v1/tasks/{id}/reopen", post(reopen_task))
@@ -1644,7 +1646,7 @@ fn action_reply(answer: &Answer, user: &str) -> String {
 }
 
 /// Over today's slice of the week, new nodes wait unless the user said to launch anyway.
-fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool) -> Option<String> {
+pub(crate) fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool) -> Option<String> {
     let u = usage.filter(|u| u.over_pace && !over_pace_ok)?;
     Some(format!(
         "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left), so the launch was refused. over_pace_ok launches anyway once the user says so.",
@@ -1958,11 +1960,14 @@ async fn review_artifact(State(hub): State<AppState>, Path(id): Path<u64>, Json(
 }
 
 #[derive(Deserialize)]
-struct MessageBody {
+pub(crate) struct MessageBody {
     text: String,
     from: Option<MessageFrom>,
     #[serde(default)]
     attachments: Vec<String>,
+    /// The task the message is about; a task no node works on yet becomes this node's.
+    #[serde(default)]
+    task: Option<String>,
 }
 
 async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
@@ -1990,7 +1995,7 @@ fn held_for_turn_end_note(name: &str) -> String {
     )
 }
 
-async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
+pub(crate) async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
     if b.from == Some(MessageFrom::Alondra) && hub.read(|v| v.resolve_node(&key).is_some_and(|n| !v.may_alondra_write(n))) {
         return err(StatusCode::CONFLICT, format!("{key} is done: only {} or the orchestrator can reopen it", hub.config.name));
     }
@@ -2000,6 +2005,21 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     };
     let text = format!("{}{}", b.text, uploads::delivery_note(&hub.config.name, &attachments));
     let interactive = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string()));
+    if let Some(task) = b.task.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let Some(sid) = hub.read(|v| v.resolve_node(&key).filter(|n| !n.is_orchestrator).map(|n| n.session_id.clone())) else {
+            return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
+        };
+        let _one_at_a_time = hub.starts.lock().await;
+        let title = hub.read(|v| v.board.tasks.get(task).map(|t| t.title.clone())).unwrap_or_default();
+        let text = format!("[Task {task} “{title}”] {text}");
+        return match crate::orchestrate::hand(&hub, task, &sid, text, b.from.unwrap_or(MessageFrom::User), attachments) {
+            Ok(m) => match interactive {
+                Some(name) => Json(json!({"id": m.id, "session_id": m.session_id, "task": task, "interactive": true, "note": held_for_turn_end_note(&name)})).into_response(),
+                None => Json(json!({"id": m.id, "session_id": m.session_id, "task": task})).into_response(),
+            },
+            Err((status, e)) => err(status, e),
+        };
+    }
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
         Some(Event::MessageQueued(Message {
@@ -2271,10 +2291,10 @@ struct RequestBody {
 }
 
 fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_id: &str, options: &alondra_core::options::Resolved, issue: Option<&str>) -> String {
-    let pass_on = if attached { " Put the attached files' paths in the node's mission so it can open them." } else { "" };
+    let pass_on = if attached { " Put the attached files' paths in the brief of the task that needs them so its node can open them." } else { "" };
     let issue = issue.map(|i| format!("\n\n{i}")).unwrap_or_default();
     format!(
-        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nPass request_id \"{request_id}\" to launch: Alondra writes these options into the node's mission and sets its model and effort, so do not restate them. {}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
+        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nAlondra keeps this request as {request_id} and gives its options to every task you define for it: it writes them into each node's mission and sets its model and effort, so do not restate them. {}\n\nTurn it into tasks with Alondra's define tool (request \"{request_id}\"): one task, or several with depends_on; each goes to a new node or, after checking candidates, to a live node that already has the context. Use ask if something is missing.{pass_on}",
         options.summary(),
         options.effort_note(user)
     )
@@ -2456,9 +2476,10 @@ fn move_task(hub: &Hub, id: &str, event: alondra_core::tasks::TaskEvent) -> Resp
 }
 
 #[derive(Deserialize)]
-struct LaunchBody {
+pub(crate) struct LaunchBody {
     name: String,
     cwd: String,
+    #[serde(default)]
     prompt: String,
     model: Option<String>,
     permission_mode: Option<String>,
@@ -2468,6 +2489,9 @@ struct LaunchBody {
     request_id: Option<String>,
     #[serde(default)]
     effort: Option<String>,
+    /// The task the node is launched for; its brief is the prompt unless one is given.
+    #[serde(default)]
+    task: Option<String>,
 }
 
 fn lenient_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -2498,32 +2522,67 @@ fn launch_options(hub: &Hub, b: &LaunchBody) -> Result<alondra_core::options::Re
 }
 
 async fn launch(State(hub): State<AppState>, Json(b): Json<LaunchBody>) -> Response {
-    if let Some(reason) = launch_blocked(crate::usage::current(&crate::watcher::claude_home()).as_ref(), b.over_pace_ok) {
-        return err(StatusCode::CONFLICT, reason);
-    }
-    if !std::path::Path::new(&b.cwd).is_dir() {
-        return err(StatusCode::BAD_REQUEST, format!("directory {} does not exist", b.cwd));
-    }
-    let resolved = match launch_options(&hub, &b) {
-        Ok(r) => r,
-        Err(r) => return r,
+    launch_with(&hub, b, &crate::orchestrate::ClaudeCli).await
+}
+
+pub(crate) async fn launch_with(hub: &Hub, b: LaunchBody, launcher: &impl crate::orchestrate::Launcher) -> Response {
+    let task = b.task.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    let _one_at_a_time = match task {
+        Some(_) => Some(hub.starts.lock().await),
+        None => None,
     };
-    let request_id = b.request_id.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let args = crate::options::launch_args(&b.name, b.permission_mode.as_deref(), b.model.as_deref(), &b.prompt, &resolved, request_id);
-    let mut cmd = tokio::process::Command::new("claude");
-    cmd.current_dir(&b.cwd).args(&args).kill_on_drop(true);
-    match tokio::time::timeout(Duration::from_secs(60), cmd.output()).await {
-        Ok(Ok(out)) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let launched = Event::Launched { name: b.name.clone(), request_id: request_id.map(str::to_string), auto_merge: resolved.auto_merge };
-            if let Err(e) = hub.append(launched) {
-                return internal(e);
-            }
-            Json(json!({"ok": true, "output": stdout, "auto_merge": resolved.auto_merge})).into_response()
+    let (options, request_id, prompt) = match &task {
+        Some(id) => match crate::orchestrate::task_launch(hub, id, &b.prompt, b.effort.as_deref()) {
+            Ok(planned) => planned,
+            Err((status, e)) => return err(status, e),
+        },
+        None if b.prompt.trim().is_empty() => return err(StatusCode::BAD_REQUEST, "prompt is required: the node's mission, or task to launch it with a task's brief"),
+        None => match launch_options(hub, &b) {
+            Ok(r) => (r, b.request_id.as_deref().map(str::trim).filter(|r| !r.is_empty()).map(str::to_string), b.prompt.clone()),
+            Err(r) => return r,
+        },
+    };
+    let l = crate::orchestrate::Launch {
+        name: b.name.clone(),
+        cwd: b.cwd.clone(),
+        prompt,
+        model: b.model.clone(),
+        permission_mode: b.permission_mode.clone(),
+        over_pace_ok: b.over_pace_ok,
+        request_id,
+        options,
+        task,
+    };
+    match crate::orchestrate::launch(hub, l, launcher).await {
+        Ok(v) => Json(v).into_response(),
+        Err((status, e)) => err(status, e),
+    }
+}
+
+/// The orchestrator turns a request into tasks. Refused with every reason when it cannot stand.
+async fn define_tasks(State(hub): State<AppState>, Json(d): Json<crate::orchestrate::Definition>) -> Response {
+    match crate::orchestrate::define(&hub, d) {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => {
+            let text = match r.problems.as_slice() {
+                [one] => one.clone(),
+                many => format!("the definition was refused:\n{}", many.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")),
+            };
+            (r.status, Json(json!({"error": text, "problems": r.problems}))).into_response()
         }
-        Ok(Ok(out)) => err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).to_string()),
-        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
-        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "claude --bg did not respond within 60 s"),
+    }
+}
+
+#[derive(Deserialize)]
+struct CandidatesQuery {
+    task: Option<String>,
+    repo: Option<String>,
+}
+
+async fn task_candidates(State(hub): State<AppState>, Query(q): Query<CandidatesQuery>) -> Response {
+    match crate::orchestrate::candidates(&hub, q.task.as_deref(), q.repo.as_deref()) {
+        Ok(v) => Json(v).into_response(),
+        Err((status, e)) => err(status, e),
     }
 }
 
@@ -3074,7 +3133,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{said}");
         hub.append(Event::TaskCreated(NewTask {
             id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-            session_id: Some("s".into()), launched: false,
+            session_id: Some("s".into()), launched: false, start: None,
         }))
         .unwrap();
         let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| {
@@ -3184,7 +3243,7 @@ mod tests {
                 }
                 if c.second_task {
                     let second = alondra_core::tasks::NewTask {
-                        id: "t-2".into(), request: "r-2".into(), title: "Otra".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false,
+                        id: "t-2".into(), request: "r-2".into(), title: "Otra".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, start: None,
                     };
                     hub.append(Event::TaskCreated(second)).unwrap();
                 }
@@ -3741,7 +3800,7 @@ mod tests {
         let hub = temp_hub("send");
         hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
-        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None, attachments: vec![] }));
+        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None, attachments: vec![], task: None }));
         let (status, body) = status_and_body(send("interactive").await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["interactive"], true);
@@ -3813,7 +3872,7 @@ mod tests {
 
         let pr = hub.read(|v| v.prs[&1].clone());
         assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
-        let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from), attachments: vec![] }));
+        let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from), attachments: vec![], task: None }));
         assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
         assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");
 
@@ -3835,7 +3894,7 @@ mod tests {
         std::fs::remove_file(&original).unwrap();
 
         let id = up["id"].as_str().unwrap().to_string();
-        let body = MessageBody { text: "Mira esto".into(), from: None, attachments: vec![id] };
+        let body = MessageBody { text: "Mira esto".into(), from: None, attachments: vec![id], task: None };
         let (status, sent) = status_and_body(send_message(State(hub.clone()), Path("job".into()), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{sent}");
         let m = hub.read(|v| v.pending_messages("job").next().cloned()).unwrap();
@@ -3845,7 +3904,7 @@ mod tests {
         assert_eq!(std::fs::read(&stored).unwrap(), b"pixels");
         assert!(hub.read(|v| v.stored_files()).contains(&PathBuf::from(&stored)));
 
-        let unknown = MessageBody { text: "otra".into(), from: None, attachments: vec!["ffffffffffffffff".into()] };
+        let unknown = MessageBody { text: "otra".into(), from: None, attachments: vec!["ffffffffffffffff".into()], task: None };
         let (status, _) = status_and_body(send_message(State(hub.clone()), Path("job".into()), Json(unknown)).await).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a send whose attachment is gone is refused, not sent without it");
     }
@@ -4086,7 +4145,7 @@ defaults = { pr = "auto_merge" }
         let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
         assert!(text.starts_with("[Alondra] New request from Ana: Fix the crash"), "{text}");
         assert!(text.contains(&format!("(request {id}): project App · PR handling: auto-merge · Effort: light · How far: merge and install.")), "{text}");
-        assert!(text.contains(&format!("Pass request_id \"{id}\" to launch")), "{text}");
+        assert!(text.contains(&format!("define tool (request \"{id}\")")), "{text}");
         let kept = hub.read(|v| v.requests.get(&id).cloned()).unwrap();
         assert!(kept.auto_merge);
         assert_eq!(kept.flags.model.as_deref(), Some("sonnet"));
@@ -4161,7 +4220,7 @@ defaults = { pr = "auto_merge" }
     fn a_node_launched_with_auto_merge_raises_no_pr_card() {
         for (auto_merge, cards) in [(true, 0), (false, 1)] {
             let hub = temp_hub("auto-merge-card");
-            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge }).unwrap();
+            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge, task: None }).unwrap();
             hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), ..Default::default() })).unwrap();
             hub.append(Event::PrOpened { url: "https://github.com/a/app/pull/3".into(), session_id: "s".into(), task: None }).unwrap();
             assert_eq!(hub.read(|v| crate::prs::in_inbox(v).count()), cards, "auto_merge {auto_merge}");
