@@ -32,6 +32,11 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
     public let mergeState: String?
     public let openedAt: Int64
     public let preferredMethod: String?
+    public let belowNumber: UInt64?
+    public let belowSetAside: Bool?
+    public let stackBottom: UInt64?
+    public let stackOpenedAt: Int64?
+    public let stackPosition: Int?
 
     public static let allMethods = ["merge", "squash", "rebase"]
 
@@ -46,6 +51,32 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
 
     /// GitHub answers `UNKNOWN` right after the base moves, until Alondra asks again.
     public var mergeabilityUnknown: Bool { !hasConflicts && (mergeable == nil || mergeable == "UNKNOWN") }
+
+    /// "On top of PR #11" for a PR stacked on another open PR.
+    public var stackedOn: String? {
+        belowNumber.map { String(localized: "On top of PR #\(String($0))", table: "AlondraShared", bundle: #bundle) }
+    }
+
+    /// Why it cannot be merged yet: the PR under it is still open on GitHub, even when it was
+    /// set aside here.
+    public var mergeBlockedReason: String? {
+        guard let below = belowNumber.map(String.init) else { return nil }
+        if belowSetAside == true {
+            return String(localized: "PR #\(below) is still open on GitHub: merge or close it first", table: "AlondraShared", bundle: #bundle)
+        }
+        return String(localized: "Merge PR #\(below) first", table: "AlondraShared", bundle: #bundle)
+    }
+
+    public var trainOpenedAt: Int64 { stackOpenedAt ?? openedAt }
+    public var trainBottom: UInt64 { stackBottom ?? id }
+    public var trainPosition: Int { stackPosition ?? 0 }
+
+    /// Each train together, bottom PR first; the newest train first.
+    public static func newestTrainsFirst(_ lhs: PullRequest, _ rhs: PullRequest) -> Bool {
+        if lhs.trainOpenedAt != rhs.trainOpenedAt { return lhs.trainOpenedAt > rhs.trainOpenedAt }
+        if lhs.trainBottom != rhs.trainBottom { return lhs.trainBottom > rhs.trainBottom }
+        return (lhs.trainPosition, lhs.id) < (rhs.trainPosition, rhs.id)
+    }
 
     /// "bitomule/alondra #12 · fase-1 ← menus · +120 −8 in 5 files"
     public var summary: String {

@@ -566,7 +566,9 @@ impl App {
     /// then reading.
     pub fn inbox_keys(&self) -> Vec<Key> {
         let q = self.data.open_questions.iter().filter(|q| self.card_of(q.pr_id).is_none()).map(|q| Key::Q(q.id));
-        let p = self.data.prs.iter().flat_map(|p| {
+        let mut prs: Vec<&crate::client::PrCard> = self.data.prs.iter().collect();
+        prs.sort_by_key(|p| p.train_place());
+        let p = prs.into_iter().flat_map(|p| {
             std::iter::once(Key::P(p.pr.id)).chain(self.asked_on(p.pr.id).map(|q| Key::Q(q.id))).chain(self.reported_on(p.pr.id).map(|r| Key::R(r.id)))
         });
         let r = self.data.news.iter().filter(|r| self.card_of(r.pr_id).is_none()).map(|r| Key::R(r.id));
@@ -649,6 +651,10 @@ impl App {
                 return;
             }
         };
+        if let Some(reason) = pr.merge_blocked() {
+            self.fail(reason);
+            return;
+        }
         let now = now_millis();
         let label = i18n::merge_method(method);
         let number = pr.pr.number;
@@ -2026,7 +2032,41 @@ pub(crate) mod tests {
         let mut pr = PullRequest::opened(4, "https://github.com/a/b/pull/12", "s1", Some("demo".into()), 0).unwrap();
         pr.title = "Menus become cards".into();
         pr.merge_methods = vec![MergeMethod::Merge, MergeMethod::Squash];
-        crate::client::PrCard { pr, preferred_method: preferred }
+        crate::client::PrCard { pr, preferred_method: preferred, below_number: None, below_set_aside: false, stack_bottom: None, stack_opened_at: None, stack_position: 0 }
+    }
+
+    /// Card `id` (PR #`id + 10`) stacked `position` cards up the train that starts at `bottom`.
+    pub(super) fn train_card(id: u64, title: &str, bottom: u64, position: usize, opened_at: i64) -> crate::client::PrCard {
+        let mut card = pr_card(None);
+        card.pr.id = id;
+        card.pr.number = id + 10;
+        card.pr.title = title.into();
+        card.pr.opened_at = opened_at;
+        card.below_number = (position > 0).then(|| id + 9);
+        (card.stack_bottom, card.stack_position, card.stack_opened_at) = (Some(bottom), position, Some(bottom as i64 * 100));
+        card
+    }
+
+    #[test]
+    fn a_pr_on_top_of_an_open_pr_cannot_be_merged_from_its_card() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.prs = vec![train_card(2, "Upper", 1, 1, 50), train_card(1, "Lower", 1, 0, 100)];
+        app.reconcile();
+        app.settle_until = 0;
+        assert_eq!(app.inbox_keys(), [Key::P(1), Key::P(2)], "the train bottom first");
+        press(&mut app, "j");
+        assert!(matches!(app.sel, Some(Key::P(2))));
+        press(&mut app, "1");
+        press(&mut app, "1");
+        assert!(app.pending_merge.is_none(), "no merge started");
+        assert!(!app.hidden.contains_key(&Key::P(2)), "nothing merged");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Merge PR #11 first")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+
+        app.data.prs = vec![crate::client::PrCard { below_set_aside: true, ..train_card(2, "Upper", 1, 1, 50) }];
+        app.reconcile();
+        press(&mut app, "1");
+        assert!(app.pending_merge.is_none(), "a PR set aside in Alondra is still open on GitHub");
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("PR #11 is still open on GitHub: merge or close it first")), "{:?}", app.flash.as_ref().map(|f| &f.text));
     }
 
     #[test]

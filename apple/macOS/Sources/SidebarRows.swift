@@ -63,6 +63,12 @@ struct InboxRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if case .pullRequest(let pr) = item, let stackedOn = pr.stackedOn {
+                    Label(stackedOn, systemImage: "square.stack.3d.up")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.vertical, 3)

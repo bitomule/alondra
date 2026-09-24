@@ -38,6 +38,10 @@ struct PullRequestDetail: View {
                     Label("GitHub is checking whether it can be merged", systemImage: "clock")
                         .foregroundStyle(.secondary)
                 }
+                if let stackedOn = pr.stackedOn {
+                    Label(stackedOn, systemImage: "square.stack.3d.up")
+                        .foregroundStyle(.secondary)
+                }
                 if let checks = pr.checks, !checks.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(checks, id: \.self) { check in
@@ -80,9 +84,16 @@ struct PullRequestDetail: View {
                     .labelsHidden()
                     .fixedSize()
                     .help("How to merge it; the method last used in this repo comes first")
+                    .disabled(pr.mergeBlockedReason != nil)
+                    if let reason = pr.mergeBlockedReason {
+                        Text(reason)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                    }
                     Button("Merge…") { confirmingMerge = true }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
+                        .disabled(pr.mergeBlockedReason != nil)
                 }
                 Button("Set Aside") { setAside() }
                     .controlSize(.large)

@@ -25,6 +25,11 @@ struct PRReviewView: View {
                 Text(pr.summary)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
+                if let stackedOn = pr.stackedOn {
+                    Label(stackedOn, systemImage: "square.stack.3d.up")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
                 ForEach(fleet.reports(forPullRequest: pr.id)) { report in
                     AttachedReport(report: report, showsBody: true)
                 }

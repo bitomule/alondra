@@ -401,6 +401,16 @@
         }
       }
     },
+    "Merge PR #%@ first": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fusiona antes el PR #%@"
+          }
+        }
+      }
+    },
     "Merge commit": {
       "localizations": {
         "es": {
@@ -441,6 +451,16 @@
         }
       }
     },
+    "On top of PR #%@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Va encima del PR #%@"
+          }
+        }
+      }
+    },
     "Orchestrator": {
       "localizations": {
         "es": {
@@ -457,6 +477,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vas por encima del ritmo: el orquestador te pregunta antes de lanzar nodos nuevos."
+          }
+        }
+      }
+    },
+    "PR #%@ is still open on GitHub: merge or close it first": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El PR #%@ sigue abierto en GitHub: fusiónalo o ciérralo antes"
           }
         }
       }

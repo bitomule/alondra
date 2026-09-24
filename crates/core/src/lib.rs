@@ -4,6 +4,7 @@ pub mod event;
 pub mod keeper;
 pub mod model;
 pub mod pr;
+pub mod stack;
 #[cfg(test)]
 mod recorded;
 pub mod states;

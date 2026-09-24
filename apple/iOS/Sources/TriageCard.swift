@@ -253,6 +253,11 @@ struct TriageCard: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            if let stackedOn = pr.stackedOn {
+                Label(stackedOn, systemImage: "square.stack.3d.up")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
             ForEach(pr.checks ?? [], id: \.self) { check in
                 Label(check.name, systemImage: check.passed ? "checkmark.circle.fill" : check.failed ? "xmark.circle.fill" : "clock")
                     .font(.footnote)
@@ -570,11 +575,12 @@ struct TriageCard: View {
                             Button(PullRequest.methodLabel(method)) { merging = method }
                         }
                     } label: {
-                        Label("Merge…", systemImage: "arrow.triangle.merge")
+                        Label(pr.mergeBlockedReason ?? String(localized: "Merge…"), systemImage: pr.mergeBlockedReason == nil ? "arrow.triangle.merge" : "square.stack.3d.up")
                             .font(.headline)
                             .frame(maxWidth: .infinity, minHeight: 50)
                     }
-                    .buttonStyle(FilledStyle(tint: Palette.sage))
+                    .buttonStyle(FilledStyle(tint: pr.mergeBlockedReason == nil ? Palette.sage : Palette.slate))
+                    .disabled(pr.mergeBlockedReason != nil)
                     .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
                         if let method = merging {
                             Button("Merge (\(PullRequest.methodLabel(method)))") {
