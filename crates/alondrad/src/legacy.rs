@@ -67,6 +67,7 @@ async fn sync(hub: &Hub, paths: &Paths, imported: &mut BTreeMap<u64, u64>) -> an
             let session_id = resolve(v, &entry.node, orchestrator_short.as_deref())?;
             let node_name = v.nodes.get(&session_id).and_then(|n| n.name.clone());
             Some(Event::QuestionAsked(Question {
+                related: vec![],
                 id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
                 session_id,
                 node_name,

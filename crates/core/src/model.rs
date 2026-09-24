@@ -392,6 +392,14 @@ pub enum QuestionOrigin {
     Elicitation,
 }
 
+/// One of a node's cards, named by what it is and its number.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CardRef {
+    Question(u64),
+    Report(u64),
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionStatus {
@@ -454,6 +462,9 @@ pub struct Question {
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<String>,
+    /// The node's other open cards it declared this question belongs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<CardRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -501,6 +512,9 @@ pub struct Report {
     /// The report gate thinks it asks the user for something that should have been a question.
     #[serde(default)]
     pub looks_like_question: bool,
+    /// The node's other open cards it declared this report belongs with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<CardRef>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

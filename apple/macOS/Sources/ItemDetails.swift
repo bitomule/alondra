@@ -51,7 +51,7 @@ struct QuestionDetail: View {
                     AttachmentDocument(attachment: attachment, anchorPrefix: "adjunto\(index)", store: store, draft: draft, focus: $focus)
                 }
                 LinksRow(links: question.links, attachments: otherAttachments)
-                if let report = question.report {
+                ForEach(question.aboutReports) { report in
                     GroupBox {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(report.title)
@@ -236,6 +236,26 @@ struct ReportDetail: View {
                     AttachmentDocument(attachment: attachment, anchorPrefix: "adjunto\(index)", store: store, draft: draft, focus: $focus)
                 }
                 LinksRow(links: report.links, attachments: otherAttachments)
+                if let earlier = report.earlier, !earlier.isEmpty {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(earlier) { e in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(e.title)
+                                        .font(.headline)
+                                    if let body = e.body, !body.isEmpty {
+                                        MarkdownText(text: body)
+                                            .font(.callout)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Label(String(localized: "Earlier in this delivery (\(earlier.count))"), systemImage: "tray.full")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         } bar: {
             VStack(alignment: .leading, spacing: 12) {

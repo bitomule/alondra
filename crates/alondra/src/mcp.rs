@@ -38,7 +38,8 @@ fn ask_schema(user: &str) -> Value {
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}, "description": "Relevant PRs, commits or URLs"},
             "attachments": {"type": "array", "items": {"type": "string"}, "description": format!("Absolute paths of files {user} must see (e.g. the plan to approve)")},
             "blocking": {"type": "boolean", "description": "true if you cannot continue without the answer (default true)"},
-            "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")}
+            "to_orchestrator": {"type": "boolean", "description": format!("true if the question is for the orchestrator and not for {user}")},
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
         },
         "required": ["title", "detail"]
     })
@@ -65,7 +66,8 @@ fn report_schema(user: &str) -> Value {
             "body": {"type": "string", "description": "The report (markdown), short: what was measured, what changes and what is left"},
             "kind": {"type": "string", "enum": ["notice", "document", "final"], "description": format!("final: you are done and nothing is pending (the usual kind). notice: a short result or finding {user} should know now. document: something for {user} to read (plan, long report), with its path in attachments. A report is for reading: a decision, approval or task for {user} goes through ask or request_action.")},
             "links": {"type": "array", "items": {"type": "object", "properties": {"url": {"type": "string"}, "title": {"type": "string"}}, "required": ["url"]}},
-            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"}
+            "attachments": {"type": "array", "items": {"type": "string"}, "description": "Absolute paths of the documents you deliver"},
+            "related": {"type": "array", "items": {"type": "integer"}, "description": format!("Required when you already have open cards for {user} (open questions or unread reports): the numbers of those this one belongs with, shown together as one card, or [] if none. Without it Alondra records nothing and lists your open cards.")}
         },
         "required": ["title", "body", "kind"]
     })
