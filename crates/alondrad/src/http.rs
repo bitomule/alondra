@@ -830,6 +830,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
 }
 
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
+    let now = now_millis();
     let machine = hub.machine();
     let usage = crate::usage::current(&crate::watcher::claude_home());
     let body = hub.read(|v| {
@@ -874,6 +875,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
+                value["background"] = json!(states::background(n, now));
                 value
             })
             .collect();
@@ -920,13 +922,15 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        Some((n, questions, reports, messages, v.held_for_turn_end(&sid)))
+        let mut node = serde_json::to_value(&n).unwrap_or(Value::Null);
+        node["background"] = json!(states::background(&n, now_millis()));
+        Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
-    let Some((node, questions, reports, messages, held)) = found else {
+    let Some((node, session_id, questions, reports, messages, held)) = found else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
-        .timeline(&node.session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
+        .timeline(&session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
         .unwrap_or_default()
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
@@ -2034,6 +2038,28 @@ mod tests {
             let Json(o) = overview(State(hub.clone())).await;
             assert_eq!(o["news"][0]["pr_id"].as_u64(), card, "{what}: {}", o["news"]);
         }
+    }
+
+    #[tokio::test]
+    async fn the_overview_and_the_node_detail_list_what_runs_and_flag_the_possibly_hung() {
+        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
+        let hub = temp_hub("background");
+        let now = now_millis();
+        let item = |kind, label: &str, started_at| BackgroundItem { kind, label: label.into(), started_at, suspect: false };
+        hub.append(Event::DaemonSeen(DaemonObservation {
+            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(2),
+            background: vec![item(BackgroundKind::Shell, "until pgrep", now - 2 * 3600 * 1000), item(BackgroundKind::Agent, "Review", now - 60_000)],
+            ..Default::default()
+        })).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        let listed = &o["nodes"][0]["background"];
+        assert_eq!(listed[0]["kind"], "shell");
+        assert_eq!(listed[0]["suspect"], true);
+        assert_eq!(listed[1]["kind"], "agent");
+        assert!(listed[1].get("suspect").is_none(), "{listed}");
+        let (status, detail) = status_and_body(node_detail(State(hub.clone()), Path("job".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["node"]["background"][0]["suspect"], true);
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {

@@ -77,6 +77,11 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let daemonDetail: String?
     public let daemonNeeds: String?
     public let project: String?
+    public let background: [BackgroundItem]?
+
+    public var running: [BackgroundItem] { background ?? [] }
+
+    public var backgroundBadge: BackgroundBadge? { BackgroundBadge(running) }
 
     public var displayName: String { name ?? shortId }
 

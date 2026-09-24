@@ -142,6 +142,16 @@ struct NodeRow: View {
                 }
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
+                if let badge = node.backgroundBadge {
+                    Label {
+                        Text(verbatim: badge.text)
+                    } icon: {
+                        Image(systemName: badge.suspect ? "exclamationmark.triangle.fill" : "square.stack.3d.up")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(badge.suspect ? Palette.ember : Palette.slate)
+                    .lineLimit(1)
+                }
                 if !oneLine.isEmpty {
                     Text(oneLine)
                         .font(.subheadline)
@@ -253,6 +263,16 @@ struct NodeDetail: View {
                             .font(.mono(.footnote))
                             .foregroundStyle(Palette.sky)
                             .lineLimit(2)
+                    }
+                }
+
+                if !node.running.isEmpty {
+                    section(BackgroundItem.sectionTitle, symbol: "square.stack.3d.up") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(node.running, id: \.self) { item in
+                                BackgroundRow(item: item)
+                            }
+                        }
                     }
                 }
 
