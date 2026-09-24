@@ -249,8 +249,8 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
         QuestionOrigin::Elicitation => elicitation_card(p),
         _ => (
-            h.tool_summary.clone().map(|t| t.chars().take(120).collect()).unwrap_or_else(|| h.tool_name.clone().unwrap_or_default()),
-            h.tool_summary.clone().filter(|t| t.chars().count() > 120).or_else(|| h.tool_summary.is_none().then(|| input.to_string())),
+            permission_title(h.tool_name.as_deref(), &input, h.tool_summary.as_deref()),
+            permission_detail(&input, h.tool_summary.as_deref()),
             vec![
                 QuestionOption { label: answer_option::ALLOW.into(), description: None },
                 QuestionOption { label: answer_option::DENY.into(), description: Some("Write the reason".into()) },
@@ -260,7 +260,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
     Question {
         id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: h.session_id.clone(),
-        node_name: node.and_then(|n| n.name.clone()),
+        node_name: node.map(|n| n.name.clone().unwrap_or_else(|| n.short_id.clone())),
         title,
         detail,
         options,
@@ -278,6 +278,39 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         steps: vec![],
         mission: None,
     }
+}
+
+const PERMISSION_TITLE_CHARS: usize = 100;
+const DESTRUCTIVE: &str = "⚠️ destructivo";
+
+fn destructive(command: &str) -> bool {
+    let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
+    let has = |w: &str| words.contains(&w);
+    let short_flag_with = |f: char| words.iter().any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains(f));
+    words.iter().any(|w| w.starts_with("--force") || *w == "-D" || *w == "rm" || *w == "--hard")
+        || (has("push") && short_flag_with('f'))
+        || (has("clean") && short_flag_with('f'))
+}
+
+fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
+    let tool = tool.unwrap_or("?");
+    let said = str_field(input, "description").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).or_else(|| summary.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")));
+    let title = match said {
+        Some(s) if s.chars().count() > PERMISSION_TITLE_CHARS => format!("{tool}: {}…", s.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()),
+        Some(s) => format!("{tool}: {s}"),
+        None => tool.to_string(),
+    };
+    match str_field(input, "command") {
+        Some(c) if destructive(&c) => format!("{DESTRUCTIVE} · {title}"),
+        _ => title,
+    }
+}
+
+fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
+    if let Some(command) = str_field(input, "command") {
+        return Some(format!("```\n{command}\n```"));
+    }
+    summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
 }
 
 async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> Response {
@@ -1616,6 +1649,64 @@ mod tests {
             assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
         }
         assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
+    }
+
+    #[test]
+    fn a_permission_card_is_titled_by_what_the_node_says_it_does_and_shows_the_whole_command() {
+        let command = "git worktree remove --force /Users/ana/Projects/lumo/.claude/worktrees/permiso-camara; git branch -D permiso-camara";
+        let mut v = View::default();
+        v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "a1b2c3d4".into(), ..Default::default() }));
+        struct Case {
+            what: &'static str,
+            tool: &'static str,
+            input: Value,
+            title: String,
+            detail: Option<String>,
+        }
+        let long = "x".repeat(150);
+        let cases = [
+            Case { what: "the real worktree cleanup, with its description", tool: "Bash",
+                input: json!({"command": command, "description": "Remove the camera worktree and its branch"}),
+                title: "⚠️ destructivo · Bash: Remove the camera worktree and its branch".into(), detail: Some(format!("```\n{command}\n```")) },
+            Case { what: "the same command without a description", tool: "Bash", input: json!({"command": command}),
+                title: format!("⚠️ destructivo · Bash: {}…", command.chars().take(PERMISSION_TITLE_CHARS).collect::<String>().trim_end()), detail: Some(format!("```\n{command}\n```")) },
+            Case { what: "a harmless command", tool: "Bash", input: json!({"command": "ls -la", "description": "List files"}),
+                title: "Bash: List files".into(), detail: Some("```\nls -la\n```".into()) },
+            Case { what: "a file edit", tool: "Edit", input: json!({"file_path": "/tmp/a.rs", "old_string": "a", "new_string": "b"}),
+                title: "Edit: /tmp/a.rs".into(), detail: Some("/tmp/a.rs".into()) },
+            Case { what: "a long path is cut", tool: "Write", input: json!({"file_path": long}),
+                title: format!("Write: {}…", "x".repeat(PERMISSION_TITLE_CHARS)), detail: Some(long.clone()) },
+        ];
+        for c in cases {
+            let p = json!({"session_id": "s", "tool_name": c.tool, "tool_input": c.input});
+            let h = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), tool_name: Some(c.tool.into()), tool_summary: tool_summary(Some(c.tool), p.get("tool_input")), ..Default::default() };
+            let q = held_question(&v, &p, &h, QuestionOrigin::Permission);
+            assert_eq!(q.title, c.title, "{}", c.what);
+            assert_eq!(q.detail, c.detail, "{}", c.what);
+            assert_eq!(q.node_name.as_deref(), Some("a1b2c3d4"), "{}: an unnamed node goes by its short id", c.what);
+        }
+    }
+
+    #[test]
+    fn destructive_commands_are_told_apart() {
+        let cases = [
+            ("git worktree remove --force x", true),
+            ("git branch -D feature", true),
+            ("rm -rf build", true),
+            ("cd x && rm file", true),
+            ("git reset --hard origin/main", true),
+            ("git push --force-with-lease", true),
+            ("git push -f origin main", true),
+            ("git clean -fdx", true),
+            ("git push origin main", false),
+            ("git branch -d merged", false),
+            ("cargo test --release", false),
+            ("git clean -n", false),
+            ("ls -f", false),
+        ];
+        for (command, expected) in cases {
+            assert_eq!(destructive(command), expected, "{command}");
+        }
     }
 
     #[test]
