@@ -25,6 +25,7 @@ struct PullRequestDetail: View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title)
+                nodeSays
                 nodeAsks
                 Text(pr.summary)
                     .font(.callout.monospaced())
@@ -84,6 +85,20 @@ struct PullRequestDetail: View {
             Button("Merge (\(PullRequest.methodLabel(method)))") { merge() }
         } message: {
             Text(pr.summary)
+        }
+    }
+
+    @ViewBuilder
+    private var nodeSays: some View {
+        let reports = store.reports(forPullRequest: pr.id)
+        if !reports.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("The node says")
+                    .font(.title3.weight(.semibold))
+                ForEach(reports) { report in
+                    AttachedReport(report: report, pullRequestURL: pr.url)
+                }
+            }
         }
     }
 

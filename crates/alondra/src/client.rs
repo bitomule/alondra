@@ -37,7 +37,7 @@ pub struct Overview {
     pub nodes: Vec<FleetNode>,
     pub open_questions: Vec<OpenQuestion>,
     #[serde(default)]
-    pub news: Vec<Report>,
+    pub news: Vec<NewsReport>,
     pub machine: Machine,
     #[serde(default)]
     pub usage: Option<alondra_core::usage::Usage>,
@@ -67,6 +67,28 @@ impl std::ops::Deref for OpenQuestion {
     type Target = Question;
     fn deref(&self) -> &Question {
         &self.question
+    }
+}
+
+/// An unread report, with the PR card it is shown inside when it links a PR that has one.
+#[derive(Deserialize, Clone)]
+pub struct NewsReport {
+    #[serde(flatten)]
+    pub report: Report,
+    #[serde(default)]
+    pub pr_id: Option<u64>,
+}
+
+impl From<Report> for NewsReport {
+    fn from(report: Report) -> Self {
+        NewsReport { report, pr_id: None }
+    }
+}
+
+impl std::ops::Deref for NewsReport {
+    type Target = Report;
+    fn deref(&self) -> &Report {
+        &self.report
     }
 }
 

@@ -264,6 +264,10 @@ impl View {
                 self.nodes.contains_key(session_id).then(|| (session_id.clone(), Trigger::Other))
             }
             Event::PrUpdated(pr) => {
+                let settled = matches!(pr.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed);
+                if settled {
+                    self.read_reports_in(pr.id, at);
+                }
                 if let Some(known) = self.prs.get_mut(&pr.id) {
                     let dismissed = known.state == crate::pr::PrState::Dismissed && pr.state == crate::pr::PrState::Open;
                     let requested = known.changes_requested_on.take();
@@ -273,12 +277,13 @@ impl View {
                         known.state = crate::pr::PrState::Dismissed;
                     }
                 }
-                if matches!(pr.state, crate::pr::PrState::Merged | crate::pr::PrState::Closed) {
+                if settled {
                     self.withdraw_questions_about(pr.id);
                 }
                 self.pr_node(pr.id)
             }
             Event::PrMerged { id, method } => {
+                self.read_reports_in(*id, at);
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.state = crate::pr::PrState::Merged;
                     self.merge_methods.insert(pr.repo.clone(), *method);
@@ -287,6 +292,7 @@ impl View {
                 self.pr_node(*id)
             }
             Event::PrDismissed { id } => {
+                self.read_reports_in(*id, at);
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.state = crate::pr::PrState::Dismissed;
                 }
@@ -339,6 +345,21 @@ impl View {
         for q in self.questions.values_mut() {
             if q.status == QuestionStatus::Open && q.links.iter().any(|l| crate::pr::parse_url(&l.url).as_ref() == Some(&target)) {
                 q.status = QuestionStatus::Withdrawn;
+            }
+        }
+    }
+
+    /// A PR card that leaves for good (merged, closed or set aside) takes the reports inside it
+    /// along: they count as read, so their node is reviewed.
+    fn read_reports_in(&mut self, pr_id: u64, at: Millis) {
+        let inside: Vec<u64> = self.reports.values().filter(|r| !r.read && self.report_pr(r) == Some(pr_id)).map(|r| r.id).collect();
+        for id in inside {
+            let Some(r) = self.reports.get_mut(&id) else { continue };
+            r.read = true;
+            let sid = r.session_id.clone();
+            if let Some(n) = self.nodes.get_mut(&sid) {
+                n.acknowledged_at = Some(at);
+                self.recompute(&sid, at, Trigger::Report);
             }
         }
     }
@@ -557,11 +578,32 @@ impl View {
         })
     }
 
+    /// The PR card a report is about: the first PR it links (its links, then its title, then its
+    /// body) whose card is open, also while that card waits for new commits. The report is shown
+    /// inside that card and never as a card of its own.
+    pub fn report_pr(&self, r: &Report) -> Option<u64> {
+        let texts = r.links.iter().map(|l| l.url.as_str()).chain([r.title.as_str(), r.body.as_deref().unwrap_or("")]);
+        texts.flat_map(crate::pr::urls_in).filter_map(|u| crate::pr::parse_url(&u)).find_map(|(repo, number)| {
+            self.prs.values().find(|p| p.state == crate::pr::PrState::Open && p.repo == repo && p.number == number).map(|p| p.id)
+        })
+    }
+
+    /// Unread reports that reach the inbox: not progress, not taken in by a question, and not inside
+    /// a PR card that waits off the inbox for new commits.
+    pub fn inbox_reports(&self) -> impl Iterator<Item = &Report> {
+        let absorbed = self.absorbed_reports();
+        self.reports.values().rev().filter(move |r| {
+            let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
+            !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !parked
+        })
+    }
+
     /// The unread report an open question takes in, so the two are one card. Deliberately narrow:
     /// the report came first, at most `REPORT_ABSORB_WINDOW` before the question, from the same
     /// node or relayed by the orchestrator, and the question says it is about that report: it
     /// cites it by number ("informe #N" / "report #N"), or links a URL or attaches a file of the
     /// same name as the report. Anything less and both stay separate cards.
+    /// A report inside a PR card stays there: the card is its home, not the question.
     pub fn question_report(&self, q: &Question) -> Option<u64> {
         if !q.status.is_open() {
             return None;
@@ -574,6 +616,7 @@ impl View {
             .filter(|r| !r.read && r.kind != ReportKind::Progress)
             .filter(|r| r.created_at <= q.asked_at && q.asked_at - r.created_at <= REPORT_ABSORB_WINDOW)
             .filter(|r| r.session_id == q.session_id || from_orchestrator)
+            .filter(|r| self.report_pr(r).is_none())
             .find(|r| cites_report(&text, r.id) || shares_a_link(q, r) || shares_an_attachment(q, r))
             .map(|r| r.id)
     }
@@ -1117,6 +1160,100 @@ mod tests {
             let mut q = question(1, "s", QuestionOrigin::Ask);
             q.links = vec![Link { url: link.into(), title: None }];
             assert_eq!(v.question_pr(&q), expected, "{what}");
+        }
+    }
+
+    fn report_about(id: u64, sid: &str, kind: ReportKind, at: Millis, links: &[&str], title: &str, body: &str) -> Event {
+        let Event::ReportPosted(mut r) = report(id, sid, kind, at) else { unreachable!() };
+        r.links = links.iter().map(|url| crate::model::Link { url: (*url).into(), title: None }).collect();
+        r.title = title.into();
+        r.body = Some(body.to_string()).filter(|b| !b.is_empty());
+        Event::ReportPosted(r)
+    }
+
+    /// R#146 "PR #50: salir de un nodo…" and the card of alondra#50, 24 Sep: two cards for one PR.
+    #[test]
+    fn a_report_that_links_a_pr_with_a_card_lives_inside_that_card() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        struct Case {
+            what: &'static str,
+            links: &'static [&'static str],
+            title: &'static str,
+            body: &'static str,
+            before: Vec<Event>,
+            inside: Option<u64>,
+            in_inbox: bool,
+        }
+        let case = |what, links, title, body, inside: Option<u64>, in_inbox| Case { what, links, title, body, before: vec![], inside, in_inbox };
+        let cases = [
+            case("links the PR", &[PR], "Ready", "", Some(1), true),
+            case("links a page of the PR", &["https://github.com/a/b/pull/24/files"], "Ready", "", Some(1), true),
+            case("names it in the title", &[], "https://github.com/a/b/pull/24 ready", "", Some(1), true),
+            case("names it in the body", &[], "Ready", "See https://github.com/a/b/pull/24.", Some(1), true),
+            case("links another PR", &["https://github.com/a/b/pull/25"], "Ready", "", None, true),
+            case("links something else", &["https://example.com/a/b/pull/24"], "Ready", "", None, true),
+            case("links a PR without a card first", &["https://github.com/a/b/pull/99", PR], "Ready", "", Some(1), true),
+            case("says the number without the link", &[], "PR #24 ready", "", None, true),
+            Case { before: vec![Event::PrChangesRequested { id: 1 }], ..case("the card waits for new commits", &[PR], "Ready", "", Some(1), false) },
+        ];
+        for c in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit")]);
+            v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+            for (i, e) in c.before.iter().enumerate() {
+                v.apply(3 + i as u64, 3000, e);
+            }
+            v.apply(10, 10_000, &report_about(7, "s", ReportKind::Notice, 10_000, c.links, c.title, c.body));
+            assert_eq!(v.report_pr(&v.reports[&7]), c.inside, "{}", c.what);
+            assert_eq!(v.inbox_reports().any(|r| r.id == 7), c.in_inbox, "{}", c.what);
+        }
+    }
+
+    #[test]
+    fn a_question_does_not_take_a_report_out_of_its_pr_card() {
+        const PR: &str = "https://github.com/a/b/pull/24";
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+        v.apply(3, 3000, &report_about(7, "s", ReportKind::Notice, 3000, &[PR], "Ready", ""));
+        let mut q = question(1, "s", QuestionOrigin::Ask);
+        q.asked_at = 4000;
+        q.links = vec![crate::model::Link { url: PR.into(), title: None }];
+        v.apply(4, 4000, &Event::QuestionAsked(q));
+        assert_eq!(v.question_report(&v.questions[&1]), None);
+        assert_eq!(v.report_pr(&v.reports[&7]), Some(1));
+    }
+
+    #[test]
+    fn a_pr_card_that_leaves_for_good_takes_its_reports_along() {
+        use crate::pr::{MergeMethod, PrState};
+        const PR: &str = "https://github.com/a/b/pull/24";
+        let github = |state: PrState| {
+            move |v: &View| {
+                let mut pr = v.prs[&1].clone();
+                pr.state = state;
+                Event::PrUpdated(pr)
+            }
+        };
+        let cases: Vec<(&str, ReportKind, Box<dyn Fn(&View) -> Event>, bool, NodeState)> = vec![
+            ("notice, merged from the card", ReportKind::Notice, Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), true, NodeState::Done),
+            ("final, merged from the card", ReportKind::Final, Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Squash }), true, NodeState::Done),
+            ("notice, merged on GitHub", ReportKind::Notice, Box::new(github(PrState::Merged)), true, NodeState::Done),
+            ("notice, closed on GitHub", ReportKind::Notice, Box::new(github(PrState::Closed)), true, NodeState::Done),
+            ("notice, card set aside", ReportKind::Notice, Box::new(|_| Event::PrDismissed { id: 1 }), true, NodeState::Done),
+            ("notice, changes requested", ReportKind::Notice, Box::new(|_| Event::PrChangesRequested { id: 1 }), false, NodeState::Delivered),
+            ("notice, still open", ReportKind::Notice, Box::new(github(PrState::Open)), false, NodeState::WaitingAnswer),
+        ];
+        for (what, kind, event, read, state) in cases {
+            let mut v = run(&[hook("s", "UserPromptSubmit")]);
+            v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into() });
+            v.apply(3, 3000, &hook("s", "Stop"));
+            v.apply(4, 4000, &report_about(7, "s", kind, 4000, &[PR], "Ready", ""));
+            v.apply(5, 4000, &report_about(8, "t", ReportKind::Notice, 4000, &[], "Something else", ""));
+            assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer, "{what}: the card waits on the user");
+            let e = event(&v);
+            v.apply(6, 6000, &e);
+            assert_eq!(v.reports[&7].read, read, "{what}");
+            assert!(!v.reports[&8].read, "{what}: a report about something else stays");
+            assert_eq!(v.nodes["s"].state, state, "{what}");
         }
     }
 

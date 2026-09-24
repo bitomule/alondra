@@ -176,6 +176,8 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
     public let mission: String?
     /// The server's report gate thought it asks for something; it is delivered anyway, marked.
     public let looksLikeQuestion: Bool?
+    /// The open PR card this report is about; it is shown inside that card.
+    public let prId: UInt64?
 
     public var seemsToAsk: Bool { looksLikeQuestion == true }
 

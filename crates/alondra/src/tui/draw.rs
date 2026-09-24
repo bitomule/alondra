@@ -425,7 +425,7 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let sections: [Section; 3] = [
         (|k, nested| matches!(k, Key::Q(_)) && !nested, tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
         (|k, nested| matches!(k, Key::P(_)) || nested, tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
-        (|k, _| matches!(k, Key::R(_)), tr!("TO READ", "PARA LEER"), Color::Cyan),
+        (|k, nested| matches!(k, Key::R(_)) && !nested, tr!("TO READ", "PARA LEER"), Color::Cyan),
     ];
     for (belongs, label, color) in sections {
         let members: Vec<(Key, bool)> = keys.iter().zip(&nested).map(|(k, n)| (*k, *n)).filter(|(k, n)| belongs(*k, *n)).collect();
@@ -508,6 +508,11 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             let label = Span::styled(tr!("The node asks: ", "El nodo pregunta: "), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
             lines.push(Line::default());
             lines.extend(wrap(vec![Span::styled(md::one_line(&q.title), Style::new().add_modifier(Modifier::BOLD))], width, vec![label], vec![Span::raw("  ")]));
+        }
+        for r in app.reported_on(p.pr.id) {
+            let label = Span::styled(tr!("The node says: ", "El nodo dice: "), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            lines.push(Line::default());
+            lines.extend(wrap(vec![Span::styled(md::one_line(&r.title), Style::new().add_modifier(Modifier::BOLD))], width, vec![label], vec![Span::raw("  ")]));
         }
     }
     if let Item::Q(q) = item
@@ -1461,6 +1466,23 @@ mod tests {
     }
 
     #[test]
+    fn a_report_about_a_pr_is_drawn_under_it_and_not_as_reading() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.prs = vec![pr_card(None)];
+        let mut r = report(2);
+        r.title = "PR ready: leaving a node returns to Alondra".into();
+        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4) });
+        app.reconcile();
+        let s = screen(&mut app, 120, 30);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
+        assert!(!s.contains("TO READ"), "{s}");
+        assert!(s.contains("Inbox 1"), "{s}");
+        assert!(at("Menus become cards") < at("↳ "), "{s}");
+        assert!(s.contains("The node says: PR ready: leaving a node returns to Alondra"), "{s}");
+    }
+
+    #[test]
     fn a_question_about_a_report_shows_the_report_inside_it() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
@@ -1589,7 +1611,7 @@ mod tests {
     fn the_footer_offers_read_and_close_only_while_the_node_is_alive() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
-        app.data.news = vec![report(1)];
+        app.data.news = vec![report(1).into()];
         app.data.nodes = vec![alive_node("s1")];
         app.reconcile();
         let s = screen(&mut app, 250, 24);
@@ -1617,7 +1639,7 @@ mod tests {
             app.loaded = true;
             let mut r = report(1);
             r.kind = kind;
-            app.data.news = vec![r];
+            app.data.news = vec![r.into()];
             app.data.nodes = vec![alive_node("s1")];
             app.data.nodes[0].node.alive = alive;
             app.reconcile();

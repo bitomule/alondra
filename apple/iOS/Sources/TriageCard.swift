@@ -229,6 +229,9 @@ struct TriageCard: View {
             }
             links(report.links)
         case .pullRequest(let pr):
+            ForEach(fleet.reports(forPullRequest: pr.id)) { report in
+                AttachedReport(report: report)
+            }
             ForEach(fleet.questions(forPullRequest: pr.id)) { question in
                 AttachedQuestion(question: question)
             }

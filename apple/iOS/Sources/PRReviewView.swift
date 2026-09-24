@@ -25,6 +25,9 @@ struct PRReviewView: View {
                 Text(pr.summary)
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
+                ForEach(fleet.reports(forPullRequest: pr.id)) { report in
+                    AttachedReport(report: report, showsBody: true)
+                }
                 ForEach(fleet.questions(forPullRequest: pr.id)) { question in
                     AttachedQuestion(question: question, showsDetail: true)
                 }

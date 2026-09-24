@@ -1321,6 +1321,16 @@
         }
       }
     },
+    "The node says": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El nodo dice"
+          }
+        }
+      }
+    },
     "The node asks something": {
       "localizations": {
         "es": {
