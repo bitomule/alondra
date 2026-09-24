@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 
 pub type Millis = i64;
 
-pub const NEWS_WINDOW_MS: Millis = 48 * 3600 * 1000;
-
 pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
 pub const OTHERS_PROJECT: &str = "others";
 
@@ -113,7 +111,6 @@ pub enum Signal {
     PrAwaitingUser,
     ReviewAwaitingUser,
     FinalReport,
-    Reviewed,
     Report,
     TurnEndedUndeclared,
     NoProcess,
@@ -284,8 +281,6 @@ pub struct Node {
     pub usage_limited: bool,
     pub last_seen: Millis,
     #[serde(default)]
-    pub acknowledged_at: Option<Millis>,
-    #[serde(default)]
     pub last_work_at: Option<Millis>,
     #[serde(default)]
     pub last_stop_at: Option<Millis>,
@@ -372,7 +367,6 @@ impl Node {
             classified: None,
             usage_limited: false,
             last_seen: at,
-            acknowledged_at: None,
             last_work_at: None,
             last_stop_at: None,
             handed_at: None,
@@ -407,13 +401,6 @@ impl Node {
     /// sitting at their terminal.
     pub fn watched(&self) -> bool {
         self.in_daemon && !self.is_orchestrator
-    }
-
-    pub fn has_news(&self, now: Millis) -> bool {
-        let finished = matches!(self.state, NodeState::Delivered | NodeState::Done | NodeState::Unclear | NodeState::WaitingMachine);
-        let said_at = self.last_message_at.unwrap_or(self.state_since).max(self.state_since);
-        let recent = now - said_at < NEWS_WINDOW_MS;
-        finished && recent && !self.is_orchestrator && self.acknowledged_at.is_none_or(|a| a < said_at)
     }
 
     pub fn project(&self) -> String {
@@ -488,14 +475,6 @@ pub enum QuestionOrigin {
     Elicitation,
 }
 
-/// One of a node's cards, named by what it is and its number.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum CardRef {
-    Question(u64),
-    Report(u64),
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionStatus {
@@ -558,9 +537,6 @@ pub struct Question {
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<String>,
-    /// The node's other open cards it declared this question belongs with.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub related: Vec<CardRef>,
     /// The task it belongs to; cards recorded before tasks named one belong to their session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -618,9 +594,6 @@ pub struct Report {
     /// The report gate thinks it asks the user for something that should have been a question.
     #[serde(default)]
     pub looks_like_question: bool,
-    /// The node's other open cards it declared this report belongs with.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub related: Vec<CardRef>,
     /// The task it belongs to; cards recorded before tasks named one belong to their session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,

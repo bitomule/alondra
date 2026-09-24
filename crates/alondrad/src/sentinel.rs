@@ -234,7 +234,6 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         (_, None) => (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None),
     };
     Question {
-        related: vec![],
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
@@ -269,7 +268,6 @@ fn finished_report(v: &View, node: &Node) -> Report {
         headline(&said, first_sentence)
     };
     Report {
-        related: vec![],
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
@@ -530,7 +528,6 @@ mod tests {
 
     fn asked(id: u64) -> Question {
         Question {
-            related: vec![],
             id,
             session_id: "s".into(),
             node_name: None,
@@ -584,7 +581,6 @@ mod tests {
     fn no_terminal_report_over_the_nodes_own() {
         let own = |kind: ReportKind, at: i64| {
             Event::ReportPosted(Report {
-                related: vec![],
                 id: 1, session_id: "s".into(), node_name: None, title: "Auditoría rehecha".into(), body: Some("Detalle".into()),
                 links: vec![], attachments: vec![], kind, created_at: at, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
                 task: None,

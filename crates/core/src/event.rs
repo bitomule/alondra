@@ -74,6 +74,7 @@ pub enum Event {
     DaemonSeen(DaemonObservation),
     ProcessExited { session_id: String, pid: i32 },
     NodeRemoved { session_id: String },
+    /// David marked the node as seen. Only daemons from before tasks record it; it changes nothing.
     Acknowledged { session_id: String },
     MarkedOrchestrator { session_id: String },
     QuestionAsked(Question),

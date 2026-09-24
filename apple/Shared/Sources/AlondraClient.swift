@@ -194,10 +194,6 @@ public struct AlondraClient: Sendable {
         try await markRead()
     }
 
-    public func acknowledge(_ session: String) async throws {
-        try await post("v1/nodes/\(session)/ack", [:])
-    }
-
     public func send(to session: String, text: String, attachments: [String] = []) async throws {
         try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david", "attachments": attachments])
     }

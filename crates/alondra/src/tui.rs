@@ -248,7 +248,7 @@ pub enum Target {
     Answer { id: u64, title: String, option: Option<String> },
     MoreContext { id: u64, title: String },
     ReplyReport { id: u64, session: String, name: String },
-    Message { session: String, name: String, ack: bool },
+    Message { session: String, name: String },
     NewRequest,
     Comment { block: usize, quote: String },
     General { send: bool },
@@ -1103,7 +1103,7 @@ impl App {
         match self.orchestrator() {
             Some(n) => {
                 let session = n.session_id.clone();
-                self.compose(Target::Message { session, name: tr!("the orchestrator", "el orquestador").into(), ack: false }, "");
+                self.compose(Target::Message { session, name: tr!("the orchestrator", "el orquestador").into() }, "");
             }
             None => self.fail(tr!("The orchestrator is not connected to Alondra yet", "El orquestador todavía no está conectado a Alondra")),
         }
@@ -1620,11 +1620,8 @@ impl App {
                 );
                 self.hide(Key::R(id));
             }
-            Target::Message { session, name, ack } => {
-                let mut calls = vec![(format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david", "attachments": ids}))];
-                if ack {
-                    calls.push((format!("/v1/nodes/{}/ack", urlencode(&session)), json!({})));
-                }
+            Target::Message { session, name } => {
+                let calls = vec![(format!("/v1/nodes/{}/messages", urlencode(&session)), json!({"text": text, "from": "david", "attachments": ids}))];
                 self.post(None, calls, trf!("Sent to {name}", "Enviado a {name}"));
             }
             Target::NewRequest => {
@@ -1982,7 +1979,7 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::Char('m') => {
                 if let Some(n) = self.selected_node() {
-                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: true };
+                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string() };
                     self.compose(target, "");
                 }
             }
@@ -2067,7 +2064,6 @@ pub(crate) mod tests {
 
     pub(super) fn question(id: u64, origin: QuestionOrigin, options: &[&str]) -> Question {
         Question {
-            related: vec![],
             id,
             session_id: "s1".into(),
             node_name: Some("demo".into()),
@@ -2094,7 +2090,6 @@ pub(crate) mod tests {
 
     pub(super) fn report(id: u64) -> Report {
         Report {
-            related: vec![],
             id,
             session_id: "s1".into(),
             node_name: Some("demo".into()),

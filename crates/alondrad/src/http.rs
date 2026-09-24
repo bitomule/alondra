@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{
-    Answer, Attachment, CardRef, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
+    Answer, Attachment, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -333,7 +333,6 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
     };
     Question {
-        related: vec![],
         id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: h.session_id.clone(),
         node_name: node.map(|n| n.name.clone().unwrap_or_else(|| n.short_id.clone())),
@@ -1312,7 +1311,8 @@ struct AskBody {
     to_orchestrator: bool,
     #[serde(default)]
     steps: Vec<String>,
-    /// Accepted from older tool schemas; cards go together by their task.
+    /// Accepted from older tool schemas and ignored: cards go together by their task.
+    #[allow(dead_code)]
     #[serde(default, deserialize_with = "card_ids")]
     related: Option<Vec<u64>>,
     /// A question of the same node this one replaces: it is withdrawn once this one is recorded.
@@ -1432,22 +1432,6 @@ fn terminal_card_of(v: &View, task: &str) -> Option<u64> {
     v.questions.get(&blocker.question).filter(|q| q.origin == QuestionOrigin::Classifier && q.status.is_open()).map(|q| q.id)
 }
 
-/// The cards a node still names in `related`, kept for older tool schemas: its own. Cards go
-/// together by their task now, so nothing is refused for it.
-fn declared_cards(v: &View, sid: &str, related: Option<&[u64]>) -> Vec<CardRef> {
-    let own_question = |id: &u64| v.questions.get(id).is_some_and(|q| q.session_id == sid);
-    let own_report = |id: &u64| v.reports.get(id).is_some_and(|r| r.session_id == sid);
-    let mut cards: Vec<CardRef> = related
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|id| [own_question(id).then_some(CardRef::Question(*id)), own_report(id).then_some(CardRef::Report(*id))])
-        .flatten()
-        .collect();
-    cards.sort_unstable();
-    cards.dedup();
-    cards
-}
-
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
     if let Some(r) = caller_probe_refused(&hub, &b.caller) {
         return r;
@@ -1487,12 +1471,10 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
     } else if let Some(task) = task.as_deref().filter(|_| b.blocking && !b.to_orchestrator) {
         b.replaces = hub.read(|v| terminal_card_of(v, task));
     }
-    let related = hub.read(|v| declared_cards(v, &sid, b.related.as_deref()));
     note_prs(&hub, &b.caller, &question_texts(&b), task.clone()).await;
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let question = |v: &View, attachments: Vec<Attachment>| Question {
-        related: related.clone(),
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: sid.clone(),
         node_name: name.clone(),
@@ -1779,7 +1761,8 @@ struct ReportBody {
     links: Vec<Link>,
     #[serde(default)]
     attachments: Vec<String>,
-    /// Accepted from older tool schemas; cards go together by their task.
+    /// Accepted from older tool schemas and ignored: cards go together by their task.
+    #[allow(dead_code)]
     #[serde(default, deserialize_with = "card_ids")]
     related: Option<Vec<u64>>,
     /// The task it is for; needed only by a node with several open tasks.
@@ -1821,13 +1804,11 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             ),
         );
     }
-    let related = hub.read(|v| declared_cards(v, &sid, b.related.as_deref()));
     let mut texts: Vec<String> = b.links.iter().map(|l| l.url.clone()).collect();
     texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
     note_prs(&hub, &b.caller, &texts, task.clone()).await;
     let stamp = now_millis();
     let report = |v: &View, attachments: Vec<Attachment>, looks_like_question: bool| Report {
-        related: related.clone(),
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: sid.clone(),
         node_name: name.clone(),
@@ -2233,12 +2214,13 @@ async fn forget_node(State(hub): State<AppState>, Path(key): Path<String>) -> Re
     }
 }
 
+/// Apps built before tasks still mark a node as seen. Nothing reads that any more, so it only
+/// answers.
 async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let res = hub.append_with(|v| v.resolve_node(&key).map(|n| Event::Acknowledged { session_id: n.session_id.clone() }));
-    match res {
-        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
-        Err(e) => internal(e),
+    if hub.read(|v| v.resolve_node(&key).is_some()) {
+        Json(json!({"ok": true})).into_response()
+    } else {
+        err(StatusCode::NOT_FOUND, format!("unknown node {key}"))
     }
 }
 
@@ -3237,7 +3219,7 @@ mod tests {
                 let hub = started("task-named", &["s", "t"]);
                 for sid in ["s", "t"] {
                     hub.append(Event::ReportPosted(Report {
-                        related: vec![], id: 0, session_id: sid.into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
+                        id: 0, session_id: sid.into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
                         kind: ReportKind::Notice, created_at: 0, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
                     })).unwrap();
                 }
@@ -3302,7 +3284,7 @@ mod tests {
     async fn david_or_the_orchestrator_cancel_and_reopen_a_task() {
         let hub = started("cancel", &["s"]);
         hub.append(Event::QuestionAsked(Question {
-            related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
+            id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
             asked_at: 0, action: false, steps: vec![], mission: None, task: None, replaces: None,
         })).unwrap();
@@ -3338,7 +3320,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         hub.append(Event::PrOpened { url: FIXTURE.into(), session_id: "s".into(), task: None }).unwrap();
         hub.append(Event::ReportPosted(Report {
-            related: vec![], id: 9, session_id: "s".into(), node_name: None, title: "Otro".into(), body: None, links: vec![], attachments: vec![],
+            id: 9, session_id: "s".into(), node_name: None, title: "Otro".into(), body: None, links: vec![], attachments: vec![],
             kind: ReportKind::Notice, created_at: 0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
         })).unwrap();
         let Json(o) = overview(State(hub.clone())).await;
@@ -3389,8 +3371,8 @@ mod tests {
         Report,
     }
 
-    /// David's rule (24 Sep): Alondra never infers which cards go together. A node that already has
-    /// open cards declares it with `related`; without it nothing is recorded.
+    /// Older tool schemas send card numbers as text; `related` is still parsed so their calls go
+    /// through, and `replaces` reads the same way.
     #[test]
     fn related_arrives_as_a_list_or_as_the_text_older_tool_schemas_send() {
         #[derive(Deserialize)]
@@ -3483,23 +3465,23 @@ mod tests {
                 hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             }
             hub.append(Event::ReportPosted(Report {
-                related: vec![], id: 1, session_id: "mine".into(), node_name: None, title: "Capturas del iPhone".into(), body: Some("Hechas".into()),
+                id: 1, session_id: "mine".into(), node_name: None, title: "Capturas del iPhone".into(), body: Some("Hechas".into()),
                 links: vec![], attachments: vec![], kind: ReportKind::Notice, created_at: 1, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
                 task: None,
             })).unwrap();
-            let asked = |id: u64, sid: &str, related: Vec<CardRef>| Question {
-                related, id, session_id: sid.into(), node_name: None, title: "¿Arranco las capturas?".into(), detail: None, options: vec![], links: vec![],
+            let asked = |id: u64, sid: &str| Question {
+                id, session_id: sid.into(), node_name: None, title: "¿Arranco las capturas?".into(), detail: None, options: vec![], links: vec![],
                 attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
                 status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
                 replaces: None,
                 task: None,
             };
-            hub.append(Event::QuestionAsked(asked(1, "mine", vec![CardRef::Report(1)]))).unwrap();
-            hub.append(Event::QuestionAsked(asked(2, "other", vec![]))).unwrap();
-            hub.append(Event::QuestionAsked(asked(3, "mine", vec![]))).unwrap();
+            hub.append(Event::QuestionAsked(asked(1, "mine"))).unwrap();
+            hub.append(Event::QuestionAsked(asked(2, "other"))).unwrap();
+            hub.append(Event::QuestionAsked(asked(3, "mine"))).unwrap();
             hub.append(Event::QuestionAnswered { id: 3, answer: Answer { text: "Sí".into(), option: None, by: None, device: None, at: 2 } }).unwrap();
             if c.another_open {
-                hub.append(Event::QuestionAsked(asked(4, "mine", vec![]))).unwrap();
+                hub.append(Event::QuestionAsked(asked(4, "mine"))).unwrap();
             }
             let before = hub.read(|v| v.questions.len());
             let body = AskBody {
@@ -3556,7 +3538,7 @@ mod tests {
             let hub = temp_hub("answer-again");
             hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             hub.append(Event::QuestionAsked(Question {
-                related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![],
+                id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![],
                 attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false,
                 node_context: None, status: QuestionStatus::Open, answer: None, asked_at: now_millis(), action: false, steps: vec![], mission: None,
                 replaces: None,
@@ -3750,7 +3732,6 @@ mod tests {
         let hub = temp_hub("close");
         hub.append(Event::Hook(HookEvent { session_id: "1234abcd-interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::QuestionAsked(Question {
-            related: vec![],
             id: 1, session_id: "1234abcd-interactive".into(), node_name: None, title: "t".into(), detail: None, options: vec![], links: vec![],
             attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
             status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
@@ -3829,7 +3810,7 @@ mod tests {
         let hub = temp_hub("review");
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         let sent = |id: u64, links: Vec<Link>| Event::ReportPosted(Report {
-            related: vec![], id, session_id: "s".into(), node_name: None, title: "The plan".into(), body: Some("Read it".into()),
+            id, session_id: "s".into(), node_name: None, title: "The plan".into(), body: Some("Read it".into()),
             links, attachments: vec![], kind: ReportKind::Document, created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false,
             task: None,
         });
@@ -3862,7 +3843,7 @@ mod tests {
         hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None }).unwrap();
         hub.append(Event::PrDismissed { id: 1 }).unwrap();
         hub.append(Event::ReportPosted(Report {
-            related: vec![], id: 1, session_id: "s".into(), node_name: None, title: "Hecho".into(), body: None,
+            id: 1, session_id: "s".into(), node_name: None, title: "Hecho".into(), body: None,
             links: vec![], attachments: vec![], kind: ReportKind::Final, created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false,
             task: None,
         }))
@@ -3954,7 +3935,6 @@ mod tests {
     #[test]
     fn a_node_withdraws_only_its_own_open_questions() {
         let mut open = alondra_core::model::Question {
-            related: vec![],
             id: 7,
             session_id: "mine".into(),
             node_name: None,

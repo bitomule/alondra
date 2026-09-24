@@ -143,8 +143,8 @@ pub struct OpenQuestion {
     /// The report this question is about; it is shown inside the question, not as its own card.
     #[serde(default)]
     pub report: Option<Report>,
-    /// Every report the question takes in, oldest first: the one it cites and the node's earlier
-    /// reports of the same episode.
+    /// Every report the question takes in, oldest first: its task's unread reports outside its PR
+    /// card and its review cards.
     #[serde(default)]
     pub reports: Vec<Report>,
 }
@@ -179,7 +179,8 @@ pub struct NewsReport {
     /// The task this report belongs to.
     #[serde(default)]
     pub task: Option<String>,
-    /// The earlier unread reports of the same episode, oldest first; this card carries them.
+    /// The other unread reports of its task that no question carries, oldest first; this card
+    /// carries them.
     #[serde(default)]
     pub earlier: Vec<Report>,
 }

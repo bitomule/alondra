@@ -520,18 +520,9 @@ public final class FleetStore {
         return text
     }
 
-    public func send(to node: Node, text: String, acknowledge: Bool = false, attachments: Attachments? = nil) async {
+    public func send(to node: Node, text: String, attachments: Attachments? = nil) async {
         do {
             try await client.send(to: node.sessionId, text: text, attachments: await attachments?.storedIDs(using: client) ?? [])
-            if acknowledge { try await client.acknowledge(node.sessionId) }
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    public func acknowledge(_ node: Node) async {
-        do {
-            try await client.acknowledge(node.sessionId)
         } catch {
             lastError = error.localizedDescription
         }

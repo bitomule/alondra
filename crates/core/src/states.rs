@@ -669,7 +669,6 @@ mod tests {
 
     fn question(action: bool, origin: QuestionOrigin) -> Event {
         Event::QuestionAsked(Question {
-            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,
@@ -708,7 +707,6 @@ mod tests {
 
     fn report_with(kind: ReportKind, to_orchestrator: bool) -> Event {
         Event::ReportPosted(Report {
-            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,

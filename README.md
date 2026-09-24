@@ -13,6 +13,7 @@ tools for the orchestrator to act.
 | `launchd/` | macOS service template for `alondrad` (installed by `alondra setup`) |
 | `signing/` | App signing: `signing.example.bzl` → local copy `signing.bzl` and profiles |
 | `docs/plan.md` | Design and phased plan |
+| `docs/tasks-plan.md` | Requests, tasks and their state machine, as built |
 
 ## Trying it
 
@@ -40,8 +41,9 @@ Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url
 variable overrides the file; `alondra config` shows the values in effect.
 
 **The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: the
-same hooks plus the `fleet`, `node`, `machine`, `send` and `launch` tools. Alondra notifies it
-on its own, every 90 s and in a single message, of:
+same hooks plus the `fleet`, `node`, `machine`, `send`, `interrupt` and `launch` tools, and
+`define`, `candidates`, `cancel` and `reopen` to turn the user's requests into tasks. Alondra
+notifies it on its own, every 90 s and in a single message, of:
 - new reports from the nodes;
 - questions addressed to it;
 - nodes that finish without saying what they want;
@@ -54,12 +56,15 @@ saying so (only when `wake` is on).
 
 ### The TUI
 
-- **Waiting for you**: questions from the nodes (structured, menu, permissions and plans).
-  `Enter` opens them with all their context, `1`–`4` picks an option and `r` answers with text.
-- **Fleet**: everything `claude agents` lists, with its state (working, waiting for an answer,
-  delivering a result, waiting for the machine, done, unclear what it wants). `~` = reported by
-  the Claude Code daemon, `*` = decided by jevi.
-- `m` sends a message to the selected node and `o`, to the orchestrator.
+- **Waiting for you**: questions from the nodes (structured, menu, permissions and plans), PR
+  cards and reports, grouped by the task they belong to (`docs/card-rules.md`). `Enter` opens them
+  with all their context, `1`–`4` picks an option and `r` answers with text.
+- **Tasks**: each request with its tasks, what depends on what, each task's state (waiting for
+  another, running, needs you, in review, closing, done, cancelled) and what its node is doing.
+  `x` cancels a task and `Shift+R` reopens it (`docs/tasks-plan.md`).
+- **Fleet**: everything `claude agents` lists, free, busy or waiting for the machine, with its
+  tasks.
+- `Tab` moves between the three, `r` messages the selected node and `Shift+M` the orchestrator.
 
 ## Development
 
