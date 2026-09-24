@@ -639,7 +639,7 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             } else {
                 tr!(" read all  ", " leer entero  ")
             };
-            let close = [keycap("X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
+            let close = [keycap("Shift+X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
             let closable = app.node(&r.session_id).is_some_and(|n| n.alive);
             let mut spans = vec![];
             if closable && r.kind == ReportKind::Final {
@@ -1220,7 +1220,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 if let Some(Item::R(rep)) = app.item(r.key)
                     && app.node(&rep.session_id).is_some_and(|n| n.alive)
                 {
-                    v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+                    v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
                 }
             }
             (None, Key::P(_)) => v.push(k("s", tr!("request changes", "pedir cambios"))),
@@ -1267,7 +1267,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         Some(Item::R(r)) => {
             let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))];
             if app.node(&r.session_id).is_some_and(|n| n.alive) {
-                v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+                v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
             }
             v.extend([k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))]);
             v.extend(tail);
@@ -1351,7 +1351,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("x", tr!("mark as read", "marcar como leído")),
-        row("X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -1361,7 +1361,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
-        row("X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
+        row("Shift+X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -1627,6 +1627,7 @@ mod tests {
         let final_row = actions(ReportKind::Final, true);
         let at = |row: &str, t: &str| row.find(t).unwrap_or_else(|| panic!("{t} missing: {row}"));
         assert!(at(&final_row, "read and close node") < at(&final_row, "read all"), "{final_row}");
+        assert!(at(&final_row, "Shift+X") < at(&final_row, "read and close node"), "the key says it needs Shift: {final_row}");
         let notice_row = actions(ReportKind::Notice, true);
         assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
         assert!(!actions(ReportKind::Final, false).contains("read and close node"), "a dead node cannot be closed");

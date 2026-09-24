@@ -1192,7 +1192,7 @@ impl App {
         let name = who(&r.node_name, &r.session_id);
         self.mark_read(&r);
         self.pending_close = Some((r.session_id.clone(), now + 4000));
-        self.flash(trf!("Read. Press X again to close {name}", "Leído. Pulsa X otra vez para cerrar {name}"));
+        self.flash(trf!("Read. Press Shift+X again to close {name}", "Leído. Pulsa Shift+X otra vez para cerrar {name}"));
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
@@ -2121,7 +2121,7 @@ pub(crate) mod tests {
         press(&mut app, "X");
         assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report immediately");
         assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         press(&mut app, "X");
         assert!(app.pending_close.is_none(), "the second X consumes the confirmation");
     }
