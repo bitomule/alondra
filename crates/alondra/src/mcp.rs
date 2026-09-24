@@ -24,7 +24,7 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never to hand off work); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. Your work is a task in Alondra: its questions, reports and PR show as one card, and it puts one question at a time in front of {user} (another is refused until that one is answered, unless it `replaces` it); if you work on several tasks, name it with `task`. A PR you open gets its own card where {user} decides the merge; with auto-merge Alondra merges it once its checks pass. If nothing is left for you after the merge, report final with the PR in links: the merge then finishes your task and no notice comes. If something is left (deploy, verify), do not report final yet: the merge notice is typed into this session. An `ask` about merging would be a second card for the same decision. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
-        Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`launch`, `send`, `interrupt`). The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
+        Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`define`, `candidates`, `launch`, `send`, `interrupt`, `cancel`, `reopen`). Every request of {user}'s is kept as a request, defining until you `define` its tasks: each task has a brief, depends_on, options and a node (a live one with the context, found with `candidates`, or a new one), and Alondra starts it as soon as nothing it depends on holds it back. The nodes' questions reach {user} directly; what is meant for you is typed into your session. `ask` asks {user} something and `report` informs {user}. {who}"),
     }
 }
 
@@ -77,6 +77,32 @@ fn report_schema(user: &str) -> Value {
     })
 }
 
+fn define_schema(user: &str) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "request": {"type": "string", "description": format!("The request_id of {user}'s request (r-…)")},
+            "text": {"type": "string", "description": format!("Instead of request: what {user} asked for outside the apps, in their words")},
+            "tasks": {"type": "array", "description": "The tasks, in order; depends_on names others by their position here (0 is the first)", "items": {"type": "object", "properties": {
+                "title": {"type": "string", "description": format!("One line: what {user} sees in the task list")},
+                "brief": {"type": "string", "description": "The task's mission: what to build, what evidence to leave, what was ruled out. Its node gets it as is"},
+                "depends_on": {"type": "array", "items": {"type": ["integer", "string"]}, "description": "Tasks this one builds on: a position in tasks (0 is the first) or an existing task id"},
+                "assignee": {"type": "string", "description": "A live node's name (see candidates) that already has the context, or \"new\""},
+                "name": {"type": "string", "description": "For a new node: its name, project/what (defaults to the project and the title)"},
+                "cwd": {"type": "string", "description": "For a new node: where it starts (defaults to the project's checkout)"},
+                "model": {"type": "string", "description": "For a new node: only to override the model the effort sets"},
+                "options": {"type": "object", "description": "Defaults to the request's", "properties": {
+                    "auto_merge": {"type": "boolean", "description": format!("Only when {user} chose auto-merge in the request; false keeps this task's PRs for {user}'s review")},
+                    "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("When the request's effort is auto; one {user} chose is binding")},
+                    "project": {"type": "string"},
+                    "issue": {"type": "string", "description": "owner/repo#n this task's PR closes"}
+                }}
+            }, "required": ["title", "brief", "assignee"]}}
+        },
+        "required": ["tasks"]
+    })
+}
+
 fn tools(role: Role, user: &str) -> Value {
     let mut list = vec![
         json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)}),
@@ -90,9 +116,13 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells; `suspect` when possibly hung); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
-            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant).", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}}, "required": ["node", "text"]}}),
+            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string"}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("The request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Yours to choose from the task when the request's effort is auto or there is no request: light for small clear work, normal for most, hard for tricky or risky work. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd", "prompt"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Yours to choose from the task when the request's effort is auto or there is no request: light for small clear work, normal for most, hard for tricky or risky work. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd"]}}),
+            json!({"name": "define", "description": format!("Turn a request into tasks. Each task gets a brief (what its node is told), depends_on, options and an assignee: a live node (by name) that already has the context, or \"new\" for a node Alondra launches. A task with nothing to wait for starts at once; one with depends_on waits until every task it depends on has its PR open or is done, then starts on top of that PR's branch, and its PR merges after theirs. Refused with every reason when the tasks cannot stand (a cycle, an unknown dependency, an unknown or closed node). For work {user} asked for outside the apps (in your terminal), pass text instead of request: Alondra records the request first."), "inputSchema": define_schema(user)}),
+            json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or working on tasks it depends on, that depend on it, or of the same request. Each comes with why, its open tasks and whether it is free or busy.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}}}}),
+            json!({"name": "cancel", "description": format!("Cancel a task that should not go on (dropped, or replaced by another). {user} sees it as cancelled. Its node is not told: send it what to do."), "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}, "reason": {"type": "string", "description": format!("Why, in one line, for {user}")}}, "required": ["task"]}}),
+            json!({"name": "reopen", "description": "Reopen a done or cancelled task: it is running again. A task no node took starts as it was defined; otherwise send its node what is left, with task.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}),
         ]);
     }
     Value::Array(list)
@@ -209,8 +239,12 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "send" if role == Role::Orchestrator => {
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
-            client.post(&format!("/v1/nodes/{}/messages", urlencode(key)), &json!({"text": text, "from": "orchestrator"}))?;
-            format!("Message queued for {key}; Alondra will type it into its session.")
+            let task = args.get("task").and_then(Value::as_str).filter(|t| !t.trim().is_empty());
+            client.post(&format!("/v1/nodes/{}/messages", urlencode(key)), &json!({"text": text, "from": "orchestrator", "task": task}))?;
+            match task {
+                Some(t) => format!("Message about {t} queued for {key}; Alondra will type it into its session."),
+                None => format!("Message queued for {key}; Alondra will type it into its session."),
+            }
         }
         "interrupt" if role == Role::Orchestrator => {
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
@@ -218,6 +252,20 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             format!("Pressed Esc in {key}'s session. `send` moves it on if it should carry on.")
         }
         "launch" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/launch", args)?)?,
+        "define" if role == Role::Orchestrator => serde_json::to_string_pretty(&client.post("/v1/tasks", args)?)?,
+        "candidates" if role == Role::Orchestrator => {
+            let query: Vec<String> = ["task", "repo"]
+                .iter()
+                .filter_map(|k| args.get(*k).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).map(|v| format!("{k}={}", urlencode(v))))
+                .collect();
+            serde_json::to_string_pretty(&client.get::<Value>(&format!("/v1/candidates?{}", query.join("&")))?)?
+        }
+        "cancel" | "reopen" if role == Role::Orchestrator => {
+            let task = args.get("task").and_then(Value::as_str).unwrap_or("");
+            let body = if name == "cancel" { pick(args, &["reason"]) } else { json!({}) };
+            let r = client.post(&format!("/v1/tasks/{}/{name}", urlencode(task)), &body)?;
+            format!("{task} is {} now.", r.get("state").and_then(Value::as_str).unwrap_or("changed").replace('_', " "))
+        }
         other => anyhow::bail!("unknown tool: {other}"),
     })
 }
@@ -271,12 +319,59 @@ fn fleet_summary(o: &Value, all: bool) -> Value {
     let reports: Vec<Value> = unread.iter().map(|r| pick(r, &["id", "title", "kind", "node_name"])).collect();
     let messages: Vec<Value> =
         list(o, "orchestrator_messages").into_iter().filter(|m| all || m.get("handed_at").is_none_or(Value::is_null)).collect();
-    let mut out = json!({"nodes": nodes, "open_questions": questions, "unread_reports": reports,
+    let (requests, done_requests) = requests_summary(o, all);
+    let mut out = json!({"nodes": nodes, "requests": requests, "open_questions": questions, "unread_reports": reports,
                          "orchestrator_messages": messages, "machine": o.get("machine"), "usage": o.get("usage")});
-    if done + gone > 0 {
-        out["hidden"] = json!({"done_nodes": done, "gone_nodes": gone, "see_them_with": "fleet with all: true"});
+    if done + gone + done_requests > 0 {
+        let mut hidden = serde_json::Map::new();
+        for (k, n) in [("done_nodes", done), ("gone_nodes", gone), ("done_requests", done_requests)] {
+            if n > 0 {
+                hidden.insert(k.into(), json!(n));
+            }
+        }
+        hidden.insert("see_them_with".into(), json!("fleet with all: true"));
+        out["hidden"] = Value::Object(hidden);
     }
     out
+}
+
+/// The requests still open, each with its tasks: their state, what they build on and the node
+/// on them. A request with no task yet is one to `define`. `all` adds the finished ones.
+fn requests_summary(o: &Value, all: bool) -> (Vec<Value>, usize) {
+    let nodes = list(o, "nodes");
+    let name_of = |session: &str| {
+        nodes.iter().find(|n| n.get("session_id").and_then(Value::as_str) == Some(session)).and_then(|n| n.get("name").or(n.get("short_id"))).cloned().unwrap_or(json!(session))
+    };
+    let tasks = list(o, "tasks");
+    let (mut shown, mut hidden) = (vec![], 0);
+    for r in list(o, "requests").iter().filter(|r| r.get("synthetic") != Some(&Value::Bool(true))) {
+        if !all && r.get("state").and_then(Value::as_str) == Some("done") {
+            hidden += 1;
+            continue;
+        }
+        let id = r.get("id").and_then(Value::as_str);
+        let mine: Vec<Value> = tasks
+            .iter()
+            .filter(|t| t.get("request").and_then(Value::as_str) == id)
+            .map(|t| {
+                let mut row = pick(t, &["id", "title", "state"]);
+                if let Some(d) = t.get("depends_on").filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
+                    row["depends_on"] = d.clone();
+                }
+                if let Some(session) = t.pointer("/assignee/session_id").and_then(Value::as_str) {
+                    row["node"] = name_of(session);
+                }
+                row
+            })
+            .collect();
+        let mut row = pick(r, &["id", "state", "text"]);
+        if let Some(text) = row.get("text").and_then(Value::as_str).filter(|t| t.chars().count() > 160) {
+            row["text"] = json!(format!("{}…", text.chars().take(160).collect::<String>()));
+        }
+        row["tasks"] = json!(mine);
+        shown.push(row);
+    }
+    (shown, hidden)
 }
 
 /// Which part of a node's record `node` returns.
@@ -733,6 +828,33 @@ mod tests {
         assert_eq!(v["nodes"].as_array().unwrap().len(), 6);
         assert_eq!(v["orchestrator_messages"].as_array().unwrap().len(), 2);
         assert!(v.get("hidden").is_none());
+    }
+
+    #[test]
+    fn the_fleet_lists_open_requests_with_their_task_trees() {
+        let o = json!({
+            "nodes": [{"session_id": "s1", "name": "app/model", "state": "working", "alive": true}],
+            "requests": [
+                {"id": "r-1", "state": "defining", "text": "Menu by sections"},
+                {"id": "r-2", "state": "in_progress", "text": "x".repeat(200)},
+                {"id": "r-3", "state": "done", "text": "Old"},
+                {"id": "r-s1", "state": "in_progress", "synthetic": true},
+            ],
+            "tasks": [
+                {"id": "t-5", "request": "r-2", "title": "Model", "state": "in_review", "depends_on": [], "assignee": {"session_id": "s1"}},
+                {"id": "t-6", "request": "r-2", "title": "UI", "state": "waiting_dependency", "depends_on": ["t-5"], "assignee": null},
+            ]
+        });
+        let f = fleet_summary(&o, false);
+        assert_eq!(f["requests"][0], json!({"id": "r-1", "state": "defining", "text": "Menu by sections", "tasks": []}), "a request to define");
+        assert_eq!(f["requests"][1]["tasks"], json!([
+            {"id": "t-5", "title": "Model", "state": "in_review", "node": "app/model"},
+            {"id": "t-6", "title": "UI", "state": "waiting_dependency", "depends_on": ["t-5"]},
+        ]));
+        assert_eq!(f["requests"][1]["text"].as_str().unwrap().chars().count(), 161);
+        assert_eq!(f["requests"].as_array().unwrap().len(), 2, "done and made-up requests are left out");
+        assert_eq!(f["hidden"], json!({"done_requests": 1, "see_them_with": "fleet with all: true"}));
+        assert_eq!(fleet_summary(&o, true)["requests"].as_array().unwrap().len(), 3);
     }
 
     #[test]
