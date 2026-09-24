@@ -53,6 +53,14 @@ fn shares_an_attachment(q: &Question, r: &Report) -> bool {
 }
 
 impl View {
+    /// Every attachment copy an item Alondra still keeps refers to.
+    pub fn stored_files(&self) -> std::collections::HashSet<std::path::PathBuf> {
+        let questions = self.questions.values().flat_map(|q| &q.attachments);
+        let reports = self.reports.values().flat_map(|r| &r.attachments);
+        let messages = self.messages.values().flat_map(|m| &m.attachments);
+        questions.chain(reports).chain(messages).filter_map(|a| a.stored_path.as_ref().map(std::path::PathBuf::from)).collect()
+    }
+
     /// Forgets what nobody can act on any more: anything older than the retention window except
     /// the inbox (open questions, unread reports) and nodes Alondra can still watch. A node that
     /// only speaks through hooks has no process to watch, so once it has been silent for the whole
@@ -759,6 +767,7 @@ impl View {
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: vec![],
         })
     }
 
@@ -1066,6 +1075,7 @@ mod tests {
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: vec![],
         }));
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });
         assert!(v.messages[&1].delivered_at.is_none());
@@ -1207,6 +1217,7 @@ mod tests {
                     handed_at: None,
                     delivered_at: None,
                     about: None,
+                    attachments: vec![],
                 }));
             }
             next(&mut v, at, Event::Pruned { before: at - 2 * hour });
@@ -1586,6 +1597,7 @@ mod tests {
                 handed_at: None,
                 delivered_at: None,
                 about: None,
+                attachments: vec![],
             })
         };
         let mut v = View::default();
@@ -1625,6 +1637,7 @@ mod tests {
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: vec![],
         }));
         assert_ne!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &Event::MessageHanded { id: 1 });

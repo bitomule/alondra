@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use crate::auth::{Auth, is_local};
 use crate::push::{Push, Registration};
 use crate::hub::Hub;
+use crate::uploads;
 
 const MAX_WAIT: Duration = Duration::from_secs(55);
 const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
@@ -62,6 +63,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/file", get(file))
+        .route("/v1/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_UPLOAD_BYTES + 64 * 1024)))
         .layer(Extension(auth))
         .layer(Extension(push))
         .with_state(hub)
@@ -511,6 +513,7 @@ fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
         handed_at: None,
         delivered_at: None,
         about: None,
+        attachments: vec![],
     })
 }
 
@@ -757,7 +760,7 @@ async fn merge_pr(State(hub): State<AppState>, signed: Option<Extension<crate::a
     let who = signed.map_or_else(|| "the Mac".to_string(), |Extension(s)| s.name);
     log!("{} merged by {} from {who}", pr.url, hub.config.name);
     let text = format!("[Alondra] {} merged {} ({}).", hub.config.name, pr.url, b.method.label());
-    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }));
+    let _ = tell_about_pr(&hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }), vec![]);
     if let Err(e) = hub.append(Event::PrMerged { id, method: b.method }) {
         return internal(e);
     }
@@ -790,7 +793,7 @@ async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) 
     if pr.state != alondra_core::pr::PrState::Open {
         return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
     }
-    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User, None) {
+    match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User, None, vec![]) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("conflicts sent on PR card #{id}, card not set aside: {e}");
@@ -814,6 +817,8 @@ fn gh_says_already_merged(stderr: &str) -> bool {
 #[derive(Deserialize)]
 struct ChangesBody {
     text: String,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ChangesBody>) -> Response {
@@ -823,8 +828,12 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     if b.text.trim().is_empty() {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to change");
     }
+    let attachments = match attached(&hub, &b.attachments) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
-    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None) {
+    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None, attachments) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("changes sent on PR card #{id}, card not set aside: {e}");
@@ -837,7 +846,8 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
 
 /// A message about a PR goes to the node that opened it, or to the orchestrator once that node is
 /// gone, or when the message is Alondra's and the node is done.
-fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>) -> anyhow::Result<String> {
+fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, from: MessageFrom, about: Option<MessageAbout>, attachments: Vec<Attachment>) -> anyhow::Result<String> {
+    let text = format!("{text}{}", uploads::delivery_note(&hub.config.name, &attachments));
     let res = hub.append_with(|v| {
         let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
         let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
@@ -851,12 +861,37 @@ fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, fr
             handed_at: None,
             delivered_at: None,
             about,
+            attachments: attachments.clone(),
         }))
     })?;
     match res {
         Some((_, Event::MessageQueued(m))) => Ok(m.session_id),
         _ => anyhow::bail!("neither the node nor an orchestrator is there to receive it"),
     }
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    name: String,
+}
+
+/// The file itself is the body; `name` is its original file name. The copy is Alondra's from
+/// here on: the original can be deleted.
+async fn upload(State(hub): State<AppState>, Query(q): Query<UploadQuery>, body: axum::body::Bytes) -> Response {
+    let home = hub.home.clone();
+    match tokio::task::spawn_blocking(move || uploads::store(&home, &q.name, &body)).await {
+        Ok(Ok((id, a))) => {
+            let kind = if uploads::is_image(&a.name) { "image" } else { "file" };
+            Json(json!({"id": id, "name": a.name, "bytes": a.bytes, "kind": kind, "path": a.stored_path})).into_response()
+        }
+        Ok(Err(e)) => err(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+        Err(e) => internal(e.into()),
+    }
+}
+
+/// The uploads a send refers to; a missing one refuses the send.
+fn attached(hub: &Hub, ids: &[String]) -> Result<Vec<Attachment>, Response> {
+    uploads::resolve(&hub.home, ids).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))
 }
 
 /// Large enough for any PR a person reviews on a phone; beyond it the diff is cut, and says so.
@@ -1313,6 +1348,8 @@ struct AnswerBody {
     text: String,
     option: Option<String>,
     by: Option<String>,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 impl AnswerBody {
@@ -1334,7 +1371,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         }
         return refused(StatusCode::CONFLICT, "question_closed", format!("question #{id} is no longer open"));
     }
+    let attachments = match attached(&hub, &b.attachments) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if crate::menus::is_menu_card(&q) {
+        if !attachments.is_empty() {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, "This card is a menu in the node's terminal: it takes an option, not attachments. Send the files in a message to the node.");
+        }
         return answer_menu(hub, q, b.option.as_deref(), signed.map(|s| s.name)).await;
     }
     let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
@@ -1354,7 +1398,9 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             log!("could not mark report #{report} read with question #{id}: {e}");
         }
     }
-    if hub.release_hold(id, answer.clone()) {
+    let note = uploads::delivery_note(&user, &attachments);
+    let held = Answer { text: format!("{}{note}", answer.text), ..answer.clone() };
+    if hub.release_hold(id, held) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
     let reply = if q.action {
@@ -1364,7 +1410,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         format!("{chosen}{}", b.text)
     };
     let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
-    let text = if other_open { format!("About \"{}\": {reply}", q.title) } else { reply };
+    let text = if other_open { format!("About \"{}\": {reply}{note}", q.title) } else { format!("{reply}{note}") };
     log!("answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
@@ -1377,6 +1423,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: attachments.clone(),
         }))
     });
     match res {
@@ -1448,6 +1495,8 @@ async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: O
 #[derive(Deserialize)]
 struct MoreContextBody {
     note: Option<String>,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
@@ -1456,7 +1505,7 @@ async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crat
     let text = format!(
         "{user} needs more context before deciding.{note} Explain what is at stake, the options with their consequences and your recommendation, and ask again."
     );
-    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some(answer_option::MORE_CONTEXT.into()), by: None })).await
+    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some(answer_option::MORE_CONTEXT.into()), by: None, attachments: b.attachments })).await
 }
 
 /// With a caller (a node's `withdraw` tool), only that node's own open questions can be withdrawn.
@@ -1637,6 +1686,8 @@ async fn report_read(State(hub): State<AppState>, Path(id): Path<u64>) -> Respon
 struct MessageBody {
     text: String,
     from: Option<MessageFrom>,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
@@ -1668,6 +1719,11 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
     if b.from == Some(MessageFrom::Alondra) && hub.read(|v| v.resolve_node(&key).is_some_and(|n| !v.may_alondra_write(n))) {
         return err(StatusCode::CONFLICT, format!("{key} is done: only {} or the orchestrator can reopen it", hub.config.name));
     }
+    let attachments = match attached(&hub, &b.attachments) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let text = format!("{}{}", b.text, uploads::delivery_note(&hub.config.name, &attachments));
     let interactive = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string()));
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
@@ -1675,12 +1731,13 @@ async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
             session_id: node.session_id.clone(),
             from: b.from.unwrap_or(MessageFrom::User),
-            text: b.text.clone(),
+            text: text.clone(),
             answers_question: None,
             created_at: now_millis(),
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: attachments.clone(),
         }))
     });
     match res {
@@ -1895,10 +1952,22 @@ async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -
 #[derive(Deserialize)]
 struct RequestBody {
     text: String,
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
-    let text = format!("[Alondra] New request from {}: {}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.", hub.config.name, b.text);
+    let attachments = match attached(&hub, &b.attachments) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let pass_on = if attachments.is_empty() { "" } else { " Put the attached files' paths in the node's mission so it can open them." };
+    let text = format!(
+        "[Alondra] New request from {}: {}{}\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.{pass_on}",
+        hub.config.name,
+        b.text,
+        uploads::delivery_note(&hub.config.name, &attachments)
+    );
     let res = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator)?;
         Some(Event::MessageQueued(Message {
@@ -1911,6 +1980,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
             handed_at: None,
             delivered_at: None,
             about: None,
+            attachments: attachments.clone(),
         }))
     });
     match res {
@@ -2009,7 +2079,7 @@ mod tests {
     use super::*;
 
     fn answered(text: &str, option: Option<&str>) -> Answer {
-        let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None };
+        let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None, attachments: vec![] };
         b.canonicalize();
         Answer { text: b.text, option: b.option, by: None, device: None, at: 0 }
     }
@@ -2259,7 +2329,7 @@ mod tests {
         assert_eq!(o["news"].as_array().unwrap().len(), 0, "the report is not a card of its own: {}", o["news"]);
         assert_eq!(o["open_questions"][0]["report"]["title"], "Auditoría: 13 cosas");
 
-        let body = AnswerBody { text: "Sí, lánzalo".into(), option: None, by: None };
+        let body = AnswerBody { text: "Sí, lánzalo".into(), option: None, by: None, attachments: vec![] };
         let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert!(hub.read(|v| v.reports[&1].read), "answering the card settles the report inside it");
@@ -2511,7 +2581,7 @@ mod tests {
         };
         let (status, said) = status_and_body(ask(State(hub.clone()), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
-        let body = AnswerBody { text: "Sí".into(), option: None, by: None };
+        let body = AnswerBody { text: "Sí".into(), option: None, by: None, attachments: vec![] };
         let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert!(hub.read(|v| v.reports[&1].read), "answering reads the report inside the question");
@@ -2604,7 +2674,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_answer_sent_again_succeeds_and_a_different_one_is_refused() {
-        let body = |text: &str| Json(AnswerBody { text: text.into(), option: None, by: None });
+        let body = |text: &str| Json(AnswerBody { text: text.into(), option: None, by: None, attachments: vec![] });
         let cases: [(&str, Option<&str>, bool, &str, StatusCode, Value); 5] = [
             ("first answer", None, false, "Sí", StatusCode::OK, json!({"id": 1})),
             ("the same answer again", Some("Sí"), false, "Sí", StatusCode::OK, json!({"already": true})),
@@ -2742,7 +2812,7 @@ mod tests {
         let hub = temp_hub("send");
         hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
-        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None }));
+        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None, attachments: vec![] }));
         let (status, body) = status_and_body(send("interactive").await).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["interactive"], true);
@@ -2782,14 +2852,42 @@ mod tests {
         assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::Done);
 
         let pr = hub.read(|v| v.prs[&1].clone());
-        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 })).unwrap(), "o", "Alondra's notice goes to the orchestrator");
-        let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from) }));
+        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
+        let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from), attachments: vec![] }));
         assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
         assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");
 
-        assert_eq!(tell_about_pr(&hub, &pr, "Ana requests changes".into(), MessageFrom::User, None).unwrap(), "s", "David's own words reach it");
+        assert_eq!(tell_about_pr(&hub, &pr, "Ana requests changes".into(), MessageFrom::User, None, vec![]).unwrap(), "s", "David's own words reach it");
         assert_eq!(status_and_body(send(MessageFrom::Orchestrator).await).await.0, StatusCode::OK);
         assert_eq!(hub.read(|v| v.pending_messages("s").map(|m| m.from).collect::<Vec<_>>()), [MessageFrom::User, MessageFrom::Orchestrator]);
+    }
+
+    #[tokio::test]
+    async fn an_attachment_reaches_the_node_as_a_readable_path_after_the_original_is_gone() {
+        let hub = temp_hub("attach");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
+        let original = hub.home.join("Captura 2026-09-24.png");
+        std::fs::write(&original, b"pixels").unwrap();
+        let bytes = axum::body::Bytes::from(std::fs::read(&original).unwrap());
+        let (status, up) = status_and_body(upload(State(hub.clone()), Query(UploadQuery { name: "Captura 2026-09-24.png".into() }), bytes).await).await;
+        assert_eq!(status, StatusCode::OK, "{up}");
+        assert_eq!((up["kind"].as_str(), up["bytes"].as_u64()), (Some("image"), Some(6)));
+        std::fs::remove_file(&original).unwrap();
+
+        let id = up["id"].as_str().unwrap().to_string();
+        let body = MessageBody { text: "Mira esto".into(), from: None, attachments: vec![id] };
+        let (status, sent) = status_and_body(send_message(State(hub.clone()), Path("job".into()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{sent}");
+        let m = hub.read(|v| v.pending_messages("job").next().cloned()).unwrap();
+        let stored = m.attachments[0].stored_path.clone().unwrap();
+        assert!(m.text.starts_with("Mira esto\n\n"), "{}", m.text);
+        assert!(m.text.contains(&format!("{stored} (image, 6 B)")), "{}", m.text);
+        assert_eq!(std::fs::read(&stored).unwrap(), b"pixels");
+        assert!(hub.read(|v| v.stored_files()).contains(&PathBuf::from(&stored)));
+
+        let unknown = MessageBody { text: "otra".into(), from: None, attachments: vec!["ffffffffffffffff".into()] };
+        let (status, _) = status_and_body(send_message(State(hub.clone()), Path("job".into()), Json(unknown)).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a send whose attachment is gone is refused, not sent without it");
     }
 
     /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.

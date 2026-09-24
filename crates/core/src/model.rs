@@ -550,6 +550,8 @@ pub struct Message {
     pub handed_at: Option<Millis>,
     #[serde(default)]
     pub delivered_at: Option<Millis>,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub about: Option<MessageAbout>,
 }
