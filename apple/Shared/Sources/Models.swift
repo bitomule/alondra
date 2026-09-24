@@ -64,7 +64,6 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let shortId: String
     public let name: String?
     public let cwd: String?
-    public let alive: Bool
     public let isOrchestrator: Bool
     public let hasPlugin: Bool
     public let state: NodeState

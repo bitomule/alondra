@@ -75,21 +75,14 @@ struct NodeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            StatusDot(state: node.state, alive: node.alive)
+            StatusDot(state: node.state)
             Text(shortName(node.displayName))
                 .lineLimit(1)
-                .foregroundStyle(node.alive ? .primary : .secondary)
             if node.isOrchestrator {
                 Image(systemName: "sparkle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .help("Orchestrator")
-            }
-            if !node.alive {
-                Image(systemName: "moon.zzz")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .help("Asleep")
             }
             if let badge = node.backgroundBadge {
                 Spacer(minLength: 4)
@@ -101,7 +94,7 @@ struct NodeRow: View {
         }
         .help(tooltip)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(node.alive ? node.stateLabel : String(localized: "\(node.stateLabel), asleep"))
+        .accessibilityValue(node.stateLabel)
     }
 }
 
@@ -116,13 +109,11 @@ extension NodeRow {
 
 struct StatusDot: View {
     let state: NodeState
-    let alive: Bool
     var size: CGFloat = 8
 
     var body: some View {
         Circle()
-            .fill(alive ? state.color : .clear)
-            .strokeBorder(state.color.opacity(alive ? 0 : 0.7), lineWidth: 1.2)
+            .fill(state.color)
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -135,7 +126,7 @@ struct ProjectHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(name)
-            let urgent = nodes.filter { $0.alive && ($0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .unclear) }.count
+            let urgent = nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .unclear }.count
             if urgent > 0 {
                 Circle().fill(NodeState.waitingAnswer.color).frame(width: 6, height: 6)
                     .help("\(urgent) nodes waiting")

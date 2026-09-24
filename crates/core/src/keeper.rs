@@ -40,7 +40,7 @@ pub fn announcement(v: &View, orchestrator: &Node, at: Millis) -> Report {
         node_name: orchestrator.name.clone().or_else(|| Some(orchestrator.short_id.clone())),
         title: format!("{ANNOUNCE_PREFIX}: none was running"),
         body: Some(format!(
-            "No orchestrator was running or dormant, so Alondra launched `{}` with the orchestrator plugin. Nodes' stalled turns, reports and questions for the orchestrator go to it from now on.",
+            "No orchestrator was running, so Alondra launched `{}` with the orchestrator plugin. Nodes' stalled turns, reports and questions for the orchestrator go to it from now on.",
             orchestrator.display_name()
         )),
         links: vec![],

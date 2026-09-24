@@ -21,16 +21,6 @@
         }
       }
     },
-    "%@, asleep": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@, dormido"
-          }
-        }
-      }
-    },
     "%@: write why…": {
       "localizations": {
         "es": {
@@ -51,7 +41,7 @@
         }
       }
     },
-    "%lld active nodes": {
+    "%lld nodes": {
       "localizations": {
         "en": {
           "variations": {
@@ -59,13 +49,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld active node"
+                  "value": "%lld node"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld active nodes"
+                  "value": "%lld nodes"
                 }
               }
             }
@@ -77,13 +67,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld nodo activo"
+                  "value": "%lld nodo"
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%lld nodos activos"
+                  "value": "%lld nodos"
                 }
               }
             }
@@ -317,16 +307,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pedir trabajo nuevo (⌘N)"
-          }
-        }
-      }
-    },
-    "Asleep": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dormido"
           }
         }
       }
@@ -1497,16 +1477,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sin tus comentarios"
-          }
-        }
-      }
-    },
-    "Write to %@ (wakes it up)…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escribe a %@ (lo despierta)…"
           }
         }
       }

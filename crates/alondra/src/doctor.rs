@@ -256,7 +256,7 @@ pub fn tmux_check(out: Option<&str>, wake: bool) -> Check {
         None => check(
             "tmux",
             if wake { Status::Fail } else { Status::Warn },
-            tr!("tmux is missing: Alondra cannot wake stopped nodes", "falta tmux: Alondra no puede despertar nodos parados"),
+            tr!("tmux is missing: Alondra cannot attach a node's session", "falta tmux: Alondra no puede engancharse a la sesión de un nodo"),
             "brew install tmux",
         ),
     }

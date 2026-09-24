@@ -123,7 +123,7 @@ struct TriageView: View {
         var parts: [String] = []
         if questions > 0 { parts.append(String(localized: "\(questions) questions")) }
         if reads > 0 { parts.append(String(localized: "\(reads) to read")) }
-        let working = fleet.nodes.filter { $0.alive && $0.state == .working }.count
+        let working = fleet.nodes.filter { $0.state == .working }.count
         parts.append(String(localized: "\(working) nodes working"))
         return parts.joined(separator: " · ")
     }
@@ -329,11 +329,11 @@ private struct EmptyTriage: View {
     }
 
     private var stats: [(label: String, count: Int, tint: Color)] {
-        let alive = fleet.nodes.filter(\.alive)
+        let nodes = fleet.nodes
         return [
-            (String(localized: "working"), alive.filter { $0.state == .working }.count, Palette.sky),
-            (String(localized: "waiting"), alive.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMachine }.count, Palette.dawn),
-            (String(localized: "alive"), alive.count, Palette.sage),
+            (String(localized: "working"), nodes.filter { $0.state == .working }.count, Palette.sky),
+            (String(localized: "waiting"), nodes.filter { $0.state == .waitingAnswer || $0.state == .yourTurn || $0.state == .waitingMachine }.count, Palette.dawn),
+            (String(localized: "total"), nodes.count, Palette.sage),
         ]
     }
 }
