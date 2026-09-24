@@ -1194,6 +1194,11 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             (None, Key::R(_)) => {
                 v.push(k("s", tr!("send to node", "enviar al nodo")));
                 v.push(k("x", tr!("mark read", "leído")));
+                if let Some(Item::R(rep)) = app.item(r.key)
+                    && app.node(&rep.session_id).is_some_and(|n| n.alive)
+                {
+                    v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+                }
             }
             (None, Key::P(_)) => v.push(k("s", tr!("request changes", "pedir cambios"))),
         }
@@ -1236,8 +1241,12 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v.extend(tail);
             v
         }
-        Some(Item::R(_)) => {
-            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído")), k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))];
+        Some(Item::R(r)) => {
+            let mut v = vec![pane, k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))];
+            if app.node(&r.session_id).is_some_and(|n| n.alive) {
+                v.push(k("X", tr!("read and close node", "leer y cerrar nodo")));
+            }
+            v.extend([k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))]);
             v.extend(tail);
             v
         }
@@ -1318,7 +1327,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("1-9", tr!("choose one of the question's options", "elegir una opción de la pregunta")),
         row("r", tr!("reply in your own words", "responder con tus palabras")),
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
-        row("x", tr!("mark as read; x again closes the node that sent it", "marcar como leído; x otra vez cierra el nodo que lo envió")),
+        row("x", tr!("mark as read", "marcar como leído")),
+        row("X", tr!("read and close the node that sent it (twice to confirm; alive nodes only)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("J/K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line returns)", "abrir el terminal del nodo (← con la línea vacía vuelve)")),
         Line::default(),
@@ -1328,6 +1338,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
+        row("X", tr!("read and close the node (twice to confirm; alive nodes only)", "leer y cerrar el nodo (dos veces para confirmar; solo si el nodo sigue vivo)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -1366,7 +1377,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use super::super::tests::{app_with, ctrl, pr_card, press, question};
+    use super::super::tests::{alive_node, app_with, ctrl, pr_card, press, question, report};
     use super::*;
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -1519,5 +1530,29 @@ mod tests {
         press(&mut app, "G");
         let s = screen(&mut app, 100, 20);
         assert!(s.contains("Always"), "{s}");
+    }
+
+    #[test]
+    fn the_footer_offers_read_and_close_only_while_the_node_is_alive() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        app.data.news = vec![report(1)];
+        app.data.nodes = vec![alive_node("s1")];
+        app.reconcile();
+        let s = screen(&mut app, 250, 24);
+        assert!(s.contains("read and close node"), "{s}");
+
+        app.data.nodes[0].node.alive = false;
+        let s = screen(&mut app, 250, 24);
+        assert!(!s.contains("read and close node"), "{s}");
+
+        app.data.nodes[0].node.alive = true;
+        press(&mut app, "o");
+        let s = screen(&mut app, 250, 24);
+        assert!(s.contains("read and close node"), "reading mode also offers it\n{s}");
+
+        app.data.nodes[0].node.alive = false;
+        let s = screen(&mut app, 250, 24);
+        assert!(!s.contains("read and close node"), "{s}");
     }
 }
