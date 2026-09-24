@@ -94,14 +94,21 @@ pub enum Event {
     MenuSeen { session_id: String, waiting_for: Option<String> },
     /// A terminal attached to the node's session, or the last one left.
     AttachChanged { session_id: String, attached: bool },
-    /// A node opened, or mentioned, a pull request.
-    PrOpened { url: String, session_id: String },
+    /// A node opened, or mentioned, a pull request, for the task it names.
+    PrOpened {
+        url: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+    },
     /// What GitHub says about a pull request now.
     PrUpdated(crate::pr::PullRequest),
     PrMerged { id: u64, method: crate::pr::MergeMethod },
     PrDismissed { id: u64 },
     /// Changes were requested on the PR; its card waits until the node pushes again.
     PrChangesRequested { id: u64 },
+    /// David asked the node about its PR from the card; the card stays where it is.
+    PrAsked { id: u64 },
     /// The user asked for new work with these options; launches that cite the request get them.
     RequestSent {
         request_id: String,
@@ -122,6 +129,19 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// From here on every task change is recorded as a task event. Written once, by the first
+    /// daemon that records them.
+    TasksRecorded,
+    TaskCreated(crate::tasks::NewTask),
+    /// A launched task's node showed up, or a subagent took the task.
+    TaskAssigned {
+        task: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+    },
+    /// A task event applied to a recorded task, with the guards the view gives it then.
+    TaskMoved { task: String, event: crate::tasks::TaskEvent },
     Clock {
         #[serde(default)]
         machine_strained: bool,
@@ -185,6 +205,11 @@ impl Event {
             Event::PrMerged { .. } => "pr_merged",
             Event::PrDismissed { .. } => "pr_dismissed",
             Event::PrChangesRequested { .. } => "pr_changes_requested",
+            Event::PrAsked { .. } => "pr_asked",
+            Event::TasksRecorded => "tasks_recorded",
+            Event::TaskCreated(_) => "task_created",
+            Event::TaskAssigned { .. } => "task_assigned",
+            Event::TaskMoved { .. } => "task_moved",
             Event::Clock { .. } => "clock",
             Event::RequestSent { .. } => "request_sent",
             Event::Launched { .. } => "launched",

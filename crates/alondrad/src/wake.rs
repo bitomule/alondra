@@ -463,6 +463,12 @@ mod resume_tests {
     fn died(hub: &Hub, session: &str, pid: i32, after: &str) {
         hub.append(seen(session, "working", Some(pid))).unwrap();
         hub.append(Event::Hook(HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let id = hub.read(|v| v.reports.keys().next_back().copied().unwrap_or(0) + 1);
+        hub.append(Event::ReportPosted(alondra_core::Report {
+            id, session_id: session.into(), node_name: None, title: "Halfway".into(), body: None, links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Notice,
+            created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false, related: vec![], task: None,
+        }))
+        .unwrap();
         hub.append(Event::ProcessExited { session_id: session.into(), pid }).unwrap();
         hub.append(seen(session, after, None)).unwrap();
     }

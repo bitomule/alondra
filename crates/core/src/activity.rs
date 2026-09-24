@@ -105,27 +105,29 @@ impl Ledger {
     }
 }
 
-fn assigned_to(t: &Task, session_id: &str) -> bool {
-    t.assignee.as_ref().is_some_and(|a| a.session_id == session_id)
-}
-
 impl View {
     pub(crate) fn note_activity(&mut self, at: Millis, h: &HookEvent) {
-        let binds = h.task.as_ref().and_then(|t| self.board.tasks.get(t)).is_some_and(|t| t.assignee.as_ref().is_none_or(|a| a.session_id == h.session_id));
+        let binds = h.task.as_ref().and_then(|t| self.board.tasks.get(t)).is_some_and(|t| t.is_assigned_to(&h.session_id));
         if let Some(node) = self.nodes.get_mut(&h.session_id) {
             node.ledger.on_hook(h, at, binds);
         }
     }
 
-    /// The tasks a node works on.
-    pub fn node_tasks<'a>(&'a self, session_id: &str) -> impl Iterator<Item = &'a Task> + use<'a> {
-        let session_id = session_id.to_string();
-        self.board.tasks.values().filter(move |t| assigned_to(t, &session_id))
+    /// Which thread of the node is calling one of Alondra's tools right now: its `PreToolUse`
+    /// reached Alondra before the call did. `Some(None)` is the main thread; none when no thread,
+    /// or more than one, is inside such a call.
+    pub fn alondra_caller(&self, session_id: &str) -> Option<Option<&str>> {
+        let node = self.nodes.get(session_id)?;
+        let mut calling = node.ledger.threads.iter().filter(|t| t.tool.as_ref().is_some_and(|x| x.name.starts_with(ALONDRA_TOOLS)));
+        match (calling.next(), calling.next()) {
+            (Some(t), None) => Some(t.agent_id.as_deref()),
+            _ => None,
+        }
     }
 
     /// The node's only open task, or its only task: everything the node does is that task's.
     fn single_task(&self, session_id: &str) -> Option<&str> {
-        let mine: Vec<&Task> = self.node_tasks(session_id).collect();
+        let mine: Vec<&Task> = self.tasks_of(session_id).collect();
         let open: Vec<&Task> = mine.iter().copied().filter(|t| !t.state.finished()).collect();
         match (open.as_slice(), mine.as_slice()) {
             ([one], _) | ([], [one]) => Some(one.id.as_str()),
@@ -143,7 +145,7 @@ impl View {
             .iter()
             .map(|t| {
                 let agent = t.agent_id.as_deref();
-                let assigned = agent.and_then(|a| self.node_tasks(sid).find(|task| task.assignee.as_ref().is_some_and(|x| x.agent_id.as_deref() == Some(a))).map(|task| task.id.as_str()));
+                let assigned = agent.and_then(|a| self.tasks_of(sid).find(|task| task.assignee.as_ref().is_some_and(|x| x.agent_id.as_deref() == Some(a))).map(|task| task.id.as_str()));
                 let task = node.ledger.bound(agent).or(assigned).or(single);
                 Activity {
                     agent_id: t.agent_id.clone(),

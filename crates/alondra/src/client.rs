@@ -22,6 +22,84 @@ pub struct FleetNode {
     pub node: Node,
     #[serde(default)]
     pub project: Option<String>,
+    /// What each of its threads does now; an older alondrad sends none.
+    #[serde(default)]
+    pub activity: Option<Vec<Activity>>,
+}
+
+/// One thread of a node, the main one (no `agent_id`) or a subagent, and what it does now.
+#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Activity {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    pub since: i64,
+}
+
+impl Activity {
+    pub fn is_main(&self) -> bool {
+        self.agent_id.is_none()
+    }
+
+    /// `main` for the node's own thread, the subagent's type otherwise.
+    pub fn thread(&self) -> String {
+        match (&self.agent_id, &self.agent_type) {
+            (None, _) => tr!("main", "principal").into(),
+            (Some(_), Some(t)) => t.clone(),
+            (Some(_), None) => tr!("subagent", "subagente").into(),
+        }
+    }
+}
+
+/// A request with the state its tasks give it and their ids.
+#[derive(Deserialize, Clone)]
+pub struct ClientRequest {
+    #[serde(flatten)]
+    pub request: alondra_core::tasks::Request,
+    pub state: alondra_core::tasks::RequestState,
+    #[serde(default)]
+    pub tasks: Vec<String>,
+}
+
+impl std::ops::Deref for ClientRequest {
+    type Target = alondra_core::tasks::Request;
+    fn deref(&self) -> &alondra_core::tasks::Request {
+        &self.request
+    }
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ClientTask {
+    #[serde(flatten)]
+    pub task: alondra_core::tasks::Task,
+    /// Alondra merges its PR by itself once the checks pass.
+    #[serde(default)]
+    pub auto_merge_pending: bool,
+}
+
+impl std::ops::Deref for ClientTask {
+    type Target = alondra_core::tasks::Task;
+    fn deref(&self) -> &alondra_core::tasks::Task {
+        &self.task
+    }
+}
+
+/// Keeps every entry this build understands, so a state it does not know yet costs that entry,
+/// not the whole overview.
+fn lenient<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let values = Vec::<Value>::deserialize(d)?;
+    Ok(values.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
 
 impl std::ops::Deref for FleetNode {
@@ -43,6 +121,13 @@ pub struct Overview {
     pub usage: Option<alondra_core::usage::Usage>,
     #[serde(default)]
     pub prs: Vec<PrCard>,
+    /// The newest reports, read or not; a task's documents are looked up here.
+    #[serde(default)]
+    pub reports: Vec<Report>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub requests: Vec<ClientRequest>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub tasks: Vec<ClientTask>,
 }
 
 /// An open question, with the PR card it belongs to when that card is waiting on the user.
@@ -52,6 +137,9 @@ pub struct OpenQuestion {
     pub question: Question,
     #[serde(default)]
     pub pr_id: Option<u64>,
+    /// The task this question blocks.
+    #[serde(default)]
+    pub task: Option<String>,
     /// The report this question is about; it is shown inside the question, not as its own card.
     #[serde(default)]
     pub report: Option<Report>,
@@ -70,7 +158,7 @@ impl OpenQuestion {
 
 impl From<Question> for OpenQuestion {
     fn from(question: Question) -> Self {
-        OpenQuestion { question, pr_id: None, report: None, reports: vec![] }
+        OpenQuestion { question, pr_id: None, task: None, report: None, reports: vec![] }
     }
 }
 
@@ -88,6 +176,9 @@ pub struct NewsReport {
     pub report: Report,
     #[serde(default)]
     pub pr_id: Option<u64>,
+    /// The task this report belongs to.
+    #[serde(default)]
+    pub task: Option<String>,
     /// The earlier unread reports of the same episode, oldest first; this card carries them.
     #[serde(default)]
     pub earlier: Vec<Report>,
@@ -95,7 +186,7 @@ pub struct NewsReport {
 
 impl From<Report> for NewsReport {
     fn from(report: Report) -> Self {
-        NewsReport { report, pr_id: None, earlier: vec![] }
+        NewsReport { report, pr_id: None, task: None, earlier: vec![] }
     }
 }
 
@@ -123,6 +214,9 @@ pub struct PrCard {
     pub stack_opened_at: Option<i64>,
     #[serde(default)]
     pub stack_position: usize,
+    /// The task this PR belongs to.
+    #[serde(default)]
+    pub task: Option<String>,
 }
 
 impl PrCard {
@@ -158,6 +252,18 @@ impl PrCard {
         self.methods().into_iter().map(PrAction::Merge).collect()
     }
 }
+
+/// alondrad answered 404 without saying why: it does not have that route yet.
+#[derive(Debug)]
+pub struct NotFound;
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(tr!("alondrad does not have this yet", "alondrad todavía no tiene esto"))
+    }
+}
+
+impl std::error::Error for NotFound {}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PrAction {
@@ -265,6 +371,9 @@ impl Client {
         let body = resp.body_mut().read_to_string().unwrap_or_default();
         if status >= 400 {
             let parsed = serde_json::from_str::<Value>(&body).ok();
+            if status == 404 && parsed.as_ref().and_then(|v| v.get("error")).is_none() {
+                return Err(anyhow::Error::new(NotFound));
+            }
             let reasons: Vec<String> = parsed
                 .as_ref()
                 .and_then(|v| v.get("reasons"))

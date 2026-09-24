@@ -9,7 +9,6 @@
 use crate::model::{
     BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
 };
-use crate::pr::{CheckState, PrState};
 use crate::tasks::{Task, TaskState};
 use crate::view::View;
 
@@ -402,14 +401,9 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
     nudge_then_orchestrator(view, node)
 }
 
-/// Alondra merges an auto-merge PR itself once its checks pass, so until then the task waits on
-/// its checks, not on its node. Failed checks are the node's to fix.
-fn waits_on_auto_merge(view: &View, task: &Task) -> bool {
-    task.prs.iter().filter_map(|id| view.prs.get(id)).any(|p| p.state == PrState::Open && p.auto_merge && !p.checks.iter().any(|c| c.state == CheckState::Failed))
-}
-
 /// The running task of a node idle when it should work: its turn ended, it shows no work and it
-/// declared nothing. A node whose process died is restarted instead (`upkeep`).
+/// declared nothing. A task whose auto-merge PR Alondra is waiting on GitHub to merge waits on
+/// GitHub, not on its node; a node whose process died is restarted instead (`upkeep`).
 pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
     let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
     let idle = node.watched()
@@ -428,7 +422,7 @@ pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Tas
     if !idle {
         return None;
     }
-    view.node_tasks(&node.session_id).find(|t| t.state == TaskState::Running && !waits_on_auto_merge(view, t))
+    view.tasks_of(&node.session_id).find(|t| t.state == TaskState::Running && !view.auto_merge_pending(t, now))
 }
 
 /// What Alondra does about a node idle when it should work: what it does about a stalled one,
@@ -653,11 +647,13 @@ mod tests {
             action,
             steps: vec![],
             mission: None,
+            replaces: None,
+            task: None,
         })
     }
 
     fn pr_opened() -> Event {
-        Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into() }
+        Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None }
     }
 
     fn report(kind: ReportKind) -> Event {
@@ -684,6 +680,7 @@ mod tests {
             to_orchestrator,
             mission: None,
             looks_like_question: false,
+            task: None,
         })
     }
 
@@ -1312,6 +1309,7 @@ mod tests {
         let mut v = run(&[launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop")], None);
         v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
         v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        use crate::pr::CheckState;
         let checks = |v: &mut View, seq: u64, state: CheckState| {
             let mut pr = v.prs[&1].clone();
             pr.fetched = true;

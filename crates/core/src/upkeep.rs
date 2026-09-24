@@ -35,7 +35,7 @@ pub fn stopped_on_purpose(node: &Node) -> bool {
 
 /// The task a dead process leaves open: not finished, and not closed by the node's own final report.
 fn open_task<'a>(view: &'a View, node: &Node) -> Option<&'a Task> {
-    view.node_tasks(&node.session_id).find(|t| !t.state.finished() && t.final_report.is_none())
+    view.tasks_of(&node.session_id).find(|t| !t.state.finished() && t.final_report.is_none())
 }
 
 /// The open task of a node whose process died, when it is time to restart it: once per exit, and
@@ -98,7 +98,7 @@ pub fn resume_failed_message(view: &View, node: &Node, user: &str, at: Millis) -
 pub fn free_to_close(view: &View, node: &Node, now: Millis, after: Millis) -> bool {
     let sid = node.session_id.as_str();
     let quiet_since = [node.last_stop_at, node.handed_at, node.exited_at].into_iter().flatten().fold(node.last_seen, Millis::max);
-    let task_open = view.node_tasks(sid).any(|t| matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::InReview | TaskState::Closing));
+    let task_open = view.tasks_of(sid).any(|t| matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::InReview | TaskState::Closing));
     let asks = view.questions.values().any(|q| q.session_id == sid && q.status.is_open());
     node.watched()
         && !node.busy
@@ -140,7 +140,7 @@ mod tests {
     fn final_report() -> Event {
         Event::ReportPosted(Report {
             id: 1, session_id: "s".into(), node_name: None, title: "Done".into(), body: None, links: vec![], attachments: vec![], kind: ReportKind::Final,
-            created_at: T0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, related: vec![],
+            created_at: T0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, related: vec![], task: None,
         })
     }
 
@@ -148,7 +148,7 @@ mod tests {
         Event::QuestionAsked(Question {
             id: 1, session_id: "s".into(), node_name: None, title: "Deploy?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open,
-            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, related: vec![],
+            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, related: vec![], replaces: None, task: None,
         })
     }
 
@@ -226,7 +226,7 @@ mod tests {
             id: 1, session_id: "s".into(), from: MessageFrom::User, text: "one more thing".into(), answers_question: None, created_at: T0,
             handed_at: None, delivered_at: None, about: None, attachments: vec![],
         };
-        let pr = Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into() };
+        let pr = Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "s".into(), task: None };
         let cases: Vec<(&str, Vec<Event>, Millis, bool)> = vec![
             ("done and free for two hours", done(&[]), 2 * H, true),
             ("done an hour ago", done(&[]), H, false),

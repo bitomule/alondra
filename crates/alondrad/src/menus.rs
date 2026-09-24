@@ -159,6 +159,8 @@ fn card(v: &View, node: &Node, screen: &str) -> Question {
         action: false,
         steps: vec![],
         mission: node.mission.clone(),
+        task: v.fact_task(&node.session_id, None),
+        replaces: None,
     }
 }
 
@@ -368,6 +370,7 @@ mod tests {
             to_orchestrator: false,
             mission: None,
             looks_like_question: false,
+            task: None,
         });
         let hook = |e: &str| Event::Hook(alondra_core::HookEvent { session_id: "s".into(), event: e.into(), tool_name: Some("Bash".into()), ..Default::default() });
         let cases: Vec<(&str, Vec<Event>, bool)> = vec![

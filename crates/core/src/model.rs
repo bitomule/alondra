@@ -546,6 +546,12 @@ pub struct Question {
     /// The node's other open cards it declared this question belongs with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<CardRef>,
+    /// The task it belongs to; cards recorded before tasks named one belong to their session's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The question of the node it replaces, withdrawn once this one is recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -600,6 +606,9 @@ pub struct Report {
     /// The node's other open cards it declared this report belongs with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<CardRef>,
+    /// The task it belongs to; cards recorded before tasks named one belong to their session's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

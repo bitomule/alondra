@@ -4,6 +4,7 @@ mod files;
 mod input;
 mod keys;
 mod md;
+mod tasks;
 mod work;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -50,6 +51,7 @@ pub enum Item<'a> {
 #[derive(Clone, Copy, PartialEq)]
 pub enum Screen {
     Inbox,
+    Tasks,
     Fleet,
 }
 
@@ -310,6 +312,10 @@ enum Msg {
     Preview { seq: u64, image: image::DynamicImage },
     Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
+    /// A task's history, or whether alondrad has no route for it.
+    TaskHistory { id: String, since: i64, history: Result<Vec<alondra_core::tasks::Transition>, bool> },
+    /// A cancel or reopen: what to flash, or why it failed and whether alondrad has no route for it.
+    TaskAction(Result<String, (String, bool)>),
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -372,6 +378,18 @@ pub struct App {
     pub detail_view: View,
     pub fleet_view: View,
     pub fleet_zoom: bool,
+    pub task_sel: Option<tasks::TaskKey>,
+    task_idx: usize,
+    pub task_scroll: usize,
+    pub task_detail_scroll: usize,
+    pub task_view: View,
+    pub task_zoom: bool,
+    /// Each task's history by id, with the `state_since` it was fetched at.
+    pub histories: HashMap<String, (i64, Vec<alondra_core::tasks::Transition>)>,
+    history_asked: HashSet<(String, i64)>,
+    history_missing: bool,
+    pub task_actions_missing: bool,
+    pending_cancel: Option<(String, i64)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
     last_clock: i64,
@@ -605,6 +623,17 @@ impl App {
             detail_view: View::default(),
             fleet_view: View::default(),
             fleet_zoom: false,
+            task_sel: None,
+            task_idx: 0,
+            task_scroll: 0,
+            task_detail_scroll: 0,
+            task_view: View::default(),
+            task_zoom: false,
+            histories: HashMap::new(),
+            history_asked: HashSet::new(),
+            history_missing: false,
+            task_actions_missing: false,
+            pending_cancel: None,
             cmdline: None,
             keymap: Keymap::default(),
             last_clock: now_millis(),
@@ -847,6 +876,7 @@ impl App {
                 self.fleet_sel = next;
             }
         }
+        self.reconcile_tasks();
     }
 
     fn on_msg(&mut self, m: Msg) {
@@ -904,6 +934,8 @@ impl App {
                     f.issues_loaded(result);
                 }
             }
+            Msg::TaskHistory { id, since, history } => self.history_loaded(id, since, history),
+            Msg::TaskAction(result) => self.task_action_done(result),
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
@@ -1020,28 +1052,51 @@ impl App {
             Cmd::Pending => {}
             Cmd::Other(k) => match k.code {
                 KeyCode::Char('q') => return Flow::Quit,
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('f') => self.switch_screen(),
+                KeyCode::Tab => self.switch_screen(),
+                KeyCode::BackTab => self.switch_screen_back(),
+                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet { Screen::Inbox } else { Screen::Fleet }),
                 KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
                 KeyCode::Char('M') => self.message_orchestrator(),
                 _ => {
                     return match self.screen {
                         Screen::Inbox => self.inbox_key(k),
+                        Screen::Tasks => self.tasks_key(k),
                         Screen::Fleet => self.fleet_key(k),
                     };
                 }
             },
             _ => match self.screen {
                 Screen::Inbox => self.inbox_cmd(cmd),
+                Screen::Tasks => self.tasks_cmd(cmd),
                 Screen::Fleet => self.fleet_cmd(cmd),
             },
         }
         Flow::Go
     }
 
+    /// Inbox, Tasks, Fleet and round again.
     fn switch_screen(&mut self) {
-        self.screen = if self.screen == Screen::Inbox { Screen::Fleet } else { Screen::Inbox };
+        self.show(match self.screen {
+            Screen::Inbox => Screen::Tasks,
+            Screen::Tasks => Screen::Fleet,
+            Screen::Fleet => Screen::Inbox,
+        });
+    }
+
+    fn switch_screen_back(&mut self) {
+        self.show(match self.screen {
+            Screen::Inbox => Screen::Fleet,
+            Screen::Tasks => Screen::Inbox,
+            Screen::Fleet => Screen::Tasks,
+        });
+    }
+
+    fn show(&mut self, screen: Screen) {
+        self.screen = screen;
         self.focus = Pane::List;
         self.fleet_zoom = false;
+        self.task_zoom = false;
+        self.reconcile_tasks();
     }
 
     fn message_orchestrator(&mut self) {
@@ -1095,24 +1150,25 @@ impl App {
             }
             "inbox" | "i" => {
                 self.reader = None;
-                if self.screen != Screen::Inbox {
-                    self.switch_screen();
-                }
+                self.show(Screen::Inbox);
+            }
+            "tasks" | "t" => {
+                self.reader = None;
+                self.show(Screen::Tasks);
             }
             "fleet" | "f" => {
                 self.reader = None;
-                if self.screen != Screen::Fleet {
-                    self.switch_screen();
-                }
+                self.show(Screen::Fleet);
             }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;
                 match self.screen {
                     Screen::Inbox => self.move_inbox(i),
+                    Screen::Tasks => self.move_tasks(i),
                     Screen::Fleet => self.move_fleet(i),
                 }
             }
-            other => self.fail(trf!("Not a command: {other}  (try :q, :help, :inbox, :fleet, :<number>)", "No es un comando: {other}  (prueba :q, :help, :inbox, :fleet, :<número>)")),
+            other => self.fail(trf!("Not a command: {other}  (try :q, :help, :inbox, :tasks, :fleet, :<number>)", "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :fleet, :<número>)")),
         }
         Flow::Go
     }
@@ -1241,6 +1297,11 @@ impl App {
                     self.compose(Target::PrAsk { id: p.pr.id, title: p.pr.title }, "");
                 }
             }
+            KeyCode::Char('v') if self.selected_report().is_some_and(|r| !alondra_core::artifact::in_report(&r).is_empty()) => {
+                if let Some(r) = self.selected_report() {
+                    self.review(&r, ReviewVerdict::Approved);
+                }
+            }
             KeyCode::Char('v') => {
                 let attachments = match self.sel.and_then(|k| self.item(k)) {
                     Some(Item::Q(q)) => q.attachments.clone(),
@@ -1296,11 +1357,6 @@ impl App {
                     self.compose(Target::MoreContext { id: q.id, title: q.title }, "");
                 } else if let Some(r) = self.selected_report() {
                     self.review(&r, ReviewVerdict::Comments);
-                }
-            }
-            KeyCode::Char('v') => {
-                if let Some(r) = self.selected_report() {
-                    self.review(&r, ReviewVerdict::Approved);
                 }
             }
             KeyCode::Char('x') => {
@@ -1792,15 +1848,18 @@ impl App {
     }
 
     pub fn node_matches(&self, n: &FleetNode, q: &str) -> bool {
+        let tasks: Vec<&str> = self.tasks_on(&n.session_id).into_iter().map(|t| t.title.as_str()).collect();
         let hay = format!(
-            "{} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {}",
             n.display_name(),
             n.short_id,
             n.project.clone().unwrap_or_default(),
             n.state.label(),
             i18n::state(n.state),
+            i18n::fleet_state(n),
             said(n),
-            n.cwd.clone().unwrap_or_default()
+            n.cwd.clone().unwrap_or_default(),
+            tasks.join(" ")
         )
             .to_lowercase();
         q.split_whitespace().all(|w| hay.contains(w))
@@ -2028,6 +2087,8 @@ pub(crate) mod tests {
             action: false,
             steps: vec![],
             mission: None,
+            replaces: None,
+            task: None,
         }
     }
 
@@ -2047,11 +2108,12 @@ pub(crate) mod tests {
             to_orchestrator: false,
             mission: None,
             looks_like_question: false,
+            task: None,
         }
     }
 
     pub(super) fn alive_node(session: &str) -> crate::client::FleetNode {
-        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None }
+        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None, activity: None }
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
@@ -2350,7 +2412,7 @@ pub(crate) mod tests {
         let mut pr = PullRequest::opened(4, "https://github.com/a/b/pull/12", "s1", Some("demo".into()), 0).unwrap();
         pr.title = "Menus become cards".into();
         pr.merge_methods = vec![MergeMethod::Merge, MergeMethod::Squash];
-        crate::client::PrCard { pr, preferred_method: preferred, below_number: None, below_set_aside: false, stack_bottom: None, stack_opened_at: None, stack_position: 0 }
+        crate::client::PrCard { pr, preferred_method: preferred, below_number: None, below_set_aside: false, stack_bottom: None, stack_opened_at: None, stack_position: 0, task: None }
     }
 
     /// Card `id` (PR #`id + 10`) stacked `position` cards up the train that starts at `bottom`.
@@ -2410,7 +2472,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![]);
         let mut node = alondra_core::model::Node::new("s1", 0);
         node.cwd = Some(repo.display().to_string());
-        app.data.nodes = vec![crate::client::FleetNode { node, project: None }];
+        app.data.nodes = vec![crate::client::FleetNode { node, project: None, activity: None }];
         app.data.prs = vec![pr_card(None)];
         app.reconcile();
         app.settle_until = 0;
@@ -2453,7 +2515,7 @@ pub(crate) mod tests {
     fn asked_on_pr(id: u64, pr: u64) -> crate::client::OpenQuestion {
         let mut q = question(id, QuestionOrigin::Ask, &["Merge it", "Not yet"]);
         q.options[1].description = Some("Write what is missing".into());
-        crate::client::OpenQuestion { question: q, pr_id: Some(pr), report: None, reports: vec![] }
+        crate::client::OpenQuestion { question: q, pr_id: Some(pr), task: None, report: None, reports: vec![] }
     }
 
     #[test]
@@ -2479,7 +2541,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_report_about_a_waiting_pr_sits_under_its_card_and_counts_with_it() {
-        let reported = |id: u64, pr: Option<u64>| crate::client::NewsReport { report: report(id), pr_id: pr, earlier: vec![] };
+        let reported = |id: u64, pr: Option<u64>| crate::client::NewsReport { report: report(id), pr_id: pr, task: None, earlier: vec![] };
         let cases: [(&str, Vec<crate::client::NewsReport>, Vec<Key>, usize); 3] = [
             ("the report links the waiting PR", vec![reported(2, None), reported(1, Some(4))], vec![Key::P(4), Key::R(1), Key::R(2)], 2),
             ("the report's card is not in the inbox", vec![reported(2, None), reported(1, Some(99))], vec![Key::P(4), Key::R(2), Key::R(1)], 3),

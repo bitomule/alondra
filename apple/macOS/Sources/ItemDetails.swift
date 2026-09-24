@@ -37,7 +37,7 @@ struct QuestionDetail: View {
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.question(question).style, node: question.nodeName, date: question.askedAt, title: question.title)
+                DetailHeader(style: InboxItem.question(question).style, node: question.nodeName, date: question.askedAt, title: question.title, task: store.task(for: .question(question))?.title)
                 MissionLine(item: .question(question))
                 if let detail = question.readableDetail, !detail.isEmpty {
                     if question.isPlan {
@@ -214,7 +214,7 @@ struct ReportDetail: View {
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.report(report).style, node: report.nodeName, date: report.createdAt, title: report.title)
+                DetailHeader(style: InboxItem.report(report).style, node: report.nodeName, date: report.createdAt, title: report.title, task: store.task(for: .report(report))?.title)
                 MissionLine(item: .report(report))
                 if report.seemsToAsk {
                     Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")

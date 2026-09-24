@@ -254,6 +254,8 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         action: expects == Expects::Act,
         steps: vec![],
         mission: node.mission.clone(),
+        task: v.fact_task(&node.session_id, None),
+        replaces: None,
     }
 }
 
@@ -281,6 +283,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
         to_orchestrator: false,
         mission: node.mission.clone(),
         looks_like_question: false,
+        task: v.fact_task(&node.session_id, None),
     }
 }
 
@@ -547,6 +550,8 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
+            replaces: None,
+            task: None,
         }
     }
 
@@ -582,6 +587,7 @@ mod tests {
                 related: vec![],
                 id: 1, session_id: "s".into(), node_name: None, title: "Auditoría rehecha".into(), body: Some("Detalle".into()),
                 links: vec![], attachments: vec![], kind, created_at: at, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
+                task: None,
             })
         };
         let handed = |at: i64| vec![message(1, MessageFrom::User, at), Event::MessageHanded { id: 1 }];

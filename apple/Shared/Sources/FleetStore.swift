@@ -41,6 +41,10 @@ public final class FleetStore {
     public private(set) var inbox: [InboxItem] = []
     private var grouping = InboxGrouping.empty
     public private(set) var projects: [(name: String, nodes: [Node])] = []
+    public private(set) var board = TaskBoard.empty
+    /// alondrad answered 404 to a task action: it does not have them yet, so the apps disable them.
+    public private(set) var taskActionsUnavailable = false
+    @ObservationIgnored private var taskDetailUnavailable = false
     private var pendingBySession: [String: Int] = [:]
     private var hidden: Set<String> = [] {
         didSet { rebuild() }
@@ -120,6 +124,7 @@ public final class FleetStore {
 
     private func rebuild() {
         grouping = InboxGrouping(questions: questions, reports: news, pullRequests: overview?.prs ?? [])
+        board = TaskBoard(requests: overview?.requests ?? [], tasks: overview?.tasks ?? [])
         let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
         let reports = grouping.looseReports.map(InboxItem.report).sorted { $0.date > $1.date }
         let prs = (overview?.prs ?? []).sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
@@ -157,6 +162,8 @@ public final class FleetStore {
         hidden = []
         ring = InboxRing()
         documents = [:]
+        taskActionsUnavailable = false
+        taskDetailUnavailable = false
         connection = .connecting
     }
 
@@ -463,6 +470,42 @@ public final class FleetStore {
         } catch {
             lastError = error.localizedDescription
             return false
+        }
+    }
+
+    @discardableResult
+    public func cancel(_ task: WorkTask) async -> Bool {
+        await taskAction { try await $0.cancelTask(task.id) }
+    }
+
+    @discardableResult
+    public func reopen(_ task: WorkTask) async -> Bool {
+        await taskAction { try await $0.reopenTask(task.id) }
+    }
+
+    private func taskAction(_ action: @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        do {
+            try await action(client)
+            return true
+        } catch AlondraError.unexpected(404) {
+            taskActionsUnavailable = true
+            return false
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
+    /// The task's history, which only its own endpoint carries; nil while alondrad has none.
+    public func history(of task: WorkTask) async -> [WorkTask.Transition]? {
+        guard !taskDetailUnavailable else { return nil }
+        do {
+            return try await client.task(task.id).history
+        } catch AlondraError.unexpected(404) {
+            taskDetailUnavailable = true
+            return nil
+        } catch {
+            return nil
         }
     }
 

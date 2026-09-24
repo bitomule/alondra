@@ -100,9 +100,14 @@ pub struct PullRequest {
     /// The head commit when changes were last requested; empty when it was not known yet.
     #[serde(default)]
     pub changes_requested_on: Option<String>,
-    /// The user let the node that opened it merge it on its own: it is tracked, not a card.
+    /// The user let Alondra merge it once its checks pass: it is tracked, not a card.
     #[serde(default)]
     pub auto_merge: bool,
+    #[serde(default)]
+    pub draft: bool,
+    /// The task it belongs to; PRs recorded before tasks named one belong to their session's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 impl PullRequest {
@@ -132,6 +137,8 @@ impl PullRequest {
             head_sha: None,
             changes_requested_on: None,
             auto_merge: false,
+            draft: false,
+            task: None,
         })
     }
 
@@ -197,7 +204,7 @@ mod tests {
         use crate::event::Event;
         use crate::view::View;
         let mut v = View::default();
-        let opened = |url: &str| Event::PrOpened { url: url.into(), session_id: "s".into() };
+        let opened = |url: &str| Event::PrOpened { url: url.into(), session_id: "s".into(), task: None };
         v.apply(1, 10, &opened("https://github.com/a/b/pull/3"));
         v.apply(2, 11, &opened("https://github.com/a/b/pull/3/files"));
         assert_eq!(v.prs.len(), 1, "the same PR mentioned twice");
@@ -230,7 +237,7 @@ mod tests {
         ];
         for &(head_at_review, head_now, waits) in cases {
             let mut v = View::default();
-            v.apply(1, 10, &Event::PrOpened { url: "https://github.com/a/b/pull/3".into(), session_id: "s".into() });
+            v.apply(1, 10, &Event::PrOpened { url: "https://github.com/a/b/pull/3".into(), session_id: "s".into(), task: None });
             let mut pr = v.prs[&1].clone();
             pr.head_sha = head_at_review.map(str::to_string);
             v.apply(2, 11, &Event::PrUpdated(pr.clone()));

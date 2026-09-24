@@ -161,7 +161,7 @@ fn builtins() -> [Spec; 2] {
             kind: Kind::Choice,
             values: vec![
                 v(REVIEW, "review each PR", "Each PR the node opens is a card for you; the node waits for your merge"),
-                v(AUTO_MERGE, "auto-merge", "The node merges its own PR once its checks pass"),
+                v(AUTO_MERGE, "auto-merge", "Alondra merges the node's PR once its checks pass"),
             ],
             default: Choice::Value(REVIEW.into()),
             builtin: true,
@@ -477,9 +477,9 @@ impl Resolved {
         };
         let mut lines = vec!["## Launch options".to_string(), String::new(), who];
         lines.push(if self.auto_merge {
-            "- PR handling: auto-merge. Merge your own PR once its checks pass and the repo's own checks are clean.".into()
+            "- PR handling: auto-merge. Open the PR and end your turn: Alondra merges it once its checks pass and GitHub can merge it, then types the merge notice into this session, or what only you can fix (failed checks, conflicts). Do not merge it yourself or wait on its checks; when the notice arrives, do what the merge unblocks and report final.".into()
         } else {
-            "- PR handling: review each PR. If you open a PR, report it: the user reviews it on its PR card. Do not merge it yourself; you are told when it is merged, and then you continue.".into()
+            "- PR handling: review each PR. If you open a PR, the user reviews it on its PR card; do not merge it yourself. If nothing is left for you after the merge, report final with the PR in links; otherwise wait: the merge notice is typed into this session and you continue.".into()
         });
         for p in self.picked.iter().filter(|p| p.id != PR && p.id != EFFORT) {
             match &p.mission {
@@ -659,7 +659,7 @@ on = "Run /review-loop before the merge."
             "## Launch options",
             "",
             "The user chose these for this work (request r-7):",
-            "- PR handling: auto-merge. Merge your own PR once its checks pass and the repo's own checks are clean.",
+            "- PR handling: auto-merge. Open the PR and end your turn: Alondra merges it once its checks pass and GitHub can merge it, then types the merge notice into this session, or what only you can fix (failed checks, conflicts). Do not merge it yourself or wait on its checks; when the notice arrives, do what the merge unblocks and report final.",
             "- How far: merge and install. After the merge, run the install target.",
             "- Try on device: yes. Ask the user to try it on a device.",
             "- Adversarial review: yes. Run /review-loop before the merge.",
