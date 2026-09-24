@@ -162,7 +162,7 @@ struct TaskRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(task.title)
+            Text(store.board.rowTitle(of: task))
                 .fontWeight(.medium)
                 .strikethrough(task.state == .cancelled)
                 .lineLimit(2)
@@ -177,7 +177,7 @@ struct TaskRow: View {
     }
 
     private var subtitle: String {
-        [store.project(of: task), store.now(for: task) ?? task.state.label].compactMap(\.self).joined(separator: " · ")
+        [store.project(of: task), store.now(for: task) ?? store.board.stateLabel(of: task)].compactMap(\.self).joined(separator: " · ")
     }
 }
 
@@ -200,7 +200,8 @@ struct DefiningRow: View {
     }
 
     private var whatHappens: String {
-        request.state == .done ? String(localized: "finished without tasks") : String(localized: "the orchestrator is splitting it")
+        if request.state == .done { return String(localized: "finished without tasks") }
+        return request.isLeftDefining() ? String(localized: "the orchestrator left it without tasks") : String(localized: "the orchestrator is splitting it")
     }
 }
 

@@ -302,7 +302,11 @@ struct RequestDetail: View {
             }
             if request.state == .defining {
                 TaskSection(String(localized: "Right now")) {
-                    Text("The orchestrator is splitting it into tasks.")
+                    Text(
+                        request.isLeftDefining()
+                            ? String(localized: "The orchestrator left it without tasks and did not close it: withdraw it if it is no longer needed.")
+                            : String(localized: "The orchestrator is splitting it into tasks.")
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)

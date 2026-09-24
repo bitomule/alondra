@@ -8,6 +8,7 @@ struct TaskLink: Hashable {
 struct TasksTab: View {
     @Environment(FleetStore.self) private var fleet
     @State private var showSettings = false
+    @State private var showDone = false
     @State private var showArchived = false
 
     var body: some View {
@@ -29,25 +30,11 @@ struct TasksTab: View {
                         }
                         let done = fleet.board.doneTrees
                         if !done.isEmpty {
-                            Text(String(localized: "requests-done.header", defaultValue: "Done"))
-                                .font(.footnote.weight(.bold))
-                                .textCase(.uppercase)
-                                .kerning(0.6)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 20)
-                                .padding(.top, 26)
-                                .padding(.bottom, 8)
-                            VStack(spacing: 0) {
-                                ForEach(Array(done.enumerated()), id: \.element.id) { index, tree in
-                                    DoneRequestRow(tree: tree, first: index == 0)
-                                }
-                            }
-                            .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
-                            .padding(.horizontal, 16)
+                            FoldedSection(title: String(localized: "Finished (\(done.count))"), trees: done, expanded: $showDone)
                         }
                         let archived = fleet.board.archivedTrees
                         if !archived.isEmpty {
-                            ArchivedSection(trees: archived, count: fleet.board.archivedCount, expanded: $showArchived)
+                            FoldedSection(title: String(localized: "Archived (\(fleet.board.archivedCount))"), trees: archived, expanded: $showArchived)
                         }
                     }
                 }
@@ -98,7 +85,7 @@ struct TasksTab: View {
     }
 
     private var summary: String {
-        let tasks = fleet.board.tasks.values
+        let tasks = fleet.board.tasks.values.filter { !fleet.board.isHidden($0) }
         var parts = [String(localized: "\(fleet.board.activeTrees.count) requests")]
         let needsYou = tasks.count(where: { $0.state == .needsYou })
         let inReview = tasks.count(where: { $0.state == .inReview })
@@ -125,6 +112,8 @@ private struct RequestSection: View {
     @Environment(FleetStore.self) private var fleet
     @State private var confirmingWithdraw = false
 
+    private var single: Bool { tree.rows.count == 1 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .bottom, spacing: 10) {
@@ -143,13 +132,17 @@ private struct RequestSection: View {
                             .foregroundStyle(.tertiary)
                     }
                     .lineLimit(1)
-                    Text(fleet.title(of: tree.request))
-                        .font(.display(.title3, weight: .bold))
-                        .foregroundStyle(Palette.ink)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !single {
+                        Text(fleet.title(of: tree.request))
+                            .font(.display(.title3, weight: .bold))
+                            .foregroundStyle(Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 8)
-                StateChip(label: tree.request.state.label, tint: tree.request.state.tint)
+                if !single {
+                    StateChip(label: tree.rows.isEmpty ? tree.request.definingLabel() : tree.request.state.label, tint: tree.request.state.tint)
+                }
                 if tree.request.canWithdraw {
                     Menu {
                         Button("Withdraw Request", systemImage: "xmark.circle", role: .destructive) {
@@ -169,7 +162,7 @@ private struct RequestSection: View {
             .padding(.bottom, 9)
             VStack(spacing: 0) {
                 if tree.rows.isEmpty {
-                    DefiningRow(since: tree.request.createdAt)
+                    DefiningRow(request: tree.request)
                 } else {
                     ForEach(Array(tree.rows.enumerated()), id: \.element.id) { index, row in
                         TaskTreeRowView(row: row, first: index == 0)
@@ -191,7 +184,7 @@ private struct RequestSection: View {
 
     private var meta: String {
         let when = relative(tree.request.createdAt)
-        guard !tree.rows.isEmpty else { return when }
+        guard tree.rows.count > 1 else { return when }
         return "\(when) · \(String(localized: "\(tree.rows.count) tasks"))"
     }
 }
@@ -214,16 +207,17 @@ struct StateChip: View {
 }
 
 private struct DefiningRow: View {
-    let since: Int64
+    let request: WorkRequest
 
     var body: some View {
+        let left = request.isLeftDefining()
         HStack(alignment: .top, spacing: 12) {
-            Glyph(symbol: "ellipsis", tint: Palette.slate, pulse: true)
+            Glyph(symbol: "diamond", tint: Palette.slate, pulse: !left)
             VStack(alignment: .leading, spacing: 3) {
-                Text("The orchestrator is splitting it into tasks")
+                Text(left ? String(localized: "The orchestrator left it without tasks") : String(localized: "The orchestrator is splitting it into tasks"))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                StateLine(label: WorkRequest.State.defining.label, tint: Palette.slate, since: since)
+                StateLine(label: request.definingLabel(), tint: Palette.slate, since: request.createdAt)
             }
             Spacer(minLength: 0)
         }
@@ -270,12 +264,12 @@ private struct TaskTreeRowView: View {
                 HStack(alignment: .top, spacing: 12) {
                     Glyph(task: task)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(task.title)
+                        Text(fleet.board.rowTitle(of: task))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(task.state == .cancelled ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
                             .strikethrough(task.state == .cancelled)
                             .multilineTextAlignment(.leading)
-                        StateLine(label: task.state.label, tint: task.tint, since: task.stateSince)
+                        StateLine(label: fleet.board.stateLabel(of: task), tint: task.tint, since: task.stateSince)
                         if let now {
                             NowLine(text: now)
                                 .padding(.top, 1)
@@ -399,17 +393,20 @@ private struct DoneRequestRow: View {
     }
 
     private func content(since: Int64) -> some View {
-        HStack(spacing: 8) {
+        let cancelled = tree.isCancelled
+        return HStack(spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
-                Glyph(symbol: "checkmark", tint: Palette.sage)
+                Glyph(symbol: cancelled ? "xmark" : "checkmark", tint: cancelled ? Palette.slate : Palette.sage)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(fleet.title(of: tree.request))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Palette.ink)
                         .multilineTextAlignment(.leading)
-                    StateLine(label: tree.request.state.label, tint: Palette.sage, since: since)
-                    NowLine(text: tree.rows.isEmpty ? String(localized: "Finished without tasks") : String(localized: "\(tree.rows.count) tasks"))
-                        .padding(.top, 1)
+                    StateLine(label: cancelled ? WorkTask.State.cancelled.label : tree.request.state.label, tint: cancelled ? Palette.slate : Palette.sage, since: since)
+                    if tree.rows.count != 1 {
+                        NowLine(text: tree.rows.isEmpty ? String(localized: "Finished without tasks") : String(localized: "\(tree.rows.count) tasks"))
+                            .padding(.top, 1)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -422,10 +419,10 @@ private struct DoneRequestRow: View {
     }
 }
 
-/// Finished work the user archived: folded under its count until opened.
-private struct ArchivedSection: View {
+/// Finished or archived work: folded under its count until opened.
+private struct FoldedSection: View {
+    let title: String
     let trees: [RequestTree]
-    let count: Int
     @Binding var expanded: Bool
 
     var body: some View {
@@ -433,7 +430,7 @@ private struct ArchivedSection: View {
             withAnimation(.smooth) { expanded.toggle() }
         } label: {
             HStack(spacing: 6) {
-                Text("Archived (\(count))")
+                Text(verbatim: title)
                 Image(systemName: "chevron.right")
                     .rotationEffect(.degrees(expanded ? 90 : 0))
                     .accessibilityHidden(true)
@@ -447,7 +444,7 @@ private struct ArchivedSection: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(.isHeader)
-        .accessibilityHint(expanded ? Text("Hides the archived tasks") : Text("Shows the archived tasks"))
+        .accessibilityHint(expanded ? Text("Hides them") : Text("Shows them"))
         .padding(.horizontal, 20)
         .padding(.top, 26)
         .padding(.bottom, 8)

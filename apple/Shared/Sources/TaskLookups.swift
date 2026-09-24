@@ -112,8 +112,7 @@ extension FleetStore {
             if let pr = pullRequests(of: task).first, let below = pr.belowNumber {
                 return String(localized: "PR #\(String(pr.number)) on top of #\(String(below))", table: "AlondraShared", bundle: #bundle)
             }
-            guard let first = board.dependencies(of: task).first(where: { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }) else { return nil }
-            return String(localized: "after “\(first.title)”", table: "AlondraShared", bundle: #bundle)
+            return nil
         case .closing:
             return String(localized: "merged; the node does what the merge unblocks", table: "AlondraShared", bundle: #bundle)
         case .running, .done, .cancelled:
