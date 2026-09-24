@@ -5,6 +5,10 @@ nodes that are born and die, questions that get answered, reports that get read 
 that wait for changes, and records the process's resident memory every 5 minutes in a CSV.
 
     python3 tools/soak.py --hours 72 --out soak.csv
+
+An accelerated run shortens retention and compaction so a leak shows within the hour:
+
+    python3 tools/soak.py --hours 1.25 --retention-hours 0.083 --compact-every-hours 0.042 --every 60
 """
 
 import argparse
@@ -70,16 +74,24 @@ def waiter(stop):
 
 
 def main():
+    global PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=72)
     ap.add_argument("--out", default="soak.csv")
     ap.add_argument("--binary", default=os.path.expanduser("~/.local/bin/alondrad"))
+    ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--retention-hours", default="0.5")
+    ap.add_argument("--compact-every-hours", default="0.25")
+    ap.add_argument("--every", type=int, default=300, help="seconds between samples")
     args = ap.parse_args()
+
+    PORT = args.port
     home = f"/tmp/alondra-soak-{os.getpid()}"
     os.makedirs(home, exist_ok=True)
     binary = os.path.join(home, "alondrad-soak")
     shutil.copy2(args.binary, binary)
-    env = dict(os.environ, ALONDRA_HOME=home, ALONDRA_PORT=str(PORT), ALONDRA_HOLD="0", ALONDRA_RETENTION_HOURS="0.5", ALONDRA_COMPACT_EVERY_HOURS="0.25",
+    env = dict(os.environ, ALONDRA_HOME=home, ALONDRA_PORT=str(PORT), ALONDRA_HOLD="0",
+               ALONDRA_RETENTION_HOURS=args.retention_hours, ALONDRA_COMPACT_EVERY_HOURS=args.compact_every_hours,
                CLAUDE_HOME=home + "/no-claude")
     proc = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
@@ -89,14 +101,15 @@ def main():
         w.start()
     end = time.time() + args.hours * 3600
     with open(args.out, "a") as out:
-        out.write("epoch,minutes,rss_kb,events_db_bytes\n")
+        out.write("epoch,minutes,rss_kb,events_db_bytes,cpu_seconds\n")
         start = time.time()
         while time.time() < end and proc.poll() is None:
-            rss = subprocess.run(["ps", "-o", "rss=", "-p", str(proc.pid)], capture_output=True, text=True).stdout.strip()
+            rss, cpu = subprocess.run(["ps", "-o", "rss=,time=", "-p", str(proc.pid)], capture_output=True, text=True).stdout.split()
+            cpu = sum(float(x) * 60 ** i for i, x in enumerate(reversed(cpu.split(":"))))
             db = sum(os.path.getsize(os.path.join(home, f)) for f in os.listdir(home) if f.startswith("alondra.db"))
-            out.write(f"{int(time.time())},{int((time.time() - start) / 60)},{rss},{db}\n")
+            out.write(f"{int(time.time())},{int((time.time() - start) / 60)},{rss},{db},{cpu:.1f}\n")
             out.flush()
-            time.sleep(300)
+            time.sleep(args.every)
     stop.set()
     proc.terminate()
 

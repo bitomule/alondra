@@ -33,21 +33,39 @@ pub struct View {
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
 
 impl View {
+    /// Forgets what nobody can act on any more: anything older than the retention window except
+    /// the inbox (open questions, unread reports) and nodes Alondra can still watch. A node that
+    /// only speaks through hooks has no process to watch, so once it has been silent for the whole
+    /// window and leaves nothing in the inbox it is gone. An answer still undelivered after the
+    /// window never will be: only nodes in the daemon can be woken to receive one.
     pub fn prune(&mut self, before: Millis) {
-        self.questions.retain(|_, q| {
-            let settled = matches!(
-                q.status,
-                QuestionStatus::Delivered | QuestionStatus::Withdrawn | QuestionStatus::Orphaned | QuestionStatus::AnsweredInTerminal
-            );
-            !(settled && q.asked_at < before)
-        });
+        let mut heard: std::collections::HashMap<&str, Millis> = std::collections::HashMap::new();
+        let activity = self.questions.values().map(|q| (q.session_id.as_str(), q.asked_at))
+            .chain(self.reports.values().map(|r| (r.session_id.as_str(), r.created_at)))
+            .chain(self.messages.values().map(|m| (m.session_id.as_str(), m.created_at)));
+        for (sid, at) in activity {
+            heard.entry(sid).and_modify(|t| *t = (*t).max(at)).or_insert(at);
+        }
+        let in_inbox: std::collections::HashSet<&str> = self.questions.values().filter(|q| q.status.is_open()).map(|q| q.session_id.as_str())
+            .chain(self.reports.values().filter(|r| !r.read).map(|r| r.session_id.as_str()))
+            .collect();
+        let gone: Vec<String> = self
+            .nodes
+            .values()
+            .filter(|n| {
+                let watched = n.in_daemon || n.is_orchestrator || (n.alive && n.pid.is_some());
+                let last = heard.get(n.session_id.as_str()).map_or(n.last_seen, |t| (*t).max(n.last_seen));
+                !watched && last < before && !in_inbox.contains(n.session_id.as_str())
+            })
+            .map(|n| n.session_id.clone())
+            .collect();
+        for sid in &gone {
+            self.nodes.remove(sid);
+        }
+        self.questions.retain(|_, q| q.status.is_open() || q.asked_at >= before);
         self.reports.retain(|_, r| !(r.read && r.created_at < before));
         self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
-        let nodes = &self.nodes;
-        self.messages.retain(|_, m| {
-            let settled = m.delivered_at.is_some() || !nodes.contains_key(&m.session_id);
-            !(settled && m.created_at < before)
-        });
+        self.messages.retain(|_, m| m.created_at >= before);
     }
 
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
@@ -794,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_drops_only_settled_old_things() {
+    fn prune_drops_old_things_that_are_not_in_the_inbox() {
         let mut v = View::default();
         v.apply(1, 1000, &hook("s", "Stop"));
         let q = |id: u64, status: QuestionStatus, at: Millis| Question {
@@ -823,7 +841,44 @@ mod tests {
         v.questions.insert(3, q(3, QuestionStatus::Answered, 100));
         v.questions.insert(4, q(4, QuestionStatus::Delivered, 9000));
         v.apply(2, 10_000, &Event::Pruned { before: 5000 });
-        assert_eq!(v.questions.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4]);
+        assert_eq!(v.questions.keys().copied().collect::<Vec<_>>(), vec![2, 4]);
+    }
+
+    #[test]
+    fn view_stays_bounded_when_hook_only_nodes_go_silent_with_answers_never_picked_up() {
+        let mut v = View::default();
+        let (mut seq, hour) = (0u64, 3_600_000);
+        let mut next = |v: &mut View, at: Millis, e: Event| {
+            seq += 1;
+            v.apply(seq, at, &e);
+        };
+        let mut sizes = vec![];
+        for cycle in 0..20i64 {
+            let at = cycle * hour;
+            for i in 0..11 {
+                let sid = if i == 10 { "live".to_string() } else { format!("s{cycle}-{i}") };
+                let id = (cycle * 11 + i) as u64 + 1;
+                next(&mut v, at, hook(&sid, "PreToolUse"));
+                let mut q = question(id, &sid, QuestionOrigin::Ask);
+                q.asked_at = at;
+                next(&mut v, at, Event::QuestionAsked(q));
+                let answer = crate::model::Answer { text: "Yes".into(), option: None, by: None, device: None, at };
+                next(&mut v, at, Event::QuestionAnswered { id, answer });
+                next(&mut v, at, Event::MessageQueued(Message {
+                    id,
+                    session_id: sid.clone(),
+                    from: MessageFrom::User,
+                    text: "Yes".into(),
+                    answers_question: Some(id),
+                    created_at: at,
+                    handed_at: None,
+                    delivered_at: None,
+                }));
+            }
+            next(&mut v, at, Event::Pruned { before: at - 2 * hour });
+            sizes.push((v.nodes.len(), v.questions.len(), v.messages.len()));
+        }
+        assert_eq!(sizes.last(), Some(&(31, 33, 33)), "sizes per cycle: {sizes:?}");
     }
 
     fn report(id: u64, sid: &str, kind: ReportKind, at: Millis) -> Event {
