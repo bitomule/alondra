@@ -52,11 +52,14 @@ pub struct OpenQuestion {
     pub question: Question,
     #[serde(default)]
     pub pr_id: Option<u64>,
+    /// The report this question is about; it is shown inside the question, not as its own card.
+    #[serde(default)]
+    pub report: Option<Report>,
 }
 
 impl From<Question> for OpenQuestion {
     fn from(question: Question) -> Self {
-        OpenQuestion { question, pr_id: None }
+        OpenQuestion { question, pr_id: None, report: None }
     }
 }
 

@@ -28,6 +28,9 @@ What you write in your terminal does not reach the user; only Alondra's tools do
 - **A document for them to read** (plan, long report) → `report` with `kind: "document"` and the
   path in `attachments`. If you also need them to **approve** it, it is not a report: it is an
   `ask` with the document attached.
+- **A question right after your own report on the same thing** → cite the report by number in
+  the question (`informe #N`), or attach the same file or link the same URL: Alondra shows the
+  report inside the question as one card, as long as it is unread and at most 30 minutes old.
 - **Stopped by the machine** (RAM, build queue, usage limit) → `wait_for_machine`.
 - **You opened a PR** → put its URL in your `report` or `links`: Alondra gives it its own card,
   where the user merges, requests changes or sets it aside, and counts you as waiting for the

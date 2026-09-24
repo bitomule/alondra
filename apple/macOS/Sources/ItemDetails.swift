@@ -51,6 +51,22 @@ struct QuestionDetail: View {
                     AttachmentDocument(attachment: attachment, anchorPrefix: "adjunto\(index)", store: store, draft: draft, focus: $focus)
                 }
                 LinksRow(links: question.links, attachments: otherAttachments)
+                if let report = question.report {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(report.title)
+                                .font(.headline)
+                            if let body = report.body, !body.isEmpty {
+                                MarkdownText(text: body)
+                                    .font(.callout)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text")
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty {
                     DisclosureGroup("What the node said last") {
                         MarkdownText(text: context)
