@@ -1,4 +1,5 @@
 mod draw;
+mod files;
 mod input;
 mod keys;
 mod md;
@@ -294,7 +295,7 @@ enum Msg {
     Data(Box<Overview>),
     Offline,
     Posted { key: Option<Key>, result: Result<String, String> },
-    File { path: String, result: Result<String, String> },
+    File { path: String, result: Result<files::FileBody, String> },
     Found { query: String, result: Result<(String, Vec<String>), String> },
 }
 
@@ -329,7 +330,12 @@ pub struct App {
     pub reader: Option<Reader>,
     pub reviews: HashMap<Key, Review>,
     drafts: HashMap<String, String>,
-    pub files: HashMap<String, Result<String, String>>,
+    pub files: HashMap<String, Result<files::FileBody, String>>,
+    /// How images are drawn in this terminal: Kitty graphics in Ghostty and Kitty, iTerm2 or sixel
+    /// where supported, colour half-blocks elsewhere. Found once, when the TUI starts.
+    pub picker: Option<ratatui_image::picker::Picker>,
+    /// Each image, encoded for the terminal, by stored path.
+    pub images: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
     loading: HashSet<String>,
     pub flash: Option<Flash>,
     pub help: bool,
@@ -354,7 +360,9 @@ pub fn run() -> Result<()> {
     crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
-    let res = main_loop(&mut terminal, App::new(tx), rx);
+    let mut app = App::new(tx);
+    app.picker = Some(ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()));
+    let res = main_loop(&mut terminal, app, rx);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     crate::attach::reset_terminal_modes();
@@ -497,12 +505,12 @@ fn has_comments(export: &str) -> bool {
 }
 
 /// Where to open a PR's repo: the node's own checkout, else `~/Projects/<name>`.
-/// The default browser, through macOS `open`. Tests never open one.
-fn open_in_browser(url: &str) {
+/// The Mac's default app for a URL or file, through `open`. Tests never open one.
+fn open_with_mac(target: &str) {
     if cfg!(test) {
         return;
     }
-    let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+    let _ = std::process::Command::new("/usr/bin/open").arg(target).spawn();
 }
 
 fn clone_of(node_cwd: Option<&str>, repo: &str) -> Option<std::path::PathBuf> {
@@ -546,6 +554,8 @@ impl App {
             reviews: HashMap::new(),
             drafts: HashMap::new(),
             files: HashMap::new(),
+            picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
+            images: HashMap::new(),
             loading: HashSet::new(),
             flash: None,
             help: false,
@@ -742,8 +752,8 @@ impl App {
         let path = path.to_string();
         self.spawn(move |tx| {
             let result = Client::for_user(Duration::from_secs(10))
-                .get_text(&format!("/v1/file?path={}", urlencode(&path)))
-                .map(|(_, body)| body)
+                .get_bytes(&format!("/v1/file?path={}", urlencode(&path)))
+                .map(files::FileBody::classify)
                 .map_err(|e| e.to_string());
             let _ = tx.send(Msg::File { path, result });
         });
@@ -817,6 +827,9 @@ impl App {
             }
             Msg::File { path, result } => {
                 self.loading.remove(&path);
+                if let (Ok(files::FileBody::Image(img)), Some(picker)) = (&result, &self.picker) {
+                    self.images.insert(path.clone(), picker.new_resize_protocol((**img).clone()));
+                }
                 self.files.insert(path.clone(), result);
                 if self.reader.as_ref().is_some_and(|r| r.parts.iter().any(|p| matches!(p, Part::File { path: fp, .. } if *fp == path))) {
                     self.rebuild_reader();
@@ -1111,13 +1124,31 @@ impl App {
                     self.compose(Target::PrChanges { id: p.pr.id, title: p.pr.title }, "");
                 }
             }
+            KeyCode::Char('v') => {
+                let attachments = match self.sel.and_then(|k| self.item(k)) {
+                    Some(Item::Q(q)) => q.attachments.clone(),
+                    Some(Item::R(r)) => r.attachments.clone(),
+                    _ => vec![],
+                };
+                let shown_elsewhere: Vec<String> = attachments
+                    .iter()
+                    .filter_map(|a| a.stored_path.clone())
+                    .filter(|p| matches!(self.files.get(p), Some(Ok(files::FileBody::Image(_) | files::FileBody::Binary { .. }))))
+                    .collect();
+                if shown_elsewhere.is_empty() {
+                    self.fail(tr!("No image or file to open here", "Aquí no hay imagen ni fichero que abrir"));
+                } else {
+                    shown_elsewhere.iter().for_each(|p| open_with_mac(p));
+                    self.flash(tr!("Opened with its app", "Abierto con su aplicación"));
+                }
+            }
             KeyCode::Char('b') => {
                 if let Some(r) = self.selected_report() {
                     let artifacts = alondra_core::artifact::in_report(&r);
                     if artifacts.is_empty() {
                         self.fail(tr!("This report has no artifact to open", "Este informe no tiene ningún artefacto que abrir"));
                     } else {
-                        artifacts.iter().for_each(|url| open_in_browser(url));
+                        artifacts.iter().for_each(|url| open_with_mac(url));
                         self.flash(tr!("Opened in the browser", "Abierto en el navegador"));
                     }
                 }
@@ -1355,7 +1386,8 @@ impl App {
                 Part::File { name, path } => {
                     blocks.push(Block::label(&format!("📎 {name}")));
                     match self.files.get(path) {
-                        Some(Ok(text)) => blocks.extend(md::parse(text)),
+                        Some(Ok(files::FileBody::Text(text))) => blocks.extend(md::parse(text)),
+                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body))),
                         Some(Err(e)) => blocks.push(Block::para(&trf!("Could not load the file: {e}", "No he podido cargar el fichero: {e}"))),
                         None => blocks.push(Block::para(tr!("Loading…", "Cargando…"))),
                     }
