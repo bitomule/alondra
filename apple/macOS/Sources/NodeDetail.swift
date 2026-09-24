@@ -153,7 +153,7 @@ struct NodeDetail: View {
 
     private func taskLine(_ task: WorkTask) -> String {
         guard let request = store.request(of: task) else { return task.state.label }
-        return "\(task.state.label) · \(String(localized: "from «\(store.title(of: request))»"))"
+        return "\(task.state.label) · \(String(localized: "from “\(store.title(of: request))”"))"
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -182,7 +182,7 @@ private struct ThreadRow: View {
                     Text(activity.thread)
                         .fontWeight(.medium)
                     if !activity.isMainThread, let task {
-                        Text("· subagent of «\(task.title)»")
+                        Text("· subagent of “\(task.title)”")
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }

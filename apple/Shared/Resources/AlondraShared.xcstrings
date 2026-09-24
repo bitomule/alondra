@@ -1539,7 +1539,7 @@
         }
       }
     },
-    "after «%@»": {
+    "after “%@”": {
       "localizations": {
         "es": {
           "stringUnit": {
@@ -1559,7 +1559,7 @@
         }
       }
     },
-    "It starts once «%@» (%@) has its PR open, builds on top of it, and its own PR merges after that one.": {
+    "It starts once “%@” (%@) has its PR open, builds on top of it, and its own PR merges after that one.": {
       "localizations": {
         "es": {
           "stringUnit": {
