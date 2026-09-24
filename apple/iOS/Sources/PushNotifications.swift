@@ -6,13 +6,19 @@ import UserNotifications
 
 struct NotificationItem: Hashable, Sendable {
     enum Kind: String, Sendable {
-        case question, report
+        case question, report, pr
     }
 
     let kind: Kind
     let id: UInt64
 
-    var inboxID: String { kind == .question ? "q\(id)" : "r\(id)" }
+    var inboxID: String {
+        switch kind {
+        case .question: "q\(id)"
+        case .report: "r\(id)"
+        case .pr: "p\(id)"
+        }
+    }
 
     init?(userInfo: [AnyHashable: Any]) {
         guard let alondra = userInfo["alondra"] as? [String: Any],
@@ -254,7 +260,7 @@ final class PushCenter {
         guard let item = response.item else { return }
         switch response.action {
         case UNNotificationDefaultActionIdentifier:
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind == .report)
+            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question)
         case NotificationCategory.review:
             route = NotificationRoute(itemID: item.inboxID, opensDetail: true)
         case NotificationCategory.reply:

@@ -1041,6 +1041,16 @@
         }
       }
     },
+    "PR #%@ ready to review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ lista para revisar"
+          }
+        }
+      }
+    },
     "PR #%llu": {
       "localizations": {
         "es": {
