@@ -202,7 +202,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
 
 fn finished_report(v: &View, node: &Node) -> Report {
     let said = what_it_said(node).unwrap_or_default();
-    let first = said.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
+    let first = first_line(&said);
     let first_sentence = first.split_inclusive(". ").next().unwrap_or(first).trim();
     let (title, body) = if first_sentence.is_empty() {
         (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None)
@@ -238,6 +238,10 @@ fn plain(text: &str) -> String {
 
 fn last_question(message: &str) -> Option<&str> {
     markdown::prose_lines(message).into_iter().rev().find(|l| l.ends_with('?'))
+}
+
+fn first_line(message: &str) -> &str {
+    markdown::prose_lines(message).into_iter().find(|l| !l.is_empty()).unwrap_or_default()
 }
 
 fn last_line(message: &str) -> &str {
@@ -286,6 +290,14 @@ mod tests {
         for (name, message, line, question) in cases {
             assert_eq!(last_line(message), line, "{name}");
             assert_eq!(last_question(message), question, "{name}");
+        }
+        let firsts = [
+            ("plain first", "Shipped 4.5.0.\nAll green.", "Shipped 4.5.0."),
+            ("table row first", "| app | size |\n|---|---|\n| Lumo | 12 |\nSizes are stable.", "Sizes are stable."),
+            ("code first", "```sh\nmake test\n```\nTests pass.", "Tests pass."),
+        ];
+        for (name, message, line) in firsts {
+            assert_eq!(first_line(message), line, "{name}");
         }
     }
 
