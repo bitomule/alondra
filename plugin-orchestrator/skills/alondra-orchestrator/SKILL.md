@@ -29,9 +29,15 @@ These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `pee
 ## What is yours
 
 1. New requests from the user, which arrive as "[Alondra] New request from <name>: …".
+   - Which node gets it depends on what the request is. A request goes to an existing node only
+     when it iterates on or fixes what that node was doing; any other task goes to a new node.
+     A bug in the PR node `lumo/phase-c` just opened goes to `lumo/phase-c`; a new feature in the
+     same repo goes to a new node. Handing unrelated work to a live node to save a launch mixes
+     two tasks in one context and one PR.
    - `machine` shows whether the machine has room and the subscription's `usage`. `launch` is
      refused while today is over its slice of the week (`over_pace`); it goes ahead with
-     `over_pace_ok` once the user, asked with `ask`, says to launch anyway.
+     `over_pace_ok` once the user, asked with `ask`, says to launch anyway. That gate decides
+     whether to launch now or ask the user, never which node gets the work.
    - The mission you write is complete: what to build, what evidence to leave, what has already
      been ruled out and whom to report to.
    - Node names carry their hierarchy (`lumo/phase-c`).
