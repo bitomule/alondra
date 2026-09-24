@@ -592,6 +592,14 @@ mod tests {
     }
 
     fn report(kind: ReportKind) -> Event {
+        report_with(kind, false)
+    }
+
+    fn report_to_orchestrator(kind: ReportKind) -> Event {
+        report_with(kind, true)
+    }
+
+    fn report_with(kind: ReportKind, to_orchestrator: bool) -> Event {
         Event::ReportPosted(Report {
             related: vec![],
             id: 1,
@@ -604,6 +612,7 @@ mod tests {
             kind,
             created_at: T0,
             read: false,
+            to_orchestrator,
             mission: None,
             looks_like_question: false,
         })
@@ -670,6 +679,8 @@ mod tests {
             Case { what: "a final report", events: vec![hook("UserPromptSubmit"), report(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
             Case { what: "a notice", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a notice the user read", events: vec![hook("UserPromptSubmit"), report(ReportKind::Notice), hook("Stop"), Event::ReportRead { id: 1 }], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::Reviewed) },
+            Case { what: "a handoff final report, nothing else pending", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Final), hook("Stop")], sweep: None, state: NodeState::Done, row: row_named(NodeState::Done, Signal::FinalReport) },
+            Case { what: "a handoff notice, still working", events: vec![hook("UserPromptSubmit"), report_to_orchestrator(ReportKind::Notice), hook("Stop")], sweep: None, state: NodeState::Delivered, row: row_named(NodeState::Delivered, Signal::Report) },
             Case { what: "a background call past its limit", events: background(&[hook("UserPromptSubmit"), tool("PreToolUse", "t")]), sweep: Some((46 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::CallStuck) },
             Case { what: "a foreground tool nobody closed", events: vec![hook("UserPromptSubmit"), tool("PreToolUse", "t")], sweep: Some((46 * min, false)), state: NodeState::Unclear, row: stale },
             Case { what: "a background node that ended its turn without declaring", events: vec![daemon("working", "active", 0, None), hook("UserPromptSubmit"), hook("Stop")], sweep: Some((30 * min, false)), state: NodeState::Stalled, row: row_named(NodeState::Stalled, Signal::TurnEndedUndeclared) },

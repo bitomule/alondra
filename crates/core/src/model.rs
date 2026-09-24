@@ -527,6 +527,10 @@ pub struct Report {
     pub created_at: Millis,
     #[serde(default)]
     pub read: bool,
+    /// A handoff for the orchestrator, not a decision for the user: excluded from the user's
+    /// inbox, delivered through the fleet digest instead.
+    #[serde(default)]
+    pub to_orchestrator: bool,
     /// The node's mission, on cards Alondra built from its terminal, so they say what it was doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission: Option<String>,

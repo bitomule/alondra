@@ -48,6 +48,7 @@ pub fn announcement(v: &View, orchestrator: &Node, at: Millis) -> Report {
         kind: ReportKind::Notice,
         created_at: at,
         read: false,
+        to_orchestrator: false,
         mission: None,
         looks_like_question: false,
     }

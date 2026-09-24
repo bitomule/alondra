@@ -62,8 +62,8 @@ public final class FleetStore {
     }
 
     public var connected: Bool { connection == .online }
-    public var questions: [Question] { overview?.openQuestions ?? [] }
-    public var news: [Report] { overview?.news ?? [] }
+    public var questions: [Question] { (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true } }
+    public var news: [Report] { (overview?.news ?? []).filter { $0.toOrchestrator != true } }
     public var nodes: [Node] { overview?.nodes ?? [] }
     public var machine: Machine? { overview?.machine }
     public var usage: Usage? { overview?.usage }
