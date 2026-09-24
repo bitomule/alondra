@@ -1704,6 +1704,7 @@ pub(crate) mod tests {
 
     pub(super) fn question(id: u64, origin: QuestionOrigin, options: &[&str]) -> Question {
         Question {
+            related: vec![],
             id,
             session_id: "s1".into(),
             node_name: Some("demo".into()),
@@ -1728,6 +1729,7 @@ pub(crate) mod tests {
 
     pub(super) fn report(id: u64) -> Report {
         Report {
+            related: vec![],
             id,
             session_id: "s1".into(),
             node_name: Some("demo".into()),

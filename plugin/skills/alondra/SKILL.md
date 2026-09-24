@@ -31,11 +31,11 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 
 ## How Alondra groups things
 
-- Your question carries the unread reports you sent since the user or the orchestrator last
-  wrote to you (or since the user last typed in your terminal): it is one card with them, and
-  answering it reads them. Several reports in that same stretch are one card too, the newest on
-  top.
-- A question about an older report, or one relayed from another node, becomes one card with it
+- When you already have open cards for the user, an `ask` or `report` without `related` is
+  refused with the list of them; send it again with `related` set to the numbers it belongs
+  with (they become one card: a question carries those reports, a report stacks with them) or
+  `[]` if none.
+- A question about a report, including one relayed from another node, also becomes one card with it
   when the question cites the report (`informe #N`), attaches the same file or links the same URL,
   and the report is unread and at most 30 minutes old.
 - A PR you open (Alondra sees `gh pr create`) gets its own card, where the user merges,

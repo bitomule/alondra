@@ -139,6 +139,7 @@ fn card(v: &View, node: &Node, screen: &str) -> Question {
         ),
     };
     Question {
+        related: vec![],
         id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: node.session_id.clone(),
         node_name: Some(name),
@@ -353,6 +354,7 @@ mod tests {
     #[test]
     fn a_node_is_asked_about_whenever_it_is_not_visibly_working() {
         let notice = Event::ReportPosted(alondra_core::Report {
+            related: vec![],
             id: 1,
             session_id: "s".into(),
             node_name: None,

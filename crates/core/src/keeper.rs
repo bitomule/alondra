@@ -34,6 +34,7 @@ pub fn to_announce(v: &View) -> Option<&Node> {
 
 pub fn announcement(v: &View, orchestrator: &Node, at: Millis) -> Report {
     Report {
+        related: vec![],
         id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
         session_id: orchestrator.session_id.clone(),
         node_name: orchestrator.name.clone().or_else(|| Some(orchestrator.short_id.clone())),
