@@ -124,6 +124,114 @@ extension NodeState {
     }
 }
 
+extension WorkTask.State {
+    var tint: Color {
+        switch self {
+        case .waitingDependency, .cancelled: Palette.slate
+        case .running: Palette.sky
+        case .needsYou, .inReview: Palette.dawn
+        case .closing, .done: Palette.sage
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .waitingDependency: "link"
+        case .running: "hammer.fill"
+        case .needsYou: "hand.raised.fill"
+        case .inReview: "arrow.triangle.pull"
+        case .closing: "arrow.triangle.merge"
+        case .done: "checkmark"
+        case .cancelled: "xmark"
+        }
+    }
+}
+
+extension WorkTask {
+    /// An action the user has to carry out reads as "your turn", like its card.
+    var tint: Color { state == .needsYou && blocker?.isAction == true ? Palette.ember : state.tint }
+    var symbol: String { state == .needsYou && blocker?.isAction == true ? "hand.point.right.fill" : state.symbol }
+}
+
+extension WorkRequest.State {
+    var tint: Color {
+        switch self {
+        case .defining: Palette.slate
+        case .inProgress: Palette.sky
+        case .done: Palette.sage
+        }
+    }
+}
+
+extension NodeOccupancy {
+    var tint: Color {
+        switch self {
+        case .busy: Palette.sky
+        case .free: Palette.sage
+        case .waitingMachine: Palette.slate
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .busy: "hammer.fill"
+        case .free: "moon.zzz.fill"
+        case .waitingMachine: "hourglass"
+        }
+    }
+}
+
+extension Node {
+    /// The orchestrator keeps its node state; every other node shows whether it is busy.
+    var glyphTint: Color { isOrchestrator ? state.tint : occupancy.tint }
+    var glyphSymbol: String { isOrchestrator ? state.symbol : occupancy.symbol }
+    var glyphPulses: Bool { isOrchestrator ? state == .working : occupancy == .busy }
+}
+
+/// A state's symbol in a tinted circle, at the sizes the lists and cards use.
+struct Glyph: View {
+    enum Size {
+        case regular, small, tiny
+
+        var side: CGFloat {
+            switch self {
+            case .regular: 34
+            case .small: 22
+            case .tiny: 18
+            }
+        }
+
+        var font: Font {
+            switch self {
+            case .regular: .footnote.weight(.bold)
+            case .small: .caption2.weight(.bold)
+            case .tiny: .system(size: 9, weight: .bold)
+            }
+        }
+    }
+
+    let symbol: String
+    let tint: Color
+    var size = Size.regular
+    var pulse = false
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(size.font)
+            .foregroundStyle(tint)
+            .frame(width: size.side, height: size.side)
+            .background(tint.opacity(0.15), in: .circle)
+            .symbolEffect(.pulse, options: .repeating, isActive: pulse)
+            .accessibilityHidden(true)
+    }
+}
+
+extension Glyph {
+    init(task: WorkTask, size: Size = .regular) {
+        self.init(symbol: task.symbol, tint: task.tint, size: size, pulse: task.state == .running && size == .regular)
+    }
+}
+
 struct KindBadge: View {
     let kind: Kind
 

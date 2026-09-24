@@ -46,6 +46,7 @@ struct DetailHeader: View {
     let node: String?
     let date: Int64
     let title: String
+    var task: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -55,6 +56,13 @@ struct DetailHeader: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+            if let task {
+                Label(task, systemImage: "checklist")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityLabel(Text("Task: \(task)"))
             }
             Text(title)
                 .font(.title.weight(.semibold))

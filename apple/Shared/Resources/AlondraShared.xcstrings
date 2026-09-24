@@ -1250,6 +1250,524 @@
           }
         }
       }
+    },
+    "defining": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "definiendo"
+          }
+        }
+      }
+    },
+    "in progress": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en curso"
+          }
+        }
+      }
+    },
+    "request-state.done": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "hecha"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "done"
+          }
+        }
+      }
+    },
+    "waiting for another task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "esperando a otra"
+          }
+        }
+      }
+    },
+    "running": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en marcha"
+          }
+        }
+      }
+    },
+    "needs you": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "te espera"
+          }
+        }
+      }
+    },
+    "in review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "en revisión"
+          }
+        }
+      }
+    },
+    "closing": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "cerrando"
+          }
+        }
+      }
+    },
+    "task-state.done": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "hecha"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "done"
+          }
+        }
+      }
+    },
+    "cancelled": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "descartada"
+          }
+        }
+      }
+    },
+    "main": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "principal"
+          }
+        }
+      }
+    },
+    "busy": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ocupado"
+          }
+        }
+      }
+    },
+    "free": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libre"
+          }
+        }
+      }
+    },
+    "Defining": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Definiendo"
+          }
+        }
+      }
+    },
+    "Waiting for another task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando a otra"
+          }
+        }
+      }
+    },
+    "Running": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En marcha"
+          }
+        }
+      }
+    },
+    "Needs you": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Te espera"
+          }
+        }
+      }
+    },
+    "In review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En revisión"
+          }
+        }
+      }
+    },
+    "Closing": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrando"
+          }
+        }
+      }
+    },
+    "task-group.done": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hechas"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "Cancelled": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descartadas"
+          }
+        }
+      }
+    },
+    "Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Petición"
+          }
+        }
+      }
+    },
+    "permission: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "permiso: %@"
+          }
+        }
+      }
+    },
+    "your turn: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "te toca: %@"
+          }
+        }
+      }
+    },
+    "question: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pregunta: %@"
+          }
+        }
+      }
+    },
+    "document: %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "documento: %@"
+          }
+        }
+      }
+    },
+    "PR #%@ on top of #%@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ va encima del #%@"
+          }
+        }
+      }
+    },
+    "after «%@»": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tras «%@»"
+          }
+        }
+      }
+    },
+    "merged; the node does what the merge unblocks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "fusionada; el nodo hace lo que desbloquea la fusión"
+          }
+        }
+      }
+    },
+    "It starts once «%@» (%@) has its PR open, builds on top of it, and its own PR merges after that one.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empieza cuando «%@» (%@) tenga su PR abierto, se construye encima y su PR se fusiona después."
+          }
+        }
+      }
+    },
+    "PR #%@ · conflicts": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · conflictos"
+          }
+        }
+      }
+    },
+    "PR #%@ · checks failed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · checks fallidos"
+          }
+        }
+      }
+    },
+    "PR #%@ · merge #%@ first": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · fusiona antes el #%@"
+          }
+        }
+      }
+    },
+    "PR #%@ · waiting for checks, %lld of %lld": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · espera checks, %lld de %lld"
+          }
+        }
+      }
+    },
+    "PR #%@ · Alondra merges it when the checks pass": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · Alondra lo fusiona cuando pasen los checks"
+          }
+        }
+      }
+    },
+    "PR #%@ · ready to merge": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PR #%@ · listo para fusionar"
+          }
+        }
+      }
+    },
+    "a task it builds on has its PR open": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la tarea de la que depende ya tiene su PR abierto"
+          }
+        }
+      }
+    },
+    "the node needs a permission": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo necesita un permiso"
+          }
+        }
+      }
+    },
+    "the node asked you to do something": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo te pidió hacer algo"
+          }
+        }
+      }
+    },
+    "the node asked you something": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo te preguntó algo"
+          }
+        }
+      }
+    },
+    "the node opened a PR": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo abrió un PR"
+          }
+        }
+      }
+    },
+    "the node sent a document for review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo envió un documento para revisar"
+          }
+        }
+      }
+    },
+    "Alondra merged its PR": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra fusionó su PR"
+          }
+        }
+      }
+    },
+    "the node reported it finished": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo dijo que terminó"
+          }
+        }
+      }
+    },
+    "you answered": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "respondiste"
+          }
+        }
+      }
+    },
+    "you asked for changes": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pediste cambios"
+          }
+        }
+      }
+    },
+    "the node pushed changes and let you know again": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "el nodo subió cambios y te avisó otra vez"
+          }
+        }
+      }
+    },
+    "merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "fusionada"
+          }
+        }
+      }
+    },
+    "the review closed without a merge": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "la revisión se cerró sin fusionar"
+          }
+        }
+      }
+    },
+    "reopened": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "reabierta"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

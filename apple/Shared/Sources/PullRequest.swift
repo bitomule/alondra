@@ -37,6 +37,8 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
     public let stackBottom: UInt64?
     public let stackOpenedAt: Int64?
     public let stackPosition: Int?
+    /// The task this PR belongs to.
+    public let task: String?
 
     public static let allMethods = ["merge", "squash", "rebase"]
 

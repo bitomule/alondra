@@ -78,35 +78,49 @@ struct InboxRow: View {
 
 struct NodeRow: View {
     let node: Node
+    var tasks: [WorkTask] = []
 
     var body: some View {
-        HStack(spacing: 8) {
-            StatusDot(state: node.state)
-            Text(shortName(node.displayName))
-                .lineLimit(1)
-            if node.isOrchestrator {
-                Image(systemName: "sparkle")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .help("Orchestrator")
-            }
-            if let badge = node.backgroundBadge {
-                Spacer(minLength: 4)
-                Text(verbatim: badge.text)
-                    .font(.caption)
-                    .foregroundStyle(badge.suspect ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                StatusDot(color: node.dotColor)
+                Text(shortName(node.displayName))
                     .lineLimit(1)
+                if node.isOrchestrator {
+                    Image(systemName: "sparkle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("Orchestrator")
+                }
+                if let badge = node.backgroundBadge {
+                    Spacer(minLength: 4)
+                    Text(verbatim: badge.text)
+                        .font(.caption)
+                        .foregroundStyle(badge.suspect ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .lineLimit(1)
+                }
+            }
+            ForEach(tasks) { task in
+                HStack(spacing: 7) {
+                    StatusDot(color: task.color, size: 6)
+                    Text(task.title)
+                        .strikethrough(task.state == .cancelled)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 19)
             }
         }
         .help(tooltip)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(node.stateLabel)
+        .accessibilityValue(node.fleetLabel)
     }
 }
 
 extension NodeRow {
     private var tooltip: String {
-        let header = "\(node.displayName) · \(node.stateLabel)"
+        let header = "\(node.displayName) · \(node.fleetLabel)"
         let summary = node.summary.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         guard !summary.isEmpty else { return header }
         return header + "\n" + (summary.count > 140 ? summary.prefix(139) + "…" : summary)
@@ -114,12 +128,12 @@ extension NodeRow {
 }
 
 struct StatusDot: View {
-    let state: NodeState
+    let color: Color
     var size: CGFloat = 8
 
     var body: some View {
         Circle()
-            .fill(state.color)
+            .fill(color)
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
@@ -139,6 +153,111 @@ struct ProjectHeader: View {
             }
         }
     }
+}
+
+/// A task in the sidebar: its title and, under it, its project and what happens now.
+struct TaskRow: View {
+    let task: WorkTask
+    let store: FleetStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(task.title)
+                .fontWeight(.medium)
+                .strikethrough(task.state == .cancelled)
+                .lineLimit(2)
+            Text(verbatim: subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(task.state.label)
+    }
+
+    private var subtitle: String {
+        [store.project(of: task), store.now(for: task) ?? task.state.label].compactMap(\.self).joined(separator: " · ")
+    }
+}
+
+struct DefiningRow: View {
+    let request: WorkRequest
+    let store: FleetStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(store.title(of: request))
+                .fontWeight(.medium)
+                .lineLimit(2)
+            Text(verbatim: [store.project(of: request), String(localized: "the orchestrator is splitting it")].compactMap(\.self).joined(separator: " · "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct TaskGroupLabel: View {
+    let group: TaskStateGroup
+
+    var body: some View {
+        HStack(spacing: 7) {
+            StatusDot(color: group.kind.color)
+            Text(group.title)
+                .fontWeight(.semibold)
+            Spacer(minLength: 4)
+            Text(group.count, format: .number)
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .font(.callout)
+    }
+}
+
+extension WorkTask.State {
+    var color: Color {
+        switch self {
+        case .waitingDependency: .indigo
+        case .running: .green
+        case .needsYou: .orange
+        case .inReview: .mint
+        case .closing: .teal
+        case .done, .cancelled: .gray
+        }
+    }
+}
+
+extension WorkTask {
+    /// An action the user has to carry out takes the colour of "your turn", like its card.
+    var color: Color { state == .needsYou && blocker?.isAction == true ? .pink : state.color }
+}
+
+extension TaskStateGroup.Kind {
+    var color: Color {
+        switch self {
+        case .defining: .purple
+        case .task(let state): state.color
+        }
+    }
+}
+
+extension NodeOccupancy {
+    var color: Color {
+        switch self {
+        case .busy: .green
+        case .free: .gray
+        case .waitingMachine: .yellow
+        }
+    }
+}
+
+extension Node {
+    /// The orchestrator keeps its node state; every other node shows whether it is busy.
+    var dotColor: Color { isOrchestrator ? state.color : occupancy.color }
 }
 
 extension NodeState {
