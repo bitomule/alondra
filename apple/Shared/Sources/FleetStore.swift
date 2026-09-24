@@ -126,14 +126,18 @@ public final class FleetStore {
         let visible = (questions + prs + reports).filter { !hidden.contains($0.id) }
         inbox = visible
         pendingBySession = visible.reduce(into: [:]) { $0[$1.sessionId, default: 0] += 1 }
-        projects = Dictionary(grouping: nodes) { $0.projectName ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }
-            .map { (name: $0.key, nodes: $0.value.sorted(by: Self.attentionOrder)) }
+        // The orchestrator is never one more node in a project's folder: it has its own fixed
+        // area outside this stable-ordered list (see `orchestrator` above).
+        projects = Dictionary(grouping: nodes.filter { !$0.isOrchestrator }) { $0.projectName ?? String(localized: "others", table: "AlondraShared", bundle: #bundle) }
+            .map { (name: $0.key, nodes: $0.value.sorted(by: Self.creationOrder)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private static func attentionOrder(_ lhs: Node, _ rhs: Node) -> Bool {
-        if lhs.state.urgency != rhs.state.urgency { return lhs.state.urgency < rhs.state.urgency }
-        return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+    /// Oldest node first; state does not drive the order, so a state change never moves a node.
+    /// The session id breaks ties deterministically.
+    private static func creationOrder(_ lhs: Node, _ rhs: Node) -> Bool {
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.sessionId < rhs.sessionId
     }
 
     private func animate(_ animation: Animation, _ changes: () -> Void) {
@@ -483,18 +487,5 @@ public struct Notice: Equatable, Sendable {
     public init(_ text: String, failure: Bool = false) {
         self.text = text
         self.failure = failure
-    }
-}
-
-extension NodeState {
-    public var urgency: Int {
-        switch self {
-        case .waitingAnswer, .yourTurn, .waitingMerge: 0
-        case .unclear, .stalled: 1
-        case .waitingMachine: 2
-        case .working: 3
-        case .delivered: 4
-        case .done: 5
-        }
     }
 }

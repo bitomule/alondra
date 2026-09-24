@@ -287,7 +287,7 @@ impl Search {
 }
 
 pub enum FleetRow {
-    Group { name: String, orchestrator: bool, total: usize },
+    Group { name: String, total: usize },
     Node(usize),
 }
 
@@ -1580,42 +1580,42 @@ impl App {
         }
     }
 
+    /// Regular nodes only, grouped by project in a stable, creation-time order (see
+    /// `fleet_sessions`); the orchestrator is never a row here, so it can never end up inside a
+    /// project's folder — it has its own fixed area above this list.
     pub fn fleet_rows(&self) -> Vec<FleetRow> {
         let indices: Vec<usize> = match self.fleet_filter() {
             Some((idx, _)) => idx,
             None => (0..self.data.nodes.len()).collect(),
         };
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        let mut orchestrator = vec![];
         for i in indices {
             let n = &self.data.nodes[i];
-            if n.is_orchestrator {
-                orchestrator.push(i);
-            } else {
+            if !n.is_orchestrator {
                 groups.entry(n.project.clone().filter(|p| p != alondra_core::OTHERS_PROJECT).unwrap_or_else(|| tr!("others", "otros").into())).or_default().push(i);
             }
         }
-        let mut sorted: Vec<(String, bool, Vec<usize>)> = groups.into_iter().map(|(p, v)| (p, false, v)).collect();
+        let mut sorted: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
         sorted.sort_by_key(|(p, ..)| p.to_lowercase());
-        if !orchestrator.is_empty() {
-            sorted.insert(0, (tr!("orchestrator", "orquestador").into(), true, orchestrator));
-        }
         let mut rows = vec![];
-        for (name, is_orchestrator, nodes) in sorted {
+        for (name, nodes) in sorted {
             let total = self.data.nodes.iter().filter(|n| !n.is_orchestrator && n.project.as_deref() == Some(name.as_str())).count().max(nodes.len());
-            rows.push(FleetRow::Group { name, orchestrator: is_orchestrator, total });
+            rows.push(FleetRow::Group { name, total });
             rows.extend(nodes.into_iter().map(FleetRow::Node));
         }
         rows
     }
 
+    /// Every selectable node, in keyboard-navigation order: the orchestrator first (its fixed
+    /// area at the top is still reachable with the arrow keys), then the regular fleet list.
     fn fleet_sessions(&self) -> Vec<String> {
-        self.fleet_rows()
-            .iter()
-            .filter_map(|r| match r {
+        self.orchestrator()
+            .map(|n| n.session_id.clone())
+            .into_iter()
+            .chain(self.fleet_rows().iter().filter_map(|r| match r {
                 FleetRow::Node(i) => Some(self.data.nodes[*i].session_id.clone()),
                 FleetRow::Group { .. } => None,
-            })
+            }))
             .collect()
     }
 

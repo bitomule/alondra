@@ -61,6 +61,18 @@ impl View {
         questions.chain(reports).chain(messages).filter_map(|a| a.stored_path.as_ref().map(std::path::PathBuf::from)).collect()
     }
 
+    /// Backfills `created_at` on nodes loaded from a snapshot taken before that field existed
+    /// (it deserializes as 0 there): the closest thing on record to when they first appeared is
+    /// `state_since`. Called once, right after loading a snapshot and before replaying newer
+    /// events (those already carry a real `created_at` from `Node::new`).
+    pub fn backfill_created_at(&mut self) {
+        for node in self.nodes.values_mut() {
+            if node.created_at == 0 {
+                node.created_at = node.state_since;
+            }
+        }
+    }
+
     /// Forgets what nobody can act on any more: anything older than the retention window except
     /// the inbox (open questions, unread reports) and nodes Alondra can still watch. A node that
     /// only speaks through hooks has no process to watch, so once it has been silent for the whole
@@ -849,6 +861,24 @@ impl View {
 mod tests {
     use super::*;
     use crate::model::{Answer, NodeState, OrchestratorState, QuestionOrigin};
+
+    /// A node from a snapshot older than `created_at` gets `state_since` as a stand-in, so it
+    /// still sorts as older than anything created after the upgrade; a node that already has a
+    /// real `created_at` is left alone.
+    #[test]
+    fn backfill_created_at_only_touches_nodes_that_never_had_one() {
+        let mut v = View::default();
+        let mut old = Node::new("old", 500);
+        old.created_at = 0; // as if deserialized from a pre-migration snapshot
+        old.state_since = 800;
+        let mut migrated_already = Node::new("already", 200);
+        migrated_already.state_since = 900; // later state change; created_at must not follow it
+        v.nodes.insert(old.session_id.clone(), old);
+        v.nodes.insert(migrated_already.session_id.clone(), migrated_already);
+        v.backfill_created_at();
+        assert_eq!(v.nodes["old"].created_at, 800);
+        assert_eq!(v.nodes["already"].created_at, 200);
+    }
 
     fn hook(sid: &str, event: &str) -> Event {
         Event::Hook(HookEvent { session_id: sid.into(), event: event.into(), ..Default::default() })

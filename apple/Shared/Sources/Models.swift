@@ -70,6 +70,9 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let hasPlugin: Bool
     public let state: NodeState
     public let orchestratorState: OrchestratorState?
+    /// When the node first appeared; fixed for its lifetime. The fleet list sorts by this, not
+    /// by state, so a node keeps its place as its state changes.
+    public let createdAt: Int64
     public let stateSince: Int64
     public let stateSource: String
     public let tool: ToolInFlight?
@@ -79,6 +82,35 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let daemonNeeds: String?
     public let project: String?
     public let background: [BackgroundItem]?
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, shortId, name, cwd, isOrchestrator, hasPlugin, state, orchestratorState, createdAt, stateSince, stateSource, tool,
+            lastMessage, lastMessageAt, daemonDetail, daemonNeeds, project, background
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        shortId = try c.decode(String.self, forKey: .shortId)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        cwd = try c.decodeIfPresent(String.self, forKey: .cwd)
+        isOrchestrator = try c.decode(Bool.self, forKey: .isOrchestrator)
+        hasPlugin = try c.decode(Bool.self, forKey: .hasPlugin)
+        state = try c.decode(NodeState.self, forKey: .state)
+        orchestratorState = try c.decodeIfPresent(OrchestratorState.self, forKey: .orchestratorState)
+        stateSince = try c.decode(Int64.self, forKey: .stateSince)
+        // A node from a server older than this field falls back to `stateSince`, the closest
+        // thing it has to a creation time — the same backfill the daemon runs on its own store.
+        createdAt = try c.decodeIfPresent(Int64.self, forKey: .createdAt) ?? stateSince
+        stateSource = try c.decode(String.self, forKey: .stateSource)
+        tool = try c.decodeIfPresent(ToolInFlight.self, forKey: .tool)
+        lastMessage = try c.decodeIfPresent(String.self, forKey: .lastMessage)
+        lastMessageAt = try c.decodeIfPresent(Int64.self, forKey: .lastMessageAt)
+        daemonDetail = try c.decodeIfPresent(String.self, forKey: .daemonDetail)
+        daemonNeeds = try c.decodeIfPresent(String.self, forKey: .daemonNeeds)
+        project = try c.decodeIfPresent(String.self, forKey: .project)
+        background = try c.decodeIfPresent([BackgroundItem].self, forKey: .background)
+    }
 
     public var running: [BackgroundItem] { background ?? [] }
 
