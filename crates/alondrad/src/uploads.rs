@@ -26,6 +26,11 @@ pub fn uploads_dir(home: &Path) -> PathBuf {
     home.join("files").join("uploads")
 }
 
+/// Messages too long to type into a node's terminal, each stored whole in its own folder.
+pub fn messages_dir(home: &Path) -> PathBuf {
+    home.join("files").join("messages")
+}
+
 fn extension(name: &str) -> String {
     Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
@@ -156,8 +161,9 @@ pub fn sweep(home: &Path, referenced: &HashSet<PathBuf>, grace: Duration) -> usi
         })
     });
     let uploads = std::fs::read_dir(uploads_dir(home)).into_iter().flatten().filter_map(Result::ok).map(|e| e.path());
+    let messages = std::fs::read_dir(messages_dir(home)).into_iter().flatten().filter_map(Result::ok).map(|e| e.path());
     let mut removed = 0;
-    for dir in node_dirs.chain(uploads).filter(|p| p.is_dir()) {
+    for dir in node_dirs.chain(uploads).chain(messages).filter(|p| p.is_dir()) {
         if !holds_a_reference(&dir) && old(&dir) && std::fs::remove_dir_all(&dir).is_ok() {
             removed += 1;
         }

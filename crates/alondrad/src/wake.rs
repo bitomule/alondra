@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -6,12 +7,38 @@ use std::time::{Duration, Instant};
 use alondra_core::Event;
 
 use crate::hub::Hub;
+use crate::uploads;
 
 type Pending = Vec<(u64, String, Option<u64>)>;
 
 const RETRY_AFTER: Duration = Duration::from_secs(120);
 const PAINT_TIMEOUT: Duration = Duration::from_secs(25);
 const MENU_MARKERS: &[&str] = &["Enter to select", "to navigate", "Do you want to proceed", "❯ 1.", "trust this folder", "Enter to confirm"];
+
+/// Claude Code takes a burst of about 900 typed bytes or more as a paste and folds it into
+/// "[Pasted text #N]", and through `claude attach` that block never reaches the node: only what
+/// followed it does. Anything longer than this is stored whole and the node is told where.
+const MAX_TYPED_BYTES: usize = 600;
+const PASTE_MARKERS: &[&str] = &["[Pasted text #", "paste again to expand"];
+
+/// The single line typed into the node for these messages: the messages themselves when they
+/// fit, or a pointer to a file holding them whole, paragraphs included.
+fn turn_for(home: &Path, msgs: &Pending) -> std::io::Result<String> {
+    let typed = msgs.iter().map(|(_, t, _)| t.replace('\n', " ")).collect::<Vec<_>>().join(" · ");
+    let Some((first, _, _)) = msgs.first().filter(|_| typed.len() > MAX_TYPED_BYTES) else {
+        return Ok(typed);
+    };
+    let whole = msgs.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>().join("\n\n---\n\n");
+    let dir = uploads::messages_dir(home).join(format!("m-{first}"));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("message.md");
+    std::fs::write(&path, &whole)?;
+    Ok(format!(
+        "[Alondra] A message for you is too long to type into this terminal ({} characters), so it is stored whole in `{}`. Read that file with the Read tool now and act on its full text as this turn's message.",
+        whole.chars().count(),
+        path.display()
+    ))
+}
 
 /// A node whose last delivery failed is left alone for a while; one that took its messages gets
 /// the next ones as soon as they are queued, since Claude Code queues what is typed mid-turn.
@@ -56,7 +83,14 @@ pub async fn run(hub: Arc<Hub>) {
             if !backoff.ready(&session_id) {
                 continue;
             }
-            let text = msgs.iter().map(|(_, t, _)| t.replace('\n', " ")).collect::<Vec<_>>().join(" · ");
+            let text = match turn_for(&hub.home, &msgs) {
+                Ok(t) => t,
+                Err(e) => {
+                    log!("could not store the long message for {short}: {e}");
+                    backoff.outcome(&session_id, false);
+                    continue;
+                }
+            };
             let short_for_task = short.clone();
             let own = hub.own_attach(&short);
             let outcome = tokio::task::spawn_blocking(move || type_into(&short_for_task, &text)).await;
@@ -168,6 +202,14 @@ fn menu_on_screen(screen: &str) -> Option<(&'static str, String)> {
         .find_map(|l| MENU_MARKERS.iter().find(|m| l.contains(*m)).map(|m| (*m, l.trim().to_string())))
 }
 
+/// The prompt box is the last block that starts with `❯`, with its hints below it; turns already
+/// sent sit above it. The fold shows as a placeholder in the box, or only as the hint.
+fn folded_into_a_paste(screen: &str) -> bool {
+    let lines: Vec<&str> = screen.lines().collect();
+    let from = lines.iter().rposition(|l| l.starts_with('❯')).unwrap_or(0);
+    lines[from..].iter().any(|l| PASTE_MARKERS.iter().any(|m| l.contains(m)))
+}
+
 fn type_into(short: &str, text: &str) -> Result<(), String> {
     let session = attach(short)?;
     std::thread::sleep(Duration::from_secs(2));
@@ -177,6 +219,10 @@ fn type_into(short: &str, text: &str) -> Result<(), String> {
     }
     tmux(&["send-keys", "-t", &session.0, "-l", text])?;
     std::thread::sleep(Duration::from_millis(600));
+    let typed = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
+    if folded_into_a_paste(&typed) {
+        return Err("the terminal folded the text into a paste, which would reach the node cut; not submitting it".into());
+    }
     tmux(&["send-keys", "-t", &session.0, "Enter"])?;
     std::thread::sleep(Duration::from_secs(2));
     Ok(())
@@ -228,5 +274,82 @@ mod backoff_tests {
         b.outcome("s", false);
         b.outcome("s", true);
         assert!(b.ready("s"), "a delivery clears an earlier failure");
+    }
+}
+
+#[cfg(test)]
+mod long_message_tests {
+    use super::*;
+
+    const LONG_REQUEST: &str = "[Alondra] New request from David: Estaba pensando que quizás estamos haciendo algo mal en Alondra. Tenemos un sistema de notificaciones donde los nodos usan el mcp para darme a mí info o al orquestador y estamos teniendo todo el rato conflictos por el estado. Por ejemplo hay 2 pr abiertas pero como conteste a una ahora no puedo hacer merge de esa. Y si los estados fueran por tareas y no por nodos? Así el orquestador podría incluso repartir en diferentes nodos. No quiero que hagas cambios, solo que evalúes pros/contras y los problemas que tenemos ahora vs ventajas y me los des en un report sencillito de leer\n\nOptions chosen by David (request r-1790263152254): project not chosen (you decide) · PR handling: review each PR · Effort: auto.\nPass request_id \"r-1790263152254\" to launch: Alondra writes these options into the node's mission and sets its model and effort, so do not restate them. Effort is auto: for each launch, choose light, normal or hard from the task and pass it as effort.\n\nPrepare the mission and launch the node with Alondra's launch tool, or use ask if something is missing.";
+
+    fn home(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("alondra-wake-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn stored_path(turn: &str) -> Option<std::path::PathBuf> {
+        turn.split('`').nth(1).map(std::path::PathBuf::from)
+    }
+
+    #[test]
+    fn a_long_multi_paragraph_message_reaches_the_node_whole_through_a_short_turn() {
+        let home = home("long");
+        let turn = turn_for(&home, &vec![(594, LONG_REQUEST.to_string(), None)]).unwrap();
+        assert!(turn.len() <= MAX_TYPED_BYTES, "the typed turn must stay under the paste fold: {} bytes", turn.len());
+        assert!(!turn.contains('\n'), "a line break would submit the turn early");
+        let path = stored_path(&turn).expect("the turn names the file holding the message");
+        assert!(path.starts_with(uploads::messages_dir(&home)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), LONG_REQUEST, "the node reads every paragraph, not the tail");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn short_messages_are_typed_as_they_are() {
+        let home = home("short");
+        let msgs = vec![(1, "Sí,\nadelante".to_string(), None), (2, "Y cierra el PR".to_string(), None)];
+        assert_eq!(turn_for(&home, &msgs).unwrap(), "Sí, adelante · Y cierra el PR");
+        assert!(!home.exists(), "nothing is stored for a message that fits");
+    }
+
+    #[test]
+    fn several_messages_that_only_fit_together_in_a_file_are_all_stored() {
+        let home = home("several");
+        let msgs = vec![(7, LONG_REQUEST.to_string(), None), (8, "Otra cosa más".to_string(), None)];
+        let turn = turn_for(&home, &msgs).unwrap();
+        let stored = std::fs::read_to_string(stored_path(&turn).unwrap()).unwrap();
+        assert!(stored.starts_with(LONG_REQUEST) && stored.ends_with("Otra cosa más"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_fold_into_a_paste_is_caught_before_submitting() {
+        let rule = "─".repeat(60);
+        let cases = [
+            ("the placeholder in the box", format!("❯ hola\n⏺ 4\n{rule}\n❯ [Pasted text #8]170 w0171 w0172\n{rule}\n  status\n"), true),
+            (
+                "only the hint, as the orchestrator's screen showed it",
+                format!("{rule}\n❯ on and launch the node with Alondra's launch tool\n{rule}\n  📁 ~/Projects\n  paste again to expand\n"),
+                true,
+            ),
+            ("a paste in a turn already sent", format!("❯ [Pasted text #1]\n⏺ ok\n{rule}\n❯ Sí, adelante\n{rule}\n"), false),
+            ("plain text in the box", format!("{rule}\n❯ Sí, adelante\n{rule}\n  -- INSERT --\n"), false),
+        ];
+        for (what, screen, folded) in cases {
+            assert_eq!(folded_into_a_paste(&screen), folded, "{what}");
+        }
+    }
+
+    /// Types `LONG_REQUEST` into a real background session the way the daemon does. Run with
+    /// `ALONDRA_LIVE_SESSION=<short id> cargo test -p alondrad live_ -- --ignored`, then read the
+    /// session's transcript: its last user turn must lead it to the whole request.
+    #[test]
+    #[ignore]
+    fn live_long_message_into_a_real_session() {
+        let short = std::env::var("ALONDRA_LIVE_SESSION").expect("ALONDRA_LIVE_SESSION");
+        let home = home("live");
+        let turn = turn_for(&home, &vec![(1, LONG_REQUEST.to_string(), None)]).unwrap();
+        type_into(&short, &turn).unwrap();
     }
 }
