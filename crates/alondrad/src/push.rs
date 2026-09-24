@@ -190,6 +190,7 @@ fn question_payload(q: &Question, badge: usize) -> Value {
         QuestionOrigin::Permission => "permission",
         QuestionOrigin::Plan => "plan",
         QuestionOrigin::Classifier => "classifier",
+        QuestionOrigin::Elicitation => "elicitation",
     };
     let who = q.node_name.clone().unwrap_or_else(|| "a node".into());
     let options = q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" · ");

@@ -188,7 +188,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
             "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
-    let only_parent_may_ask = h.agent_id.is_some() && event != "PermissionRequest";
+    let only_parent_may_ask = h.agent_id.is_some() && !matches!(event.as_str(), "PermissionRequest" | "Elicitation");
     if hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| states::watching(v, n, now_millis()))) {
         return Json(json!({})).into_response();
     }
@@ -199,6 +199,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         ("PreToolUse", Some("AskUserQuestion")) => hold(hub, p, h, QuestionOrigin::AskUserQuestion).await,
         ("PreToolUse", Some("ExitPlanMode")) => hold(hub, p, h, QuestionOrigin::Plan).await,
         ("PermissionRequest", _) => hold(hub, p, h, QuestionOrigin::Permission).await,
+        ("Elicitation", _) => hold(hub, p, h, QuestionOrigin::Elicitation).await,
         _ => Json(json!({})).into_response(),
     }
 }
@@ -246,6 +247,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
                 QuestionOption { label: answer_option::REQUEST_CHANGES.into(), description: Some("Write what to change".into()) },
             ],
         ),
+        QuestionOrigin::Elicitation => elicitation_card(p),
         _ => (
             h.tool_summary.clone().map(|t| t.chars().take(120).collect()).unwrap_or_else(|| h.tool_name.clone().unwrap_or_default()),
             h.tool_summary.clone().filter(|t| t.chars().count() > 120).or_else(|| h.tool_summary.is_none().then(|| input.to_string())),
@@ -268,7 +270,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         origin,
         tool_use_id: h.tool_use_id.clone(),
         to_orchestrator: false,
-        node_context: if origin == QuestionOrigin::Permission { None } else { node.and_then(|n| n.last_message.clone()) },
+        node_context: if matches!(origin, QuestionOrigin::Permission | QuestionOrigin::Elicitation) { None } else { node.and_then(|n| n.last_message.clone()) },
         status: QuestionStatus::Open,
         answer: None,
         asked_at: now_millis(),
@@ -291,7 +293,7 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         return Json(json!({})).into_response();
     };
     let _ = hub.append(Event::QuestionDelivered { id });
-    let input = p.get("tool_input").cloned().unwrap_or(Value::Null);
+    let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
     Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response()
 }
 
@@ -314,6 +316,22 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
             json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
                    "updatedInput": {"questions": qs, "answers": answers}}})
         }
+        QuestionOrigin::Elicitation => {
+            let action = if approves(answer_option::ACCEPT) {
+                "accept"
+            } else if wants_context {
+                "cancel"
+            } else {
+                "decline"
+            };
+            let mut out = json!({"hookEventName": "Elicitation", "action": action});
+            if action == "accept" && input.is_object() {
+                let said = answer.text.trim();
+                let said = if said.eq_ignore_ascii_case(answer_option::ACCEPT) { "" } else { said };
+                out["content"] = elicitation_content(&input, said);
+            }
+            json!({"hookSpecificOutput": out})
+        }
         QuestionOrigin::Plan if approves(answer_option::APPROVE) => json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input}}),
         QuestionOrigin::Plan => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -323,6 +341,78 @@ fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &s
         _ => json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
             "decision": {"behavior": "deny", "message": if wants_context { answer.text.clone() } else { format!("{user} denies it: {}", answer.text) }}}}),
     }
+}
+
+/// The fields an MCP server's form asks for: (name, title, JSON type).
+fn elicitation_fields(schema: &Value) -> Vec<(String, String, String)> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|props| {
+            props
+                .iter()
+                .map(|(name, f)| (name.clone(), str_field(f, "title").unwrap_or_else(|| name.clone()), str_field(f, "type").unwrap_or_else(|| "string".into())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
+    let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
+    let message = str_field(p, "message").unwrap_or_default();
+    let title = message.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{server} requests your input"), |l| l.chars().take(120).collect());
+    let fields = elicitation_fields(p.get("requested_schema").unwrap_or(&Value::Null));
+    let mut detail = vec![format!("MCP server “{server}” requests your input."), message];
+    if let Some(url) = str_field(p, "url") {
+        detail.push(url);
+    }
+    let accept_hint = match fields.as_slice() {
+        [] => None,
+        [(_, title, _)] => Some(format!("Write the {title}")),
+        many => Some(format!("Write one per line: {}", many.iter().map(|(name, _, _)| format!("{name}: …")).collect::<Vec<_>>().join(", "))),
+    };
+    (
+        title,
+        Some(detail.into_iter().filter(|d| !d.is_empty()).collect::<Vec<_>>().join("\n\n")),
+        vec![
+            QuestionOption { label: answer_option::ACCEPT.into(), description: accept_hint },
+            QuestionOption { label: answer_option::DECLINE.into(), description: None },
+        ],
+    )
+}
+
+/// The form values for an accepted elicitation: a JSON object as written, the whole answer for a
+/// one-field form, or `name: value` lines, each typed as the form's schema says.
+fn elicitation_content(schema: &Value, said: &str) -> Value {
+    if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(said) {
+        return Value::Object(o);
+    }
+    let fields = elicitation_fields(schema);
+    let typed = |kind: &str, v: &str| -> Value {
+        let v = v.trim();
+        match kind {
+            "integer" => v.parse::<i64>().map(Value::from).unwrap_or_else(|_| v.into()),
+            "number" => v.parse::<f64>().map(Value::from).unwrap_or_else(|_| v.into()),
+            "boolean" => Value::Bool(matches!(v.to_lowercase().as_str(), "true" | "yes" | "y" | "sí" | "si" | "1")),
+            _ => v.into(),
+        }
+    };
+    let mut content = serde_json::Map::new();
+    if said.is_empty() {
+        return Value::Object(content);
+    }
+    if let [(name, _, kind)] = fields.as_slice() {
+        content.insert(name.clone(), typed(kind, said));
+        return Value::Object(content);
+    }
+    for line in said.lines() {
+        let Some((key, value)) = line.split_once(':').or_else(|| line.split_once('=')) else { continue };
+        let key = key.trim();
+        if let Some((name, _, kind)) = fields.iter().find(|(name, title, _)| name.eq_ignore_ascii_case(key) || title.eq_ignore_ascii_case(key)) {
+            content.insert(name.clone(), typed(kind, value));
+        }
+    }
+    Value::Object(content)
 }
 
 #[derive(Deserialize)]
@@ -906,9 +996,9 @@ fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool
     ))
 }
 
-/// A menu card is answered by pressing the option's number in the node's terminal.
+/// A menu card is answered by picking the option in the node's terminal.
 async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: Option<String>) -> Response {
-    let Some(key) = option.and_then(|o| crate::menus::key_for(&q, o)) else {
+    let Some(label) = option.filter(|o| q.options.iter().any(|x| x.label == *o)).map(str::to_string) else {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "This card is a menu in the node's terminal: pick one of its options, or open the session to answer it there.");
     };
     let Some(short) = hub.read(|v| v.nodes.get(&q.session_id).map(|n| n.short_id.clone())) else {
@@ -916,8 +1006,8 @@ async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: O
     };
     let own = hub.own_attach(&short);
     let pressed = {
-        let (short, key) = (short.clone(), key.clone());
-        tokio::task::spawn_blocking(move || crate::wake::press(&short, &key)).await
+        let short = short.clone();
+        tokio::task::spawn_blocking(move || crate::wake::press(&short, &label)).await
     };
     drop(own);
     match pressed {
@@ -1429,6 +1519,54 @@ mod tests {
         let out = decision(QuestionOrigin::Permission, &a);
         assert_eq!(out["hookSpecificOutput"]["decision"]["behavior"], "deny");
         assert_eq!(out["hookSpecificOutput"]["decision"]["message"], "Ana denies it: Deny");
+    }
+
+    /// An MCP elicitation reaches the clients as an Accept / Decline card, and the answer goes back
+    /// to Claude Code as the Elicitation hook's `action` and `content`.
+    #[test]
+    fn an_elicitation_becomes_a_card_and_its_answer_the_hook_response() {
+        let context7 = json!({"session_id": "s", "hook_event_name": "Elicitation", "mcp_server_name": "context7", "mode": "form",
+            "message": "You're using Context7 anonymously. Get a free API key for higher rate limits.",
+            "requested_schema": {"type": "object", "properties": {}}});
+        let login = json!({"session_id": "s", "hook_event_name": "Elicitation", "mcp_server_name": "db", "mode": "form", "message": "Log in",
+            "requested_schema": {"type": "object", "properties": {"username": {"type": "string", "title": "Username"}, "port": {"type": "integer"}, "remember": {"type": "boolean"}}}});
+        let token = json!({"session_id": "s", "hook_event_name": "Elicitation", "mcp_server_name": "gh", "mode": "form", "message": "Paste the token",
+            "requested_schema": {"type": "object", "properties": {"token": {"type": "string", "title": "Token"}}}});
+        let browser = json!({"session_id": "s", "hook_event_name": "Elicitation", "mcp_server_name": "auth", "mode": "url", "message": "Please authenticate", "url": "https://auth.example.com/login"});
+        struct Case {
+            what: &'static str,
+            payload: Value,
+            title: &'static str,
+            accept_hint: Option<&'static str>,
+            answer: Answer,
+            response: Value,
+        }
+        let cases = [
+            Case { what: "context7's anonymous notice, accepted", payload: context7.clone(), title: "You're using Context7 anonymously. Get a free API key for higher rate limits.", accept_hint: None,
+                answer: answered("Accept", Some("Accept")), response: json!({"hookEventName": "Elicitation", "action": "accept", "content": {}}) },
+            Case { what: "context7's anonymous notice, declined", payload: context7.clone(), title: "You're using Context7 anonymously. Get a free API key for higher rate limits.", accept_hint: None,
+                answer: answered("Decline", Some("Decline")), response: json!({"hookEventName": "Elicitation", "action": "decline"}) },
+            Case { what: "more context cancels", payload: context7, title: "You're using Context7 anonymously. Get a free API key for higher rate limits.", accept_hint: None,
+                answer: answered("Why?", Some(answer_option::MORE_CONTEXT)), response: json!({"hookEventName": "Elicitation", "action": "cancel"}) },
+            Case { what: "a one-field form takes the whole answer", payload: token, title: "Paste the token", accept_hint: Some("Write the Token"),
+                answer: answered("ghp_123", Some("Accept")), response: json!({"hookEventName": "Elicitation", "action": "accept", "content": {"token": "ghp_123"}}) },
+            Case { what: "a form's fields come one per line, typed by the schema", payload: login.clone(), title: "Log in", accept_hint: Some("Write one per line: port: …, remember: …, username: …"),
+                answer: answered("Username: ana\nport: 5432\nremember: yes", Some("Accept")), response: json!({"hookEventName": "Elicitation", "action": "accept", "content": {"username": "ana", "port": 5432, "remember": true}}) },
+            Case { what: "a form's fields as JSON", payload: login, title: "Log in", accept_hint: Some("Write one per line: port: …, remember: …, username: …"),
+                answer: answered(r#"{"username": "ana"}"#, Some("Accept")), response: json!({"hookEventName": "Elicitation", "action": "accept", "content": {"username": "ana"}}) },
+            Case { what: "a browser link sends no form", payload: browser, title: "Please authenticate", accept_hint: None,
+                answer: answered("Accept", Some("Accept")), response: json!({"hookEventName": "Elicitation", "action": "accept"}) },
+        ];
+        for c in cases {
+            let h = HookEvent { session_id: "s".into(), event: "Elicitation".into(), ..Default::default() };
+            let q = held_question(&View::default(), &c.payload, &h, QuestionOrigin::Elicitation);
+            assert_eq!(q.title, c.title, "{}", c.what);
+            assert_eq!(q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), [answer_option::ACCEPT, answer_option::DECLINE], "{}", c.what);
+            assert_eq!(q.options[0].description.as_deref(), c.accept_hint, "{}", c.what);
+            assert!(q.detail.as_deref().is_some_and(|d| d.contains(str_field(&c.payload, "mcp_server_name").unwrap().as_str())), "{}", c.what);
+            let schema = c.payload.get("requested_schema").cloned().unwrap_or(Value::Null);
+            assert_eq!(hold_decision(QuestionOrigin::Elicitation, &c.answer, schema, "Ana")["hookSpecificOutput"], c.response, "{}", c.what);
+        }
     }
 
     #[test]

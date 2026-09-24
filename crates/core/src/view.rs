@@ -326,13 +326,14 @@ impl View {
     fn question_update(&mut self, id: u64, f: impl FnOnce(&mut Question)) -> Option<(String, Trigger)> {
         let q = self.questions.get_mut(&id)?;
         f(q);
-        let (sid, open, tool_use_id) = (q.session_id.clone(), q.status.is_open(), q.tool_use_id.clone());
-        if !open
-            && let Some(node) = self.nodes.get_mut(&sid)
-            && tool_use_id.is_some()
-            && node.tool.as_ref().is_some_and(|t| t.tool_use_id == tool_use_id)
-        {
-            node.tool = None;
+        let (sid, open, tool_use_id, origin) = (q.session_id.clone(), q.status.is_open(), q.tool_use_id.clone(), q.origin);
+        if !open && let Some(node) = self.nodes.get_mut(&sid) {
+            if tool_use_id.is_some() && node.tool.as_ref().is_some_and(|t| t.tool_use_id == tool_use_id) {
+                node.tool = None;
+            }
+            if origin == QuestionOrigin::Elicitation {
+                node.waiting_permission = false;
+            }
         }
         Some((sid, Trigger::Question))
     }
@@ -417,12 +418,12 @@ impl View {
                     }
                 }
             }
-            "PermissionRequest" => node.waiting_permission = true,
-            "Notification" => {
-                if h.notification_type.as_deref() == Some("permission_prompt") {
-                    node.waiting_permission = true;
-                }
-            }
+            "PermissionRequest" | "Elicitation" => node.waiting_permission = true,
+            "Notification" => match h.notification_type.as_deref() {
+                Some("permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog") => node.waiting_permission = true,
+                Some("elicitation_response") => node.waiting_permission = false,
+                _ => {}
+            },
             "Stop" => {
                 node.busy = false;
                 node.tool = None;
@@ -682,6 +683,29 @@ mod tests {
         assert_eq!(v.nodes["s"].state, NodeState::WaitingAnswer);
         v.apply(3, 3000, &hook("s", "PostToolUse"));
         assert_eq!(v.nodes["s"].state, NodeState::Working);
+    }
+
+    /// Quill, 24 Sep: parked on context7's "requests your input" dialog while Alondra showed it working.
+    #[test]
+    fn an_mcp_elicitation_waits_on_the_user_until_it_is_answered() {
+        let notification = |kind: &str| Event::Hook(HookEvent { session_id: "s".into(), event: "Notification".into(), notification_type: Some(kind.into()), ..Default::default() });
+        let held = question(1, "s", QuestionOrigin::Elicitation);
+        let answered = Event::QuestionAnswered { id: 1, answer: Answer { text: "Accept".into(), option: Some("Accept".into()), by: None, device: None, at: 0 } };
+        let cases: Vec<(&str, Vec<Event>, NodeState)> = vec![
+            ("the hook is held", vec![hook("s", "UserPromptSubmit"), hook("s", "Elicitation")], NodeState::WaitingAnswer),
+            ("the dialog is on screen", vec![hook("s", "UserPromptSubmit"), notification("elicitation_dialog")], NodeState::WaitingAnswer),
+            ("a browser link is asked for", vec![hook("s", "UserPromptSubmit"), notification("elicitation_url_dialog")], NodeState::WaitingAnswer),
+            ("answered in the terminal", vec![hook("s", "UserPromptSubmit"), notification("elicitation_dialog"), notification("elicitation_response")], NodeState::Working),
+            (
+                "its card is answered",
+                vec![hook("s", "UserPromptSubmit"), hook("s", "Elicitation"), Event::QuestionAsked(held.clone()), answered.clone(), Event::QuestionDelivered { id: 1 }],
+                NodeState::Working,
+            ),
+            ("an idle prompt is not a dialog", vec![hook("s", "UserPromptSubmit"), notification("idle_prompt")], NodeState::Working),
+        ];
+        for (what, events, expected) in cases {
+            assert_eq!(run(&events).nodes["s"].state, expected, "{what}");
+        }
     }
 
     #[test]

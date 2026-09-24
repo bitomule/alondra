@@ -2,7 +2,8 @@
 //! that never went through a hook Alondra holds (a subagent's worktree relocation, a menu left
 //! open after the user stopped watching, nodes without the plugin). The Claude daemon says so in
 //! `claude agents --json` (`waitingFor`); the menu itself is read from the screen and becomes a
-//! card whose options are typed back as the menu's number.
+//! card whose options are typed back as the menu's number, or with the arrows and Enter on a
+//! dialog whose options sit side by side (an MCP server's Accept / Decline).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +24,15 @@ pub struct Menu {
     pub title: String,
     pub detail: String,
     pub options: Vec<String>,
+    /// On a row of options, the one under `❯`; numbered menus are picked by number instead.
+    pub selected: Option<usize>,
+}
+
+impl Menu {
+    /// The same dialog, wherever its cursor is.
+    pub fn same_as(&self, other: &Menu) -> bool {
+        (&self.title, &self.detail, &self.options) == (&other.title, &other.detail, &other.options)
+    }
 }
 
 pub async fn run(hub: Arc<Hub>) {
@@ -163,13 +173,42 @@ fn option_line(line: &str) -> Option<(u32, String)> {
     Some((n, rest.trim().to_string()))
 }
 
+/// Options side by side, `❯` on the selected one: `❯ Accept    Decline` or `Accept / ❯ Decline`.
+fn option_row(line: &str) -> Option<(Vec<String>, usize)> {
+    let t = line.trim().replace(" / ", "   ");
+    if !t.contains('❯') {
+        return None;
+    }
+    let cells: Vec<&str> = t.split("  ").map(str::trim).filter(|c| !c.is_empty()).collect();
+    let selected = cells.iter().position(|c| c.starts_with('❯'))?;
+    let labels: Vec<String> = cells.iter().map(|c| c.trim_start_matches('❯').trim().to_string()).collect();
+    let short = labels.iter().all(|l| !l.is_empty() && l.chars().count() <= 30 && !l.contains('❯') && option_line(l).is_none());
+    let one_cursor = cells.iter().filter(|c| c.contains('❯')).count() == 1;
+    ((2..=4).contains(&labels.len()) && short && one_cursor).then_some((labels, selected))
+}
+
+/// A dialog whose options sit on one row under what it asks, with the key hint below.
+fn parse_row(block: &[&str]) -> Option<Menu> {
+    let at = block.iter().rposition(|l| option_row(l).is_some())?;
+    let (options, selected) = option_row(block[at])?;
+    if at == 0 || !block[at + 1..].iter().any(|l| l.contains("Esc")) {
+        return None;
+    }
+    let about: Vec<String> = block[..at].iter().map(|l| l.trim().to_string()).collect();
+    let detail = if about.len() > 1 { format!("```\n{}\n```", about[1..].join("\n")) } else { String::new() };
+    Some(Menu { title: about[0].clone(), detail, options, selected: Some(selected) })
+}
+
 /// Claude Code draws a menu below a rule: a header, what it is about, the question, then
-/// numbered options with `❯` on the selected one and a key hint underneath.
+/// numbered options with `❯` on the selected one and a key hint underneath. A dialog with its
+/// options on one row (an MCP server's Accept / Decline) is read too.
 pub fn parse_menu(screen: &str) -> Option<Menu> {
     let lines: Vec<&str> = screen.lines().collect();
     let rule = lines.iter().rposition(|l| l.trim().chars().count() > 20 && l.trim().chars().all(|c| c == '─'))?;
     let block: Vec<&str> = lines[rule + 1..].iter().copied().filter(|l| !l.trim().is_empty()).collect();
-    let first = block.iter().position(|l| option_line(l).is_some())?;
+    let Some(first) = block.iter().position(|l| option_line(l).is_some()) else {
+        return parse_row(&block);
+    };
     let options: Vec<(u32, String)> = block[first..].iter().map_while(|l| option_line(l)).collect();
     let contiguous = options.iter().enumerate().all(|(i, (n, _))| *n as usize == i + 1);
     if options.len() < 2 || !contiguous {
@@ -182,12 +221,20 @@ pub fn parse_menu(screen: &str) -> Option<Menu> {
         None => question.clone(),
     };
     let detail = if about.len() > 1 { format!("```\n{}\n```", about[1..].join("\n")) } else { String::new() };
-    Some(Menu { title, detail, options: options.into_iter().map(|(_, l)| l).collect() })
+    Some(Menu { title, detail, options: options.into_iter().map(|(_, l)| l).collect(), selected: None })
 }
 
-/// The key that picks `label` in the card's menu: its position, counting from 1.
-pub fn key_for(q: &Question, label: &str) -> Option<String> {
-    q.options.iter().position(|o| o.label == label).map(|i| (i + 1).to_string())
+/// The tmux keys that pick `label` in the menu on screen: its number on a numbered menu, or the
+/// arrows from the selected option to it and Enter on a row.
+pub fn key_for(menu: &Menu, label: &str) -> Option<Vec<String>> {
+    let target = menu.options.iter().position(|o| o == label)?;
+    let Some(selected) = menu.selected else {
+        return Some(vec![(target + 1).to_string()]);
+    };
+    let arrow = if target > selected { "Right" } else { "Left" };
+    let mut keys = vec![arrow.to_string(); target.abs_diff(selected)];
+    keys.push("Enter".into());
+    Some(keys)
 }
 
 #[cfg(test)]
@@ -213,12 +260,75 @@ mod tests {
  Esc to cancel · Tab to amend
 ";
 
+    /// Quill, 24 Sep: context7's elicitation dialog as Claude Code v2.1.280 draws it (the pointer
+    /// before the focused button, the buttons side by side, the key hint below). Its buttons line
+    /// is rebuilt from the dialog's render code, not captured from a live terminal.
+    fn elicitation(buttons: &str) -> String {
+        format!(
+            " ▐▛███▜▌   Claude Code v2.1.280
+❯ Find the axum docs for extractors
+● context7 - resolve-library-id (MCP)(libraryName: \"axum\")
+────────────────────────────────────────────────────────────────────────────────
+ MCP server “context7” requests your input
+ You're using Context7 anonymously. Get a free API key at context7.com/dashboard
+ for higher rate limits.
+
+ {buttons}
+
+ Esc to cancel · ↑/↓ to navigate
+"
+        )
+    }
+
+    #[test]
+    fn a_dialog_with_its_options_on_one_row_becomes_a_card_answered_with_the_arrows() {
+        let cases: [(&str, &str, Option<usize>, &str, Option<&[&str]>); 7] = [
+            ("Accept focused, Accept picked", "❯ Accept    Decline", Some(0), "Accept", Some(&["Enter"])),
+            ("Accept focused, Decline picked", "❯ Accept    Decline", Some(0), "Decline", Some(&["Right", "Enter"])),
+            ("Decline focused, Accept picked", "  Accept  ❯ Decline", Some(1), "Accept", Some(&["Left", "Enter"])),
+            ("written with a slash", "❯ Accept / Decline", Some(0), "Decline", Some(&["Right", "Enter"])),
+            ("an option it does not offer", "❯ Accept    Decline", Some(0), "Maybe", None),
+            ("no cursor on the row", "Accept / Decline", None, "Accept", None),
+            ("two cursors on the row", "❯ Accept  ❯ Decline", None, "Accept", None),
+        ];
+        for (what, buttons, selected, label, keys) in cases {
+            let menu = parse_menu(&elicitation(buttons));
+            assert_eq!(menu.as_ref().and_then(|m| m.selected), selected, "{what}");
+            let Some(menu) = menu else { continue };
+            assert_eq!(menu.title, "MCP server “context7” requests your input", "{what}");
+            assert!(menu.detail.contains("You're using Context7 anonymously"), "{what}");
+            assert_eq!(menu.options, ["Accept", "Decline"], "{what}");
+            assert_eq!(key_for(&menu, label), keys.map(|k| k.iter().map(|s| s.to_string()).collect()), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_row_is_the_same_menu_wherever_its_cursor_is() {
+        let accept = parse_menu(&elicitation("❯ Accept    Decline")).unwrap();
+        let decline = parse_menu(&elicitation("  Accept  ❯ Decline")).unwrap();
+        assert!(accept.same_as(&decline));
+        assert!(!accept.same_as(&parse_menu(PERMISSION).unwrap()));
+    }
+
+    #[test]
+    fn the_prompt_box_is_not_a_row_of_options() {
+        let screens = [
+            "● done\n────────────────────────────────\n❯ fix  this  now\n────────────────────────────────\n  ? for shortcuts\n",
+            "● done\n────────────────────────────────\n❯ fix  this\n",
+            "────────────────────────────────\n❯ Accept    Decline\n Esc to cancel\n",
+        ];
+        for screen in screens {
+            assert_eq!(parse_menu(screen), None, "{screen}");
+        }
+    }
+
     #[test]
     fn a_permission_menu_becomes_a_card_with_its_own_options() {
         let m = parse_menu(PERMISSION).unwrap();
         assert_eq!(m.title, "Bash command: Do you want to proceed?");
         assert!(m.detail.contains("touch /tmp/alondra-menu-probe-file"));
         assert_eq!(m.options, ["Yes", "Yes, and always allow access to /tmp from this project", "No"]);
+        assert_eq!(m.selected, None);
     }
 
     #[test]
@@ -276,7 +386,8 @@ mod tests {
         v.apply(1, 1, &Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), ..Default::default() }));
         let q = card(&v, &v.nodes["s"], PERMISSION);
         assert!(is_menu_card(&q));
-        assert_eq!(key_for(&q, "No").as_deref(), Some("3"));
-        assert_eq!(key_for(&q, "Maybe"), None);
+        let menu = parse_menu(PERMISSION).unwrap();
+        assert_eq!(key_for(&menu, "No"), Some(vec!["3".to_string()]));
+        assert_eq!(key_for(&menu, "Maybe"), None);
     }
 }

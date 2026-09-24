@@ -46,6 +46,18 @@
         ]
       }
     ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47800/hook",
+            "timeout": 2592000
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "*",
