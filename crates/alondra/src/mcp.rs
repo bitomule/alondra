@@ -141,7 +141,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         "report" => {
             let r = client.post("/v1/reports", &merge(args.clone(), &who))?;
-            format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0))
+            let delivered = format!("Report #{} delivered to {user}.", r.get("id").and_then(Value::as_u64).unwrap_or(0));
+            match r.get("note").and_then(Value::as_str) {
+                Some(note) => format!("{delivered} {note}"),
+                None => delivered,
+            }
         }
         "withdraw" => {
             let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("id is required"))?;
@@ -188,7 +192,7 @@ fn fleet_summary(o: &Value) -> Value {
     let active: Vec<Value> = nodes
         .iter()
         .filter(|n| n.get("state").and_then(Value::as_str) != Some("done"))
-        .map(|n| pick(n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive"]))
+        .map(|n| pick(n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive", "undeliverable_messages"]))
         .collect();
     let questions: Vec<Value> = list("open_questions").iter().map(|q| pick(q, &["id", "title", "node_name", "origin", "to_orchestrator", "asked_at"])).collect();
     let unread: Vec<Value> = list("reports")

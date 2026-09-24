@@ -72,7 +72,6 @@ The paperwork you used to do by hand is now done by Alondra, so your job is only
   report the questions that are already open: the user already has them in their inbox.
   Never report progress or that you do not need the user; that is noise and Alondra rejects it.
   Your own terminal does not reach the user: anything for them goes through `ask` or `report`, written in the language the MCP instructions name.
-  Alondra rejects reports that ask for something.
 
 ## A finished node leaves a clean worktree
 

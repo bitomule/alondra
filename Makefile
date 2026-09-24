@@ -2,7 +2,7 @@ BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac e2e-sandbox soak
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -57,3 +57,12 @@ mac:
 	mkdir -p $(HOME)/Applications
 	unzip -q -o $$(bazelisk cquery --output=files //apple:AlondraMac 2>/dev/null | grep '\.zip$$' | head -1) -d $(HOME)/Applications
 	open $(HOME)/Applications/Alondra.app
+
+
+e2e-sandbox:
+	bazelisk build //crates/alondrad //crates/alondra
+	tools/e2e-sandbox.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null)
+
+soak:
+	bazelisk build //crates/alondrad
+	taskpolicy -b python3 tools/soak.py --binary $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(SOAK_ARGS)

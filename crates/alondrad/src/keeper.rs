@@ -15,7 +15,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
     loop {
         tokio::time::sleep(EVERY).await;
         if let Err(e) = tick(&hub, &claude_home, started_at).await {
-            eprintln!("alondrad: keeper: {e}");
+            log!("keeper: {e}");
         }
     }
 }
@@ -28,7 +28,7 @@ async fn tick(hub: &Hub, claude_home: &Path, started_at: i64) -> anyhow::Result<
     let ok = match orchestrator_plugin(claude_home) {
         Some(plugin) => launch(&plugin, &hub.config.name).await,
         None => {
-            eprintln!("alondrad: keeper: no orchestrator is running and the Alondra marketplace is not registered, so there is no plugin to launch one with");
+            log!("keeper: no orchestrator is running and the Alondra marketplace is not registered, so there is no plugin to launch one with");
             false
         }
     };
@@ -57,19 +57,19 @@ async fn launch(plugin: &Path, user: &str) -> bool {
         .kill_on_drop(true);
     match tokio::time::timeout(Duration::from_secs(60), cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => {
-            eprintln!("alondrad: keeper: no orchestrator was running; launched one with {}", plugin.display());
+            log!("keeper: no orchestrator was running; launched one with {}", plugin.display());
             true
         }
         Ok(Ok(out)) => {
-            eprintln!("alondrad: keeper: launching an orchestrator failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+            log!("keeper: launching an orchestrator failed: {}", String::from_utf8_lossy(&out.stderr).trim());
             false
         }
         Ok(Err(e)) => {
-            eprintln!("alondrad: keeper: launching an orchestrator failed: {e}");
+            log!("keeper: launching an orchestrator failed: {e}");
             false
         }
         Err(_) => {
-            eprintln!("alondrad: keeper: claude --bg did not respond within 60 s");
+            log!("keeper: claude --bg did not respond within 60 s");
             false
         }
     }

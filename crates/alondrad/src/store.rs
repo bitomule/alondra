@@ -72,7 +72,7 @@ impl Store {
             let body: String = row.get(2)?;
             match serde_json::from_str::<Event>(&body) {
                 Ok(ev) => f(seq as u64, at, ev),
-                Err(e) => eprintln!("alondrad: event {seq} unreadable, ignored: {e}"),
+                Err(e) => log!("event {seq} unreadable, ignored: {e}"),
             }
             count += 1;
         }

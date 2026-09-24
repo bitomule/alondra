@@ -32,7 +32,7 @@ pub async fn run(hub: Arc<Hub>) {
         hub.wait_event(EVERY).await;
         tokio::time::sleep(DEBOUNCE).await;
         if let Err(e) = sweep(&hub, &mut memory).await {
-            eprintln!("alondrad: sentinel: {e}");
+            log!("sentinel: {e}");
         }
     }
 }
@@ -221,6 +221,7 @@ fn finished_report(v: &View, node: &Node) -> Report {
         created_at: now_millis(),
         read: false,
         mission: node.mission.clone(),
+        looks_like_question: false,
     }
 }
 

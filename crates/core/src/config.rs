@@ -60,6 +60,8 @@ pub struct Config {
     pub wake: bool,
     pub retention_hours: f64,
     pub service_label: String,
+    /// A throwaway instance for probes and end-to-end runs: only it takes reports and questions from `test/` nodes.
+    pub sandbox: bool,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -123,6 +125,7 @@ impl Config {
                 .or(file.retention_hours)
                 .unwrap_or(DEFAULT_RETENTION_HOURS),
             service_label: var("ALONDRA_SERVICE_LABEL").or_else(|| file.service_label.clone()).unwrap_or_else(|| DEFAULT_LABEL.into()),
+            sandbox: var("ALONDRA_SANDBOX").is_some_and(flag),
             home,
         }
     }
@@ -196,6 +199,14 @@ mod tests {
         let file = FileConfig { port: Some(47801), public_url: Some("https://a.example".into()), ..Default::default() };
         let c = resolve(&file, &[("ALONDRA_PORT", "nope"), ("ALONDRA_PUBLIC_URL", " "), ("ALONDRA_NAME", "")]);
         assert_eq!((c.port, c.public_url.as_deref(), c.name.as_str()), (47801, Some("https://a.example"), "Ana"));
+    }
+
+    #[test]
+    fn only_an_explicit_env_makes_a_sandbox() {
+        assert!(!resolve(&FileConfig::default(), &[]).sandbox);
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_PORT", "47891")]).sandbox);
+        assert!(resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "1")]).sandbox);
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "0")]).sandbox);
     }
 
     #[test]
