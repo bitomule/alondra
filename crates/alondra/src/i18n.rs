@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::sync::OnceLock;
 
+use alondra_core::tasks::{RequestState, TaskState};
 use alondra_core::{BackgroundItem, BackgroundKind, Node, NodeState, OrchestratorState, ReportKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,6 +101,57 @@ pub fn orchestrator(s: OrchestratorState) -> &'static str {
 /// The orchestrator is shown with its own states, every other node with the node states.
 pub fn node_state(n: &Node) -> &'static str {
     n.orchestrator_state.map_or_else(|| state(n.state), orchestrator)
+}
+
+pub fn task_state(s: TaskState) -> &'static str {
+    match s {
+        TaskState::WaitingDependency => tr!("waiting for another task", "esperando a otra"),
+        TaskState::Running => tr!("running", "en marcha"),
+        TaskState::NeedsYou => tr!("needs you", "te espera"),
+        TaskState::InReview => tr!("in review", "en revisión"),
+        TaskState::Closing => tr!("closing", "cerrando"),
+        TaskState::Done => tr!("done", "hecha"),
+        TaskState::Cancelled => tr!("cancelled", "descartada"),
+    }
+}
+
+pub fn request_state(s: RequestState) -> &'static str {
+    match s {
+        RequestState::Defining => tr!("defining", "definiendo"),
+        RequestState::InProgress => tr!("in progress", "en curso"),
+        RequestState::Done => tr!("done", "hecha"),
+    }
+}
+
+/// Whether a node works on something now; its tasks carry everything else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Occupancy {
+    Busy,
+    Free,
+    WaitingMachine,
+}
+
+impl Occupancy {
+    pub fn of(n: &Node) -> Self {
+        match n.state {
+            NodeState::Working => Occupancy::Busy,
+            NodeState::WaitingMachine => Occupancy::WaitingMachine,
+            _ => Occupancy::Free,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Occupancy::Busy => tr!("busy", "ocupado"),
+            Occupancy::Free => tr!("free", "libre"),
+            Occupancy::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
+        }
+    }
+}
+
+/// The orchestrator keeps its own states; every other node is free or busy.
+pub fn fleet_state(n: &Node) -> &'static str {
+    n.orchestrator_state.map_or_else(|| Occupancy::of(n).label(), orchestrator)
 }
 
 pub fn report_kind(k: ReportKind) -> &'static str {
@@ -302,5 +354,20 @@ mod tests {
         set_for_this_thread(Lang::Es);
         assert_eq!(state(NodeState::Working), "trabajando");
         assert_eq!(comments(1), "1 comentario");
+    }
+
+    #[test]
+    fn task_request_and_node_labels_read_as_the_apps_do() {
+        set_for_this_thread(Lang::Es);
+        let tasks: Vec<&str> = TaskState::ALL.iter().map(|s| task_state(*s)).collect();
+        assert_eq!(tasks, ["esperando a otra", "en marcha", "te espera", "en revisión", "cerrando", "hecha", "descartada"]);
+        assert_eq!(request_state(RequestState::Defining), "definiendo");
+        let mut n = Node::new("s", 0);
+        n.state = NodeState::Working;
+        assert_eq!(fleet_state(&n), "ocupado");
+        n.state = NodeState::WaitingMerge;
+        assert_eq!(fleet_state(&n), "libre");
+        set_for_this_thread(Lang::En);
+        assert_eq!(task_state(TaskState::WaitingDependency), "waiting for another task");
     }
 }

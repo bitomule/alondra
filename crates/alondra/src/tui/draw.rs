@@ -1,5 +1,8 @@
+mod tasks;
+
 use std::collections::HashMap;
 
+use alondra_core::tasks::{BlockerKind, TaskState};
 use alondra_core::{NodeState, Question, QuestionOrigin, Report, ReportKind, now_millis};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -9,8 +12,8 @@ use ratatui::widgets::{Block as Panel, BorderType, Clear, Paragraph, Scrollbar, 
 
 use super::md::{self, str_width, truncate, wrap};
 use super::{App, FleetRow, Item, Key, Pane, Remote, Screen, Target, View, said, who};
-use crate::client::FleetNode;
-use crate::i18n;
+use crate::client::{ClientTask, FleetNode};
+use crate::i18n::{self, Occupancy};
 
 const ACCENT: Color = Color::LightYellow;
 const DIM: Color = Color::DarkGray;
@@ -42,6 +45,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         match app.screen {
             Screen::Inbox => draw_inbox(f, app, body),
+            Screen::Tasks => tasks::draw_tasks(f, app, body),
             Screen::Fleet => draw_fleet(f, app, body),
         }
     }
@@ -162,6 +166,40 @@ fn state_color(s: NodeState) -> Color {
     }
 }
 
+/// The orchestrator keeps its node state's colour; every other node is busy, free or waiting.
+fn node_color(n: &FleetNode) -> Color {
+    if n.is_orchestrator {
+        return state_color(n.state);
+    }
+    match Occupancy::of(n) {
+        Occupancy::Busy => Color::Green,
+        Occupancy::Free => SOFT,
+        Occupancy::WaitingMachine => Color::LightRed,
+    }
+}
+
+pub(super) fn state_glyph(s: TaskState) -> (&'static str, Color) {
+    match s {
+        TaskState::WaitingDependency => ("◌", DIM),
+        TaskState::Running => ("●", Color::Green),
+        TaskState::NeedsYou => ("?", Color::Yellow),
+        TaskState::InReview => ("⇄", Color::LightGreen),
+        TaskState::Closing => ("⇉", Color::Cyan),
+        TaskState::Done => ("✓", Color::LightGreen),
+        TaskState::Cancelled => ("✗", DIM),
+    }
+}
+
+/// An action the user has to carry out reads as "your turn", like its card.
+pub(super) fn task_glyph(t: &ClientTask) -> (&'static str, Color) {
+    if t.state == TaskState::NeedsYou && t.blocker.is_some_and(|b| b.kind == BlockerKind::Action) {
+        return ("▶", ACCENT);
+    }
+    state_glyph(t.state)
+}
+
+const DEFINING: (&str, Color) = ("…", Color::LightMagenta);
+
 pub(super) fn question_glyph(q: &Question) -> (&'static str, &'static str, Color) {
     if q.action {
         return ("▶", tr!("your turn", "te toca"), Color::LightYellow);
@@ -232,8 +270,9 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     let mut left = vec![Span::styled(" Alondra ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
-    let (inbox, fleet) = (app.inbox_count(), app.data.nodes.len());
+    let (inbox, tasks, fleet) = (app.inbox_count(), app.open_task_count(), app.data.nodes.len());
     left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
+    left.push(tab(trf!("Tasks {tasks}", "Tareas {tasks}"), app.screen == Screen::Tasks));
     left.push(tab(trf!("Fleet {fleet}", "Flota {fleet}"), app.screen == Screen::Fleet));
     if app.offline {
         left.push(Span::raw(" "));
@@ -429,7 +468,7 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(tr!("Nobody is waiting for you and there is nothing to read.", "Nadie te espera y no hay nada por leer.").fg(DIM)),
                 Line::default(),
                 Line::from(vec![Span::styled("n", Style::new().fg(ACCENT).bold()), tr!(" order new work", " encarga trabajo nuevo").fg(DIM)]),
-                Line::from(vec![Span::styled("Tab", Style::new().fg(ACCENT).bold()), tr!(" see the fleet", " mira la flota").fg(DIM)]),
+                Line::from(vec![Span::styled("Tab", Style::new().fg(ACCENT).bold()), tr!(" see the tasks", " mira las tareas").fg(DIM)]),
             ],
         );
         return;
@@ -522,6 +561,10 @@ fn detail(app: &App, item: &Item, width: usize) -> (Vec<Line<'static>>, Vec<Imag
     }
     meta.push(Span::styled(format!(" · {}", ago_phrase(at)), Style::new().fg(DIM)));
     lines.push(fit(meta, width));
+    if let Some(task) = app.card_task_title(item) {
+        let label = Span::styled(tr!("Task: ", "Tarea: "), Style::new().fg(DIM).add_modifier(Modifier::BOLD));
+        lines.extend(wrap(vec![Span::styled(md::one_line(&task), Style::new().fg(SOFT))], width, vec![label], vec![Span::raw("  ")]));
+    }
     let mission = match item {
         Item::Q(q) => q.mission.as_deref(),
         Item::R(r) => r.mission.as_deref(),
@@ -878,13 +921,13 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     let name_w = room.saturating_sub(badge.as_ref().map_or(0, |(t, _)| str_width(t)));
     let name = truncate(&short, name_w);
     let pad = name_w.saturating_sub(str_width(&name));
-    let mut spans = vec![bar, Span::styled(" ● ", Style::new().fg(state_color(n.state))), Span::styled(name, Style::new())];
+    let mut spans = vec![bar, Span::styled(" ● ", Style::new().fg(node_color(n))), Span::styled(name, Style::new())];
     if let Some((text, style)) = badge {
         spans.push(Span::styled(text, style));
     }
     spans.push(Span::raw(" ".repeat(pad)));
     if state_w > 0 {
-        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::node_state(n), 19)), Style::new().fg(state_color(n.state))));
+        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::fleet_state(n), 19)), Style::new().fg(node_color(n))));
     }
     spans.push(Span::styled(format!("{since:>5}"), Style::new().fg(DIM)));
     fit(spans, width)
@@ -991,10 +1034,12 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
             FleetRow::Node(idx) => {
                 let n = &app.data.nodes[*idx];
                 let selected = app.fleet_sel.as_deref() == Some(n.session_id.as_str());
-                if selected {
-                    sel = Some((lines.len(), lines.len() + 1));
-                }
+                let start = lines.len();
                 lines.push(node_row(n, width, selected));
+                lines.extend(tasks::node_task_lines(app, n, width, selected));
+                if selected {
+                    sel = Some((start, lines.len()));
+                }
             }
         }
     }
@@ -1035,7 +1080,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let width = text.width as usize;
     let mut lines = vec![fit(
         vec![
-            Span::styled(format!("● {}", i18n::node_state(&n)), Style::new().fg(state_color(n.state)).bold()),
+            Span::styled(format!("● {}", i18n::fleet_state(&n)), Style::new().fg(node_color(&n)).bold()),
             Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
         ],
         width,
@@ -1047,15 +1092,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(cwd) = &n.cwd {
         lines.push(fit(vec![Span::styled(cwd.clone(), Style::new().fg(DIM))], width));
     }
-    if let Some(t) = &n.tool {
-        lines.push(Line::default());
-        lines.extend(wrap(
-            vec![Span::styled(format!("{} ", t.name), Style::new().fg(ACCENT)), Span::raw(t.summary.clone().unwrap_or_default()), Span::styled(format!(" · {}", ago(t.since)), Style::new().fg(DIM))],
-            width,
-            vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))],
-            vec![],
-        ));
-    }
+    lines.extend(tasks::node_detail_lines(app, &n, width));
     lines.extend(background_lines(&n, width));
     if let Some(needs) = &n.daemon_needs {
         lines.push(Line::default());
@@ -1109,9 +1146,9 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
                 let name = n.display_name().rsplit('/').next().unwrap_or(n.display_name()).to_string();
                 lines.push(fit(
                     vec![
-                        Span::styled("  ● ", Style::new().fg(state_color(n.state))),
+                        Span::styled("  ● ", Style::new().fg(node_color(n))),
                         Span::raw(md::one_line(&name)),
-                        Span::styled(format!(" {}", i18n::node_state(n)), Style::new().fg(DIM)),
+                        Span::styled(format!(" {}", i18n::fleet_state(n)), Style::new().fg(DIM)),
                     ],
                     width,
                 ));
@@ -1566,6 +1603,17 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         v.push(k("Esc/o", tr!("back", "volver")));
         return v;
     }
+    if app.screen == Screen::Tasks {
+        if app.task_zoom {
+            return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
+        }
+        let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel")), k("o", tr!("expand", "expandir")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))];
+        if !app.task_actions_missing {
+            v.extend([k("x", tr!("cancel", "descartar")), k("Shift+R", tr!("reopen", "reabrir"))]);
+        }
+        v.extend([k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
+        return v;
+    }
     if app.screen == Screen::Fleet {
         if app.search.as_ref().is_some_and(|s| s.editing) {
             return vec![k("⏎", tr!("keep filter", "fijar filtro")), k("Esc", tr!("clear search", "quitar búsqueda"))];
@@ -1589,7 +1637,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         return v;
     }
     let pane = if app.focus == Pane::Detail { k("j/k", tr!("scroll", "desplazar")) } else { k("j/k", tr!("move", "mover")) };
-    let tail = [k("^d/^u", tr!("scroll detail", "desplazar detalle")), k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))];
+    let tail = [k("^d/^u", tr!("scroll detail", "desplazar detalle")), k("Tab", tr!("tasks", "tareas")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))];
     match app.sel.and_then(|s| app.item(s)) {
         Some(Item::Q(q)) => {
             let mut v = vec![];
@@ -1627,7 +1675,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v.extend(tail);
             v
         }
-        None => vec![k("n", tr!("new work", "trabajo nuevo")), k("Shift+M", tr!("orchestrator", "orquestador")), k("Tab", tr!("fleet", "flota")), k("q", tr!("quit", "salir"))],
+        None => vec![k("n", tr!("new work", "trabajo nuevo")), k("Shift+M", tr!("orchestrator", "orquestador")), k("Tab", tr!("tasks", "tareas")), k("q", tr!("quit", "salir"))],
     }
 }
 
@@ -1686,7 +1734,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("h/l  ←→", tr!("focus the list / the detail pane", "enfocar la lista / el panel de detalle")),
         row("o  ⏎", tr!("expand: open the whole question, plan or report", "expandir: abrir entera la pregunta, plan o informe")),
         row("Esc", tr!("back: close, collapse or leave the detail pane", "volver: cerrar, plegar o salir del panel de detalle")),
-        row(":", tr!("command line: :q  :help  :inbox  :fleet  :<number>", "línea de órdenes: :q  :help  :inbox  :fleet  :<número>")),
+        row(":", tr!("command line: :q  :help  :inbox  :tasks  :fleet  :<number>", "línea de órdenes: :q  :help  :inbox  :tasks  :fleet  :<número>")),
         Line::default(),
         section(tr!("Bars in the header, left to right", "Barras de la cabecera, de izquierda a derecha")),
         row(tr!("week", "semana"), tr!("Claude's weekly limit used; it turns red past 85%", "límite semanal de Claude usado; en rojo pasado el 85%")),
@@ -1713,6 +1761,12 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("Shift+X", tr!("read and close the node (twice to confirm; never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; nunca el orquestador)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
+        section(tr!("Tasks", "Tareas")),
+        row("o", tr!("expand the task's detail to full screen", "expandir el detalle de la tarea a pantalla completa")),
+        row("r · ⏎", tr!("message its node · its node's terminal", "mensaje a su nodo · el terminal de su nodo")),
+        row("x", tr!("cancel the task (twice to confirm)", "descartar la tarea (dos veces para confirmar)")),
+        row("Shift+R", tr!("reopen a done or cancelled task", "reabrir una tarea hecha o descartada")),
+        Line::default(),
         section(tr!("Fleet", "Flota")),
         row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),
         row("r · ⏎", tr!("message the node · its terminal", "mensaje al nodo · su terminal")),
@@ -1720,7 +1774,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("x", tr!("close the node (twice to confirm; never discards work)", "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)")),
         Line::default(),
         section(tr!("Always", "Siempre")),
-        row("Tab", tr!("inbox ⇄ fleet", "bandeja ⇄ flota")),
+        row("Tab", tr!("inbox → tasks → fleet (Shift+Tab goes back)", "bandeja → tareas → flota (Shift+Tab vuelve)")),
         row("n · Shift+M", tr!("new work · message the orchestrator", "trabajo nuevo · mensaje al orquestador")),
         row("q  Ctrl-c", tr!("quit", "salir")),
         row(tr!("typing", "al escribir"), tr!("letters go to the text box; Esc leaves it", "las letras van al cuadro de texto; Esc sale")),
@@ -1934,7 +1988,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
         q.title = "Merge it before the release?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None, reports: vec![] });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), task: None, report: None, reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1952,7 +2006,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut r = report(2);
         r.title = "PR ready: leaving a node returns to Alondra".into();
-        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4), earlier: vec![] });
+        app.data.news.push(crate::client::NewsReport { report: r, pr_id: Some(4), task: None, earlier: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1973,7 +2027,7 @@ mod tests {
         .unwrap();
         let mut q = question(2, QuestionOrigin::Ask, &["Launch it"]);
         q.title = "Launch a node to fix the audit?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report), reports: vec![] });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, task: None, report: Some(report), reports: vec![] });
         app.reconcile();
         let s = screen(&mut app, 120, 40);
         assert!(s.contains("Launch a node to fix the audit?"), "{s}");
@@ -1995,7 +2049,7 @@ mod tests {
         let mut q = question(2, QuestionOrigin::Ask, &["Yes"]);
         q.title = "Go on with the TUI jump?".into();
         let reports = vec![delivered(7, "Menus become cards"), delivered(8, "Subscription usage")];
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: reports.last().cloned(), reports });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, task: None, report: reports.last().cloned(), reports });
         app.reconcile();
         let s = screen(&mut app, 120, 40);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -2007,7 +2061,7 @@ mod tests {
     fn a_report_card_carries_the_earlier_reports_of_its_delivery() {
         let (mut app, _rx) = app_with(vec![]);
         app.loaded = true;
-        app.data.news = vec![crate::client::NewsReport { report: delivered(2, "Annex to the audit"), pr_id: None, earlier: vec![delivered(1, "Audit redone")] }];
+        app.data.news = vec![crate::client::NewsReport { report: delivered(2, "Annex to the audit"), pr_id: None, task: None, earlier: vec![delivered(1, "Audit redone")] }];
         app.reconcile();
         let s = screen(&mut app, 120, 40);
         assert!(s.contains("TO READ 1"), "{s}");

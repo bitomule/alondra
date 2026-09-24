@@ -1,0 +1,603 @@
+//! The Tasks screen: every request with its task tree, what is happening to each task now, and
+//! what the other screens say about a card's or a node's tasks.
+
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+use alondra_core::now_millis;
+use alondra_core::pr::CheckState;
+use alondra_core::tasks::{BlockerKind, RequestState, TaskState, Transition};
+use crossterm::event::{KeyCode, KeyEvent};
+use serde_json::{Value, json};
+
+use super::keys::{self, Cmd, Motion};
+use super::{App, Flow, Item, Key, Msg, Pane, Target, md};
+use crate::client::{Activity, Client, ClientRequest, ClientTask, FleetNode, NotFound, PrCard};
+use crate::mcp::urlencode;
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum TaskKey {
+    Task(String),
+    Request(String),
+}
+
+/// A task placed in its request's tree: depth 0 runs in parallel with its siblings, a deeper one
+/// goes after its parent. `lines` says, for each level above the parent, whether that ancestor's
+/// rail runs on through this row.
+#[derive(Clone, PartialEq, Debug)]
+pub struct TreeRow {
+    pub id: String,
+    pub depth: usize,
+    pub last: bool,
+    pub lines: Vec<bool>,
+    pub has_children: bool,
+}
+
+pub enum TaskListRow {
+    Request(String),
+    Task(TreeRow),
+    Defining(String),
+}
+
+/// Each task under the dependency it goes after (the newest one when it has several); tasks with
+/// no dependency among `tasks` are roots, in parallel. A cycle still shows every task.
+pub fn tree(tasks: &[&ClientTask]) -> Vec<TreeRow> {
+    let mut ordered: Vec<&ClientTask> = tasks.to_vec();
+    ordered.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    let by_id: HashMap<&str, &ClientTask> = ordered.iter().map(|t| (t.id.as_str(), *t)).collect();
+    let parent: HashMap<&str, &str> = ordered
+        .iter()
+        .filter_map(|t| {
+            let newest = t.depends_on.iter().filter(|d| **d != t.id).filter_map(|d| by_id.get(d.as_str())).max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))?;
+            Some((t.id.as_str(), newest.id.as_str()))
+        })
+        .collect();
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    for t in &ordered {
+        if let Some(p) = parent.get(t.id.as_str()) {
+            children.entry(p).or_default().push(t.id.as_str());
+        }
+    }
+    let mut rows = vec![];
+    let mut placed: HashSet<&str> = HashSet::new();
+    fn place<'a>(id: &'a str, depth: usize, last: bool, lines: Vec<bool>, children: &HashMap<&str, Vec<&'a str>>, placed: &mut HashSet<&'a str>, rows: &mut Vec<TreeRow>) {
+        if !placed.insert(id) {
+            return;
+        }
+        let kids: Vec<&str> = children.get(id).map(|k| k.iter().copied().filter(|k| !placed.contains(k)).collect()).unwrap_or_default();
+        rows.push(TreeRow { id: id.to_string(), depth, last, lines: lines.clone(), has_children: !kids.is_empty() });
+        let below = if depth == 0 { lines } else { [lines, vec![!last]].concat() };
+        let n = kids.len();
+        for (i, kid) in kids.into_iter().enumerate() {
+            place(kid, depth + 1, i + 1 == n, below.clone(), children, placed, rows);
+        }
+    }
+    let roots: Vec<&str> = ordered.iter().map(|t| t.id.as_str()).filter(|id| !parent.contains_key(id)).collect();
+    let n = roots.len();
+    for (i, root) in roots.into_iter().enumerate() {
+        place(root, 0, i + 1 == n, vec![], &children, &mut placed, &mut rows);
+    }
+    for t in &ordered {
+        place(t.id.as_str(), 0, true, vec![], &children, &mut placed, &mut rows);
+    }
+    rows
+}
+
+/// `HH:MM` in the Mac's time zone.
+pub fn clock(ms: i64) -> String {
+    let secs = (ms / 1000) as libc::time_t;
+    // SAFETY: `localtime_r` only writes into the `tm` it is given.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+        return String::new();
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
+/// "PR #150 · waiting for checks, 2 of 3", for a task's line.
+pub fn pr_progress(p: &PrCard, merges_alone: bool) -> String {
+    let n = p.pr.number;
+    let checks = &p.pr.checks;
+    if p.pr.conflicts() {
+        return trf!("PR #{n} · conflicts", "PR #{n} · conflictos");
+    }
+    if checks.iter().any(|c| c.state == CheckState::Failed) {
+        return trf!("PR #{n} · checks failed", "PR #{n} · checks fallidos");
+    }
+    if let Some(below) = p.below_number {
+        return trf!("PR #{n} · merge #{below} first", "PR #{n} · fusiona antes el #{below}");
+    }
+    if checks.iter().any(|c| c.state == CheckState::Running) {
+        let (ok, all) = (checks.iter().filter(|c| c.state == CheckState::Passed).count(), checks.len());
+        return trf!("PR #{n} · waiting for checks, {ok} of {all}", "PR #{n} · espera checks, {ok} de {all}");
+    }
+    if merges_alone {
+        return trf!("PR #{n} · Alondra merges it when the checks pass", "PR #{n} · Alondra lo fusiona cuando pasen los checks");
+    }
+    trf!("PR #{n} · ready to merge", "PR #{n} · listo para fusionar")
+}
+
+/// What moved a task, in a few words.
+pub fn transition_summary(t: &Transition) -> String {
+    use alondra_core::tasks::TaskEvent as E;
+    match &t.event {
+        E::DependencyReady { .. } => tr!("a task it builds on has its PR open", "la tarea de la que depende ya tiene su PR abierto").into(),
+        E::BlockerRaised { blocker, .. } => match blocker.kind {
+            BlockerKind::Question => tr!("the node asked you something", "el nodo te preguntó algo").into(),
+            BlockerKind::Permission => tr!("the node needs a permission", "el nodo necesita un permiso").into(),
+            BlockerKind::Action => tr!("the node asked you to do something", "el nodo te pidió hacer algo").into(),
+        },
+        E::PrOpened { .. } => tr!("the node opened a PR", "el nodo abrió un PR").into(),
+        E::DocumentSent { .. } => tr!("the node sent a document for review", "el nodo envió un documento para revisar").into(),
+        E::AutoMerged { .. } => tr!("Alondra merged its PR", "Alondra fusionó su PR").into(),
+        E::FinalReport { .. } => tr!("the node reported it finished", "el nodo dijo que terminó").into(),
+        E::Answered { .. } => tr!("you answered", "respondiste").into(),
+        E::ChangesRequested { .. } => tr!("you asked for changes", "pediste cambios").into(),
+        E::NodeUpdated { .. } => tr!("the node pushed changes and let you know again", "el nodo subió cambios y te avisó otra vez").into(),
+        E::Merged { .. } => tr!("merged", "fusionada").into(),
+        E::ReviewClosed { .. } => tr!("the review closed without a merge", "la revisión se cerró sin fusionar").into(),
+        E::Reopen => tr!("reopened", "reabierta").into(),
+        E::Cancel => tr!("cancelled", "descartada").into(),
+    }
+}
+
+fn before_its_pr_opens(s: TaskState) -> bool {
+    !s.finished() && s != TaskState::InReview && s != TaskState::Closing
+}
+
+impl App {
+    pub fn task(&self, id: &str) -> Option<&ClientTask> {
+        self.data.tasks.iter().find(|t| t.id == id)
+    }
+
+    pub fn request(&self, id: &str) -> Option<&ClientRequest> {
+        self.data.requests.iter().find(|r| r.id == id)
+    }
+
+    pub fn request_tasks(&self, r: &ClientRequest) -> Vec<&ClientTask> {
+        let listed: Vec<&ClientTask> = r.tasks.iter().filter_map(|id| self.task(id)).collect();
+        if listed.is_empty() { self.data.tasks.iter().filter(|t| t.request == r.id).collect() } else { listed }
+    }
+
+    /// Requests still open, newest first, then the finished ones.
+    pub fn ordered_requests(&self) -> Vec<&ClientRequest> {
+        let mut all: Vec<&ClientRequest> = self.data.requests.iter().collect();
+        all.sort_by(|a, b| ((a.state == RequestState::Done), std::cmp::Reverse((a.created_at, &a.id))).cmp(&((b.state == RequestState::Done), std::cmp::Reverse((b.created_at, &b.id)))));
+        all
+    }
+
+    pub fn task_rows(&self) -> Vec<TaskListRow> {
+        let mut rows = vec![];
+        for r in self.ordered_requests() {
+            rows.push(TaskListRow::Request(r.id.clone()));
+            let tasks = self.request_tasks(r);
+            if tasks.is_empty() {
+                rows.push(TaskListRow::Defining(r.id.clone()));
+            } else {
+                rows.extend(tree(&tasks).into_iter().map(TaskListRow::Task));
+            }
+        }
+        rows
+    }
+
+    pub fn task_keys(&self) -> Vec<TaskKey> {
+        self.task_rows()
+            .into_iter()
+            .filter_map(|r| match r {
+                TaskListRow::Task(row) => Some(TaskKey::Task(row.id)),
+                TaskListRow::Defining(id) => Some(TaskKey::Request(id)),
+                TaskListRow::Request(_) => None,
+            })
+            .collect()
+    }
+
+    pub fn selected_task(&self) -> Option<&ClientTask> {
+        match &self.task_sel {
+            Some(TaskKey::Task(id)) => self.task(id),
+            _ => None,
+        }
+    }
+
+    pub fn tasks_on(&self, session: &str) -> Vec<&ClientTask> {
+        let mut tasks: Vec<&ClientTask> = self.data.tasks.iter().filter(|t| t.assignee.as_ref().is_some_and(|a| a.session_id == session)).collect();
+        tasks.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        tasks
+    }
+
+    /// Open tasks and requests still being defined: what the Tasks tab counts.
+    pub fn open_task_count(&self) -> usize {
+        self.data.tasks.iter().filter(|t| !t.state.finished()).count() + self.data.requests.iter().filter(|r| r.state == RequestState::Defining).count()
+    }
+
+    /// The first line of what the user asked; a request made up for an older node takes its
+    /// first task's title.
+    pub fn request_title(&self, r: &ClientRequest) -> String {
+        let line = r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
+        line.or_else(|| self.request_tasks(r).first().map(|t| t.title.clone())).unwrap_or_else(|| r.id.clone())
+    }
+
+    pub fn task_project(&self, t: &ClientTask) -> Option<String> {
+        let named = |p: &String| (!p.is_empty() && p != alondra_core::OTHERS_PROJECT).then(|| p.clone());
+        t.options
+            .project
+            .as_ref()
+            .and_then(named)
+            .or_else(|| t.assignee.as_ref().and_then(|a| self.node(&a.session_id)).and_then(|n| n.project.as_ref()).and_then(named))
+            .or_else(|| self.request(&t.request).and_then(|r| r.options.as_ref()).and_then(|o| o.project.as_ref()).and_then(named))
+    }
+
+    pub fn request_project(&self, r: &ClientRequest) -> Option<String> {
+        r.options.as_ref().and_then(|o| o.project.clone()).filter(|p| !p.is_empty() && p != alondra_core::OTHERS_PROJECT).or_else(|| self.request_tasks(r).iter().find_map(|t| self.task_project(t)))
+    }
+
+    /// What the node does now, per thread; an alondrad without the activity ledger gives only the
+    /// main thread's tool in flight.
+    pub fn node_activity(&self, n: &FleetNode) -> Vec<Activity> {
+        if let Some(a) = &n.activity {
+            let mut a = a.clone();
+            a.sort_by_key(|x| std::cmp::Reverse(x.since));
+            return a;
+        }
+        n.tool.as_ref().map(|t| vec![Activity { tool: Some(t.name.clone()), summary: t.summary.clone(), since: t.since, ..Default::default() }]).unwrap_or_default()
+    }
+
+    /// The threads that work on this task: those bound to it, or all of its node's while the node
+    /// has no other open task.
+    pub fn task_activity(&self, t: &ClientTask) -> Vec<Activity> {
+        let Some(n) = t.assignee.as_ref().and_then(|a| self.node(&a.session_id)) else { return vec![] };
+        let all = self.node_activity(n);
+        let mine: Vec<Activity> = all.iter().filter(|a| a.task.as_deref() == Some(t.id.as_str())).cloned().collect();
+        if !mine.is_empty() {
+            return mine;
+        }
+        let open: Vec<&str> = self.tasks_on(&n.session_id).into_iter().filter(|x| !x.state.finished()).map(|x| x.id.as_str()).collect();
+        if open != [t.id.as_str()] {
+            return vec![];
+        }
+        all.into_iter().filter(|a| a.task.is_none()).collect()
+    }
+
+    pub fn task_prs(&self, t: &ClientTask) -> Vec<&PrCard> {
+        let mut prs: Vec<&PrCard> = self.data.prs.iter().filter(|p| t.prs.contains(&p.pr.id) || p.task.as_deref() == Some(t.id.as_str())).collect();
+        prs.sort_by_key(|p| p.train_place());
+        prs
+    }
+
+    pub fn dependencies(&self, t: &ClientTask) -> Vec<&ClientTask> {
+        t.depends_on.iter().filter_map(|id| self.task(id)).collect()
+    }
+
+    pub fn dependents(&self, t: &ClientTask) -> Vec<&ClientTask> {
+        let mut out: Vec<&ClientTask> = self.data.tasks.iter().filter(|x| x.depends_on.contains(&t.id)).collect();
+        out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        out
+    }
+
+    /// The task, everything it builds on and everything built on it, in the order their PRs merge.
+    pub fn merge_order<'a>(&'a self, t: &'a ClientTask) -> Vec<&'a ClientTask> {
+        let mut seen: HashSet<&str> = HashSet::from([t.id.as_str()]);
+        fn down<'a>(app: &'a App, t: &ClientTask, seen: &mut HashSet<&'a str>, out: &mut Vec<&'a ClientTask>) {
+            for d in app.dependencies(t) {
+                if seen.insert(d.id.as_str()) {
+                    down(app, d, seen, out);
+                    out.push(d);
+                }
+            }
+        }
+        let mut below = vec![];
+        down(self, t, &mut seen, &mut below);
+        let mut above = vec![];
+        let mut frontier = vec![t];
+        while !frontier.is_empty() {
+            let next: Vec<&ClientTask> = frontier.iter().flat_map(|f| self.dependents(f)).filter(|d| seen.insert(d.id.as_str())).collect();
+            above.extend(next.iter().copied());
+            frontier = next;
+        }
+        below.into_iter().chain(std::iter::once(t)).chain(above).collect()
+    }
+
+    /// The task a card belongs to: the one it names, else the one that carries it.
+    pub fn task_of(&self, key: Key) -> Option<&ClientTask> {
+        match key {
+            Key::Q(id) => {
+                let named = self.data.open_questions.iter().find(|q| q.id == id).and_then(|q| q.task.as_deref());
+                named.and_then(|t| self.task(t)).or_else(|| self.data.tasks.iter().find(|t| t.blocker.is_some_and(|b| b.question == id)))
+            }
+            Key::R(id) => {
+                let named = self.data.news.iter().find(|r| r.id == id).and_then(|r| r.task.as_deref());
+                named
+                    .and_then(|t| self.task(t))
+                    .or_else(|| self.data.tasks.iter().find(|t| t.documents.contains(&id) || t.notices.contains(&id) || t.final_report == Some(id)))
+            }
+            Key::P(id) => {
+                let named = self.data.prs.iter().find(|p| p.pr.id == id).and_then(|p| p.task.as_deref());
+                named.and_then(|t| self.task(t)).or_else(|| self.data.tasks.iter().find(|t| t.prs.contains(&id)))
+            }
+        }
+    }
+
+    /// The task's cards that wait in the inbox.
+    pub fn task_items(&self, t: &ClientTask) -> Vec<Key> {
+        self.inbox_keys().into_iter().filter(|k| self.task_of(*k).is_some_and(|x| x.id == t.id)).collect()
+    }
+
+    /// One line on what is happening to the task now, or nothing to add to its state.
+    pub fn task_now(&self, t: &ClientTask) -> Option<String> {
+        match t.state {
+            TaskState::NeedsYou => {
+                let b = t.blocker?;
+                let title = md::one_line(&self.data.open_questions.iter().find(|q| q.id == b.question)?.title);
+                Some(match b.kind {
+                    BlockerKind::Question => trf!("question: {title}", "pregunta: {title}"),
+                    BlockerKind::Permission => trf!("permission: {title}", "permiso: {title}"),
+                    BlockerKind::Action => trf!("your turn: {title}", "te toca: {title}"),
+                })
+            }
+            TaskState::InReview => {
+                if let Some(p) = self.task_prs(t).first() {
+                    return Some(pr_progress(p, t.auto_merge_pending));
+                }
+                let doc = t.documents.iter().rev().find_map(|id| self.report_by_id(*id))?;
+                let title = md::one_line(&doc.title);
+                Some(trf!("document: {title}", "documento: {title}"))
+            }
+            TaskState::WaitingDependency => {
+                if let Some((n, below)) = self.task_prs(t).first().and_then(|p| p.below_number.map(|b| (p.pr.number, b))) {
+                    return Some(trf!("PR #{n} on top of #{below}", "PR #{n} va encima del #{below}"));
+                }
+                let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
+                let title = &first.title;
+                Some(trf!("after «{title}»", "tras «{title}»"))
+            }
+            TaskState::Running => {
+                let latest = self.task_activity(t).into_iter().max_by_key(|a| a.since)?;
+                let doing = activity_doing(&latest);
+                if latest.is_main() { doing } else { Some([Some(latest.thread()), doing].into_iter().flatten().collect::<Vec<_>>().join(" · ")) }
+            }
+            TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
+            TaskState::Done | TaskState::Cancelled => None,
+        }
+    }
+
+    /// Why a task waits, in a sentence, for its detail.
+    pub fn waiting_reason(&self, t: &ClientTask) -> Option<String> {
+        if t.state != TaskState::WaitingDependency {
+            return None;
+        }
+        let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
+        let (title, state) = (&first.title, crate::i18n::task_state(first.state));
+        Some(trf!(
+            "It starts once «{title}» ({state}) has its PR open, builds on top of it, and its own PR merges after that one.",
+            "Empieza cuando «{title}» ({state}) tenga su PR abierto, se construye encima y su PR se fusiona después."
+        ))
+    }
+
+    pub fn report_by_id(&self, id: u64) -> Option<&alondra_core::Report> {
+        self.data.news.iter().map(|n| &n.report).find(|r| r.id == id).or_else(|| self.data.reports.iter().find(|r| r.id == id))
+    }
+
+    pub(super) fn reconcile_tasks(&mut self) {
+        let keys = self.task_keys();
+        match self.task_sel.as_ref().and_then(|s| keys.iter().position(|k| k == s)) {
+            Some(i) => self.task_idx = i,
+            None => {
+                self.task_idx = self.task_idx.min(keys.len().saturating_sub(1));
+                let next = keys.get(self.task_idx).cloned();
+                if next != self.task_sel {
+                    self.task_detail_scroll = 0;
+                }
+                self.task_sel = next;
+            }
+        }
+        if self.screen == super::Screen::Tasks {
+            self.load_history();
+        }
+    }
+
+    /// The selected task's history, which only its own endpoint carries; asked once per state.
+    fn load_history(&mut self) {
+        let Some((id, since)) = self.selected_task().map(|t| (t.id.clone(), t.state_since)) else { return };
+        if self.history_missing || self.histories.get(&id).is_some_and(|(at, _)| *at == since) || !self.history_asked.insert((id.clone(), since)) {
+            return;
+        }
+        self.spawn(move |tx| {
+            let result = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/tasks/{}", urlencode(&id)));
+            let history = match result {
+                Ok(v) => {
+                    let task = if v.get("task").is_some() { v["task"].clone() } else { v };
+                    Ok(serde_json::from_value::<Vec<Transition>>(task["history"].clone()).unwrap_or_default())
+                }
+                Err(e) => Err(e.downcast_ref::<NotFound>().is_some()),
+            };
+            let _ = tx.send(Msg::TaskHistory { id, since, history });
+        });
+    }
+
+    pub(super) fn history_loaded(&mut self, id: String, since: i64, history: Result<Vec<Transition>, bool>) {
+        match history {
+            Ok(h) => {
+                self.histories.insert(id, (since, h));
+            }
+            Err(missing) => self.history_missing |= missing,
+        }
+    }
+
+    pub(super) fn move_tasks(&mut self, to: isize) {
+        let keys = self.task_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let idx = to.clamp(0, keys.len() as isize - 1) as usize;
+        if self.task_sel.as_ref() != Some(&keys[idx]) {
+            self.task_detail_scroll = 0;
+        }
+        self.task_idx = idx;
+        self.task_sel = Some(keys[idx].clone());
+        self.load_history();
+    }
+
+    pub(super) fn tasks_cmd(&mut self, cmd: Cmd) {
+        let i = self.task_idx as isize;
+        let detail = self.task_zoom || (self.focus == Pane::Detail && self.task_view.shown);
+        match cmd {
+            Cmd::Move(m) if detail => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Move(Motion::Down) => self.move_tasks(i + 1),
+            Cmd::Move(Motion::Up) => self.move_tasks(i - 1),
+            Cmd::Move(Motion::Top) => self.move_tasks(0),
+            Cmd::Move(Motion::Bottom) => self.move_tasks(isize::MAX),
+            Cmd::Move(m) => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Right if self.task_view.shown && !self.task_zoom => self.focus = Pane::Detail,
+            Cmd::Right => self.task_zoom = self.task_sel.is_some(),
+            Cmd::Expand => self.task_zoom = !self.task_zoom && self.task_sel.is_some(),
+            Cmd::Left | Cmd::Back if self.task_zoom => self.task_zoom = false,
+            Cmd::Left | Cmd::Back if self.focus == Pane::Detail => self.focus = Pane::List,
+            Cmd::Left | Cmd::Back | Cmd::Pending | Cmd::Other(_) => {}
+        }
+    }
+
+    pub(super) fn tasks_key(&mut self, k: KeyEvent) -> Flow {
+        match k.code {
+            KeyCode::Char('J') => self.task_detail_scroll = keys::by(self.task_detail_scroll, 5, self.task_view.h, self.task_view.total),
+            KeyCode::Char('K') => self.task_detail_scroll = keys::by(self.task_detail_scroll, -5, self.task_view.h, self.task_view.total),
+            KeyCode::Char('x') => self.cancel_task(),
+            KeyCode::Char('R') => self.reopen_task(),
+            KeyCode::Char('r') | KeyCode::Char('m') => {
+                if let Some(n) = self.selected_task().and_then(|t| t.assignee.as_ref()).and_then(|a| self.node(&a.session_id)) {
+                    let target = Target::Message { session: n.session_id.clone(), name: n.display_name().to_string(), ack: false };
+                    self.compose(target, "");
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Enter => {
+                if let Some(session) = self.selected_task().and_then(|t| t.assignee.as_ref()).map(|a| a.session_id.clone()) {
+                    return self.attach_to(&session);
+                }
+            }
+            _ => {}
+        }
+        Flow::Go
+    }
+
+    fn cancel_task(&mut self) {
+        let Some((id, title, finished)) = self.selected_task().map(|t| (t.id.clone(), md::truncate(&t.title, 60), t.state.finished())) else { return };
+        if self.task_actions_missing {
+            self.fail(tr!("This alondrad cannot cancel tasks yet", "Este alondrad todavía no sabe descartar tareas"));
+            return;
+        }
+        if finished {
+            self.fail(tr!("It is already finished; Shift+R reopens it", "Ya está terminada; Shift+R la reabre"));
+            return;
+        }
+        let now = now_millis();
+        if !self.pending_cancel.as_ref().is_some_and(|(p, until)| *p == id && now < *until) {
+            self.pending_cancel = Some((id, now + 4000));
+            self.fail(trf!("Press x again to cancel «{title}»", "Pulsa x otra vez para descartar «{title}»"));
+            return;
+        }
+        self.pending_cancel = None;
+        self.task_action(format!("/v1/tasks/{}/cancel", urlencode(&id)), trf!("Cancelled: {title}", "Descartada: {title}"));
+    }
+
+    fn reopen_task(&mut self) {
+        let Some((id, title, finished)) = self.selected_task().map(|t| (t.id.clone(), md::truncate(&t.title, 60), t.state.finished())) else { return };
+        if self.task_actions_missing {
+            self.fail(tr!("This alondrad cannot reopen tasks yet", "Este alondrad todavía no sabe reabrir tareas"));
+            return;
+        }
+        if !finished {
+            self.fail(tr!("Only a done or cancelled task reopens", "Solo se reabre una tarea hecha o descartada"));
+            return;
+        }
+        self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"));
+    }
+
+    fn task_action(&self, path: String, ok: String) {
+        #[cfg(test)]
+        self.posted.borrow_mut().push((vec![path.clone()], ok.clone()));
+        self.spawn(move |tx| {
+            let result = match Client::for_user(Duration::from_secs(15)).post(&path, &json!({})) {
+                Ok(_) => Ok(ok),
+                Err(e) => Err((e.to_string(), e.downcast_ref::<NotFound>().is_some())),
+            };
+            let _ = tx.send(Msg::TaskAction(result));
+        });
+    }
+
+    pub(super) fn task_action_done(&mut self, result: Result<String, (String, bool)>) {
+        match result {
+            Ok(text) => self.flash(text),
+            Err((_, true)) => {
+                self.task_actions_missing = true;
+                self.fail(tr!("This alondrad cannot cancel or reopen tasks yet", "Este alondrad todavía no sabe descartar ni reabrir tareas"));
+            }
+            Err((e, false)) => self.fail(trf!("Not sent: {e}", "No se envió: {e}")),
+        }
+    }
+
+    /// The item a key points at, for the lines a card's task adds.
+    pub fn card_task_title(&self, item: &Item) -> Option<String> {
+        let key = match item {
+            Item::Q(q) => Key::Q(q.id),
+            Item::R(r) => Key::R(r.id),
+            Item::P(p) => Key::P(p.pr.id),
+        };
+        self.task_of(key).map(|t| t.title.clone())
+    }
+}
+
+/// "Bash bazel build //app", or whichever half is known.
+pub fn activity_doing(a: &Activity) -> Option<String> {
+    let text = [a.tool.as_deref(), a.summary.as_deref()].into_iter().flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::ClientTask;
+
+    fn task(id: &str, depends_on: &[&str], created_at: i64) -> ClientTask {
+        serde_json::from_value(json!({
+            "id": id, "request": "r-1", "title": format!("Task {id}"), "depends_on": depends_on,
+            "state": "running", "state_since": created_at, "created_at": created_at,
+        }))
+        .unwrap()
+    }
+
+    fn shape(tasks: &[ClientTask]) -> Vec<(String, usize, bool, Vec<bool>, bool)> {
+        let refs: Vec<&ClientTask> = tasks.iter().collect();
+        tree(&refs).into_iter().map(|r| (r.id, r.depth, r.last, r.lines, r.has_children)).collect()
+    }
+
+    #[test]
+    fn sequential_tasks_nest_under_the_one_they_follow() {
+        let tasks = [task("a", &[], 1), task("b", &["a"], 2), task("c", &["b"], 3)];
+        assert_eq!(
+            shape(&tasks),
+            vec![("a".into(), 0, true, vec![], true), ("b".into(), 1, true, vec![], true), ("c".into(), 2, true, vec![false], false)]
+        );
+    }
+
+    #[test]
+    fn parallel_tasks_share_a_level_and_a_second_root_runs_beside_the_first() {
+        let tasks = [task("d", &[], 4), task("c", &["a"], 3), task("b", &["a"], 2), task("a", &[], 1)];
+        assert_eq!(
+            shape(&tasks),
+            vec![
+                ("a".into(), 0, false, vec![], true),
+                ("b".into(), 1, false, vec![], false),
+                ("c".into(), 1, true, vec![], false),
+                ("d".into(), 0, true, vec![], false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_task_with_two_dependencies_goes_under_the_newest_and_a_cycle_keeps_every_task() {
+        let joined = [task("a", &[], 1), task("b", &[], 2), task("c", &["a", "b"], 3)];
+        let rows = shape(&joined);
+        assert_eq!(rows.iter().map(|r| (r.0.as_str(), r.1)).collect::<Vec<_>>(), vec![("a", 0), ("b", 0), ("c", 1)]);
+        let cycle = [task("x", &["y"], 1), task("y", &["x"], 2)];
+        let ids: HashSet<String> = shape(&cycle).into_iter().map(|r| r.0).collect();
+        assert_eq!(ids, HashSet::from(["x".to_string(), "y".to_string()]));
+    }
+}
