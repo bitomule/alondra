@@ -593,13 +593,40 @@ impl View {
             .filter(move |m| m.session_id == session_id && m.handed_at.is_none())
     }
 
-    /// Messages waiting for a node Alondra cannot type into: only background jobs have a
-    /// terminal it can attach to, so what is queued for an interactive session stays there.
-    pub fn undeliverable(&self, session_id: &str) -> usize {
+    /// Messages waiting for an interactive session: Alondra cannot type into a terminal it did not
+    /// start, so they wait for the session's next Stop hook (see `turn_end_delivery`).
+    pub fn held_for_turn_end(&self, session_id: &str) -> usize {
         match self.nodes.get(session_id) {
             Some(n) if !n.in_daemon => self.pending_messages(session_id).count(),
             _ => 0,
         }
+    }
+
+    /// What an interactive session's Stop hook hands it: the ids of its pending messages (with the
+    /// question each one answers) and the text that keeps its turn going. Background jobs get
+    /// their messages typed in by `wake` instead, so they get nothing here.
+    pub fn turn_end_delivery(&self, session_id: &str, user: &str) -> Option<(Vec<(u64, Option<u64>)>, String)> {
+        if self.nodes.get(session_id)?.in_daemon {
+            return None;
+        }
+        let pending: Vec<&Message> = self.pending_messages(session_id).collect();
+        if pending.is_empty() {
+            return None;
+        }
+        let said = pending
+            .iter()
+            .map(|m| {
+                let from = match m.from {
+                    crate::model::MessageFrom::User => user,
+                    crate::model::MessageFrom::Orchestrator => "the orchestrator",
+                    crate::model::MessageFrom::Alondra => "Alondra",
+                };
+                format!("From {from}:\n{}", m.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let text = format!("Messages sent to you through Alondra while you worked. Act on them before you stop:\n\n{said}");
+        Some((pending.iter().map(|m| (m.id, m.answers_question)).collect(), text))
     }
 
     pub fn resolve_node(&self, key: &str) -> Option<&Node> {
@@ -1127,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn messages_for_an_interactive_session_are_counted_as_undeliverable() {
+    fn messages_for_an_interactive_session_wait_for_its_turn_to_end() {
         let queued = |id: u64, sid: &str| {
             Event::MessageQueued(Message {
                 id,
@@ -1146,11 +1173,20 @@ mod tests {
         for (i, sid) in ["interactive", "interactive", "job"].iter().enumerate() {
             v.apply(3 + i as u64, 3000, &queued(i as u64 + 1, sid));
         }
-        assert_eq!(v.undeliverable("interactive"), 2);
-        assert_eq!(v.undeliverable("job"), 0, "a background job gets them typed in");
-        assert_eq!(v.undeliverable("nobody"), 0);
+        assert_eq!(v.held_for_turn_end("interactive"), 2);
+        assert_eq!(v.held_for_turn_end("job"), 0, "a background job gets them typed in");
+        assert_eq!(v.held_for_turn_end("nobody"), 0);
+
+        let (ids, text) = v.turn_end_delivery("interactive", "Ana").unwrap();
+        assert_eq!(ids, vec![(1, None), (2, None)]);
+        assert_eq!(text.matches("From Ana:\ngo on").count(), 2, "{text}");
+        assert_eq!(v.turn_end_delivery("job", "Ana"), None, "wake types into background jobs");
+        assert_eq!(v.turn_end_delivery("nobody", "Ana"), None);
+
         v.apply(6, 4000, &Event::MessageHanded { id: 1 });
-        assert_eq!(v.undeliverable("interactive"), 1);
+        assert_eq!(v.held_for_turn_end("interactive"), 1);
+        v.apply(7, 4000, &Event::MessageHanded { id: 2 });
+        assert_eq!(v.turn_end_delivery("interactive", "Ana"), None, "a handed message is not handed again");
     }
 
     #[test]
