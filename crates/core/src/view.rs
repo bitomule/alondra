@@ -547,6 +547,15 @@ impl View {
             .filter(move |m| m.session_id == session_id && m.handed_at.is_none())
     }
 
+    /// Messages waiting for a node Alondra cannot type into: only background jobs have a
+    /// terminal it can attach to, so what is queued for an interactive session stays there.
+    pub fn undeliverable(&self, session_id: &str) -> usize {
+        match self.nodes.get(session_id) {
+            Some(n) if !n.in_daemon => self.pending_messages(session_id).count(),
+            _ => 0,
+        }
+    }
+
     pub fn resolve_node(&self, key: &str) -> Option<&Node> {
         if let Some(n) = self.nodes.get(key) {
             return Some(n);
@@ -1069,6 +1078,33 @@ mod tests {
         assert_eq!(v.nodes["s"].state, NodeState::Working);
         v.apply(4, 4000, &hook("s", "Stop"));
         assert_eq!(v.nodes["s"].state, NodeState::Unclear);
+    }
+
+    #[test]
+    fn messages_for_an_interactive_session_are_counted_as_undeliverable() {
+        let queued = |id: u64, sid: &str| {
+            Event::MessageQueued(Message {
+                id,
+                session_id: sid.into(),
+                from: crate::model::MessageFrom::User,
+                text: "go on".into(),
+                answers_question: None,
+                created_at: 3000,
+                handed_at: None,
+                delivered_at: None,
+            })
+        };
+        let mut v = View::default();
+        v.apply(1, 1000, &hook("interactive", "UserPromptSubmit"));
+        v.apply(2, 1000, &Event::DaemonSeen(DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() }));
+        for (i, sid) in ["interactive", "interactive", "job"].iter().enumerate() {
+            v.apply(3 + i as u64, 3000, &queued(i as u64 + 1, sid));
+        }
+        assert_eq!(v.undeliverable("interactive"), 2);
+        assert_eq!(v.undeliverable("job"), 0, "a background job gets them typed in");
+        assert_eq!(v.undeliverable("nobody"), 0);
+        v.apply(6, 4000, &Event::MessageHanded { id: 1 });
+        assert_eq!(v.undeliverable("interactive"), 1);
     }
 
     #[test]

@@ -796,6 +796,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .map(|n| {
                 let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
                 value["project"] = Value::String(n.project());
+                value["undeliverable_messages"] = json!(v.undeliverable(&n.session_id));
                 value
             })
             .collect();
@@ -833,9 +834,9 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
-        Some((n, questions, reports, messages))
+        Some((n, questions, reports, messages, v.undeliverable(&sid)))
     });
-    let Some((node, questions, reports, messages)) = found else {
+    let Some((node, questions, reports, messages, undeliverable)) = found else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
     let timeline: Vec<Value> = hub
@@ -844,7 +845,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>) -> Re
         .into_iter()
         .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
         .collect();
-    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "timeline": timeline})).into_response()
+    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "undeliverable_messages": undeliverable, "timeline": timeline})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1286,7 +1287,17 @@ async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Resp
     }
 }
 
+fn undeliverable_to(name: &str) -> String {
+    format!(
+        "{name} is an interactive terminal session, not a background job (claude --bg): Alondra can only type into \
+         background jobs, so a message queued for it would never arrive. Write in its terminal instead."
+    )
+}
+
 async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
+    if let Some(name) = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string())) {
+        return err(StatusCode::CONFLICT, undeliverable_to(&name));
+    }
     let res = hub.append_with(|v| {
         let node = v.resolve_node(&key)?;
         Some(Event::MessageQueued(Message {
@@ -1326,11 +1337,14 @@ fn close_reasons(busy: bool, waiting_permission: bool, worktree_leftovers: Optio
 }
 
 async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    let Some((short, session, busy, waiting_permission)) =
-        hub.read(|v| v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission)))
-    else {
+    let Some((short, session, busy, waiting_permission, in_daemon, name)) = hub.read(|v| {
+        v.resolve_node(&key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string()))
+    }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
+    if !in_daemon {
+        return forget_interactive(&hub, &session, &name);
+    }
     let leftovers = crate::worktree::leftovers(&session).await;
     let reasons = close_reasons(busy, waiting_permission, leftovers);
     if !reasons.is_empty() {
@@ -1378,6 +1392,24 @@ async fn close_node(State(hub): State<AppState>, Path(key): Path<String>) -> Res
         }
     }
     err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
+}
+
+/// An interactive session is not a job `claude rm` knows, and the user may be typing in it: Alondra
+/// only stops following it and leaves the terminal alone.
+fn forget_interactive(hub: &Hub, session: &str, name: &str) -> Response {
+    let own_open: Vec<u64> = hub.read(|v| v.questions.values().filter(|q| q.session_id == session && q.status.is_open()).map(|q| q.id).collect());
+    for id in own_open {
+        if let Err(e) = hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn, note: Some("the user closed the node".into()) }) {
+            return internal(e);
+        }
+    }
+    if let Err(e) = hub.append(Event::NodeRemoved { session_id: session.to_string() }) {
+        return internal(e);
+    }
+    Json(json!({"ok": true, "interactive": true, "output": format!(
+        "{name} is an interactive session, not a background job: Alondra removed it from the fleet and left the terminal session itself open. Close it there with /exit when you are done."
+    )}))
+    .into_response()
 }
 
 /// A private index per call: two closes in the same millisecond must not share one.
@@ -1796,6 +1828,51 @@ mod tests {
         for (command, expected) in cases {
             assert_eq!(destructive(command), expected, "{command}");
         }
+    }
+
+    fn temp_hub(tag: &str) -> Arc<Hub> {
+        let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
+        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        Arc::new(Hub::open(config, false).unwrap())
+    }
+
+    async fn status_and_body(r: Response) -> (StatusCode, Value) {
+        let status = r.status();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// lumo/permiso-camara and hive/servidor-colmena, 24 Sep: close ran `claude rm` on sessions
+    /// that were never background jobs and failed with "No job matching".
+    #[tokio::test]
+    async fn closing_an_interactive_session_forgets_it_without_claude_rm() {
+        let hub = temp_hub("close");
+        hub.append(Event::Hook(HookEvent { session_id: "1234abcd-interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::QuestionAsked(Question {
+            id: 1, session_id: "1234abcd-interactive".into(), node_name: None, title: "t".into(), detail: None, options: vec![], links: vec![],
+            attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
+            status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
+        })).unwrap();
+        let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into())).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["interactive"], true);
+        assert!(body["output"].as_str().unwrap().contains("left the terminal session itself open"), "{body}");
+        assert!(hub.read(|v| !v.nodes.contains_key("1234abcd-interactive")));
+        assert!(hub.read(|v| !v.questions[&1].status.is_open()));
+    }
+
+    #[tokio::test]
+    async fn a_message_for_an_interactive_session_is_refused_instead_of_left_queued() {
+        let hub = temp_hub("send");
+        hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
+        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None }));
+        let (status, body) = status_and_body(send("interactive").await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body["error"].as_str().unwrap().contains("interactive terminal session"), "{body}");
+        assert_eq!(status_and_body(send("job").await).await.0, StatusCode::OK);
+        assert_eq!(status_and_body(send("nobody").await).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(hub.read(|v| v.messages.len()), 1);
     }
 
     /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
