@@ -8,6 +8,7 @@ struct TaskLink: Hashable {
 struct TasksTab: View {
     @Environment(FleetStore.self) private var fleet
     @State private var showSettings = false
+    @State private var showArchived = false
 
     var body: some View {
         NavigationStack {
@@ -44,14 +45,25 @@ struct TasksTab: View {
                             .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
                             .padding(.horizontal, 16)
                         }
+                        let archived = fleet.board.archivedTrees
+                        if !archived.isEmpty {
+                            ArchivedSection(trees: archived, count: fleet.board.archivedCount, expanded: $showArchived)
+                        }
                     }
                 }
                 .padding(.bottom, 24)
-                .animation(.smooth, value: fleet.board.trees.map(\.id))
+                .animation(.smooth, value: fleet.board.activeTrees.map(\.id))
+                .animation(.smooth, value: fleet.board.archivedTrees.map(\.id))
             }
             .background(DawnBackground())
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Archive Completed", systemImage: "archivebox") {
+                        Task { await fleet.archiveCompleted() }
+                    }
+                    .disabled(!fleet.canArchive)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
                 }
@@ -87,7 +99,7 @@ struct TasksTab: View {
 
     private var summary: String {
         let tasks = fleet.board.tasks.values
-        var parts = [String(localized: "\(fleet.board.requests.count) requests")]
+        var parts = [String(localized: "\(fleet.board.activeTrees.count) requests")]
         let needsYou = tasks.count(where: { $0.state == .needsYou })
         let inReview = tasks.count(where: { $0.state == .inReview })
         let running = tasks.count(where: { $0.state == .running })
@@ -387,7 +399,7 @@ private struct DoneRequestRow: View {
                         .foregroundStyle(Palette.ink)
                         .multilineTextAlignment(.leading)
                     StateLine(label: tree.request.state.label, tint: Palette.sage, since: since)
-                    NowLine(text: String(localized: "\(tree.rows.count) tasks"))
+                    NowLine(text: tree.rows.isEmpty ? String(localized: "Finished without tasks") : String(localized: "\(tree.rows.count) tasks"))
                         .padding(.top, 1)
                 }
             }
@@ -398,5 +410,46 @@ private struct DoneRequestRow: View {
         .padding(.trailing, 14)
         .padding(.vertical, 12)
         .contentShape(.rect)
+    }
+}
+
+/// Finished work the user archived: folded under its count until opened.
+private struct ArchivedSection: View {
+    let trees: [RequestTree]
+    let count: Int
+    @Binding var expanded: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.smooth) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Archived (\(count))")
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .accessibilityHidden(true)
+                Spacer(minLength: 0)
+            }
+            .font(.footnote.weight(.bold))
+            .textCase(.uppercase)
+            .kerning(0.6)
+            .foregroundStyle(.secondary)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityHint(expanded ? Text("Hides the archived tasks") : Text("Shows the archived tasks"))
+        .padding(.horizontal, 20)
+        .padding(.top, 26)
+        .padding(.bottom, 8)
+        if expanded {
+            VStack(spacing: 0) {
+                ForEach(Array(trees.enumerated()), id: \.element.id) { index, tree in
+                    DoneRequestRow(tree: tree, first: index == 0)
+                }
+            }
+            .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, 16)
+        }
     }
 }

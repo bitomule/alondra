@@ -122,6 +122,12 @@ public struct AlondraClient: Sendable {
         try await post("v1/tasks/\(id)/reopen", [:])
     }
 
+    /// Archives every done or cancelled task, and request that finished without tasks, or those
+    /// `ids` names: they leave the Tasks list for its archived section.
+    public func archiveCompletedTasks(ids: [String]? = nil) async throws {
+        try await post("v1/tasks/archive", ids.map { ["ids": $0] } ?? [:])
+    }
+
     /// The task with its history, which the overview leaves out.
     public func task(_ id: String) async throws -> WorkTask {
         let data = try await get("v1/tasks/\(id)")

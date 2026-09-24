@@ -271,6 +271,26 @@
         }
       }
     },
+    "Archive Completed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivar terminadas"
+          }
+        }
+      }
+    },
+    "Archive every done or cancelled task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archiva todas las tareas hechas o descartadas"
+          }
+        }
+      }
+    },
     "Ask": {
       "localizations": {
         "es": {
@@ -517,6 +537,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Terminado"
+          }
+        }
+      }
+    },
+    "finished without tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "terminada sin tareas"
           }
         }
       }

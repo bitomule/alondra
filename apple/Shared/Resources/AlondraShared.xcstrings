@@ -191,6 +191,16 @@
         }
       }
     },
+    "Archived": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivadas"
+          }
+        }
+      }
+    },
     "CPU in use: %lld%%. Load average %@ over %lld cores: how many processes want the CPU at once.": {
       "localizations": {
         "es": {

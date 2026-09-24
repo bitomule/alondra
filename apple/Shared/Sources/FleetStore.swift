@@ -44,6 +44,8 @@ public final class FleetStore {
     public private(set) var board = TaskBoard.empty
     /// alondrad answered 404 to a task action: it does not have them yet, so the apps disable them.
     public private(set) var taskActionsUnavailable = false
+    /// alondrad answered 404 to an archive: it cannot archive yet, so the apps disable it.
+    public private(set) var archiveUnavailable = false
     @ObservationIgnored private var taskDetailUnavailable = false
     private var pendingBySession: [String: Int] = [:]
     private var hidden: Set<String> = [] {
@@ -481,6 +483,22 @@ public final class FleetStore {
     @discardableResult
     public func reopen(_ task: WorkTask) async -> Bool {
         await taskAction { try await $0.reopenTask(task.id) }
+    }
+
+    public var canArchive: Bool { !archiveUnavailable && board.hasArchivable }
+
+    @discardableResult
+    public func archiveCompleted() async -> Bool {
+        do {
+            try await client.archiveCompletedTasks()
+            return true
+        } catch AlondraError.unexpected(404) {
+            archiveUnavailable = true
+            return false
+        } catch {
+            report(error)
+            return false
+        }
     }
 
     private func taskAction(_ action: @Sendable (AlondraClient) async throws -> Void) async -> Bool {

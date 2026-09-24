@@ -301,6 +301,26 @@
         }
       }
     },
+    "Archive Completed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivar terminadas"
+          }
+        }
+      }
+    },
+    "Archived (%lld)": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivadas (%lld)"
+          }
+        }
+      }
+    },
     "Ask": {
       "localizations": {
         "es": {
@@ -621,6 +641,16 @@
         }
       }
     },
+    "Finished without tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminada sin tareas"
+          }
+        }
+      }
+    },
     "Fleet": {
       "localizations": {
         "es": {
@@ -687,6 +717,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "GitHub está comprobando si se puede fusionar"
+          }
+        }
+      }
+    },
+    "Hides the archived tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oculta las tareas archivadas"
           }
         }
       }
@@ -1497,6 +1537,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ver más"
+          }
+        }
+      }
+    },
+    "Shows the archived tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Muestra las tareas archivadas"
           }
         }
       }

@@ -12,14 +12,16 @@ import Testing
     private static let machine = #"{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}"#
     private static let node = #"{"session_id":"s1","short_id":"s1","is_orchestrator":false,"has_plugin":true,"state":"working","state_since":5,"state_source":"hook","tool":{"name":"Bash","summary":"make test","since":4}}"#
 
-    private static func task(_ id: String, request: String = "r-1", state: String = "running", dependsOn: [String] = [], created: Int64, session: String = "s1") throws -> WorkTask {
+    private static func task(_ id: String, request: String = "r-1", state: String = "running", dependsOn: [String] = [], created: Int64, session: String = "s1", archivedAt: Int64? = nil) throws -> WorkTask {
         let deps = dependsOn.map { #""\#($0)""# }.joined(separator: ",")
-        return try decode(#"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","depends_on":[\#(deps)],"options":{"auto_merge":false},"assignee":{"session_id":"\#(session)"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"\#(state)","state_since":\#(created),"created_at":\#(created)}"#)
+        let archived = archivedAt.map { #","archived_at":\#($0)"# } ?? ""
+        return try decode(#"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","depends_on":[\#(deps)],"options":{"auto_merge":false},"assignee":{"session_id":"\#(session)"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"\#(state)","state_since":\#(created),"created_at":\#(created)\#(archived)}"#)
     }
 
-    private static func request(_ id: String, tasks: [String], state: String = "in_progress") throws -> WorkRequest {
+    private static func request(_ id: String, tasks: [String], state: String = "in_progress", archivedAt: Int64? = nil) throws -> WorkRequest {
         let ids = tasks.map { #""\#($0)""# }.joined(separator: ",")
-        return try decode(#"{"id":"\#(id)","text":"Do the thing\nin detail","created_at":1,"state":"\#(state)","tasks":[\#(ids)]}"#)
+        let archived = archivedAt.map { #","archived_at":\#($0)"# } ?? ""
+        return try decode(#"{"id":"\#(id)","text":"Do the thing\nin detail","created_at":1,"state":"\#(state)","tasks":[\#(ids)]\#(archived)}"#)
     }
 
     @MainActor @Test func anOverviewFromBeforeTasksStillDecodes() throws {
@@ -119,5 +121,46 @@ import Testing
         #expect(board.groups.map(\.kind) == [.task(.needsYou), .task(.inReview), .task(.running), .defining, .task(.done)])
         #expect(board.openCount == 4)
         #expect(board.openTrees.map(\.id) == ["r-2", "r-1"])
+    }
+
+    @Test func archivedAtIsReadWhenSentAndOptionalOtherwise() throws {
+        let plain: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"done","state_since":1,"created_at":1}"#)
+        let archived: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"done","state_since":1,"created_at":1,"archived_at":9}"#)
+        #expect(plain.archivedAt == nil && !plain.isArchived)
+        #expect(archived.archivedAt == 9 && archived.isArchived)
+        let older = try Self.request("r", tasks: ["t"])
+        let unarchived: WorkRequest = try Self.decode(#"{"id":"r","created_at":1,"state":"in_progress","tasks":["t"],"archived_at":null}"#)
+        let archivedRequest: WorkRequest = try Self.decode(#"{"id":"r","created_at":1,"state":"done","tasks":["t"],"archived_at":9}"#)
+        #expect(older.archivedAt == nil && unarchived.archivedAt == nil && archivedRequest.archivedAt == 9)
+    }
+
+    @Test func archivedWorkLeavesTheListForAFoldedSectionAndARunningTaskIsNeverArchivable() throws {
+        let tasks = [
+            try Self.task("shipped", request: "r-1", state: "done", created: 1, archivedAt: 9),
+            try Self.task("dropped", request: "r-1", state: "cancelled", created: 2, archivedAt: 9),
+            try Self.task("old", request: "r-2", state: "done", created: 3, archivedAt: 9),
+            try Self.task("run", request: "r-2", state: "running", created: 4),
+        ]
+        let requests = [
+            try Self.request("r-1", tasks: ["shipped", "dropped"], state: "done", archivedAt: 9),
+            try Self.request("r-2", tasks: ["old", "run"]),
+            try Self.request("r-3", tasks: [], state: "done"),
+            try Self.request("r-4", tasks: [], state: "done", archivedAt: 9),
+        ]
+        let board = TaskBoard(requests: requests, tasks: tasks)
+        #expect(board.activeTrees.map(\.id) == ["r-3", "r-2"])
+        #expect(board.activeTrees.first { $0.id == "r-2" }?.rows.map(\.id) == ["run"])
+        #expect(board.archivedTrees.map(\.id) == ["r-4", "r-2", "r-1"])
+        #expect(board.archivedTrees.first { $0.id == "r-2" }?.rows.map(\.id) == ["old"])
+        #expect(board.archivedCount == 4, "three archived tasks and a request archived without tasks")
+        #expect(board.doneTrees.map(\.id) == ["r-3"], "finished without tasks: done, waiting to be archived")
+        #expect(board.hasArchivable)
+        #expect(board.tasks(onNode: "s1").map(\.id) == ["run"])
+        #expect(board.groups.map(\.kind) == [.task(.running), .task(.done), .archived])
+        #expect(board.groups.last?.count == 4)
+
+        let running = TaskBoard(requests: [try Self.request("r", tasks: ["run"])], tasks: [try Self.task("run", request: "r", created: 1)])
+        #expect(!running.hasArchivable, "a running task is never archived")
+        #expect(running.archivedTrees.isEmpty && running.archivedCount == 0)
     }
 }

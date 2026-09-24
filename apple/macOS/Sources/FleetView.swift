@@ -80,6 +80,15 @@ public struct FleetView: View {
                 .keyboardShortcut("n")
                 .help("Ask for new work (⌘N)")
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    Task { await store.archiveCompleted() }
+                } label: {
+                    Label("Archive Completed", systemImage: "archivebox")
+                }
+                .disabled(!store.canArchive)
+                .help("Archive every done or cancelled task")
+            }
         }
         .sheet(isPresented: $showingNew) {
             NewRequestSheet(store: store)
