@@ -61,7 +61,7 @@ struct ReviewView: View {
         .toolbar(.hidden, for: .tabBar)
         .safeAreaBar(edge: .bottom) { actionBar }
         .toolbar {
-            if case .report(let report) = item, let node = fleet.node(report.sessionId) {
+            if case .report(let report) = item, let node = fleet.node(report.sessionId), report.primaryAction(nodeFound: true) == .markRead {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button(role: .destructive) {
@@ -198,60 +198,83 @@ struct ReviewView: View {
         }
     }
 
+    private var closableNode: Node? {
+        guard case .report(let report) = item, let node = fleet.node(report.sessionId),
+              report.primaryAction(nodeFound: true) == .readAndClose else { return nil }
+        return node
+    }
+
+    private var reportTint: Color {
+        kind.tint == Palette.sky ? Palette.skyDeep : Palette.ember
+    }
+
     @ViewBuilder
     private var actionBar: some View {
         GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
-                switch item {
-                case .question(let question):
-                    Button {
-                        sendFeedback()
-                    } label: {
-                        Label(changeOption(question).map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .modifier(GlassEmphasis(prominent: hasFeedback))
-                    .tint(Palette.dawn)
-                    .disabled(!hasFeedback || sending)
-                    if let approve = approveOption(question) {
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    switch item {
+                    case .question(let question):
                         Button {
-                            finish(approve) { try await $0.answer(question.id, text: approve, option: approve) }
+                            sendFeedback()
                         } label: {
-                            Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
+                            Label(changeOption(question).map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.glassProminent)
-                        .tint(Palette.sageDeep)
+                        .modifier(GlassEmphasis(prominent: hasFeedback))
+                        .tint(Palette.dawn)
+                        .disabled(!hasFeedback || sending)
+                        if let approve = approveOption(question) {
+                            Button {
+                                finish(approve) { try await $0.answer(question.id, text: approve, option: approve) }
+                            } label: {
+                                Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.glassProminent)
+                            .tint(Palette.sageDeep)
+                            .disabled(sending)
+                        }
+                    case .pullRequest:
+                        Button {
+                            sendFeedback()
+                        } label: {
+                            Label("Request Changes", systemImage: "arrow.uturn.backward")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .modifier(GlassEmphasis(prominent: hasFeedback))
+                        .tint(Palette.dawn)
+                        .disabled(!hasFeedback || sending)
+                    case .report(let report):
+                        Button {
+                            sendFeedback()
+                        } label: {
+                            Label("Send", systemImage: "paperplane")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .modifier(GlassEmphasis(prominent: hasFeedback))
+                        .tint(Palette.dawn)
+                        .disabled(!hasFeedback || sending)
+                        Button {
+                            finish(HandoffLabel.read) { try await $0.markRead(report.id) }
+                        } label: {
+                            Label("Mark as Read", systemImage: "checkmark")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .modifier(GlassEmphasis(prominent: closableNode == nil))
+                        .tint(reportTint)
                         .disabled(sending)
                     }
-                case .pullRequest:
+                }
+                if let node = closableNode {
                     Button {
-                        sendFeedback()
+                        closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
                     } label: {
-                        Label("Request Changes", systemImage: "arrow.uturn.backward")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .modifier(GlassEmphasis(prominent: hasFeedback))
-                    .tint(Palette.dawn)
-                    .disabled(!hasFeedback || sending)
-                case .report(let report):
-                    Button {
-                        sendFeedback()
-                    } label: {
-                        Label("Send", systemImage: "paperplane")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .modifier(GlassEmphasis(prominent: hasFeedback))
-                    .tint(Palette.dawn)
-                    .disabled(!hasFeedback || sending)
-                    Button {
-                        finish(HandoffLabel.read) { try await $0.markRead(report.id) }
-                    } label: {
-                        Label("Mark as Read", systemImage: "checkmark")
+                        Label("Read and Close Node", systemImage: "xmark.bin")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glassProminent)
-                    .tint(kind.tint == Palette.sky ? Palette.skyDeep : Palette.ember)
+                    .tint(reportTint)
                     .disabled(sending)
                 }
             }

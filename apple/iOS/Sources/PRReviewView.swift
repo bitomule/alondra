@@ -12,6 +12,7 @@ struct PRReviewView: View {
     @State private var comments: [String: String] = [:]
     @State private var note = ""
     @State private var commenting: DiffLine?
+    @State private var collapsed: Set<String> = []
     @State private var sending = false
     @State private var colours = DiffColours()
     @Environment(\.colorScheme) private var scheme
@@ -27,6 +28,9 @@ struct PRReviewView: View {
                 ForEach(fleet.questions(forPullRequest: pr.id)) { question in
                     AttachedQuestion(question: question, showsDetail: true)
                 }
+                if let body = pr.body, !body.isEmpty {
+                    PRDescription(markdown: body)
+                }
                 if let files {
                     Text("Tap a line to comment on it")
                         .font(.caption)
@@ -34,11 +38,15 @@ struct PRReviewView: View {
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(files) { file in
                             Section {
-                                ForEach(file.lines) { line in
-                                    PhoneDiffLine(line: line, coloured: colours.lines[line.id], comment: line.anchor.flatMap { comments[$0] }) { commenting = $0 }
+                                if !collapsed.contains(file.id) {
+                                    ForEach(file.lines) { line in
+                                        PhoneDiffLine(line: line, coloured: colours.lines[line.id], comment: line.anchor.flatMap { comments[$0] }) { commenting = $0 }
+                                    }
                                 }
                             } header: {
-                                DiffFileHeader(file: file)
+                                DiffFileHeader(file: file, comments: file.commentCount(in: comments), collapsed: collapsed.contains(file.id)) {
+                                    withAnimation(.snappy) { collapsed.formSymmetricDifference([file.id]) }
+                                }
                             }
                         }
                     }
@@ -57,16 +65,31 @@ struct PRReviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 0) { bar }
+        .toolbar {
+            if let files, !files.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    let allCollapsed = collapsed.count == files.count
+                    Button(allCollapsed ? String(localized: "Expand All Files") : String(localized: "Collapse All Files"),
+                           systemImage: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical") {
+                        withAnimation(.snappy) {
+                            collapsed = allCollapsed ? [] : Set(files.map(\.id))
+                        }
+                    }
+                }
+            }
+        }
         .sheet(item: $commenting) { line in
             LineCommentSheet(line: line, initial: line.anchor.flatMap { comments[$0] } ?? "") { text in
                 guard let anchor = line.anchor else { return }
                 comments[anchor] = text.isEmpty ? nil : text
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
         }
         .task {
             do {
-                files = UnifiedDiff.parse(try await fleet.client.pullRequestDiff(pr.id))
+                let parsed = UnifiedDiff.parse(try await fleet.client.pullRequestDiff(pr.id))
+                collapsed = Set(parsed.filter(\.startsCollapsed).map(\.id))
+                files = parsed
             } catch {
                 failure = error.localizedDescription
             }
@@ -104,6 +127,54 @@ struct PRReviewView: View {
             sending = false
             if ok { dismiss() }
         }
+    }
+}
+
+private struct PRDescription: View {
+    static let foldedLength = 600
+
+    let segments: [MarkdownSegment]
+    let isLong: Bool
+    @State private var expanded: Bool
+
+    init(markdown: String) {
+        segments = MarkdownParser.segments(from: markdown)
+        isLong = markdown.count > Self.foldedLength
+        _expanded = State(initialValue: markdown.count <= Self.foldedLength)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(segments) { segment in
+                    MarkdownSegmentView(segment: segment)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(Palette.ink.opacity(0.9))
+            .frame(maxWidth: .infinity, maxHeight: expanded ? nil : 180, alignment: .topLeading)
+            .clipped()
+            .mask {
+                LinearGradient(stops: expanded
+                    ? [.init(color: .black, location: 0), .init(color: .black, location: 1)]
+                    : [.init(color: .black, location: 0.5), .init(color: .clear, location: 1)],
+                    startPoint: .top, endPoint: .bottom)
+            }
+            if isLong {
+                Button {
+                    withAnimation(.snappy) { expanded.toggle() }
+                } label: {
+                    Label(expanded ? String(localized: "Show Less") : String(localized: "Show More"),
+                          systemImage: expanded ? "chevron.up" : "chevron.down")
+                        .font(.subheadline.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Palette.sage)
+            }
+        }
+        .padding(14)
+        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
     }
 }
 

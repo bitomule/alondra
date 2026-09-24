@@ -180,6 +180,17 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
         default: String(localized: "Progress", table: "AlondraShared", bundle: #bundle)
         }
     }
+
+    public var isFinal: Bool { kind == "final" }
+
+    public enum PrimaryAction: Sendable {
+        case markRead
+        case readAndClose
+    }
+
+    public func primaryAction(nodeFound: Bool) -> PrimaryAction {
+        isFinal && nodeFound ? .readAndClose : .markRead
+    }
 }
 
 extension InboxItem {

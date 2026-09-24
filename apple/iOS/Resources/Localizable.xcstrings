@@ -431,6 +431,16 @@
         }
       }
     },
+    "Collapse All Files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plegar todos los archivos"
+          }
+        }
+      }
+    },
     "Comment": {
       "localizations": {
         "es": {
@@ -577,6 +587,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Escribe una dirección http:// o https:// completa."
+          }
+        }
+      }
+    },
+    "Expand All Files": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desplegar todos los archivos"
           }
         }
       }
@@ -1417,6 +1437,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ajustes"
+          }
+        }
+      }
+    },
+    "Show Less": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ver menos"
+          }
+        }
+      }
+    },
+    "Show More": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ver más"
           }
         }
       }
