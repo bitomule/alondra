@@ -419,6 +419,7 @@ impl View {
                 node.tool = None;
             }
             "UserPromptSubmit" => {
+                node.turn_since = at;
                 if h.prompt.is_some() {
                     node.last_prompt = h.prompt.clone();
                     node.last_prompt_at = Some(at);
@@ -531,6 +532,7 @@ impl View {
             node.usage_limited = false;
             if woke {
                 node.turn += 1;
+                node.turn_since = at;
                 node.begin_episode(at);
             }
         }

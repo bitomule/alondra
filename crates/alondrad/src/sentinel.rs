@@ -127,10 +127,12 @@ fn what_it_said(node: &Node) -> Option<String> {
     message.or(needs).map(str::to_string)
 }
 
-/// The node already reported since the last message reached it: its own words stand, and a
-/// report Alondra builds from its terminal would only repeat or contradict them.
+/// The node already reported since the last message reached it or its current turn began,
+/// whichever is later: its own words stand, and a report Alondra builds from its terminal would
+/// only repeat or contradict them. An older report is about something else.
 fn reported_this_episode(v: &View, node: &Node) -> bool {
-    v.reports.values().any(|r| r.session_id == node.session_id && r.created_at >= node.episode_since)
+    let since = node.episode_since.max(node.turn_since);
+    v.reports.values().any(|r| r.session_id == node.session_id && r.created_at >= since)
 }
 
 /// Something David said is on its way to the node: an answer not yet delivered, or a message from
@@ -520,12 +522,17 @@ mod tests {
             })
         };
         let handed = |at: i64| vec![message(1, MessageFrom::User, at), Event::MessageHanded { id: 1 }];
+        let turn = |event: &str| Event::Hook(HookEvent { session_id: "s".into(), event: event.into(), last_message: Some("Task complete.".into()), ..Default::default() });
+        let new_turn = || vec![turn("UserPromptSubmit"), turn("Stop")];
         let cases: Vec<(&str, Vec<Event>, Expects, bool)> = vec![
             ("the node reported nothing", vec![], Expects::Finished, true),
             ("the node reported final", vec![own(ReportKind::Final, 2200)], Expects::Finished, false),
             ("the node sent a notice", vec![own(ReportKind::Notice, 2200)], Expects::Finished, false),
             ("handed off after its own report", vec![own(ReportKind::Final, 2200)], Expects::HandedOff, false),
             ("its report was before the last message", [vec![own(ReportKind::Final, 2200)], handed(2600)].concat(), Expects::Finished, true),
+            ("never messaged, its report was in an earlier turn", [vec![own(ReportKind::Final, 2200)], new_turn()].concat(), Expects::Finished, true),
+            ("never messaged, a report in an earlier turn and one in this one", [vec![own(ReportKind::Final, 2200)], new_turn(), vec![own(ReportKind::Notice, 3400)]].concat(), Expects::Finished, false),
+            ("messaged, then a new turn after its report", [vec![own(ReportKind::Final, 2200)], handed(2600), new_turn()].concat(), Expects::Finished, true),
         ];
         for (what, events, expects, posts) in cases {
             let mut v = waiting_view("Task complete.");
