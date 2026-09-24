@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::states;
+use alondra_core::{states, upkeep};
 use alondra_core::{
     Event, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
 };
@@ -21,9 +21,14 @@ const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
 /// to find it before jev reads its last message.
 const MENU_FIRST_MS: i64 = 90 * 1000;
 
+/// A free node whose close was refused (work not saved elsewhere, a prompt on screen) is tried
+/// again after this long.
+const CLOSE_RETRY: Duration = Duration::from_secs(3600);
+
 #[derive(Default)]
 struct Memory {
     settled: HashSet<String>,
+    close_refused: HashMap<String, std::time::Instant>,
 }
 
 pub async fn run(hub: Arc<Hub>) {
@@ -43,7 +48,10 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         hub.append(Event::Clock { machine_strained: strained })?;
     }
     let user = hub.config.name.clone();
-    let stalled: Vec<String> = hub.read(|v| v.nodes.values().filter(|n| n.state == NodeState::Stalled).map(|n| n.session_id.clone()).collect());
+    let now = now_millis();
+    let stalled: Vec<String> = hub.read(|v| {
+        v.nodes.values().filter(|n| n.state == NodeState::Stalled || states::idle_task(v, n, now).is_some()).map(|n| n.session_id.clone()).collect()
+    });
     for session in stalled {
         hub.append_with(|v| v.nodes.get(&session).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued))?;
     }
@@ -53,6 +61,9 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             .append_with(|v| v.nodes.get(&session).and_then(|n| states::hung_message(v, n, &user, now_millis())).map(Event::MessageQueued))?
             .is_some()
         {}
+    }
+    if let Some(after) = hub.config.close_free_nodes_after {
+        close_free_nodes(hub, memory, after).await;
     }
     let now = now_millis();
     let stale: Vec<u64> = hub.read(|v| {
@@ -107,6 +118,30 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         memory.settled.insert(due_key);
     }
     Ok(())
+}
+
+/// Closes the nodes free for `after` through the fleet's close, which keeps unsaved work. One it
+/// refused is left alone for a while instead of being tried on every sweep.
+async fn close_free_nodes(hub: &Hub, memory: &mut Memory, after: Duration) {
+    memory.close_refused.retain(|_, at| at.elapsed() < CLOSE_RETRY);
+    let now = now_millis();
+    let free: Vec<(String, String)> = hub.read(|v| {
+        v.nodes
+            .values()
+            .filter(|n| !memory.close_refused.contains_key(&n.session_id) && upkeep::free_to_close(v, n, now, after.as_millis() as i64))
+            .map(|n| (n.session_id.clone(), n.display_name().to_string()))
+            .collect()
+    });
+    for (session, name) in free {
+        let response = crate::http::close(hub, &session, false).await;
+        if response.status().is_success() {
+            log!("closed {name}: free for {} min with no task open", after.as_secs() / 60);
+            continue;
+        }
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap_or_default();
+        log!("did not close the free node {name}: {}", String::from_utf8_lossy(&body));
+        memory.close_refused.insert(session, std::time::Instant::now());
+    }
 }
 
 fn last_nudge_at(v: &View, session: &str) -> Option<i64> {

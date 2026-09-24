@@ -134,6 +134,7 @@ impl View {
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
+                self.note_activity(at, h);
                 Some((h.session_id.clone(), Trigger::Hook))
             }
             Event::DaemonSeen(d) => {
@@ -147,6 +148,8 @@ impl View {
                     node.busy = false;
                     node.tool = None;
                     node.waiting_permission = false;
+                    node.exited_at = Some(at);
+                    node.ledger.on_exit(at);
                 }
                 for q in self.questions.values_mut() {
                     if &q.session_id == session_id
@@ -361,6 +364,12 @@ impl View {
             }
             Event::OrchestratorLaunched { .. } => {
                 self.orchestrator_launched_at = Some(at);
+                None
+            }
+            Event::Resumed { session_id, ok, error } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.resumed = Some(crate::model::ResumeAttempt { at, exit: node.exited_at, ok: *ok, error: error.clone() });
+                }
                 None
             }
             Event::Clock { machine_strained } => {
@@ -623,6 +632,7 @@ impl View {
         let Some(node) = self.nodes.get_mut(session_id) else { return };
         if outcome.drop_tool {
             node.tool = None;
+            node.ledger.drop_main_tool(at);
         }
         let source = match outcome.evidence.signal {
             Signal::DaemonActive | Signal::BackgroundTask => StateSource::Daemon,

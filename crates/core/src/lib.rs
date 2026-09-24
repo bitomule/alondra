@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod artifact;
 pub mod config;
 pub mod event;
@@ -11,6 +12,7 @@ pub mod stack;
 mod recorded;
 pub mod states;
 pub mod tasks;
+pub mod upkeep;
 pub mod usage;
 pub mod view;
 

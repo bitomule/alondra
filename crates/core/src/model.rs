@@ -177,6 +177,50 @@ pub struct BackgroundItem {
     pub suspect: bool,
 }
 
+/// One line of work in a node: its main conversation (`agent_id` none) or a subagent running now.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Thread {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub tool: Option<ToolInFlight>,
+    /// When it last changed what it does: started, or began or ended a tool.
+    pub since: Millis,
+}
+
+/// Who does what in a node, from its hooks.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Ledger {
+    /// The main thread first, then the subagents in the order they started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<Thread>,
+    /// The task each thread bound itself to with its first Alondra call naming one, by agent id
+    /// (none: the main thread). Kept after a subagent stops: `SendMessage` continues it under
+    /// the same id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bound: Vec<(Option<String>, String)>,
+}
+
+impl Ledger {
+    pub fn is_empty(&self) -> bool {
+        self.threads.is_empty() && self.bound.is_empty()
+    }
+}
+
+/// alondrad's last attempt to restart the node's process.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ResumeAttempt {
+    pub at: Millis,
+    /// The exit it answered: one attempt per exit.
+    #[serde(default)]
+    pub exit: Option<Millis>,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Node {
     pub session_id: String,
@@ -264,6 +308,14 @@ pub struct Node {
     pub evidence: Option<Evidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator_state: Option<OrchestratorState>,
+    /// Internal: clients get it as `activity` (`View::activity`).
+    #[serde(default, skip_serializing_if = "Ledger::is_empty")]
+    pub ledger: Ledger,
+    /// When its process last ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exited_at: Option<Millis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<ResumeAttempt>,
 }
 
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
@@ -322,6 +374,9 @@ impl Node {
             turn_since: 0,
             evidence: None,
             orchestrator_state: None,
+            ledger: Ledger::default(),
+            exited_at: None,
+            resumed: None,
         }
     }
 

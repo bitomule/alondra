@@ -24,6 +24,11 @@ pub struct HookEvent {
     pub cwd: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// The task an Alondra tool call names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -110,6 +115,13 @@ pub enum Event {
     Launched { name: String, request_id: Option<String>, auto_merge: bool },
     /// alondrad tried to launch an orchestrator because none was running.
     OrchestratorLaunched { ok: bool },
+    /// alondrad restarted a node whose process ended while it still had work, or failed to.
+    Resumed {
+        session_id: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Clock {
         #[serde(default)]
         machine_strained: bool,
@@ -135,7 +147,8 @@ impl Event {
             | Event::Classified { session_id, .. }
             | Event::WaitingMachine { session_id, .. }
             | Event::AttachChanged { session_id, .. }
-            | Event::MenuSeen { session_id, .. } => Some(session_id),
+            | Event::MenuSeen { session_id, .. }
+            | Event::Resumed { session_id, .. } => Some(session_id),
             Event::QuestionAsked(q) => Some(&q.session_id),
             Event::ReportPosted(r) => Some(&r.session_id),
             Event::MessageQueued(m) => Some(&m.session_id),
@@ -164,6 +177,7 @@ impl Event {
             Event::WaitingMachine { .. } => "waiting_machine",
             Event::Pruned { .. } => "pruned",
             Event::OrchestratorLaunched { .. } => "orchestrator_launched",
+            Event::Resumed { .. } => "resumed",
             Event::AttachChanged { .. } => "attach_changed",
             Event::MenuSeen { .. } => "menu_seen",
             Event::PrOpened { .. } => "pr_opened",

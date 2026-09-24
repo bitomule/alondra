@@ -9,6 +9,8 @@
 use crate::model::{
     BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, OrchestratorState, QuestionStatus, ReportKind, Signal, TurnSignal,
 };
+use crate::pr::{CheckState, PrState};
+use crate::tasks::{Task, TaskState};
 use crate::view::View;
 
 const MINUTE: Millis = 60 * 1000;
@@ -397,6 +399,47 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
         let o = orchestrator()?;
         return (!told(o, &stuck_tag(node, tool.since))).then(|| StallMove::TellOrchestrator { orchestrator: o.session_id.clone() });
     }
+    nudge_then_orchestrator(view, node)
+}
+
+/// Alondra merges an auto-merge PR itself once its checks pass, so until then the task waits on
+/// its checks, not on its node. Failed checks are the node's to fix.
+fn waits_on_auto_merge(view: &View, task: &Task) -> bool {
+    task.prs.iter().filter_map(|id| view.prs.get(id)).any(|p| p.state == PrState::Open && p.auto_merge && !p.checks.iter().any(|c| c.state == CheckState::Failed))
+}
+
+/// The running task of a node idle when it should work: its turn ended, it shows no work and it
+/// declared nothing. A node whose process died is restarted instead (`upkeep`).
+pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
+    let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
+    let idle = node.watched()
+        && node.has_plugin
+        && turn_ended
+        && node.turn_signal.is_none()
+        && !node.usage_limited
+        && !node.waiting_permission
+        && node.menu_waiting.is_none()
+        && node.background.is_empty()
+        && !crate::upkeep::died_working(node)
+        && !watching(view, node, now)
+        && !works(view, node, now)
+        && view.deliverable_messages(&node.session_id).next().is_none();
+    if !idle {
+        return None;
+    }
+    view.node_tasks(&node.session_id).find(|t| t.state == TaskState::Running && !waits_on_auto_merge(view, t))
+}
+
+/// What Alondra does about a node idle when it should work: what it does about a stalled one,
+/// keyed on its running task instead of its state.
+pub fn idle_move(view: &View, node: &Node, now: Millis) -> Option<StallMove> {
+    idle_task(view, node, now)?;
+    nudge_then_orchestrator(view, node)
+}
+
+/// Nudge the node once in its episode; if it stops again undeclared after the nudge reached it,
+/// hand it to the orchestrator.
+fn nudge_then_orchestrator(view: &View, node: &Node) -> Option<StallMove> {
     let since = node.episode_since;
     let alondra_wrote = |session: &str, prefix: &str, about: Option<&str>| {
         view.messages.values().any(|m| {
@@ -455,13 +498,34 @@ pub fn stalled_text(node: &Node, user: &str) -> String {
     )
 }
 
-/// The message a stall move puts in a session.
+/// Shares the stalled prefix and tag, so the orchestrator hears about a node once whichever way
+/// it was found idle.
+pub fn idle_text(node: &Node, task: &Task, user: &str) -> String {
+    let said: String = node.last_message.as_deref().unwrap_or("(nothing)").chars().take(1500).collect();
+    format!(
+        "{STALLED_PREFIX}: {} {} ended its turn twice without declaring anything while its task \"{}\" is running, and \
+         Alondra already nudged it once. Its last message:\n\n{said}\n\n`send` moves it on when that message tells you what \
+         comes next; otherwise it is a question for {user}.",
+        node.display_name(),
+        stalled_tag(node),
+        task.title
+    )
+}
+
+/// The message a stall move, or a move on a node idle when it should work, puts in a session.
 pub fn stall_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
     let stuck = node.evidence.as_ref().is_some_and(|e| e.signal == Signal::CallStuck);
-    let (session_id, text) = match stall_move(view, node)? {
-        StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
-        StallMove::TellOrchestrator { orchestrator } if stuck => (orchestrator, stuck_text(node, user, at)?),
-        StallMove::TellOrchestrator { orchestrator } => (orchestrator, stalled_text(node, user)),
+    let (session_id, text) = match stall_move(view, node) {
+        Some(StallMove::Nudge) => (node.session_id.clone(), nudge_text(user)),
+        Some(StallMove::TellOrchestrator { orchestrator }) if stuck => (orchestrator, stuck_text(node, user, at)?),
+        Some(StallMove::TellOrchestrator { orchestrator }) => (orchestrator, stalled_text(node, user)),
+        None => {
+            let task = idle_task(view, node, at)?;
+            match nudge_then_orchestrator(view, node)? {
+                StallMove::Nudge => (node.session_id.clone(), nudge_text(user)),
+                StallMove::TellOrchestrator { orchestrator } => (orchestrator, idle_text(node, task, user)),
+            }
+        }
     };
     view.alondra_message(&session_id, text, at)
 }
@@ -1205,5 +1269,74 @@ mod tests {
         assert_eq!(s, NodeState::YourTurn);
         let o: OrchestratorState = serde_json::from_str("\"asleep\"").unwrap();
         assert_eq!(o, OrchestratorState::Unknown);
+    }
+
+    fn seen_without_process(state: &str) -> Event {
+        Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), state: Some(state.into()), tempo: Some("idle".into()), ..Default::default() })
+    }
+
+    fn exited() -> Event {
+        Event::ProcessExited { session_id: "s".into(), pid: 7 }
+    }
+
+    #[test]
+    fn a_node_is_idle_when_it_should_work_only_with_a_running_task_no_work_and_nothing_declared() {
+        let turn = |events: &[Event]| background(&[&[hook("UserPromptSubmit")], events].concat());
+        let cases: Vec<(&str, Vec<Event>, bool)> = vec![
+            ("ended its turn saying nothing", turn(&[hook("Stop")]), true),
+            ("reported final", turn(&[report(ReportKind::Final), hook("Stop")]), false),
+            ("sent a notice", turn(&[report(ReportKind::Notice), hook("Stop")]), false),
+            ("asked", turn(&[question(false, QuestionOrigin::Ask), hook("Stop")]), false),
+            ("declared a machine wait", turn(&[wait(), hook("Stop")]), false),
+            ("still in its turn", turn(&[tool("PreToolUse", "t")]), false),
+            ("opened a PR, now in review", turn(&[pr_opened(), hook("Stop")]), false),
+            ("a background task still runs", turn(&[hook("Stop"), daemon_running(&[(BackgroundKind::Shell, T0)])]), false),
+            ("the user is typing in it", background(&[typed("what is left?"), hook("Stop")]), false),
+            ("a foreground session", vec![hook("UserPromptSubmit"), hook("Stop")], false),
+            ("its process died while working: restarted instead", turn(&[hook("Stop"), exited(), seen_without_process("stopped")]), false),
+            ("the daemon let it go after its turn: the nudge brings it back", turn(&[hook("Stop"), exited(), seen_without_process("done")]), true),
+        ];
+        for (what, events, idle) in cases {
+            let v = run(&events, None);
+            let now = T0 + events.len() as Millis * 1000;
+            assert_eq!(idle_task(&v, &v.nodes["s"], now).map(|t| t.id.as_str()), idle.then_some("t-s"), "{what}");
+        }
+    }
+
+    #[test]
+    fn an_idle_node_is_nudged_then_handed_on_by_its_running_task_whatever_its_state() {
+        let named = Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("n".into()), pid: Some(7), ..Default::default() });
+        let launched = Event::Launched { name: "n".into(), request_id: None, auto_merge: true };
+        let mut v = run(&[launched, named, hook("UserPromptSubmit"), pr_opened(), hook("Stop")], None);
+        v.apply(50, T0, &Event::MarkedOrchestrator { session_id: "o".into() });
+        v.apply(51, T0, &Event::Hook(HookEvent { session_id: "o".into(), event: "SessionStart".into(), ..Default::default() }));
+        let checks = |v: &mut View, seq: u64, state: CheckState| {
+            let mut pr = v.prs[&1].clone();
+            pr.fetched = true;
+            pr.checks = vec![crate::pr::Check { name: "ci".into(), state, url: None }];
+            v.apply(seq, T0 + seq as Millis * 1000, &Event::PrUpdated(pr));
+        };
+        let at = |seq: u64| T0 + seq as Millis * 1000;
+        assert_eq!(v.session_task("s").map(|t| t.state), Some(TaskState::Running), "an auto-merge PR leaves its task running");
+
+        checks(&mut v, 52, CheckState::Running);
+        assert_eq!(idle_task(&v, &v.nodes["s"], at(52)), None, "its PR waits on its checks, not on the node");
+        checks(&mut v, 53, CheckState::Failed);
+        assert_eq!(v.nodes["s"].state, NodeState::WaitingMerge, "the node table still shows it waiting for a merge");
+        assert_eq!(stall_move(&v, &v.nodes["s"]), None);
+        assert_eq!(idle_move(&v, &v.nodes["s"], at(53)), Some(StallMove::Nudge), "failed checks are the node's to fix");
+        let nudge = stall_message(&v, &v.nodes["s"], "Ana", at(53)).unwrap();
+        assert_eq!((nudge.session_id.as_str(), nudge.text.clone()), ("s", nudge_text("Ana")));
+
+        v.apply(54, at(54), &Event::MessageQueued(nudge.clone()));
+        assert_eq!(stall_message(&v, &v.nodes["s"], "Ana", at(54)), None, "one nudge until it reaches the node");
+        v.apply(55, at(55), &Event::MessageHanded { id: nudge.id });
+        v.apply(56, at(56), &typed(&nudge_text("Ana")));
+        v.apply(57, at(57), &hook("Stop"));
+        let handed_on = stall_message(&v, &v.nodes["s"], "Ana", at(57)).unwrap();
+        assert_eq!(handed_on.session_id, "o", "idle again after the nudge");
+        assert!(handed_on.text.starts_with(STALLED_PREFIX) && handed_on.text.contains("while its task \"n\" is running"), "{}", handed_on.text);
+        v.apply(58, at(58), &Event::MessageQueued(handed_on));
+        assert_eq!(stall_message(&v, &v.nodes["s"], "Ana", at(58)), None, "the orchestrator already has it");
     }
 }
