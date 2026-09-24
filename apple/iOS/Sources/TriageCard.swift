@@ -205,6 +205,9 @@ struct TriageCard: View {
                 }
             }
             links(question.links)
+            if let report = question.report {
+                aboutReport(report)
+            }
             if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty, !context.hasPrefix("mcp__") {
                 nodeContext(context)
             }
@@ -354,6 +357,25 @@ struct TriageCard: View {
         }
     }
 
+    private func aboutReport(_ report: Report) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(report.title)
+                .font(.headline)
+                .foregroundStyle(Palette.ink)
+            if let body = report.body, !body.isEmpty {
+                blocks(body)
+                    .font(.callout)
+                    .lineLimit(12)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
+    }
+
     private func nodeContext(_ context: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
@@ -412,24 +434,45 @@ struct TriageCard: View {
                         try await client.markRead(report.id)
                     }
                 }
-                Button {
-                    resolve(Stamp(label: String(localized: "Read"), symbol: "checkmark", tint: actionTint)) { try await $0.markRead(report.id) }
-                } label: {
-                    Label("Mark as Read", systemImage: "checkmark")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 50)
-                }
-                .buttonStyle(FilledStyle(tint: actionTint))
-                if let node = fleet.node(report.sessionId) {
+                let node = fleet.node(report.sessionId)
+                if report.primaryAction(nodeFound: node != nil) == .readAndClose, let node {
                     Button {
                         closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
                     } label: {
                         Label("Read and Close Node", systemImage: "xmark.bin")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(FilledStyle(tint: actionTint))
+                    Button {
+                        markRead(report)
+                    } label: {
+                        Label("Mark as Read", systemImage: "checkmark")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Palette.rose)
+                            .foregroundStyle(.secondary)
                             .frame(minHeight: 30)
                     }
                     .buttonStyle(.plain)
+                } else {
+                    Button {
+                        markRead(report)
+                    } label: {
+                        Label("Mark as Read", systemImage: "checkmark")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                    }
+                    .buttonStyle(FilledStyle(tint: actionTint))
+                    if let node {
+                        Button {
+                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
+                        } label: {
+                            Label("Read and Close Node", systemImage: "xmark.bin")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(Palette.rose)
+                                .frame(minHeight: 30)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         case .pullRequest(let pr):
@@ -572,6 +615,10 @@ struct TriageCard: View {
         resolve(Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate)) {
             try await $0.moreContext(question.id, note: note)
         }
+    }
+
+    private func markRead(_ report: Report) {
+        resolve(stamp(for: HandoffLabel.read)) { try await $0.markRead(report.id) }
     }
 
     private func readAndClose() {

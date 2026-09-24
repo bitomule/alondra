@@ -545,6 +545,17 @@ fn detail_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
         }
     }
     if let Item::Q(q) = item
+        && let Some(r) = app.data.open_questions.iter().find(|o| o.id == q.id).and_then(|o| o.report.as_ref())
+    {
+        lines.push(Line::default());
+        let id = r.id;
+        lines.push(Line::from(trf!("About report #{id}", "Sobre el informe #{id}").fg(DIM).bold()));
+        lines.extend(wrap(vec![Span::styled(r.title.clone(), Style::new().bold())], width, vec![], vec![]));
+        if let Some(body) = r.body.as_deref().filter(|b| !b.trim().is_empty()) {
+            lines.extend(md::render(&md::parse(body), width).lines);
+        }
+    }
+    if let Item::Q(q) = item
         && let Some(c) = q.node_context.as_ref().filter(|c| c.trim().contains(char::is_whitespace))
     {
         lines.push(Line::default());
@@ -1429,7 +1440,7 @@ mod tests {
         app.data.prs = vec![pr_card(None)];
         let mut q = question(2, QuestionOrigin::Ask, &["Merge it"]);
         q.title = "Merge it before the release?".into();
-        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4) });
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: Some(4), report: None });
         app.reconcile();
         let s = screen(&mut app, 120, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing\n{s}"));
@@ -1438,6 +1449,25 @@ mod tests {
         assert!(at("PULL REQUESTS 1") < at("Menus become cards"), "{s}");
         assert!(at("Menus become cards") < at("↳ ? Merge it before the release?"), "{s}");
         assert!(s.contains("The node asks: Merge it before the release?"), "{s}");
+    }
+
+    #[test]
+    fn a_question_about_a_report_shows_the_report_inside_it() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        let report: alondra_core::Report = serde_json::from_value(serde_json::json!({
+            "id": 7, "session_id": "audit", "node_name": "alondra/auditoria", "title": "Audit: 13 things left",
+            "body": "The worst three are in iOS.", "kind": "document", "created_at": 1
+        }))
+        .unwrap();
+        let mut q = question(2, QuestionOrigin::Ask, &["Launch it"]);
+        q.title = "Launch a node to fix the audit?".into();
+        app.data.open_questions.push(crate::client::OpenQuestion { question: q, pr_id: None, report: Some(report) });
+        app.reconcile();
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("Launch a node to fix the audit?"), "{s}");
+        assert!(s.contains("About report #7"), "{s}");
+        assert!(s.contains("Audit: 13 things left") && s.contains("The worst three are in iOS."), "{s}");
     }
 
     #[test]

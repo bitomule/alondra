@@ -837,12 +837,17 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 if let Some(pr) = v.question_pr(q) {
                     value["pr_id"] = json!(pr);
                 }
+                if let Some(report) = v.question_report(q).and_then(|id| v.reports.get(&id)) {
+                    value["report"] = json!(report);
+                }
                 value
             })
             .collect();
         let recent_answered: Vec<&Question> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).collect();
         let reports: Vec<&Report> = v.reports.values().rev().take(50).collect();
-        let news: Vec<&Report> = v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress).collect();
+        let absorbed = v.absorbed_reports();
+        let news: Vec<&Report> =
+            v.reports.values().rev().filter(|r| !r.read && r.kind != ReportKind::Progress && !absorbed.contains(&r.id)).collect();
         let orchestrator_messages: Vec<&Message> = v
             .nodes
             .values()
@@ -1116,8 +1121,14 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
     let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
+    let absorbed = hub.read(|v| v.question_report(&q));
     if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
         return internal(e);
+    }
+    if let Some(report) = absorbed
+        && let Err(e) = hub.append(Event::ReportRead { id: report })
+    {
+        log!("could not mark report #{report} read with question #{id}: {e}");
     }
     if hub.release_hold(id, answer.clone()) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
@@ -1937,6 +1948,34 @@ mod tests {
             assert_eq!(said, expected, "{command}");
         }
         assert_eq!(risks("rm a; rm b").len(), 1, "one line per kind of risk");
+    }
+
+    #[tokio::test]
+    async fn a_question_about_a_report_is_one_card_and_answering_it_reads_the_report() {
+        let hub = temp_hub("absorb");
+        hub.append(Event::MarkedOrchestrator { session_id: "orq".into() }).unwrap();
+        hub.append(Event::Hook(HookEvent { session_id: "audit".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let now = now_millis();
+        hub.append(Event::ReportPosted(Report {
+            id: 1, session_id: "audit".into(), node_name: None, title: "Auditoría: 13 cosas".into(), body: Some("Detalle adjunto".into()),
+            links: vec![], attachments: vec![], kind: ReportKind::Document, created_at: now, read: false, mission: None, looks_like_question: false,
+        })).unwrap();
+        hub.append(Event::QuestionAsked(Question {
+            id: 1, session_id: "orq".into(), node_name: None, title: "¿Lanzo un nodo que lo arregle?".into(),
+            detail: Some("La auditoría (informe #1) encontró 13 cosas".into()), options: vec![], links: vec![], attachments: vec![], blocking: true,
+            origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
+            asked_at: now + 20_000, action: false, steps: vec![], mission: None,
+        })).unwrap();
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["news"].as_array().unwrap().len(), 0, "the report is not a card of its own: {}", o["news"]);
+        assert_eq!(o["open_questions"][0]["report"]["title"], "Auditoría: 13 cosas");
+
+        let body = AnswerBody { text: "Sí, lánzalo".into(), option: None, by: None };
+        let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reports[&1].read), "answering the card settles the report inside it");
+        let Json(o) = overview(State(hub.clone())).await;
+        assert_eq!(o["news"].as_array().unwrap().len(), 0);
     }
 
     fn temp_hub(tag: &str) -> Arc<Hub> {

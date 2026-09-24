@@ -18,39 +18,54 @@ public struct LineCommentSheet: View {
         _text = State(initialValue: initial)
     }
 
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(verbatim: line.anchor ?? "")
-                .font(.caption.monospaced().weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(verbatim: line.text)
-                .font(.callout.monospaced())
-                .lineLimit(4)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 6))
-            TextField(String(localized: "What should change here?", table: "AlondraShared", bundle: #bundle), text: $text, axis: .vertical)
-                .lineLimit(3...8)
-                .focused($focused)
-            HStack {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(verbatim: line.text)
+                        .font(.callout.monospaced())
+                        .lineLimit(6)
+                        .textSelection(.enabled)
+                } header: {
+                    Text(verbatim: line.anchor ?? "")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .textCase(nil)
+                }
+                Section {
+                    TextField(String(localized: "What should change here?", table: "AlondraShared", bundle: #bundle), text: $text, axis: .vertical)
+                        .lineLimit(4...12)
+                        .focused($focused)
+                }
                 if !initial.isEmpty {
-                    Button(String(localized: "Delete", table: "AlondraShared", bundle: #bundle), role: .destructive) {
-                        onSave("")
-                        dismiss()
+                    Section {
+                        Button(String(localized: "Delete Comment", table: "AlondraShared", bundle: #bundle), role: .destructive) {
+                            onSave("")
+                            dismiss()
+                        }
                     }
                 }
-                Spacer()
-                Button(String(localized: "Cancel", table: "AlondraShared", bundle: #bundle), role: .cancel) { dismiss() }
-                Button(String(localized: "Save", table: "AlondraShared", bundle: #bundle)) {
-                    onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                    dismiss()
+            }
+            .navigationTitle(initial.isEmpty
+                ? String(localized: "Comment", table: "AlondraShared", bundle: #bundle)
+                : String(localized: "Edit Comment", table: "AlondraShared", bundle: #bundle))
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(String(localized: "Cancel", table: "AlondraShared", bundle: #bundle), systemImage: "xmark", role: .cancel) { dismiss() }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(String(localized: "Save", table: "AlondraShared", bundle: #bundle), systemImage: "checkmark") {
+                        onSave(trimmed)
+                        dismiss()
+                    }
+                    .disabled(trimmed.isEmpty && initial.isEmpty)
+                }
             }
         }
-        .padding(20)
-        .frame(minWidth: 380)
         .onAppear { focused = true }
     }
 }
