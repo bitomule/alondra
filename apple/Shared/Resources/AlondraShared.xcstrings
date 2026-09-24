@@ -181,6 +181,16 @@
         }
       }
     },
+    "Alondra no longer has it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra ya no lo tiene"
+          }
+        }
+      }
+    },
     "Approve": {
       "localizations": {
         "es": {
@@ -657,6 +667,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "El servidor respondió %lld"
+          }
+        }
+      }
+    },
+    "The task’s state does not allow that now": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El estado de la tarea no lo permite ahora"
           }
         }
       }

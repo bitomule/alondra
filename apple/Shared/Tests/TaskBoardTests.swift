@@ -179,4 +179,56 @@ import Testing
         #expect(!running.hasArchivable, "a running task is never archived")
         #expect(running.archivedTrees.isEmpty && running.archivedCount == 0)
     }
+
+    @MainActor @Test func aRequestGoesByItsTitleThenItsOnlyTasksThenWhatTheUserWrote() throws {
+        func task(_ id: String, _ request: String) -> String {
+            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"running","state_since":1,"created_at":1}"#
+        }
+        func request(_ id: String, _ state: String, _ tasks: String, _ title: String = "") -> String {
+            #"{"id":"\#(id)","text":"Do the thing\nin detail","created_at":1,"state":"\#(state)","tasks":[\#(tasks)]\#(title)}"#
+        }
+        let requests = [
+            request("r-given", "in_progress", #""a""#, #","title":"Ship the thing""#),
+            request("r-one", "in_progress", #""one""#),
+            request("r-two", "in_progress", #""b","c""#),
+            request("r-new", "defining", ""),
+        ]
+        let tasks = [task("a", "r-given"), task("one", "r-one"), task("b", "r-two"), task("c", "r-two")]
+        let json = #"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":[\#(requests.joined(separator: ","))],"tasks":[\#(tasks.joined(separator: ","))]}"#
+        let store = FleetStore()
+        store.apply(try Self.decode(json))
+        let title = { (id: String) in store.board.request(id).map(store.title(of:)) }
+        #expect(title("r-given") == "Ship the thing", "the orchestrator's title wins")
+        #expect(title("r-one") == "Task one", "its only task's title, not the prompt")
+        #expect(title("r-two") == "Do the thing", "several tasks and no title from an older alondrad")
+        #expect(title("r-new") == "Do the thing", "still defined: what the user wrote")
+        #expect(try Self.request("r", tasks: []).title == nil)
+    }
+
+    @MainActor @Test func aTasksHistoryFollowsItsLastChangeAndAFailedFetchKeepsWhatWasShown() async throws {
+        let older = try Self.task("t", created: 5)
+        let newer: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1,"last_change":9}"#)
+        #expect(older.historyKey == 5 && newer.historyKey == 9, "a move that keeps the state still moves the key")
+        let wrapped: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1,"history":[{"from":"running","to":"in_review","event":{"kind":"pr_opened","pr":2},"at":6}]},"documents":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
+        let bare: TaskInFull = try Self.decode(#"{"id":"t","request":"r","title":"T","state":"running","state_since":5,"created_at":1}"#)
+        #expect(wrapped.task.history?.count == 1 && wrapped.documents?.map(\.id) == [5])
+        #expect(bare.task.id == "t" && bare.documents == nil, "an older alondrad sends the task alone")
+        let nowhere = AlondraClient(base: try #require(URL(string: "http://127.0.0.1:9")))
+        let store = FleetStore(client: nowhere)
+        #expect(await store.details(of: newer, keeping: wrapped)?.task.history?.count == 1, "a failed fetch keeps the history shown")
+    }
+
+    @MainActor @Test func aTasksDocumentsComeFromItsOwnRouteBeyondTheOverviewsNewestReports() throws {
+        let task: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","documents":[5],"state":"in_review","state_since":5,"created_at":1}"#)
+        let details: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"in_review","state_since":5,"created_at":1},"documents":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
+        let store = FleetStore()
+        store.apply(try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"reports":[]}"#))
+        #expect(store.documents(of: task, in: nil).isEmpty, "report 5 is not among the overview's newest")
+        #expect(store.documents(of: task, in: details).map(\.title) == ["Plan"])
+    }
+
+    @Test func aTasksPrHandlingReadsLikeTheLaunchOption() throws {
+        let spec: OptionSpec = try Self.decode(#"{"id":"pr","label":"PR handling","kind":"choice","builtin":true,"default":"review","values":[{"id":"review","label":"review each PR"},{"id":"auto_merge","label":"auto-merge"}]}"#)
+        #expect(spec.values.map(spec.title(of:)) == [OptionSpec.prHandling(autoMerge: false), OptionSpec.prHandling(autoMerge: true)])
+    }
 }

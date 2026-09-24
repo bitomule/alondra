@@ -132,12 +132,9 @@ public struct AlondraClient: Sendable {
         try Self.decoder.decode(NodeThreads.self, from: try await get("v1/nodes/\(session)"))
     }
 
-    /// The task with its history, which the overview leaves out.
-    public func task(_ id: String) async throws -> WorkTask {
-        let data = try await get("v1/tasks/\(id)")
-        struct Wrapped: Decodable { let task: WorkTask }
-        if let wrapped = try? Self.decoder.decode(Wrapped.self, from: data) { return wrapped.task }
-        return try Self.decoder.decode(WorkTask.self, from: data)
+    /// The task with its history and documents, which the overview leaves out.
+    public func task(_ id: String) async throws -> TaskInFull {
+        try Self.decoder.decode(TaskInFull.self, from: try await get("v1/tasks/\(id)"))
     }
 
     public func activity(client: String) async throws {
@@ -397,6 +394,9 @@ public enum AlondraError: LocalizedError, Equatable {
             let lines = reasons.map { closeReasonMessage(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String) }
             return .server(lines.count == 1 ? lines[0] : lines.map { "- \($0)" }.joined(separator: "\n"))
         }
+        if status == 404, json?["error"] != nil {
+            return .server(String(localized: "Alondra no longer has it", table: "AlondraShared", bundle: #bundle))
+        }
         if let message = (json?["error"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
             let detail = message.count > longestMessage ? String(message.prefix(longestMessage)) + "…" : message
             return .server(refusalMessage(kind: json?["kind"] as? String, detail: detail))
@@ -411,6 +411,7 @@ public enum AlondraError: LocalizedError, Equatable {
         case "pr_not_open": String(localized: "This PR is no longer open", table: "AlondraShared", bundle: #bundle)
         case "merge_refused": String(localized: "GitHub didn’t merge it: \(detail)", table: "AlondraShared", bundle: #bundle)
         case "question_closed": String(localized: "This question was already answered", table: "AlondraShared", bundle: #bundle)
+        case "task_refused": String(localized: "The task’s state does not allow that now", table: "AlondraShared", bundle: #bundle)
         default: detail
         }
     }

@@ -67,11 +67,18 @@ public struct OptionSpec: Decodable, Identifiable, Hashable, Sendable {
         }
     }
 
+    /// How a task's PRs are handled, in the words of the launch option.
+    public static func prHandling(autoMerge: Bool) -> String {
+        autoMerge
+            ? String(localized: "Auto-merge", table: "AlondraShared", bundle: #bundle)
+            : String(localized: "Review each one", table: "AlondraShared", bundle: #bundle)
+    }
+
     public func title(of value: Value) -> String {
         guard builtin else { return value.label }
         switch value.id {
-        case "review": return String(localized: "Review each one", table: "AlondraShared", bundle: #bundle)
-        case "auto_merge": return String(localized: "Auto-merge", table: "AlondraShared", bundle: #bundle)
+        case "review": return Self.prHandling(autoMerge: false)
+        case "auto_merge": return Self.prHandling(autoMerge: true)
         case "auto": return String(localized: "Auto", table: "AlondraShared", bundle: #bundle)
         case "light": return String(localized: "Light", table: "AlondraShared", bundle: #bundle)
         case "normal": return String(localized: "Normal", table: "AlondraShared", bundle: #bundle)

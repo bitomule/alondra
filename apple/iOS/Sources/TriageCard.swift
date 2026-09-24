@@ -21,6 +21,7 @@ struct TriageCard: View {
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
     @State private var merging: String?
+    @State private var asking = false
 
     private var kind: Kind { Kind(item) }
     private var actionTint: Color { kind.tint == Palette.slate ? Palette.dawn : kind.tint }
@@ -609,7 +610,7 @@ struct TriageCard: View {
                         .frame(minHeight: 30)
                 }
                 .buttonStyle(.plain)
-                .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty)
+                .disabled((reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty) || asking)
                 if pr.hasConflicts {
                     Button {
                         resolve(Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)) {
@@ -798,16 +799,16 @@ struct TriageCard: View {
     /// Unlike `resolve`, the PR's card stays live on the server (asking never parks it), so
     /// this must not hide it locally: it just sends and clears the draft.
     private func ask(onPullRequest pr: PullRequest) {
+        guard !asking else { return }
+        asking = true
         replyFocused = false
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
-            let ok = await fleet.perform { [attachments] client in
-                try await client.ask(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
-            }
-            if ok {
+            if await fleet.ask(onPullRequest: pr.id, text: text, attachments: attachments) {
                 reply = ""
                 attachments.removeAll()
             }
+            asking = false
         }
     }
 

@@ -8,7 +8,7 @@ struct TaskDetail: View {
     let store: FleetStore
     let select: (Selection) -> Void
 
-    @State private var history: [WorkTask.Transition]?
+    @State private var details: TaskInFull?
     @State private var confirmingCancel = false
     @State private var acting = false
 
@@ -65,8 +65,8 @@ struct TaskDetail: View {
         } message: {
             Text("Its node stops working on it. You can reopen it later.")
         }
-        .task(id: task.stateSince) {
-            history = await store.history(of: task)
+        .task(id: task.historyKey) {
+            details = await store.details(of: task, keeping: details)
         }
     }
 
@@ -190,7 +190,7 @@ struct TaskDetail: View {
 
     @ViewBuilder
     private var documents: some View {
-        let reports = task.documents.compactMap(store.report)
+        let reports = store.documents(of: task, in: details)
         if !reports.isEmpty {
             TaskSection(String(localized: "Documents")) {
                 VStack(spacing: 0) {
@@ -225,12 +225,8 @@ struct TaskDetail: View {
         return TaskSection(String(localized: "Options")) {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                 GridRow {
-                    Text("Auto-merge").foregroundStyle(.secondary)
-                    Toggle("Auto-merge", isOn: .constant(alone)).labelsHidden().toggleStyle(.switch).controlSize(.mini)
-                }
-                GridRow {
-                    Text("Review PR").foregroundStyle(.secondary)
-                    Toggle("Review PR", isOn: .constant(!alone)).labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    Text("PR handling").foregroundStyle(.secondary)
+                    Text(OptionSpec.prHandling(autoMerge: alone))
                 }
                 if let effort = task.options?.effort {
                     GridRow {
@@ -239,13 +235,14 @@ struct TaskDetail: View {
                     }
                 }
             }
-            .disabled(true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
         }
     }
+
+    private var history: [WorkTask.Transition]? { details?.task.history }
 
     @ViewBuilder
     private var timeline: some View {
@@ -279,6 +276,7 @@ struct TaskDetail: View {
 struct RequestDetail: View {
     let request: WorkRequest
     let store: FleetStore
+    let select: (Selection) -> Void
 
     var body: some View {
         TaskPage {
@@ -306,6 +304,29 @@ struct RequestDetail: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
+                }
+            }
+            let tasks = store.board.tree(for: request.id)?.tasks ?? []
+            if !tasks.isEmpty {
+                TaskSection(String(localized: "Tasks")) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(tasks) { task in
+                            Button { select(.task(task.id)) } label: {
+                                HStack(spacing: 6) {
+                                    StatusDot(color: task.color)
+                                    Text(task.title)
+                                    Text(verbatim: "· \(task.state.label)")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                 }
             }
             RequestText(request: request, store: store)

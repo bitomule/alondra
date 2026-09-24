@@ -244,7 +244,7 @@ public struct FleetView: View {
             }
         case .request(let id):
             if let request = store.board.request(id) {
-                RequestDetail(request: request, store: store)
+                RequestDetail(request: request, store: store, select: { selection = $0 })
             } else {
                 ContentUnavailableView("This request is gone", systemImage: "questionmark.circle")
             }

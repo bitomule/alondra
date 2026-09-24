@@ -101,7 +101,7 @@ private struct ProjectHeader: View {
                     Label(String(count), systemImage: occupancy.symbol)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(occupancy.tint)
-                        .accessibilityLabel(Text(verbatim: "\(count) \(occupancy.label)"))
+                        .accessibilityLabel(occupancy.spoken(count))
                 }
             }
         }
@@ -499,6 +499,17 @@ private struct ThreadLine: View {
                         .lineLimit(2)
                 }
             }
+        }
+    }
+}
+
+extension NodeOccupancy {
+    /// "3 busy nodes", for VoiceOver.
+    func spoken(_ count: Int) -> String {
+        switch self {
+        case .busy: String(localized: "\(count) busy nodes")
+        case .free: String(localized: "\(count) free nodes")
+        case .waitingMachine: String(localized: "\(count) nodes waiting for the machine")
         }
     }
 }

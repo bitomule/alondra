@@ -81,12 +81,132 @@
         }
       }
     },
+    "%lld busy nodes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld busy node"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld busy nodes"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo ocupado"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos ocupados"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld cores": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
             "value": "%lld núcleos"
+          }
+        }
+      }
+    },
+    "%lld free nodes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld free node"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld free nodes"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo libre"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos libres"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld nodes waiting for the machine": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld node waiting for the machine"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodes waiting for the machine"
+                }
+              }
+            }
+          }
+        },
+        "es": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodo esperando la máquina"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld nodos esperando la máquina"
+                }
+              }
+            }
           }
         }
       }
@@ -1187,6 +1307,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Plan"
+          }
+        }
+      }
+    },
+    "PR handling": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gestión de PR"
           }
         }
       }
@@ -2703,36 +2833,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "leído"
-          }
-        }
-      }
-    },
-    "Auto-merge": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Auto-merge"
-          }
-        }
-      }
-    },
-    "Alondra merges it alone when the checks pass": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alondra fusiona sola cuando pasan los checks"
-          }
-        }
-      }
-    },
-    "Review PR": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Revisar PR"
           }
         }
       }

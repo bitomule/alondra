@@ -35,10 +35,19 @@ extension FleetStore {
         request.options?.project.flatMap(Self.named) ?? board.tree(for: request.id)?.tasks.lazy.compactMap(project(of:)).first
     }
 
-    /// A request with no text of its own (one Alondra made up for an older node) takes its first
-    /// task's title.
+    /// The title the orchestrator gave it, else its only task's, else the first line of what the
+    /// user asked (all a request being defined has), else its first task's.
     public func title(of request: WorkRequest) -> String {
-        request.headline ?? board.tree(for: request.id)?.tasks.first?.title ?? String(localized: "Request", table: "AlondraShared", bundle: #bundle)
+        let tasks = board.tree(for: request.id)?.tasks ?? []
+        if let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
+        if tasks.count == 1 { return tasks[0].title }
+        return request.headline ?? tasks.first?.title ?? String(localized: "Request", table: "AlondraShared", bundle: #bundle)
+    }
+
+    /// The task's documents: as its own route gave them, else those among the overview's newest
+    /// reports.
+    public func documents(of task: WorkTask, in details: TaskInFull?) -> [Report] {
+        task.documents.compactMap { id in details?.documents?.first { $0.id == id } ?? report(id) }
     }
 
     public func request(of task: WorkTask) -> WorkRequest? {

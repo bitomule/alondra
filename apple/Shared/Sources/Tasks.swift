@@ -35,6 +35,8 @@ public struct WorkRequest: Codable, Identifiable, Hashable, Sendable {
     public let synthetic: Bool?
     public let state: State
     public let tasks: [String]?
+    /// The title the orchestrator gave it.
+    public let title: String?
     /// When it left the Tasks list: every task of it is archived, or it finished without tasks
     /// and was archived itself.
     public let archivedAt: Int64?
@@ -130,10 +132,12 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     public let autoMergePending: Bool?
     /// When the user archived it, once it was finished.
     public let archivedAt: Int64?
+    /// When anything last happened to it, its history included.
+    public let lastChange: Int64?
 
     private enum CodingKeys: String, CodingKey {
         case id, request, title, brief, dependsOn, options, assignee, prs, documents, blocker, notices, state, stateSince, createdAt, finalReport, history,
-            autoMergePending, archivedAt
+            autoMergePending, archivedAt, lastChange
     }
 
     public init(from decoder: Decoder) throws {
@@ -156,11 +160,16 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
         history = try c.decodeIfPresent([Transition].self, forKey: .history)
         autoMergePending = try c.decodeIfPresent(Bool.self, forKey: .autoMergePending)
         archivedAt = try c.decodeIfPresent(Int64.self, forKey: .archivedAt)
+        lastChange = try c.decodeIfPresent(Int64.self, forKey: .lastChange)
     }
 
     public var mergesAlone: Bool { autoMergePending == true }
 
     public var isArchived: Bool { archivedAt != nil }
+
+    /// Moves when its history does, also when its state stays: an older alondrad only says when
+    /// the state changed.
+    public var historyKey: Int64 { lastChange ?? stateSince }
 
     /// Every report the task carries: documents, notices and its final report.
     public var reports: [UInt64] { documents + notices + (finalReport.map { [$0] } ?? []) }
@@ -187,6 +196,23 @@ public struct NodeActivity: Codable, Hashable, Sendable {
     public var doing: String? {
         let text = [tool, summary].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
         return text.isEmpty ? nil : text
+    }
+}
+
+/// A task as its own route gives it: with its history and, from a newer alondrad, its documents,
+/// which the overview only has among the newest reports.
+public struct TaskInFull: Decodable, Sendable {
+    public let task: WorkTask
+    public let documents: [Report]?
+
+    private enum CodingKeys: String, CodingKey {
+        case task, documents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        task = try c.decodeIfPresent(WorkTask.self, forKey: .task) ?? WorkTask(from: decoder)
+        documents = try c.decodeIfPresent([Report].self, forKey: .documents)
     }
 }
 
