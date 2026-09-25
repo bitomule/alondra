@@ -993,6 +993,16 @@ mod http_tests {
             "revocation must survive relay restart"
         );
         assert_eq!(persisted["revoked_ids"], serde_json::json!(["phone-1"]));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&server.auth.config.device_registry_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "revocation replacement must remain owner-only"
+        );
         let after_restart = Auth::test(
             server.auth.config.clone(),
             include_bytes!("../tests/fixtures/jwks.json"),
