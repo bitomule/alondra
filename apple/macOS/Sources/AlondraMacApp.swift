@@ -3,13 +3,23 @@ import SwiftUI
 
 @main
 struct AlondraMacApp: App {
-    @State private var device = LocalDevice()
+    @State private var device: LocalDevice
+    @State private var sync: MacAppSync
+
+    init() {
+        let device = LocalDevice()
+        let sync = MacAppSync(client: device.client)
+        device.onClientChanged = { [sync] client in
+            let scope = sync.prepareUse(client)
+            Task { await sync.activate(client, scope: scope) }
+        }
+        _device = State(initialValue: device)
+        _sync = State(initialValue: sync)
+    }
 
     var body: some Scene {
         WindowGroup("Alondra") {
-            FleetView()
-                .frame(minWidth: 860, minHeight: 540)
-                .environment(device)
+            MacWindowScene(device: device, services: sync)
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
@@ -21,7 +31,9 @@ struct AlondraMacApp: App {
 
         Window("Pair an iPhone", id: "pairing") {
             PairingView()
+                .id(MacAppSync.identity(for: device.client))
                 .environment(device)
+                .environment(sync)
         }
         .windowResizability(.contentSize)
     }

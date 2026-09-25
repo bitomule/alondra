@@ -33,7 +33,15 @@ swift_library(
     name = "AlondraMacEntry",
     srcs = glob(["macOS/Sources/**/*.swift"]),
     module_name = "AlondraMac",
-    deps = [":AlondraShared", "//apple/DeviceIdentity:AlondraDeviceIdentity"],
+    deps = [
+        ":AlondraShared",
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Data/Commands:AlondraCommands",
+        "//apple/Data/Sync:AlondraSync",
+        "//apple/DeviceIdentity:AlondraDeviceIdentity",
+        "//apple/macOS/Feature:AlondraMacFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 macos_application(

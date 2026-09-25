@@ -3,6 +3,7 @@ import SwiftUI
 
 struct NewRequestSheet: View {
     let store: FleetStore
+    let submit: @MainActor (NewRequestBody, Attachments) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var attachments = Attachments()
@@ -76,7 +77,7 @@ struct NewRequestSheet: View {
         let body = (options?.options ?? WorkOptions()).body(text: trimmed)
         sending = true
         Task {
-            if await store.newRequest(body, attachments: attachments) {
+            if await submit(body, attachments) {
                 dismiss()
             }
             sending = false

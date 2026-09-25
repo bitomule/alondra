@@ -3,6 +3,7 @@ import SwiftUI
 
 /// A question the node asks about the PR it sits in, answered right there in the PR's detail.
 struct AttachedQuestion: View {
+    @Environment(MacAppSync.self) private var services
     let question: Question
     let pullRequestURL: String
     let store: FleetStore
@@ -92,7 +93,7 @@ struct AttachedQuestion: View {
         focus = nil
         let drafts = drafts
         let key = key
-        Task {
+        services.runMutation {
             if await action() { drafts.discard(key) }
         }
     }

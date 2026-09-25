@@ -9,6 +9,7 @@ import Observation
 @Observable
 final class LocalDevice {
     private(set) var client: AlondraClient
+    @ObservationIgnored var onClientChanged: (@MainActor (AlondraClient) -> Void)?
 
     private let base: URL
     private let identities: DeviceIdentityStore
@@ -40,5 +41,6 @@ final class LocalDevice {
         )
         let identity = identities.completeMacPairing(at: base, deviceID: id, key: key)
         client = AlondraClient(base: base, signer: identity.signer)
+        onClientChanged?(client)
     }
 }

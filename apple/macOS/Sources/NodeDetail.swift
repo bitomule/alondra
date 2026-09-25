@@ -2,6 +2,7 @@ import AlondraShared
 import SwiftUI
 
 struct NodeDetail: View {
+    @Environment(MacAppSync.self) private var services
     let node: Node
     let store: FleetStore
     let drafts: Drafts
@@ -122,7 +123,7 @@ struct NodeDetail: View {
         .closeConfirmation($closing) { _ in
             let store = store
             let node = node
-            Task { await store.close(node) }
+            services.runMutation { await store.close(node) }
         }
         .task(id: store.threadsKey(of: node.sessionId)) {
             await store.followThreads(of: node.sessionId) { threads = $0 }
@@ -209,6 +210,7 @@ private struct ThreadRow: View {
 }
 
 private struct NodeComposer: View {
+    @Environment(MacAppSync.self) private var services
     let node: Node
     let store: FleetStore
     @Bindable var draft: ReviewDraft
@@ -235,7 +237,7 @@ private struct NodeComposer: View {
         draft.attachments = Attachments()
         let store = store
         let node = node
-        Task { await store.send(to: node, text: text, attachments: attachments) }
+        services.runMutation { await store.send(to: node, text: text, attachments: attachments) }
     }
 }
 

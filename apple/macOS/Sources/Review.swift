@@ -74,6 +74,10 @@ final class Drafts {
     func discard(_ key: String) {
         drafts[key] = nil
     }
+
+    func discardAll() {
+        drafts.removeAll()
+    }
 }
 
 enum DetailField: Hashable {

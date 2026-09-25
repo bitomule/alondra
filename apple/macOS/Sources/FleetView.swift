@@ -1,55 +1,36 @@
 import AlondraShared
-import AppKit
+import AlondraMacFeature
+import ComposableArchitecture
 import SwiftUI
-
-enum Selection: Hashable {
-    case item(String)
-    case node(String)
-    case task(String)
-    case request(String)
-    case schedules
-}
 
 extension EnvironmentValues {
     @Entry var searchActive = false
 }
 
-public struct FleetView: View {
+struct FleetView: View {
     @Environment(LocalDevice.self) private var device
-    @State private var store = FleetStore()
-    @State private var drafts = Drafts()
-    @State private var selection: Selection?
-    @State private var didAutoSelect = false
-    @State private var query = ""
+    let store: FleetStore
+    @Bindable var feature: StoreOf<MacWindowFeature>
+    let services: MacAppSync
+    let drafts: Drafts
     @State private var smartMatches: Set<String>?
     @State private var smartStatus = ""
-    @State private var showingNew = false
     @State private var closing: CloseRequest?
     @FocusState private var searchFocused: Bool
     @AppStorage("collapsedProjects") private var collapsedRaw = ""
     @AppStorage("tasksExpanded") private var tasksExpanded = true
     @AppStorage("toggledTaskGroups") private var toggledGroupsRaw = ""
 
-    public init() {}
-
-    /// While the user clicks, types or scrolls here, alondrad holds back iPhone pushes.
-    private func reportActivity() async {
-        let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { event in
-            continuation.yield()
-            return event
-        }
-        defer {
-            if let monitor { NSEvent.removeMonitor(monitor) }
-        }
-        var told = Date.distantPast
-        for await _ in events where Date().timeIntervalSince(told) >= 60 {
-            told = Date()
-            try? await store.client.activity(client: "mac")
-        }
+    private var selection: Selection? { feature.selection }
+    private var query: String { feature.query }
+    private var newRequestIsPresented: Binding<Bool> {
+        Binding(
+            get: { feature.isNewRequestPresented },
+            set: { if !$0 { feature.send(.dismissNewRequest) } }
+        )
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationSplitView {
             sidebar
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
@@ -60,7 +41,13 @@ public struct FleetView: View {
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
             }
             .animation(.smooth(duration: 0.22), value: selection)
-            .overlay(alignment: .top) { ErrorBanner(store: store) }
+            .overlay(alignment: .top) {
+                ErrorBanner(
+                    store: store,
+                    pairingError: feature.pairingError,
+                    dismissPairingError: { feature.send(.dismissPairingError) }
+                )
+            }
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
@@ -74,7 +61,7 @@ public struct FleetView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showingNew = true
+                    feature.send(.showNewRequest)
                 } label: {
                     Label("New", systemImage: "square.and.pencil")
                 }
@@ -83,7 +70,7 @@ public struct FleetView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    Task { await store.archiveCompleted() }
+                    services.runMutation { await store.archiveCompleted() }
                 } label: {
                     Label("Archive Completed", systemImage: "archivebox")
                 }
@@ -91,56 +78,38 @@ public struct FleetView: View {
                 .help("Archive every done or cancelled task")
             }
         }
-        .sheet(isPresented: $showingNew) {
-            NewRequestSheet(store: store)
+        .sheet(isPresented: newRequestIsPresented) {
+            NewRequestSheet(
+                store: store,
+                submit: MacNewRequestSubmission(
+                    feature: feature,
+                    fleet: store,
+                    services: services,
+                    origin: feature.newRequestOrigin,
+                    originEpoch: feature.newRequestOriginEpoch,
+                    originScope: services.commandScope
+                ).call
+            )
         }
         .closeConfirmation($closing) { request in
             guard let node = store.node(request.session) else { return }
-            Task { await store.close(node) }
+            services.runMutation { await store.close(node) }
         }
         .closeRefusalAlert(store)
-        .task {
-            store.use(device.client)
-            await store.run()
-        }
-        .task { await reportActivity() }
-        .onChange(of: device.client.identity) { store.use(device.client) }
-        .onChange(of: device.credentialRevision) {
-            store.resetPresentationForIdentityChange()
-            store.use(device.client)
-        }
-        .task(id: store.connection) { await pairIfNeeded() }
-        .onChange(of: inboxIDs, initial: true) { old, new in
-            follow(from: old, to: new)
-        }
+        .task(id: store.connection) { await services.pairIfNeeded(device: device, connection: store.connection) }
     }
 
     private var inboxIDs: [String] { store.inbox.map(\.id) }
 
-    private func pairIfNeeded() async {
-        guard store.connection == .unpaired || (store.connection == .online && !device.isPaired) else { return }
-        while !Task.isCancelled {
-            do {
-                try await device.pair()
-                return
-            } catch where error.isCancellation {
-                return
-            } catch {
-                store.lastError = String(localized: "Couldn’t pair this Mac with alondrad: \(error.friendlyDescription)")
-            }
-            try? await Task.sleep(for: .seconds(30))
-        }
-    }
-
     private var subtitle: String {
-        guard store.connected, let overview = store.overview else { return String(localized: "No connection to alondrad") }
+        guard store.connected, store.overview != nil else { return String(localized: "No connection to alondrad") }
         let count = store.inbox.count
         let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
         return [pending, String(localized: "\(store.nodes.count) nodes")].joined(separator: " · ")
     }
 
     private var sidebar: some View {
-        List(selection: $selection) {
+        List(selection: $feature.selection) {
             if !smartStatus.isEmpty {
                 Label(smartStatus, systemImage: "text.magnifyingglass")
                     .font(.callout)
@@ -218,7 +187,7 @@ public struct FleetView: View {
             }
         }
         .animation(.snappy, value: inboxIDs)
-        .searchable(text: $query, placement: .sidebar, prompt: "Search")
+        .searchable(text: $feature.query, placement: .sidebar, prompt: "Search")
         .searchFocused($searchFocused)
         .task(id: query) { await runSmartSearch() }
     }
@@ -232,49 +201,33 @@ public struct FleetView: View {
             if let item = store.item(id: id) {
                 ItemDetail(item: item, store: store, drafts: drafts)
             } else {
-                HomeView(store: store, start: startTriage, newRequest: { showingNew = true })
+                HomeView(store: store, start: startTriage, newRequest: { feature.send(.showNewRequest) })
             }
         case .node(let id):
             if let node = store.node(id) {
-                NodeDetail(node: node, store: store, drafts: drafts, open: { selection = .item($0) }, openTask: { selection = .task($0) })
+                NodeDetail(node: node, store: store, drafts: drafts, open: { feature.selection = .item($0) }, openTask: { feature.selection = .task($0) })
             } else {
                 ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
             }
         case .task(let id):
             if let task = store.board.task(id) {
-                TaskDetail(task: task, store: store, select: { selection = $0 })
+                TaskDetail(task: task, store: store, select: { feature.selection = $0 })
             } else {
                 ContentUnavailableView("This task is gone", systemImage: "questionmark.circle")
             }
         case .request(let id):
             if let request = store.board.request(id) {
-                RequestDetail(request: request, store: store, select: { selection = $0 })
+                RequestDetail(request: request, store: store, select: { feature.selection = $0 })
             } else {
                 ContentUnavailableView("This request is gone", systemImage: "questionmark.circle")
             }
         case nil:
-            HomeView(store: store, start: startTriage, newRequest: { showingNew = true })
+            HomeView(store: store, start: startTriage, newRequest: { feature.send(.showNewRequest) })
         }
     }
 
     private func startTriage() {
-        selection = store.inbox.first.map { .item($0.id) }
-    }
-
-    private func follow(from old: [String], to new: [String]) {
-        if !didAutoSelect, selection == nil, let first = new.first {
-            didAutoSelect = true
-            selection = .item(first)
-            return
-        }
-        guard case .item(let id)? = selection, !new.contains(id) else { return }
-        let remaining = Set(new)
-        guard let index = old.firstIndex(of: id) else {
-            selection = new.first.map { .item($0) }
-            return
-        }
-        let next = old[(index + 1)...].first(where: remaining.contains) ?? old[..<index].last(where: remaining.contains)
-        selection = next.map { .item($0) }
+        feature.send(.startTriage)
     }
 
     private var collapsed: Set<String> {
@@ -420,6 +373,8 @@ struct HomeView: View {
 
 struct ErrorBanner: View {
     let store: FleetStore
+    let pairingError: String?
+    let dismissPairingError: () -> Void
 
     var body: some View {
         ZStack {
@@ -445,6 +400,21 @@ struct ErrorBanner: View {
                     try? await Task.sleep(for: .seconds(6))
                     if !Task.isCancelled { store.lastError = nil }
                 }
+            } else if let pairingError {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(pairingError).lineLimit(2)
+                    Button(action: dismissPairingError) {
+                        Image(systemName: "xmark").font(.caption.weight(.bold))
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.regularMaterial, in: .capsule)
+                .padding(.top, 10)
+                .transition(.opacity)
             } else if !store.uncertainSends.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
