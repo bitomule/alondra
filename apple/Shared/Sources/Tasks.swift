@@ -153,6 +153,8 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     public let stateSince: Int64
     public let createdAt: Int64
     public let finalReport: UInt64?
+    /// The PR card of a dependency whose merge the task, already started, waits for.
+    public let awaiting: UInt64?
     public let history: [Transition]?
     /// Alondra merges its PR by itself once the checks pass.
     public let autoMergePending: Bool?
@@ -164,8 +166,8 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     public let recorded: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, request, title, brief, dependsOn, options, assignee, prs, documents, blocker, notices, state, stateSince, createdAt, finalReport, history,
-            autoMergePending, archivedAt, lastChange, recorded
+        case id, request, title, brief, dependsOn, options, assignee, prs, documents, blocker, notices, state, stateSince, createdAt, finalReport, awaiting,
+            history, autoMergePending, archivedAt, lastChange, recorded
     }
 
     public init(from decoder: Decoder) throws {
@@ -185,6 +187,7 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
         stateSince = try c.decode(Int64.self, forKey: .stateSince)
         createdAt = try c.decodeIfPresent(Int64.self, forKey: .createdAt) ?? stateSince
         finalReport = try c.decodeIfPresent(UInt64.self, forKey: .finalReport)
+        awaiting = try c.decodeIfPresent(UInt64.self, forKey: .awaiting)
         history = try c.decodeIfPresent([Transition].self, forKey: .history)
         autoMergePending = try c.decodeIfPresent(Bool.self, forKey: .autoMergePending)
         archivedAt = try c.decodeIfPresent(Int64.self, forKey: .archivedAt)

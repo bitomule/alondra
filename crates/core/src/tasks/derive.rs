@@ -398,6 +398,8 @@ impl View {
             waiting_on: unready.clone().map(|(d, _)| d.clone()).next(),
             cancelled_dependency: unready.filter(|(_, t)| t.is_some_and(|t| t.state == TaskState::Cancelled)).map(|(d, _)| d.clone()).next(),
             unmerged_dependency: dependencies.filter_map(|(_, t)| t).flat_map(|t| self.open_prs(t)).map(|p| p.number).next(),
+            started: task.awaiting.is_some(),
+            awaited_merge: task.awaiting.and_then(|id| self.prs.get(&id)).filter(|p| p.state == PrState::Open).map(|p| p.number),
             blocker: task.blocker,
             unmerged_pr: self.open_prs(task).filter(|p| !p.auto_merge).map(|p| p.number).next(),
             unreviewed_document: task.documents.iter().copied().find(|id| self.review_pending(*id)),
@@ -827,6 +829,7 @@ impl View {
             state_since: at,
             created_at: at,
             final_report: None,
+            awaiting: None,
             launched: false,
             launched_at: None,
             launched_as: None,
@@ -985,11 +988,13 @@ impl View {
     }
 
     /// David or the orchestrator wrote to the node: that reopens a done task, and sends one in
-    /// review back to work.
+    /// review, or one that waited for a dependency's merge, back to work.
     fn written_to(&mut self, id: &str, by: Item, at: Millis) -> Option<String> {
+        let started = self.board.tasks.get(id).is_some_and(|t| t.awaiting.is_some());
         let event = match self.task_state(id)? {
             TaskState::Done => TaskEvent::Reopen,
             TaskState::InReview => TaskEvent::ChangesRequested { on: by },
+            TaskState::WaitingDependency if started => TaskEvent::ChangesRequested { on: by },
             TaskState::WaitingDependency | TaskState::Running | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => return None,
         };
         self.fact(id, event, at).then(|| id.to_string())
@@ -1094,15 +1099,22 @@ impl View {
         }
     }
 
-    /// Tasks whose every dependency now has its PR open or is done start: they build on top.
+    /// Tasks whose every dependency now has its PR open or is done start: they build on top. A
+    /// task that waited for a dependency's merge goes on once that PR is no longer open.
     fn dependencies_ready(&mut self, at: Millis) -> Vec<String> {
         let ready: Vec<(String, String)> = self
             .board
             .tasks
             .values()
             .filter(|t| t.state == TaskState::WaitingDependency && t.recorded == self.recording())
-            .filter(|t| self.task_guards(t).waiting_on.is_none())
-            .filter_map(|t| Some((t.id.clone(), t.depends_on.last()?.clone())))
+            .filter(|t| {
+                let g = self.task_guards(t);
+                g.waiting_on.is_none() && g.awaited_merge.is_none()
+            })
+            .filter_map(|t| {
+                let awaited = t.awaiting.and_then(|pr| self.prs.get(&pr)).and_then(|p| p.task.clone()).filter(|d| t.depends_on.contains(d));
+                Some((t.id.clone(), awaited.or_else(|| t.depends_on.last().cloned())?))
+            })
             .collect();
         ready.into_iter().filter(|(id, dependency)| self.fact(id, TaskEvent::DependencyReady { task: dependency.clone() }, at)).map(|(id, _)| id).collect()
     }
@@ -1356,7 +1368,7 @@ mod tests {
         run.on(opened()).on(report(1, ReportKind::Final, &[PR]));
         assert_eq!(run.task().final_report, Some(1));
         run.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
-        run.message(1, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }));
+        run.message(1, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1, task: None }));
         assert_eq!(run.states(), vec![InReview, InReview, Done], "the merge notice does not reopen it");
         assert_eq!(run.task().prs, vec![1]);
     }
@@ -1747,7 +1759,7 @@ mod tests {
             d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(reported(1, "s", ReportKind::Final, &[PR]));
             assert!(d.view.merge_finishes_task(1), "the node gets no merge notice");
             d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
-            let notice = Message { id: 1, session_id: "s".into(), from: MessageFrom::Alondra, text: "merged".into(), answers_question: None, created_at: 0, handed_at: None, delivered_at: None, attachments: vec![], about: Some(MessageAbout::PrMerged { pr_id: 1 }) };
+            let notice = Message { id: 1, session_id: "s".into(), from: MessageFrom::Alondra, text: "merged".into(), answers_question: None, created_at: 0, handed_at: None, delivered_at: None, attachments: vec![], about: Some(MessageAbout::PrMerged { pr_id: 1, task: None }) };
             d.on(Event::MessageQueued(notice)).on(Event::MessageHanded { id: 1 });
             assert_eq!(d.task("s").state, Done);
 

@@ -161,6 +161,7 @@ pub fn transition_summary(t: &Transition) -> String {
     use alondra_core::tasks::TaskEvent as E;
     match &t.event {
         E::DependencyReady { .. } => tr!("a task it builds on has its PR open", "la tarea de la que depende ya tiene su PR abierto").into(),
+        E::AwaitsMerge { .. } => tr!("the node has nothing left but the merge of a PR it builds on", "al nodo solo le queda que se fusione un PR del que depende").into(),
         E::BlockerRaised { blocker, .. } => match blocker.kind {
             BlockerKind::Question => tr!("the node asked you something", "el nodo te preguntó algo").into(),
             BlockerKind::Permission => tr!("the node needs a permission", "el nodo necesita un permiso").into(),
@@ -425,6 +426,11 @@ impl App {
         self.inbox_keys().into_iter().filter(|k| self.task_of(*k).is_some_and(|x| x.id == t.id)).collect()
     }
 
+    /// The dependency's PR a started task waits to see merged.
+    fn awaited_pr(&self, t: &ClientTask) -> Option<&PrCard> {
+        t.awaiting.and_then(|id| self.data.prs.iter().find(|p| p.pr.id == id))
+    }
+
     /// One line on what is happening to the task now, or nothing to add to its state.
     pub fn task_now(&self, t: &ClientTask) -> Option<String> {
         match t.state {
@@ -446,6 +452,9 @@ impl App {
                 Some(trf!("document: {title}", "documento: {title}"))
             }
             TaskState::WaitingDependency => {
+                if let Some(n) = self.awaited_pr(t).map(|p| p.pr.number) {
+                    return Some(trf!("waits for PR #{n} to be merged", "espera a que se fusione el PR #{n}"));
+                }
                 if let Some((n, below)) = self.task_prs(t).first().and_then(|p| p.below_number.map(|b| (p.pr.number, b))) {
                     return Some(trf!("PR #{n} on top of #{below}", "PR #{n} va encima del #{below}"));
                 }
@@ -460,6 +469,14 @@ impl App {
     pub fn waiting_reason(&self, t: &ClientTask) -> Option<String> {
         if t.state != TaskState::WaitingDependency {
             return None;
+        }
+        if let Some(p) = self.awaited_pr(t) {
+            let n = p.pr.number;
+            let title = p.task.as_deref().and_then(|id| self.task(id)).map_or_else(|| p.pr.title.clone(), |d| d.title.clone());
+            return Some(trf!(
+                "It started, and what is left of it waits for PR #{n} of “{title}” to be merged: it goes on once that PR is merged.",
+                "Empezó, y lo que le queda espera a que se fusione el PR #{n} de «{title}»: sigue en cuanto se fusione."
+            ));
         }
         let first = self.dependencies(t).into_iter().find(|d| before_its_pr_opens(d.state))?;
         let (title, state) = (&first.title, crate::i18n::task_state(first.state));
