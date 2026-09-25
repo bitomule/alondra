@@ -19,12 +19,15 @@ import json
 import os
 import random
 import shutil
+import socket
+import struct
 import subprocess
 import threading
 import time
 import urllib.request
 
 PORT = 47890
+HOME = None
 
 
 def call(method, path, body=None, timeout=70):
@@ -38,12 +41,31 @@ def call(method, path, body=None, timeout=70):
         return None
 
 
+def hook(body):
+    wire = json.dumps({"launched": True, "payload": body}).encode()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5)
+            connection.connect(os.path.join(HOME, "hooks.sock"))
+            connection.sendall(struct.pack(">I", len(wire)) + wire)
+            chunks = []
+            while part := connection.recv(65536):
+                chunks.append(part)
+            reply = b"".join(chunks)
+            if len(reply) < 2 or struct.unpack(">H", reply[:2])[0] >= 400:
+                return None
+            connection.sendall(b"\x06")
+            return json.loads(reply[2:] or b"null")
+    except (OSError, ValueError):
+        return None
+
+
 def hooks(stop):
     sessions = [f"soak-{i}" for i in range(20)]
     while not stop.is_set():
         s = random.choice(sessions)
         event = random.choice(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"])
-        call("POST", "/hook", {"session_id": s, "hook_event_name": event, "tool_name": "Bash",
+        hook({"session_id": s, "hook_event_name": event, "tool_name": "Bash",
                                "tool_use_id": f"t{random.randint(0, 10**9)}",
                                "tool_input": {"command": "echo " + "x" * random.randint(1, 400)},
                                "last_assistant_message": "end of turn " + "y" * random.randint(1, 800)})
@@ -77,7 +99,7 @@ def waiter(stop):
 
 
 def main():
-    global PORT
+    global PORT, HOME
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=72)
     ap.add_argument("--out", default="soak.csv")
@@ -90,6 +112,7 @@ def main():
 
     PORT = args.port
     home = f"/tmp/alondra-soak-{os.getpid()}"
+    HOME = home
     os.makedirs(home, exist_ok=True)
     binary = os.path.join(home, "alondrad-soak")
     shutil.copy2(args.binary, binary)

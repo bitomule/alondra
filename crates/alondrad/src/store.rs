@@ -2,7 +2,7 @@ use std::path::Path;
 
 use alondra_core::{Event, Millis, View};
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 
 pub struct Store {
     conn: Connection,
@@ -32,12 +32,35 @@ impl Store {
     }
 
     pub fn append(&mut self, at: Millis, event: &Event) -> Result<u64> {
+        Self::insert(&self.conn, at, event)
+    }
+
+    fn insert(conn: &Connection, at: Millis, event: &Event) -> Result<u64> {
         let body = serde_json::to_string(event)?;
-        self.conn.execute(
-            "INSERT INTO events (at, kind, session, body) VALUES (?1, ?2, ?3, ?4)",
+        // Compaction can delete every event while keeping a snapshot. SQLite's implicit
+        // rowid would then restart at 1, below that snapshot, and replay would miss writes.
+        conn.execute(
+            "INSERT INTO events (seq, at, kind, session, body)
+             VALUES ((SELECT MAX(seq) + 1 FROM (
+                 SELECT COALESCE(MAX(seq), 0) AS seq FROM events
+                 UNION ALL SELECT COALESCE(MAX(seq), 0) FROM snapshots
+             )), ?1, ?2, ?3, ?4)",
             params![at, event.kind(), event.session_id(), body],
         )?;
-        Ok(self.conn.last_insert_rowid() as u64)
+        Ok(conn.last_insert_rowid() as u64)
+    }
+
+    /// A source event and every task event it causes are one durable fact. A failed closure or
+    /// commit rolls the whole batch back, including any earlier events in the same API call.
+    pub fn transaction<T>(&mut self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let tx = self.conn.transaction()?;
+        let result = f(&tx)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn append_in(tx: &Transaction<'_>, at: Millis, event: &Event) -> Result<u64> {
+        Self::insert(tx, at, event)
     }
 
     pub fn latest_snapshot(&self) -> Result<Option<(u64, View)>> {
@@ -70,10 +93,9 @@ impl Store {
             let seq: i64 = row.get(0)?;
             let at: i64 = row.get(1)?;
             let body: String = row.get(2)?;
-            match serde_json::from_str::<Event>(&body) {
-                Ok(ev) => f(seq as u64, at, ev),
-                Err(e) => log!("event {seq} unreadable, ignored: {e}"),
-            }
+            let ev = serde_json::from_str::<Event>(&body)
+                .with_context(|| format!("event {seq} is unreadable; replay stopped before state can diverge"))?;
+            f(seq as u64, at, ev);
             count += 1;
         }
         Ok(count)
@@ -111,6 +133,50 @@ mod tests {
         s.replay(0, |q, at, e| seen.push((q, at, e))).unwrap();
         assert_eq!(seen, vec![(seq, 5, ev)]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sequence_stays_above_snapshot_after_all_events_are_compacted() {
+        let dir = std::env::temp_dir().join(format!("alondra-sequence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut s = Store::open(&path).unwrap();
+        let ev = Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), ..Default::default() });
+        let mut view = View::default();
+        for at in 1..=3 {
+            let seq = s.append(at, &ev).unwrap();
+            view.apply(seq, at, &ev);
+        }
+        let snapshot = view.seq;
+        assert_eq!(s.compact(&view, 100, 100).unwrap(), 3);
+        drop(s);
+        let mut s = Store::open(&path).unwrap();
+        let seq = s.append(101, &ev).unwrap();
+        assert!(seq > snapshot);
+        let mut seen = vec![];
+        s.replay(snapshot, |seq, _, _| seen.push(seq)).unwrap();
+        assert_eq!(seen, vec![seq]);
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_batch_does_not_leave_a_source_event_without_its_task_move() {
+        let dir = std::env::temp_dir().join(format!("alondra-rollback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let _ = std::fs::remove_file(&path);
+        let mut s = Store::open(&path).unwrap();
+        let ev = Event::Hook(HookEvent { session_id: "s".into(), event: "Stop".into(), ..Default::default() });
+        let result: Result<()> = s.transaction(|tx| {
+            Store::append_in(tx, 1, &ev)?;
+            anyhow::bail!("simulated derived event failure")
+        });
+        assert!(result.is_err());
+        assert_eq!(s.replay(0, |_, _, _| {}).unwrap(), 0);
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -91,14 +91,18 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
         mark_attaches(&hub);
 
         while let Ok((session_id, pid)) = exit_rx.try_recv() {
-            registered.remove(&session_id);
+            if registered.get(&session_id) == Some(&pid) {
+                registered.remove(&session_id);
+            }
             let _ = hub.append(Event::ProcessExited { session_id, pid });
         }
 
         tokio::select! {
             _ = tokio::time::sleep(SCAN_EVERY) => {}
             Some((session_id, pid)) = exit_rx.recv() => {
-                registered.remove(&session_id);
+                if registered.get(&session_id) == Some(&pid) {
+                    registered.remove(&session_id);
+                }
                 let _ = hub.append(Event::ProcessExited { session_id, pid });
             }
         }

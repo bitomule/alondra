@@ -6,6 +6,7 @@ mod doctor;
 mod mcp;
 mod setup;
 mod statusline;
+mod state;
 mod tui;
 
 use std::time::Duration;
@@ -58,6 +59,11 @@ enum Cmd {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
     },
+    #[command(about = tr!("Audit or safely rebuild the local event-derived state", "Audita o reconstruye de forma segura el estado local derivado de eventos"))]
+    State {
+        #[command(subcommand)]
+        command: StateCmd,
+    },
     #[command(about = tr!(
         "Install or update Alondra on this Mac: config.toml, apns.json, launchd service, Claude Code plugin and pairing",
         "Instala o actualiza Alondra en este Mac: config.toml, apns.json, servicio de launchd, plugin de Claude Code y vinculación"
@@ -80,9 +86,20 @@ enum Cmd {
     /// Retired: sessions started with an older plugin still call it from their Stop hook
     #[command(hide = true)]
     Inbox,
+    /// Local Claude Code hook transport; the daemon remains the sole state writer.
+    #[command(hide = true)]
+    Hook,
     /// Prints the raw bytes and the parsed key of every key pressed, to debug terminal input
     #[command(hide = true)]
     Keys,
+}
+
+#[derive(Subcommand)]
+enum StateCmd {
+    #[command(about = tr!("Replay and validate the local database", "Reproduce y valida la base de datos local"))]
+    Audit,
+    #[command(about = tr!("Back up the database and rebuild from a complete event log; stop alondrad first", "Crea una copia y reconstruye desde un historial completo; detén alondrad antes"))]
+    Repair,
 }
 
 fn main() -> Result<()> {
@@ -118,9 +135,21 @@ fn main() -> Result<()> {
         },
         Some(Cmd::Devices { revoke }) => devices(revoke),
         Some(Cmd::Doctor { json }) => doctor::run(json),
+        Some(Cmd::State { command }) => {
+            let home = client::config().home.clone();
+            match command {
+                StateCmd::Audit => {
+                    let (seq, tasks) = state::audit(&home)?;
+                    println!("State valid through event {seq}; {tasks} tasks.");
+                }
+                StateCmd::Repair => println!("{}", state::repair_from_events(&home)?),
+            }
+            Ok(())
+        }
         Some(Cmd::Setup(args)) => setup::run(*args),
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
         Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
+        Some(Cmd::Hook) => hook(),
         Some(Cmd::Statusline) => statusline::run(),
         Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
@@ -152,6 +181,82 @@ fn show_config(get: Option<&str>) -> Result<()> {
         None => rows.iter().for_each(|(k, v)| println!("{k} = {v}")),
     }
     Ok(())
+}
+
+fn hook() -> Result<()> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut input = Vec::new();
+    std::io::stdin().read_to_end(&mut input)?;
+    let mut payload: serde_json::Value = serde_json::from_slice(&input)?;
+    if payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("MessageDisplay")
+        && payload.get("final") != Some(&serde_json::Value::Bool(true))
+    {
+        std::io::stdout().write_all(b"{}\n")?;
+        return Ok(());
+    }
+    compact_hook_payload(&mut payload);
+    let critical = matches!(payload.get("hook_event_name").and_then(serde_json::Value::as_str),
+        Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
+    let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
+    let send = (|| -> Result<()> {
+        let body = serde_json::to_vec(&json!({"launched": launched, "payload": payload}))?;
+        let path = client::config().home.join("hooks.sock");
+        let mut stream = UnixStream::connect(&path)
+            .map_err(|e| anyhow::anyhow!("cannot send hook to {}: {e}", path.display()))?;
+        anyhow::ensure!(body.len() <= u32::MAX as usize, "hook input is too large");
+        stream.write_all(&(body.len() as u32).to_be_bytes())?;
+        stream.write_all(&body)?;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response)?;
+        anyhow::ensure!(response.len() >= 2, "daemon closed the hook connection without a reply");
+        let status = u16::from_be_bytes([response[0], response[1]]);
+        anyhow::ensure!(status < 400, "daemon rejected hook ({status}): {}", String::from_utf8_lossy(&response[2..]));
+        std::io::stdout().write_all(&response[2..])?;
+        std::io::stdout().flush()?;
+        stream.write_all(&[6])?;
+        Ok(())
+    })();
+    if critical && let Err(error) = &send {
+        eprintln!("Alondra cannot validate this action: {error:#}");
+        std::process::exit(2);
+    }
+    send
+}
+
+/// Claude's batch hook includes complete tool responses; Alondra needs only the fact that a
+/// batch finished. Assistant display deltas are also deliberately kept out of the event log.
+fn compact_hook_payload(payload: &mut serde_json::Value) {
+    let event = payload.get("hook_event_name").and_then(serde_json::Value::as_str).map(str::to_string);
+    match event.as_deref() {
+        Some("PostToolBatch") => {
+            let count = payload.get("tool_calls").and_then(serde_json::Value::as_array).map(Vec::len);
+            if let Some(map) = payload.as_object_mut() {
+                map.remove("tool_calls");
+                if let Some(count) = count {
+                    map.insert("tool_calls_count".into(), count.into());
+                }
+            }
+        }
+        Some("PostToolUse") => {
+            // PR detection reads only the last stdout line. Complete tool output can be
+            // megabytes and is never otherwise persisted by the daemon.
+            if let Some(map) = payload.as_object_mut() {
+                if let Some(response) = map.remove("tool_response") {
+                    let stdout = response.get("stdout").and_then(serde_json::Value::as_str)
+                        .or_else(|| response.as_str());
+                    if let Some(last) = stdout.and_then(|s| s.lines().map(str::trim).rfind(|s| !s.is_empty())) {
+                        map.insert("tool_response".into(), json!({"stdout": last}));
+                    }
+                }
+            }
+        }
+        Some("PostToolUseFailure") => { if let Some(map) = payload.as_object_mut() { map.remove("tool_response"); } }
+        Some("MessageDisplay") => { if let Some(map) = payload.as_object_mut() { map.remove("delta"); } }
+        Some("InstructionsLoaded") => { if let Some(map) = payload.as_object_mut() { map.remove("content"); } }
+        _ => {}
+    }
 }
 
 fn status() -> Result<()> {

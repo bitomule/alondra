@@ -26,11 +26,35 @@ pub struct HookEvent {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
-    /// The task an Alondra tool call names, or the one an `Agent` call names after “Alondra task:”
-    /// in its description or prompt.
+    /// The task an Alondra tool call names, or the parent task verified at `PreToolUse Agent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// A single task verified from the named call, agent binding, or sole assigned task.
+    /// Session-wide hooks on a multi-task node have no unique task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Tasks the hook may concern. A main thread can coordinate several, so this is a set of
+    /// candidates rather than a guessed single task ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_ids: Vec<String>,
+    /// A parent Agent call reserves this task for the child carrying this opaque token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_task: Option<String>,
+    /// The token presented by a child's successful claim_task call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_token: Option<String>,
+    /// PermissionDenied synthesized after this hook itself rejected a tool, rather than a
+    /// later denial of an Agent call that had already reserved a task.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub local_denial: bool,
+    /// Short event-specific context from hooks that are not tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
+
+fn is_false(value: &bool) -> bool { !value }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct DaemonObservation {

@@ -212,13 +212,6 @@ pub struct Ledger {
     /// without an id, left by older daemons for a main thread, binds nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bound: Vec<(Option<String>, String)>,
-    /// `Agent` calls whose subagent has not shown up yet, oldest first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub launches: Vec<SubagentLaunch>,
-    /// The task each subagent took from the “Alondra task: t-…” of the call that launched it, by
-    /// agent id. Its own first Alondra call naming a task replaces it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub launched: Vec<(String, String)>,
     /// The task the node said it works on now, with `focus`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<Focus>,
@@ -226,19 +219,8 @@ pub struct Ledger {
 
 impl Ledger {
     pub fn is_empty(&self) -> bool {
-        self.threads.is_empty() && self.bound.is_empty() && self.launches.is_empty() && self.launched.is_empty() && self.focus.is_none()
+        self.threads.is_empty() && self.bound.is_empty() && self.focus.is_none()
     }
-}
-
-/// An `Agent` call waiting for its subagent to show up. `task` is none when the call named no
-/// open task of the node, or when other calls under way at once named another.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct SubagentLaunch {
-    #[serde(default)]
-    pub tool_use_id: Option<String>,
-    #[serde(default)]
-    pub task: Option<String>,
-    pub at: Millis,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -363,6 +345,9 @@ pub struct Node {
     /// When its process last ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exited_at: Option<Millis>,
+    /// A terminal exit was observed. Late hooks and same-PID daemon sightings cannot revive it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed: Option<ResumeAttempt>,
     /// How full its context window was at its last model call, as its status line saw it.
@@ -447,6 +432,7 @@ impl Node {
             orchestrator_state: None,
             ledger: Ledger::default(),
             exited_at: None,
+            ended: false,
             resumed: None,
             context: None,
             compaction: None,

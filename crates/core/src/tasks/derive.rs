@@ -51,6 +51,7 @@ pub enum Before {
 pub enum CardTask {
     Unknown(String),
     NotYours(String),
+    BoundElsewhere { bound: String, requested: String },
     /// The node works on several open tasks and did not say which: their ids.
     Several(Vec<String>),
 }
@@ -165,7 +166,7 @@ fn checks_failed(pr: &PullRequest) -> Option<u64> {
 /// Events that can move a recorded task, make one or give one to a node.
 fn may_move_tasks(event: &Event) -> bool {
     match event {
-        Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit"),
+        Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit" | "SessionEnd"),
         Event::QuestionAsked(_)
         | Event::QuestionAnswered { .. }
         | Event::QuestionClosed { .. }
@@ -207,11 +208,8 @@ impl View {
     /// The task a card names, or for a card that names none, its session's own or current one.
     fn card_task_id(&self, named: Option<&String>, session_id: &str) -> Option<String> {
         match named {
-            Some(id) => self.board.tasks.contains_key(id).then(|| id.clone()),
-            None => {
-                let id = task_id(session_id);
-                if self.board.tasks.contains_key(&id) { Some(id) } else { self.session_task(session_id).map(|t| t.id.clone()) }
-            }
+            Some(id) => self.board.tasks.get(id).filter(|t| t.is_assigned_to(session_id)).map(|t| t.id.clone()),
+            None => self.single_task(session_id).map(str::to_string),
         }
     }
 
@@ -285,6 +283,18 @@ impl View {
     /// its newest, else the one its first card gives it. A subagent's card goes to the open task
     /// it works on.
     pub fn card_task(&self, session_id: &str, named: Option<&str>, agent_id: Option<&str>) -> Result<String, CardTask> {
+        if let Some(bound) = agent_id.and_then(|a| self.nodes.get(session_id)?.ledger.bound(a))
+        {
+            if !self.board.tasks.get(bound).is_some_and(|t| t.is_assigned_to(session_id)) {
+                return Err(CardTask::NotYours(bound.to_string()));
+            }
+            if let Some(requested) = named.map(str::trim).filter(|t| !t.is_empty())
+                && requested != bound
+            {
+                return Err(CardTask::BoundElsewhere { bound: bound.to_string(), requested: requested.to_string() });
+            }
+            return Ok(bound.to_string());
+        }
         if let Some(id) = named.map(str::trim).filter(|t| !t.is_empty()) {
             let task = self.board.tasks.get(id).ok_or_else(|| CardTask::Unknown(id.to_string()))?;
             return if task.is_assigned_to(session_id) { Ok(task.id.clone()) } else { Err(CardTask::NotYours(id.to_string())) };
@@ -298,21 +308,40 @@ impl View {
         }
     }
 
-    /// The task a card of a fact (a hook, a menu, the sentinel) goes to: it cannot be refused,
-    /// so with several open tasks it goes to the newest. The orchestrator's cards have none. A PR
-    /// never goes by it: see `pr_task_for`.
+    /// The task a fact can be attributed to without guessing. A node-wide observation with
+    /// several open tasks has no task; a subagent can identify one through its binding.
     pub fn fact_task(&self, session_id: &str, agent_id: Option<&str>) -> Option<String> {
         if self.nodes.get(session_id).is_none_or(|n| n.is_orchestrator) {
             return None;
         }
-        match self.card_task(session_id, None, agent_id) {
-            Ok(id) => Some(id),
-            Err(_) => self.session_task(session_id).map(|t| t.id.clone()),
+        let candidates = self.hook_task_ids(session_id, agent_id, None);
+        (candidates.len() == 1).then(|| candidates[0].clone())
+    }
+
+    /// Attribution for every hook. A specific Alondra call or a bound subagent has one task;
+    /// an unbound main thread or subagent may concern several, so keep all candidates.
+    pub fn hook_task_ids(&self, session_id: &str, agent_id: Option<&str>, named: Option<&str>) -> Vec<String> {
+        if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
+            return vec![];
         }
+        if let Some(bound) = agent_id.and_then(|a| self.nodes.get(session_id)?.ledger.bound(a))
+        {
+            return self.board.tasks.get(bound).filter(|t| t.is_assigned_to(session_id))
+                .map(|_| vec![bound.to_string()]).unwrap_or_default();
+        }
+        if let Some(id) = named.filter(|id| self.board.tasks.get(*id).is_some_and(|t| t.is_assigned_to(session_id))) {
+            return vec![id.to_string()];
+        }
+        if let Some(agent) = agent_id
+            && let Some(task) = self.agent_task(session_id, agent)
+        {
+            return vec![task.id.clone()];
+        }
+        self.tasks_of(session_id).filter(|t| !t.state.finished()).map(|t| t.id.clone()).collect()
     }
 
     /// The task a PR the node opened is for, in this order: the task its title, body or branch
-    /// names (“Alondra task: t-…”), the task of the subagent that opened it, the node's live
+    /// names (“Alondra task: t-…”) for the main thread, the task of the subagent that opened it, the node's live
     /// `focus`, the node's only open task (its only task when none is open). None when the node
     /// works on several and nothing says which: Alondra asks the node instead of guessing. 25 Sep
     /// 00:01: the main thread of 7e661a50 opened #98 and #99 for its review, and both went to
@@ -321,9 +350,9 @@ impl View {
         if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
             return None;
         }
-        self.named_task(session_id, texts)
-            .or_else(|| agent_id.and_then(|a| self.agent_task(session_id, a)).map(|t| t.id.clone()))
-            .or_else(|| self.focus(session_id, now).map(str::to_string))
+        agent_id.and_then(|a| self.agent_task(session_id, a)).map(|t| t.id.clone())
+            .or_else(|| self.named_task(session_id, texts))
+            .or_else(|| agent_id.is_none().then(|| self.focus(session_id, now)).flatten().map(str::to_string))
             .or_else(|| self.single_task(session_id).map(str::to_string))
     }
 
@@ -676,7 +705,7 @@ impl View {
     fn moved_by(&mut self, at: Millis, event: &Event, before: Before) -> Vec<String> {
         let mut moved = vec![];
         let closes_questions = match event {
-            Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure"),
+            Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "SessionEnd"),
             Event::QuestionAnswered { .. } | Event::QuestionClosed { .. } | Event::ProcessExited { .. } | Event::PrUpdated(_) | Event::PrMerged { .. } => true,
             _ => false,
         };
@@ -697,7 +726,7 @@ impl View {
             (Event::MessageHanded { id }, _) => {
                 let from_someone = self.messages.get(id).filter(|m| m.from != MessageFrom::Alondra && m.answers_question.is_none());
                 let task = from_someone.and_then(|m| match &m.about {
-                    None => self.session_task(&m.session_id).map(|t| t.id.clone()),
+                    None => self.single_task(&m.session_id).map(str::to_string),
                     Some(MessageAbout::Task { task }) => self.board.tasks.get(task).filter(|t| t.is_assigned_to(&m.session_id)).map(|t| t.id.clone()),
                     Some(_) => None,
                 });
@@ -707,7 +736,7 @@ impl View {
             }
             (Event::Hook(h), _) if h.event == "UserPromptSubmit" && h.prompt.is_some() => {
                 let typed = self.nodes.get(&h.session_id).is_some_and(|n| crate::states::talking_with_user(self, n));
-                let task = self.session_task(&h.session_id).map(|t| t.id.clone()).filter(|_| typed);
+                let task = self.single_task(&h.session_id).map(str::to_string).filter(|_| typed);
                 if let Some(tid) = task {
                     moved.extend(self.written_to(&tid, Item::Terminal, at));
                 }
@@ -2125,7 +2154,7 @@ mod tests {
                 ("ids that only look like it", None, "t-22 at-2 t-2x", None),
                 ("another node's task", None, "Alondra task: t-o", None),
                 ("the subagent that bound itself to t-2", Some("a1"), "gh pr create --fill", Some("t-2")),
-                ("what the PR says wins over the subagent", Some("a1"), "Alondra task: t-s", Some("t-s")),
+                ("a bound subagent cannot route its PR to another task", Some("a1"), "Alondra task: t-s", Some("t-2")),
             ];
             for (what, agent, text, task) in cases {
                 assert_eq!(d.view.pr_task_for("s", *agent, &[text], d.at).as_deref(), *task, "{what}");
@@ -2154,7 +2183,7 @@ mod tests {
                 ("the main thread, nothing named: the focus", None, FILL, Some("t-2")),
                 ("the marker wins over the focus", None, "--body 'Alondra task: t-s'", Some("t-s")),
                 ("the subagent's own task wins over the focus", Some("a1"), FILL, Some("t-s")),
-                ("a subagent with no task of its own: the focus", Some("a2"), FILL, Some("t-2")),
+                ("an unbound subagent never inherits the main thread's focus", Some("a2"), FILL, None),
             ];
             for (what, agent, text, task) in cases {
                 assert_eq!(d.view.pr_task_for("s", *agent, &[text], d.at).as_deref(), *task, "{what}");

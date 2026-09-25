@@ -79,18 +79,16 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 The orchestrator can give you another task while you work: Alondra types it in as
 "[Alondra] A new task for you, from the orchestrator: t-… “…”", and a message about one of your
 tasks starts with "[Task t-… “…”]".
-- Work each task in a subagent of its own (Agent tool), named after the task (`name: "t-12"`),
-  with the task's brief as its prompt, so the tasks never share a context. Subagents have
-  Alondra's tools: the subagent asks, reports and opens its PR itself, passing `task` on every
+- Work each task in a subagent of its own (Agent tool), with its prompt starting with
+  `Alondra task: t-…` followed by the task brief, so the tasks never share a context. Alondra
+  adds a unique claim token to that Agent prompt. Each subagent calls `claim_task` with that
+  token before any Bash, edit, or other tool. Alondra binds it to the parent's task, blocks
+  unbound subagents' tools, and does not let a bound subagent switch tasks. The
+  subagent asks, reports and opens its PR itself, passing `task` on every
   `ask`, `request_action`, `report` and `withdraw`.
-- When you launch a subagent for a task, write "Alondra task: t-…" in its `description` or
-  `prompt`. Alondra gives it that task from its first step, so everything it does counts for the
-  task before its first Alondra call. Subagents launched at the same moment for different tasks
-  get none this way: each takes its task from the first Alondra call it makes with `task`.
-- When this main session works on one task itself, not in a subagent, call `focus` with that
-  task first. For 30 minutes (`minutes`, up to 240), what the main thread and subagents with no
-  task of their own do counts for it, and so do PRs and cards that name no task. Call it again
-  when you switch tasks: the new focus replaces the old one.
+- When this main session works on one task itself, call `focus` with that task first. For 30
+  minutes (`minutes`, up to 240), the main thread's activity, PRs and cards that name no task
+  count for it. A focus never gives a task to an unbound subagent. Call it again when you switch.
 - A task on a different branch gets its own worktree. A subagent's automatic worktree always
   starts from the default branch, so create it with git when the task names a base
   (`git worktree add .claude/worktrees/t-12 -b <branch> origin/<base>`) and have the subagent

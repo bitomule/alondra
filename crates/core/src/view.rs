@@ -51,8 +51,21 @@ pub struct View {
     /// of the inbox.
     #[serde(default)]
     pub left_out: std::collections::BTreeSet<String>,
+    /// Agent tool calls waiting for their child to claim its parent's task. The token is
+    /// injected into that specific Agent prompt, so concurrent launches never use FIFO order.
+    #[serde(default)]
+    pub spawn_reservations: BTreeMap<String, SpawnReservation>,
     #[serde(skip)]
     pub(crate) task_pass: crate::tasks::Pass,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SpawnReservation {
+    pub session_id: String,
+    pub task: String,
+    pub at: Millis,
+    pub claimed: bool,
+    pub agent_completed: bool,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -83,6 +96,60 @@ fn is_review(r: &Report) -> bool {
 }
 
 impl View {
+    /// Structural invariants that must survive every committed batch and every snapshot.
+    /// Historical refused task facts are recorded as anomalies; they never change these fields.
+    pub fn integrity_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        for (id, node) in &self.nodes {
+            if node.session_id != *id {
+                issues.push(format!("node {id}: stored session is {}", node.session_id));
+            }
+            if node.ended && (node.alive || node.busy || node.tool.is_some() || node.waiting_permission) {
+                issues.push(format!("node {id}: ended session retains live work signals"));
+            }
+        }
+        for (id, task) in &self.board.tasks {
+            if task.id != *id {
+                issues.push(format!("task {id}: stored id is {}", task.id));
+            }
+            if !self.board.requests.contains_key(&task.request) {
+                issues.push(format!("task {id}: request {} is missing", task.request));
+            }
+            if (task.state == crate::tasks::TaskState::NeedsYou) != task.blocker.is_some() {
+                issues.push(format!("task {id}: blocker disagrees with {}", task.state.name()));
+            }
+            if let Some(blocker) = task.blocker
+                && !self.questions.get(&blocker.question).is_some_and(|q| q.status.is_open())
+            {
+                issues.push(format!("task {id}: blocker question #{} is absent or closed", blocker.question));
+            }
+            if task.awaiting.is_some() && task.state != crate::tasks::TaskState::WaitingDependency {
+                issues.push(format!("task {id}: awaited merge disagrees with {}", task.state.name()));
+            }
+            if let Some(last) = task.history.last()
+                && last.to != task.state
+            {
+                issues.push(format!("task {id}: history ends at {}, stored as {}", last.to.name(), task.state.name()));
+            }
+            for pair in task.history.windows(2) {
+                if pair[0].to != pair[1].from {
+                    issues.push(format!("task {id}: history has a broken transition at {}", pair[1].at));
+                    break;
+                }
+            }
+        }
+        for (token, reservation) in &self.spawn_reservations {
+            if token.is_empty() || reservation.session_id.is_empty() || reservation.task.is_empty()
+            {
+                issues.push("empty subagent spawn reservation".into());
+            }
+            if !token.starts_with(&format!("{}:", reservation.session_id)) || (reservation.claimed && reservation.agent_completed) {
+                issues.push(format!("invalid subagent spawn reservation {token}"));
+            }
+        }
+        issues
+    }
+
     /// Every attachment copy an item Alondra still keeps refers to.
     pub fn stored_files(&self) -> std::collections::HashSet<std::path::PathBuf> {
         let questions = self.questions.values().flat_map(|q| &q.attachments);
@@ -139,6 +206,7 @@ impl View {
         self.approved_artifacts.retain(|_, at| *at >= before);
         self.removed.retain(|_, at| *at >= before);
         self.launched_sessions.retain(|_, at| *at >= before);
+        self.spawn_reservations.retain(|_, r| r.at >= before);
         let keep = self.tasks_to_keep();
         self.board.prune(before, |t| keep.contains(&t.id));
         let board = &self.board.requests;
@@ -152,38 +220,48 @@ impl View {
         {
             return;
         }
+        if let Event::Hook(h) = event
+            && !matches!(h.event.as_str(), "SessionStart" | "Stop" | "StopFailure")
+            && self.nodes.get(&h.session_id).is_some_and(|n| n.ended)
+        {
+            return;
+        }
+        // A session may have restarted with another PID before the old process's exit reaches
+        // us. Its questions and task blockers belong to the current process, too.
+        if let Event::ProcessExited { session_id, pid } = event
+            && self.nodes.get(session_id).and_then(|n| n.pid).is_some_and(|current| current != *pid)
+        {
+            return;
+        }
         let before = self.before_tasks(event);
         let touched = match event {
             Event::Hook(h) => {
                 self.apply_hook(at, h);
                 self.note_activity(at, h);
-                Some((h.session_id.clone(), Trigger::Hook))
+                if h.event == "SessionEnd" {
+                    self.orphan_runtime_questions(&h.session_id);
+                }
+                Some((h.session_id.clone(), if h.event == "SessionEnd" { Trigger::ProcessExit } else { Trigger::Hook }))
             }
             Event::DaemonSeen(d) => {
                 self.apply_daemon(at, d);
                 Some((d.session_id.clone(), Trigger::Daemon))
             }
-            Event::ProcessExited { session_id, pid } => {
+            Event::ProcessExited { session_id, .. } => {
+                self.spawn_reservations.retain(|_, r| r.session_id != *session_id);
                 let node = self.node_mut(session_id, at);
-                if node.pid == Some(*pid) || node.pid.is_none() {
-                    node.alive = false;
-                    node.busy = false;
-                    node.tool = None;
-                    node.waiting_permission = false;
-                    node.exited_at = Some(at);
-                    node.ledger.on_exit(at);
-                }
-                for q in self.questions.values_mut() {
-                    if &q.session_id == session_id
-                        && q.status.is_open()
-                        && q.origin != QuestionOrigin::Ask
-                    {
-                        q.status = QuestionStatus::Orphaned;
-                    }
-                }
+                node.alive = false;
+                node.ended = true;
+                node.busy = false;
+                node.tool = None;
+                node.waiting_permission = false;
+                node.exited_at = Some(at);
+                node.ledger.on_exit(at);
+                self.orphan_runtime_questions(session_id);
                 Some((session_id.clone(), Trigger::ProcessExit))
             }
             Event::NodeRemoved { session_id } => {
+                self.spawn_reservations.retain(|_, r| r.session_id != *session_id);
                 self.nodes.remove(session_id);
                 self.removed.insert(session_id.clone(), at);
                 for q in self.questions.values_mut() {
@@ -476,6 +554,14 @@ impl View {
         }
     }
 
+    fn orphan_runtime_questions(&mut self, session_id: &str) {
+        for q in self.questions.values_mut() {
+            if q.session_id == session_id && q.status.is_open() && q.origin != QuestionOrigin::Ask {
+                q.status = QuestionStatus::Orphaned;
+            }
+        }
+    }
+
     /// Whether time alone has changed what some node shows, so a sweep at `now` has to record
     /// an `Event::Clock`.
     pub fn due(&self, now: Millis, machine_strained: bool) -> bool {
@@ -560,6 +646,54 @@ impl View {
     }
 
     fn apply_hook(&mut self, at: Millis, h: &HookEvent) {
+        if h.event == "PreToolUse"
+            && let (Some(token), Some(task)) = (&h.spawn_token, &h.spawn_task)
+        {
+            self.spawn_reservations.insert(
+                token.clone(),
+                SpawnReservation {
+                    session_id: h.session_id.clone(),
+                    task: task.clone(),
+                    at,
+                    claimed: false,
+                    agent_completed: false,
+                },
+            );
+        }
+        if h.event == "PostToolUse"
+            && let Some(token) = &h.claim_token
+        {
+            if let Some(r) = self.spawn_reservations.get_mut(token) {
+                r.claimed = true;
+                if r.agent_completed {
+                    self.spawn_reservations.remove(token);
+                }
+            }
+        }
+        if h.event == "PostToolUse"
+            && h.tool_name.as_deref() == Some("Agent")
+            && let Some(id) = &h.tool_use_id
+            && let Some(r) = self
+                .spawn_reservations
+                .get_mut(&format!("{}:{id}", h.session_id))
+        {
+            r.agent_completed = true;
+            if r.claimed {
+                self.spawn_reservations
+                    .remove(&format!("{}:{id}", h.session_id));
+            }
+        }
+        if (h.event == "PostToolUseFailure" || (h.event == "PermissionDenied" && !h.local_denial))
+            && h.tool_name.as_deref() == Some("Agent")
+            && let Some(id) = &h.tool_use_id
+        {
+            self.spawn_reservations
+                .remove(&format!("{}:{id}", h.session_id));
+        }
+        if matches!(h.event.as_str(), "SessionStart" | "SessionEnd") {
+            self.spawn_reservations
+                .retain(|_, r| r.session_id != h.session_id);
+        }
         let handed: Vec<u64> = self
             .messages
             .values()
@@ -579,17 +713,42 @@ impl View {
             node.menu_waiting = None;
         }
         node.has_plugin = true;
-        node.alive = true;
+        node.alive = h.event != "SessionEnd" && (h.event == "SessionStart" || !node.ended);
         node.last_seen = at;
-        if h.cwd.is_some() && (!node.in_daemon || node.cwd.is_none()) {
+        if h.cwd.is_some() && (h.event == "CwdChanged" || !node.in_daemon || node.cwd.is_none()) {
             node.cwd = h.cwd.clone();
         }
-        if matches!(h.event.as_str(), "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
+        if !matches!(h.event.as_str(), "SessionEnd" | "Stop" | "StopFailure" | "SubagentStop" | "Notification" | "MessageDisplay") {
             node.last_work_at = Some(at);
         }
         match h.event.as_str() {
-            "SessionStart" => {
+            "SessionEnd" => {
+                node.ended = true;
                 node.busy = false;
+                node.tool = None;
+                node.waiting_permission = false;
+                node.ledger.on_exit(at);
+                node.exited_at = Some(at);
+            }
+            "SessionStart" => {
+                node.ended = false;
+                node.exited_at = None;
+                node.busy = false;
+                node.tool = None;
+            }
+            "PermissionDenied" => {
+                node.waiting_permission = false;
+                if h.agent_id.is_none() && node.tool.as_ref().is_some_and(|tool|
+                    match h.tool_use_id.as_deref() {
+                        Some(id) => tool.tool_use_id.as_deref() == Some(id),
+                        None => h.tool_name.as_deref() == Some(tool.name.as_str()),
+                    }
+                ) {
+                    node.tool = None;
+                }
+            }
+            "ElicitationResult" => {
+                node.waiting_permission = false;
                 node.tool = None;
             }
             "PostCompact" => {
@@ -680,7 +839,11 @@ impl View {
             node.cwd = d.cwd.clone();
         }
         node.in_daemon = true;
-        node.alive = d.pid.is_some();
+        if d.pid.is_some() && d.pid != node.pid {
+            node.ended = false;
+            node.exited_at = None;
+        }
+        node.alive = d.pid.is_some() && !node.ended;
         if d.pid.is_some() {
             node.pid = d.pid;
         }
@@ -1014,6 +1177,37 @@ mod tests {
     use super::*;
     use crate::model::{Answer, NodeState, OrchestratorState, QuestionOrigin};
 
+    #[test]
+    fn integrity_audit_rejects_corrupt_task_holding_fields() {
+        let mut v = View::default();
+        v.apply(1, 1, &Event::TaskCreated(crate::tasks::NewTask {
+            id: "t-1".into(), request: "r-1".into(), title: "Task".into(), brief: None,
+            depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
+            launched: false, launched_as: None, start: None,
+        }));
+        assert!(v.integrity_issues().is_empty());
+        v.board.tasks.get_mut("t-1").unwrap().state = crate::tasks::TaskState::NeedsYou;
+        assert!(v.integrity_issues().iter().any(|i| i.contains("blocker disagrees")));
+    }
+
+    #[test]
+    fn hooks_name_an_exact_task_or_every_open_candidate() {
+        let mut v = View::default();
+        for (seq, id) in [(1, "t-a"), (2, "t-b")] {
+            v.apply(seq, seq as i64, &Event::TaskCreated(crate::tasks::NewTask {
+                id: id.into(), request: "r-1".into(), title: id.into(), brief: None,
+                depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
+                launched: false, launched_as: None, start: None,
+            }));
+        }
+        assert_eq!(v.hook_task_ids("s", None, None), vec!["t-a", "t-b"]);
+        assert_eq!(v.hook_task_ids("s", None, Some("t-b")), vec!["t-b"]);
+        assert_eq!(v.hook_task_ids("s", None, Some("not-mine")), vec!["t-a", "t-b"]);
+        v.board.tasks.get_mut("t-a").unwrap().state = crate::tasks::TaskState::Done;
+        v.board.tasks.get_mut("t-b").unwrap().state = crate::tasks::TaskState::Done;
+        assert!(v.hook_task_ids("s", None, None).is_empty());
+    }
+
     /// A node from a snapshot older than `created_at` gets `state_since` as a stand-in, so it
     /// still sorts as older than anything created after the upgrade; a node that already has a
     /// real `created_at` is left alone.
@@ -1117,6 +1311,17 @@ mod tests {
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 42 });
         assert!(!v.nodes["s"].alive);
         assert_ne!(v.nodes["s"].state, NodeState::Working);
+    }
+
+    #[test]
+    fn exit_of_old_pid_does_not_orphan_current_process_question() {
+        let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Permission))]);
+        v.nodes.get_mut("s").unwrap().pid = Some(43);
+        let before = v.board.tasks.clone();
+        v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 42 });
+        assert!(v.nodes["s"].alive);
+        assert_eq!(v.questions[&1].status, QuestionStatus::Open);
+        assert_eq!(v.board.tasks, before, "a stale exit must not settle a task blocker");
     }
 
     #[test]
@@ -1231,6 +1436,54 @@ mod tests {
         ]);
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 0 });
         assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
+    }
+
+    #[test]
+    fn session_end_orphans_runtime_questions_but_keeps_deliberate_asks() {
+        let mut v = run(&[
+            hook("s", "UserPromptSubmit"),
+            Event::QuestionAsked(question(1, "s", QuestionOrigin::Permission)),
+            Event::QuestionAsked(question(2, "s", QuestionOrigin::Ask)),
+        ]);
+        v.apply(4, 4000, &hook("s", "SessionEnd"));
+        assert!(!v.nodes["s"].alive);
+        assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
+        assert_eq!(v.questions[&2].status, QuestionStatus::Open);
+    }
+
+    #[test]
+    fn session_end_settles_a_recorded_tasks_orphaned_permission_blocker() {
+        let mut v = View::default();
+        v.apply(1, 1, &Event::TasksRecorded);
+        v.record(2, &Event::TaskCreated(crate::tasks::NewTask {
+            id: "t-s".into(), request: "r-s".into(), title: "Task".into(), brief: None,
+            depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
+            launched: false, launched_as: None, start: None,
+        }));
+        v.record(3, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Permission)));
+        assert_eq!(v.board.tasks["t-s"].state, crate::tasks::TaskState::NeedsYou);
+        v.record(4, &hook("s", "SessionEnd"));
+        assert_eq!(v.questions[&1].status, QuestionStatus::Orphaned);
+        assert_ne!(v.board.tasks["t-s"].state, crate::tasks::TaskState::NeedsYou, "{:?}", v.board.tasks["t-s"]);
+        assert!(v.board.tasks["t-s"].blocker.is_none());
+        assert!(v.integrity_issues().is_empty());
+    }
+
+    #[test]
+    fn late_hook_and_same_pid_sighting_cannot_revive_ended_session() {
+        let mut v = run(&[hook("s", "SessionStart")]);
+        v.nodes.get_mut("s").unwrap().pid = Some(42);
+        v.apply(2, 2000, &hook("s", "SessionEnd"));
+        let after_end = v.nodes["s"].clone();
+        v.apply(3, 3000, &hook("s", "InstructionsLoaded"));
+        assert_eq!(v.nodes["s"], after_end);
+        v.apply(4, 4000, &Event::DaemonSeen(DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(42), ..Default::default() }));
+        assert!(!v.nodes["s"].alive);
+        v.apply(5, 4500, &hook("s", "Stop"));
+        assert!(!v.nodes["s"].alive, "a late completion can reset the retry streak without resurrecting the process");
+        v.apply(6, 5000, &hook("s", "SessionStart"));
+        assert!(v.nodes["s"].alive);
+        assert!(!v.nodes["s"].ended);
     }
 
     #[test]
