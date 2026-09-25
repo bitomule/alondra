@@ -25,6 +25,7 @@ use std::{
 
 // Base64 adds ~33%; 180 KiB plus envelope metadata stays below the relay's 256 KiB cap.
 const MAX_LOCAL_RESPONSE: usize = 180 * 1024;
+const MAX_RELAY_RESPONSE: usize = 256 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -407,22 +408,35 @@ impl Service {
         device: &Device,
         result: &Value,
     ) -> Result<Vec<u8>> {
-        let payload = serde_json::to_vec(result)?;
-        let envelope = EnvelopeV1::seal_random(
-            EnvelopeContext {
-                route: &self.mac_id,
-                sender: &self.mac_id,
-                recipient: &request.sender,
-                request_id: &request.request_id,
-                kind: "response",
-                expires_at_ms: now_ms() + 600_000,
-            },
-            &payload,
-            &self.signing,
-            &device.agreement,
-        )
-        .map_err(|error| anyhow!("seal response: {error}"))?;
-        Ok(serde_json::to_vec(&envelope)?)
+        let seal = |value: &Value| -> Result<Vec<u8>> {
+            let payload = serde_json::to_vec(value)?;
+            let envelope = EnvelopeV1::seal_random(
+                EnvelopeContext {
+                    route: &self.mac_id,
+                    sender: &self.mac_id,
+                    recipient: &request.sender,
+                    request_id: &request.request_id,
+                    kind: "response",
+                    expires_at_ms: now_ms() + 600_000,
+                },
+                &payload,
+                &self.signing,
+                &device.agreement,
+            )
+            .map_err(|error| anyhow!("seal response: {error}"))?;
+            Ok(serde_json::to_vec(&envelope)?)
+        };
+        let bytes = seal(result)?;
+        if bytes.len() <= MAX_RELAY_RESPONSE {
+            return Ok(bytes);
+        }
+        // A JSON string containing many escaped bytes can expand far beyond the
+        // raw local response cap. Persist a small encrypted error as the receipt.
+        let fallback = seal(&json!({"status":502,"error":"response_too_large","detail":"Mac response exceeded the encrypted relay limit; an action may already have completed"}))?;
+        if fallback.len() > MAX_RELAY_RESPONSE {
+            bail!("encrypted fallback response exceeds relay limit");
+        }
+        Ok(fallback)
     }
 
     async fn dispatch(&self, request: &LocalRequest) -> Result<Value> {
@@ -432,19 +446,24 @@ impl Service {
         if let Some(body) = &request.body {
             builder = builder.json(body);
         }
-        let mut response = builder.send().await?;
+        let response = builder.send().await?;
         let status = response.status().as_u16();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
-                bail!("local response exceeds encrypted relay limit");
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = bounded_response(response).await?;
         let body = serde_json::from_slice::<Value>(&bytes)
             .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}));
         Ok(json!({"status":status,"body":body}))
     }
+}
+
+async fn bounded_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
+            bail!("local response exceeds encrypted relay limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 fn id(s: &str) -> bool {
@@ -525,7 +544,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
 }
 
 fn single_query(query: &str, key: &str, max_value_bytes: usize) -> bool {
-    // Reject ambiguous/double encoded query values and all extra parameters.
+    // Accept exactly one named parameter; the local handler validates its decoded value.
     let mut pairs = url::form_urlencoded::parse(query.as_bytes());
     matches!(pairs.next(), Some((k, v)) if k == key && !v.is_empty() && v.len() <= max_value_bytes)
         && pairs.next().is_none()
@@ -703,7 +722,7 @@ mod tests {
         body::Bytes,
         extract::State,
         http::HeaderMap,
-        routing::{delete, post},
+        routing::{delete, get, post},
     };
     use base64::engine::general_purpose::STANDARD;
     use std::sync::{
@@ -752,6 +771,25 @@ mod tests {
         ] {
             assert!(!accepts(method, path, body), "{method} {path}");
         }
+    }
+
+    #[tokio::test]
+    async fn local_response_stops_at_encrypted_relay_boundary() {
+        let exact = format!("{{\"x\":\"{}\"}}", "a".repeat(MAX_LOCAL_RESPONSE - 8));
+        assert_eq!(exact.len(), MAX_LOCAL_RESPONSE);
+        let too_large = format!("{exact} ");
+        let router = Router::new()
+            .route("/exact", get(move || async move { exact.clone() }))
+            .route("/large", get(move || async move { too_large.clone() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(axum::serve(listener, router).into_future());
+        let client = Client::new();
+        let exact = client.get(format!("http://127.0.0.1:{port}/exact")).send().await.unwrap();
+        assert_eq!(bounded_response(exact).await.unwrap().len(), MAX_LOCAL_RESPONSE);
+        let large = client.get(format!("http://127.0.0.1:{port}/large")).send().await.unwrap();
+        assert!(bounded_response(large).await.unwrap_err().to_string().contains("encrypted relay limit"));
+        task.abort();
     }
     #[test]
     fn durable_receipt_rejects_changed_bytes_and_never_reruns_executing() {
@@ -1056,6 +1094,14 @@ mod tests {
             &service.agreement.public_key(),
         )
         .unwrap();
+        let oversized = service.encode_response(&e, service.devices.get("phone-1").unwrap(),
+            &json!({"status":200,"body":{"text":"\u{0}".repeat(MAX_LOCAL_RESPONSE)}})).unwrap();
+        assert!(oversized.len() <= MAX_RELAY_RESPONSE);
+        let oversized_envelope: EnvelopeV1 = serde_json::from_slice(&oversized).unwrap();
+        let opened = oversized_envelope.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+        let error: Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(error["error"], "response_too_large");
         let work = || Work {
             request_id: "op-1".into(),
             envelope: e.clone(),
