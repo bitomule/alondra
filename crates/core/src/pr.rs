@@ -111,6 +111,9 @@ pub struct PullRequest {
     /// The task it belongs to; PRs recorded before tasks named one belong to their session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// When Alondra learned it was merged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<Millis>,
 }
 
 impl PullRequest {
@@ -143,6 +146,7 @@ impl PullRequest {
             auto_merge: false,
             draft: false,
             task: None,
+            merged_at: None,
         })
     }
 

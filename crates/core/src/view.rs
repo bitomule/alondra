@@ -192,6 +192,7 @@ impl View {
                 if q.blocking && q.origin == QuestionOrigin::Ask {
                     node.turn_signal = Some(TurnSignal::Asked);
                     node.signal_at = Some(at);
+                    node.signal_task = q.task.clone();
                 }
                 let mut q = q.clone();
                 if q.node_name.is_none() {
@@ -229,6 +230,7 @@ impl View {
                 if let Some(signal) = signal {
                     node.turn_signal = Some(signal);
                     node.signal_at = Some(at);
+                    node.signal_task = r.task.clone();
                 }
                 let mut r = r.clone();
                 if r.node_name.is_none() {
@@ -283,6 +285,7 @@ impl View {
                 let node = self.node_mut(session_id, at);
                 node.turn_signal = Some(TurnSignal::WaitingMachine);
                 node.signal_at = Some(at);
+                node.signal_task = None;
                 Some((session_id.clone(), Trigger::Declaration))
             }
             Event::Pruned { before } => {
@@ -320,11 +323,13 @@ impl View {
                     let requested = known.changes_requested_on.take();
                     let (auto_merge, task) = (known.auto_merge, known.task.take());
                     let head_seen_at = if known.head_sha == pr.head_sha { known.head_seen_at } else { pr.head_sha.as_ref().map(|_| at) };
+                    let merged_at = (pr.state == crate::pr::PrState::Merged).then(|| known.merged_at.or(pr.merged_at).unwrap_or(at));
                     *known = pr.clone();
                     known.head_seen_at = head_seen_at;
                     known.changes_requested_on = requested;
                     known.auto_merge = auto_merge;
                     known.task = task.or(known.task.take());
+                    known.merged_at = merged_at;
                     if dismissed {
                         known.state = crate::pr::PrState::Dismissed;
                     }
@@ -338,6 +343,7 @@ impl View {
                 self.read_reports_in(*id, at);
                 if let Some(pr) = self.prs.get_mut(id) {
                     pr.state = crate::pr::PrState::Merged;
+                    pr.merged_at.get_or_insert(at);
                     self.merge_methods.insert(pr.repo.clone(), *method);
                 }
                 self.withdraw_questions_about(*id);
@@ -870,10 +876,15 @@ impl View {
         })
     }
 
-    /// Alondra's notice that a PR the node opened was merged: the node still has to act on it.
+    /// Alondra's notice that a PR the node opened, or one a task of the node depends on, was
+    /// merged: the node still has to act on it.
     pub fn is_merge_notice(&self, m: &Message) -> bool {
-        let Some(crate::model::MessageAbout::PrMerged { pr_id }) = m.about else { return false };
-        self.prs.get(&pr_id).is_some_and(|p| p.session_id == m.session_id && p.state == crate::pr::PrState::Merged)
+        let Some(crate::model::MessageAbout::PrMerged { pr_id, task }) = &m.about else { return false };
+        let for_node = |p: &crate::pr::PullRequest| match task {
+            None => p.session_id == m.session_id,
+            Some(t) => self.board.tasks.get(t).is_some_and(|t| t.is_assigned_to(&m.session_id)),
+        };
+        self.prs.get(pr_id).is_some_and(|p| for_node(p) && p.state == crate::pr::PrState::Merged)
     }
 
     /// A merge notice still on its way to the node: it waits for the merge until the notice lands.

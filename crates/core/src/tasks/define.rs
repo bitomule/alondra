@@ -145,7 +145,8 @@ impl View {
         let branch = |p: &PullRequest| heads.get(&p.id).cloned().or_else(|| p.head.clone());
         let below = self.stacked_on(task);
         let described: Vec<String> = below.iter().map(|(d, p)| format!("{} “{}” (PR #{}, {})", d.id, d.title, p.number, p.url)).collect();
-        Some(match below.as_slice() {
+        let merge_notice = " If what is left of your task needs that merge, end your turn when you get there: the merge notice is typed into this session, naming your task.";
+        let note = match below.as_slice() {
             [] => format!("The tasks it comes after ({}) have no PR waiting: start from the default branch, up to date.", task.depends_on.join(", ")),
             [(_, p)] => match branch(p) {
                 Some(b) => format!(
@@ -167,7 +168,8 @@ impl View {
                     branch(first).map(|b| format!("`{b}`")).unwrap_or_else(|| "that branch".into())
                 )
             }
-        })
+        };
+        Some(if below.is_empty() { note } else { note + merge_notice })
     }
 
     /// What a node is told when Alondra starts a task on it: the orchestrator's brief, which task
@@ -418,6 +420,7 @@ mod tests {
         let brief = d.view.start_brief(&d.view.board.tasks["t-b"], &BTreeMap::new());
         assert!(brief.starts_with("Build t-b.\n\n## Task t-b in Alondra"), "{brief}");
         assert!(brief.contains("Base your work on its branch `feat/model`") && brief.contains("gh pr create --base feat/model") && brief.contains("Your PR merges after PR #7."), "{brief}");
+        assert!(brief.contains("the merge notice is typed into this session, naming your task"), "{brief}");
         assert_eq!(d.view.task_guards(&d.view.board.tasks["t-b"]).unmerged_dependency, Some(7), "its PR merges after t-a's");
 
         let replayed = d.replayed();

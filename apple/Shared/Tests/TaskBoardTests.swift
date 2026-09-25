@@ -319,6 +319,22 @@ import Testing
         #expect(store.now(for: waiting) == nil, "no “after …” line: the tree already shows what it waits for")
     }
 
+    /// t-44137, the Redraft beta, started on PR #264 of t-44136 and had nothing left but its merge.
+    @MainActor @Test func aStartedTaskWaitingForAMergeSaysWhichPR() throws {
+        let fix = #"{"id":"t-44136","request":"r-1","title":"PhotoKit off the pool","state":"in_review","prs":[1],"state_since":1,"created_at":1,"recorded":true}"#
+        let beta = #"{"id":"t-44137","request":"r-1","title":"Beta 192","state":"waiting_dependency","depends_on":["t-44136"],"awaiting":1,"state_since":2,"created_at":1,"recorded":true}"#
+        let pr = #"{"id":1,"url":"https://github.com/acmecorp-private/Redraft/pull/264","repo":"acmecorp-private/Redraft","number":264,"session_id":"s1","title":"Run Home's PhotoKit calls off the pool","opened_at":1,"state":"open","additions":0,"deletions":0,"changed_files":0,"checks":[],"merge_methods":["merge"],"task":"t-44136"}"#
+        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-44136","t-44137"]}]"#
+        let store = FleetStore()
+        store.apply(try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"prs":[\#(pr)],"requests":\#(requests),"tasks":[\#(fix),\#(beta)]}"#))
+        let waiting = try #require(store.board.task("t-44137"))
+        #expect(waiting.awaiting == 1)
+        #expect(store.now(for: waiting) == "waits for PR #264 to be merged")
+        #expect(store.waitingReason(for: waiting) == "It started, and what is left of it waits for PR #264 of “PhotoKit off the pool” to be merged: it goes on once that PR is merged.")
+        let summary = try Self.decode(#"{"from":"running","to":"waiting_dependency","event":{"kind":"awaits_merge","pr":1},"at":2}"#) as WorkTask.Transition
+        #expect(summary.summary == "the node has nothing left but the merge of a PR it builds on")
+    }
+
     @Test func aRequestTheOrchestratorLeftDefiningSaysItHasNoTasks() throws {
         let now = Date(timeIntervalSince1970: 10_000)
         let sent = { (minutesAgo: Int64) throws -> WorkRequest in try Self.asked("r", tasks: [], state: "defining", created: 10_000_000 - minutesAgo * 60_000) }
