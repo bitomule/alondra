@@ -167,6 +167,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let links: [LinkRef]
     public let attachments: [Attachment]
     public let origin: String
+    /// `menu:<short>` identifies a terminal menu. Its answer accepts only an exact option.
+    public let toolUseId: String?
     public let nodeContext: String?
     public let status: String
     public let askedAt: Int64
@@ -191,6 +193,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }
+
+    public var isTerminalMenu: Bool { toolUseId?.hasPrefix("menu:") == true }
 
     /// The steps numbered ahead of the detail, so every client reads an action the same way.
     public var readableDetail: String? {
