@@ -217,7 +217,115 @@ import Testing
         let board = TaskBoard(requests: [try Self.request("r-1", tasks: tasks.map(\.id)), try Self.request("r-2", tasks: [], state: "defining")], tasks: tasks)
         #expect(board.groups.map(\.kind) == [.task(.needsYou), .task(.inReview), .task(.running), .defining, .task(.done)])
         #expect(board.openCount == 4)
-        #expect(board.openTrees.map(\.id) == ["r-2", "r-1"])
+        #expect(board.openTrees.map(\.id) == ["r-1", "r-2"], "r-1's tasks moved after r-2 was sent")
+    }
+
+    private static func work(_ id: String, request: String, title: String? = nil, state: String = "running", at: Int64, recorded: Bool = true, session: String? = nil, prs: [Int] = [], dependsOn: [String] = [], lastChange: Int64? = nil) throws -> WorkTask {
+        let assignee = session.map { #","assignee":{"session_id":"\#($0)"}"# } ?? ""
+        let change = lastChange.map { #","last_change":\#($0)"# } ?? ""
+        let deps = dependsOn.map { #""\#($0)""# }.joined(separator: ",")
+        let numbers = prs.map(String.init).joined(separator: ",")
+        return try decode(#"{"id":"\#(id)","request":"\#(request)","title":"\#(title ?? "Task \(id)")","state":"\#(state)","state_since":\#(at),"created_at":\#(at),"recorded":\#(recorded),"prs":[\#(numbers)],"depends_on":[\#(deps)]\#(assignee)\#(change)}"#)
+    }
+
+    private static func asked(_ id: String, tasks: [String], state: String = "in_progress", synthetic: Bool = false, created: Int64 = 1, title: String? = nil, closedAt: Int64? = nil) throws -> WorkRequest {
+        let ids = tasks.map { #""\#($0)""# }.joined(separator: ",")
+        let named = title.map { #","title":"\#($0)""# } ?? ""
+        let closed = closedAt.map { #","closed":{"at":\#($0)}"# } ?? ""
+        return try decode(#"{"id":"\#(id)","text":"Do the thing","created_at":\#(created),"state":"\#(state)","synthetic":\#(synthetic),"tasks":[\#(ids)]\#(named)\#(closed)}"#)
+    }
+
+    /// t-44370: the lists showed every probe session. A node's own task from before tasks were
+    /// recorded is its work as much as a recorded one it took later: both show.
+    @Test func probeSessionsLeaveTheListsAndTheCountsButNothingOfARequestDavidMade() throws {
+        let tasks = [
+            try Self.work("t-new", request: "r-view", at: 100, session: "s1"),
+            try Self.work("t-s1", request: "r-old", title: "alondra/estados-por-tarea", at: 10, recorded: false, session: "s1", prs: [83]),
+            try Self.work("t-shift", request: "r-shift", title: "test/shift-x", state: "cancelled", at: 5, recorded: false),
+            try Self.work("t-inject", request: "r-inject", title: "prompt injection test", state: "cancelled", at: 6, recorded: false),
+            try Self.work("t-rama", request: "r-rama", title: "alondra/rama-main", state: "done", at: 7, recorded: false, prs: [65]),
+            try Self.work("t-gone", request: "r-mine", title: "alondra/abandonada", state: "cancelled", at: 8, recorded: false),
+        ]
+        let requests = [
+            try Self.asked("r-view", tasks: ["t-new"], created: 99),
+            try Self.asked("r-old", tasks: ["t-s1"], created: 9),
+            try Self.asked("r-shift", tasks: ["t-shift"], state: "done", synthetic: true),
+            try Self.asked("r-inject", tasks: ["t-inject"], state: "done", synthetic: true),
+            try Self.asked("r-rama", tasks: ["t-rama"], state: "done", synthetic: true),
+            try Self.asked("r-mine", tasks: ["t-gone"], state: "done"),
+        ]
+        let board = TaskBoard(requests: requests, tasks: tasks)
+        #expect(board.hidden == ["t-shift", "t-inject"])
+        #expect(board.openTrees.map(\.id) == ["r-view", "r-old"])
+        #expect(board.doneTrees.map(\.id) == ["r-mine", "r-rama"], "a session that delivered stays, and so does anything of a request David made")
+        #expect(board.openCount == 2)
+        #expect(board.tasks(onNode: "s1").map(\.id) == ["t-s1", "t-new"])
+        #expect(board.groups.flatMap(\.tasks).map(\.id).sorted() == ["t-gone", "t-new", "t-rama", "t-s1"])
+    }
+
+    @Test func aRequestWithOneTaskIsOneRowUnderTheOrchestratorsTitleOrTheTasks() throws {
+        let tasks = [
+            try Self.work("a", request: "r-titled", at: 1),
+            try Self.work("b", request: "r-two", at: 2),
+            try Self.work("c", request: "r-two", at: 3),
+            try Self.work("d", request: "r-plain", at: 4),
+        ]
+        let board = TaskBoard(
+            requests: [
+                try Self.asked("r-titled", tasks: ["a"], title: "Readable Tasks view"),
+                try Self.asked("r-two", tasks: ["b", "c"], title: "Two parts"),
+                try Self.asked("r-plain", tasks: ["d"]),
+            ],
+            tasks: tasks
+        )
+        #expect(board.rowTitle(of: tasks[0]) == "Readable Tasks view")
+        #expect(board.rowTitle(of: tasks[1]) == "Task b", "the request's title heads its tree, not each row")
+        #expect(board.rowTitle(of: tasks[3]) == "Task d")
+    }
+
+    @Test func openWorkGoesByItsLastChangeAndFinishedWorkTheLastToFinishFirst() throws {
+        let tasks = [
+            try Self.work("a", request: "r-a", at: 50),
+            try Self.work("b", request: "r-b", at: 30, lastChange: 90),
+            try Self.work("x", request: "r-x", state: "done", at: 40),
+            try Self.work("y", request: "r-y", state: "cancelled", at: 70),
+        ]
+        let requests = [
+            try Self.asked("r-a", tasks: ["a"], created: 1),
+            try Self.asked("r-b", tasks: ["b"], created: 2),
+            try Self.asked("r-defining", tasks: [], state: "defining", created: 60),
+            try Self.asked("r-x", tasks: ["x"], state: "done", created: 3),
+            try Self.asked("r-y", tasks: ["y"], state: "done", created: 4),
+            try Self.asked("r-answered", tasks: [], state: "done", created: 5, closedAt: 55),
+        ]
+        let board = TaskBoard(requests: requests, tasks: tasks)
+        #expect(board.openTrees.map(\.id) == ["r-b", "r-defining", "r-a"])
+        #expect(board.doneTrees.map(\.id) == ["r-y", "r-answered", "r-x"])
+        #expect(board.doneTrees.first?.isCancelled == true, "every task of it was cancelled: it does not read as done")
+    }
+
+    @MainActor @Test func aWaitingTaskReadsWaitingWithAnArrowWhenItWaitsInAnotherRequest() throws {
+        func task(_ id: String, _ request: String, _ state: String, _ deps: String) -> String {
+            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"\#(state)","depends_on":[\#(deps)],"state_since":1,"created_at":1,"recorded":true}"#
+        }
+        let tasks = [task("t-1", "r-1", "running", ""), task("t-2", "r-1", "waiting_dependency", #""t-1""#), task("t-3", "r-2", "waiting_dependency", #""t-1""#)]
+        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-1","t-2"]},{"id":"r-2","created_at":1,"state":"in_progress","tasks":["t-3"]}]"#
+        let store = FleetStore()
+        store.apply(try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":\#(requests),"tasks":[\#(tasks.joined(separator: ","))]}"#))
+        let waiting = try #require(store.board.task("t-2"))
+        let elsewhere = try #require(store.board.task("t-3"))
+        #expect(store.board.stateLabel(of: waiting) == "waiting")
+        #expect(store.board.stateLabel(of: elsewhere) == "waiting ↗")
+        #expect(store.now(for: waiting) == nil, "no “after …” line: the tree already shows what it waits for")
+    }
+
+    @Test func aRequestTheOrchestratorLeftDefiningSaysItHasNoTasks() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let sent = { (minutesAgo: Int64) throws -> WorkRequest in try Self.asked("r", tasks: [], state: "defining", created: 10_000_000 - minutesAgo * 60_000) }
+        #expect(try sent(1).isLeftDefining(now: now) == false)
+        #expect(try sent(1).definingLabel(now: now) == "defining")
+        #expect(try sent(11).isLeftDefining(now: now))
+        #expect(try sent(11).definingLabel(now: now) == "no tasks")
     }
 
     @Test func archivedAtIsReadWhenSentAndOptionalOtherwise() throws {
@@ -245,7 +353,7 @@ import Testing
             try Self.request("r-4", tasks: [], state: "done", archivedAt: 9),
         ]
         let board = TaskBoard(requests: requests, tasks: tasks)
-        #expect(board.activeTrees.map(\.id) == ["r-3", "r-2"])
+        #expect(board.activeTrees.map(\.id) == ["r-2", "r-3"], "what is open comes before what finished")
         #expect(board.activeTrees.first { $0.id == "r-2" }?.rows.map(\.id) == ["run"])
         #expect(board.archivedTrees.map(\.id) == ["r-4", "r-2", "r-1"])
         #expect(board.archivedTrees.first { $0.id == "r-2" }?.rows.map(\.id) == ["old"])
