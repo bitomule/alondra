@@ -35,6 +35,7 @@ struct Server {
 fn router(server: Arc<Server>) -> Router {
     Router::new()
         .route("/healthz", get(health))
+        .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
@@ -54,6 +55,16 @@ fn router(server: Arc<Server>) -> Router {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"ok":true})))
+}
+async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
+    if server.auth.jwks_ready() {
+        (StatusCode::OK, Json(json!({"ready":true})))
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ready":false})),
+        )
+    }
 }
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
     (
@@ -571,6 +582,7 @@ mod http_tests {
             issuer: "https://id.example/realms/alondra".into(),
             audience: "alondra-relay".into(),
             jwks_url: "http://127.0.0.1:1/jwks".into(),
+            allow_internal_http_jwks: false,
             owner_sub: "owner".into(),
             mac_id: "mac-1".into(),
             mac_signing_key: key_bytes(mac_key),
@@ -1084,6 +1096,7 @@ mod http_tests {
             issuer: "https://id.example/realms/alondra".into(),
             audience: "alondra-relay".into(),
             jwks_url,
+            allow_internal_http_jwks: false,
             owner_sub: "owner".into(),
             mac_id: "mac-1".into(),
             mac_signing_key: key_bytes(&mac_key),

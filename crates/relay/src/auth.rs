@@ -26,6 +26,9 @@ pub struct Config {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: String,
+    /// Permit the Docker-only Keycloak service URL on the isolated pilot network.
+    #[serde(default)]
+    pub allow_internal_http_jwks: bool,
     pub owner_sub: String,
     pub mac_id: String,
     /// SEC1 uncompressed P-256 public key, base64url without padding.
@@ -99,8 +102,12 @@ impl Auth {
         }
         if !config.jwks_url.starts_with("https://")
             && !config.jwks_url.starts_with("http://127.0.0.1:")
+            && !(config.allow_internal_http_jwks
+                && config.jwks_url.starts_with("http://keycloak:8080/"))
         {
-            bail!("JWKS URL must use HTTPS (localhost allowed for tests)");
+            bail!(
+                "JWKS URL must use HTTPS, loopback, or explicitly allowed pilot Keycloak network"
+            );
         }
         verifying_key(&config.mac_signing_key).context("invalid bootstrap Mac signing key")?;
         let jwks = fetch_jwks(&config.jwks_url).await?;
@@ -265,6 +272,10 @@ impl Auth {
 
     pub fn server_epoch(&self) -> [u8; 16] {
         self.verifier.lock().unwrap().server_epoch()
+    }
+
+    pub fn jwks_ready(&self) -> bool {
+        self.jwks.read().unwrap().refreshed_at.elapsed() <= JWKS_MAX_AGE
     }
 
     /// Replace the complete key set; removed Keycloak keys stop validating immediately.
@@ -460,6 +471,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let parent = path
         .parent()
         .context("device registry needs a parent directory")?;
@@ -471,6 +483,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .create(true)
         .truncate(true)
         .open(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
