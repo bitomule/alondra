@@ -1988,4 +1988,157 @@ mod http_tests {
         );
         handle.abort();
     }
+    #[tokio::test]
+    async fn registry_schema_guard_rejects_rollback_and_ambiguous_bindings() {
+        let pilot_key = SigningKey::from_slice(&[71u8; 32]).unwrap();
+        let second_key = SigningKey::from_slice(&[72u8; 32]).unwrap();
+        let (url, server, handle) = test_server(&pilot_key).await;
+        let config = server.auth.config.clone();
+        let pilot = auth::Identity {
+            device_id: "mac-1".into(),
+            owner_sub: "owner".into(),
+        };
+        server
+            .auth
+            .enroll(
+                &pilot,
+                PhoneDevice {
+                    device_id: "phone-pilot".into(),
+                    owner_sub: "owner".into(),
+                    signing_key: key_bytes(&second_key),
+                },
+            )
+            .unwrap();
+        let second = auth::MacDevice {
+            mac_id: "mac-second".into(),
+            owner_sub: "other".into(),
+            signing_key: key_bytes(&second_key),
+            agreement_key: key_bytes(&second_key),
+        };
+        server.auth.enroll_mac(second).unwrap();
+        let guarded: Value =
+            serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+        assert_eq!(guarded["schema_version"], 2);
+        assert_eq!(guarded["phone_macs"]["phone-pilot"], "mac-1");
+        assert!(
+            config
+                .device_registry_path
+                .with_extension("schema-v2")
+                .exists()
+        );
+
+        // The one-Mac pilot format can be upgraded without guessing a route.
+        let mut legacy = config.clone();
+        legacy.device_registry_path = config.device_registry_path.with_extension("pilot.json");
+        let old_phone = PhoneDevice {
+            device_id: "phone-old".into(),
+            owner_sub: "owner".into(),
+            signing_key: key_bytes(&second_key),
+        };
+        std::fs::write(
+            &legacy.device_registry_path,
+            serde_json::to_vec(&json!({
+                "devices":[old_phone], "revoked_ids":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let upgraded = Auth::test(
+            legacy.clone(),
+            include_bytes!("../tests/fixtures/jwks.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            upgraded.paired_mac_for_phone("phone-old", "owner").unwrap(),
+            "mac-1"
+        );
+        let upgraded_disk: Value =
+            serde_json::from_slice(&std::fs::read(&legacy.device_registry_path).unwrap()).unwrap();
+        assert_eq!(upgraded_disk["schema_version"], 2);
+        assert_eq!(upgraded_disk["phone_macs"]["phone-old"], "mac-1");
+        assert!(
+            legacy
+                .device_registry_path
+                .with_extension("schema-v2")
+                .exists()
+        );
+
+        // A multi-Mac v1 registry with a missing phone binding cannot be guessed.
+        let mut ambiguous = guarded.clone();
+        ambiguous.as_object_mut().unwrap().remove("schema_version");
+        ambiguous["phone_macs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("phone-pilot");
+        let mut imported = config.clone();
+        imported.device_registry_path =
+            config.device_registry_path.with_extension("ambiguous.json");
+        std::fs::write(
+            &imported.device_registry_path,
+            serde_json::to_vec(&ambiguous).unwrap(),
+        )
+        .unwrap();
+        assert!(Auth::test(imported, include_bytes!("../tests/fixtures/jwks.json")).is_err());
+
+        // A rolled-back binary discards unknown v2 fields; the separate guard survives.
+        let mut downgraded = guarded;
+        for field in ["schema_version", "phone_macs", "macs", "revoked_mac_ids"] {
+            downgraded.as_object_mut().unwrap().remove(field);
+        }
+        std::fs::write(
+            &config.device_registry_path,
+            serde_json::to_vec(&downgraded).unwrap(),
+        )
+        .unwrap();
+        assert!(Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).is_err());
+        handle.abort();
+        drop(url);
+    }
+
+    #[tokio::test]
+    async fn post_rename_sync_failure_poison_blocks_auth_until_restart() {
+        let pilot_key = SigningKey::from_slice(&[73u8; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[74u8; 32]).unwrap();
+        let (_url, server, handle) = test_server(&pilot_key).await;
+        let config = server.auth.config.clone();
+        let phone = PhoneDevice {
+            device_id: "phone-after-rename".into(),
+            owner_sub: "owner".into(),
+            signing_key: key_bytes(&phone_key),
+        };
+        *auth::FAIL_AFTER_RENAME_PATH.lock().unwrap() = Some(config.device_registry_path.clone());
+        assert!(
+            server
+                .auth
+                .enroll(
+                    &auth::Identity {
+                        device_id: "mac-1".into(),
+                        owner_sub: "owner".into()
+                    },
+                    phone
+                )
+                .is_err()
+        );
+        assert!(!server.auth.jwks_ready());
+        assert!(server.auth.mac_key("mac-1").is_err());
+        assert!(server.auth.phone_key("phone-after-rename").is_err());
+        assert!(
+            !server.auth.is_phone_registered("phone-after-rename"),
+            "memory rolled back"
+        );
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+        assert!(
+            on_disk["devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["device_id"] == "phone-after-rename"),
+            "rename already committed on disk"
+        );
+        let restarted = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        assert!(restarted.jwks_ready());
+        assert!(restarted.is_phone_registered("phone-after-rename"));
+        handle.abort();
+    }
 }

@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -19,6 +22,11 @@ const MAX_JWKS_BYTES: usize = 64 * 1024;
 const JWKS_TIMEOUT: Duration = Duration::from_secs(5);
 const JWKS_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 const UNKNOWN_KID_RETRY: Duration = Duration::from_secs(30);
+const REGISTRY_SCHEMA_VERSION: u32 = 2;
+const REGISTRY_GUARD: &[u8] = b"alondra-relay-device-registry-v2\n";
+
+#[cfg(test)]
+pub(crate) static FAIL_AFTER_RENAME_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
@@ -83,6 +91,8 @@ struct DeviceRegistry {
 
 #[derive(Serialize, Deserialize)]
 struct StoredDeviceRegistry {
+    #[serde(default)]
+    schema_version: Option<u32>,
     devices: Vec<PhoneDevice>,
     #[serde(default)]
     phone_macs: HashMap<String, String>,
@@ -147,6 +157,7 @@ pub struct Auth {
     jwks_refresh: AsyncMutex<()>,
     last_unknown_refresh: Mutex<Option<Instant>>,
     devices: Mutex<DeviceRegistry>,
+    registry_poisoned: AtomicBool,
     verifier: Mutex<HttpChallengeVerifier>,
 }
 
@@ -178,12 +189,21 @@ impl Auth {
             keys: parse_jwks(jwks)?,
             refreshed_at: Instant::now(),
         };
-        let mut migrated_registry = false;
+        let guard_path = schema_guard_path(&config.device_registry_path);
+        let guarded = guard_path.exists();
+        if guarded && std::fs::read(&guard_path)? != REGISTRY_GUARD {
+            bail!("invalid device registry schema guard");
+        }
+        if guarded && !config.device_registry_path.exists() {
+            bail!("guarded device registry is missing");
+        }
+        let mut migrated_registry = !guarded;
         let mut devices = if config.device_registry_path.exists() {
             let raw = std::fs::read(&config.device_registry_path)?;
-            let (list, mut phone_macs, revoked_ids, push, macs, revoked_mac_ids) =
+            let (schema_version, list, mut phone_macs, revoked_ids, push, macs, revoked_mac_ids) =
                 match serde_json::from_slice(&raw)? {
                     RegistryOnDisk::Current(StoredDeviceRegistry {
+                        schema_version,
                         devices,
                         phone_macs,
                         revoked_ids,
@@ -191,6 +211,7 @@ impl Auth {
                         macs,
                         revoked_mac_ids,
                     }) => (
+                        schema_version,
                         devices,
                         phone_macs,
                         revoked_ids,
@@ -199,6 +220,7 @@ impl Auth {
                         revoked_mac_ids,
                     ),
                     RegistryOnDisk::Legacy(devices) => (
+                        None,
                         devices,
                         HashMap::new(),
                         Vec::new(),
@@ -207,10 +229,28 @@ impl Auth {
                         Vec::new(),
                     ),
                 };
+            if guarded && schema_version != Some(REGISTRY_SCHEMA_VERSION) {
+                bail!(
+                    "device registry was rewritten by an older version; refusing unsafe migration"
+                );
+            }
+            if !guarded && schema_version.is_some() {
+                bail!("device registry guard is missing");
+            }
             let devices: HashMap<_, _> =
                 list.into_iter().map(|d| (d.device_id.clone(), d)).collect();
             if phone_macs.keys().any(|id| !devices.contains_key(id)) {
                 bail!("phone binding references inactive device");
+            }
+            let missing_bindings = devices.keys().any(|id| !phone_macs.contains_key(id));
+            if guarded && missing_bindings {
+                bail!("guarded registry is missing phone bindings");
+            }
+            if missing_bindings
+                && (macs.iter().any(|mac| mac.mac_id != config.mac_id)
+                    || !revoked_mac_ids.is_empty())
+            {
+                bail!("ambiguous phone binding in multi-Mac registry");
             }
             for id in devices.keys() {
                 if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -305,6 +345,9 @@ impl Auth {
             }
         }
         if migrated_registry {
+            if !guarded {
+                write_atomic(&guard_path, REGISTRY_GUARD)?;
+            }
             persist_registry_at(&config.device_registry_path, &devices)?;
         }
         let verifier = HttpChallengeVerifier::new(CLOCK_SKEW_MS, MAX_NONCES)
@@ -315,6 +358,7 @@ impl Auth {
             jwks_refresh: AsyncMutex::new(()),
             last_unknown_refresh: Mutex::new(None),
             devices: Mutex::new(devices),
+            registry_poisoned: AtomicBool::new(false),
             verifier: Mutex::new(verifier),
         })
     }
@@ -325,6 +369,7 @@ impl Auth {
     }
 
     pub fn enroll(&self, mac: &Identity, device: PhoneDevice) -> Result<()> {
+        self.ensure_registry_ready()?;
         if device.owner_sub != mac.owner_sub || !valid_device_id(&device.device_id) {
             bail!("invalid phone device registration");
         }
@@ -361,6 +406,7 @@ impl Auth {
 
     /// A Mac-signed revocation removes the public key durably before queued data is purged.
     pub fn revoke(&self, mac: &Identity, device_id: &str) -> Result<()> {
+        self.ensure_registry_ready()?;
         if !valid_device_id(device_id) {
             bail!("invalid device ID");
         }
@@ -403,6 +449,7 @@ impl Auth {
 
     /// Store token and binding atomically with device state; an old binding cannot remain after revoke.
     pub fn register_push(&self, device_id: &str, registration: PushRegistration) -> Result<()> {
+        self.ensure_registry_ready()?;
         crate::push::validate_registration(&registration)?;
         let mut registry = self.devices.lock().unwrap();
         if !registry.devices.contains_key(device_id) || registry.revoked_ids.contains(device_id) {
@@ -421,6 +468,9 @@ impl Auth {
     }
 
     pub fn push_registration(&self, device_id: &str) -> Option<PushRegistration> {
+        if self.ensure_registry_ready().is_err() {
+            return None;
+        }
         self.devices.lock().unwrap().push.get(device_id).cloned()
     }
 
@@ -434,6 +484,7 @@ impl Auth {
         now_ms: u64,
         request: MacRegistration,
     ) -> Result<MacDevice> {
+        self.ensure_registry_ready()?;
         if !valid_device_id(&request.mac_id) || request.agreement_key.is_empty() {
             bail!("invalid Mac registration");
         }
@@ -462,6 +513,7 @@ impl Auth {
 
     /// Register only a new ID or complete the pilot record under its existing signing key.
     pub fn enroll_mac(&self, mac: MacDevice) -> Result<bool> {
+        self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
         if registry.revoked_mac_ids.contains(&mac.mac_id)
             || registry.revoked_ids.contains(&mac.mac_id)
@@ -497,6 +549,7 @@ impl Auth {
     }
 
     pub fn revoke_mac(&self, who: &Identity) -> Result<()> {
+        self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
         let existing = registry
             .macs
@@ -516,6 +569,7 @@ impl Auth {
     }
 
     pub fn mac_for_owner(&self, mac_id: &str, owner_sub: &str) -> Result<VerifyingKey> {
+        self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();
         let mac = registry.macs.get(mac_id).context("unknown Mac")?;
         if mac.owner_sub != owner_sub {
@@ -525,6 +579,7 @@ impl Auth {
     }
 
     pub fn phone_for_mac(&self, phone_id: &str, mac: &Identity) -> Result<()> {
+        self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();
         let phone = registry.devices.get(phone_id).context("unknown phone")?;
         if phone.owner_sub != mac.owner_sub
@@ -536,6 +591,7 @@ impl Auth {
     }
 
     pub fn paired_mac_for_phone(&self, phone_id: &str, owner_sub: &str) -> Result<String> {
+        self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();
         let phone = registry.devices.get(phone_id).context("unknown phone")?;
         if phone.owner_sub != owner_sub {
@@ -549,7 +605,20 @@ impl Auth {
     }
 
     fn persist_registry(&self, registry: &DeviceRegistry) -> Result<()> {
-        persist_registry_at(&self.config.device_registry_path, registry)
+        let result = persist_registry_at(&self.config.device_registry_path, registry);
+        if result.is_err() {
+            // A failure may occur after rename. Do not trust the in-memory rollback
+            // until a fresh process has loaded the disk state.
+            self.registry_poisoned.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    fn ensure_registry_ready(&self) -> Result<()> {
+        if self.registry_poisoned.load(Ordering::Acquire) {
+            bail!("registry persistence failed; restart required");
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -565,6 +634,7 @@ impl Auth {
         body: &[u8],
         now_ms: u64,
     ) -> Result<Identity> {
+        self.ensure_registry_ready()?;
         let id = header(headers, "x-device-id")?;
         let mac = self
             .devices
@@ -590,6 +660,7 @@ impl Auth {
     }
 
     pub fn mac_key(&self, mac_id: &str) -> Result<VerifyingKey> {
+        self.ensure_registry_ready()?;
         let mac = self
             .devices
             .lock()
@@ -606,7 +677,8 @@ impl Auth {
     }
 
     pub fn jwks_ready(&self) -> bool {
-        self.jwks.read().unwrap().refreshed_at.elapsed() <= JWKS_MAX_AGE
+        !self.registry_poisoned.load(Ordering::Acquire)
+            && self.jwks.read().unwrap().refreshed_at.elapsed() <= JWKS_MAX_AGE
     }
 
     /// Replace the complete key set; removed Keycloak keys stop validating immediately.
@@ -654,6 +726,7 @@ impl Auth {
         body: &[u8],
         now_ms: u64,
     ) -> Result<Identity> {
+        self.ensure_registry_ready()?;
         let token = headers
             .get(axum::http::header::AUTHORIZATION)
             .context("missing Authorization")?
@@ -682,6 +755,7 @@ impl Auth {
     }
 
     pub fn phone_key(&self, device_id: &str) -> Result<VerifyingKey> {
+        self.ensure_registry_ready()?;
         let device = self
             .devices
             .lock()
@@ -759,6 +833,7 @@ impl Auth {
         id: &str,
         public_key: &str,
     ) -> Result<()> {
+        self.ensure_registry_ready()?;
         if header(headers, "x-device-id")? != id {
             bail!("device ID mismatch");
         }
@@ -863,6 +938,10 @@ fn valid_device_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
+fn schema_guard_path(path: &Path) -> PathBuf {
+    path.with_extension("schema-v2")
+}
+
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     Ok(headers
         .get(name)
@@ -882,6 +961,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     write_atomic(
         path,
         &serde_json::to_vec(&StoredDeviceRegistry {
+            schema_version: Some(REGISTRY_SCHEMA_VERSION),
             devices,
             phone_macs: registry.phone_macs.clone(),
             revoked_ids,
@@ -910,6 +990,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all()?;
     drop(file);
     std::fs::rename(tmp, path)?;
+    #[cfg(test)]
+    {
+        let mut fail = FAIL_AFTER_RENAME_PATH.lock().unwrap();
+        if fail.as_deref() == Some(path) {
+            *fail = None;
+            bail!("injected post-rename directory sync failure");
+        }
+    }
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
