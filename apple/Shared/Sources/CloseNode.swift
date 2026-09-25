@@ -1,36 +1,19 @@
 import SwiftUI
 
 public struct CloseRequest: Identifiable, Hashable, Sendable {
-    public enum Kind: Hashable, Sendable {
-        case node
-        case readAndClose
-    }
-
     public let session: String
     public let name: String
-    public let kind: Kind
 
     public var id: String { session }
 
-    public init(session: String, name: String, kind: Kind) {
+    public init(session: String, name: String) {
         self.session = session
         self.name = name
-        self.kind = kind
     }
 
-    var title: String {
-        switch kind {
-        case .node: String(localized: "Close \(name)?", table: "AlondraShared", bundle: #bundle)
-        case .readAndClose: String(localized: "Mark as read and close \(name)?", table: "AlondraShared", bundle: #bundle)
-        }
-    }
+    var title: String { String(localized: "Close \(name)?", table: "AlondraShared", bundle: #bundle) }
 
-    var confirmTitle: String {
-        switch kind {
-        case .node: String(localized: "Close Node", table: "AlondraShared", bundle: #bundle)
-        case .readAndClose: String(localized: "Read and Close Node", table: "AlondraShared", bundle: #bundle)
-        }
-    }
+    var confirmTitle: String { String(localized: "Close Node", table: "AlondraShared", bundle: #bundle) }
 }
 
 extension View {

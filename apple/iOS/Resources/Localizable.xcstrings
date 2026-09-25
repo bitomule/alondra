@@ -1391,26 +1391,6 @@
         }
       }
     },
-    "Read and Close Node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leer y cerrar nodo"
-          }
-        }
-      }
-    },
-    "Read and closed": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leído y cerrado"
-          }
-        }
-      }
-    },
     "Read it all": {
       "localizations": {
         "es": {

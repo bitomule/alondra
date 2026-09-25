@@ -1444,7 +1444,6 @@ impl App {
                     self.mark_read(&r);
                 }
             }
-            KeyCode::Char('X') => self.read_and_close(),
             KeyCode::Char(c @ '1'..='9') => {
                 if let Some(q) = self.selected_question() {
                     self.choose(&q, c as usize - '1' as usize);
@@ -1546,33 +1545,6 @@ impl App {
         self.post(Some(Key::R(r.id)), vec![(format!("/v1/reports/{}/review", r.id), json!({ "verdict": verdict }))], done);
         self.reader = None;
         self.hide(Key::R(r.id));
-    }
-
-    /// Reads the selected report and closes the node that sent it, same as the fleet's own
-    /// close: a second `X` within a few seconds confirms it, since closing cannot be undone.
-    /// The report is read on the first press whether or not the node can be closed.
-    fn read_and_close(&mut self) {
-        let now = now_millis();
-        if let Some((session, until)) = self.pending_close.clone()
-            && now < until
-        {
-            self.pending_close = None;
-            let name = self.node(&session).map_or_else(|| session.chars().take(8).collect(), |n| n.display_name().to_string());
-            self.close(&session, &name, false);
-            return;
-        }
-        let Some(r) = self.selected_report() else { return };
-        let name = who(&r.node_name, &r.session_id);
-        let (arm, hint) = match self.node(&r.session_id) {
-            Some(n) if n.offers_close() => (true, trf!("Read. Press Shift+X again to close {name}", "Leído. Pulsa Shift+X otra vez para cerrar {name}")),
-            Some(_) => (false, trf!("Read. {name} is the orchestrator, which Alondra keeps alive: close it from the fleet if you mean to", "Leído. {name} es el orquestador, que Alondra mantiene vivo: ciérralo desde la flota si de verdad quieres")),
-            None => (false, trf!("Read. {name} is no longer in the fleet, nothing to close", "Leído. {name} ya no está en la flota, no hay nada que cerrar")),
-        };
-        self.mark_read_saying(&r, hint.clone());
-        if arm {
-            self.pending_close = Some((r.session_id.clone(), now + 4000));
-        }
-        self.flash(hint);
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
@@ -1856,7 +1828,6 @@ impl App {
                     self.mark_read(&rep);
                 }
             }
-            KeyCode::Char('X') if matches!(key, Key::R(_)) => self.read_and_close(),
             KeyCode::Char(c @ '1'..='9') if matches!(key, Key::Q(_)) => {
                 if let Some(q) = self.data.open_questions.iter().find(|q| Key::Q(q.id) == key).cloned() {
                     self.settle_until = 0;
@@ -2757,38 +2728,6 @@ pub(crate) mod tests {
         assert!(app.pending_close.is_none(), "x alone never arms a close");
     }
 
-    /// 24 Sep: David pressed Shift+X, saw «Leído: …» and the node stayed. alondrad confirming
-    /// the read replaced the «press Shift+X again» hint milliseconds after it appeared.
-    #[test]
-    fn the_hint_to_press_shift_x_again_outlives_alondrad_confirming_the_read() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1).into()];
-        app.data.nodes = vec![alive_node("s1")];
-        app.reconcile();
-        press(&mut app, "X");
-        let (paths, answer) = app.posted.borrow().last().cloned().expect("X posts the read");
-        assert_eq!(paths, ["/v1/reports/1/read"]);
-        app.on_msg(Msg::Posted { key: Some(Key::R(1)), result: Ok(answer) });
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-        press(&mut app, "X");
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.starts_with("Closing ")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-    }
-
-    #[test]
-    fn the_second_shift_x_closes_the_node_even_when_a_question_took_the_selection() {
-        let (mut app, _rx) = app_with(vec![question(7, QuestionOrigin::Ask, &[])]);
-        app.data.news = vec![report(1).into()];
-        app.data.nodes = vec![alive_node("s1")];
-        app.reconcile();
-        press(&mut app, "j");
-        assert_eq!(app.sel, Some(Key::R(1)));
-        press(&mut app, "X");
-        assert_eq!(app.sel, Some(Key::Q(7)), "the read report leaves the inbox");
-        press(&mut app, "X");
-        assert!(app.pending_close.is_none());
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.starts_with("Closing ")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-    }
-
     #[test]
     fn a_close_answer_says_in_one_line_what_happened() {
         let (mut app, _rx) = app_with(vec![]);
@@ -2800,74 +2739,4 @@ pub(crate) mod tests {
         assert_eq!(app.flash.as_ref().map(|f| (f.text.as_str(), f.error)), Some(("demo was not closed: it is working; wait until it stops", true)));
     }
 
-    #[test]
-    fn shift_x_on_a_report_whose_node_is_gone_reads_it_and_says_so() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1).into()];
-        app.reconcile();
-        press(&mut app, "X");
-        assert!(app.hidden.contains_key(&Key::R(1)));
-        assert!(app.pending_close.is_none());
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("demo is no longer in the fleet")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-    }
-
-    #[test]
-    fn shift_x_reads_and_arms_a_close_that_a_second_press_confirms() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1).into()];
-        app.data.nodes = vec![alive_node("s1")];
-        app.reconcile();
-        press(&mut app, "X");
-        assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report immediately");
-        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press Shift+X again to close demo")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-        press(&mut app, "X");
-        assert!(app.pending_close.is_none(), "the second X consumes the confirmation");
-    }
-
-    /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never close it.
-    #[test]
-    fn shift_x_never_closes_the_orchestrator_but_reads_its_report_and_says_why() {
-        for (orchestrator, arms) in [(false, true), (true, false)] {
-            let (mut app, _rx) = app_with(vec![]);
-            app.data.news = vec![report(1).into()];
-            let mut node = alive_node("s1");
-            node.node.is_orchestrator = orchestrator;
-            app.data.nodes = vec![node];
-            app.reconcile();
-            press(&mut app, "X");
-            assert_eq!(app.pending_close.is_some(), arms, "orchestrator={orchestrator}");
-            assert!(app.hidden.contains_key(&Key::R(1)), "orchestrator={orchestrator}: X reads the report either way");
-            if orchestrator {
-                assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("demo is the orchestrator")), "{:?}", app.flash.as_ref().map(|f| &f.text));
-            }
-        }
-    }
-
-    #[test]
-    fn shift_x_reads_and_arms_a_close_whatever_the_node_session_is_doing() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1).into()];
-        let mut node = alive_node("s1");
-        node.node.alive = false;
-        app.data.nodes = vec![node];
-        app.reconcile();
-        press(&mut app, "X");
-        assert!(app.hidden.contains_key(&Key::R(1)), "X reads the report whatever the session is doing");
-        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
-    }
-
-    #[test]
-    fn shift_x_also_works_from_reading_mode() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.data.news = vec![report(1).into()];
-        app.data.nodes = vec![alive_node("s1")];
-        app.reconcile();
-        press(&mut app, "o");
-        assert!(app.reader.as_ref().is_some_and(|r| r.key == Key::R(1)));
-        press(&mut app, "X");
-        assert!(app.reader.is_none(), "reading and closing leaves the reader");
-        assert!(app.hidden.contains_key(&Key::R(1)));
-        assert_eq!(app.pending_close.as_ref().map(|(s, _)| s.as_str()), Some("s1"));
-    }
 }

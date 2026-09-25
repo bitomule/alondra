@@ -769,23 +769,14 @@ fn action_lines(app: &App, item: &Item, width: usize) -> Vec<Line<'static>> {
             } else {
                 tr!(" read all  ", " leer entero  ")
             };
-            let close = [keycap("Shift+X"), Span::styled(tr!(" read and close node  ", " leer y cerrar nodo  "), Style::new().add_modifier(Modifier::BOLD))];
-            let closable = app.node(&r.session_id).is_some_and(|n| n.offers_close());
-            let mut spans = vec![];
-            if closable && r.kind == ReportKind::Final {
-                spans.extend(close.clone());
-            }
-            spans.extend([
+            let mut spans = vec![
                 keycap("o"),
                 Span::styled(read, Style::new().fg(SOFT)),
                 keycap("x"),
                 Span::styled(tr!(" mark read  ", " leído  "), Style::new().fg(SOFT)),
                 keycap("r"),
                 Span::styled(tr!(" reply  ", " responder  "), Style::new().fg(SOFT)),
-            ]);
-            if closable && r.kind != ReportKind::Final {
-                spans.extend(close);
-            }
+            ];
             if pending > 0 {
                 spans.push(Span::styled(trf!("  ✎{pending} unsent", "  ✎{pending} sin enviar"), Style::new().fg(COMMENT)));
             }
@@ -1592,11 +1583,6 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             (None, Key::R(_)) => {
                 v.push(k("s", tr!("send to node", "enviar al nodo")));
                 v.push(k("x", tr!("mark read", "leído")));
-                if let Some(Item::R(rep)) = app.item(r.key)
-                    && app.node(&rep.session_id).is_some_and(|n| n.offers_close())
-                {
-                    v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
-                }
             }
             (None, Key::P(_)) => v.push(k("s", tr!("request changes", "pedir cambios"))),
         }
@@ -1667,9 +1653,6 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                 v.extend([k("b", i18n::open_in_browser()), k("c", i18n::rescue_comments()), k("v", i18n::approve_artifact())]);
             }
             v.extend([k("o", tr!("expand", "expandir")), k("x", tr!("mark read", "leído"))]);
-            if app.node(&r.session_id).is_some_and(|n| n.offers_close()) {
-                v.push(k("Shift+X", tr!("read and close node", "leer y cerrar nodo")));
-            }
             v.extend([k("r", tr!("reply", "responder")), k("a", tr!("its terminal", "su terminal"))]);
             v.extend(tail);
             v
@@ -1759,7 +1742,6 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("b · c · v", tr!("artifact: open in the browser · the node reads your comments on it · approve it", "artefacto: abrir en el navegador · el nodo lee tus comentarios · aprobarlo")),
         row("x", tr!("mark as read", "marcar como leído")),
-        row("Shift+X", tr!("read and close the node that sent it (twice to confirm; never the orchestrator)", "leer y cerrar el nodo que lo envió (dos veces para confirmar; nunca el orquestador)")),
         row("Shift+J/Shift+K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -1769,7 +1751,6 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c · Shift+C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
         row("a · p", tr!("approve · request changes (plans)", "aprobar · pedir cambios (planes)")),
         row("s · x", tr!("send comments · mark read (documents)", "enviar comentarios · leído (documentos)")),
-        row("Shift+X", tr!("read and close the node (twice to confirm; never the orchestrator)", "leer y cerrar el nodo (dos veces para confirmar; nunca el orquestador)")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Tasks", "Tareas")),
@@ -2199,64 +2180,6 @@ mod tests {
         press(&mut app, "G");
         let s = screen(&mut app, 100, 20);
         assert!(s.contains("Always"), "{s}");
-    }
-
-    #[test]
-    fn the_footer_offers_read_and_close_whatever_the_node_session_is_doing() {
-        let (mut app, _rx) = app_with(vec![]);
-        app.loaded = true;
-        app.data.news = vec![report(1).into()];
-        app.data.nodes = vec![alive_node("s1")];
-        app.data.nodes[0].node.alive = false;
-        app.reconcile();
-        let s = screen(&mut app, 250, 24);
-        assert!(s.contains("read and close node"), "{s}");
-
-        press(&mut app, "o");
-        let s = screen(&mut app, 250, 24);
-        assert!(s.contains("read and close node"), "reading mode also offers it\n{s}");
-    }
-
-    /// 24 Sep: David keeps the orchestrator alive on purpose; its reports never offer to close it.
-    #[test]
-    fn the_orchestrators_reports_never_offer_read_and_close() {
-        for (orchestrator, offered) in [(false, true), (true, false)] {
-            let (mut app, _rx) = app_with(vec![]);
-            app.loaded = true;
-            let mut r = report(1);
-            r.kind = ReportKind::Final;
-            app.data.news = vec![r.into()];
-            app.data.nodes = vec![alive_node("s1")];
-            app.data.nodes[0].node.is_orchestrator = orchestrator;
-            app.reconcile();
-            let s = screen(&mut app, 250, 30);
-            assert_eq!(s.contains("read and close node"), offered, "orchestrator={orchestrator}\n{s}");
-            press(&mut app, "o");
-            let s = screen(&mut app, 250, 30);
-            assert_eq!(s.contains("read and close node"), offered, "reading, orchestrator={orchestrator}\n{s}");
-        }
-    }
-
-    /// 24 Sep: David found read-and-close only in the footer, not among the report's own actions.
-    #[test]
-    fn a_report_offers_read_and_close_among_its_own_actions_first_when_it_is_final() {
-        let actions = |kind: ReportKind| {
-            let (mut app, _rx) = app_with(vec![]);
-            app.loaded = true;
-            let mut r = report(1);
-            r.kind = kind;
-            app.data.news = vec![r.into()];
-            app.data.nodes = vec![alive_node("s1")];
-            app.reconcile();
-            let s = screen(&mut app, 250, 30);
-            s.lines().find(|l| l.contains("read all") && l.contains("reply")).map(str::to_string).unwrap_or_else(|| panic!("no actions row\n{s}"))
-        };
-        let final_row = actions(ReportKind::Final);
-        let at = |row: &str, t: &str| row.find(t).unwrap_or_else(|| panic!("{t} missing: {row}"));
-        assert!(at(&final_row, "read and close node") < at(&final_row, "read all"), "{final_row}");
-        assert!(at(&final_row, "Shift+X") < at(&final_row, "read and close node"), "the key says it needs Shift: {final_row}");
-        let notice_row = actions(ReportKind::Notice);
-        assert!(at(&notice_row, "reply") < at(&notice_row, "read and close node"), "{notice_row}");
     }
 
     /// A shortcut key that needs an uppercase letter must read "Shift+X", never a bare capital:

@@ -438,14 +438,6 @@ public final class FleetStore {
     }
 
     @discardableResult
-    public func readAndClose(_ report: Report) async -> Bool {
-        let outcome = await close(session: report.sessionId, force: false)
-        guard outcome != .failed else { return false }
-        let read = await markRead(report)
-        return outcome == .closed && read
-    }
-
-    @discardableResult
     public func close(_ node: Node) async -> Bool {
         await close(session: node.sessionId, force: true) == .closed
     }

@@ -15,7 +15,6 @@ struct TriageCard: View {
     @State private var pickedOption: QuestionOption?
     @State private var stamp: Stamp?
     @State private var askingContext = false
-    @State private var closing: CloseRequest?
     @State private var contextNote = ""
     @State private var showNodeContext = false
     @State private var contentHeight: CGFloat?
@@ -52,7 +51,6 @@ struct TriageCard: View {
             } message: {
                 Text("The node will explain and ask again.")
             }
-            .closeConfirmation($closing) { _ in readAndClose() }
             .accessibilityAction(named: "Leave for Later", onSkip)
             .onChange(of: fleet.handoff?.id, initial: true) {
                 guard let handoff = fleet.handoff, handoff.itemID == item.id else { return }
@@ -506,8 +504,7 @@ struct TriageCard: View {
                         try await client.markRead(report.id)
                     }
                 }
-                let node = report.closableNode(fleet.node(report.sessionId))
-                if report.primaryAction(nodeFound: node != nil) == .review {
+                if report.primaryAction() == .review {
                     Button {
                         review(report, .comments)
                     } label: {
@@ -534,24 +531,6 @@ struct TriageCard: View {
                     }
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
-                } else if report.primaryAction(nodeFound: node != nil) == .readAndClose, let node {
-                    Button {
-                        closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                    } label: {
-                        Label("Read and Close Node", systemImage: "xmark.bin")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                    }
-                    .buttonStyle(FilledStyle(tint: actionTint))
-                    Button {
-                        markRead(report)
-                    } label: {
-                        Label("Mark as Read", systemImage: "checkmark")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .frame(minHeight: 30)
-                    }
-                    .buttonStyle(.plain)
                 } else {
                     Button {
                         markRead(report)
@@ -561,17 +540,6 @@ struct TriageCard: View {
                             .frame(maxWidth: .infinity, minHeight: 50)
                     }
                     .buttonStyle(FilledStyle(tint: actionTint))
-                    if let node {
-                        Button {
-                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                        } label: {
-                            Label("Read and Close Node", systemImage: "xmark.bin")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(Palette.rose)
-                                .frame(minHeight: 30)
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
             }
         case .pullRequest(let pr):
@@ -708,15 +676,9 @@ struct TriageCard: View {
         resolve(stamp) { try await $0.review(report.id, verdict) }
     }
 
-    private func readAndClose() {
-        guard case .report(let report) = item else { return }
-        resolve(stamp(for: HandoffLabel.readAndClosed)) { try await $0.readAndClose(report) }
-    }
-
     private func stamp(for label: String) -> Stamp {
         switch label {
         case HandoffLabel.read: return Stamp(label: String(localized: "Read"), symbol: "checkmark", tint: actionTint)
-        case HandoffLabel.readAndClosed: return Stamp(label: String(localized: "Read and closed"), symbol: "xmark.bin.fill", tint: Palette.rose)
         case HandoffLabel.answered: return Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: kind.tint)
         case HandoffLabel.sent: return Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: kind.tint)
         case HandoffLabel.merged: return Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)
@@ -779,7 +741,6 @@ enum HandoffLabel {
     static let read = "alondra.read"
     static let answered = "alondra.answered"
     static let sent = "alondra.sent"
-    static let readAndClosed = "alondra.readAndClosed"
     static let merged = "alondra.merged"
     static let conflictsSent = "alondra.conflictsSent"
     static let setAside = "alondra.setAside"

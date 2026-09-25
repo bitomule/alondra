@@ -434,12 +434,6 @@ impl Node {
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.short_id)
     }
-
-    /// Whether a card from this node may offer to close it. The orchestrator never: Alondra
-    /// keeps it around on purpose. Whatever its session is doing does not matter here.
-    pub fn offers_close(&self) -> bool {
-        !self.is_orchestrator
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
