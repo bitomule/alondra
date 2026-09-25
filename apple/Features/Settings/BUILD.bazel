@@ -1,0 +1,18 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraSettingsFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraSettingsFeature",
+    visibility = ["//visibility:public"],
+    deps = ["@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)
+
+swift_test(
+    name = "AlondraSettingsFeatureTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraSettingsFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
