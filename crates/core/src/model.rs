@@ -558,6 +558,11 @@ pub struct Question {
     /// The question of the node it replaces, withdrawn once this one is recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<u64>,
+    /// The number of the PR of its task under review that the node said it is about: the
+    /// question shows in that PR's card and goes when the PR is merged or closed. A link to a PR
+    /// is only context and never does either (t-47328, question #254).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_pr: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

@@ -405,7 +405,7 @@ mod tests {
         Question {
             id, session_id: sid.into(), node_name: None, title: format!("Q{id}"), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
-            status: alondra_core::QuestionStatus::Open, answer: None, asked_at: 0, action: false, steps: vec![], mission: None, task: None, replaces: None,
+            status: alondra_core::QuestionStatus::Open, answer: None, asked_at: 0, action: false, steps: vec![], mission: None, task: None, replaces: None, about_pr: None,
         }
     }
 

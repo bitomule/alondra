@@ -148,6 +148,15 @@ pub struct Blocker {
     pub kind: BlockerKind,
     pub question: u64,
     pub since: Millis,
+    /// Raised by the node's own `ask` or `request_action`, the only cards held to the task's PR
+    /// under review. Claude Code's prompts and menus and the cards Alondra builds from the
+    /// terminal are facts it never refuses; so are the blockers recorded before this marker
+    /// existed, which replay exactly as they were.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
+    /// The number of the task's PR under review the node said the card is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_pr: Option<u64>,
 }
 
 /// What an event is about.
@@ -289,10 +298,26 @@ fn nothing_to_answer() -> Refused {
     refused("no question of the task is open")
 }
 
+/// How the reason ends when a task already has its one blocker.
+pub const STILL_OPEN: &str = "is still open";
+
 fn blocked(g: &Guards) -> Result<(), Refused> {
     match g.blocker {
-        Some(b) => Err(refused(format!("{} #{} is still open", b.kind.noun(), b.question))),
+        Some(b) => Err(refused(format!("{} #{} {STILL_OPEN}", b.kind.noun(), b.question))),
         None => Ok(()),
+    }
+}
+
+/// While a PR of the task waits for review, that PR is the task's one pending point: the node's
+/// own card has to be about it, and other work goes in a task of its own (t-47328: question #254,
+/// about a cron, sat in PR #102's card and went with its merge unanswered).
+fn about_the_review(b: &Blocker, g: &Guards) -> Result<(), Refused> {
+    match g.unmerged_pr {
+        Some(n) if b.asked && b.about_pr.is_none() => Err(refused(format!(
+            "PR #{n} waits for review. If the answer changes what PR #{n} contains or how it ships, resend with about_pr: {n}. \
+             Otherwise open a separate task with new_task and ask there"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -391,8 +416,11 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
             | E::ReviewClosed { .. },
         ) => Err(not_started(g)),
 
-        (Running | NeedsYou | InReview | Closing, E::BlockerRaised { replaces, .. }) => {
-            if *replaces { Ok(NeedsYou) } else { blocked(g).map(|()| NeedsYou) }
+        (Running | NeedsYou | InReview | Closing, E::BlockerRaised { blocker, replaces }) => {
+            if !*replaces {
+                blocked(g)?;
+            }
+            about_the_review(blocker, g).map(|()| NeedsYou)
         }
         (Done, E::BlockerRaised { .. }) => Err(is_done()),
         (Cancelled, E::BlockerRaised { .. }) => Err(is_cancelled()),
@@ -417,7 +445,7 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Done, E::FinalReport { .. }) => Ok(Done),
         (Cancelled, E::FinalReport { .. }) => Err(is_cancelled()),
 
-        (NeedsYou, E::Answered { .. }) => Ok(Running),
+        (NeedsYou, E::Answered { .. }) => Ok(if g.reviews_left() { InReview } else { Running }),
         (Running | InReview | Closing | Done | Cancelled, E::Answered { .. }) => Err(nothing_to_answer()),
 
         (InReview | Closing, E::ChangesRequested { .. }) => Ok(Running),
@@ -772,7 +800,7 @@ mod tests {
     use super::*;
     use TaskState::*;
 
-    const Q: Blocker = Blocker { kind: BlockerKind::Question, question: 7, since: 0 };
+    const Q: Blocker = Blocker { kind: BlockerKind::Question, question: 7, since: 0, asked: false, about_pr: None };
 
     fn every_event() -> Vec<TaskEvent> {
         let all = vec![
@@ -943,6 +971,31 @@ mod tests {
                 assert_eq!(merged, Ok(Done), "a merge notice never reopens a done task");
             }
         }
+    }
+
+    /// t-47328 (25 Sep): PR #102 waited for review when its node asked #253 (how #102 ships) and
+    /// #254 (a cron #102 breaks). Both joined the PR's card; the merge withdrew #254 unanswered.
+    #[test]
+    fn a_pr_under_review_is_the_tasks_one_pending_point() {
+        let review = Guards { unmerged_pr: Some(102), ..Guards::default() };
+        let raised = |kind, asked, about_pr| TaskEvent::BlockerRaised { blocker: Blocker { kind, asked, about_pr, ..Q }, replaces: false };
+        let other_work = Err(refused(
+            "PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. \
+             Otherwise open a separate task with new_task and ask there",
+        ));
+        for state in [Running, InReview, Closing] {
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, None), &review), other_work, "{state:?}: #254, about other work");
+            assert_eq!(transition(state, &raised(BlockerKind::Action, true, None), &review), other_work, "{state:?}: an action about other work");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, Some(102)), &review), Ok(NeedsYou), "{state:?}: #253, about the PR");
+            assert_eq!(transition(state, &raised(BlockerKind::Permission, false, None), &review), Ok(NeedsYou), "{state:?}: Claude Code's prompt is a fact");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, false, None), &review), Ok(NeedsYou), "{state:?}: a menu, a terminal card, or a blocker recorded before the marker");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, None), &Guards::default()), Ok(NeedsYou), "{state:?}: no PR under review");
+        }
+        let replacing = TaskEvent::BlockerRaised { blocker: Blocker { asked: true, ..Q }, replaces: true };
+        assert_eq!(transition(NeedsYou, &replacing, &Guards { blocker: Some(Q), ..review.clone() }), other_work, "replacing a question does not skip the review");
+        let answered = TaskEvent::Answered { question: 253 };
+        assert_eq!(transition(NeedsYou, &answered, &review), Ok(InReview), "answered while the PR still waits: back in review, not running");
+        assert_eq!(transition(NeedsYou, &answered, &Guards::default()), Ok(Running));
     }
 
     fn task(state: TaskState) -> Task {

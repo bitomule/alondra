@@ -499,7 +499,7 @@ mod tests {
         let question = Question {
             id: 240, session_id: "o".into(), node_name: None, title: "¿Qué parte?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open,
-            answer: None, asked_at: 4000, action: false, steps: vec![], mission: None, replaces: None, task: None,
+            answer: None, asked_at: 4000, action: false, steps: vec![], mission: None, replaces: None, about_pr: None, task: None,
         };
         let mut d = Daemon::new();
         d.on(Event::MarkedOrchestrator { session_id: "o".into() }).on(hook("SessionStart"));

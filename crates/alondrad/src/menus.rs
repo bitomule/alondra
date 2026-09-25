@@ -159,7 +159,7 @@ fn card(v: &View, node: &Node, screen: &str) -> Question {
         steps: vec![],
         mission: node.mission.clone(),
         task: v.fact_task(&node.session_id, None),
-        replaces: None,
+        replaces: None, about_pr: None,
     }
 }
 
