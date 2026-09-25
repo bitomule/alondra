@@ -24,6 +24,17 @@ const KEYCHAIN_SERVICE: &str = "dev.davidcollado.alondra.service-login";
 const CALLBACK_PATH: &str = "/oauth2redirect/alondra-cli";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
+#[derive(Debug)]
+struct SessionExpired;
+
+impl std::fmt::Display for SessionExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Alondra login expired or revoked")
+    }
+}
+
+impl std::error::Error for SessionExpired {}
+
 #[derive(Deserialize)]
 struct Discovery {
     issuer: String,
@@ -397,8 +408,11 @@ fn refreshed() -> Result<(AccountToken, Option<String>)> {
             ("refresh_token", &session.refresh_token),
         ],
     )?;
+    if matches!(status, 400 | 401) {
+        return Err(SessionExpired.into());
+    }
     if status != 200 {
-        bail!("session expired or revoked; run `alondra login` again");
+        bail!("OIDC token refresh failed ({status})");
     }
     let token: TokenResponse = serde_json::from_str(&body)?;
     let user = userinfo(&http, &d, &token.access_token)?;
@@ -429,7 +443,14 @@ pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
     if stored().is_err() {
         login()?;
     }
-    token_for_enrollment()
+    match token_for_enrollment() {
+        Ok(token) => Ok(token),
+        Err(error) if error.is::<SessionExpired>() => {
+            login()?;
+            token_for_enrollment()
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn status() -> Result<()> {

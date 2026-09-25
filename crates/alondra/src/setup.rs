@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, IsTerminal, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,8 +14,6 @@ pub const MARKETPLACE: &str = "alondra";
 
 #[derive(clap::Args, Default)]
 pub struct Args {
-    #[arg(long, help = tr!("Enroll this Mac in the Alondra service using browser login", "Da de alta este Mac en el servicio Alondra mediante login en el navegador"))]
-    pub service: bool,
     #[arg(long, help = tr!("Name of the person the nodes talk to", "Nombre de la persona con la que hablan los nodos"))]
     pub name: Option<String>,
     #[arg(long, help = tr!("URL the iPhone uses to reach this Mac", "URL por la que el iPhone llega a este Mac"))]
@@ -197,14 +194,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 restart = true;
             }
         }
-        (None, None) if args.service => {}
-        (None, None) => steps.push(Step::Warn(
-            tr!(
-                "No apns.json: the iPhone gets no notifications. Rerun with --apns-key-path --apns-key-id --apns-team-id --apns-topic.",
-                "Sin apns.json: el iPhone no recibe notificaciones. Vuelve a ejecutarlo con --apns-key-path --apns-key-id --apns-team-id --apns-topic."
-            )
-            .into(),
-        )),
+        (None, None) => {}
         (None, Some(_)) => steps.push(Step::Unchanged { path: paths.apns() }),
     }
 
@@ -349,20 +339,6 @@ fn package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
         .map(|assets| (bin, assets))
 }
 
-fn prompt(question: &str, default: &str) -> Result<String> {
-    let mut out = std::io::stderr();
-    if default.is_empty() {
-        write!(out, "{question}: ")?;
-    } else {
-        write!(out, "{question} [{default}]: ")?;
-    }
-    out.flush()?;
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
-    let line = line.trim();
-    Ok(if line.is_empty() { default.to_string() } else { line.to_string() })
-}
-
 pub fn local_host_name() -> Option<String> {
     let out = Command::new("/usr/sbin/scutil").args(["--get", "LocalHostName"]).output().ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -406,28 +382,8 @@ fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig>
     };
     wanted = wanted.overlay(&flags);
     let known = |w: &FileConfig, f: fn(&FileConfig) -> bool| f(w) || existing.is_some_and(f);
-    let interactive = !args.no_input && std::io::stdin().is_terminal();
     if !known(&wanted, |c| c.name.is_some()) {
-        let fallback = config::system_name().unwrap_or_default();
-        let name = if interactive { prompt(tr!("Your name (the nodes address you by it)", "Tu nombre (los nodos te llaman así)"), &fallback)? } else { fallback };
-        wanted.name = Some(name).filter(|n| !n.is_empty());
-    }
-    if interactive && !args.service && !known(&wanted, |c| c.public_url.is_some()) {
-        let port = wanted.port.or(existing.and_then(|e| e.port)).unwrap_or(alondra_core::DEFAULT_PORT);
-        let suggestion = lan_url(port).unwrap_or_default();
-        let url = prompt(
-            tr!(
-                "URL the iPhone uses to reach this Mac (LAN, Tailscale or a tunnel; empty for none)",
-                "URL por la que el iPhone llega a este Mac (red local, Tailscale o un túnel; vacío para ninguna)"
-            ),
-            &suggestion,
-        )?;
-        if !url.is_empty() {
-            if url == suggestion && !known(&wanted, |c| c.listen.is_some()) {
-                wanted.listen = Some([0, 0, 0, 0].into());
-            }
-            wanted.public_url = Some(url);
-        }
+        wanted.name = config::system_name().filter(|n| !n.is_empty());
     }
     Ok(wanted)
 }
@@ -536,12 +492,10 @@ pub fn run(args: Args) -> Result<()> {
         }
         bail!(tr!("setup stopped", "setup detenido"));
     }
-    let service_created = if args.service && !args.dry_run {
+    let service_created = if !args.dry_run {
         crate::service_setup::enroll(&paths.alondra_home)?
     } else {
-        if args.service {
-            println!("would sign in and enroll this Mac with the Alondra service");
-        }
+        println!("would sign in if needed and enroll this Mac with the Alondra service");
         false
     };
     for step in &plan.steps {
@@ -566,10 +520,12 @@ pub fn run(args: Args) -> Result<()> {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
         return Ok(());
     }
-    if args.skip_pair || args.skip_service || args.service {
+    if args.skip_pair || args.skip_service {
         return Ok(());
     }
-    pair_when_ready(&config)
+    // The service pairing flow is connected after Mac approval support lands.
+    let _ = config;
+    Ok(())
 }
 
 fn print_step(step: &Step, dry: bool) {
@@ -749,7 +705,7 @@ mod tests {
             ],
             "the plugin is not installed for every session: alondrad loads it into the ones it launches"
         );
-        assert!(p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("apns.json"))));
+        assert!(!p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("apns.json"))));
     }
 
     #[test]

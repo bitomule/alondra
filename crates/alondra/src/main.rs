@@ -73,8 +73,8 @@ enum Cmd {
         command: StateCmd,
     },
     #[command(about = tr!(
-        "Install or update Alondra on this Mac: config.toml, apns.json, launchd service, Claude Code plugin and pairing",
-        "Instala o actualiza Alondra en este Mac: config.toml, apns.json, servicio de launchd, plugin de Claude Code y vinculación"
+        "Set up or repair Alondra: account login, Mac enrollment, daemon, Claude Code plugin and pairing",
+        "Configura o repara Alondra: login, alta del Mac, daemon, plugin de Claude Code y vinculación"
     ))]
     Setup(Box<setup::Args>),
     #[command(about = tr!("Show the effective settings (environment > config.toml > default)", "Enseña los ajustes en vigor (entorno > config.toml > por defecto)"))]
