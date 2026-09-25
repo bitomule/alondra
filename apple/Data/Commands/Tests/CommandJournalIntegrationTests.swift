@@ -87,6 +87,34 @@ import AlondraCommands
         #expect(try await relaunched.restore() == [uncertain])
     }
 
+    @Test func unresolvedCardBlocksDifferentNotificationActionAfterRelaunch() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = CommandGate(scope: scope, journal: journal)
+        let first = await gate.submit(.moreContext(7), itemID: "q7", in: scope,
+            isUnknown: { _ in true }) { throw URLError(.timedOut) }
+        guard case .unknown(let original) = first else {
+            Issue.record("Lost response was not retained")
+            return
+        }
+        let relaunched = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory))
+        let conflicting = await relaunched.submit(.answer(7), itemID: "q7", in: scope,
+            isUnknown: { _ in true }) {
+            Issue.record("A different button sent a second command for an unresolved card")
+        }
+        guard case .unknown(let blocked) = conflicting else {
+            Issue.record("Conflicting card action was not blocked")
+            return
+        }
+        #expect(blocked.id == original.id)
+        let otherCard = await relaunched.submit(.answer(8), itemID: "q8", in: scope,
+            isUnknown: { _ in true }) {}
+        guard case .confirmed = otherCard else {
+            Issue.record("An unrelated card was blocked")
+            return
+        }
+    }
+
     @Test func confirmedAttemptDoesNotBecomeUnknownAfterRelaunch() async throws {
         let (directory, journal) = try temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -99,6 +127,7 @@ import AlondraCommands
         }
         let relaunched = CommandGate(scope: scope, journal: journal)
         #expect(try await relaunched.restore().isEmpty)
+        #expect(try await journal.records().isEmpty)
     }
 
     @Test func concurrentSecondAttemptCannotPassWhileFirstSendIsInFlight() async throws {

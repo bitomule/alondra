@@ -28,12 +28,12 @@ including other `ALONDRA_Q_` prefixes, are preserved. Delivered-notification
 cleanup only touches the current binding. Send-failure notices
 carry no action category or original payload.
 
-D1b's `CommandGate` is now in main, but this headless path still calls
-`NotificationAction.execute(using:)` once; it never automatically retries a
-mutation after a timeout. Wire it to the final typed transport when the
-backend idempotency contract is final. Persist unknown outcomes in the D1b
-journal before treating notification actions as release ready. This PR does not
-implement the journal or enable mutation replay.
+D1b's app-owned `CommandGate` now reserves the command in its durable journal
+before `NotificationAction.execute(using:)` dispatches. Push actions never retry
+automatically after a timeout. The pairing credential revision must match the
+active FleetStore scope, and the binding is checked again just before dispatch;
+an unknown outcome leaves an in-app warning and an informational local notice.
+The notification service extension still holds no signing key or journal access.
 The server may have committed an action before the client observes a timeout;
 repeating it by hand can produce a duplicate. Resolve that unknown outcome
 using the final D1b receipt/status endpoint before enabling retries.

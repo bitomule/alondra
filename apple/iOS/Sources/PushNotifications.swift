@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraCommands
 import AlondraNotificationActions
 import AlondraNotificationPayload
 import AlondraPushBinding
@@ -59,6 +60,7 @@ struct QuietHours: Equatable {
 @MainActor
 @Observable
 final class PushCenter {
+    private struct BindingChangedBeforeSend: Error {}
     enum Authorization: Equatable {
         case unknown, notDetermined, denied, authorized
     }
@@ -242,28 +244,47 @@ final class PushCenter {
             route = NotificationRoute(itemID: item.inboxID, opensDetail: true, binding: binding)
         default:
             guard let command = NotificationAction(item: item, action: response.action, text: response.text) else { return }
-            await send(response, binding: binding) { try await command.execute(using: $0) }
+            await send(response, itemID: item.inboxID, binding: binding, command: command)
         }
     }
 
-    private func send(_ response: NotificationResponse, binding: NotificationPayload.Binding, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async {
-        guard let client = currentClient() else {
+    private func send(_ response: NotificationResponse, itemID: String, binding: NotificationPayload.Binding, command: NotificationAction) async {
+        guard let client = currentClient(), let credentialRevision = pairing.credentialRevision else {
             await reportFailure(response, reason: String(localized: "No server configured"))
             return
         }
         let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action")
         defer { UIApplication.shared.endBackgroundTask(background) }
-        do {
-            guard currentBinding() == binding else { return }
-            try await Self.withDeadline(Self.actionDeadline) { try await action(client) }
-            guard currentBinding() == binding else { return }
+        guard currentBinding() == binding else { return }
+        let result = await fleet.submitCommand(command.commandKind, itemID: itemID,
+            expectedCredentialRevision: credentialRevision, using: client) { [self] scopedClient in
+            guard await currentBinding() == binding else { throw BindingChangedBeforeSend() }
+            try await Self.withDeadline(Self.actionDeadline) { try await command.execute(using: scopedClient) }
+        }
+        guard currentBinding() == binding else { return }
+        switch result {
+        case .confirmed:
             if UIApplication.shared.applicationState == .active {
                 await fleet.refresh(ifCurrentClientMatches: client.identity)
             }
-        } catch {
-            guard currentBinding() == binding else { return }
+        case .unknown:
+            await reportUncertain(response)
+        case .rejected(let error):
+            guard !(error is BindingChangedBeforeSend) else { return }
             await reportFailure(response, reason: error.friendlyDescription)
+        case .obsolete:
+            return
         }
+    }
+
+    private func reportUncertain(_ response: NotificationResponse) async {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Check Alondra")
+        content.body = response.title.isEmpty
+            ? String(localized: "The action may have completed. Check its current state before trying again.")
+            : String(localized: "\(response.title) may have completed. Check its current state before trying again.")
+        content.sound = .default
+        try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
     private func reportFailure(_ response: NotificationResponse, reason: String) async {

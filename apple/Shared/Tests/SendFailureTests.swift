@@ -141,6 +141,28 @@ import Testing
         #expect(relaunched.uncertainSends.isEmpty)
     }
 
+    @Test func headlessCommandWaitsForMatchingCredentialRevisionAtSameDeviceID() async {
+        let client = AlondraClient(base: URL(string: "https://example.test")!, device: "iphone")
+        let old = CommandScope(server: client.base, deviceID: "iphone", credentialRevision: "key-A", generation: 1)
+        let fleet = FleetStore(client: client, commandScope: old)
+        let premature = await fleet.submitCommand(.answer(7), itemID: "q7",
+            expectedCredentialRevision: "key-B", using: client) { _ in
+            Issue.record("New signer dispatched while FleetStore still owned the old credential")
+        }
+        guard case .obsolete = premature else {
+            Issue.record("Mismatched credential was reserved under the old journal scope")
+            return
+        }
+        let next = CommandScope(server: client.base, deviceID: "iphone", credentialRevision: "key-B", generation: 2)
+        fleet.use(client, commandScope: next)
+        let ready = await fleet.submitCommand(.answer(7), itemID: "q7",
+            expectedCredentialRevision: "key-B", using: client) { _ in }
+        guard case .confirmed = ready else {
+            Issue.record("Matching credential did not dispatch after activation")
+            return
+        }
+    }
+
     @Test func anUnansweredCommandCannotBeSentToAnotherServer() async throws {
         let a = AlondraClient(base: URL(string: "http://a.example")!)
         let b = AlondraClient(base: URL(string: "http://b.example")!)

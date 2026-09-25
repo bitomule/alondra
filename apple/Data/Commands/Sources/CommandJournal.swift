@@ -50,9 +50,7 @@ public actor FileCommandJournal: CommandJournaling {
         try withLock {
             if let existing = try recordsUnlocked().first(where: {
                 ($0.state == .pending || $0.state == .unknown)
-                    && $0.command.scope.sameIdentity(as: command.scope)
-                    && $0.command.kind == command.kind
-                    && $0.command.itemID == command.itemID
+                    && $0.command.conflicts(with: command.kind, itemID: command.itemID, scope: command.scope)
             }) {
                 return .existing(existing.command)
             }
@@ -113,6 +111,14 @@ public actor FileCommandJournal: CommandJournaling {
                 // A previous pending record is durable. If directory sync fails here,
                 // either terminal state or pending state can survive; both are safe.
                 _ = try? syncDirectory()
+                if record.state == .confirmed {
+                    // Terminal metadata has no reconciliation value. A failed cleanup only
+                    // leaves a harmless confirmed record, never an executable request.
+                    do {
+                        try manager.removeItem(at: file)
+                        _ = try? syncDirectory()
+                    } catch {}
+                }
             }
         } catch {
             if isOpen { _ = Darwin.close(descriptor) }

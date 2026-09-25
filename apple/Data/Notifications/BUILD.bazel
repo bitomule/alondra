@@ -5,11 +5,11 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraNotificationActions",
     visibility = ["//apple:__pkg__"],
-    deps = ["//apple:AlondraShared", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = ["//apple:AlondraShared", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )
 
 swift_test(
     name = "AlondraNotificationActionsTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraNotificationActions", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = [":AlondraNotificationActions", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )

@@ -56,6 +56,13 @@ public struct UncertainCommand: Identifiable, Equatable, Sendable, Codable {
         self.kind = kind
         self.itemID = itemID
     }
+
+    /// One unresolved card blocks all of its actions, even if the user taps another button.
+    public func conflicts(with kind: CommandKind, itemID: String?, scope: CommandScope) -> Bool {
+        guard self.scope.sameIdentity(as: scope) else { return false }
+        if let itemID { return self.itemID == itemID }
+        return self.itemID == nil && self.kind == kind
+    }
 }
 
 public enum CommandResult: Sendable {
@@ -149,7 +156,7 @@ public actor CommandGate {
             catch { return .rejected(error) }
         }
         guard expectedScope == scope, submittedGeneration == generation else { return .obsolete }
-        if let existing = (pending + uncertain).first(where: { $0.kind == kind && $0.itemID == itemID && $0.scope.sameIdentity(as: expectedScope) }) {
+        if let existing = (pending + uncertain).first(where: { $0.conflicts(with: kind, itemID: itemID, scope: expectedScope) }) {
             return .unknown(existing)
         }
         let command = UncertainCommand(id: UUID(), scope: expectedScope, kind: kind, itemID: itemID)

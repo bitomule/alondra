@@ -1,4 +1,5 @@
 import AlondraNotificationPayload
+import AlondraCommands
 import AlondraShared
 import Foundation
 
@@ -8,6 +9,14 @@ public enum NotificationAction: Equatable, Sendable {
     case answer(question: UInt64, text: String, option: String?)
     case moreContext(question: UInt64)
     case markRead(report: UInt64)
+
+    public var commandKind: CommandKind {
+        switch self {
+        case .answer(let question, _, _): .answer(question)
+        case .moreContext(let question): .moreContext(question)
+        case .markRead(let report): .markRead(report)
+        }
+    }
 
     public init?(item: NotificationPayload.Item, action: String, text: String?) {
         switch (item.kind, action) {

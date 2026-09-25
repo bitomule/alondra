@@ -419,6 +419,13 @@ public final class FleetStore {
         return result
     }
 
+    /// Headless callers share the app's scoped, durable command gate and uncertainty UI.
+    public func submitCommand(_ kind: CommandKind, itemID: String?, expectedCredentialRevision: String, using client: AlondraClient,
+        _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> CommandResult {
+        guard expectedCredentialRevision == credentialRevision else { return .obsolete }
+        return await submit(kind, itemID: itemID, using: client, action)
+    }
+
     public func isHidden(_ itemID: String) -> Bool {
         hidden.contains(itemID)
     }
