@@ -198,9 +198,7 @@ final class PushCenter {
     private func currentClient() -> AlondraClient? {
         let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
         guard let url = AlondraClient.serverURL(address), let signer = pairing.signer(for: url) else { return nil }
-        let client = AlondraClient(base: url, device: "iphone", signer: signer)
-        fleet.use(client)
-        return fleet.client
+        return AlondraClient(base: url, device: "iphone", signer: signer)
     }
 
     /// Simulators and development-signed builds talk to the APNs sandbox; the embedded

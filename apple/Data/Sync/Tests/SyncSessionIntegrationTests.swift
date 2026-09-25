@@ -235,4 +235,72 @@ final class SyncSessionIntegrationTests: XCTestCase {
         guard case .offline = resumed?.connection else { return XCTFail("Expected B offline") }
         await session.stop()
     }
+
+    func testInvalidServerSuspendsOldRequestAndExistingWindowsResumeOnValidServer() async throws {
+        let transport = ControlledTransport()
+        let old = AlondraAPIClient(base: base, transport: transport)
+        let replacement = AlondraAPIClient(base: URL(string: "https://new.example")!, transport: transport)
+        let session = SyncSession(client: old, credentialRevision: "old")
+        var window = await session.subscribe().makeAsyncIterator()
+        await transport.waitForRequests(1)
+
+        await session.suspendForInvalidConfiguration("Invalid server URL")
+        await transport.waitForCancellations(1)
+        let suspended = await window.next()
+        guard case .invalidConfiguration = suspended?.connection else { return XCTFail("Expected invalid configuration") }
+        XCTAssertNil(suspended?.snapshot)
+        let pausedRequestCount = await transport.requestCount()
+        XCTAssertEqual(pausedRequestCount, 1)
+
+        await session.use(replacement, credentialRevision: "new")
+        await transport.waitForRequests(2)
+        await transport.respond(1, body: try overview(1))
+        let fresh = await nextSnapshot(from: &window)
+        XCTAssertEqual(fresh?.identity.server, replacement.base)
+        XCTAssertEqual(fresh?.snapshot?.tick, 1)
+        await session.stop()
+    }
+
+    func testInvalidSavedServerNeverStartsTransportUntilReconfigured() async throws {
+        let transport = ControlledTransport()
+        let client = AlondraAPIClient(base: base, transport: transport)
+        let session = SyncSession(client: client, credentialRevision: "local", initialInvalidConfiguration: "Invalid server URL")
+        var window = await session.subscribe().makeAsyncIterator()
+        let initial = await window.next()
+        guard case .invalidConfiguration = initial?.connection else { return XCTFail("Expected invalid configuration") }
+        XCTAssertNil(initial?.snapshot)
+        let initialRequestCount = await transport.requestCount()
+        XCTAssertEqual(initialRequestCount, 0)
+        await session.use(client, credentialRevision: "local")
+        await transport.waitForRequests(1)
+        await session.stop()
+    }
+
+    func testInvalidConfigurationSurvivesClosingAndReopeningLastWindow() async throws {
+        let transport = ControlledTransport()
+        let session = SyncSession(
+            client: AlondraAPIClient(base: base, transport: transport),
+            credentialRevision: "local",
+            initialInvalidConfiguration: "Invalid server URL"
+        )
+        let firstWindow = Task {
+            for await _ in await session.subscribe() { }
+        }
+        await Task.yield()
+        firstWindow.cancel()
+        await firstWindow.value
+        for _ in 0..<100 {
+            if await session.state.generation > 0 { break }
+            await Task.yield()
+        }
+
+        var reopened = await session.subscribe().makeAsyncIterator()
+        let replayed = await reopened.next()
+        guard case .invalidConfiguration = replayed?.connection else {
+            return XCTFail("Reopening a scene must not restart the old server")
+        }
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 0)
+        await session.stop()
+    }
 }

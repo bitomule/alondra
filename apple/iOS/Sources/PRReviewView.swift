@@ -167,14 +167,14 @@ struct PRReviewView: View {
     private func finish(_ outcome: PullRequestOutcome) {
         sending = true
         let pr = current
-        let handoff = FleetStore.Handoff(itemID: InboxItem.pullRequest(pr).id, label: outcome.handoffLabel, kind: outcome.commandKind(for: pr.id)) {
+        let handoff = FleetStore.Handoff(presentationToken: fleet.presentationToken, itemID: InboxItem.pullRequest(pr).id, label: outcome.handoffLabel, kind: outcome.commandKind(for: pr.id)) {
             try await pr.perform(outcome, using: $0)
         }
         let fleet = fleet
         dismiss()
         Task {
             try? await Task.sleep(for: .milliseconds(320))
-            fleet.handoff = handoff
+            fleet.publishHandoff(handoff)
         }
     }
 

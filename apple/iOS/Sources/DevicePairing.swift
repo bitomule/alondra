@@ -28,6 +28,8 @@ struct PairingInvite: Equatable {
 @MainActor
 @Observable
 final class DevicePairing {
+    /// Changes even when a server keeps the same device ID after key rotation.
+    private(set) var revision = UUID()
     private(set) var deviceID: String?
     private(set) var pairedURL: URL?
     private(set) var signer: AlondraDeviceIdentity.DeviceSigner?
@@ -39,6 +41,7 @@ final class DevicePairing {
         deviceID = identity.signer.deviceID
         pairedURL = identity.serverURL
         signer = identity.signer
+        revision = UUID()
     }
 
     var isPaired: Bool { signer != nil }
@@ -72,6 +75,7 @@ final class DevicePairing {
         deviceID = identity.signer.deviceID
         pairedURL = identity.serverURL
         signer = identity.signer
+        revision = UUID()
     }
 
     func unpair() {
@@ -79,5 +83,6 @@ final class DevicePairing {
         deviceID = nil
         pairedURL = nil
         signer = nil
+        revision = UUID()
     }
 }

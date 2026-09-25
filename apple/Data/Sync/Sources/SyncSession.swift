@@ -15,7 +15,7 @@ public struct SyncIdentity: Hashable, Sendable {
     }
 }
 
-public struct SyncSnapshot: Sendable {
+public struct SyncSnapshot: Equatable, Sendable {
     public let tick: UInt64
     public let body: Data
 
@@ -26,16 +26,17 @@ public struct SyncSnapshot: Sendable {
     }
 }
 
-public enum SyncConnection: Sendable {
+public enum SyncConnection: Equatable, Sendable {
     case connecting
     case online
     case offline(String)
+    case invalidConfiguration(String)
     case unpaired
 }
 
 /// A complete renderable value. Every emission identifies the credential generation that owns
 /// its snapshot, so a slow subscriber can safely discard intermediate buffered states.
-public struct SyncState: Sendable {
+public struct SyncState: Equatable, Sendable {
     public let identity: SyncIdentity
     public let generation: UInt64
     public let connection: SyncConnection
@@ -64,14 +65,19 @@ public actor SyncSession {
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<SyncState>.Continuation] = [:]
 
-    public init(client: AlondraAPIClient, credentialRevision: String, retryDelay: Duration = .seconds(2)) {
+    public init(client: AlondraAPIClient, credentialRevision: String, retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil) {
         self.client = client
         let identity = SyncIdentity(
             server: client.base,
             deviceID: client.signer?.deviceID ?? client.device,
             credentialRevision: credentialRevision
         )
-        self.state = SyncState(identity: identity, generation: 0, connection: .connecting, snapshot: nil)
+        self.state = SyncState(
+            identity: identity,
+            generation: 0,
+            connection: initialInvalidConfiguration.map(SyncConnection.invalidConfiguration) ?? .connecting,
+            snapshot: nil
+        )
         self.retryDelay = retryDelay
     }
 
@@ -103,6 +109,15 @@ public actor SyncSession {
         startIfNeeded()
     }
 
+    /// Keep scene subscriptions alive while a saved server address is invalid. A later `use`
+    /// resumes the same subscribers with a new identity; no request reaches the old server.
+    public func suspendForInvalidConfiguration(_ reason: String) {
+        generation &+= 1
+        loop?.cancel()
+        loop = nil
+        publish(SyncState(identity: identity, generation: generation, connection: .invalidConfiguration(reason), snapshot: nil))
+    }
+
     /// Ends all subscriptions and cancels the active long poll.
     public func stop() {
         generation &+= 1
@@ -119,11 +134,18 @@ public actor SyncSession {
         generation &+= 1
         loop?.cancel()
         loop = nil
-        state = SyncState(identity: identity, generation: generation, connection: .connecting, snapshot: state.snapshot)
+        let connection: SyncConnection
+        if case .invalidConfiguration = state.connection {
+            connection = state.connection
+        } else {
+            connection = .connecting
+        }
+        state = SyncState(identity: identity, generation: generation, connection: connection, snapshot: state.snapshot)
     }
 
     private func startIfNeeded() {
         guard !subscribers.isEmpty, loop == nil else { return }
+        if case .invalidConfiguration = state.connection { return }
         let currentGeneration = generation
         let currentClient = client
         loop = Task { [weak self] in

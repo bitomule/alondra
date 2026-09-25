@@ -18,12 +18,14 @@ public final class FleetStore {
 
     public struct Handoff: Sendable {
         public let id = UUID()
+        public let presentationToken: UUID
         public let itemID: String
         public let label: String
         public let kind: MutationKind
         public let action: @Sendable (AlondraClient) async throws -> Void
 
-        public init(itemID: String, label: String, kind: MutationKind, action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+        public init(presentationToken: UUID, itemID: String, label: String, kind: MutationKind, action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+            self.presentationToken = presentationToken
             self.itemID = itemID
             self.label = label
             self.kind = kind
@@ -38,7 +40,8 @@ public final class FleetStore {
     public var lastError: String?
     public var refusal: String?
     public var notice: Notice?
-    public var handoff: Handoff?
+    public private(set) var handoff: Handoff?
+    public private(set) var presentationToken = UUID()
     public var leaving: String?
     public private(set) var resolvedCount = 0
     public private(set) var skippedCount = 0
@@ -65,6 +68,7 @@ public final class FleetStore {
     private let commandGate: CommandGate
     private var credentialRevision: String
     private var credentialGeneration: UInt64 = 0
+    private var commandsEnabled = true
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
     /// What a node's own route last said its threads do, kept for when asking it again fails.
@@ -174,6 +178,7 @@ public final class FleetStore {
     }
 
     public func use(_ client: AlondraClient, commandScope nextScope: CommandScope? = nil) {
+        commandsEnabled = true
         let identityChanged = client.identity != self.client.identity
         self.client = client
         if let nextScope {
@@ -185,9 +190,22 @@ public final class FleetStore {
         }
     }
 
+    /// An invalid saved address must not leave the previous server available for mutations.
+    public func suspendForInvalidConfiguration(_ reason: String) {
+        commandsEnabled = false
+        resetPresentationForIdentityChange()
+        connection = .offline(reason)
+    }
+
     /// The root calls this on every credential generation change, even if URL and device ID
     /// are unchanged. It invalidates any in-flight mutation's right to update presentation.
     public func resetPresentationForIdentityChange(to nextScope: CommandScope? = nil) {
+        presentationToken = UUID()
+        handoff = nil
+        notice = nil
+        refusal = nil
+        lastError = nil
+        leaving = nil
         credentialRevision = nextScope?.credentialRevision ?? UUID().uuidString
         credentialGeneration = nextScope?.generation ?? (credentialGeneration &+ 1)
         uncertainSends = []
@@ -199,6 +217,17 @@ public final class FleetStore {
         taskActionsUnavailable = false
         taskDetailUnavailable = false
         connection = .connecting
+    }
+
+    public func publishHandoff(_ next: Handoff) {
+        guard next.presentationToken == presentationToken else { return }
+        handoff = next
+    }
+
+    public func takeHandoff(for itemID: String) -> Handoff? {
+        guard let handoff, handoff.presentationToken == presentationToken, handoff.itemID == itemID else { return nil }
+        self.handoff = nil
+        return handoff
     }
 
     public func start() {
@@ -289,7 +318,8 @@ public final class FleetStore {
     }
 
     @discardableResult
-    public func resolve(_ item: InboxItem, kind: MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+    public func resolve(_ item: InboxItem, kind: MutationKind, expectedPresentationToken: UUID? = nil, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        if let expectedPresentationToken, expectedPresentationToken != presentationToken { return false }
         let client = client
         animate(.spring(duration: 0.55, bounce: 0.2)) {
             ring.resolve(item, in: ordered)
@@ -339,14 +369,14 @@ public final class FleetStore {
     }
 
     private func submit(_ kind: CommandKind, itemID: String?, using client: AlondraClient, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> CommandResult {
-        guard self.client.identity == client.identity else { return .obsolete }
+        guard commandsEnabled, self.client.identity == client.identity else { return .obsolete }
         let scope = commandScope(client)
         await commandGate.use(scope)
-        guard self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
+        guard commandsEnabled, self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
         let result = await commandGate.submit(kind, itemID: itemID, in: scope, isUnknown: { $0.isTransient || $0.isCancellation }) {
             try await action(client)
         }
-        guard self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
+        guard commandsEnabled, self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
         if case .unknown(let command) = result { uncertainSends.append(command) }
         return result
     }

@@ -53,8 +53,7 @@ struct TriageCard: View {
             }
             .accessibilityAction(named: "Leave for Later", onSkip)
             .onChange(of: fleet.handoff?.id, initial: true) {
-                guard let handoff = fleet.handoff, handoff.itemID == item.id else { return }
-                fleet.handoff = nil
+                guard let handoff = fleet.takeHandoff(for: item.id) else { return }
                 resolve(stamp(for: handoff.label), kind: handoff.kind, handoff.action)
             }
     }
@@ -721,9 +720,10 @@ struct TriageCard: View {
         fleet.leaving = item.id
         let item = item
         let fleet = fleet
+        let presentationToken = fleet.presentationToken
         Task {
             try? await Task.sleep(for: .milliseconds(520))
-            let ok = await fleet.resolve(item, kind: kind, action)
+            let ok = await fleet.resolve(item, kind: kind, expectedPresentationToken: presentationToken, action)
             if !ok {
                 withAnimation(.spring(duration: 0.3)) { self.stamp = nil }
             }

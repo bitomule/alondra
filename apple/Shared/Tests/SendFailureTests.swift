@@ -177,4 +177,25 @@ import Testing
         #expect(fleet.client.base == b.base)
         #expect(fleet.connection == .connecting)
     }
+
+    @Test func delayedGestureAndHandoffFromOldServerCannotExecuteOnNewServer() async throws {
+        let a = AlondraClient(base: URL(string: "https://a.example")!)
+        let b = AlondraClient(base: URL(string: "https://b.example")!)
+        let fleet = FleetStore(client: a)
+        let tokenA = fleet.presentationToken
+        let counter = Counter()
+        let question = try JSONDecoder().decode(Question.self, from: Data(#"{"id":42,"sessionId":"node","title":"Q","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
+        let handoff = FleetStore.Handoff(presentationToken: tokenA, itemID: "q42", label: "old decision", kind: .answer(42)) { _ in
+            await counter.sent()
+        }
+
+        fleet.use(b)
+        fleet.publishHandoff(handoff)
+        #expect(fleet.takeHandoff(for: "q42") == nil)
+        let accepted = await fleet.resolve(.question(question), kind: .answer(42), expectedPresentationToken: tokenA) { _ in
+            await counter.sent()
+        }
+        #expect(!accepted)
+        #expect(await counter.calls == 0)
+    }
 }

@@ -1,4 +1,6 @@
 import AlondraShared
+import AlondraiOSFeature
+import ComposableArchitecture
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -10,7 +12,7 @@ struct AlondraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(serverURL: serverURL)
+            RootView(serverURL: serverURL, services: delegate.sync)
                 .environment(delegate.fleet)
                 .environment(delegate.pairing)
                 .environment(delegate.push)
@@ -23,6 +25,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     let fleet = FleetStore(client: AlondraClient(base: AlondraClient.defaultURL, device: "iphone"), animated: true, retryDelay: .seconds(3))
     let pairing = DevicePairing()
     lazy var push = PushCenter(fleet: fleet, pairing: pairing)
+    lazy var sync = IOSAppSync(fleet: fleet, pairing: pairing, push: push)
     private lazy var responder = NotificationResponder(push: push)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -46,83 +49,63 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 private struct RootView: View {
     let serverURL: String
+    let services: IOSAppSync
+
+    @State private var context: IOSWindowContext
+    @State private var sceneID = UUID()
+
+    init(serverURL: String, services: IOSAppSync) {
+        self.serverURL = serverURL
+        self.services = services
+        _context = State(initialValue: IOSWindowContext(services: services))
+    }
 
     @Environment(FleetStore.self) private var fleet
     @Environment(DevicePairing.self) private var pairing
     @Environment(PushCenter.self) private var push
     @Environment(\.scenePhase) private var scenePhase
-    @State private var tab = AppTab.triage
-
-    enum AppTab: Hashable {
-        case triage, tasks, fleet, new
-    }
-
-    /// While the app is in front of the user (it leaves the foreground when the screen locks),
-    /// alondrad holds back pushes, as it does for the TUI and the Mac.
-    private func reportActivity() async {
-        while !Task.isCancelled {
-            try? await fleet.client.activity(client: "iphone")
-            try? await Task.sleep(for: .seconds(60))
-        }
-    }
-
     private struct SyncKey: Hashable {
         let url: String
-        let device: String?
-        let credentialRevision: String?
-        let active: Bool
+        let revision: UUID
     }
 
-    @State private var appliedCredentialRevision: String?
-
     var body: some View {
-        TabView(selection: $tab) {
-            Tab("Waiting for You", systemImage: "tray.full", value: .triage) {
+        @Bindable var feature = context.feature
+        return TabView(selection: $feature.tab) {
+            Tab("Waiting for You", systemImage: "tray.full", value: IOSRootFeature.Tab.triage) {
                 TriageView()
             }
-            .badge(fleet.connection == .unpaired ? 0 : fleet.queue.count)
-            Tab("Tasks", systemImage: "checklist", value: .tasks) {
+            .badge(feature.connection == .unpaired ? 0 : feature.inboxCount)
+            Tab("Tasks", systemImage: "checklist", value: IOSRootFeature.Tab.tasks) {
                 TasksTab()
             }
-            Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
+            Tab("Fleet", systemImage: "circle.hexagongrid", value: IOSRootFeature.Tab.fleet) {
                 FleetTab()
             }
-            Tab("New", systemImage: "plus.bubble", value: .new) {
+            Tab("New", systemImage: "plus.bubble", value: IOSRootFeature.Tab.new) {
                 NewRequestView()
             }
         }
+        .id(feature.presentationGeneration)
         .tabBarMinimizeBehavior(.onScrollDown)
-        .onChange(of: fleet.focusRequest) { tab = .triage }
-        .onChange(of: push.route) { if push.route != nil { tab = .triage } }
-        .onChange(of: fleet.queue) { push.inboxChanged(pending: fleet.queue) }
-        .task(id: pairing.deviceID) {
-            guard pairing.isPaired else { return }
-            await push.activate()
-            push.scheduleSync()
+        .onChange(of: fleet.focusRequest) { context.feature.send(.focusTriage) }
+        .onChange(of: fleet.queue.count) { _, count in context.feature.send(.inboxCountChanged(count)) }
+        .onChange(of: push.route) { if push.route != nil { context.feature.send(.focusTriage) } }
+        .task(id: pairing.revision) {
+            context.feature.send(.pairingChanged)
         }
         .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            await push.refreshAuthorization()
+            context.feature.send(.sceneActive(scenePhase != .background))
+            context.feature.send(.activityActive(sceneID, scenePhase == .active))
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active, pairing.isPaired else { return }
-            await reportActivity()
+        .onDisappear {
+            context.feature.send(.sceneActive(false))
+            context.feature.send(.activityActive(sceneID, false))
         }
         .overlay(alignment: .bottom) { NoticeToast() }
         .closeRefusalAlert(fleet)
-        .task(id: SyncKey(url: serverURL, device: pairing.deviceID, credentialRevision: pairing.credentialRevision, active: scenePhase != .background)) {
-            guard scenePhase != .background else { return }
-            if let url = AlondraClient.serverURL(serverURL) {
-                let client = AlondraClient(base: url, device: "iphone", signer: pairing.signer(for: url))
-                if appliedCredentialRevision != nil, appliedCredentialRevision != pairing.credentialRevision,
-                   fleet.client.identity == client.identity {
-                    fleet.resetPresentationForIdentityChange()
-                }
-                fleet.use(client)
-                appliedCredentialRevision = pairing.credentialRevision
-                push.scheduleSync()
-            }
-            await fleet.run()
+        .task(id: SyncKey(url: serverURL, revision: pairing.revision)) {
+            context.feature.send(.configurationChanged(serverURL))
         }
     }
 }

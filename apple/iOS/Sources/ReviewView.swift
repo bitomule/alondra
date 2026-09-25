@@ -303,12 +303,12 @@ struct ReviewView: View {
 
     private func finish(_ label: String, kind: FleetStore.MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         sending = true
-        let handoff = FleetStore.Handoff(itemID: item.id, label: label, kind: kind, action: action)
+        let handoff = FleetStore.Handoff(presentationToken: fleet.presentationToken, itemID: item.id, label: label, kind: kind, action: action)
         let fleet = fleet
         dismiss()
         Task {
             try? await Task.sleep(for: .milliseconds(320))
-            fleet.handoff = handoff
+            fleet.publishHandoff(handoff)
         }
     }
 

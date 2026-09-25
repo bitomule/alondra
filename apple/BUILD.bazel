@@ -59,7 +59,16 @@ swift_library(
     name = "AlondraiOSEntry",
     srcs = glob(["iOS/Sources/**/*.swift"]),
     module_name = "AlondraiOS",
-    deps = [":AlondraShared", "//apple/DeviceIdentity:AlondraDeviceIdentity", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = [
+        ":AlondraShared",
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Data/Commands:AlondraCommands",
+        "//apple/Data/Sync:AlondraSync",
+        "//apple/DeviceIdentity:AlondraDeviceIdentity",
+        "//apple/NotificationPayload:AlondraNotificationPayload",
+        "//apple/iOS/Feature:AlondraiOSFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 ios_application(
