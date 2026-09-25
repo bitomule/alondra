@@ -1322,7 +1322,7 @@ async fn resolve_pr_conflicts(State(hub): State<AppState>, Path(id): Path<u64>) 
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
     if pr.state != alondra_core::pr::PrState::Open {
-        return err(StatusCode::CONFLICT, format!("{} is no longer open", pr.url));
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
     }
     match tell_about_pr(&hub, &pr, resolve_conflicts_text(&hub.config.name, &pr), MessageFrom::User, None, vec![]) {
         Ok(to) => {
@@ -1356,6 +1356,9 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
+    if pr.state != alondra_core::pr::PrState::Open {
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
+    }
     if b.text.trim().is_empty() {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to change");
     }
@@ -1389,6 +1392,9 @@ async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b):
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
+    if pr.state != alondra_core::pr::PrState::Open {
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
+    }
     if b.text.trim().is_empty() {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "say what to ask");
     }
@@ -3972,6 +3978,27 @@ mod tests {
 
         assert!(hub.read(|v| v.prs[&1].changes_requested_on.is_none()), "asking must not park the card");
         assert_eq!(hub.read(|v| v.prs_awaiting_user().map(|p| p.id).collect::<Vec<_>>()), vec![1], "the card stays in the inbox");
+    }
+
+    #[tokio::test]
+    async fn a_closed_pr_rejects_review_messages_before_the_node_is_contacted() {
+        let hub = temp_hub("closed-review");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/150".into(), session_id: "s".into(), task: None }).unwrap();
+        let mut closed = hub.read(|v| v.prs[&1].clone());
+        closed.state = alondra_core::pr::PrState::Closed;
+        hub.append(Event::PrUpdated(closed)).unwrap();
+        let before = hub.read(|v| v.messages.len());
+
+        let (status, said) = status_and_body(request_pr_changes(
+            State(hub.clone()), Path(1), Json(ChangesBody { text: "Please change this".into(), attachments: vec![] })
+        ).await).await;
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
+        let (status, said) = status_and_body(ask_about_pr(
+            State(hub.clone()), Path(1), Json(AskPrBody { text: "Why?".into(), attachments: vec![] })
+        ).await).await;
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
+        assert_eq!(hub.read(|v| v.messages.len()), before);
     }
 
     /// A PR stacked on the one being asked about must not become any harder to merge than it
