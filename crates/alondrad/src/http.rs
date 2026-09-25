@@ -1404,7 +1404,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
         let mut node = client_node(&n);
         node["background"] = json!(states::background(&n, now_millis()));
-        node["activity"] = json!(v.activity(&n));
+        node["activity"] = json!(v.activity(&n, now_millis()));
         Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
     let Some((node, session_id, questions, reports, messages, held)) = found else {
@@ -1422,7 +1422,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
 /// What each thread of the node does now, and nothing else of its detail: an open detail asks it
 /// every few seconds.
 async fn node_activity(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    match hub.read(|v| v.resolve_node(&key).map(|n| json!(v.activity(n)))) {
+    match hub.read(|v| v.resolve_node(&key).map(|n| json!(v.activity(n, now_millis())))) {
         Some(activity) => Json(json!({"activity": activity})).into_response(),
         None => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
     }

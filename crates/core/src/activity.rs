@@ -2,11 +2,18 @@
 //! running now) is doing, since when, and for which task. Hooks carry `agent_id` and
 //! `agent_type` when they fire inside a subagent (code.claude.com/docs/en/hooks), so the ledger
 //! is built from stored events alone and a replay builds the same one.
+//!
+//! Claude Code never sends `SubagentStop` for a subagent's own subagents (a fork, for example):
+//! their hooks reach the parent session, but nothing ever tells it they are gone. `activity`
+//! drops such a thread once it has been silent past `BACKGROUND_SUSPECT_MS` with no tool in
+//! flight within its call limit, the same clock-and-window rule `states` uses everywhere else.
+//! The main thread is never dropped this way; `SubagentStop` still drops a subagent at once.
 
 use serde::{Deserialize, Serialize};
 
 use crate::event::HookEvent;
 use crate::model::{Ledger, Millis, Node, Thread, ToolInFlight};
+use crate::states::{BACKGROUND_SUSPECT_MS, call_limit};
 use crate::tasks::Task;
 use crate::view::View;
 
@@ -110,6 +117,21 @@ impl Ledger {
     }
 }
 
+/// A subagent thread with no tool in flight is live for `BACKGROUND_SUSPECT_MS` past its last
+/// hook; one with a tool in flight is live up to that tool's own call limit, whichever is
+/// longer. The main thread is always live.
+fn thread_alive(t: &Thread, now: Millis) -> bool {
+    if t.agent_id.is_none() {
+        return true;
+    }
+    if let Some(tool) = &t.tool
+        && now - tool.since <= call_limit(&tool.name)
+    {
+        return true;
+    }
+    now - t.since <= BACKGROUND_SUSPECT_MS
+}
+
 impl View {
     pub(crate) fn note_activity(&mut self, at: Millis, h: &HookEvent) {
         let binds = h.task.as_ref().and_then(|t| self.board.tasks.get(t)).is_some_and(|t| t.is_assigned_to(&h.session_id));
@@ -141,13 +163,15 @@ impl View {
     }
 
     /// Each thread of the node with the task it works on: the one it bound itself to, the one
-    /// assigned to it, or the node's single task.
-    pub fn activity(&self, node: &Node) -> Vec<Activity> {
+    /// assigned to it, or the node's single task. A subagent thread gone silent past its window
+    /// (`thread_alive`) is left out, as if it had sent `SubagentStop`.
+    pub fn activity(&self, node: &Node, now: Millis) -> Vec<Activity> {
         let sid = node.session_id.as_str();
         let single = self.single_task(sid);
         node.ledger
             .threads
             .iter()
+            .filter(|t| thread_alive(t, now))
             .map(|t| {
                 let agent = t.agent_id.as_deref();
                 let assigned = agent.and_then(|a| self.tasks_of(sid).find(|task| task.assignee.as_ref().is_some_and(|x| x.agent_id.as_deref() == Some(a))).map(|task| task.id.as_str()));
@@ -201,7 +225,11 @@ mod tests {
         }
 
         fn activity(&self) -> Vec<Activity> {
-            self.view.activity(&self.view.nodes["s"])
+            self.activity_at(self.seq as Millis * 1000)
+        }
+
+        fn activity_at(&self, now: Millis) -> Vec<Activity> {
+            self.view.activity(&self.view.nodes["s"], now)
         }
 
         fn rows(&self) -> Vec<(Option<String>, Option<String>, Option<String>)> {
@@ -297,7 +325,59 @@ mod tests {
         run.hook("UserPromptSubmit", None, None, None).second_task();
         run.hook("PreToolUse", EXPLORE, Some(("Bash", "u")), None).hook("PostToolUse", EXPLORE, Some((REPORT, "r")), Some("t-other"));
         let restored: View = serde_json::from_value(serde_json::to_value(&run.view).unwrap()).unwrap();
-        assert_eq!(restored.activity(&restored.nodes["s"]), run.activity());
+        let now = run.seq as Millis * 1000;
+        assert_eq!(restored.activity(&restored.nodes["s"], now), run.activity());
         assert_eq!(run.activity()[1].task.as_deref(), Some("t-other"));
+    }
+
+    const GHOST_A: Option<(&str, &str)> = Some(("g1", "Explore"));
+    const GHOST_B: Option<(&str, &str)> = Some(("g2", "Explore"));
+    const GHOST_C: Option<(&str, &str)> = Some(("g3", "Explore"));
+
+    /// 25 Sep 00:23-00:30: three of 7e661a50's nested subagents (forks spawned by its own
+    /// subagents) each sent one `PreToolUse` and then nothing. Claude Code never sends
+    /// `SubagentStop` for a subagent's own subagents, so they stayed in `activity` forever.
+    #[test]
+    fn three_ghost_subagents_with_one_pre_tool_use_each_drop_after_their_call_limit_and_not_before() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None);
+        run.hook("SubagentStart", GHOST_A, None, None).hook("PreToolUse", GHOST_A, Some(("SubagentHandback", "h1")), None);
+        run.hook("SubagentStart", GHOST_B, None, None).hook("PreToolUse", GHOST_B, Some(("Bash", "h2")), None);
+        run.hook("SubagentStart", GHOST_C, None, None).hook("PreToolUse", GHOST_C, Some(("Edit", "h3")), None);
+        let since: Vec<Millis> = run.activity()[1..].iter().map(|a| a.since).collect();
+        let limit = call_limit("Edit");
+
+        let alive = |now: Millis| -> Vec<String> { run.activity_at(now).into_iter().filter_map(|a| a.agent_id).collect() };
+        let before = alive(since.iter().copied().min().unwrap() + limit);
+        for g in ["g1", "g2", "g3"] {
+            assert!(before.contains(&g.to_string()), "{g} is still within its call limit: {before:?}");
+        }
+        let after = alive(since.iter().copied().max().unwrap() + limit + 1);
+        for g in ["g1", "g2", "g3"] {
+            assert!(!after.contains(&g.to_string()), "{g} went silent past its call limit and should be dropped: {after:?}");
+        }
+    }
+
+    #[test]
+    fn a_live_subagent_with_a_recent_hook_stays_even_long_after_it_started() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None);
+        run.hook("SubagentStart", EXPLORE, None, None)
+            .hook("PreToolUse", EXPLORE, Some(("Bash", "u1")), None)
+            .hook("PostToolUse", EXPLORE, Some(("Bash", "u1")), None);
+        let since = run.activity()[1].since;
+        let ids: Vec<String> = run.activity_at(since + BACKGROUND_SUSPECT_MS).into_iter().filter_map(|a| a.agent_id).collect();
+        assert!(ids.contains(&"a1".to_string()), "a hook this recent keeps the thread alive: {ids:?}");
+    }
+
+    #[test]
+    fn subagent_stop_drops_its_thread_at_once_regardless_of_the_window() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None);
+        run.hook("SubagentStart", EXPLORE, None, None).hook("PreToolUse", EXPLORE, Some(("Bash", "u1")), None);
+        run.hook("SubagentStop", EXPLORE, None, None);
+        let now = run.seq as Millis * 1000;
+        let ids: Vec<Option<String>> = run.activity_at(now).into_iter().map(|a| a.agent_id).collect();
+        assert_eq!(ids, vec![None], "the subagent is gone the instant it stops, not just after the window");
     }
 }
