@@ -39,6 +39,8 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 - `new_task`: work that is not your task's, found while you do it (a follow-up the PR under
   review caused, a problem in another place). It opens a task of its own in the same request,
   assigned to you, and returns its id; its questions and PR go there (see "Your task").
+- `focus`: which of your tasks this session works on now, when you work on several (see
+  "Several tasks").
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 - `ask` with `replaces`: a question of yours changed (rephrased, or new facts change it). The new
   question is recorded and the old one, given by its number, is withdrawn in the same step, so
@@ -81,6 +83,14 @@ tasks starts with "[Task t-… “…”]".
   with the task's brief as its prompt, so the tasks never share a context. Subagents have
   Alondra's tools: the subagent asks, reports and opens its PR itself, passing `task` on every
   `ask`, `request_action`, `report` and `withdraw`.
+- When you launch a subagent for a task, write "Alondra task: t-…" in its `description` or
+  `prompt`. Alondra gives it that task from its first step, so everything it does counts for the
+  task before its first Alondra call. Subagents launched at the same moment for different tasks
+  get none this way: each takes its task from the first Alondra call it makes with `task`.
+- When this main session works on one task itself, not in a subagent, call `focus` with that
+  task first. For 30 minutes (`minutes`, up to 240), what the main thread and subagents with no
+  task of their own do counts for it, and so do PRs and cards that name no task. Call it again
+  when you switch tasks: the new focus replaces the old one.
 - A task on a different branch gets its own worktree. A subagent's automatic worktree always
   starts from the default branch, so create it with git when the task names a base
   (`git worktree add .claude/worktrees/t-12 -b <branch> origin/<base>`) and have the subagent

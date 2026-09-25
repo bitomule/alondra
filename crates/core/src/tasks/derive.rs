@@ -153,6 +153,11 @@ fn task_mentions(text: &str) -> Vec<(&str, bool)> {
     found
 }
 
+/// The task ids a text names after “Alondra task:”.
+pub fn marked_tasks(text: &str) -> Vec<&str> {
+    task_mentions(text).into_iter().filter(|(_, marked)| *marked).map(|(id, _)| id).collect()
+}
+
 fn checks_failed(pr: &PullRequest) -> Option<u64> {
     pr.checks.iter().any(|c| matches!(c.state, CheckState::Failed | CheckState::Running)).then_some(pr.number)
 }
@@ -307,33 +312,37 @@ impl View {
     }
 
     /// The task a PR the node opened is for, in this order: the task its title, body or branch
-    /// names (“Alondra task: t-…”), the task of the subagent that opened it, the node's only open
-    /// task (its only task when none is open). None when the node works on several and nothing
-    /// says which: Alondra asks the node instead of guessing. 25 Sep 00:01: the main thread of
-    /// 7e661a50 opened #98 and #99 for its review, and both went to t-44370, its newest task.
-    pub fn pr_task_for(&self, session_id: &str, agent_id: Option<&str>, texts: &[&str]) -> Option<String> {
+    /// names (“Alondra task: t-…”), the task of the subagent that opened it, the node's live
+    /// `focus`, the node's only open task (its only task when none is open). None when the node
+    /// works on several and nothing says which: Alondra asks the node instead of guessing. 25 Sep
+    /// 00:01: the main thread of 7e661a50 opened #98 and #99 for its review, and both went to
+    /// t-44370, its newest task.
+    pub fn pr_task_for(&self, session_id: &str, agent_id: Option<&str>, texts: &[&str], now: Millis) -> Option<String> {
         if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
             return None;
         }
         self.named_task(session_id, texts)
             .or_else(|| agent_id.and_then(|a| self.agent_task(session_id, a)).map(|t| t.id.clone()))
+            .or_else(|| self.focus(session_id, now).map(str::to_string))
             .or_else(|| self.single_task(session_id).map(str::to_string))
+    }
+
+    /// The node's task a mention names: `t-12-fix` names `t-12` when that one is the node's.
+    pub(crate) fn mentioned_task(&self, session_id: &str, mention: &str) -> Option<&Task> {
+        let mut id = mention;
+        loop {
+            if let Some(t) = self.board.tasks.get(id).filter(|t| t.is_assigned_to(session_id)) {
+                return Some(t);
+            }
+            id = &id[..id.rfind('-').filter(|&i| i > 1)?];
+        }
     }
 
     /// The node's task a PR's text names: the one after “Alondra task:”, else the only open task
     /// it mentions.
     fn named_task(&self, session_id: &str, texts: &[&str]) -> Option<String> {
-        let mine = |id: &str| self.board.tasks.get(id).filter(|t| t.is_assigned_to(session_id));
-        let resolve = |mention: &str| {
-            let mut id = mention;
-            loop {
-                if let Some(t) = mine(id) {
-                    return Some(t);
-                }
-                id = &id[..id.rfind('-').filter(|&i| i > 1)?];
-            }
-        };
-        let named: Vec<(&Task, bool)> = texts.iter().flat_map(|t| task_mentions(t)).filter_map(|(id, marked)| resolve(id).map(|t| (t, marked))).collect();
+        let named: Vec<(&Task, bool)> =
+            texts.iter().flat_map(|t| task_mentions(t)).filter_map(|(id, marked)| self.mentioned_task(session_id, id).map(|t| (t, marked))).collect();
         if let Some((t, _)) = named.iter().find(|(_, marked)| *marked) {
             return Some(t.id.clone());
         }
@@ -594,7 +603,7 @@ impl View {
             (Event::PrOpened { session_id, task, .. }, Before::Opened { last, orphan }) => {
                 let named = task.clone().filter(|t| self.board.tasks.contains_key(t));
                 let opened: Vec<u64> = self.prs.range(last + 1..).map(|(id, _)| *id).collect();
-                let id = named.clone().or_else(|| self.pr_task_for(session_id, None, &[]));
+                let id = named.clone().or_else(|| self.pr_task_for(session_id, None, &[], at));
                 for pr in opened {
                     self.put_pr_in_task(pr, id.clone());
                 }
@@ -2119,9 +2128,48 @@ mod tests {
                 ("what the PR says wins over the subagent", Some("a1"), "Alondra task: t-s", Some("t-s")),
             ];
             for (what, agent, text, task) in cases {
-                assert_eq!(d.view.pr_task_for("s", *agent, &[text]).as_deref(), *task, "{what}");
+                assert_eq!(d.view.pr_task_for("s", *agent, &[text], d.at).as_deref(), *task, "{what}");
             }
-            assert_eq!(d.view.pr_task_for("o", None, &["gh pr create --fill"]).as_deref(), Some("t-o"), "a node with one open task needs no word");
+            assert_eq!(d.view.pr_task_for("o", None, &["gh pr create --fill"], d.at).as_deref(), Some("t-o"), "a node with one open task needs no word");
+        }
+
+        /// The node said it works on t-2 now (`focus`): a PR that names no task and comes from no
+        /// subagent with a task of its own is t-2's until the focus ends.
+        #[test]
+        fn a_pr_goes_to_the_live_focus_after_its_marker_and_its_subagent_and_before_the_only_open_task() {
+            const FILL: &str = "gh pr create --fill";
+            let mut d = two_tasks();
+            d.on(Event::Hook(HookEvent {
+                session_id: "s".into(),
+                event: "PostToolUse".into(),
+                agent_id: Some("a1".into()),
+                tool_name: Some("mcp__plugin_alondra_alondra__report".into()),
+                task: Some("t-s".into()),
+                ..Default::default()
+            }));
+            assert_eq!(d.view.pr_task_for("s", None, &[FILL], d.at), None, "two open tasks and no focus");
+            d.on(Event::Focused { session_id: "s".into(), task: "t-2".into(), minutes: 30 });
+            let until = d.at + 30 * 60 * 1000;
+            let cases: &[(&str, Option<&str>, &str, Option<&str>)] = &[
+                ("the main thread, nothing named: the focus", None, FILL, Some("t-2")),
+                ("the marker wins over the focus", None, "--body 'Alondra task: t-s'", Some("t-s")),
+                ("the subagent's own task wins over the focus", Some("a1"), FILL, Some("t-s")),
+                ("a subagent with no task of its own: the focus", Some("a2"), FILL, Some("t-2")),
+            ];
+            for (what, agent, text, task) in cases {
+                assert_eq!(d.view.pr_task_for("s", *agent, &[text], d.at).as_deref(), *task, "{what}");
+            }
+            assert_eq!(d.view.pr_task_for("s", None, &[FILL], until), None, "the focus ended: Alondra asks the node");
+
+            d.on(pr_for(PR98, None));
+            assert_eq!(pr_task(&d, 1).as_deref(), Some("t-2"), "recorded with no task, it goes to the focus");
+            d.at = until;
+            d.on(pr_for(PR99, None));
+            assert_eq!(pr_task(&d, 2), None, "past the focus it waits for the node");
+            assert_eq!(d.replayed(|_| true).prs, d.view.prs);
+
+            d.on(hook_of("o", UPS)).on(asked(2, "o", |_| {}));
+            assert_eq!(d.view.pr_task_for("o", None, &[FILL], d.at).as_deref(), Some("t-o"), "one open task needs no focus");
         }
 
         /// A PR opened with no task waits for the node: a report naming its task, or GitHub's copy
