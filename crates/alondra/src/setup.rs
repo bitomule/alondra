@@ -560,7 +560,6 @@ pub fn run(args: Args) -> Result<()> {
             execute(&Step::Write { path: stamp, contents: current, private: true })?;
         }
     }
-    let config = Config::resolve(paths.alondra_home.clone(), &plan.config, env, config::system_name);
     if args.dry_run {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
         return Ok(());
@@ -568,8 +567,9 @@ pub fn run(args: Args) -> Result<()> {
     if args.skip_pair || args.skip_service {
         return Ok(());
     }
-    // The service pairing flow is connected after Mac approval support lands.
-    let _ = config;
+    if !crate::service_pair::has_paired_device(&paths.alondra_home)? {
+        crate::service_pair::run(&paths.alondra_home)?;
+    }
     Ok(())
 }
 
@@ -640,31 +640,6 @@ fn execute(step: &Step) -> Result<()> {
         Step::Unchanged { .. } | Step::Warn(_) => {}
     }
     Ok(())
-}
-
-fn pair_when_ready(config: &Config) -> Result<()> {
-    let client = crate::client::Client::new(Duration::from_secs(2));
-    let up = (0..20).any(|_| {
-        let ok = client.get::<Value>("/v1/health").is_ok();
-        if !ok {
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        ok
-    });
-    if !up {
-        println!("{}", tr!("! alondrad did not answer yet; pair later with `alondra pair`.", "! alondrad aún no responde; vincula después con `alondra pair`."));
-        return Ok(());
-    }
-    match pairing_url(config) {
-        Some(url) => crate::pair(&url),
-        None => {
-            println!("{}", tr!(
-                "! No URL the iPhone can reach: set --public-url (and --listen 0.0.0.0 for the LAN), then run `alondra pair`.",
-                "! No hay URL a la que llegue el iPhone: pon --public-url (y --listen 0.0.0.0 para la red local) y ejecuta `alondra pair`."
-            ));
-            Ok(())
-        }
-    }
 }
 
 pub fn pairing_url(config: &Config) -> Option<String> {
