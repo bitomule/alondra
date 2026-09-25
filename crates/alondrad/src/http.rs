@@ -144,6 +144,22 @@ fn shown_in_pr_note(number: u64, user: &str) -> String {
     )
 }
 
+/// Whether links or the body carry a claude.ai artifact URL: the one thing that still makes a
+/// `document` report a review instead of a dead end for its task (see `document_refusal`).
+fn has_artifact_link(links: &[Link], body: Option<&str>) -> bool {
+    links.iter().any(|l| !alondra_core::artifact::urls_in(&l.url).is_empty()) || !alondra_core::artifact::urls_in(body.unwrap_or("")).is_empty()
+}
+
+/// A `document` report never moves its task, so without a claude.ai artifact URL to review it is
+/// a dead end: the node meant final (the answer, file attached) or ask (a decision, file
+/// attached). Refused for every plugin version, old or new.
+fn document_refusal(user: &str) -> String {
+    format!(
+        "A document does not move your task. If it is the answer, send it as report kind final with the file in \
+         attachments. If {user} has to decide, send an ask with the file attached and the options."
+    )
+}
+
 pub const USER_KEY_FILE: &str = "tui-key.pem";
 const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
 
@@ -1927,6 +1943,9 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             format!("A report needs a title that states the result and a body with what {} should know: what changed, what was measured, what is left.", hub.config.name),
         );
     }
+    if b.kind == Some(ReportKind::Document) && !has_artifact_link(&b.links, b.body.as_deref()) {
+        return refused(StatusCode::UNPROCESSABLE_ENTITY, "document_without_artifact", document_refusal(&hub.config.name));
+    }
     let Some((sid, name)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
         return err(StatusCode::BAD_REQUEST, "unknown reporting node");
     };
@@ -3481,6 +3500,31 @@ mod tests {
         let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert!(hub.read(|v| !v.reports[&1].read && v.reviews_awaiting_user().any(|r| r.id == 1)), "only David's verdict settles a review card");
+    }
+
+    /// t-47118: an analysis delivered as a standalone `document` never moved the task, which
+    /// stayed "en marcha" forever. A `document` without a claude.ai artifact to review is now a
+    /// dead end and is refused, recording nothing, for every plugin version.
+    #[tokio::test]
+    async fn a_document_without_an_artifact_is_refused_and_records_nothing() {
+        let hub = started("document-refusal", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Document, &[]))).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        let error = said["error"].as_str().unwrap_or_default();
+        assert!(error.contains("A document does not move your task"), "{said}");
+        assert!(error.contains("report kind final with the file in"), "{said}");
+        assert!(error.contains("ask with the file attached and the options"), "{said}");
+        assert_eq!(hub.read(|v| v.reports.len()), 0, "nothing recorded");
+    }
+
+    /// The one case a `document` still stands for: an artifact David reviews, its claude.ai URL
+    /// in `links`. The refusal above must not catch this one.
+    #[tokio::test]
+    async fn a_document_with_an_artifact_still_opens_a_review() {
+        let hub = started("document-review", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reviews_awaiting_user().any(|r| r.id == 1)), "a document with an artifact still waits for David's verdict");
     }
 
     /// Cards go together by their task: `related` from older tool schemas is accepted and changes

@@ -104,7 +104,10 @@ works each task. The user follows tasks, not nodes.
 
 - `ask`: one decision per question, a one-line title, the context in `detail`, options and
   links.
-- `report`: `notice` for something to know, `document` with the path for something to read.
+- `report`: `final` with the file in `attachments` delivers the answer; `notice` is something to
+  know now, no state change; `document` is only for a claude.ai artifact to review, its URL in
+  `links` — never brief a node to deliver a plan or a long report that way, that is `final` (the
+  answer) or `ask` (a decision), with the file attached.
   A report is for reading; anything the user has to decide, approve or test is an `ask`. Open
   questions are already in the user's inbox, so a report that lists them repeats them. Alondra
   rejects reports that only give progress or say you do not need the user.
