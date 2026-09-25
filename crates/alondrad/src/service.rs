@@ -1,5 +1,8 @@
 //! Optional outbound Mac connector. Enabled only by `~/.alondra/service.toml`.
 //! The relay never supplies trusted endpoint keys: those are pinned in this Mac's config.
+//! A device must also remain approved in the local pairing registry. Enrollment is a one-time
+//! durable attempt per device ID so a relay-side revocation survives reconnects and restarts.
+use crate::auth::Auth;
 use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,8 +17,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -55,6 +59,7 @@ pub struct Service {
     signing: SigningKey,
     agreement: SecretKey,
     devices: HashMap<String, Device>,
+    auth: Arc<Auth>,
     journal: Journal,
     local_port: u16,
 }
@@ -109,7 +114,7 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
 }
 
 impl Service {
-    pub fn open(home: &Path, local_port: u16) -> Result<Option<Self>> {
+    pub fn open(home: &Path, local_port: u16, auth: Arc<Auth>) -> Result<Option<Self>> {
         let file = home.join("service.toml");
         if !file.exists() {
             return Ok(None);
@@ -169,6 +174,7 @@ impl Service {
             signing,
             agreement,
             devices,
+            auth,
             journal,
             local_port,
         }))
@@ -230,21 +236,75 @@ impl Service {
 
     async fn enroll(&self, epoch: &[u8; 16]) -> Result<()> {
         for (id, device) in &self.devices {
+            if !self.auth.approved_key_matches(id, &device.signing) {
+                continue;
+            }
+            // Record one attempt before any network write. A relay-side revocation must
+            // survive retries and restarts; a new approval needs a new device ID.
+            match self
+                .journal
+                .reserve_enrollment(id, &device.signing.to_sec1_bytes())?
+            {
+                EnrollmentDecision::New => {}
+                EnrollmentDecision::Pending => {
+                    log!(
+                        "service device {id}: enrollment outcome unknown; approve again with a new device ID"
+                    );
+                    continue;
+                }
+                EnrollmentDecision::Active | EnrollmentDecision::Revoked => continue,
+            }
             let body = serde_json::to_vec(
                 &json!({"device_id":id,"owner_sub":self.owner_sub,"signing_key":device.signing_wire}),
             )?;
             self.signed(Method::POST, "/v1/devices", body, epoch)
                 .await?
                 .error_for_status()?;
+            if self.auth.approved_key_matches(id, &device.signing) {
+                self.journal.activate_enrollment(id)?;
+            } else {
+                self.journal.revoke_enrollment(id)?;
+                let path = format!("/v1/devices/{id}");
+                self.signed(Method::DELETE, &path, Vec::new(), epoch)
+                    .await?
+                    .error_for_status()?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn sync_revocations(&self, epoch: &[u8; 16], synced: &mut HashSet<String>) -> Result<()> {
+        for (id, device) in &self.devices {
+            if self.auth.approved_key_matches(id, &device.signing)
+                && !self.journal.enrollment_revoked(id)?
+                && !self.journal.enrollment_pending(id)?
+            {
+                continue;
+            }
+            self.journal.revoke_enrollment(id)?;
+            if synced.contains(id) {
+                continue;
+            }
+            let path = format!("/v1/devices/{id}");
+            self.signed(Method::DELETE, &path, Vec::new(), epoch)
+                .await?
+                .error_for_status()?;
+            synced.insert(id.clone());
         }
         Ok(())
     }
 
     pub async fn run(self) {
         let mut enrolled_epoch: Option<[u8; 16]> = None;
+        let mut revoked_this_epoch = HashSet::new();
         loop {
             let result = async {
                 let epoch = self.bootstrap().await?;
+                if enrolled_epoch != Some(epoch) {
+                    revoked_this_epoch.clear();
+                }
+                self.sync_revocations(&epoch, &mut revoked_this_epoch)
+                    .await?;
                 if enrolled_epoch != Some(epoch) {
                     self.enroll(&epoch).await?;
                     enrolled_epoch = Some(epoch);
@@ -282,6 +342,12 @@ impl Service {
             .devices
             .get(&e.sender)
             .context("work from unapproved device")?;
+        if !self.auth.approved_key_matches(&e.sender, &device.signing) {
+            bail!("work from locally revoked device");
+        }
+        if !self.journal.enrollment_active(&e.sender)? {
+            bail!("work from device without active local service enrollment");
+        }
         let plaintext = e
             .open(
                 &device.signing,
@@ -308,6 +374,9 @@ impl Service {
                 bytes
             }
             Disposition::Accepted => {
+                if !self.auth.approved_key_matches(&e.sender, &device.signing) {
+                    bail!("device was revoked before execution");
+                }
                 self.journal.executing(&e.sender, &e.request_id, &digest)?;
                 let result = match self.dispatch(&request).await {
                     Ok(value) => value,
@@ -392,6 +461,12 @@ enum Disposition {
     Executing,
     Completed(Vec<u8>),
 }
+enum EnrollmentDecision {
+    New,
+    Pending,
+    Active,
+    Revoked,
+}
 struct Journal {
     path: PathBuf,
 }
@@ -402,7 +477,10 @@ impl Journal {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS service_receipts (
               sender TEXT NOT NULL, request_id TEXT NOT NULL, digest BLOB NOT NULL,
-              state TEXT NOT NULL, response BLOB, PRIMARY KEY(sender, request_id));",
+              state TEXT NOT NULL, response BLOB, PRIMARY KEY(sender, request_id));
+            CREATE TABLE IF NOT EXISTS service_enrollments (
+              device_id TEXT PRIMARY KEY, signing_key BLOB NOT NULL, attempted_at_ms INTEGER NOT NULL,
+              state TEXT NOT NULL);",
         )?;
         Ok(Self { path })
     }
@@ -410,6 +488,82 @@ impl Journal {
         let c = Connection::open(&self.path)?;
         c.pragma_update(None, "synchronous", "FULL")?;
         Ok(c)
+    }
+    fn reserve_enrollment(&self, id: &str, signing_key: &[u8]) -> Result<EnrollmentDecision> {
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let previous: Option<(Vec<u8>, String)> = tx
+            .query_row(
+                "SELECT signing_key,state FROM service_enrollments WHERE device_id=?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let state = match previous {
+            Some((prior, state)) if prior == signing_key => match state.as_str() {
+                "pending" => EnrollmentDecision::Pending,
+                "active" => EnrollmentDecision::Active,
+                "revoked" => EnrollmentDecision::Revoked,
+                _ => bail!("invalid stored enrollment state"),
+            },
+            Some(_) => bail!("device ID cannot be re-enrolled with another signing key"),
+            None => {
+                tx.execute("INSERT INTO service_enrollments(device_id,signing_key,attempted_at_ms,state) VALUES (?1,?2,?3,'pending')",
+                    params![id,signing_key,now_ms() as i64])?;
+                EnrollmentDecision::New
+            }
+        };
+        tx.commit()?;
+        Ok(state)
+    }
+    fn activate_enrollment(&self, id: &str) -> Result<()> {
+        let c = self.db()?;
+        let n = c.execute(
+            "UPDATE service_enrollments SET state='active' WHERE device_id=?1 AND state='pending'",
+            params![id],
+        )?;
+        if n != 1 {
+            bail!("enrollment no longer pending");
+        }
+        Ok(())
+    }
+    fn revoke_enrollment(&self, id: &str) -> Result<()> {
+        let c = self.db()?;
+        c.execute(
+            "UPDATE service_enrollments SET state='revoked' WHERE device_id=?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+    fn enrollment_revoked(&self, id: &str) -> Result<bool> {
+        let c = self.db()?;
+        Ok(c.query_row(
+            "SELECT state FROM service_enrollments WHERE device_id=?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|state| state == "revoked"))
+    }
+    fn enrollment_pending(&self, id: &str) -> Result<bool> {
+        let c = self.db()?;
+        Ok(c.query_row(
+            "SELECT state FROM service_enrollments WHERE device_id=?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|state| state == "pending"))
+    }
+    fn enrollment_active(&self, id: &str) -> Result<bool> {
+        let c = self.db()?;
+        Ok(c.query_row(
+            "SELECT state FROM service_enrollments WHERE device_id=?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|state| state == "active"))
     }
     fn accept(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<Disposition> {
         let mut c = self.db()?;
@@ -455,10 +609,17 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, body::Bytes, extract::State, http::HeaderMap, routing::post};
+    use axum::{
+        Router,
+        body::Bytes,
+        extract::State,
+        http::HeaderMap,
+        routing::{delete, post},
+    };
+    use base64::engine::general_purpose::STANDARD;
     use std::sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
@@ -505,6 +666,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ambiguous_enrollment_is_deleted_and_never_retried() {
+        let registered = Arc::new(AtomicBool::new(false));
+        let posts = Arc::new(AtomicUsize::new(0));
+        let post_registered = registered.clone();
+        let post_count = posts.clone();
+        let delete_registered = registered.clone();
+        let relay = Router::new()
+            .route(
+                "/v1/devices",
+                post(move || {
+                    let registered = post_registered.clone();
+                    let posts = post_count.clone();
+                    async move {
+                        registered.store(true, Ordering::SeqCst);
+                        posts.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(json!({"error":"response_lost"})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/v1/devices/{id}",
+                delete(move || {
+                    let registered = delete_registered.clone();
+                    async move {
+                        registered.store(false, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(axum::serve(listener, relay).into_future());
+        let home = std::env::temp_dir().join(format!(
+            "alondra-pending-enrollment-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let phone = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
+        std::fs::write(home.join("devices.json"),serde_json::to_vec(&json!([{
+            "id":"phone-pending","name":"Pending","public_key":STANDARD.encode(phone.verifying_key().to_sec1_bytes()),
+            "created_at":0,"last_seen":null
+        }])).unwrap()).unwrap();
+        let service = Service {
+            relay: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            client: Client::new(),
+            mac_id: "mac-1".into(),
+            owner_sub: "owner".into(),
+            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
+            devices: HashMap::from([(
+                "phone-pending".into(),
+                Device {
+                    signing: *phone.verifying_key(),
+                    agreement: phone_agreement.public_key(),
+                    signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
+                },
+            )]),
+            auth: Arc::new(Auth::open(&home).unwrap()),
+            journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
+            local_port: 0,
+        };
+        let epoch = [7u8; 16];
+        assert!(
+            service.enroll(&epoch).await.is_err(),
+            "relay committed but response was ambiguous"
+        );
+        assert!(registered.load(Ordering::SeqCst));
+        assert!(service.journal.enrollment_pending("phone-pending").unwrap());
+        let request = EnvelopeV1::seal_random(
+            EnvelopeContext {
+                route: "mac-1",
+                sender: "phone-pending",
+                recipient: "mac-1",
+                request_id: "op-pending",
+                kind: "request",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            br#"{"method":"GET","path":"/v1/overview"}"#,
+            &phone,
+            &service.agreement.public_key(),
+        )
+        .unwrap();
+        assert!(
+            service
+                .handle(
+                    Work {
+                        request_id: "op-pending".into(),
+                        envelope: request
+                    },
+                    &epoch
+                )
+                .await
+                .is_err(),
+            "pending enrollment must not execute work"
+        );
+        service
+            .sync_revocations(&epoch, &mut HashSet::new())
+            .await
+            .unwrap();
+        assert!(
+            !registered.load(Ordering::SeqCst),
+            "compensating DELETE removes ambiguous registration"
+        );
+        assert!(service.journal.enrollment_revoked("phone-pending").unwrap());
+        service.enroll(&[8u8; 16]).await.unwrap();
+        assert_eq!(
+            posts.load(Ordering::SeqCst),
+            1,
+            "no implicit re-enrollment after ambiguous outcome"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn encrypted_work_executes_once_and_replays_exact_response() {
         let calls = Arc::new(AtomicUsize::new(0));
         let local_calls = calls.clone();
@@ -523,8 +803,32 @@ mod tests {
         let local_task = tokio::spawn(axum::serve(local_listener, local).into_future());
 
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let enrollments = Arc::new(AtomicUsize::new(0));
+        let relay_enrollments = enrollments.clone();
+        let deletions = Arc::new(AtomicUsize::new(0));
+        let relay_deletions = deletions.clone();
         let relay_responses = responses.clone();
         let relay = Router::new()
+            .route(
+                "/v1/devices",
+                post(move || {
+                    let enrollments = relay_enrollments.clone();
+                    async move {
+                        enrollments.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(json!({"ok":true}))
+                    }
+                }),
+            )
+            .route(
+                "/v1/devices/{id}",
+                delete(move || {
+                    let deletions = relay_deletions.clone();
+                    async move {
+                        deletions.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
             .route(
                 "/v1/work/{id}/receipt",
                 post(|headers: HeaderMap| async move {
@@ -550,11 +854,18 @@ mod tests {
         let mac_agreement = SecretKey::from_slice(&[2u8; 32]).unwrap();
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
-        let journal_path = std::env::temp_dir().join(format!(
-            "alondra-service-e2e-{}-{}.sqlite",
+        let home = std::env::temp_dir().join(format!(
+            "alondra-service-e2e-home-{}-{}",
             std::process::id(),
             now_ms()
         ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&json!([{
+            "id":"phone-1","name":"Test phone","public_key":STANDARD.encode(phone_signing.verifying_key().to_sec1_bytes()),
+            "created_at":0,"last_seen":null
+        }])).unwrap()).unwrap();
+        let auth = Arc::new(Auth::open(&home).unwrap());
+        let journal_path = home.join("service-receipts.sqlite");
         let service = Service {
             relay: Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(),
             client: Client::new(),
@@ -567,12 +878,48 @@ mod tests {
                 Device {
                     signing: *phone_signing.verifying_key(),
                     agreement: phone_agreement.public_key(),
-                    signing_wire: String::new(),
+                    signing_wire: URL_SAFE_NO_PAD
+                        .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
+            auth: auth.clone(),
+            journal: Journal::open(journal_path.clone()).unwrap(),
+            local_port,
+        };
+        let epoch = [7u8; 16];
+        service.enroll(&epoch).await.unwrap();
+        service.enroll(&[8u8; 16]).await.unwrap();
+        assert_eq!(
+            enrollments.load(Ordering::SeqCst),
+            1,
+            "reconnect cannot resurrect a relay-revoked device"
+        );
+        let restarted = Service {
+            relay: service.relay.clone(),
+            client: Client::new(),
+            mac_id: service.mac_id.clone(),
+            owner_sub: service.owner_sub.clone(),
+            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
+            devices: HashMap::from([(
+                "phone-1".into(),
+                Device {
+                    signing: *phone_signing.verifying_key(),
+                    agreement: phone_agreement.public_key(),
+                    signing_wire: URL_SAFE_NO_PAD
+                        .encode(phone_signing.verifying_key().to_sec1_bytes()),
+                },
+            )]),
+            auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,
         };
+        restarted.enroll(&[9u8; 16]).await.unwrap();
+        assert_eq!(
+            enrollments.load(Ordering::SeqCst),
+            1,
+            "restart cannot resurrect a relay-revoked device"
+        );
         let plaintext =
             br#"{"method":"POST","path":"/v1/questions/1/answer","body":{"text":"hello"}}"#;
         let e = EnvelopeV1::seal_random(
@@ -593,7 +940,6 @@ mod tests {
             request_id: "op-1".into(),
             envelope: e.clone(),
         };
-        let epoch = [7u8; 16];
         service.handle(work(), &epoch).await.unwrap();
         service.handle(work(), &epoch).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -680,6 +1026,55 @@ mod tests {
         let content: Value = serde_json::from_slice(&opened).unwrap();
         assert_eq!(content["error"], "uncertain");
         drop(saved);
+        assert!(auth.revoke("phone-1").unwrap());
+        service
+            .sync_revocations(&[10u8; 16], &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(deletions.load(Ordering::SeqCst), 1);
+        service.enroll(&[10u8; 16]).await.unwrap();
+        restarted
+            .sync_revocations(&[11u8; 16], &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            deletions.load(Ordering::SeqCst),
+            2,
+            "restart resends signed DELETE"
+        );
+        restarted.enroll(&[11u8; 16]).await.unwrap();
+        assert_eq!(
+            enrollments.load(Ordering::SeqCst),
+            1,
+            "local revoke remains denied after restart and reconnect"
+        );
+        let revoked = EnvelopeV1::seal_random(
+            EnvelopeContext {
+                route: "mac-1",
+                sender: "phone-1",
+                recipient: "mac-1",
+                request_id: "op-3",
+                kind: "request",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            plaintext,
+            &phone_signing,
+            &service.agreement.public_key(),
+        )
+        .unwrap();
+        assert!(
+            service
+                .handle(
+                    Work {
+                        request_id: "op-3".into(),
+                        envelope: revoked
+                    },
+                    &epoch
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         local_task.abort();
         relay_task.abort();
     }

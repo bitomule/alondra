@@ -105,8 +105,10 @@ impl Auth {
             last_seen: None,
         };
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        devices.push(device.clone());
-        self.save(&devices).map_err(|e| e.to_string())?;
+        let mut next = devices.clone();
+        next.push(device.clone());
+        self.save(&next).map_err(|e| e.to_string())?;
+        *devices = next;
         Ok(device)
     }
 
@@ -114,15 +116,24 @@ impl Auth {
         self.devices.lock().expect("devices lock poisoned").clone()
     }
 
-    pub fn revoke(&self, id: &str) -> bool {
+    pub fn revoke(&self, id: &str) -> Result<bool> {
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        let before = devices.len();
-        devices.retain(|d| d.id != id);
-        let changed = devices.len() != before;
+        let mut next = devices.clone();
+        next.retain(|d| d.id != id);
+        let changed = next.len() != devices.len();
         if changed {
-            let _ = self.save(&devices);
+            self.save(&next)?;
+            *devices = next;
         }
-        changed
+        Ok(changed)
+    }
+
+    /// Service enrollment and work may use only a locally paired device with the same key.
+    pub fn approved_key_matches(&self, id: &str, public_key: &VerifyingKey) -> bool {
+        self.devices.lock().expect("devices lock poisoned").iter().any(|device| {
+            device.id == id && B64.decode(&device.public_key).ok()
+                .is_some_and(|raw| raw.as_slice() == public_key.to_sec1_bytes().as_ref())
+        })
     }
 
     fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
@@ -263,6 +274,14 @@ mod tests {
         let code = auth.new_pairing_code();
         assert!(auth.pair(&code, "a", &public).is_ok());
         assert!(auth.pair(&code, "b", &public).is_err());
+    }
+
+    #[test]
+    fn failed_revocation_keeps_device_approved_and_reports_failure() {
+        let (auth, _, id) = auth_with_device();
+        std::fs::create_dir(auth.path.with_extension("json.tmp")).unwrap();
+        assert!(auth.revoke(&id).is_err());
+        assert!(auth.list().iter().any(|device| device.id == id));
     }
 
     #[test]

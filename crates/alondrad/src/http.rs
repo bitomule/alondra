@@ -1086,7 +1086,11 @@ async fn revoke_device(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer):
     if let Some(r) = local_only(&peer, &headers) {
         return r;
     }
-    if auth.revoke(&id) { Json(json!({"ok": true})).into_response() } else { err(StatusCode::NOT_FOUND, "not found") }
+    match auth.revoke(&id) {
+        Ok(true) => Json(json!({"ok": true})).into_response(),
+        Ok(false) => err(StatusCode::NOT_FOUND, "not found"),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("could not persist revocation: {e}")),
+    }
 }
 
 #[derive(Deserialize)]

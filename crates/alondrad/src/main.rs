@@ -67,8 +67,10 @@ async fn main() -> Result<()> {
     }
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
-    if let Some(service) = service::Service::open(&config.home, config.port)? {
-        tokio::spawn(async move { service.run().await });
+    match service::Service::open(&config.home, config.port, auth.clone()) {
+        Ok(Some(service)) => { tokio::spawn(async move { service.run().await }); }
+        Ok(None) => {}
+        Err(error) => log!("service connector disabled: {error:#}"),
     }
     let push = Arc::new(push::Push::open(&config.home)?);
     tokio::spawn(push::run(hub.clone(), push.clone()));
