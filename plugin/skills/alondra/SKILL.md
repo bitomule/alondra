@@ -79,7 +79,10 @@ The orchestrator can give you another task while you work: Alondra types it in a
 tasks starts with "[Task t-… “…”]".
 - Work each task in a subagent of its own (Agent tool), named after the task (`name: "t-12"`),
   with the task's brief as its prompt, so the tasks never share a context. Subagents have
-  Alondra's tools: the subagent asks, reports and opens its PR itself, passing `task` on every
+  Alondra's tools: when the node has several tasks, each subagent first calls `select_task`
+  with its assigned `t-…` ID, before any Bash, edit, or other tool. Alondra blocks unbound
+  subagents' tools until this succeeds and does not let a bound subagent switch tasks. The
+  subagent asks, reports and opens its PR itself, passing `task` on every
   `ask`, `request_action`, `report` and `withdraw`.
 - A task on a different branch gets its own worktree. A subagent's automatic worktree always
   starts from the default branch, so create it with git when the task names a base

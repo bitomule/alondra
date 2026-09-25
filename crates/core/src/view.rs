@@ -657,7 +657,18 @@ impl View {
                 node.busy = false;
                 node.tool = None;
             }
-            "PermissionDenied" | "ElicitationResult" => {
+            "PermissionDenied" => {
+                node.waiting_permission = false;
+                if h.agent_id.is_none() && node.tool.as_ref().is_some_and(|tool|
+                    match h.tool_use_id.as_deref() {
+                        Some(id) => tool.tool_use_id.as_deref() == Some(id),
+                        None => h.tool_name.as_deref() == Some(tool.name.as_str()),
+                    }
+                ) {
+                    node.tool = None;
+                }
+            }
+            "ElicitationResult" => {
                 node.waiting_permission = false;
                 node.tool = None;
             }

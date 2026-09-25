@@ -71,7 +71,7 @@ impl Ledger {
                 thread.tool = Some(ToolInFlight { tool_use_id: h.tool_use_id.clone(), name: h.tool_name.clone().unwrap_or_default(), summary: h.tool_summary.clone(), since: at });
                 thread.since = at;
             }
-            "PostToolUse" | "PostToolUseFailure" => {
+            "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
                 let same = match (&thread.tool, &h.tool_use_id) {
                     (Some(t), Some(id)) => t.tool_use_id.as_deref() == Some(id.as_str()),
                     (Some(_), None) => true,
