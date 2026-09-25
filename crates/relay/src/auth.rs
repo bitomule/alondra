@@ -43,6 +43,25 @@ pub struct PhoneDevice {
     pub signing_key: String,
 }
 
+#[derive(Default)]
+struct DeviceRegistry {
+    devices: HashMap<String, PhoneDevice>,
+    revoked_ids: HashSet<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredDeviceRegistry {
+    devices: Vec<PhoneDevice>,
+    revoked_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RegistryOnDisk {
+    Current(StoredDeviceRegistry),
+    Legacy(Vec<PhoneDevice>),
+}
+
 #[derive(Deserialize)]
 struct Jwks {
     keys: Vec<Jwk>,
@@ -87,7 +106,7 @@ pub struct Auth {
     jwks: RwLock<CachedJwks>,
     jwks_refresh: AsyncMutex<()>,
     last_unknown_refresh: Mutex<Option<Instant>>,
-    devices: Mutex<HashMap<String, PhoneDevice>>,
+    devices: Mutex<DeviceRegistry>,
     verifier: Mutex<HttpChallengeVerifier>,
 }
 
@@ -100,11 +119,11 @@ impl Auth {
         {
             bail!("issuer, audience, owner_sub and mac_id are required");
         }
-        if !config.jwks_url.starts_with("https://")
-            && !config.jwks_url.starts_with("http://127.0.0.1:")
-            && !(config.allow_internal_http_jwks
-                && config.jwks_url.starts_with("http://keycloak:8080/"))
-        {
+        let jwks_url_allowed = config.jwks_url.starts_with("https://")
+            || config.jwks_url.starts_with("http://127.0.0.1:")
+            || (config.allow_internal_http_jwks
+                && config.jwks_url.starts_with("http://keycloak:8080/"));
+        if !jwks_url_allowed {
             bail!(
                 "JWKS URL must use HTTPS, loopback, or explicitly allowed pilot Keycloak network"
             );
@@ -121,10 +140,25 @@ impl Auth {
         };
         let devices = if config.device_registry_path.exists() {
             let raw = std::fs::read(&config.device_registry_path)?;
-            let list: Vec<PhoneDevice> = serde_json::from_slice(&raw)?;
-            list.into_iter().map(|d| (d.device_id.clone(), d)).collect()
+            let (list, revoked_ids) = match serde_json::from_slice(&raw)? {
+                RegistryOnDisk::Current(StoredDeviceRegistry {
+                    devices,
+                    revoked_ids,
+                }) => (devices, revoked_ids),
+                RegistryOnDisk::Legacy(devices) => (devices, Vec::new()),
+            };
+            let devices: HashMap<_, _> =
+                list.into_iter().map(|d| (d.device_id.clone(), d)).collect();
+            let revoked_ids: HashSet<_> = revoked_ids.into_iter().collect();
+            if devices.keys().any(|id| revoked_ids.contains(id)) {
+                bail!("device registry contains active and revoked duplicate ID");
+            }
+            DeviceRegistry {
+                devices,
+                revoked_ids,
+            }
         } else {
-            HashMap::new()
+            DeviceRegistry::default()
         };
         let verifier = HttpChallengeVerifier::new(CLOCK_SKEW_MS, MAX_NONCES)
             .map_err(|_| anyhow::anyhow!("could not initialize device challenge verifier"))?;
@@ -145,15 +179,17 @@ impl Auth {
 
     pub fn enroll(&self, device: PhoneDevice) -> Result<()> {
         if device.owner_sub != self.config.owner_sub
-            || device.device_id.is_empty()
-            || device.device_id.len() > 128
+            || !valid_device_id(&device.device_id)
             || device.device_id == self.config.mac_id
         {
             bail!("invalid phone device registration");
         }
         verifying_key(&device.signing_key)?;
-        let mut devices = self.devices.lock().unwrap();
-        if let Some(existing) = devices.get(&device.device_id) {
+        let mut registry = self.devices.lock().unwrap();
+        if registry.revoked_ids.contains(&device.device_id) {
+            bail!("revoked device ID cannot be enrolled again");
+        }
+        if let Some(existing) = registry.devices.get(&device.device_id) {
             if existing.owner_sub != device.owner_sub || existing.signing_key != device.signing_key
             {
                 bail!("device key replacement requires a new device ID and fresh pairing");
@@ -161,15 +197,10 @@ impl Auth {
             return Ok(());
         }
         let new_id = device.device_id.clone();
-        devices.insert(new_id.clone(), device);
-        let mut sorted: Vec<_> = devices.values().cloned().collect();
-        sorted.sort_by(|a, b| a.device_id.cmp(&b.device_id));
-        if let Err(e) = write_atomic(
-            &self.config.device_registry_path,
-            &serde_json::to_vec(&sorted)?,
-        ) {
+        registry.devices.insert(new_id.clone(), device);
+        if let Err(e) = self.persist_registry(&registry) {
             // Enrollment must not become usable unless registry durability succeeds.
-            devices.remove(&new_id);
+            registry.devices.remove(&new_id);
             return Err(e);
         }
         Ok(())
@@ -177,25 +208,42 @@ impl Auth {
 
     /// A Mac-signed revocation removes the public key durably before queued data is purged.
     pub fn revoke(&self, device_id: &str) -> Result<()> {
-        let mut devices = self.devices.lock().unwrap();
-        let Some(previous) = devices.remove(device_id) else {
+        if !valid_device_id(device_id) {
+            bail!("invalid device ID");
+        }
+        let mut registry = self.devices.lock().unwrap();
+        if registry.revoked_ids.contains(device_id) {
             return Ok(());
-        };
-        let mut sorted: Vec<_> = devices.values().cloned().collect();
-        sorted.sort_by(|a, b| a.device_id.cmp(&b.device_id));
-        if let Err(e) = write_atomic(
-            &self.config.device_registry_path,
-            &serde_json::to_vec(&sorted)?,
-        ) {
-            devices.insert(device_id.to_owned(), previous);
+        }
+        let previous = registry.devices.remove(device_id);
+        registry.revoked_ids.insert(device_id.to_owned());
+        if let Err(e) = self.persist_registry(&registry) {
+            registry.revoked_ids.remove(device_id);
+            if let Some(previous) = previous {
+                registry.devices.insert(device_id.to_owned(), previous);
+            }
             return Err(e);
         }
         Ok(())
     }
 
+    fn persist_registry(&self, registry: &DeviceRegistry) -> Result<()> {
+        let mut devices: Vec<_> = registry.devices.values().cloned().collect();
+        devices.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+        let mut revoked_ids: Vec<_> = registry.revoked_ids.iter().cloned().collect();
+        revoked_ids.sort();
+        write_atomic(
+            &self.config.device_registry_path,
+            &serde_json::to_vec(&StoredDeviceRegistry {
+                devices,
+                revoked_ids,
+            })?,
+        )
+    }
+
     #[cfg(test)]
     pub fn is_phone_registered(&self, device_id: &str) -> bool {
-        self.devices.lock().unwrap().contains_key(device_id)
+        self.devices.lock().unwrap().devices.contains_key(device_id)
     }
 
     pub fn authenticate_mac(
@@ -242,6 +290,7 @@ impl Auth {
             .devices
             .lock()
             .unwrap()
+            .devices
             .get(id)
             .cloned()
             .context("unknown device")?;
@@ -260,6 +309,7 @@ impl Auth {
             .devices
             .lock()
             .unwrap()
+            .devices
             .get(device_id)
             .cloned()
             .context("unknown device")?;
@@ -461,6 +511,14 @@ async fn fetch_jwks(url: &str) -> Result<Jwks> {
 fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
     let bytes = URL_SAFE_NO_PAD.decode(encoded)?;
     Ok(VerifyingKey::from_sec1_bytes(&bytes)?)
+}
+
+fn valid_device_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {

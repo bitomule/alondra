@@ -984,14 +984,42 @@ mod http_tests {
             0,
             "revocation purges even completed ciphertext"
         );
-        let persisted: Vec<PhoneDevice> = serde_json::from_slice(
+        let persisted: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
         )
         .unwrap();
         assert!(
-            persisted.is_empty(),
+            persisted["devices"].as_array().unwrap().is_empty(),
             "revocation must survive relay restart"
         );
+        assert_eq!(persisted["revoked_ids"], serde_json::json!(["phone-1"]));
+        let after_restart = Auth::test(
+            server.auth.config.clone(),
+            include_bytes!("../tests/fixtures/jwks.json"),
+        )
+        .unwrap();
+        assert!(!after_restart.is_phone_registered("phone-1"));
+        assert!(
+            after_restart.enroll(device.clone()).is_err(),
+            "revoked ID must stay blocked after restart"
+        );
+        let reenroll_body = serde_json::to_vec(&device).unwrap();
+        let reenroll = sign(
+            &epoch,
+            client
+                .post(format!("{url}/v1/devices"))
+                .body(reenroll_body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            "/v1/devices",
+            &reenroll_body,
+            17,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(reenroll.status(), StatusCode::CONFLICT);
         let denied = sign(
             &epoch,
             client
