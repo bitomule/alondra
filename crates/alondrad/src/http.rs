@@ -193,7 +193,15 @@ fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
-async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
+/// The plugin's hooks send `ALONDRA_LAUNCHED` in this header: set in the sessions Alondra
+/// launches, empty in any other.
+fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
+    headers.get(alondra_core::LAUNCHED_HEADER).is_some_and(|v| !v.as_bytes().is_empty())
+}
+
+/// A hook from a session Alondra does not follow ends at once with no effect: nothing is
+/// recorded and nothing is held, so Claude Code's own menus show.
+async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>) -> Response {
     let Some(session_id) = str_field(&p, "session_id") else {
         return Json(json!({})).into_response();
     };
@@ -214,6 +222,17 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         task: named_task(tool.as_deref(), p.get("tool_input")),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
+    match hub.admit(&session_id, launched_mark(&headers)) {
+        Ok(true) => {}
+        Ok(false) => {
+            hub.hold_unclaimed(h);
+            return Json(json!({})).into_response();
+        }
+        Err(e) => {
+            log!("hook lost: {e}");
+            return Json(json!({})).into_response();
+        }
+    }
     if let Err(e) = hub.append(Event::Hook(h.clone())) {
         log!("hook lost: {e}");
         return Json(json!({})).into_response();
@@ -258,7 +277,7 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
     if hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| states::watching(v, n, now_millis()))) {
         return Json(json!({})).into_response();
     }
-    if !hub.hold_enabled || only_parent_may_ask || !crate::watcher::is_background_session(&crate::watcher::claude_home(), &session_id) {
+    if !hub.hold_enabled || only_parent_may_ask || !crate::watcher::is_background_session(&hub.claude_home, &session_id) {
         return Json(json!({})).into_response();
     }
     match (event.as_str(), tool.as_deref()) {
@@ -1169,8 +1188,9 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 value
             })
             .collect();
-        let recent_answered: Vec<Value> = v.questions.values().rev().filter(|q| !q.status.is_open()).take(20).map(|q| client_question(v, q)).collect();
-        let reports: Vec<Value> = v.reports.values().rev().take(50).map(|r| client_report(v, r)).collect();
+        let recent_answered: Vec<Value> =
+            v.questions.values().rev().filter(|q| !q.status.is_open() && !v.left_out.contains(&q.session_id)).take(20).map(|q| client_question(v, q)).collect();
+        let reports: Vec<Value> = v.reports.values().rev().filter(|r| !v.left_out.contains(&r.session_id)).take(50).map(|r| client_report(v, r)).collect();
         let news: Vec<Value> = v
             .inbox_reports()
             .map(|r| {
@@ -1391,6 +1411,26 @@ struct Caller {
     session_id: Option<String>,
     #[serde(default)]
     pids: Vec<i32>,
+    /// The caller's session carries Alondra's mark.
+    #[serde(default)]
+    launched: bool,
+}
+
+fn not_alondras(user: &str) -> String {
+    format!(
+        "This session does not belong to Alondra: Alondra follows only the sessions it launches, so it recorded nothing and {user} will not see it. Reach {user} in this terminal instead."
+    )
+}
+
+/// The answer for a caller from a session Alondra does not follow. One Alondra launched and has
+/// not heard from yet joins now.
+fn outside_caller(hub: &Hub, c: &Caller) -> Option<Response> {
+    let sid = c.session_id.as_deref().filter(|s| !s.is_empty())?;
+    match hub.admit(sid, c.launched) {
+        Ok(true) => None,
+        Ok(false) => Some(err(StatusCode::FORBIDDEN, not_alondras(&hub.config.name))),
+        Err(e) => Some(internal(e)),
+    }
 }
 
 fn resolve_caller(view: &View, c: &Caller) -> Option<(String, Option<String>)> {
@@ -1500,7 +1540,7 @@ fn caller_probe_refused(hub: &Hub, caller: &Caller) -> Option<Response> {
 }
 
 async fn ask(State(hub): State<AppState>, Json(b): Json<AskBody>) -> Response {
-    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+    if let Some(r) = outside_caller(&hub, &b.caller).or_else(|| caller_probe_refused(&hub, &b.caller)) {
         return r;
     }
     if b.title.trim().is_empty() || b.detail.as_deref().is_none_or(|d| d.trim().is_empty()) {
@@ -1568,7 +1608,7 @@ fn terminal_card_of(v: &View, task: &str) -> Option<u64> {
 }
 
 async fn request_action(State(hub): State<AppState>, Json(mut b): Json<AskBody>) -> Response {
-    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+    if let Some(r) = outside_caller(&hub, &b.caller).or_else(|| caller_probe_refused(&hub, &b.caller)) {
         return r;
     }
     b.steps.retain(|s| !s.trim().is_empty());
@@ -1843,6 +1883,9 @@ struct WithdrawBody {
 /// With a caller (a node's `withdraw` tool), only that node's own open questions can be withdrawn,
 /// and only from the task it names, when it names one.
 async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>, body: Option<Json<WithdrawBody>>) -> Response {
+    if let Some(r) = body.as_ref().and_then(|Json(b)| outside_caller(&hub, &b.caller)) {
+        return r;
+    }
     let (question, caller) = hub.read(|v| (v.questions.get(&id).cloned(), body.as_ref().and_then(|Json(b)| resolve_caller(v, &b.caller))));
     let asker = body.is_some().then(|| caller.map(|(sid, _)| sid));
     if let Some((status, why)) = withdraw_refusal(id, question.as_ref(), asker.as_ref().map(Option::as_deref)) {
@@ -1918,7 +1961,7 @@ struct ReportBody {
 }
 
 async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Response {
-    if let Some(r) = caller_probe_refused(&hub, &b.caller) {
+    if let Some(r) = outside_caller(&hub, &b.caller).or_else(|| caller_probe_refused(&hub, &b.caller)) {
         return r;
     }
     if b.kind != Some(ReportKind::Progress) && (b.title.trim().is_empty() || b.body.as_deref().is_none_or(|t| t.trim().is_empty())) {
@@ -2021,6 +2064,9 @@ struct WaitingMachineBody {
 }
 
 async fn waiting_machine(State(hub): State<AppState>, Json(b): Json<WaitingMachineBody>) -> Response {
+    if let Some(r) = outside_caller(&hub, &b.caller) {
+        return r;
+    }
     let res = hub.append_with(|v| {
         let (session_id, _) = resolve_caller(v, &b.caller)?;
         Some(Event::WaitingMachine { session_id, reason: b.reason.clone() })
@@ -2408,6 +2454,9 @@ async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Re
 }
 
 async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -> Response {
+    if let Some(r) = outside_caller(&hub, &c) {
+        return r;
+    }
     let res = hub.append_with(|v| resolve_caller(v, &c).map(|(sid, _)| Event::MarkedOrchestrator { session_id: sid }));
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
@@ -3160,7 +3209,7 @@ mod tests {
             let hub = temp_hub("report-pr");
             hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             let body = ReportBody {
-                caller: Caller { session_id: Some("s".into()), pids: vec![] },
+                caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
                 title: "Listo".into(),
                 body: Some("Hecho y probado".into()),
                 kind: Some(ReportKind::Final),
@@ -3188,7 +3237,7 @@ mod tests {
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
 
         let ask_body = AskBody {
-            caller: Caller { session_id: Some("s".into()), pids: vec![] },
+            caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
             title: "Sigo con la fase 3?".into(),
             detail: Some("Fase 2 medida; esto es lo que debería venir después".into()),
             options: vec![],
@@ -3206,7 +3255,7 @@ mod tests {
         assert_eq!(asked["to_orchestrator"], true, "{asked}");
 
         let report_body = ReportBody {
-            caller: Caller { session_id: Some("s".into()), pids: vec![] },
+            caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
             title: "Fase 2 medida".into(),
             body: Some("Nada pendiente de mi parte; el orquestador debería seguir con la fase 3".into()),
             kind: Some(ReportKind::Final),
@@ -3364,7 +3413,7 @@ mod tests {
             json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
         ];
         for p in payloads {
-            hook(State(hub.clone()), Json(p)).await;
+            hook(State(hub.clone()), launched(), Json(p)).await;
         }
         let stored = hub.read(|v| v.nodes["s"].ledger.clone());
         assert_eq!(stored.bound, vec![(Some("a1".to_string()), "t-s".to_string())], "the subagent bound itself with the task its Alondra call named");
@@ -3412,12 +3461,12 @@ mod tests {
             json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "tool_name": "mcp__plugin_alondra_alondra__ask", "tool_use_id": id, "tool_input": {"task": task, "title": "¿Sigo?"}})
         };
         for p in [ask_tool("a1", "PreToolUse", "b1", Some("t-other")), ask_tool("a1", "PostToolUse", "b1", Some("t-other"))] {
-            hook(State(hub.clone()), Json(p)).await;
+            hook(State(hub.clone()), launched(), Json(p)).await;
         }
         let asked = |hub: Arc<Hub>, agent: &'static str, id: &'static str| async move {
-            hook(State(hub.clone()), Json(ask_tool(agent, "PreToolUse", id, None))).await;
+            hook(State(hub.clone()), launched(), Json(ask_tool(agent, "PreToolUse", id, None))).await;
             let answer = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo con esto?"))).await).await;
-            hook(State(hub.clone()), Json(ask_tool(agent, "PostToolUse", id, None))).await;
+            hook(State(hub.clone()), launched(), Json(ask_tool(agent, "PostToolUse", id, None))).await;
             answer
         };
         let (status, said) = asked(hub.clone(), "a1", "c1").await;
@@ -3430,14 +3479,14 @@ mod tests {
 
     fn ask_body(sid: &str, title: &str) -> AskBody {
         AskBody {
-            caller: Caller { session_id: Some(sid.into()), pids: vec![] }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
+            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
             attachments: vec![], blocking: true, to_orchestrator: false, steps: vec![], related: None, replaces: None, task: None,
         }
     }
 
     fn report_body(sid: &str, kind: ReportKind, links: &[&str]) -> ReportBody {
         ReportBody {
-            caller: Caller { session_id: Some(sid.into()), pids: vec![] }, title: "Hecho".into(), body: Some("Detalle".into()), kind: Some(kind),
+            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false }, title: "Hecho".into(), body: Some("Detalle".into()), kind: Some(kind),
             links: links.iter().map(|u| Link { url: (*u).into(), title: None }).collect(), attachments: vec![], related: None, to_orchestrator: false, task: None,
         }
     }
@@ -3601,7 +3650,7 @@ mod tests {
         let tool = |event: &str| json!({"session_id": "s", "hook_event_name": event, "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}});
         let before = hub.tick();
         for event in ["PreToolUse", "PostToolUse", "PreToolUse"] {
-            hook(State(hub.clone()), Json(tool(event))).await;
+            hook(State(hub.clone()), launched(), Json(tool(event))).await;
         }
         assert_eq!(hub.tick(), before, "a tool starting and ending changes no state");
         assert!(hub.changes() > 3, "Alondra's own loops still hear every event");
@@ -3983,7 +4032,7 @@ mod tests {
                 launched: false, launched_as: None, start: Some(Start::NewNode { name: name.into(), cwd: "/tmp".into(), model: None }),
             }))
             .unwrap();
-            hub.append(Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(id.into()), title: None }).unwrap();
+            hub.append(Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(id.into()), title: None, session: None }).unwrap();
             hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), pid: Some(1), ..Default::default() })).unwrap();
             hub.append(Event::Hook(HookEvent { session_id: sid.into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             hub.append(Event::PrOpened { url: url.into(), session_id: sid.into(), task: None }).unwrap();
@@ -4116,7 +4165,7 @@ mod tests {
             }
             let before = hub.read(|v| v.questions.len());
             let body = AskBody {
-                caller: Caller { session_id: Some("mine".into()), pids: vec![] },
+                caller: Caller { session_id: Some("mine".into()), pids: vec![], launched: false },
                 title: "Apple no exige capturas del iPhone Duo: ¿las hago igual?".into(),
                 detail: Some("No se pueden subir aún".into()),
                 options: vec![],
@@ -4199,6 +4248,13 @@ mod tests {
         hub_with(tag, false)
     }
 
+    /// The headers of a hook from a session Alondra launched.
+    pub(super) fn launched() -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(alondra_core::LAUNCHED_HEADER, "1".parse().unwrap());
+        h
+    }
+
     fn hub_with(tag: &str, sandbox: bool) -> Arc<Hub> {
         hub_on(tag, sandbox, FakeGithub::default())
     }
@@ -4249,7 +4305,7 @@ mod tests {
             "hook_event_name": "PostToolUse", "session_id": "s", "tool_name": "Bash",
             "tool_input": {"command": command}, "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false},
         });
-        hook(State(hub.clone()), Json(p)).await;
+        hook(State(hub.clone()), launched(), Json(p)).await;
         for _ in 0..50 {
             tokio::task::yield_now().await;
         }
@@ -4310,7 +4366,7 @@ mod tests {
 
     async fn main_thread_calls(hub: &Arc<Hub>, event: &str, tool: &str, input: Value) {
         let p = json!({"hook_event_name": event, "session_id": "s", "tool_name": tool, "tool_use_id": "q", "tool_input": input});
-        hook(State(hub.clone()), Json(p)).await;
+        hook(State(hub.clone()), launched(), Json(p)).await;
     }
 
     fn alondra_told(hub: &Hub) -> Vec<String> {
@@ -4407,7 +4463,7 @@ mod tests {
             let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
             let hub = hub_on("fixture-pr", false, github.clone());
             hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-            let caller = Caller { session_id: Some("s".into()), pids: vec![] };
+            let caller = Caller { session_id: Some("s".into()), pids: vec![], launched: false };
             let links = vec![Link { url: FIXTURE.into(), title: None }];
             let response = match kind {
                 NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
@@ -4438,7 +4494,7 @@ mod tests {
                 hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), ..Default::default() })).unwrap();
             }
             let body = |sid: &str| ReportBody {
-                caller: Caller { session_id: Some(sid.into()), pids: vec![] },
+                caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false },
                 title: "Menú leído".into(),
                 body: Some("La sonda leyó el menú".into()),
                 kind: Some(ReportKind::Final),
@@ -4531,7 +4587,7 @@ mod tests {
         assert_eq!((status, body.get("interactive")), (StatusCode::OK, None));
         assert_eq!(status_and_body(send("nobody").await).await.0, StatusCode::NOT_FOUND);
 
-        let stop = |sid: &str| hook(State(hub.clone()), Json(json!({"hook_event_name": "Stop", "session_id": sid})));
+        let stop = |sid: &str| hook(State(hub.clone()), launched(), Json(json!({"hook_event_name": "Stop", "session_id": sid})));
         let (_, said) = status_and_body(stop("interactive").await).await;
         let context = said["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string();
         assert_eq!(said["hookSpecificOutput"]["hookEventName"], "Stop", "{said}");
@@ -4927,13 +4983,16 @@ defaults = { pr = "auto_merge" }
     fn the_launch_command_carries_the_flags_and_the_options_section() {
         let file = alondra_core::options::OptionsFile::parse(OPTIONS).unwrap();
         let resolved = file.resolve(Some("App"), &[("how_far".to_string(), alondra_core::options::Choice::Value("install".into()))].into()).unwrap();
-        let args = crate::options::launch_args("app/fix", None, None, "Fix it.\n", &resolved, Some("r-1"));
+        let plugin = std::path::Path::new("/src/alondra/plugin");
+        let args = crate::options::launch_args("app/fix", None, None, "Fix it.\n", &resolved, Some("r-1"), plugin);
         assert_eq!(args[..9], ["--bg", "--name", "app/fix", "--permission-mode", "auto", "--model", "sonnet", "--effort", "medium"]);
-        assert_eq!(args[9], "--");
-        let prompt = &args[10];
+        assert_eq!(args[9..12], ["--plugin-dir", "/src/alondra/plugin", "--settings"], "the node loads Alondra's plugin for itself only");
+        assert!(args[12].contains(alondra_core::LAUNCHED_ENV), "{}", args[12]);
+        assert_eq!(args[13], "--");
+        let prompt = &args[14];
         assert!(prompt.starts_with("Fix it.\n\n## Launch options\n\nThe user chose these for this work (request r-1):"), "{prompt}");
         assert!(prompt.contains("- How far: merge and install. After the merge, run the install target."), "{prompt}");
-        let explicit = crate::options::launch_args("n", Some("plan"), Some("haiku"), "p", &resolved, None);
+        let explicit = crate::options::launch_args("n", Some("plan"), Some("haiku"), "p", &resolved, None, plugin);
         assert_eq!(explicit[3..9], ["--permission-mode", "plan", "--model", "haiku", "--effort", "medium"]);
     }
 
@@ -4941,7 +5000,7 @@ defaults = { pr = "auto_merge" }
     fn a_node_launched_with_auto_merge_raises_no_pr_card() {
         for (auto_merge, cards) in [(true, 0), (false, 1)] {
             let hub = temp_hub("auto-merge-card");
-            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge, task: None, title: None }).unwrap();
+            hub.append(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge, task: None, title: None, session: None }).unwrap();
             hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("app/fix".into()), ..Default::default() })).unwrap();
             hub.append(Event::PrOpened { url: "https://github.com/a/app/pull/3".into(), session_id: "s".into(), task: None }).unwrap();
             assert_eq!(hub.read(|v| crate::prs::in_inbox(v).count()), cards, "auto_merge {auto_merge}");
@@ -5260,7 +5319,7 @@ mod archive_tests {
             json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
         ];
         for p in payloads {
-            hook(State(hub.clone()), Json(p)).await;
+            hook(State(hub.clone()), super::tests::launched(), Json(p)).await;
         }
         for id in 1..=30 {
             let text = format!("{id} ").repeat(1000);
@@ -5289,5 +5348,166 @@ mod archive_tests {
         assert_eq!(get("/v1/nodes/nobody/activity").send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
         let remote = get("/v1/nodes/s/activity").header("x-forwarded-for", "203.0.113.9").send().await.unwrap();
         assert_eq!(remote.status(), reqwest::StatusCode::UNAUTHORIZED, "paired devices only, like the node's detail");
+    }
+}
+
+#[cfg(test)]
+mod owned_session_tests {
+    use super::tests::{launched, status_and_body};
+    use super::*;
+    use alondra_core::DaemonObservation;
+
+    const EXTERNAL: &str = "eacfc103-4d1e-4b43-9d0a-cron00000001";
+    const NEW: &str = "4e5f6a7b-1111-4222-8333-944445555666";
+    const OWN: &str = "7e661a50-a308-4859-a2e1-003554431ff7";
+    const ORCHESTRATOR: &str = "0100014c-8803-469d-ba89-ae6fd660c420";
+
+    fn home(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("alondra-owned-{tag}-{}-{}", std::process::id(), now_millis()))
+    }
+
+    /// A hub that holds permissions, with Claude Code's home in `home/claude` where every session
+    /// the test names is a background job, as a cron's `claude --bg` is.
+    fn hub_at(home: &std::path::Path) -> Arc<Hub> {
+        for sid in [EXTERNAL, NEW, OWN, ORCHESTRATOR] {
+            let job = home.join("claude/jobs").join(&sid[..8]);
+            std::fs::create_dir_all(&job).unwrap();
+            std::fs::write(job.join("state.json"), json!({"sessionId": sid}).to_string()).unwrap();
+        }
+        let config = alondra_core::config::Config::resolve(home.to_path_buf(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        Arc::new(Hub::open(config, true).unwrap().with_claude_home(home.join("claude")))
+    }
+
+    async fn send(hub: &Arc<Hub>, headers: axum::http::HeaderMap, payload: Value) -> Value {
+        let answered = tokio::time::timeout(Duration::from_secs(2), hook(State(hub.clone()), headers, Json(payload))).await;
+        status_and_body(answered.expect("the hook held instead of answering at once")).await.1
+    }
+
+    fn caller(sid: &str, launched: bool) -> Caller {
+        Caller { session_id: Some(sid.into()), pids: vec![], launched }
+    }
+
+    fn question(sid: &str) -> AskBody {
+        AskBody {
+            caller: caller(sid, false),
+            title: "¿Mergeo?".into(),
+            detail: Some("Contexto".into()),
+            options: vec![],
+            links: vec![],
+            attachments: vec![],
+            blocking: true,
+            to_orchestrator: false,
+            steps: vec![],
+            related: None,
+            replaces: None,
+            task: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_alondra_did_not_launch_is_not_followed_and_its_hooks_do_nothing() {
+        let hub = hub_at(&home("external"));
+        let seq = hub.read(|v| v.seq);
+        for payload in [
+            json!({"session_id": EXTERNAL, "hook_event_name": "SessionStart", "cwd": "/Users/x/Projects/MealScale"}),
+            json!({"session_id": EXTERNAL, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "gh pr create"}}),
+            json!({"session_id": EXTERNAL, "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Ship it?"}]}}),
+            json!({"session_id": EXTERNAL, "hook_event_name": "UserPromptSubmit", "prompt": "weekly sweep"}),
+        ] {
+            assert_eq!(send(&hub, axum::http::HeaderMap::new(), payload).await, json!({}), "Claude Code's own menu shows");
+        }
+        assert_eq!(hub.holds_count(), 0, "nothing is held");
+        assert_eq!(hub.read(|v| v.seq), seq, "nothing is recorded");
+        assert!(hub.timeline(EXTERNAL, 10, None).unwrap().is_empty());
+        assert!(hub.read(|v| v.nodes.is_empty() && v.board.requests.is_empty()), "no node and no request in Fleet or Tasks");
+
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(question(EXTERNAL))).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(said["error"].as_str().unwrap().contains("does not belong to Alondra"), "{said}");
+        let report_body = ReportBody {
+            caller: caller(EXTERNAL, false),
+            title: "Hecho".into(),
+            body: Some("Detalle".into()),
+            kind: Some(ReportKind::Final),
+            links: vec![],
+            attachments: vec![],
+            related: None,
+            to_orchestrator: false,
+            task: None,
+        };
+        assert_eq!(status_and_body(report(State(hub.clone()), Json(report_body)).await).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(hub.read(|v| v.seq), seq, "the tools created nothing");
+    }
+
+    #[tokio::test]
+    async fn a_session_alondra_launched_is_followed_from_its_first_hook() {
+        let hub = hub_at(&home("marked"));
+        send(&hub, launched(), json!({"session_id": NEW, "hook_event_name": "SessionStart", "cwd": "/Users/x/Projects/app"})).await;
+        send(&hub, launched(), json!({"session_id": NEW, "hook_event_name": "UserPromptSubmit", "prompt": "Fix the menu"})).await;
+        let kinds: Vec<String> = hub
+            .timeline(NEW, 10, None)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|(_, _, body)| serde_json::from_str::<Value>(&body).unwrap()["type"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(kinds, ["joined", "hook", "hook"], "it joins with its very first hook");
+        assert_eq!(hub.read(|v| v.nodes[NEW].last_prompt.clone()).as_deref(), Some("Fix the menu"));
+    }
+
+    #[tokio::test]
+    async fn the_hooks_a_launched_session_sends_before_its_launch_returns_are_kept() {
+        let hub = hub_at(&home("early"));
+        let under_way = hub.launching();
+        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "SessionStart"})).await;
+        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "UserPromptSubmit", "prompt": "Fix the menu"})).await;
+        assert!(hub.read(|v| !v.nodes.contains_key(NEW)), "not Alondra's until its launch says so");
+        hub.append(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None, session: Some(NEW[..8].into()) }).unwrap();
+        hub.admit_launched(&NEW[..8]).unwrap();
+        drop(under_way);
+        assert_eq!(hub.read(|v| v.nodes[NEW].last_prompt.clone()).as_deref(), Some("Fix the menu"), "its first prompt is not lost");
+        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "Stop"})).await;
+        assert!(hub.read(|v| v.nodes[NEW].last_stop_at.is_some()));
+    }
+
+    #[tokio::test]
+    async fn the_orchestrator_and_the_nodes_alondra_launched_before_the_mark_stay_and_the_rest_leave() {
+        let home = home("upgrade");
+        std::fs::create_dir_all(&home).unwrap();
+        {
+            let mut store = crate::store::Store::open(&home.join("alondra.db")).unwrap();
+            let seen = |sid: &str, name: &str| Event::DaemonSeen(DaemonObservation { session_id: sid.into(), short_id: sid[..8].into(), name: Some(name.into()), pid: Some(1), ..Default::default() });
+            let hook = |sid: &str, e: &str| Event::Hook(HookEvent { session_id: sid.into(), event: e.into(), ..Default::default() });
+            let options = alondra_core::options::Resolved { project: None, auto_merge: false, effort: "auto".into(), flags: Default::default(), picked: vec![], issue: None };
+            let start = now_millis() - 60_000;
+            let before = [
+                Event::RequestSent { request_id: "r-1790263152254".into(), options, text: Some("¿Estados por tarea?".into()), attachments: vec![] },
+                Event::Launched { name: "alondra/estados-por-tarea".into(), request_id: Some("r-1790263152254".into()), auto_merge: false, task: None, title: None, session: None },
+                seen(OWN, "alondra/estados-por-tarea"),
+                hook(OWN, "SessionStart"),
+                Event::MarkedOrchestrator { session_id: ORCHESTRATOR.into() },
+                hook(ORCHESTRATOR, "SessionStart"),
+                seen(EXTERNAL, "MealScale · mejora semanal"),
+                hook(EXTERNAL, "UserPromptSubmit"),
+            ];
+            for (i, e) in before.iter().enumerate() {
+                store.append(start + i as i64 * 1000, e).unwrap();
+            }
+        }
+        let hub = hub_at(&home);
+        let overview = super::overview(State(hub.clone())).await.0;
+        let nodes: Vec<&str> = overview["nodes"].as_array().unwrap().iter().map(|n| n["session_id"].as_str().unwrap()).collect();
+        assert_eq!(nodes, [ORCHESTRATOR, OWN], "the cron leaves Fleet");
+        let requests: Vec<&str> = overview["requests"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(requests, ["r-1790263152254"], "the cron's single-node request leaves Tasks");
+
+        for sid in [OWN, ORCHESTRATOR, EXTERNAL] {
+            let payload = json!({"session_id": sid, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}});
+            send(&hub, axum::http::HeaderMap::new(), payload).await;
+        }
+        assert!(hub.read(|v| v.nodes[OWN].tool.is_some() && v.nodes[ORCHESTRATOR].tool.is_some()), "running Alondra sessions need no mark");
+        assert!(hub.read(|v| !v.nodes.contains_key(EXTERNAL)));
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(question(OWN))).await).await;
+        assert_eq!(status, StatusCode::OK, "its tools still reach David: {said}");
     }
 }

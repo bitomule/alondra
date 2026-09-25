@@ -13,6 +13,7 @@ mod menus;
 mod notifier;
 mod options;
 mod orchestrate;
+mod plugins;
 mod prs;
 mod push;
 mod sentinel;

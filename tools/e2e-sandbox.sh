@@ -28,14 +28,15 @@ cp -R "$repo/plugin" "$dir/plugin"
 sed -i '' "s#http://127.0.0.1:47800/#http://127.0.0.1:$port/#g" "$dir/plugin/hooks/hooks.json"
 printf '#!/bin/sh\nALONDRA_HOME="%s" ALONDRA_PORT="%s" exec "%s/bin/alondra" "$@"\n' "$dir" "$port" "$dir" >"$dir/plugin/bin/alondra"
 chmod 755 "$dir/plugin/bin/alondra"
-printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}}\n' >"$dir/settings.json"
+printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$dir/settings.json"
 printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$dir" "$port" >"$dir/env"
 
 cat <<EOF
 Alondra sandbox on http://127.0.0.1:$port, data in $dir (sandbox mode: test/ nodes allowed, wake off).
 
-Launch a probe node against it (the installed plugin is switched off for that session, the
-sandbox copy of the plugin takes its place):
+Launch a probe node against it (any installed plugin is switched off for that session, the
+sandbox copy of the plugin takes its place, and the probe carries the mark Alondra's own
+launches carry, without which the sandbox would leave it out):
 
   claude --bg --name test/<probe> --plugin-dir $dir/plugin --settings $dir/settings.json -- "<prompt>"
 

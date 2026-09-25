@@ -41,6 +41,16 @@ pub struct View {
     /// Requests and the tasks they became.
     #[serde(default)]
     pub board: crate::tasks::Board,
+    /// Since when Alondra follows only the sessions it launched (`Event::LaunchedOnly`).
+    #[serde(default)]
+    pub launched_only_since: Option<Millis>,
+    /// The short ids Alondra's launches printed, with when.
+    #[serde(default)]
+    pub launched_sessions: BTreeMap<String, Millis>,
+    /// Sessions from before `LaunchedOnly` that no record ties to a launch: their cards stay out
+    /// of the inbox.
+    #[serde(default)]
+    pub left_out: std::collections::BTreeSet<String>,
     #[serde(skip)]
     pub(crate) task_pass: crate::tasks::Pass,
 }
@@ -128,6 +138,7 @@ impl View {
         self.messages.retain(|_, m| m.created_at >= before);
         self.approved_artifacts.retain(|_, at| *at >= before);
         self.removed.retain(|_, at| *at >= before);
+        self.launched_sessions.retain(|_, at| *at >= before);
         let keep = self.tasks_to_keep();
         self.board.prune(before, |t| keep.contains(&t.id));
         let board = &self.board.requests;
@@ -186,6 +197,15 @@ impl View {
             Event::MarkedOrchestrator { session_id } => {
                 self.node_mut(session_id, at).is_orchestrator = true;
                 Some((session_id.clone(), Trigger::Other))
+            }
+            Event::Joined { session_id } => {
+                self.node_mut(session_id, at);
+                Some((session_id.clone(), Trigger::Other))
+            }
+            Event::LaunchedOnly => {
+                self.launched_only_since.get_or_insert(at);
+                self.leave_out_foreign();
+                None
             }
             Event::QuestionAsked(q) => {
                 let node = self.node_mut(&q.session_id, at);
@@ -371,16 +391,22 @@ impl View {
                 self.requests.insert(request_id.clone(), options.clone());
                 None
             }
-            Event::Launched { name, auto_merge, .. } => {
+            Event::Launched { name, auto_merge, session, .. } => {
                 if *auto_merge {
                     self.auto_merge_nodes.insert(name.clone());
                 } else {
                     self.auto_merge_nodes.remove(name);
                 }
+                if let Some(short) = session {
+                    self.launched_sessions.insert(short.clone(), at);
+                }
                 None
             }
-            Event::OrchestratorLaunched { .. } => {
+            Event::OrchestratorLaunched { session, .. } => {
                 self.orchestrator_launched_at = Some(at);
+                if let Some(short) = session {
+                    self.launched_sessions.insert(short.clone(), at);
+                }
                 None
             }
             Event::Resumed { session_id, ok, error } => {
@@ -767,7 +793,7 @@ impl View {
         let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
             let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
-            !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked
+            !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked && !self.left_out.contains(&r.session_id)
         })
     }
 

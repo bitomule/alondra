@@ -52,6 +52,14 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
                 continue;
             }
             let Some(mut obs) = read_state(&state_path, &short) else { continue };
+            match hub.admit(&obs.session_id, false) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(e) => {
+                    log!("could not tell whether {short} is Alondra's: {e}");
+                    continue;
+                }
+            }
             obs.pid = pid;
             obs.updated_at = Some(mtime);
             if let Some(path) = transcript_path(&mut transcripts, &projects, &obs.session_id)

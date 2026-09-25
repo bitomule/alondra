@@ -4,11 +4,37 @@ use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::{Answer, Event, Machine, View, now_millis};
+use alondra_core::sessions::Admission;
+use alondra_core::{Answer, Event, HookEvent, Machine, View, now_millis};
 use anyhow::Result;
 use tokio::sync::{oneshot, watch};
 
 use crate::store::Store;
+
+/// While a launch is under way, the hooks of this many unknown sessions are held, this many each,
+/// in case the launch turns out to be theirs.
+const HELD_SESSIONS: usize = 32;
+const HELD_HOOKS: usize = 20;
+
+/// Hooks of sessions Alondra does not follow, held while launches are under way.
+#[derive(Default)]
+struct Unclaimed {
+    launches: usize,
+    hooks: HashMap<String, Vec<HookEvent>>,
+}
+
+/// A launch under way: the hooks held for it are dropped once no launch is.
+pub struct Launching<'a>(&'a Hub);
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        let mut u = self.0.unclaimed.lock().expect("unclaimed lock poisoned");
+        u.launches -= 1;
+        if u.launches == 0 {
+            u.hooks.clear();
+        }
+    }
+}
 
 pub struct Hub {
     writer: Mutex<Store>,
@@ -21,12 +47,15 @@ pub struct Hub {
     /// What clients were last shown: the overview's digest and the machine's rounded gauges.
     shown: Mutex<(u64, u64)>,
     holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
+    unclaimed: Mutex<Unclaimed>,
     own_attaches: Mutex<HashSet<String>>,
     closing: Mutex<HashSet<String>>,
     activity: Mutex<HashMap<String, i64>>,
     pub options: Mutex<Option<alondra_core::options::OptionsFile>>,
     pub issues: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub home: PathBuf,
+    /// Claude Code's home, where it keeps its background sessions.
+    pub claude_home: PathBuf,
     pub config: Config,
     pub hold_enabled: bool,
     pub pr_lookup: crate::prs::Lookup,
@@ -54,6 +83,12 @@ impl Hub {
             let seq = store.append(at, &Event::TasksRecorded)?;
             view.apply(seq, at, &Event::TasksRecorded);
         }
+        if view.launched_only_since.is_none() {
+            let at = now_millis();
+            let seq = store.append(at, &Event::LaunchedOnly)?;
+            view.apply(seq, at, &Event::LaunchedOnly);
+            log!("from now on only sessions Alondra launched are followed; {} left out", view.left_out.len());
+        }
         let (tick, _) = watch::channel(0);
         let (changes, _) = watch::channel(0);
         let shown = crate::http::overview_digest(&view, now_millis());
@@ -65,12 +100,14 @@ impl Hub {
             changes,
             shown: Mutex::new((shown, 0)),
             holds: Mutex::new(HashMap::new()),
+            unclaimed: Mutex::new(Unclaimed::default()),
             own_attaches: Mutex::new(HashSet::new()),
             closing: Mutex::new(HashSet::new()),
             activity: Mutex::new(HashMap::new()),
             options: Mutex::new(None),
             issues: tokio::sync::Mutex::new(None),
             home,
+            claude_home: crate::watcher::claude_home(),
             config,
             hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
@@ -89,6 +126,11 @@ impl Hub {
     #[cfg(test)]
     pub fn with_report_judge(self, judge: impl crate::classify::JudgesReports + 'static) -> Self {
         Hub { report_judge: Box::new(judge), ..self }
+    }
+
+    #[cfg(test)]
+    pub fn with_claude_home(self, claude_home: PathBuf) -> Self {
+        Hub { claude_home, ..self }
     }
 
     /// Records an event, and around it the task events it takes: the task a session's first card
@@ -131,6 +173,54 @@ impl Hub {
         self.changed(Some(digest), None);
         drop(store);
         Ok(Ok(recorded))
+    }
+
+    /// Whether Alondra follows the session: it does already, or it launched it and the session
+    /// joins now, with the hooks it sent before Alondra could tell it was its own. Nothing is
+    /// recorded for any other session.
+    pub fn admit(&self, session_id: &str, marked: bool) -> Result<bool> {
+        match self.read(|v| v.admission(session_id, marked)) {
+            Admission::Follows => return Ok(true),
+            Admission::Outside => return Ok(false),
+            Admission::Joins => {}
+        }
+        let early = self.unclaimed.lock().expect("unclaimed lock poisoned").hooks.remove(session_id).unwrap_or_default();
+        let joined = self.append_all(|v| match v.admission(session_id, marked) {
+            Admission::Joins => Ok(std::iter::once(Event::Joined { session_id: session_id.to_string() }).chain(early.into_iter().map(Event::Hook)).collect()),
+            other => Err(other),
+        })?;
+        Ok(match joined {
+            Ok(_) => true,
+            Err(other) => other == Admission::Follows,
+        })
+    }
+
+    /// Marks a launch under way until the guard drops.
+    pub fn launching(&self) -> Launching<'_> {
+        self.unclaimed.lock().expect("unclaimed lock poisoned").launches += 1;
+        Launching(self)
+    }
+
+    /// Holds a hook of a session Alondra does not follow while a launch is under way: its short
+    /// id is known only once `claude --bg` returns, and the session may already be talking.
+    pub fn hold_unclaimed(&self, h: HookEvent) {
+        let mut u = self.unclaimed.lock().expect("unclaimed lock poisoned");
+        if u.launches == 0 || (u.hooks.len() >= HELD_SESSIONS && !u.hooks.contains_key(&h.session_id)) {
+            return;
+        }
+        let held = u.hooks.entry(h.session_id.clone()).or_default();
+        if held.len() < HELD_HOOKS {
+            held.push(h);
+        }
+    }
+
+    /// A launch printed this short id: the session it names joins if it already spoke.
+    pub fn admit_launched(&self, short: &str) -> Result<()> {
+        let waiting: Vec<String> = self.unclaimed.lock().expect("unclaimed lock poisoned").hooks.keys().filter(|s| s.starts_with(short)).cloned().collect();
+        for sid in waiting {
+            self.admit(&sid, false)?;
+        }
+        Ok(())
     }
 
     /// Reads the view once nothing is being recorded: whatever an append started before this

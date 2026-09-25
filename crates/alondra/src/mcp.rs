@@ -137,7 +137,8 @@ fn tools(role: Role, user: &str) -> Value {
 
 pub fn caller() -> Value {
     let session = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
-    json!({"session_id": session, "pids": ancestors()})
+    let launched = std::env::var(alondra_core::LAUNCHED_ENV).is_ok_and(|v| !v.is_empty());
+    json!({"session_id": session, "pids": ancestors(), "launched": launched})
 }
 
 fn ancestors() -> Vec<i32> {
