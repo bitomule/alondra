@@ -7,6 +7,7 @@ use alondra_core::{
     QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states, upkeep,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::body::Bytes;
 use axum::Extension;
 use std::net::SocketAddr;
 use axum::http::StatusCode;
@@ -35,6 +36,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/pairing", post(new_pairing))
         .route("/v1/pair", post(pair))
         .route("/v1/service/approve-device", post(service_approve_device))
+        .route("/v1/service/bootstrap", get(service_bootstrap))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
         .route("/v1/overview", get(overview))
@@ -1077,13 +1079,29 @@ struct ServiceApproveBody { device_id: String, name: String, signing_key: String
 
 async fn service_approve_device(
     Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap, Json(body): Json<ServiceApproveBody>,
+    headers: axum::http::HeaderMap, body: Bytes,
 ) -> Response {
     if let Some(response) = local_only(&peer, &headers) { return response; }
+    if body.len() > 2048 { return err(StatusCode::PAYLOAD_TOO_LARGE, "service approval too large"); }
+    if let Err(error) = auth.verify_service_approval(&headers, &body) {
+        return err(StatusCode::UNAUTHORIZED, error);
+    }
+    let Ok(body) = serde_json::from_slice::<ServiceApproveBody>(&body) else {
+        return err(StatusCode::BAD_REQUEST, "invalid service approval");
+    };
     match auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => err(StatusCode::CONFLICT, error),
     }
+}
+
+async fn service_bootstrap(
+    Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(response) = local_only(&peer, &headers) { return response; }
+    Json(json!({"epoch": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        auth.service_epoch())})).into_response()
 }
 
 async fn devices(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {

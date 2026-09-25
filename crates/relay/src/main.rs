@@ -895,6 +895,80 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn pairing_requires_mac_approval_and_returns_key_bound_proof() {
+        use p256::ecdsa::{Signature, signature::Signer};
+        let mac_sign = SigningKey::from_slice(&[31u8; 32]).unwrap();
+        let mac_agreement = SecretKey::from_slice(&[32u8; 32]).unwrap();
+        let phone_sign = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
+        let (url, server, task) = test_server(&mac_sign).await;
+        let mac_agreement_key = URL_SAFE_NO_PAD.encode(mac_agreement.public_key().to_sec1_point(false).as_bytes());
+        server.auth.enroll_mac(auth::MacDevice {
+            mac_id: "mac-1".into(), owner_sub: "owner".into(), signing_key: key_bytes(&mac_sign),
+            agreement_key: mac_agreement_key.clone(),
+        }).unwrap();
+        let epoch = server.auth.server_epoch();
+        let client = reqwest::Client::new();
+        let secret = [9u8; 16];
+        let session_id = "pair-http-test";
+        let expires = now_ms() + 600_000;
+        let session = serde_json::to_vec(&pairing::SessionRequest {
+            session_id: session_id.into(), mac_id: "mac-1".into(),
+            secret_hash: URL_SAFE_NO_PAD.encode(Sha256::digest(secret)), expires_at_ms: expires,
+        }).unwrap();
+        let response = sign(&epoch, client.post(format!("{url}/v1/pairings")), &mac_sign,
+            "mac-1", "POST", "/v1/pairings", &session, 1).body(session).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let phone_key = key_bytes(&phone_sign);
+        let plaintext = serde_json::to_vec(&json!({"device_id":"phone-a","signing_key":phone_key,
+            "agreement_key":URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_point(false).as_bytes()),
+            "display_name":"iPhone","owner_sub":"owner","session_id":session_id})).unwrap();
+        let envelope = EnvelopeV1::seal_random(Context { route: "mac-1", sender: "phone-a",
+            recipient: "mac-1", request_id: session_id, kind: "pairing", expires_at_ms: expires },
+            &plaintext, &phone_sign, &mac_agreement.public_key()).unwrap();
+        let candidate = serde_json::to_vec(&pairing::CandidateRequest {
+            secret: URL_SAFE_NO_PAD.encode(secret), device_id: "phone-a".into(),
+            signing_key: phone_key.clone(), envelope,
+        }).unwrap();
+        let path = format!("/v1/pairings/{session_id}/candidates");
+        let response = sign(&epoch, client.post(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "POST", &path,
+            &candidate, 2).body(candidate).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let approval_path = format!("/v1/pairings/{session_id}/approval");
+        let response = sign(&epoch, client.get(format!("{url}{approval_path}"))
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "GET",
+            &approval_path, &[], 3).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let registration = serde_json::to_vec(&PhoneDevice { device_id: "phone-a".into(),
+            owner_sub: "owner".into(), signing_key: phone_key.clone() }).unwrap();
+        let response = sign(&epoch, client.post(format!("{url}/v1/devices")), &mac_sign,
+            "mac-1", "POST", "/v1/devices", &registration, 4)
+            .body(registration).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let approval = pairing::Approval { v: 1, session_id: session_id.into(), owner_sub: "owner".into(),
+            mac_id: "mac-1".into(), mac_signing_key: key_bytes(&mac_sign),
+            mac_agreement_key, device_id: "phone-a".into(), phone_signing_key: phone_key,
+            phone_agreement_key: URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_point(false).as_bytes()),
+            expires_at_ms: expires };
+        let signature: Signature = mac_sign.sign(&approval.signed_bytes());
+        let proof = pairing::ApprovalProof { approval, signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()) };
+        let body = serde_json::to_vec(&proof).unwrap();
+        let response = sign(&epoch, client.post(format!("{url}{approval_path}")), &mac_sign,
+            "mac-1", "POST", &approval_path, &body, 5).body(body).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let response = sign(&epoch, client.get(format!("{url}{approval_path}"))
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "GET",
+            &approval_path, &[], 6).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let returned: pairing::ApprovalProof = response.json().await.unwrap();
+        pairing::verify_proof(&returned).unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn encrypted_push_requires_both_identities_and_purges_registration_on_revoke() {
         use std::sync::Mutex;
         let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));

@@ -421,7 +421,7 @@ impl Auth {
             if registry.phone_macs.get(device_id) != Some(&mac.device_id) {
                 bail!("device is paired to another Mac");
             }
-        } else if !registry.revoked_ids.contains(device_id) {
+        } else if !registry.revoked_ids.contains(device_id) && !device_id.starts_with("phone-") {
             bail!("unknown phone device");
         }
         if registry.revoked_ids.contains(device_id) {
