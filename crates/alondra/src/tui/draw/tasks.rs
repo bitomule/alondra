@@ -1,4 +1,5 @@
 use alondra_core::tasks::{RequestState, TaskState};
+use alondra_core::now_millis;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -10,10 +11,7 @@ use super::super::{App, Pane, View};
 use super::{ACCENT, DEFINING, DIM, SOFT, ago, ago_phrase, centered_lines, fit, highlight, keep_visible, more_hint, panel, pr_glyph, pr_summary, scrollbar, since_phrase, state_glyph, task_glyph};
 use crate::client::{Activity, ClientRequest, ClientTask, FleetNode};
 use crate::i18n;
-use crate::tui::md::{self, char_width, str_width, truncate, wrap};
-
-/// The narrowest a title gets on its row's first line before the project leaves the right part.
-const TITLE_MIN: usize = 24;
+use crate::tui::md::{self, str_width, truncate, wrap};
 
 pub fn draw_tasks(f: &mut Frame, app: &mut App, area: Rect) {
     if app.task_zoom && app.task_sel.is_some() {
@@ -34,17 +32,6 @@ pub fn draw_tasks(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, list);
     if !app.loaded {
         centered_lines(f, inner, vec![Line::from(tr!("Connecting to alondrad…", "Conectando con alondrad…").fg(DIM))]);
-    } else if app.data.requests.is_empty() {
-        centered_lines(
-            f,
-            inner,
-            vec![
-                Line::from(tr!("No tasks yet", "Aún no hay tareas").fg(DIM).bold()),
-                Line::from(tr!("What you ask for shows up here at once, and the orchestrator splits it into tasks.", "Lo que pidas sale aquí al momento y el orquestador lo reparte en tareas.").fg(DIM)),
-                Line::default(),
-                Line::from(vec![Span::styled("n", Style::new().fg(ACCENT).bold()), tr!(" order new work", " encarga trabajo nuevo").fg(DIM)]),
-            ],
-        );
     } else {
         let width = inner.width.saturating_sub(1) as usize;
         let (lines, sel) = list_lines(app, width);
@@ -64,71 +51,19 @@ pub fn draw_tasks(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Words laid out in `first` columns on the first line and `rest` on the others, a word longer
-/// than a line cut where the line ends.
-fn word_lines(text: &str, first: usize, rest: usize) -> Vec<String> {
-    let mut out = vec![];
-    let mut cur = String::new();
-    let mut limit = first.max(1);
-    for word in text.split_whitespace() {
-        if !cur.is_empty() && str_width(&cur) + 1 + str_width(word) <= limit {
-            cur.push(' ');
-            cur.push_str(word);
-            continue;
-        }
-        if !cur.is_empty() {
-            out.push(std::mem::take(&mut cur));
-            limit = rest.max(1);
-        }
-        for c in word.chars() {
-            if !cur.is_empty() && str_width(&cur) + char_width(c) > limit {
-                out.push(std::mem::take(&mut cur));
-                limit = rest.max(1);
-            }
-            cur.push(c);
-        }
-    }
-    if !cur.is_empty() || out.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-/// A row: `lead` and the title on its first line with `right` pushed to the edge, the rest of
-/// the title under it from `under` on, broken between words.
-fn titled(bar: &Span<'static>, lead: Vec<Span<'static>>, title: &str, style: Style, under: &str, right: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
+/// Keep the list scannable: one row per item. The full title remains in the detail pane.
+fn titled(bar: &Span<'static>, lead: Vec<Span<'static>>, title: &str, style: Style, _under: &str, right: Vec<Span<'static>>, width: usize) -> Vec<Line<'static>> {
     let lead_w = bar.width() + lead.iter().map(Span::width).sum::<usize>();
     let right_w: usize = right.iter().map(Span::width).sum();
-    let first = width.saturating_sub(lead_w + right_w + if right_w > 0 { 2 } else { 0 });
-    let rest = width.saturating_sub(bar.width() + str_width(under));
-    let mut lines = vec![];
-    for (i, part) in word_lines(&md::one_line(title), first, rest).into_iter().enumerate() {
-        if i == 0 {
-            let used = lead_w + str_width(&part);
-            let mut spans = vec![bar.clone()];
-            spans.extend(lead.clone());
-            spans.push(Span::styled(part, style));
-            spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
-            spans.extend(right.clone());
-            lines.push(fit(spans, width));
-        } else {
-            lines.push(fit(vec![bar.clone(), Span::styled(under.to_string(), Style::new().fg(DIM)), Span::styled(part, style)], width));
-        }
-    }
-    lines
-}
-
-/// The right part of a row with its project when the title keeps room enough, else without.
-fn right_part(project: Option<String>, rest: Vec<Span<'static>>, lead_w: usize, width: usize) -> Vec<Span<'static>> {
-    let rest_w: usize = rest.iter().map(Span::width).sum();
-    match project {
-        Some(p) if width.saturating_sub(lead_w + rest_w + str_width(&p) + 5) >= TITLE_MIN => {
-            let mut spans = vec![Span::styled(format!("{p} · "), Style::new().fg(DIM))];
-            spans.extend(rest);
-            spans
-        }
-        _ => rest,
-    }
+    let available = width.saturating_sub(lead_w + right_w + usize::from(right_w > 0));
+    let part = truncate(&md::one_line(title), available);
+    let used = lead_w + str_width(&part);
+    let mut spans = vec![bar.clone()];
+    spans.extend(lead);
+    spans.push(Span::styled(part, style));
+    spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
+    spans.extend(right);
+    vec![fit(spans, width)]
 }
 
 /// The state and age a task's row ends with.
@@ -146,9 +81,19 @@ fn title_style(t: &ClientTask) -> Style {
     Style::new().add_modifier(if t.state == TaskState::Cancelled { Modifier::CROSSED_OUT } else { Modifier::empty() })
 }
 
+/// A small activity cue on running rows; the existing Tasks timer repaints it twice a second.
+fn list_glyph(t: &ClientTask) -> (&'static str, Color) {
+    if t.state == TaskState::Running && t.archived_at.is_none() {
+        let frames = ["◐", "◓", "◑", "◒"];
+        (frames[(now_millis() / 500).rem_euclid(4) as usize], Color::Green)
+    } else {
+        task_glyph(t)
+    }
+}
+
 /// The tree before a task's glyph: the rails of ancestors that go on, and the elbow into it.
 fn tree_lead(row: &TreeRow) -> String {
-    let mut s = String::from(" ");
+    let mut s = String::from("   ");
     for on in &row.lines {
         s.push(if *on { '│' } else { ' ' });
     }
@@ -160,7 +105,7 @@ fn tree_lead(row: &TreeRow) -> String {
 
 /// The tree before the rest of a task's title: the rails that go on past it.
 fn tree_under(row: &TreeRow) -> String {
-    let mut s = String::from(" ");
+    let mut s = String::from("   ");
     for on in &row.lines {
         s.push(if *on { '│' } else { ' ' });
     }
@@ -174,62 +119,67 @@ fn tree_under(row: &TreeRow) -> String {
 fn list_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let mut lines: Vec<Line<'static>> = vec![];
     let mut sel = None;
-    let mut under_header = false;
+    let mut previous_was_section = false;
     for row in app.task_rows() {
         let key = row.key();
         let selected = key.is_some() && key == app.task_sel;
         let bar = if selected { Span::styled("▌", Style::new().fg(ACCENT)) } else { Span::raw(" ") };
-        if !matches!(row, TaskListRow::Task(_) | TaskListRow::Active(_)) && !lines.is_empty() && !under_header {
+        if matches!(row, TaskListRow::Project(_) | TaskListRow::Finished(..) | TaskListRow::Archived(_)) && !lines.is_empty() && !previous_was_section {
             lines.push(Line::default());
         }
-        under_header = matches!(row, TaskListRow::Active(n) if n > 0);
+        previous_was_section = matches!(row, TaskListRow::Active(_) | TaskListRow::Finished(..) | TaskListRow::Archived(_));
         let start = lines.len();
         match row {
             TaskListRow::Active(n) => {
-                lines.push(fit(vec![bar, Span::styled(trf!("Active · {n}", "Activo · {n}"), Style::new().bold())], width));
+                lines.push(fit(vec![bar, Span::styled(tr!("IN PROGRESS", "EN CURSO"), Style::new().fg(ACCENT).bold())], width));
                 if n == 0 {
-                    lines.push(fit(vec![Span::raw(" "), Span::styled(tr!("Nothing open", "Nada abierto"), Style::new().fg(DIM))], width));
+                    lines.push(fit(vec![Span::raw(" "), Span::styled(tr!("Nothing open · n new task", "Nada abierto · n nueva tarea"), Style::new().fg(DIM))], width));
                 }
+            }
+            TaskListRow::Project(name) => {
+                let label = if name.eq_ignore_ascii_case("alondra") { "Alondra" } else { &name };
+                lines.push(fit(vec![bar, Span::styled(format!("◆ {label}"), Style::new().fg(Color::Cyan).bold())], width));
             }
             TaskListRow::Single(id) => {
                 let Some(t) = app.task(&id) else { continue };
-                let (glyph, color) = task_glyph(t);
-                let lead = vec![Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
-                let right = right_part(app.task_project(t), state_and_age(app, t), 3, width);
+                let (glyph, color) = list_glyph(t);
+                let lead = vec![Span::raw("  "), Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
+                let right = state_and_age(app, t);
                 lines.extend(titled(&bar, lead, &app.single_title(t), title_style(t), "  ", right, width));
-                if let Some(now) = app.task_now(t) {
+                if t.archived_at.is_none() && let Some(now) = app.task_now(t) {
                     lines.push(fit(vec![bar.clone(), Span::raw("  "), Span::styled(md::one_line(&now), Style::new().fg(SOFT))], width));
                 }
             }
             TaskListRow::Request(id, done, total) => {
                 let Some(r) = app.request(&id) else { continue };
-                let right = right_part(app.request_project(r), vec![Span::styled(trf!("{done} of {total}", "{done} de {total}"), Style::new().fg(DIM))], 1, width);
-                lines.extend(titled(&bar, vec![], &app.request_title(r), Style::new().bold(), "  ", right, width));
+                let right = vec![Span::styled(trf!("{done}/{total}", "{done}/{total}"), Style::new().fg(DIM))];
+                let lead = vec![Span::raw("  "), Span::styled("▸ ", Style::new().fg(Color::Cyan))];
+                lines.extend(titled(&bar, lead, &app.request_title(r), Style::new().bold(), "  ", right, width));
             }
             TaskListRow::Task(row) => {
                 let Some(t) = app.task(&row.id) else { continue };
-                let (glyph, color) = task_glyph(t);
+                let (glyph, color) = list_glyph(t);
                 let lead = vec![Span::styled(tree_lead(&row), Style::new().fg(DIM)), Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
                 let under = tree_under(&row);
                 lines.extend(titled(&bar, lead, &t.title, title_style(t), &under, state_and_age(app, t), width));
-                if let Some(now) = app.task_now(t) {
+                if t.archived_at.is_none() && let Some(now) = app.task_now(t) {
                     lines.push(fit(vec![bar.clone(), Span::styled(under, Style::new().fg(DIM)), Span::styled(md::one_line(&now), Style::new().fg(SOFT))], width));
                 }
             }
             TaskListRow::Taskless(id) => {
                 let Some(r) = app.request(&id) else { continue };
                 let ((glyph, color), state) = taskless(app, r);
-                let lead = vec![Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
+                let lead = vec![Span::raw("  "), Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
                 let at = r.closed.as_ref().map_or(r.created_at, |c| c.at);
                 let rest = vec![Span::styled(state.to_string(), Style::new().fg(color)), Span::styled(format!("{:>5}", ago(at)), Style::new().fg(DIM))];
-                let right = right_part(app.request_project(r), rest, 3, width);
+                let right = rest;
                 lines.extend(titled(&bar, lead, &app.request_title(r), Style::new(), "  ", right, width));
             }
             TaskListRow::Finished(n, last) => {
                 let arrow = if app.finished_open { "▾" } else { "▸" };
                 let when = ago_phrase(last);
                 let right = vec![Span::styled(trf!("the last one {when}", "el último {when}"), Style::new().fg(DIM))];
-                lines.extend(titled(&bar, vec![Span::styled(format!("{arrow} "), Style::new().fg(DIM))], &trf!("Finished · {n}", "Terminado · {n}"), Style::new().bold(), "  ", right, width));
+                lines.extend(titled(&bar, vec![Span::styled(format!("{arrow} "), Style::new().fg(DIM))], &trf!("Finished · {n}", "Terminadas · {n}"), Style::new().bold(), "  ", right, width));
             }
             TaskListRow::Archived(n) => {
                 let arrow = if app.archived_open { "▾" } else { "▸" };
@@ -254,36 +204,56 @@ fn taskless(app: &App, r: &ClientRequest) -> ((&'static str, Color), &'static st
     }
 }
 
-fn section(lines: &mut Vec<Line<'static>>, title: &str) {
+fn section(lines: &mut Vec<Line<'static>>, title: &str, width: usize) {
+    let title = title.trim().to_uppercase();
+    let rest = width.saturating_sub(str_width(&title) + 4);
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled(title.to_string(), Style::new().fg(DIM).bold())));
+    lines.push(Line::from(vec![Span::styled(" ─ ", Style::new().fg(DIM)), Span::styled(title, Style::new().fg(Color::Cyan).bold()), Span::styled(format!(" {}", "─".repeat(rest)), Style::new().fg(DIM))]));
+}
+
+fn shortcut_line(shortcut: &str) -> Line<'static> {
+    let mut spans = vec![];
+    for item in shortcut.trim().split(" · ") {
+        if let Some((key, label)) = item.split_once(' ') {
+            spans.push(super::keycap(key));
+            spans.push(Span::styled(format!(" {label} "), Style::new().fg(SOFT)));
+        }
+    }
+    Line::from(spans).right_aligned()
 }
 
 fn draw_task_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.task_zoom || app.focus == Pane::Detail;
     let width = area.width.saturating_sub(4) as usize;
-    let (title, lines) = match app.task_sel.clone() {
-        Some(TaskKey::Task(id)) => (tr!(" Task ", " Tarea "), app.task(&id).map(|t| task_lines(app, t, width)).unwrap_or_default()),
-        Some(TaskKey::Request(id)) => (tr!(" Request ", " Petición "), app.request(&id).map(|r| request_lines(app, r, width)).unwrap_or_default()),
-        Some(TaskKey::Finished) => (tr!(" Finished ", " Terminado "), finished_lines(app, width)),
-        Some(TaskKey::Archived) => (tr!(" Archived ", " Archivadas "), archived_lines(app, width)),
-        None => (tr!(" Task ", " Tarea "), vec![]),
+    let (title, lines, shortcut) = match app.task_sel.clone() {
+        Some(TaskKey::Task(id)) => match app.task(&id) {
+            Some(t) => {
+                let (glyph, color) = task_glyph(t);
+                (Line::from(vec![Span::styled(format!(" {glyph} "), Style::new().fg(color).bold()), Span::styled(tr!("Task ", "Tarea "), Style::new().bold())]), task_lines(app, t, width), tr!(" ⏎ terminal · r message · o expand ", " ⏎ terminal · r mensaje · o ampliar "))
+            }
+            None => (Line::from(tr!(" Task ", " Tarea ")), vec![], ""),
+        },
+        Some(TaskKey::Request(id)) => match app.request(&id) {
+            Some(r) => (Line::from(tr!(" Request ", " Petición ")), request_lines(app, r, width), tr!(" x withdraw ", " x retirar ")),
+            None => (Line::from(tr!(" Request ", " Petición ")), vec![], ""),
+        },
+        Some(TaskKey::Finished) => (Line::from(tr!(" Finished ", " Terminadas ")), finished_lines(app, width), if app.archive_missing { tr!(" ⏎ show/hide ", " ⏎ mostrar/ocultar ") } else { tr!(" ⏎ show/hide · Shift+A archive ", " ⏎ mostrar/ocultar · Shift+A archivar ") }),
+        Some(TaskKey::Archived) => (Line::from(tr!(" Archived ", " Archivadas ")), archived_lines(app, width), tr!(" ⏎ show/hide ", " ⏎ mostrar/ocultar ")),
+        None => (Line::from(tr!(" Task ", " Tarea ")), vec![], ""),
     };
     if lines.is_empty() {
         app.task_view.total = 0;
-        f.render_widget(panel(Line::from(title.fg(DIM)), false), area);
+        f.render_widget(panel(title, false), area);
         return;
     }
-    let mut block = panel(Line::from(title.bold()), focused);
+    let mut block = panel(title, focused);
     let inner = block.clone().inner(area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
     let total = lines.len();
     let h = inner.height as usize;
     app.task_detail_scroll = app.task_detail_scroll.min(total.saturating_sub(h));
     app.task_view = View { h, total, shown: app.task_view.shown || app.task_zoom };
-    if let Some(hint) = more_hint(app.task_detail_scroll, h, total) {
-        block = block.title_bottom(hint);
-    }
+    block = block.title_bottom(more_hint(app.task_detail_scroll, h, total).unwrap_or_else(|| shortcut_line(shortcut)));
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines).scroll((app.task_detail_scroll as u16, 0)), text);
     scrollbar(f, inner, total, app.task_detail_scroll);
@@ -306,13 +276,17 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
     if !where_.is_empty() {
         lines.extend(wrap(vec![Span::styled(where_.join(" · "), Style::new().fg(DIM))], width, vec![], vec![]));
     }
+    if let Some(brief) = app.task_briefs.get(&t.id).filter(|brief| !brief.trim().is_empty()) {
+        section(&mut lines, tr!(" Assignment", " Encargo"), width);
+        lines.extend(md::render(&md::parse(brief), width).lines);
+    }
     if let Some(now) = app.waiting_reason(t).or_else(|| app.task_now(t)) {
-        lines.push(Line::default());
-        lines.extend(wrap(vec![Span::raw(md::one_line(&now))], width, vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))], vec![Span::raw("  ")]));
+        section(&mut lines, tr!(" Current status", " Estado actual"), width);
+        lines.extend(wrap(vec![Span::styled(md::one_line(&now), Style::new().fg(SOFT))], width, vec![Span::raw(" ")], vec![Span::raw(" ")]));
     }
     let items = app.task_items(t);
     if !items.is_empty() {
-        section(&mut lines, tr!(" Waiting for you", " Te espera"));
+        section(&mut lines, tr!(" Waiting for you", " Te espera"), width);
         for k in items {
             if let Some(item) = app.item(k) {
                 let (glyph, kind, color) = super::item_glyph(&item);
@@ -325,13 +299,9 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
             }
         }
     }
-    if let Some(text) = request.and_then(|r| r.text.clone()).filter(|t| !t.trim().is_empty()) {
-        section(&mut lines, tr!(" Request", " Petición"));
-        lines.extend(md::render(&md::parse(&text), width).lines);
-    }
     let train: Vec<(&ClientTask, &crate::client::PrCard)> = app.merge_order(t).into_iter().flat_map(|owner| app.task_prs(owner).into_iter().map(move |p| (owner, p))).collect();
     if !train.is_empty() {
-        section(&mut lines, tr!(" PRs in merge order", " PRs en orden de fusión"));
+        section(&mut lines, tr!(" PRs in merge order", " PRs en orden de fusión"), width);
         for (i, (owner, p)) in train.iter().enumerate() {
             let (g, c) = if owner.state == TaskState::InReview { (pr_glyph().0, pr_glyph().2) } else { task_glyph(owner) };
             let lead = vec![Span::styled(format!(" {} ", i + 1), Style::new().fg(DIM)), Span::styled(format!("{g} "), Style::new().fg(c).bold())];
@@ -348,7 +318,7 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
     }
     let (deps, dependents) = (app.dependencies(t), app.dependents(t));
     if !deps.is_empty() || !dependents.is_empty() {
-        section(&mut lines, tr!(" Dependencies", " Dependencias"));
+        section(&mut lines, tr!(" Dependencies", " Dependencias"), width);
         for (label, tasks) in [(tr!("depends on", "depende de"), deps), (tr!("waiting on it", "la esperan"), dependents)] {
             if tasks.is_empty() {
                 lines.push(fit(vec![Span::styled(format!(" {label} "), Style::new().fg(DIM)), Span::styled(tr!("none", "ninguna"), Style::new().fg(DIM))], width));
@@ -365,21 +335,14 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
     }
     let documents: Vec<&alondra_core::Report> = t.documents.iter().filter_map(|id| app.report_by_id(*id)).collect();
     if !documents.is_empty() {
-        section(&mut lines, tr!(" Documents", " Documentos"));
+        section(&mut lines, tr!(" Documents", " Documentos"), width);
         for d in documents {
             let read = if app.data.news.iter().any(|n| n.id == d.id) { tr!("unread", "sin leer") } else { tr!("read", "leído") };
             lines.push(fit(vec![Span::styled(" ▤ ", Style::new().fg(Color::Cyan).bold()), Span::raw(md::one_line(&d.title)), Span::styled(format!(" · {read} · {}", ago_phrase(d.created_at)), Style::new().fg(DIM))], width));
         }
     }
-    section(&mut lines, tr!(" Options", " Opciones"));
-    let mut options = vec![Span::styled(tr!("PR handling ", "gestión de PR "), Style::new().fg(DIM)), Span::raw(super::super::work::pr_handling(t.options.auto_merge))];
-    if let Some(effort) = &t.options.effort {
-        options.push(Span::styled(tr!(" · effort ", " · esfuerzo "), Style::new().fg(DIM)));
-        options.push(Span::raw(effort.clone()));
-    }
-    lines.extend(wrap(options, width, vec![Span::raw(" ")], vec![Span::raw(" ")]));
     if let Some((_, history)) = app.histories.get(&t.id).filter(|(_, h)| !h.is_empty()) {
-        section(&mut lines, tr!(" History", " Historia"));
+        section(&mut lines, tr!(" History", " Historia"), width);
         for step in history {
             let (g, c) = state_glyph(step.to);
             let label = format!("{g} {:<14}", i18n::task_state(step.to));
@@ -391,40 +354,40 @@ fn task_lines(app: &App, t: &ClientTask, width: usize) -> Vec<Line<'static>> {
             ));
         }
     }
+    if let Some(text) = request.and_then(|r| r.text.as_deref()).filter(|t| !t.trim().is_empty()) {
+        section(&mut lines, tr!(" Original request", " Petición original"), width);
+        lines.extend(md::render(&md::parse(text), width).lines);
+    }
+    section(&mut lines, tr!(" Options", " Opciones"), width);
+    lines.push(fit(vec![Span::styled(format!("  {:<12}", tr!("PR handling", "Gestión PR")), Style::new().fg(DIM)), Span::styled(super::super::work::pr_handling(t.options.auto_merge), Style::new().fg(SOFT))], width));
+    if let Some(effort) = &t.options.effort {
+        lines.push(fit(vec![Span::styled(format!("  {:<12}", tr!("Effort", "Esfuerzo")), Style::new().fg(DIM)), Span::styled(effort.clone(), Style::new().fg(SOFT))], width));
+    }
     lines
 }
 
 fn finished_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let mut text = tr!(
-        "Requests whose tasks are all done or cancelled, and those that ended without tasks, the last to finish first. ⏎ shows or hides them in the list.",
-        "Peticiones con todas sus tareas hechas o descartadas, y las que terminaron sin tareas, la última en terminar primero. ⏎ las muestra u oculta en la lista."
-    )
-    .to_string();
+    let mut lines = vec![Line::from(Span::styled(tr!("✓ Completed work", "✓ Trabajo terminado"), Style::new().fg(Color::LightGreen).bold()))];
+    section(&mut lines, tr!(" Actions", " Acciones"), width);
+    lines.push(Line::from(vec![super::keycap("⏎"), Span::raw(tr!(" show or hide", " mostrar u ocultar"))]));
     if !app.archive_missing {
-        text.push_str(tr!(" Shift+A archives them.", " Shift+A las archiva."));
+        lines.push(Line::from(vec![super::keycap("Shift+A"), Span::raw(tr!(" archive finished work", " archivar lo terminado"))]));
     }
-    wrap(vec![Span::raw(text)], width, vec![], vec![])
+    lines
 }
 
 fn archived_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let n = app.archived_count();
-    let mut lines = vec![Line::from(Span::styled(trf!("{n} archived", "{n} archivadas"), Style::new().bold())), Line::default()];
-    lines.extend(wrap(
-        vec![Span::raw(tr!(
-            "Finished work you archived: it left the list above. ⏎ shows or hides it here. Alondra deletes it once the days in archived_tasks_days (30 unless changed) are over.",
-            "Trabajo terminado que archivaste: salió de la lista de arriba. ⏎ lo muestra u oculta aquí. Alondra lo borra cuando pasan los días de archived_tasks_days (30 si no lo cambias)."
-        ))],
-        width,
-        vec![],
-        vec![],
-    ));
+    let mut lines = vec![Line::from(Span::styled(trf!("✓ {n} archived", "✓ {n} archivadas"), Style::new().fg(Color::LightGreen).bold()))];
+    section(&mut lines, tr!(" Actions", " Acciones"), width);
+    lines.push(Line::from(vec![super::keycap("⏎"), Span::raw(tr!(" show or hide", " mostrar u ocultar"))]));
     lines
 }
 
 fn request_lines(app: &App, r: &ClientRequest, width: usize) -> Vec<Line<'static>> {
     let ((glyph, color), state) = taskless(app, r);
     let mut lines = vec![fit(vec![Span::styled(format!("{glyph} {state}"), Style::new().fg(color).bold()), Span::styled(format!(" · {}", since_phrase(r.created_at)), Style::new().fg(DIM))], width)];
-    lines.extend(wrap(vec![Span::styled(md::one_line(&app.request_title(r)), Style::new().bold())], width, vec![], vec![]));
+    lines.extend(wrap(vec![Span::styled(app.request_title(r), Style::new().bold())], width, vec![], vec![]));
     if let Some(p) = app.request_project(r) {
         lines.push(Line::from(Span::styled(p, Style::new().fg(DIM))));
     }
@@ -440,7 +403,7 @@ fn request_lines(app: &App, r: &ClientRequest, width: usize) -> Vec<Line<'static
     };
     lines.extend(wrap(vec![Span::raw(now)], width, vec![Span::styled(tr!("Now: ", "Ahora: "), Style::new().fg(DIM))], vec![Span::raw("  ")]));
     if let Some(text) = r.text.clone().filter(|t| !t.trim().is_empty()) {
-        section(&mut lines, tr!(" Request", " Petición"));
+        section(&mut lines, tr!(" Original request", " Petición original"), width);
         lines.extend(md::render(&md::parse(&text), width).lines);
     }
     lines
@@ -488,7 +451,7 @@ pub fn node_detail_lines(app: &App, n: &FleetNode, width: usize) -> Vec<Line<'st
     let mut lines = vec![];
     let tasks = if n.is_orchestrator { vec![] } else { app.tasks_on(&n.session_id) };
     if !tasks.is_empty() {
-        section(&mut lines, tr!(" Tasks", " Tareas"));
+        section(&mut lines, tr!(" Tasks", " Tareas"), width);
         for t in tasks {
             let (g, c) = task_glyph(t);
             lines.push(fit(
@@ -504,7 +467,7 @@ pub fn node_detail_lines(app: &App, n: &FleetNode, width: usize) -> Vec<Line<'st
     }
     let threads = app.node_activity(n);
     if !threads.is_empty() {
-        section(&mut lines, tr!(" Now", " Ahora"));
+        section(&mut lines, tr!(" Now", " Ahora"), width);
         for a in &threads {
             lines.push(activity_line(a, "", width, Span::raw("")));
             if let Some(task) = a.task.as_deref().and_then(|id| app.task(id)).filter(|_| !a.is_main()) {
@@ -595,21 +558,20 @@ mod tests {
         press(&mut app, "j");
         let s = screen(&mut app, 130, 33);
         for text in [
-            "Tareas 4",
-            "Activo · 4",
-            "Strike-through phase 2",
-            "App · 0 de 3",
+            "Tareas 3",
+            "EN CURSO",
+            "◆ App",
             "⇄ Editor covers readable text",
             "└◌ Album and Siri",
             "en espera",
             "en revisión",
             "PR #150 · listo para fusionar",
-            "◇ Import lists from Notes",
+            "◇ Preparando petición",
             "definiendo",
-            "PRs en orden de fusión",
+            "PRS EN ORDEN DE FUSIÓN",
             "#150 Editor covers readable text  esta",
             "x descartar",
-            "Shift+R reabrir",
+            "s programadas",
         ] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
@@ -670,12 +632,14 @@ mod tests {
         code(&mut app, KeyCode::Tab);
         let at = app.task_keys().iter().position(|k| *k == super::super::super::tasks::TaskKey::Request("r-2".into())).expect("the defining request is listed");
         app.move_tasks(at as isize);
-        assert!(screen(&mut app, 130, 33).contains("x withdraw"));
+        let shown = screen(&mut app, 130, 33);
+        assert!(shown.contains("x withdraw") && shown.contains("Import lists from Notes"), "the original message remains in the detail: {shown}");
+        assert!(!list_of(&shown).contains("Import lists from Notes"), "the list uses a short label: {shown}");
         press(&mut app, "x");
         assert!(app.posted.borrow().is_empty(), "the first press only asks");
-        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press x again to withdraw “Import lists from Notes”")), "{:?}", app.flash.as_ref().map(|f| &f.text));
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("Press x again to withdraw “Preparing request”")), "{:?}", app.flash.as_ref().map(|f| &f.text));
         press(&mut app, "x");
-        assert_eq!(app.posted.borrow().last().map(|(paths, ok)| (paths.clone(), ok.clone())), Some((vec!["/v1/requests/r-2/close".to_string()], "Withdrawn: Import lists from Notes".to_string())));
+        assert_eq!(app.posted.borrow().last().map(|(paths, ok)| (paths.clone(), ok.clone())), Some((vec!["/v1/requests/r-2/close".to_string()], "Withdrawn: Preparing request".to_string())));
     }
 
     #[test]
@@ -730,7 +694,7 @@ mod tests {
         app.move_tasks(app.task_keys().iter().position(|k| *k == super::super::super::tasks::TaskKey::Finished).expect("the finished header") as isize);
         code(&mut app, KeyCode::Enter);
         let s = screen(&mut app, 150, 40);
-        for text in ["▾ Finished · 2", "Shipped fix", "How is it going?", "answered", "Shift+A archive finished"] {
+        for text in ["▾ Finished · 2", "Shipped fix", "Orchestrator reply", "answered", "Shift+A archive finished"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
         assert!(!s.contains("Archived ("), "nothing archived yet:\n{s}");
@@ -759,7 +723,7 @@ mod tests {
         assert!(app.task_sel == Some(super::super::super::tasks::TaskKey::Archived));
         code(&mut app, KeyCode::Enter);
         let s = screen(&mut app, 150, 40);
-        for shown in ["▾ Archivadas (2)", "Shipped fix", "How is it going?", "respondida"] {
+        for shown in ["▾ Archivadas (2)", "Shipped fix", "Respuesta del orquestador", "respondida"] {
             assert!(s.contains(shown), "{shown}:\n{s}");
         }
         assert!(app.archivable_count() == 0, "archived work is not archived again");
@@ -775,7 +739,7 @@ mod tests {
         press(&mut app, "j");
         let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
         assert!(app.history_asked.contains(&(id.clone(), since)));
-        app.history_loaded(id.clone(), since, Ok((vec![], vec![])));
+        app.history_loaded(id.clone(), since, Ok((vec![], vec![], None)));
         let later = since + 5;
         app.data.tasks.iter_mut().find(|t| t.id == id).unwrap().last_change = Some(later);
         app.reconcile();
@@ -793,19 +757,21 @@ mod tests {
         press(&mut app, "j");
         let (id, since) = app.selected_task().map(|t| (t.id.clone(), t.state_since)).expect("a task is selected");
         assert!(app.report_by_id(9_001).is_none(), "the overview does not carry it");
-        app.history_loaded(id, since, Ok((vec![], vec![report(9_001)])));
+        app.history_loaded(id, since, Ok((vec![], vec![report(9_001)], Some("Fix the editor without blocking scrolling.".into()))));
         assert_eq!(app.report_by_id(9_001).map(|r| r.id), Some(9_001));
+        let detail = screen(&mut app, 130, 40);
+        assert!(detail.contains("ASSIGNMENT") && detail.contains("Fix the editor without blocking scrolling."), "{detail}");
     }
 
     #[test]
-    fn a_request_goes_by_its_title_then_its_only_tasks_then_what_the_user_wrote() {
+    fn a_request_never_uses_the_users_message_as_its_title() {
         let (mut app, _rx) = app_with(vec![]);
         board(&mut app);
         finished(&mut app, None);
         let title = |app: &App, id: &str| app.request_title(app.request(id).unwrap());
-        assert_eq!(title(&app, "r-2"), "Import lists from Notes", "still defined: what the user wrote");
+        assert_eq!(title(&app, "r-2"), "Preparing request", "a pending request has no title yet");
         assert_eq!(title(&app, "r-3"), "Shipped fix", "its only task's title, not the prompt");
-        assert_eq!(title(&app, "r-1"), "Strike-through phase 2", "three tasks and no title from an older alondrad");
+        assert_eq!(title(&app, "r-1"), "App", "a task group without a title uses its project");
         let given: crate::client::ClientRequest = serde_json::from_value(json!({"id": "r-1", "created_at": 1, "state": "in_progress", "tasks": ["t-1"], "title": "Strike-through, phase 2"})).unwrap();
         app.data.requests[0] = given;
         assert_eq!(title(&app, "r-1"), "Strike-through, phase 2", "the orchestrator's title wins");
@@ -886,49 +852,38 @@ mod tests {
     }
 
     #[test]
-    fn the_tasks_tab_is_option_a_at_130_by_33() {
+    fn the_tasks_tab_keeps_rows_compact_at_130_by_33() {
         let (mut app, _rx) = app_with(vec![]);
         set_for_this_thread(Lang::Es);
         mockup(&mut app);
         code(&mut app, KeyCode::Tab);
         let s = screen(&mut app, 130, 33);
-        for line in [
-            "Tareas 4 ",
-            "╭ Tareas ────",
-            "╮╭ Tarea ────",
-            "│ Activo · 4                                                                 ││ ● en marcha · desde hace 5m",
-            "│▌● Alondra: rehacer la vista Tareas de la TUI      alondra · en marcha   5m ││ Alondra: rehacer la vista Tareas de la TUI para  │",
-            "│▌  para que se lea bien                                                     ││ que se lea bien                                  │",
-            "││ alondra · nodo alondra/estados-por-tarea         │",
-            "│ Entonces lo de Redraft como ha quedado? Subimos beta al   Redraft · 0 de 2 ││",
-            "│   usuario y que reproduzca el bloqueo otra vez? El pr ha hecho algún fix?  ││",
-            "│  └◌ Redraft: beta 4.5.0 (192) con el arreglo y el           en espera  10m ││",
-            "│ ◇ En qué punto tenemos a BlurCamera? Cómo puedo probar",
-            "sin tareas   2h ││",
-            "│ ▸ Terminado · 3                                         el último hace 41m ││",
-            "│  gestión de PR revisar cada una · esfuerzo       │",
-            "│  normal ",
-        ] {
-            assert!(s.contains(line), "{line}:\n{s}");
+        for text in ["Tareas 3", "╭ Tareas", "╭ ● Tarea", "EN CURSO", "◆ Alondra", "◆ Redraft", "◆ Otros", "Alondra: rehacer la vista", "└◌ Redraft: beta", "Preparando petición", "Terminadas · 3", "OPCIONES", "Gestión PR  revisar cada una", "Esfuerzo    normal"] {
+            assert!(s.contains(text), "{text}:\n{s}");
         }
         let list = list_of(&s);
-        for gone in ["test/shift-x", "prompt injection", "git rebase", "…", "tras «", "general-purpose", "t-44"] {
+        let alondra = list.find("◆ Alondra").unwrap();
+        let redraft = list.find("◆ Redraft").unwrap();
+        let otros = list.find("◆ Otros").unwrap();
+        assert!(alondra < redraft && redraft < otros, "group order:\n{list}");
+        let list = list_of(&s);
+        for gone in ["test/shift-x", "prompt injection", "git rebase", "tras «", "general-purpose", "t-44"] {
             assert!(!list.contains(gone), "{gone}:\n{list}");
         }
     }
 
     #[test]
-    fn at_100_by_30_the_list_and_the_detail_still_share_the_screen_and_titles_wrap() {
+    fn at_100_by_30_the_list_stays_compact_and_detail_keeps_the_full_title() {
         let (mut app, _rx) = app_with(vec![]);
         set_for_this_thread(Lang::Es);
         mockup(&mut app);
         code(&mut app, KeyCode::Tab);
         let s = screen(&mut app, 100, 30);
-        for text in ["│ Activo · 4", "╭ Tarea ", "▌● Alondra: rehacer la vista", "para que se lea bien", "└◌ Redraft: beta 4.5.0 (192)", "en espera", "▸ Terminado · 3", "algún fix?"] {
+        for text in ["│ EN CURSO", "╭ ● Tarea ", "◆ Alondra", "◆ Redraft", "Alondra: rehacer la vista", "para que se lea bien", "└◌ Redraft: beta 4.5.0 (192)", "en espera", "▸ Terminadas · 3", "Programadas [s]"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
         let list: String = s.lines().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>().join("\n");
-        assert!(!list.contains('…'), "a title breaks between words, it is not cut:\n{list}");
+        assert!(list.contains('…'), "long titles are shortened in the list:\n{list}");
     }
 
     #[test]
@@ -959,7 +914,7 @@ mod tests {
             .unwrap(),
         );
         assert!(keys(&app).contains(&"t-s1".to_string()));
-        assert_eq!(app.open_task_count(), 5, "four open tasks and a request left defining");
+        assert_eq!(app.open_task_count(), 4, "only open tasks count; a request being prepared is not a task");
         assert_eq!(app.tasks_on("s1").iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t-s1", "t-44370"]);
     }
 
@@ -998,7 +953,21 @@ mod tests {
         assert_eq!(list_of(&screen(&mut app, 130, 33)).matches("Alondra: rehacer la vista").count(), 1, "one row, the prompt only in the detail");
         app.data.requests.iter_mut().find(|r| r.id == "r-view").unwrap().title = Some("Vista de Tareas legible".into());
         let list = list_of(&screen(&mut app, 130, 33));
-        assert!(list.contains("● Vista de Tareas legible") && !list.contains("Alondra: rehacer"), "{list}");
+        assert!(list.contains("Vista de Tareas legible") && !list.contains("Alondra: rehacer"), "{list}");
+    }
+
+    #[test]
+    fn tasks_from_one_request_stay_with_their_own_apps() {
+        let (mut app, _rx) = app_with(vec![]);
+        set_for_this_thread(Lang::Es);
+        mockup(&mut app);
+        app.data.tasks.iter_mut().find(|t| t.id == "t-44137").unwrap().task.options.project = Some("Lumo".into());
+        let rows = app.task_rows();
+        let project = |name: &str| rows.iter().position(|row| matches!(row, TaskListRow::Project(p) if p == name)).unwrap();
+        let task = |id: &str| rows.iter().position(|row| matches!(row, TaskListRow::Single(t) if t == id) || matches!(row, TaskListRow::Task(t) if t.id == id)).unwrap();
+        assert!(project("Redraft") < task("t-44136") && task("t-44136") < project("Lumo"));
+        assert!(project("Lumo") < task("t-44137"));
+        assert_eq!(rows.iter().filter(|row| row.key() == Some(TaskKey::Task("t-44137".into()))).count(), 1);
     }
 
     #[test]
@@ -1040,7 +1009,8 @@ mod tests {
         code(&mut app, KeyCode::Tab);
         assert!(list_of(&screen(&mut app, 130, 33)).contains("sin tareas   2h"));
         app.data.requests.iter_mut().find(|r| r.id == "r-hf").unwrap().request.created_at = now_millis() - 60_000;
-        assert!(list_of(&screen(&mut app, 130, 33)).contains("◇ En qué punto tenemos a BlurCamera? Cómo puedo probar lo  definiendo   1m"));
+        let list = list_of(&screen(&mut app, 130, 33));
+        assert!(list.contains("◇ Preparando petición") && list.contains("definiendo   1m") && !list.contains("En qué punto"), "{list}");
     }
 
     /// The Tasks tab of the overview in `ALONDRA_OVERVIEW`, at 130×33, written to `ALONDRA_SCREEN`
@@ -1058,6 +1028,8 @@ mod tests {
         std::fs::write(out, screen(&mut app, 130, 33)).unwrap();
     }
 
+
+
     #[test]
     fn a_task_shows_how_its_prs_are_handled_once() {
         let (mut app, _rx) = app_with(vec![]);
@@ -1068,4 +1040,5 @@ mod tests {
         assert!(s.contains("PR handling review each one"), "{s}");
         assert!(!s.contains("review PR") && !s.contains("auto-merge no"), "one setting, one row:\n{s}");
     }
+
 }
