@@ -31,11 +31,21 @@ struct ApnsConfig {
 pub struct Registration {
     pub token: String,
     pub environment: String,
+    /// Random client-side context identifier. Old registrations omit it and
+    /// their notifications remain non-actionable in clients that enforce it.
+    #[serde(default)]
+    pub push_binding: Option<String>,
     #[serde(default)]
     pub quiet_start: Option<String>,
     #[serde(default)]
     pub quiet_end: Option<String>,
     pub updated_at: i64,
+}
+
+/// A canonical base64url encoding of 32 random bytes. It is an opaque context
+/// label, not an authentication credential.
+pub(crate) fn valid_push_binding(value: &str) -> bool {
+    B64URL.decode(value).is_ok_and(|bytes| bytes.len() == 32 && B64URL.encode(bytes) == value)
 }
 
 pub struct Push {
@@ -98,7 +108,7 @@ impl Push {
     pub async fn broadcast(&self, payload: &Value, with_sound: bool) {
         let Some(apns) = &self.apns else { return };
         for reg in self.registrations() {
-            let mut body = payload.clone();
+            let mut body = payload_for_registration(payload, &reg);
             let quiet = in_quiet_hours(reg.quiet_start.as_deref(), reg.quiet_end.as_deref(), local_minutes());
             let level = if quiet { "passive" } else { "active" };
             body["aps"]["interruption-level"] = json!(level);
@@ -119,6 +129,14 @@ impl Push {
             }
         }
     }
+}
+
+fn payload_for_registration(payload: &Value, reg: &Registration) -> Value {
+    let mut body = payload.clone();
+    if let Some(binding) = &reg.push_binding {
+        body["alondra"]["push_binding"] = json!(binding);
+    }
+    body
 }
 
 impl Apns {
@@ -375,6 +393,29 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
 mod tests {
     use super::*;
     use alondra_core::Event;
+
+    #[test]
+    fn push_binding_is_canonical_and_scoped_to_each_registration() {
+        let first = B64URL.encode([1u8; 32]);
+        let second = B64URL.encode([2u8; 32]);
+        assert!(valid_push_binding(&first));
+        assert!(valid_push_binding(&second));
+        for bad in [String::new(), "short".into(), B64URL.encode([3u8; 31]), first.clone() + "="] {
+            assert!(!valid_push_binding(&bad));
+        }
+        let registration = |binding: Option<String>| Registration {
+            token: "ab".into(), environment: "sandbox".into(), push_binding: binding,
+            quiet_start: None, quiet_end: None, updated_at: 0,
+        };
+        let payload = question_payload(&question(7, "session", true), 1);
+        assert_eq!(payload_for_registration(&payload, &registration(Some(first.clone())))["alondra"]["push_binding"].as_str(), Some(first.as_str()));
+        assert_eq!(payload_for_registration(&payload, &registration(Some(second.clone())))["alondra"]["push_binding"].as_str(), Some(second.as_str()));
+        assert!(payload_for_registration(&payload, &registration(None))["alondra"].get("push_binding").is_none());
+        let old: Registration = serde_json::from_value(json!({
+            "token":"ab", "environment":"sandbox", "updated_at":0
+        })).unwrap();
+        assert!(old.push_binding.is_none(), "old push.json registrations remain readable");
+    }
 
     #[test]
     fn using_any_client_in_the_last_5_minutes_silences_pushes() {

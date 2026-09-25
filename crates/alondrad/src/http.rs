@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use alondra_core::tasks::CardTask;
 
 use crate::auth::{Auth, is_local};
-use crate::push::{Push, Registration};
+use crate::push::{Push, Registration, valid_push_binding};
 use crate::hub::Hub;
 use crate::uploads;
 
@@ -1099,6 +1099,7 @@ struct PushRegisterBody {
     environment: Option<String>,
     quiet_start: Option<String>,
     quiet_end: Option<String>,
+    push_binding: Option<String>,
 }
 
 async fn push_register(
@@ -1115,9 +1116,13 @@ async fn push_register(
     if b.token.is_empty() || !b.token.chars().all(|c| c.is_ascii_hexdigit()) {
         return err(StatusCode::BAD_REQUEST, "invalid token");
     }
+    if b.push_binding.as_deref().is_some_and(|binding| !valid_push_binding(binding)) {
+        return err(StatusCode::BAD_REQUEST, "invalid push binding");
+    }
     let reg = Registration {
         token: b.token.to_lowercase(),
         environment: b.environment.unwrap_or_else(|| "sandbox".into()),
+        push_binding: b.push_binding,
         quiet_start: b.quiet_start,
         quiet_end: b.quiet_end,
         updated_at: now_millis(),
