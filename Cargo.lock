@@ -90,6 +90,7 @@ name = "alondrad"
 version = "0.1.0"
 dependencies = [
  "alondra-core",
+ "alondra-e2e",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -97,12 +98,14 @@ dependencies = [
  "notify",
  "p256",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "sysinfo",
  "tokio",
+ "toml",
 ]
 
 [[package]]

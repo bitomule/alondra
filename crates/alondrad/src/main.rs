@@ -17,6 +17,7 @@ mod orchestrate;
 mod plugins;
 mod prs;
 mod schedules;
+mod service;
 mod push;
 mod sentinel;
 mod store;
@@ -66,6 +67,9 @@ async fn main() -> Result<()> {
     }
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
+    if let Some(service) = service::Service::open(&config.home, config.port)? {
+        tokio::spawn(async move { service.run().await });
+    }
     let push = Arc::new(push::Push::open(&config.home)?);
     tokio::spawn(push::run(hub.clone(), push.clone()));
     log!("listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",

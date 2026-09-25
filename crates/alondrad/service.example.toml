@@ -1,0 +1,13 @@
+# Copy to ~/.alondra/service.toml to enable outbound service polling.
+# Private key files contain base64url-encoded 32-byte P-256 scalars and must be mode 0600.
+# This file holds public device keys only; the Mac's content keys never go to the relay.
+relay_url = "https://api.alondra.davidcollado.dev/"
+mac_id = "replace-with-mac-route-id"
+owner_sub = "replace-with-keycloak-subject"
+signing_key_path = "service-signing.key"
+agreement_key_path = "service-agreement.key"
+
+[[devices]]
+device_id = "replace-with-approved-phone-id"
+signing_key = "replace-with-uncompressed-p256-signing-public-key-base64url"
+agreement_key = "replace-with-uncompressed-p256-agreement-public-key-base64url"
