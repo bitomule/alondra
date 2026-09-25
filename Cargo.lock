@@ -28,6 +28,7 @@ name = "alondra"
 version = "0.1.0"
 dependencies = [
  "alondra-core",
+ "alondra-e2e",
  "anyhow",
  "base64 0.23.1",
  "clap",
@@ -46,6 +47,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "subtle",
+ "toml",
  "ureq",
  "url",
 ]

@@ -12,6 +12,6 @@ cask "alondra" do
   binary "#{appdir}/Alondra.app/Contents/MacOS/alondrad"
 
   caveats <<~EOS
-    Run `alondra login` to sign in, then `alondra setup` to configure this Mac.
+    Run `alondra setup --service` to sign in and configure this Mac.
   EOS
 end

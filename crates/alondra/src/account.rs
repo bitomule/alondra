@@ -45,12 +45,17 @@ struct Userinfo {
     preferred_username: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Session {
     issuer: String,
     client_id: String,
     sub: String,
     refresh_token: String,
+}
+
+pub struct AccountToken {
+    pub sub: String,
+    pub access_token: String,
 }
 
 fn agent() -> ureq::Agent {
@@ -374,7 +379,7 @@ pub fn login() -> Result<()> {
     Ok(())
 }
 
-pub fn status() -> Result<()> {
+fn refreshed() -> Result<(AccountToken, Option<String>)> {
     let session = stored()?;
     let http = agent();
     let d = discovery(&http)?;
@@ -398,13 +403,35 @@ pub fn status() -> Result<()> {
     if let Some(refresh) = token.refresh_token {
         let updated = Session {
             refresh_token: refresh,
-            ..session
+            ..session.clone()
         };
         set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&updated)?)?;
     }
+    Ok((
+        AccountToken {
+            sub: user.sub,
+            access_token: token.access_token,
+        },
+        user.preferred_username,
+    ))
+}
+
+pub fn token_for_enrollment() -> Result<AccountToken> {
+    Ok(refreshed()?.0)
+}
+
+pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
+    if stored().is_err() {
+        login()?;
+    }
+    token_for_enrollment()
+}
+
+pub fn status() -> Result<()> {
+    let (account, preferred_username) = refreshed()?;
     println!(
         "Signed in as {}.",
-        user.preferred_username.as_deref().unwrap_or(&user.sub)
+        preferred_username.as_deref().unwrap_or(&account.sub)
     );
     Ok(())
 }
@@ -418,7 +445,9 @@ pub fn logout() -> Result<()> {
     delete_generic_password(KEYCHAIN_SERVICE, ISSUER)?;
     println!("Signed out on this Mac.");
     if !remote_revoked {
-        eprintln!("Could not confirm server-side revocation while offline; the local Keychain token was removed. Other copies remain valid until Keycloak expires them.");
+        eprintln!(
+            "Could not confirm server-side revocation while offline; the local Keychain token was removed. Other copies remain valid until Keycloak expires them."
+        );
     }
     Ok(())
 }

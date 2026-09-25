@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-core.workspace = true
+alondra-e2e = { path = "../e2e" }
 anyhow.workspace = true
 base64 = "0.23.1"
 clap.workspace = true
@@ -16,6 +17,7 @@ ratatui-image.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 sha2 = "0.11.0"
 ureq.workspace = true
 url = "2.5.7"

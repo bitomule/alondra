@@ -5,6 +5,7 @@ mod account;
 mod client;
 mod doctor;
 mod mcp;
+mod service_setup;
 mod setup;
 mod statusline;
 mod state;

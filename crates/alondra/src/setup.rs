@@ -15,6 +15,8 @@ pub const MARKETPLACE: &str = "alondra";
 
 #[derive(clap::Args, Default)]
 pub struct Args {
+    #[arg(long, help = tr!("Enroll this Mac in the Alondra service using browser login", "Da de alta este Mac en el servicio Alondra mediante login en el navegador"))]
+    pub service: bool,
     #[arg(long, help = tr!("Name of the person the nodes talk to", "Nombre de la persona con la que hablan los nodos"))]
     pub name: Option<String>,
     #[arg(long, help = tr!("URL the iPhone uses to reach this Mac", "URL por la que el iPhone llega a este Mac"))]
@@ -195,6 +197,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 restart = true;
             }
         }
+        (None, None) if args.service => {}
         (None, None) => steps.push(Step::Warn(
             tr!(
                 "No apns.json: the iPhone gets no notifications. Rerun with --apns-key-path --apns-key-id --apns-team-id --apns-topic.",
@@ -409,7 +412,7 @@ fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig>
         let name = if interactive { prompt(tr!("Your name (the nodes address you by it)", "Tu nombre (los nodos te llaman así)"), &fallback)? } else { fallback };
         wanted.name = Some(name).filter(|n| !n.is_empty());
     }
-    if interactive && !known(&wanted, |c| c.public_url.is_some()) {
+    if interactive && !args.service && !known(&wanted, |c| c.public_url.is_some()) {
         let port = wanted.port.or(existing.and_then(|e| e.port)).unwrap_or(alondra_core::DEFAULT_PORT);
         let suggestion = lan_url(port).unwrap_or_default();
         let url = prompt(
@@ -504,6 +507,9 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
 }
 
 pub fn run(args: Args) -> Result<()> {
+    if args.service && args.skip_service {
+        bail!("--service cannot be combined with --skip-service");
+    }
     let env = |k: &str| std::env::var(k).ok();
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
@@ -533,18 +539,34 @@ pub fn run(args: Args) -> Result<()> {
         }
         bail!(tr!("setup stopped", "setup detenido"));
     }
+    let service_created = if args.service && !args.dry_run {
+        crate::service_setup::enroll(&paths.alondra_home)?
+    } else {
+        false
+    };
     for step in &plan.steps {
         print_step(step, args.dry_run);
         if !args.dry_run {
             execute(step)?;
         }
     }
+    let launched_by_plan = plan.steps.iter().any(|step| {
+        matches!(step, Step::Run { program, args } if program == "launchctl"
+            && matches!(args.first().map(String::as_str), Some("bootstrap" | "kickstart")))
+    });
+    if service_created && seen.binaries && seen.service_loaded && !launched_by_plan {
+        let target = format!("gui/{}/{}", paths.uid, label);
+        execute(&Step::Run {
+            program: "launchctl".into(),
+            args: vec!["kickstart".into(), "-k".into(), target],
+        })?;
+    }
     let config = Config::resolve(paths.alondra_home.clone(), &plan.config, env, config::system_name);
     if args.dry_run {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
         return Ok(());
     }
-    if args.skip_pair || args.skip_service {
+    if args.skip_pair || args.skip_service || args.service {
         return Ok(());
     }
     pair_when_ready(&config)
