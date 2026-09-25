@@ -6,7 +6,10 @@ load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUND
 
 swift_library(
     name = "AlondraShared",
-    srcs = glob(["Shared/Sources/**/*.swift"]),
+    srcs = glob(
+        ["Shared/Sources/**/*.swift"],
+        exclude = ["Shared/Sources/DeviceKeyStore.swift", "Shared/Sources/RequestSigning.swift"],
+    ),
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
@@ -22,14 +25,14 @@ swift_test(
     name = "AlondraSharedTests",
     srcs = glob(["Shared/Tests/**/*.swift"]),
     data = ["//fixtures/markdown"],
-    deps = [":AlondraShared"],
+    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient"],
 )
 
 swift_library(
     name = "AlondraMacEntry",
     srcs = glob(["macOS/Sources/**/*.swift"]),
     module_name = "AlondraMac",
-    deps = [":AlondraShared"],
+    deps = [":AlondraShared", "//apple/DeviceIdentity:AlondraDeviceIdentity"],
 )
 
 macos_application(
@@ -55,7 +58,7 @@ swift_library(
     name = "AlondraiOSEntry",
     srcs = glob(["iOS/Sources/**/*.swift"]),
     module_name = "AlondraiOS",
-    deps = [":AlondraShared", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = [":AlondraShared", "//apple/DeviceIdentity:AlondraDeviceIdentity", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )
 
 ios_application(

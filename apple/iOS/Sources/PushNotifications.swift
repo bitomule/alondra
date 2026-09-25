@@ -196,8 +196,9 @@ final class PushCenter {
     }
 
     private func currentClient() -> AlondraClient? {
-        let url = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
-        guard let client = AlondraClient(string: url, device: "iphone", signer: pairing.signer) else { return nil }
+        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
+        guard let url = AlondraClient.serverURL(address), let signer = pairing.signer(for: url) else { return nil }
+        let client = AlondraClient(base: url, device: "iphone", signer: signer)
         fleet.use(client)
         return fleet.client
     }

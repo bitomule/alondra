@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraDeviceIdentity
 import Foundation
 import Observation
 import UIKit
@@ -29,26 +30,31 @@ struct PairingInvite: Equatable {
 final class DevicePairing {
     private(set) var deviceID: String?
     private(set) var pairedURL: URL?
-    private(set) var signer: DeviceSigner?
+    private(set) var signer: AlondraDeviceIdentity.DeviceSigner?
+    private let identities: DeviceIdentityStore
 
-    private static let deviceIDKey = "pairedDeviceID"
-    private static let pairedURLKey = "pairedURL"
-
-    init() {
-        let defaults = UserDefaults.standard
-        guard let id = defaults.string(forKey: Self.deviceIDKey),
-              let url = defaults.url(forKey: Self.pairedURLKey),
-              let key = try? DeviceKeyStore.load() else { return }
-        deviceID = id
-        pairedURL = url
-        signer = DeviceSigner(deviceID: id, key: key)
+    init(identities: DeviceIdentityStore = DeviceIdentityStore()) {
+        self.identities = identities
+        guard let identity = try? identities.pairedIOSIdentity() else { return }
+        deviceID = identity.signer.deviceID
+        pairedURL = identity.serverURL
+        signer = identity.signer
     }
 
     var isPaired: Bool { signer != nil }
 
+    /// A signer belongs to exactly one server. Use this for all client construction,
+    /// especially when Settings tests a candidate URL before switching servers.
+    func signer(for serverURL: URL) -> AlondraDeviceIdentity.DeviceSigner? {
+        guard let identity = pairedURL.flatMap({ url in
+            signer.map { DeviceIdentity(serverURL: url, signer: $0) }
+        }), identity.matches(serverURL: serverURL) else { return nil }
+        return identity.signer
+    }
+
     func pair(_ invite: PairingInvite) async throws {
-        let key = DeviceSigningKey.generate()
-        try DeviceKeyStore.save(key)
+        let previous = try identities.pairedIOSIdentity()
+        let key = try identities.beginIOSPairing()
         let id: String
         do {
             id = try await AlondraClient.pair(
@@ -58,27 +64,17 @@ final class DevicePairing {
                 publicKey: key.publicKey.x963Representation
             )
         } catch {
-            if let previous = signer {
-                try? DeviceKeyStore.save(previous.key)
-            } else {
-                DeviceKeyStore.delete()
-            }
+            try identities.restoreIOSKey(previous)
             throw error
         }
-        let defaults = UserDefaults.standard
-        defaults.set(id, forKey: Self.deviceIDKey)
-        defaults.set(invite.url, forKey: Self.pairedURLKey)
-        defaults.set(invite.url.absoluteString, forKey: ServerSetting.key)
-        deviceID = id
-        pairedURL = invite.url
-        signer = DeviceSigner(deviceID: id, key: key)
+        let identity = identities.completeIOSPairing(serverURL: invite.url, deviceID: id, key: key)
+        deviceID = identity.signer.deviceID
+        pairedURL = identity.serverURL
+        signer = identity.signer
     }
 
     func unpair() {
-        DeviceKeyStore.delete()
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: Self.deviceIDKey)
-        defaults.removeObject(forKey: Self.pairedURLKey)
+        identities.unpairIOS()
         deviceID = nil
         pairedURL = nil
         signer = nil

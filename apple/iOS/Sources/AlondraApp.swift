@@ -110,7 +110,8 @@ private struct RootView: View {
         .closeRefusalAlert(fleet)
         .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
             guard scenePhase != .background else { return }
-            if let client = AlondraClient(string: serverURL, device: "iphone", signer: pairing.signer) {
+            if let url = AlondraClient.serverURL(serverURL) {
+                let client = AlondraClient(base: url, device: "iphone", signer: pairing.signer(for: url))
                 fleet.use(client)
                 push.scheduleSync()
             }

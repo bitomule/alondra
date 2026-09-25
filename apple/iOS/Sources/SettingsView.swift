@@ -13,7 +13,10 @@ struct SettingsView: View {
         case idle, checking, ok, failed(String)
     }
 
-    private var candidate: AlondraClient? { AlondraClient(string: draft, device: "iphone", signer: pairing.signer) }
+    private var candidate: AlondraClient? {
+        guard let url = AlondraClient.serverURL(draft) else { return nil }
+        return AlondraClient(base: url, device: "iphone", signer: pairing.signer(for: url))
+    }
 
     var body: some View {
         NavigationStack {
