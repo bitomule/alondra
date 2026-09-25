@@ -55,6 +55,7 @@ struct Qr<'a> {
     mac_agreement_key: &'a str,
     session_id: &'a str,
     secret: &'a str,
+    expires_at_ms: u64,
 }
 #[derive(Serialize)]
 struct Session<'a> {
@@ -577,6 +578,7 @@ pub fn run(home: &Path) -> Result<()> {
         mac_agreement_key: &public.agreement_key,
         session_id: &session_id,
         secret: &secret,
+        expires_at_ms: expires,
     })?;
     let art = qrcode::QrCode::new(qr.as_bytes())?
         .render::<qrcode::render::unicode::Dense1x2>()
