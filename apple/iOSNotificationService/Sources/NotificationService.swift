@@ -1,3 +1,4 @@
+import AlondraNotificationPayload
 import Foundation
 import os
 import UserNotifications
@@ -12,7 +13,7 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         let delivery = Delivery(content: content, handler: contentHandler)
         self.delivery = delivery
-        guard let question = OptionQuestion(userInfo: content.userInfo) else {
+        guard let question = NotificationPayload.Question(userInfo: content.userInfo) else {
             delivery.finish(category: nil)
             return
         }
@@ -54,64 +55,31 @@ private final class Delivery: Sendable {
     }
 }
 
-struct OptionQuestion: Sendable {
-    static let maxOptions = 4
-    private static let origins: Set<String> = ["ask", "ask_user_question", "elicitation"]
-
-    let id: UInt64
-    let options: [String]
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard let alondra = userInfo["alondra"] as? [String: Any],
-              alondra["kind"] as? String == "question",
-              let origin = alondra["origin"] as? String, Self.origins.contains(origin),
-              let id = (alondra["id"] as? NSNumber)?.uint64Value,
-              let raw = alondra["options"] as? [String] else { return nil }
-        var seen = Set<String>()
-        let options = raw
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-            .prefix(Self.maxOptions)
-        guard !options.isEmpty else { return nil }
-        self.id = id
-        self.options = Array(options)
-    }
-}
-
 enum QuestionCategories {
-    static let prefix = "ALONDRA_Q_"
-    static let optionPrefix = "OPT:"
     static let limit = 20
 
-    private static let reply = "REPLY"
-    private static let moreContext = "MORE_CONTEXT"
     private static let registrationPolls = 20
     private static let pollInterval: Duration = .milliseconds(50)
 
     /// `setNotificationCategories` registers asynchronously; handing the content back before
     /// the new category is visible shows the notification without its buttons.
-    static func register(_ question: OptionQuestion) async -> String {
+    static func register(_ question: NotificationPayload.Question) async -> String {
         let center = UNUserNotificationCenter.current()
-        let identifier = prefix + String(question.id)
+        let identifier = NotificationPayload.Category.questionID(question.id)
         let existing = await center.notificationCategories()
         let recent = existing
-            .compactMap { category in questionID(category).map { (id: $0, category: category) } }
+            .compactMap { category in NotificationPayload.Category.questionID(from: category.identifier).map { (id: $0, category: category) } }
             .filter { $0.id != question.id }
             .sorted { $0.id < $1.id }
             .suffix(limit - 1)
             .map(\.category)
-        let fixed = existing.filter { questionID($0) == nil }
+        let fixed = existing.filter { NotificationPayload.Category.questionID(from: $0.identifier) == nil }
         center.setNotificationCategories(fixed.union(recent).union([category(for: question, identifier: identifier)]))
         for _ in 0..<registrationPolls {
             if await center.notificationCategories().contains(where: { $0.identifier == identifier }) { break }
             try? await Task.sleep(for: pollInterval)
         }
         return identifier
-    }
-
-    private static func questionID(_ category: UNNotificationCategory) -> UInt64? {
-        guard category.identifier.hasPrefix(prefix) else { return nil }
-        return UInt64(category.identifier.dropFirst(prefix.count))
     }
 
     private static func title(for label: String) -> String {
@@ -124,20 +92,20 @@ enum QuestionCategories {
         }
     }
 
-    private static func category(for question: OptionQuestion, identifier: String) -> UNNotificationCategory {
+    private static func category(for question: NotificationPayload.Question, identifier: String) -> UNNotificationCategory {
         let options = question.options.map { label in
-            UNNotificationAction(identifier: optionPrefix + label, title: title(for: label), options: [.authenticationRequired])
+            UNNotificationAction(identifier: NotificationPayload.Action.option(label), title: title(for: label), options: [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: options + [
             UNTextInputNotificationAction(
-                identifier: reply,
+                identifier: NotificationPayload.Action.reply,
                 title: String(localized: "Reply"),
                 options: [.authenticationRequired],
                 icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
                 textInputButtonTitle: String(localized: "Send"),
                 textInputPlaceholder: String(localized: "Your answer")
             ),
-            UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
+            UNNotificationAction(identifier: NotificationPayload.Action.moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
         ], intentIdentifiers: [])
     }
 }

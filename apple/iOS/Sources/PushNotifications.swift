@@ -1,33 +1,11 @@
 import AlondraShared
+import AlondraNotificationPayload
 import Foundation
 import Observation
 import UIKit
 import UserNotifications
 
-struct NotificationItem: Hashable, Sendable {
-    enum Kind: String, Sendable {
-        case question, report, pr
-    }
-
-    let kind: Kind
-    let id: UInt64
-
-    var inboxID: String {
-        switch kind {
-        case .question: "q\(id)"
-        case .report: "r\(id)"
-        case .pr: "p\(id)"
-        }
-    }
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard let alondra = userInfo["alondra"] as? [String: Any],
-              let kind = (alondra["kind"] as? String).flatMap(Kind.init(rawValue:)),
-              let id = (alondra["id"] as? NSNumber)?.uint64Value else { return nil }
-        self.kind = kind
-        self.id = id
-    }
-}
+typealias NotificationItem = NotificationPayload.Item
 
 struct NotificationRoute: Hashable {
     let itemID: String
@@ -35,20 +13,20 @@ struct NotificationRoute: Hashable {
 }
 
 enum NotificationCategory {
-    static let question = "ALONDRA_QUESTION"
-    static let permission = "ALONDRA_PERMISSION"
-    static let plan = "ALONDRA_PLAN"
-    static let read = "ALONDRA_READ"
+    static let question = NotificationPayload.Category.question
+    static let permission = NotificationPayload.Category.permission
+    static let plan = NotificationPayload.Category.plan
+    static let read = NotificationPayload.Category.read
 
-    static let reply = "REPLY"
-    static let moreContext = "MORE_CONTEXT"
-    static let allow = "ALLOW"
-    static let deny = "DENY"
-    static let approve = "APPROVE"
-    static let review = "REVIEW"
-    static let markRead = "READ"
-    static let optionPrefix = "OPT:"
-    static let questionPrefix = "ALONDRA_Q_"
+    static let reply = NotificationPayload.Action.reply
+    static let moreContext = NotificationPayload.Action.moreContext
+    static let allow = NotificationPayload.Action.allow
+    static let deny = NotificationPayload.Action.deny
+    static let approve = NotificationPayload.Action.approve
+    static let review = NotificationPayload.Action.review
+    static let markRead = NotificationPayload.Action.markRead
+    static let optionPrefix = NotificationPayload.Action.optionPrefix
+    static let questionPrefix = NotificationPayload.Category.questionPrefix
 
     static var all: Set<UNNotificationCategory> {
         [

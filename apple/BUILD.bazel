@@ -10,7 +10,12 @@ swift_library(
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
-    deps = ["@swiftpkg_highlightswift//:HighlightSwift"],
+    deps = [
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Contracts:AlondraContracts",
+        "//apple/Domain:AlondraDomain",
+        "@swiftpkg_highlightswift//:HighlightSwift",
+    ],
 )
 
 swift_test(
@@ -50,7 +55,7 @@ swift_library(
     name = "AlondraiOSEntry",
     srcs = glob(["iOS/Sources/**/*.swift"]),
     module_name = "AlondraiOS",
-    deps = [":AlondraShared"],
+    deps = [":AlondraShared", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )
 
 ios_application(
@@ -74,6 +79,7 @@ swift_library(
     name = "AlondraNotificationServiceLib",
     srcs = glob(["iOSNotificationService/Sources/**/*.swift"]),
     module_name = "AlondraNotificationService",
+    deps = ["//apple/NotificationPayload:AlondraNotificationPayload"],
 )
 
 ios_extension(
