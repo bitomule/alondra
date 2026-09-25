@@ -69,6 +69,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "p256",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+]
+
+[[package]]
 name = "alondrad"
 version = "0.1.0"
 dependencies = [
