@@ -266,7 +266,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         steps: vec![],
         mission: node.mission.clone(),
         task: v.fact_task(&node.session_id, None),
-        replaces: None,
+        replaces: None, about_pr: None,
     }
 }
 
@@ -585,7 +585,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         }
     }

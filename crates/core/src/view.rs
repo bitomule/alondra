@@ -463,16 +463,18 @@ impl View {
         self.nodes.contains_key(sid).then(|| (sid.clone(), Trigger::Other))
     }
 
-    /// Once a PR is merged or closed, the open questions of its task that link to it have nothing
-    /// left to decide. Another task's cards are never touched by it (#78 withdrew action #217).
+    /// Once a PR is merged or closed, the open questions of its task that the node said are about
+    /// it have nothing left to decide. A question that only links it is about other work and stays
+    /// (t-47328: merging #102 withdrew question #254 on a cron unanswered). Another task's cards
+    /// are never touched by it (#78 withdrew action #217).
     fn withdraw_questions_about(&mut self, pr_id: u64) {
         let Some(pr) = self.prs.get(&pr_id) else { return };
-        let target = (pr.repo.clone(), pr.number);
+        let number = pr.number;
         let task = self.pr_task_of(pr).map(|t| t.id.clone());
         let moot: Vec<u64> = self
             .questions
             .values()
-            .filter(|q| q.status == QuestionStatus::Open && !q.action && q.links.iter().any(|l| crate::pr::parse_url(&l.url).as_ref() == Some(&target)))
+            .filter(|q| q.status == QuestionStatus::Open && !q.action && q.about_pr == Some(number))
             .filter(|q| task.is_some() && self.question_task(q).map(|t| t.id.clone()) == task)
             .map(|q| q.id)
             .collect();
@@ -735,15 +737,17 @@ impl View {
         linked.or_else(|| homes.iter().max_by_key(|p| p.id)).map(|p| p.id)
     }
 
-    /// The PR card a question of the node shows in: its task's open PR card. Questions Claude Code
-    /// itself raised (permissions, plans, menus) and questions for the orchestrator stay cards of
-    /// their own.
+    /// The PR card a question of the node shows in: the open card of its task's PR the node said
+    /// it is about. A question that only links a PR, questions Claude Code itself raised
+    /// (permissions, plans, menus) and questions for the orchestrator stay cards of their own.
     pub fn question_pr(&self, q: &Question) -> Option<u64> {
         if q.origin != QuestionOrigin::Ask || q.to_orchestrator {
             return None;
         }
-        let links: Vec<&str> = q.links.iter().map(|l| l.url.as_str()).collect();
-        self.task_pr_home(self.question_task(q)?, &links, false)
+        let number = q.about_pr?;
+        let task = self.question_task(q)?;
+        let home = |p: &&crate::pr::PullRequest| p.number == number && p.state == crate::pr::PrState::Open && !p.auto_merge && !p.awaiting_push();
+        task.prs.iter().filter_map(|id| self.prs.get(id)).find(home).map(|p| p.id)
     }
 
     /// The report links a PR the user already merged or closed on its card, and no open one: it
@@ -1015,7 +1019,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         }
     }
@@ -1344,7 +1348,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         };
         v.questions.insert(1, q(1, QuestionStatus::Delivered, 100));
@@ -1464,33 +1468,33 @@ mod tests {
     }
 
     #[test]
-    fn a_merged_or_closed_pr_withdraws_the_open_questions_that_link_to_it() {
+    fn a_merged_or_closed_pr_withdraws_the_open_questions_about_it() {
         use crate::model::Link;
         use crate::pr::{MergeMethod, PrState};
+        const PR: &str = "https://github.com/a/b/pull/24";
         let closed = |state: PrState| move |v: &View| {
             let mut pr = v.prs[&1].clone();
             pr.state = state;
             Event::PrUpdated(pr)
         };
-        let cases: Vec<(&str, &str, Box<dyn Fn(&View) -> Event>, QuestionStatus)> = vec![
-            ("merged from a card", "https://github.com/a/b/pull/24", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Withdrawn),
-            ("an action to do once it is merged", "action https://github.com/a/b/pull/24", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Open),
-            ("merged on GitHub", "https://github.com/a/b/pull/24/files", Box::new(closed(PrState::Merged)), QuestionStatus::Withdrawn),
-            ("closed on GitHub", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Closed)), QuestionStatus::Withdrawn),
-            ("still open", "https://github.com/a/b/pull/24", Box::new(closed(PrState::Open)), QuestionStatus::Open),
-            ("set aside is not settled", "https://github.com/a/b/pull/24", Box::new(|_| Event::PrDismissed { id: 1 }), QuestionStatus::Open),
-            ("another PR", "https://github.com/a/b/pull/25", Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }), QuestionStatus::Open),
+        let merged = || -> Box<dyn Fn(&View) -> Event> { Box::new(|_| Event::PrMerged { id: 1, method: MergeMethod::Merge }) };
+        let cases: Vec<(&str, Option<u64>, &str, bool, Box<dyn Fn(&View) -> Event>, QuestionStatus)> = vec![
+            ("merged from a card", Some(24), "", false, merged(), QuestionStatus::Withdrawn),
+            ("an action to do once it is merged", Some(24), "", true, merged(), QuestionStatus::Open),
+            ("merged on GitHub", Some(24), "", false, Box::new(closed(PrState::Merged)), QuestionStatus::Withdrawn),
+            ("closed on GitHub", Some(24), "", false, Box::new(closed(PrState::Closed)), QuestionStatus::Withdrawn),
+            ("still open", Some(24), "", false, Box::new(closed(PrState::Open)), QuestionStatus::Open),
+            ("set aside is not settled", Some(24), "", false, Box::new(|_| Event::PrDismissed { id: 1 }), QuestionStatus::Open),
+            ("about another PR", Some(25), PR, false, merged(), QuestionStatus::Open),
+            ("only links it: other work, as question #254 on PR #102 (t-47328)", None, PR, false, merged(), QuestionStatus::Open),
         ];
-        for (name, link, event, expected) in cases {
+        for (name, about_pr, link, action, event, expected) in cases {
             let mut v = run(&[hook("s", "UserPromptSubmit")]);
-            v.apply(2, 2000, &Event::PrOpened { url: "https://github.com/a/b/pull/24".into(), session_id: "s".into(), task: None });
+            v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None });
             let mut q = question(1, "s", QuestionOrigin::Ask);
-            let (action, link) = match link.strip_prefix("action ") {
-                Some(url) => (true, url),
-                None => (false, link),
-            };
             q.action = action;
-            q.links = vec![Link { url: link.into(), title: None }];
+            q.about_pr = about_pr;
+            q.links = [link].iter().filter(|l| !l.is_empty()).map(|l| Link { url: (*l).into(), title: None }).collect();
             v.apply(3, 3000, &Event::QuestionAsked(q));
             let e = event(&v);
             v.apply(4, 4000, &e);
@@ -1502,21 +1506,23 @@ mod tests {
     }
 
     #[test]
-    fn a_question_of_a_task_with_an_open_pr_card_shows_in_that_card() {
+    fn a_question_shows_in_the_card_of_the_pr_it_is_about() {
         use crate::model::Link;
         const PR: &str = "https://github.com/a/b/pull/24";
         let link = |url: &str| vec![Link { url: url.into(), title: None }];
-        let cases: Vec<(&str, &str, QuestionOrigin, Vec<Link>, Vec<Event>, Option<u64>)> = vec![
-            ("links the PR", "s", QuestionOrigin::Ask, link(PR), vec![], Some(1)),
-            ("links nothing: the newest", "s", QuestionOrigin::Ask, vec![], vec![], Some(2)),
-            ("links the task's other PR", "s", QuestionOrigin::Ask, link("https://github.com/a/b/pull/25"), vec![], Some(2)),
-            ("links another node's PR", "s", QuestionOrigin::Ask, link("https://github.com/a/b/pull/26"), vec![], Some(2)),
-            ("another node's question linking the PR: its own card", "t", QuestionOrigin::Ask, link(PR), vec![], Some(3)),
-            ("a permission prompt", "s", QuestionOrigin::Permission, vec![], vec![], None),
-            ("the PRs wait for new commits", "s", QuestionOrigin::Ask, link(PR), vec![Event::PrChangesRequested { id: 1 }, Event::PrChangesRequested { id: 2 }], None),
-            ("the PR cards were set aside", "s", QuestionOrigin::Ask, link(PR), vec![Event::PrDismissed { id: 1 }, Event::PrDismissed { id: 2 }], None),
+        let cases: Vec<(&str, &str, QuestionOrigin, Option<u64>, Vec<Link>, Vec<Event>, Option<u64>)> = vec![
+            ("about the PR", "s", QuestionOrigin::Ask, Some(24), vec![], vec![], Some(1)),
+            ("about the task's other PR", "s", QuestionOrigin::Ask, Some(25), link(PR), vec![], Some(2)),
+            ("only links the PR: a card of its own", "s", QuestionOrigin::Ask, None, link(PR), vec![], None),
+            ("about nothing: a card of its own", "s", QuestionOrigin::Ask, None, vec![], vec![], None),
+            ("about another node's PR", "s", QuestionOrigin::Ask, Some(26), vec![], vec![], None),
+            ("another node's question about the PR: its own card", "t", QuestionOrigin::Ask, Some(24), vec![], vec![], None),
+            ("another node's question about its own PR", "t", QuestionOrigin::Ask, Some(26), vec![], vec![], Some(3)),
+            ("a permission prompt", "s", QuestionOrigin::Permission, None, vec![], vec![], None),
+            ("the PR waits for new commits", "s", QuestionOrigin::Ask, Some(24), vec![], vec![Event::PrChangesRequested { id: 1 }], None),
+            ("the PR card was set aside", "s", QuestionOrigin::Ask, Some(24), vec![], vec![Event::PrDismissed { id: 1 }], None),
         ];
-        for (what, asker, origin, links, events, expected) in cases {
+        for (what, asker, origin, about_pr, links, events, expected) in cases {
             let mut v = run(&[hook("s", "UserPromptSubmit"), hook("t", "UserPromptSubmit")]);
             for (seq, url, sid) in [(3, PR, "s"), (4, "https://github.com/a/b/pull/25", "s"), (5, "https://github.com/a/b/pull/26", "t")] {
                 v.apply(seq, 2000, &Event::PrOpened { url: url.into(), session_id: sid.into(), task: None });
@@ -1526,6 +1532,7 @@ mod tests {
             }
             let mut q = question(1, asker, origin);
             q.links = links;
+            q.about_pr = about_pr;
             assert_eq!(v.question_pr(&q), expected, "{what}");
         }
     }
@@ -1650,7 +1657,9 @@ mod tests {
         let mut v = run(&[hook("s", "UserPromptSubmit")]);
         v.apply(2, 2000, &Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None });
         v.apply(3, 3000, &report_about(7, "s", ReportKind::Notice, 3000, &[PR], "Ready", ""));
-        v.apply(4, 4000, &Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask)));
+        let mut q = question(1, "s", QuestionOrigin::Ask);
+        q.about_pr = Some(24);
+        v.apply(4, 4000, &Event::QuestionAsked(q));
         assert!(v.question_reports(&v.questions[&1]).is_empty());
         assert_eq!(v.report_pr(&v.reports[&7]), Some(1));
         assert_eq!(v.question_pr(&v.questions[&1]), Some(1), "the question is in the PR card too");

@@ -688,7 +688,7 @@ mod tests {
             action,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         })
     }
