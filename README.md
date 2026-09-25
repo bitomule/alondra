@@ -60,6 +60,20 @@ notifies it on its own, every 90 s and in a single message, of:
 If no orchestrator is running, alondrad launches one this way on its own and posts a notice
 saying so (only when `wake` is on).
 
+### Scheduled tasks
+
+Alondrad keeps local schedules in `~/.alondra/schedules.db` and starts a fresh task at each due
+time. Create and edit them under Tasks → Scheduled Tasks in the Mac and iPhone apps, or press
+`s` on the TUI Tasks screen. A schedule stores its mission, project, local time and launch
+options. The editor's Advanced section accepts one Claude `--disallowedTools` pattern per line;
+those patterns are applied to every run, including a task resumed after a failed start.
+
+In Alondra-managed Claude sessions, the `PreToolUse` hook redirects `CronCreate` to the
+`schedule_create` MCP tool. This keeps durable work in Alondra, where it is visible and can be
+paused or edited. Subhour polling remains in the current Claude session because Alondra does
+not support that cadence. The hook does not affect Claude sessions outside Alondra. See the
+[Claude scheduled tasks documentation](https://code.claude.com/docs/en/scheduled-tasks).
+
 ### The TUI
 
 - **Waiting for you**: questions from the nodes (structured, menu, permissions and plans), PR

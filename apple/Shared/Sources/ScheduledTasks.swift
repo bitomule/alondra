@@ -11,6 +11,7 @@ public struct ScheduledTask: Decodable, Identifiable, Sendable {
     public let text: String
     public let project: String?
     public let options: [String: OptionChoice]
+    public let disallowedTools: [String]
     public let frequency: String
     public let hour: Int
     public let minute: Int
@@ -33,6 +34,7 @@ public struct ScheduledTaskDraft: Encodable, Sendable {
     public var text: String
     public var project: String?
     public var options: [String: OptionChoice]
+    public var disallowedTools: [String]
     public var frequency: String
     public var hour: Int
     public var minute: Int
@@ -44,6 +46,7 @@ public struct ScheduledTaskDraft: Encodable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case title, text, project, options, frequency, hour, minute, weekday, interval, enabled, revision
+        case disallowedTools = "disallowed_tools"
         case startAt = "start_at"
     }
 
@@ -52,6 +55,7 @@ public struct ScheduledTaskDraft: Encodable, Sendable {
         text = task?.text ?? ""
         project = task?.project
         options = task?.options ?? [:]
+        disallowedTools = task?.disallowedTools ?? []
         frequency = task?.frequency ?? "daily"
         hour = task?.hour ?? 9
         minute = task?.minute ?? 0
@@ -365,6 +369,7 @@ private func scheduleError(_ message: String) -> String {
     switch message {
     case "title must be 1–120 characters": key = "Enter a name of up to 120 characters."
     case "mission must be 1–20,000 characters": key = "Enter instructions of up to 20,000 characters."
+    case "disallowed tools must be at most 100 nonempty tool patterns without spaces or flags": key = "Enter up to 100 tool patterns without spaces."
     case "time must be a valid local hour and minute": key = "Choose a valid time."
     case "weekly schedule needs weekday 0–6": key = "Choose a day of the week."
     case "custom interval must be 1–365": key = "Choose an interval from 1 to 365."
@@ -392,12 +397,14 @@ private struct ScheduleEditor: View {
     @State private var projects: [String] = []
     @State private var error: String?
     @State private var saving = false
+    @State private var disallowedToolsText: String
 
     init(client: AlondraClient, task: ScheduledTask?, saved: @escaping () async -> Void) {
         self.client = client
         self.task = task
         self.saved = saved
         _draft = State(initialValue: ScheduledTaskDraft(task))
+        _disallowedToolsText = State(initialValue: task?.disallowedTools.joined(separator: "\n") ?? "")
     }
 
     var body: some View {
@@ -411,6 +418,7 @@ private struct ScheduleEditor: View {
                 missionSection
                 whenSection
                 optionsSection
+                advancedSection
                 if let error { Text(scheduleError(error)).foregroundStyle(.red) }
             }
             .navigationTitle(task == nil ? "New Schedule" : "Edit Schedule")
@@ -443,6 +451,7 @@ private struct ScheduleEditor: View {
                 missionSection
                 whenSection
                 optionsSection
+                advancedSection
                 if let error { Text(scheduleError(error)).foregroundStyle(.red) }
             }
             .formStyle(.grouped)
@@ -583,6 +592,15 @@ private struct ScheduleEditor: View {
         }
     }
 
+    private var advancedSection: some View {
+        Section(String(localized: "Advanced", table: "AlondraShared", bundle: #bundle)) {
+            TextField(String(localized: "Disallowed tools (one pattern per line)", table: "AlondraShared", bundle: #bundle), text: $disallowedToolsText, axis: .vertical)
+                .lineLimit(2...6)
+            Text(String(localized: "These tool patterns are passed to Claude as disallowed tools for every run.", table: "AlondraShared", bundle: #bundle))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder private func optionControl(_ spec: OptionSpec) -> some View {
         if spec.kind == .toggle {
             Toggle(spec.title, isOn: Binding(
@@ -602,6 +620,7 @@ private struct ScheduleEditor: View {
     }
 
     private func save() async {
+        draft.disallowedTools = disallowedToolsText.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         saving = true
         defer { saving = false }
         do {

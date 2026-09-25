@@ -190,6 +190,15 @@ fn hook() -> Result<()> {
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
     let mut payload: serde_json::Value = serde_json::from_slice(&input)?;
+    if std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty())
+        && payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("PreToolUse")
+        && payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("CronCreate")
+        && !short_session_poll(&payload)
+    {
+        let output = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "This session is managed by Alondra. Use the alondra schedule_create tool for a durable task visible in Alondra. CronCreate only lives inside this Claude session and expires after seven days."}});
+        println!("{output}");
+        return Ok(());
+    }
     if payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("MessageDisplay")
         && payload.get("final") != Some(&serde_json::Value::Bool(true))
     {
@@ -223,6 +232,32 @@ fn hook() -> Result<()> {
         std::process::exit(2);
     }
     send
+}
+
+/// Alondra schedules start at one-hour intervals. Keep shorter session polling in Claude.
+fn short_session_poll(payload: &serde_json::Value) -> bool {
+    let cron = payload.pointer("/tool_input/cron").and_then(serde_json::Value::as_str)
+        .or_else(|| payload.pointer("/tool_input/cron_expression").and_then(serde_json::Value::as_str));
+    let Some(cron) = cron else { return false; };
+    let parts: Vec<_> = cron.split_whitespace().collect();
+    if parts.len() != 5 { return false; }
+    // Any minute field with more than one value can fire more than once an hour,
+    // including lists and ranges on specific weekdays. Alondra cannot express it.
+    !parts[0].parse::<u8>().is_ok_and(|minute| minute <= 59)
+}
+
+#[cfg(test)]
+mod schedule_hook_tests {
+    use super::*;
+
+    #[test]
+    fn short_polls_stay_in_claude_while_daily_work_uses_alondra() {
+        assert!(short_session_poll(&json!({"tool_input": {"cron": "*/5 * * * *"}})));
+        assert!(short_session_poll(&json!({"tool_input": {"cron": "* * * * *"}})));
+        assert!(short_session_poll(&json!({"tool_input": {"cron": "0,30 9-17 * * 1-5"}})));
+        assert!(!short_session_poll(&json!({"tool_input": {"cron": "0 9 * * 1"}})));
+        assert!(!short_session_poll(&json!({"tool_input": {"cron": "0 * * * *"}})));
+    }
 }
 
 /// Claude's batch hook includes complete tool responses; Alondra needs only the fact that a

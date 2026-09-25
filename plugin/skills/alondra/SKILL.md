@@ -11,6 +11,8 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 
 ## The tools
 
+- `schedule_create`: create a durable Alondra schedule when the user wants a task to run later or repeatedly. It starts a fresh node at each run. In Alondra-managed sessions, `CronCreate` is redirected here for schedules Alondra supports because its jobs belong to the current Claude session and expire. Polling more often than hourly stays in Claude's current session.
+
 - `ask`: a decision for the user. One question per decision, a one-line title (the
   notification shows it), all the context in `detail`, options, PRs in `links` and files in
   `attachments`. Alondra types the answer into this session, so end your turn after asking. A

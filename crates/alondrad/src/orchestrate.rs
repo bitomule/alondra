@@ -82,7 +82,16 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
             "Alondra's plugin was not found: the Alondra marketplace is not registered in Claude Code. Run `alondra setup` in the Alondra repo.".into(),
         ));
     };
-    let args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref(), &plugin);
+    let mut args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref(), &plugin);
+    if let Some(request) = &l.request_id {
+        let patterns = hub.schedules.tools_for_request(request)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("cannot load scheduled tool policy: {e}")))?;
+        if !patterns.is_empty() {
+            let prompt = args.pop().expect("launch prompt");
+            let separator = args.pop().expect("launch separator");
+            args.extend(["--disallowedTools".into(), patterns.join(" "), separator, prompt]);
+        }
+    }
     let _launching = hub.launching();
     let output = launcher.run(&l.cwd, &args).await?;
     let session = alondra_core::sessions::launched_short(&output);
