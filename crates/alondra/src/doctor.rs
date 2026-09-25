@@ -124,25 +124,43 @@ pub fn service_check(print: Option<&str>, label: &str) -> Check {
     }
 }
 
-pub fn plugin_check(list: Option<&Value>, repo: Option<&Path>) -> Check {
+/// Alondra loads its plugin with `--plugin-dir` into the sessions it launches, from the repo
+/// registered as its marketplace; a global install would load it into every other session too.
+pub fn plugin_check(list: Option<&Value>, marketplace: bool, repo: Option<&Path>) -> Check {
     let add = repo.map_or_else(|| "<repo>".to_string(), |r| r.display().to_string());
-    let fix = format!("claude plugin marketplace add {add} && claude plugin install {}", setup::PLUGIN_ID);
-    let Some(list) = list else {
-        return check("plugin", Status::Fail, tr!("could not list Claude Code plugins", "no pude listar los plugins de Claude Code"), fix);
-    };
-    let entry = list.as_array().and_then(|a| a.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(setup::PLUGIN_ID)));
-    match entry {
-        None => check("plugin", Status::Fail, tr!("the alondra plugin is not installed", "el plugin alondra no está instalado"), fix),
-        Some(p) if p.get("enabled") == Some(&Value::Bool(false)) => check(
+    if !marketplace {
+        return check(
             "plugin",
             Status::Fail,
-            tr!("the alondra plugin is disabled", "el plugin alondra está desactivado"),
-            format!("claude plugin enable {}", setup::PLUGIN_ID),
+            tr!(
+                "Alondra's marketplace is not registered: alondrad cannot load its plugin into the nodes it launches",
+                "el marketplace de Alondra no está registrado: alondrad no puede cargar su plugin en los nodos que lanza"
+            ),
+            format!("claude plugin marketplace add {add}"),
+        );
+    }
+    let Some(list) = list else {
+        return check("plugin", Status::Fail, tr!("could not list Claude Code plugins", "no pude listar los plugins de Claude Code"), "claude plugin list --json");
+    };
+    match setup::enabled_globally(list).as_slice() {
+        [] => check(
+            "plugin",
+            Status::Pass,
+            tr!("loaded only into the sessions Alondra launches", "cargado solo en las sesiones que lanza Alondra"),
+            "",
         ),
-        Some(p) => {
-            let v = p.get("version").and_then(Value::as_str).unwrap_or("?");
-            let id = setup::PLUGIN_ID;
-            check("plugin", Status::Pass, trf!("{id} {v} installed", "{id} {v} instalado"), "")
+        enabled => {
+            let ids = enabled.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ");
+            let fix = enabled.iter().map(|(id, scope)| format!("claude plugin disable {id} --scope {scope}")).collect::<Vec<_>>().join(" && ");
+            check(
+                "plugin",
+                Status::Warn,
+                trf!(
+                    "{ids} is enabled in every Claude session: sessions Alondra did not launch send it their hooks (alondra setup turns it off)",
+                    "{ids} está activado en todas las sesiones de Claude: las que no lanza Alondra le mandan sus hooks (alondra setup lo desactiva)"
+                ),
+                fix,
+            )
         }
     }
 }
@@ -298,7 +316,7 @@ pub fn run(json_out: bool) -> Result<()> {
     let claude = output("claude", &["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(claude_version_check(claude.as_deref()));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
-    checks.push(plugin_check(setup::plugin_list().as_ref(), repo.as_deref()));
+    checks.push(plugin_check(setup::plugin_list().as_ref(), setup::has_marketplace(), repo.as_deref()));
 
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
@@ -401,13 +419,13 @@ mod tests {
         assert_eq!(service_check(Some("state = not running"), "x").status, Status::Warn);
         assert_eq!(service_check(None, "x").status, Status::Fail);
 
-        let list = json!([{"id": "alondra@alondra", "version": "0.1.2", "enabled": true}]);
-        let c = plugin_check(Some(&list), None);
-        assert_eq!(c.status, Status::Pass);
-        assert!(c.detail.contains("alondra@alondra 0.1.2"));
-        assert_eq!(plugin_check(Some(&json!([{"id": "alondra@alondra", "enabled": false}])), None).status, Status::Fail);
-        assert_eq!(plugin_check(Some(&json!([])), None).status, Status::Fail);
-        assert!(plugin_check(None, Some(Path::new("/src/alondra"))).fix.contains("marketplace add /src/alondra"));
+        let global = json!([{"id": "alondra@alondra", "version": "0.1.2", "scope": "user", "enabled": true}]);
+        let c = plugin_check(Some(&global), true, None);
+        assert_eq!(c.status, Status::Warn, "a global install reaches sessions Alondra did not launch");
+        assert_eq!(c.fix, "claude plugin disable alondra@alondra --scope user");
+        assert_eq!(plugin_check(Some(&json!([{"id": "alondra@alondra", "enabled": false}])), true, None).status, Status::Pass);
+        assert_eq!(plugin_check(Some(&json!([])), true, None).status, Status::Pass);
+        assert!(plugin_check(Some(&json!([])), false, Some(Path::new("/src/alondra"))).fix.contains("marketplace add /src/alondra"));
 
         assert!(hooks_port_check(alondra_core::DEFAULT_PORT).is_none());
         assert_eq!(hooks_port_check(47897).map(|c| c.status), Some(Status::Warn));

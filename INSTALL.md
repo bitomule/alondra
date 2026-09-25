@@ -11,7 +11,7 @@ What gets installed:
 | `alondrad`, the daemon (24/7 HTTP server, SQLite) | `~/.local/bin/alondrad`, run by launchd |
 | `alondra`, the CLI/TUI and the nodes' MCP server | `~/.local/bin/alondra` |
 | Settings, database, logs, APNs key | `~/.alondra/` |
-| Claude Code plugin `alondra@alondra` | from this repo's marketplace (`.claude-plugin/marketplace.json`) |
+| Claude Code plugin `alondra` | this repo, registered as the marketplace `alondra`; alondrad loads it only into the sessions it launches, never into every session |
 | `jevi` (required: node state, report filter, search) | `~/.cargo/bin/jevi` |
 | iOS app (on the iPhone) and Mac app | built here with Bazel, signed with your Apple team |
 
@@ -113,7 +113,11 @@ in effect (defaults at this point: `port = 47800`, `listen = 127.0.0.1`).
 
 `alondra setup` writes `~/.alondra/config.toml` (and `apns.json` in step 5), installs the
 launchd service (`~/Library/LaunchAgents/dev.alondra.alondrad.plist`), adds this repo as a
-Claude Code plugin marketplace, installs the plugin and, at the end, shows the pairing QR.
+Claude Code plugin marketplace (alondrad finds the plugin there and loads it into each session
+it launches) and, at the end, shows the pairing QR. It does not enable the plugin for every
+Claude session; if an older install did, it turns that off with `claude plugin disable
+alondra@alondra --scope user`, which sets `"enabledPlugins": {"alondra@alondra": false}` in
+`~/.claude/settings.json`.
 It never asks when it gets `--no-input`, and `--dry-run` shows everything it would do.
 
 Values to pass:
@@ -133,8 +137,8 @@ alondra setup --no-input --name "<first name>" --listen 0.0.0.0 \
 ```
 
 Read the plan it prints: one `would write …config.toml`, one `would write …plist`, `launchctl
-bootstrap`, `claude plugin marketplace add <this repo>` and `claude plugin install
-alondra@alondra`. If it says `Not touching anything, because:` it found an existing
+bootstrap` and `claude plugin marketplace add <this repo>` (plus `claude plugin disable
+alondra@alondra --scope user` on a Mac where an older install enabled it). If it says `Not touching anything, because:` it found an existing
 installation: show the lines to the human before using `--force`. Then run the same command
 without `--dry-run`.
 
@@ -147,8 +151,8 @@ alondra config; curl -s http://127.0.0.1:47800/v1/health | jq .config; alondra d
 **Success:** `alondra config` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
 answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`, `launchd`,
 `claude`, `plugin`, `tmux`, `jevi`, `jevi key`, `jevi ask`, `tuicr`. Expected at this point: `!` for
-`apns` (step 5) and `pairing` (step 6). New Claude Code sessions pick up the plugin; already
-open ones do not.
+`apns` (step 5) and `pairing` (step 6). Only the sessions Alondra launches load the plugin;
+any other Claude session never talks to Alondra.
 
 ## 5. Notifications with your own Apple developer account
 
@@ -317,7 +321,7 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `hooks` | the port is not 47800, so the plugin's hooks miss the daemon | remove `port` from `config.toml` and `ALONDRA_PORT` |
 | `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start) | `alondra setup`; read `~/.alondra/alondrad.log` |
 | `claude` | Claude Code is not on `PATH` | install Claude Code |
-| `plugin` | plugin not installed or disabled | run from the repo: `claude plugin marketplace add "$PWD" && claude plugin install alondra@alondra` (or `claude plugin enable alondra@alondra`) |
+| `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra setup` (or the `claude plugin disable … --scope …` doctor prints) |
 | `tmux` | tmux missing: stopped nodes cannot be woken | `brew install tmux` |
 | `jevi` | jevi not on `PATH` | step 2; add `~/.cargo/bin` to `PATH` |
 | `jevi key` | no OpenRouter key stored | `pbpaste \| jevi config set-key openrouter` |

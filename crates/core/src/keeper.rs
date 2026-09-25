@@ -86,7 +86,7 @@ mod tests {
         let mut running = View::default();
         orchestrator(&mut running, 1, T0);
         let mut launched = View::default();
-        launched.apply(1, T0 + 5 * min, &Event::OrchestratorLaunched { ok: true });
+        launched.apply(1, T0 + 5 * min, &Event::OrchestratorLaunched { ok: true, session: None });
 
         let none = View::default();
         let cases: Vec<(&str, &View, Millis, bool)> = vec![
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn the_launched_orchestrator_is_announced_once_it_registers_and_only_once() {
         let mut v = View::default();
-        v.apply(1, T0, &Event::OrchestratorLaunched { ok: true });
+        v.apply(1, T0, &Event::OrchestratorLaunched { ok: true, session: None });
         assert!(to_announce(&v).is_none(), "not registered yet");
         orchestrator(&mut v, 2, T0 + 30_000);
         let o = to_announce(&v).expect("registered").clone();

@@ -23,6 +23,10 @@ Alondra does the bookkeeping, so your work is judgment:
   waiting for the machine, done, or unclear what it wants.
 - `send` queues a message and Alondra types it into the node's session, waking it if it is
   dormant.
+- Only sessions Alondra launched are in it: the nodes `launch` and `define` start, which load
+  Alondra's plugin for themselves, and you. Crons, the user's own terminals and any other Claude
+  session are not in `fleet`, cannot take a task or a message, and their tools do not reach
+  Alondra. Work that touches one of them goes to a node you launch.
 
 These replace the hive scripts (`questions.sh`, `briefing.sh`, `status.sh`, `peek.sh`) and
 `SendMessage`.
