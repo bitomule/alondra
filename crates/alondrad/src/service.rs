@@ -540,6 +540,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || one_id_path(path, "/v1/nodes/").is_some()
                 || id_action(path, "/v1/nodes/", "/activity", false)
                 || id_action(path, "/v1/prs/", "/diff", true)
+                || id_action(path, "/v1/prs/", "/diff-snapshot", true)
         }
         "POST" if request.body.is_some() && query.is_none() => {
             matches!(path, "/v1/requests" | "/v1/tasks/archive" | "/v1/activity" | "/v1/schedules")
@@ -762,7 +763,7 @@ mod tests {
         }).is_ok();
         for path in [
             "/v1/overview", "/v1/tasks/task-1", "/v1/nodes/session_1/activity",
-            "/v1/prs/7/diff", "/v1/search?q=hello%20world",
+            "/v1/prs/7/diff", "/v1/prs/7/diff-snapshot", "/v1/search?q=hello%20world",
             "/v1/file?path=%2FUsers%2Fme%2Ffile.txt", "/v1/options?project=foo",
         ] {
             assert!(accepts("GET", path, None), "{path}");

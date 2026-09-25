@@ -75,6 +75,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
         .route("/v1/prs/{id}/task", post(reassign_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
+        .route("/v1/prs/{id}/diff-snapshot", get(pr_diff_snapshot))
         .route("/v1/tasks", post(define_tasks))
         .route("/v1/tasks/archive", post(archive_tasks))
         .route("/v1/tasks/new", post(new_task))
@@ -1350,6 +1351,8 @@ struct ChangesBody {
     text: String,
     #[serde(default)]
     attachments: Vec<String>,
+    #[serde(default)]
+    expected_head_sha: Option<String>,
 }
 
 async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ChangesBody>) -> Response {
@@ -1366,15 +1369,18 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
         Ok(a) => a,
         Err(r) => return r,
     };
+    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+        return response;
+    }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
-    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None, attachments) {
+    match tell_review_about_pr(&hub, &pr, text, b.expected_head_sha.as_deref(), attachments) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrChangesRequested { id }) {
                 log!("changes sent on PR card #{id}, card not set aside: {e}");
             }
             Json(json!({"id": id, "sent_to": to})).into_response()
         }
-        Err(e) => internal(e),
+        Err(response) => response,
     }
 }
 
@@ -1383,6 +1389,8 @@ struct AskPrBody {
     text: String,
     #[serde(default)]
     attachments: Vec<String>,
+    #[serde(default)]
+    expected_head_sha: Option<String>,
 }
 
 /// #150, 24 Sep: asking a node about its PR had no way but "Request changes", which parks the
@@ -1402,20 +1410,103 @@ async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b):
         Ok(a) => a,
         Err(r) => return r,
     };
+    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+        return response;
+    }
     let text = format!(
         "{} asks about {}: {}\n\nAnswer with a report linking the PR so the answer shows inside its card.",
         hub.config.name,
         pr.url,
         b.text.trim()
     );
-    match tell_about_pr(&hub, &pr, text, MessageFrom::User, None, attachments) {
+    match tell_review_about_pr(&hub, &pr, text, b.expected_head_sha.as_deref(), attachments) {
         Ok(to) => {
             if let Err(e) = hub.append(Event::PrAsked { id }) {
                 log!("asked about PR card #{id}, its task not moved: {e}");
             }
             Json(json!({"id": id, "sent_to": to})).into_response()
         }
-        Err(e) => internal(e),
+        Err(response) => response,
+    }
+}
+
+async fn live_pr_head(url: &str) -> Result<(String, bool), Response> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new("gh")
+            .args(["pr", "view", url, "--json", "headRefOid,state"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let output = match result {
+        Ok(Ok(output)) if output.status.success() => output,
+        Ok(Ok(output)) => return Err(err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&output.stderr).trim().to_string())),
+        Ok(Err(error)) => return Err(err(StatusCode::BAD_GATEWAY, error.to_string())),
+        Err(_) => return Err(err(StatusCode::GATEWAY_TIMEOUT, "gh pr view did not finish within 20 s")),
+    };
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| err(StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let head = value.get("headRefOid").and_then(Value::as_str).filter(|head| head.len() == 40 && head.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| err(StatusCode::BAD_GATEWAY, "GitHub did not return a valid PR head SHA"))?;
+    Ok((head.to_string(), value.get("state").and_then(Value::as_str) == Some("OPEN")))
+}
+
+async fn verify_review_head(hub: &Hub, id: u64, expected: Option<&str>) -> Result<(), Response> {
+    let Some(expected) = expected else { return Ok(()) };
+    if expected.len() != 40 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "expected_head_sha must be a full Git commit SHA"));
+    }
+    let Some(url) = hub.read(|view| view.prs.get(&id).map(|pr| pr.url.clone())) else {
+        return Err(err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist")));
+    };
+    let (live, open) = live_pr_head(&url).await?;
+    if !open {
+        return Err(refused(StatusCode::CONFLICT, "pr_not_open", format!("{url} is no longer open")));
+    }
+    if !live.eq_ignore_ascii_case(expected) {
+        return Err(refused(StatusCode::CONFLICT, "head_changed", "The PR changed since the diff was reviewed; load the new diff"));
+    }
+    Ok(())
+}
+
+fn tell_review_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: String, expected: Option<&str>, attachments: Vec<Attachment>) -> Result<String, Response> {
+    let Some(expected) = expected else {
+        return tell_about_pr(hub, pr, text, MessageFrom::User, None, attachments).map_err(internal);
+    };
+    let text = format!(
+        "{text}\n\nReviewed PR head: {expected}. Before acting, verify GitHub still reports this exact head SHA; if it changed, ask for a new review.{}",
+        uploads::delivery_note(&hub.config.name, &attachments)
+    );
+    let recorded = hub.append_all(|view| {
+        let Some(current) = view.prs.get(&pr.id) else {
+            return Err(err(StatusCode::NOT_FOUND, format!("PR card #{} does not exist", pr.id)));
+        };
+        if current.state != alondra_core::pr::PrState::Open {
+            return Err(refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", current.url)));
+        }
+        if !current.head_sha.as_deref().is_some_and(|head| head.eq_ignore_ascii_case(expected)) {
+            return Err(refused(StatusCode::CONFLICT, "head_changed", "The PR changed since the diff was reviewed; load the new diff"));
+        }
+        let node = view.nodes.get(&current.session_id).filter(|node| node.alive || node.in_daemon);
+        let Some(to) = node.or_else(|| view.nodes.values().find(|node| node.is_orchestrator && node.alive)) else {
+            return Err(err(StatusCode::CONFLICT, "neither the node nor an orchestrator is there to receive it"));
+        };
+        Ok(vec![Event::MessageQueued(Message {
+            id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            session_id: to.session_id.clone(),
+            from: MessageFrom::User,
+            text: text.clone(),
+            answers_question: None,
+            created_at: now_millis(),
+            handed_at: None,
+            delivered_at: None,
+            about: None,
+            attachments: attachments.clone(),
+        })])
+    }).map_err(internal)??;
+    match recorded.into_iter().next() {
+        Some((_, Event::MessageQueued(message))) => Ok(message.session_id),
+        _ => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "review message was not recorded")),
     }
 }
 
@@ -1471,6 +1562,49 @@ fn attached(hub: &Hub, ids: &[String]) -> Result<Vec<Attachment>, Response> {
 
 /// Large enough for any PR a person reviews on a phone; beyond it the diff is cut, and says so.
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+async fn pr_diff_snapshot(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+    let Some(pr) = hub.read(|view| view.prs.get(&id).cloned()) else {
+        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
+    };
+    if pr.state != alondra_core::pr::PrState::Open {
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
+    }
+    let (before, open) = match live_pr_head(&pr.url).await {
+        Ok(head) => head,
+        Err(response) => return response,
+    };
+    if !open {
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::process::Command::new("gh").args(["pr", "diff", &pr.url]).kill_on_drop(true).output(),
+    ).await;
+    let output = match result {
+        Ok(Ok(output)) if output.status.success() => output,
+        Ok(Ok(output)) => return err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&output.stderr).trim().to_string()),
+        Ok(Err(error)) => return err(StatusCode::BAD_GATEWAY, error.to_string()),
+        Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr diff did not finish within 60 s"),
+    };
+    let (after, still_open) = match live_pr_head(&pr.url).await {
+        Ok(head) => head,
+        Err(response) => return response,
+    };
+    if !still_open {
+        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
+    }
+    if before != after {
+        return refused(StatusCode::CONFLICT, "head_changed", "The PR changed while its diff was loaded; retry");
+    }
+    let mut diff = String::from_utf8_lossy(&output.stdout).into_owned();
+    let truncated = diff.len() > MAX_DIFF_BYTES;
+    if truncated {
+        let cut = (0..=MAX_DIFF_BYTES).rev().find(|index| diff.is_char_boundary(*index)).unwrap_or(0);
+        diff.truncate(cut);
+    }
+    Json(json!({"diff": diff, "head_sha": before, "truncated": truncated})).into_response()
+}
 
 async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     let Some(url) = hub.read(|v| v.prs.get(&id).map(|p| p.url.clone())) else {
@@ -3966,7 +4100,7 @@ mod tests {
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/150".into(), session_id: "s".into(), task: None }).unwrap();
 
-        let body = AskPrBody { text: "why did CI fail?".into(), attachments: vec![] };
+        let body = AskPrBody { text: "why did CI fail?".into(), attachments: vec![], expected_head_sha: None };
         let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert_eq!(said["sent_to"].as_str(), Some("s"));
@@ -3991,14 +4125,40 @@ mod tests {
         let before = hub.read(|v| v.messages.len());
 
         let (status, said) = status_and_body(request_pr_changes(
-            State(hub.clone()), Path(1), Json(ChangesBody { text: "Please change this".into(), attachments: vec![] })
+            State(hub.clone()), Path(1), Json(ChangesBody { text: "Please change this".into(), attachments: vec![], expected_head_sha: None })
         ).await).await;
         assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
         let (status, said) = status_and_body(ask_about_pr(
-            State(hub.clone()), Path(1), Json(AskPrBody { text: "Why?".into(), attachments: vec![] })
+            State(hub.clone()), Path(1), Json(AskPrBody { text: "Why?".into(), attachments: vec![], expected_head_sha: None })
         ).await).await;
         assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
         assert_eq!(hub.read(|v| v.messages.len()), before);
+    }
+
+    #[tokio::test]
+    async fn reviewed_head_is_checked_atomically_with_queuing() {
+        let hub = temp_hub("reviewed-head");
+        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/150".into(), session_id: "s".into(), task: None }).unwrap();
+        let mut pr = hub.read(|view| view.prs[&1].clone());
+        let old = "a".repeat(40);
+        let new = "b".repeat(40);
+        pr.head_sha = Some(old.clone());
+        hub.append(Event::PrUpdated(pr.clone())).unwrap();
+
+        let to = tell_review_about_pr(&hub, &pr, "Please check this".into(), Some(&old), vec![]).unwrap();
+        assert_eq!(to, "s");
+        let message = hub.read(|view| view.messages.values().last().unwrap().text.clone());
+        assert!(message.contains(&format!("Reviewed PR head: {old}")));
+
+        pr.head_sha = Some(new);
+        hub.append(Event::PrUpdated(pr)).unwrap();
+        let before = hub.read(|view| view.messages.len());
+        let (status, body) = status_and_body(
+            tell_review_about_pr(&hub, &hub.read(|view| view.prs[&1].clone()), "Stale".into(), Some(&old), vec![]).unwrap_err()
+        ).await;
+        assert_eq!((status, body["kind"].as_str()), (StatusCode::CONFLICT, Some("head_changed")));
+        assert_eq!(hub.read(|view| view.messages.len()), before);
     }
 
     /// A PR stacked on the one being asked about must not become any harder to merge than it
@@ -4020,7 +4180,7 @@ mod tests {
         let before = hub.read(|v| merge_blocked(v, 2));
         assert_eq!(before.as_deref(), Some("merge PR #150 first"));
 
-        let body = AskPrBody { text: "can you explain this diff?".into(), attachments: vec![] };
+        let body = AskPrBody { text: "can you explain this diff?".into(), attachments: vec![], expected_head_sha: None };
         let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
 
@@ -5225,7 +5385,7 @@ mod tests {
         let hub = started("pr-ask", &["s"]);
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(1), ..Default::default() })).unwrap();
         hub.append(Event::PrOpened { url: FIXTURE.into(), session_id: "s".into(), task: None }).unwrap();
-        let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(AskPrBody { text: "¿Por qué este cambio?".into(), attachments: vec![] })).await).await;
+        let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(AskPrBody { text: "¿Por qué este cambio?".into(), attachments: vec![], expected_head_sha: None })).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert_eq!(hub.read(|v| v.board.tasks["t-s"].state), alondra_core::tasks::TaskState::Running);
         let Json(o) = overview(State(hub.clone())).await;
