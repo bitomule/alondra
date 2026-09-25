@@ -527,6 +527,11 @@ pub struct Task {
     /// nothing is read into it from other events.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recorded: bool,
+    /// David or the orchestrator named it with `TaskTitled`: its title is no longer a fallback,
+    /// and `follow_node` leaves it alone even if the node it runs on is renamed or bound to a
+    /// request later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub titled: bool,
     #[serde(default)]
     pub history: Vec<Transition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -702,6 +707,7 @@ impl Board {
             launched_as: t.launched_as.clone(),
             start: t.start.clone(),
             recorded: true,
+            titled: false,
             history: vec![],
             anomalies: vec![],
             archived_at: None,
@@ -907,6 +913,7 @@ mod tests {
             launched_as: None,
             start: None,
             recorded: false,
+            titled: false,
             history: vec![],
             anomalies: vec![],
             archived_at: None,

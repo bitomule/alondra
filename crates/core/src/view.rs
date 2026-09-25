@@ -377,7 +377,13 @@ impl View {
                 self.pr_node(*id)
             }
             Event::PrAsked { id } | Event::PrReassigned { pr: id, .. } => self.pr_node(*id),
-            Event::TasksRecorded | Event::TaskCreated(_) | Event::TaskAssigned { .. } | Event::TaskMoved { .. } | Event::RequestTitled { .. } | Event::RequestClosed { .. } => None,
+            Event::TasksRecorded
+            | Event::TaskCreated(_)
+            | Event::TaskAssigned { .. }
+            | Event::TaskMoved { .. }
+            | Event::RequestTitled { .. }
+            | Event::TaskTitled { .. }
+            | Event::RequestClosed { .. } => None,
             Event::TasksArchived(what) => {
                 self.board.archive(what, at);
                 None

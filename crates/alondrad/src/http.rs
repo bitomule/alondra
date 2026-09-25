@@ -78,6 +78,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/v1/tasks/{id}/reopen", post(reopen_task))
+        .route("/v1/tasks/{id}/title", post(title_task))
         .route("/v1/file", get(file))
         .route("/v1/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_UPLOAD_BYTES + 64 * 1024)))
         .layer(Extension(auth))
@@ -141,6 +142,22 @@ fn shown_in_pr_note(number: u64, user: &str) -> String {
     format!(
         "Shown inside the card of PR #{number}, not as a card of its own: {user} reads it there when they review the PR. \
          Do not report the PR again."
+    )
+}
+
+/// Whether links or the body carry a claude.ai artifact URL: the one thing that still makes a
+/// `document` report a review instead of a dead end for its task (see `document_refusal`).
+fn has_artifact_link(links: &[Link], body: Option<&str>) -> bool {
+    links.iter().any(|l| !alondra_core::artifact::urls_in(&l.url).is_empty()) || !alondra_core::artifact::urls_in(body.unwrap_or("")).is_empty()
+}
+
+/// A `document` report never moves its task, so without a claude.ai artifact URL to review it is
+/// a dead end: the node meant final (the answer, file attached) or ask (a decision, file
+/// attached). Refused for every plugin version, old or new.
+fn document_refusal(user: &str) -> String {
+    format!(
+        "A document does not move your task. If it is the answer, send it as report kind final with the file in \
+         attachments. If {user} has to decide, send an ask with the file attached and the options."
     )
 }
 
@@ -1970,6 +1987,9 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             format!("A report needs a title that states the result and a body with what {} should know: what changed, what was measured, what is left.", hub.config.name),
         );
     }
+    if b.kind == Some(ReportKind::Document) && !has_artifact_link(&b.links, b.body.as_deref()) {
+        return refused(StatusCode::UNPROCESSABLE_ENTITY, "document_without_artifact", document_refusal(&hub.config.name));
+    }
     let Some((sid, name)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
         return err(StatusCode::BAD_REQUEST, "unknown reporting node");
     };
@@ -2747,6 +2767,27 @@ pub(crate) async fn cancel_task(State(hub): State<AppState>, Path(id): Path<Stri
 /// David or the orchestrator reopens a done or cancelled task.
 async fn reopen_task(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
     move_task(&hub, &id, alondra_core::tasks::TaskEvent::Reopen)
+}
+
+#[derive(Deserialize)]
+struct TitleBody {
+    title: String,
+}
+
+/// David or the orchestrator gives a task a short human title, replacing whatever it fell back
+/// to (a node's own name, most often, per t-47118). Once titled, `follow_node` never overwrites
+/// it again, however the node it runs on is renamed or bound to a request later.
+async fn title_task(State(hub): State<AppState>, Path(id): Path<String>, Json(b): Json<TitleBody>) -> Response {
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "a title cannot be empty");
+    }
+    let recorded = hub.append_with(|v| v.board.tasks.contains_key(&id).then(|| Event::TaskTitled { task: id.clone(), title: title.clone() }));
+    match recorded {
+        Ok(Some(_)) => Json(json!({"id": id, "title": title})).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, format!("task {id} does not exist")),
+        Err(e) => internal(e),
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -3532,6 +3573,31 @@ mod tests {
         assert!(hub.read(|v| !v.reports[&1].read && v.reviews_awaiting_user().any(|r| r.id == 1)), "only David's verdict settles a review card");
     }
 
+    /// t-47118: an analysis delivered as a standalone `document` never moved the task, which
+    /// stayed "en marcha" forever. A `document` without a claude.ai artifact to review is now a
+    /// dead end and is refused, recording nothing, for every plugin version.
+    #[tokio::test]
+    async fn a_document_without_an_artifact_is_refused_and_records_nothing() {
+        let hub = started("document-refusal", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Document, &[]))).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        let error = said["error"].as_str().unwrap_or_default();
+        assert!(error.contains("A document does not move your task"), "{said}");
+        assert!(error.contains("report kind final with the file in"), "{said}");
+        assert!(error.contains("ask with the file attached and the options"), "{said}");
+        assert_eq!(hub.read(|v| v.reports.len()), 0, "nothing recorded");
+    }
+
+    /// The one case a `document` still stands for: an artifact David reviews, its claude.ai URL
+    /// in `links`. The refusal above must not catch this one.
+    #[tokio::test]
+    async fn a_document_with_an_artifact_still_opens_a_review() {
+        let hub = started("document-review", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(hub.read(|v| v.reviews_awaiting_user().any(|r| r.id == 1)), "a document with an artifact still waits for David's verdict");
+    }
+
     /// Cards go together by their task: `related` from older tool schemas is accepted and changes
     /// nothing, and a node names the task only when it works on several.
     #[tokio::test]
@@ -3961,6 +4027,29 @@ mod tests {
         assert_eq!(said["task"]["history"][1]["event"], json!({"kind": "cancel", "reason": "ya no hace falta"}));
         assert_eq!(said["task"]["auto_merge_pending"], false);
         let (status, _) = status_and_body(task_detail(State(hub.clone()), Path("t-9".into())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// David or the orchestrator retitles a task (t-47118: a task titled after its own node's
+    /// name, and nothing could rename it). It sticks: a later rename of the node does not undo it.
+    #[tokio::test]
+    async fn david_or_the_orchestrator_retitles_a_task_and_it_sticks() {
+        let hub = started("retitle", &["s"]);
+        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = hub.read(|v| v.board.tasks["t-s"].title.clone());
+        let (status, said) = status_and_body(title_task(State(hub.clone()), Path("t-s".into()), Json(TitleBody { title: "  Fix the timeout  ".into() })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(said["title"].as_str(), Some("Fix the timeout"), "trimmed");
+        assert!(hub.read(|v| v.board.tasks["t-s"].titled && v.board.tasks["t-s"].title == "Fix the timeout"));
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("renamed/node".into()), pid: Some(1), ..Default::default() })).unwrap();
+        assert_eq!(hub.read(|v| v.board.tasks["t-s"].title.clone()), "Fix the timeout", "a rename of the node does not undo an explicit title");
+        assert_ne!(before, "Fix the timeout");
+
+        let (status, said) = status_and_body(title_task(State(hub.clone()), Path("t-s".into()), Json(TitleBody { title: "   ".into() })).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+
+        let (status, _) = status_and_body(title_task(State(hub.clone()), Path("t-9".into()), Json(TitleBody { title: "Anything".into() })).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
