@@ -25,6 +25,7 @@ use std::{
 
 // Base64 adds ~33%; 180 KiB plus envelope metadata stays below the relay's 256 KiB cap.
 const MAX_LOCAL_RESPONSE: usize = 180 * 1024;
+const MAX_RELAY_RESPONSE: usize = 256 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +164,8 @@ impl Service {
         }
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(45))
+            // PR merge and GitHub issue refresh can take close to 90 seconds locally.
+            .timeout(Duration::from_secs(95))
             .build()?;
         let journal = Journal::open(home.join("service-receipts.sqlite"))?;
         Ok(Some(Self {
@@ -373,7 +375,7 @@ impl Service {
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::Executing => {
-                let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}))?;
+                let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
@@ -384,11 +386,17 @@ impl Service {
                 self.journal.executing(&e.sender, &e.request_id, &digest)?;
                 let result = match self.dispatch(&request).await {
                     Ok(value) => value,
+                    Err(error) if error.is::<ResponseTooLarge>() => {
+                        json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
+                    }
+                    Err(error) if request.method == "GET" => {
+                        json!({"status":502,"error":"read_failed","detail":error.to_string()})
+                    }
                     Err(error) => {
                         json!({"status":503,"error":"uncertain","detail":error.to_string()})
                     }
                 };
-                let bytes = self.encode_response(e, device, &result)?;
+                let bytes = self.encode_response(e, device, &result, &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
@@ -405,59 +413,173 @@ impl Service {
         request: &EnvelopeV1,
         device: &Device,
         result: &Value,
+        local_request: &LocalRequest,
     ) -> Result<Vec<u8>> {
-        let payload = serde_json::to_vec(result)?;
-        let envelope = EnvelopeV1::seal_random(
-            EnvelopeContext {
-                route: &self.mac_id,
-                sender: &self.mac_id,
-                recipient: &request.sender,
-                request_id: &request.request_id,
-                kind: "response",
-                expires_at_ms: now_ms() + 600_000,
-            },
-            &payload,
-            &self.signing,
-            &device.agreement,
-        )
-        .map_err(|error| anyhow!("seal response: {error}"))?;
-        Ok(serde_json::to_vec(&envelope)?)
+        let seal = |value: &Value| -> Result<Vec<u8>> {
+            let payload = serde_json::to_vec(value)?;
+            let envelope = EnvelopeV1::seal_random(
+                EnvelopeContext {
+                    route: &self.mac_id,
+                    sender: &self.mac_id,
+                    recipient: &request.sender,
+                    request_id: &request.request_id,
+                    kind: "response",
+                    expires_at_ms: now_ms() + 600_000,
+                },
+                &payload,
+                &self.signing,
+                &device.agreement,
+            )
+            .map_err(|error| anyhow!("seal response: {error}"))?;
+            Ok(serde_json::to_vec(&envelope)?)
+        };
+        let bytes = seal(result)?;
+        if bytes.len() <= MAX_RELAY_RESPONSE {
+            return Ok(bytes);
+        }
+        // A JSON string containing many escaped bytes can expand far beyond the
+        // raw local response cap. Persist a small encrypted error as the receipt.
+        let fallback = seal(&json!({"status":502,"error":"response_too_large","detail":response_size_detail(local_request)}))?;
+        if fallback.len() > MAX_RELAY_RESPONSE {
+            bail!("encrypted fallback response exceeds relay limit");
+        }
+        Ok(fallback)
     }
 
     async fn dispatch(&self, request: &LocalRequest) -> Result<Value> {
-        let method = match request.method.as_str() {
-            "GET" if request.path == "/v1/overview" && request.body.is_none() => Method::GET,
-            "POST" if answer_path(&request.path) && request.body.is_some() => Method::POST,
-            _ => bail!("local operation is not approved for service access"),
-        };
+        let method = approved_method(request)?;
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
         if let Some(body) = &request.body {
             builder = builder.json(body);
         }
-        let mut response = builder.send().await?;
+        let response = builder.send().await?;
         let status = response.status().as_u16();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
-                bail!("local response exceeds encrypted relay limit");
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = bounded_response(response).await?;
         let body = serde_json::from_slice::<Value>(&bytes)
             .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}));
         Ok(json!({"status":status,"body":body}))
     }
 }
 
-fn answer_path(path: &str) -> bool {
-    let Some(id) = path
-        .strip_prefix("/v1/questions/")
-        .and_then(|s| s.strip_suffix("/answer"))
-    else {
-        return false;
+async fn bounded_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
+            return Err(ResponseTooLarge.into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+#[derive(Debug)]
+struct ResponseTooLarge;
+
+impl std::fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "local response exceeds encrypted relay limit")
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
+
+fn response_size_detail(request: &LocalRequest) -> &'static str {
+    if request.method == "GET" {
+        "Mac response exceeded the encrypted relay limit"
+    } else {
+        "Mac response exceeded the encrypted relay limit; an action may already have completed"
+    }
+}
+
+fn id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn number(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u64>().is_ok()
+}
+
+fn one_id_path<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    path.strip_prefix(prefix).filter(|s| id(s))
+}
+
+fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|s| s.strip_suffix(action))
+        .is_some_and(|s| if numeric { number(s) } else { id(s) })
+}
+
+/// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
+/// There is deliberately no general URL proxy, no pairing/device management, and no upload.
+fn approved_method(request: &LocalRequest) -> Result<Method> {
+    let raw = request.path.as_str();
+    if raw.len() > 4096 || raw.contains(['#', '\\']) {
+        bail!("local operation is not approved for service access");
+    }
+    let (path, query) = raw.split_once('?').map_or((raw, None), |(p, q)| (p, Some(q)));
+    if !path.starts_with("/v1/") || path.contains('%') || path.contains("//") || path.contains("/./") || path.contains("/../") {
+        bail!("local operation is not approved for service access");
+    }
+    let query_ok = match (path, query) {
+        (_, None) => true,
+        ("/v1/options", Some(q)) => single_query(q, "project", 2048),
+        ("/v1/issues", Some(q)) => single_query_value(q, "refresh", &["1"]),
+        ("/v1/search", Some(q)) => single_query(q, "q", 2048),
+        ("/v1/file", Some(q)) => single_query(q, "path", 2048),
+        (p, Some(q)) if one_id_path(p, "/v1/nodes/").is_some() => single_query_value(q, "limit", &["1"]),
+        _ => false,
     };
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+    if !query_ok {
+        bail!("local operation is not approved for service access");
+    }
+    let allowed = match request.method.as_str() {
+        "GET" if request.body.is_none() => {
+            matches!(path, "/v1/overview" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
+                || one_id_path(path, "/v1/tasks/").is_some()
+                || one_id_path(path, "/v1/nodes/").is_some()
+                || id_action(path, "/v1/nodes/", "/activity", false)
+                || id_action(path, "/v1/prs/", "/diff", true)
+        }
+        "POST" if request.body.is_some() && query.is_none() => {
+            matches!(path, "/v1/requests" | "/v1/tasks/archive" | "/v1/activity" | "/v1/schedules")
+                || id_action(path, "/v1/questions/", "/answer", true)
+                || id_action(path, "/v1/questions/", "/more-context", true)
+                || id_action(path, "/v1/prs/", "/merge", true)
+                || id_action(path, "/v1/prs/", "/changes", true)
+                || id_action(path, "/v1/prs/", "/ask", true)
+                || id_action(path, "/v1/prs/", "/resolve-conflicts", true)
+                || id_action(path, "/v1/prs/", "/dismiss", true)
+                || id_action(path, "/v1/tasks/", "/cancel", false)
+                || id_action(path, "/v1/tasks/", "/reopen", false)
+                || id_action(path, "/v1/requests/", "/close", false)
+                || id_action(path, "/v1/reports/", "/read", true)
+                || id_action(path, "/v1/reports/", "/review", true)
+                || id_action(path, "/v1/nodes/", "/close", false)
+                || id_action(path, "/v1/nodes/", "/messages", false)
+                || id_action(path, "/v1/schedules/", "/run", false)
+        }
+        "PUT" if request.body.is_some() && query.is_none() => one_id_path(path, "/v1/schedules/").is_some(),
+        "DELETE" if request.body.is_none() && query.is_none() => one_id_path(path, "/v1/schedules/").is_some(),
+        _ => false,
+    };
+    if !allowed {
+        bail!("local operation is not approved for service access");
+    }
+    Ok(Method::from_bytes(request.method.as_bytes())?)
+}
+
+fn single_query(query: &str, key: &str, max_value_bytes: usize) -> bool {
+    // Accept exactly one named parameter; the local handler validates its decoded value.
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    matches!(pairs.next(), Some((k, v)) if k == key && !v.is_empty() && v.len() <= max_value_bytes)
+        && pairs.next().is_none()
+}
+
+fn single_query_value(query: &str, key: &str, values: &[&str]) -> bool {
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    matches!(pairs.next(), Some((k, v)) if k == key && values.contains(&v.as_ref()))
+        && pairs.next().is_none()
 }
 
 enum Disposition {
@@ -626,7 +748,7 @@ mod tests {
         body::Bytes,
         extract::State,
         http::HeaderMap,
-        routing::{delete, post},
+        routing::{delete, get, post},
     };
     use base64::engine::general_purpose::STANDARD;
     use std::sync::{
@@ -635,15 +757,67 @@ mod tests {
     };
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
-        assert!(answer_path("/v1/questions/123/answer"));
-        for p in [
-            "/v1/questions/../answer",
-            "/v1/questions/1%2f../answer",
-            "/v1/questions/1/answer?x=1",
-            "/v1/questions/-1/answer",
+        let accepts = |method: &str, path: &str, body: Option<Value>| approved_method(&LocalRequest {
+            method: method.into(), path: path.into(), body
+        }).is_ok();
+        for path in [
+            "/v1/overview", "/v1/tasks/task-1", "/v1/nodes/session_1/activity",
+            "/v1/prs/7/diff", "/v1/search?q=hello%20world",
+            "/v1/file?path=%2FUsers%2Fme%2Ffile.txt", "/v1/options?project=foo",
         ] {
-            assert!(!answer_path(p));
+            assert!(accepts("GET", path, None), "{path}");
         }
+        for path in [
+            "/v1/questions/123/answer", "/v1/questions/123/more-context",
+            "/v1/prs/7/merge", "/v1/prs/7/changes", "/v1/prs/7/ask",
+            "/v1/prs/7/resolve-conflicts", "/v1/prs/7/dismiss",
+            "/v1/tasks/task_1/cancel", "/v1/tasks/archive", "/v1/requests",
+            "/v1/nodes/session-1/messages", "/v1/nodes/session-1/close",
+            "/v1/schedules/schedule-1/run", "/v1/reports/1/review",
+        ] {
+            assert!(accepts("POST", path, Some(json!({}))), "{path}");
+        }
+        assert!(accepts("PUT", "/v1/schedules/schedule-1", Some(json!({}))));
+        assert!(accepts("DELETE", "/v1/schedules/schedule-1", None));
+        for (method, path, body) in [
+            ("POST", "/v1/questions/../answer", Some(json!({}))),
+            ("POST", "/v1/questions/1%2f../answer", Some(json!({}))),
+            ("POST", "/v1/questions/1/answer?x=1", Some(json!({}))),
+            ("POST", "/v1/questions/-1/answer", Some(json!({}))),
+            ("GET", "/v1/overview?next=/v1/pairing", None),
+            ("GET", "//evil.example/v1/overview", None),
+            ("GET", "/v1/search?q=hello&path=secret", None),
+            ("GET", "/v1/nodes/s?limit=2000", None),
+            ("POST", "/v1/uploads", Some(json!({}))),
+            ("POST", "/v1/pairing", Some(json!({}))),
+            ("DELETE", "/v1/devices/phone", None),
+            ("GET", "/v1/overview", Some(json!({}))),
+            ("POST", "/v1/requests", None),
+            ("GET", "/v1/prs/7/diff#fragment", None),
+        ] {
+            assert!(!accepts(method, path, body), "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn local_response_stops_at_encrypted_relay_boundary() {
+        let exact = format!("{{\"x\":\"{}\"}}", "a".repeat(MAX_LOCAL_RESPONSE - 8));
+        assert_eq!(exact.len(), MAX_LOCAL_RESPONSE);
+        let too_large = format!("{exact} ");
+        let router = Router::new()
+            .route("/exact", get(move || async move { exact.clone() }))
+            .route("/large", get(move || async move { too_large.clone() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(axum::serve(listener, router).into_future());
+        let client = Client::new();
+        let exact = client.get(format!("http://127.0.0.1:{port}/exact")).send().await.unwrap();
+        assert_eq!(bounded_response(exact).await.unwrap().len(), MAX_LOCAL_RESPONSE);
+        let large = client.get(format!("http://127.0.0.1:{port}/large")).send().await.unwrap();
+        let oversized = bounded_response(large).await.unwrap_err();
+        assert!(oversized.is::<ResponseTooLarge>());
+        assert!(oversized.to_string().contains("encrypted relay limit"));
+        task.abort();
     }
     #[test]
     fn durable_receipt_rejects_changed_bytes_and_never_reruns_executing() {
@@ -948,6 +1122,15 @@ mod tests {
             &service.agreement.public_key(),
         )
         .unwrap();
+        let oversized = service.encode_response(&e, service.devices.get("phone-1").unwrap(),
+            &json!({"status":200,"body":{"text":"\u{0}".repeat(MAX_LOCAL_RESPONSE)}}),
+            &LocalRequest { method: "GET".into(), path: "/v1/file?path=test".into(), body: None }).unwrap();
+        assert!(oversized.len() <= MAX_RELAY_RESPONSE);
+        let oversized_envelope: EnvelopeV1 = serde_json::from_slice(&oversized).unwrap();
+        let opened = oversized_envelope.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+        let error: Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(error["error"], "response_too_large");
         let work = || Work {
             request_id: "op-1".into(),
             envelope: e.clone(),
