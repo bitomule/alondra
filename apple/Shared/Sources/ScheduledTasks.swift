@@ -111,40 +111,50 @@ public struct ScheduledTasksView: View {
 
     @ViewBuilder private var content: some View {
         #if os(iOS)
-        List {
-            statusRows
-            ForEach(tasks, id: \.id) { task in
-                Button { editing = task } label: { summaryRow(task) }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button("Run", systemImage: "play.fill") { Task { await run(task) } }
-                            .tint(.green)
-                        if task.frequency != "once" || task.nextRun != nil {
-                            Button(String(localized: task.enabled ? "Pause" : "Resume", table: "AlondraShared", bundle: #bundle), systemImage: task.enabled ? "pause.fill" : "play.circle") {
-                                Task { await setEnabled(task, !task.enabled) }
+        if tasks.isEmpty && !loading {
+            emptyState
+        } else {
+            List {
+                errorBanner
+                ForEach(tasks, id: \.id) { task in
+                    Button { editing = task } label: { summaryRow(task) }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button("Run", systemImage: "play.fill") { Task { await run(task) } }
+                                .tint(.green)
+                            if task.frequency != "once" || task.nextRun != nil {
+                                Button(String(localized: task.enabled ? "Pause" : "Resume", table: "AlondraShared", bundle: #bundle), systemImage: task.enabled ? "pause.fill" : "play.circle") {
+                                    Task { await setEnabled(task, !task.enabled) }
+                                }
+                                .tint(.orange)
                             }
-                            .tint(.orange)
                         }
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("Delete", systemImage: "trash", role: .destructive) { deleting = task }
-                        Button("Edit", systemImage: "pencil") { editing = task }
-                            .tint(.blue)
-                    }
-                    .contextMenu { taskActions(task) }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("Delete", systemImage: "trash", role: .destructive) { deleting = task }
+                            Button("Edit", systemImage: "pencil") { editing = task }
+                                .tint(.blue)
+                        }
+                        .contextMenu { taskActions(task) }
+                }
             }
+            .refreshable { await refresh() }
         }
-        .refreshable { await refresh() }
         #else
-        List(selection: $selectedID) {
-            statusRows
-            ForEach(tasks, id: \.id) { task in
-                summaryRow(task)
-                    .tag(task.id)
-                    .contextMenu { taskActions(task) }
+        Group {
+            if tasks.isEmpty && !loading {
+                emptyState
+            } else {
+                List(selection: $selectedID) {
+                    errorBanner
+                    ForEach(tasks, id: \.id) { task in
+                        summaryRow(task)
+                            .tag(task.id)
+                            .contextMenu { taskActions(task) }
+                    }
+                }
+                .listStyle(.inset)
             }
         }
-        .listStyle(.inset)
         .onChange(of: selectedID) { _, newValue in inspectorVisible = newValue != nil }
         .inspector(isPresented: $inspectorVisible) {
             if let selected = tasks.first(where: { $0.id == selectedID }) {
@@ -155,18 +165,26 @@ public struct ScheduledTasksView: View {
         #endif
     }
 
-    @ViewBuilder private var statusRows: some View {
-        if let error, !tasks.isEmpty {
+    @ViewBuilder private var errorBanner: some View {
+        if let error {
             Label(displayError(error), systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
         }
-        if tasks.isEmpty && !loading {
-            if let error {
-                ContentUnavailableView("Could not load scheduled tasks", systemImage: "wifi.slash", description: Text(displayError(error)))
+    }
+
+    @ViewBuilder private var emptyState: some View {
+        if let error {
+            ContentUnavailableView {
+                Label("Could not load scheduled tasks", systemImage: "wifi.slash")
+            } description: {
+                Text(displayError(error))
+            } actions: {
                 Button("Retry") { Task { await refresh() } }
-            } else {
-                    ContentUnavailableView("No scheduled tasks", systemImage: "calendar.badge.clock", description: Text(String(localized: "Run a task automatically on a schedule.", table: "AlondraShared", bundle: #bundle)))
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView("No scheduled tasks", systemImage: "calendar.badge.clock", description: Text(String(localized: "Run a task automatically on a schedule.", table: "AlondraShared", bundle: #bundle)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
