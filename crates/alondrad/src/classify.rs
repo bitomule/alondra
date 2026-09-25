@@ -1,26 +1,7 @@
-use std::time::Duration;
+//! Local, conservative interpretation of reports and quiet nodes.
+//! Unclear terminal messages never become completion evidence.
 
-use serde_json::Value;
-use tokio::process::Command;
-
-const TAIL_CHARS: usize = 4000;
-
-fn tail(text: &str) -> &str {
-    let count = text.chars().count();
-    if count <= TAIL_CHARS {
-        return text;
-    }
-    let start = text.char_indices().nth(count - TAIL_CHARS).map_or(0, |(i, _)| i);
-    &text[start..]
-}
-
-fn report_question(user: &str) -> String {
-    format!(
-        "This is a report a coding agent sends to {user}. Does it ask {user} for something NEW: a decision, an approval, \
-         an answer or an action that is not already an open question? Mentioning a question that is already open, or \
-         describing what was done, is not asking."
-    )
-}
+use crate::markdown;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportVerdict {
@@ -28,96 +9,114 @@ pub enum ReportVerdict {
     Fine,
 }
 
-/// Whoever reads a report before it goes to the user, so tests can stand in for jev.
 pub trait JudgesReports: Send + Sync {
-    fn judge<'a>(&'a self, text: &'a str, user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>>;
+    fn judge<'a>(
+        &'a self,
+        text: &'a str,
+        user: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>>;
 }
 
-pub struct Jev;
+pub struct LocalJudge;
 
-impl JudgesReports for Jev {
-    fn judge<'a>(&'a self, text: &'a str, user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>> {
-        Box::pin(judge_report(text, user))
+impl JudgesReports for LocalJudge {
+    fn judge<'a>(
+        &'a self,
+        text: &'a str,
+        _user: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ReportVerdict> + Send + 'a>> {
+        Box::pin(async move { judge_report(text) })
     }
 }
 
-pub async fn judge_report(text: &str, user: &str) -> ReportVerdict {
-    let out = tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new("jevi")
-            .args(["ask", &report_question(user), "--options", "asks,does_not_ask,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    let Ok(Ok(out)) = out else { return ReportVerdict::Fine };
-    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return ReportVerdict::Fine };
-    match v["answers"]["answer"]["label"].as_str() {
-        Some("asks") => ReportVerdict::Asks,
-        _ => ReportVerdict::Fine,
-    }
+fn asks_for_action(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Read each sentence or clause, so a request after a status update is still found.
+    lower.split(['.', ';', ':']).any(|part| {
+        let part = part.trim().trim_start_matches(['-', '*', ' ']);
+        if (part.starts_with("please note") || part.starts_with("ten en cuenta"))
+            && !["approval is required", "approve", "need you to", "need your", "aprobación es necesaria", "necesito tu"]
+                .iter().any(|marker| part.contains(marker)) {
+            return false;
+        }
+        [
+            "please ", "could you ", "can you ", "you need to ", "i need you to ",
+            "approve ", "review ", "test ", "confirm ", "send me ", "provide ",
+            "sign off ", "choose ", "decide ",
+            "por favor ", "puedes ", "podrías ", "necesito que ", "necesita que ",
+            "necesito tu ", "necesito tus ", "necesitamos tu ", "necesitamos tus ",
+            "revisa ", "confirma ", "aprueba ", "prueba ", "decide ", "elige ",
+            "envíame ", "enviame ", "mándame ", "mandame ", "pásame ", "pasame ", "dame ",
+        ].iter().any(|marker| part.starts_with(marker))
+            || ["need your approval", "need you to ", "require your approval", "your approval is required",
+                "waiting for your ", "waits for your ", "awaits your ",
+                "esperando tu ", "a la espera de tu ",
+                "necesito tu aprobación",
+                "tu aprobación es necesaria"].iter().any(|marker| part.contains(marker))
+    })
 }
 
-const EXPECTS_QUESTION: &str = "This is the last message of a coding agent that has just ended its turn. What does it expect from the person supervising it? decide = it asks them to decide or answer something; act = it asks them to do something outside (test on a device, get a key, review something); handed_off = it reported or handed its result to another agent (the orchestrator, a parent node), not to the person; finished = it is done and expects nothing from that person.";
+/// Flag an explicit question or request. An ambiguous report remains visible in the inbox.
+fn asks_question(line: &str) -> bool {
+    let lower = line.trim().trim_start_matches(['#', '*', '-', ' ']).to_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") { return false; }
+    let (before, after) = lower.split_once('?').unwrap_or((&lower, ""));
+    let heading = ["what changed", "what was tested", "how was it tested", "qué cambió", "que cambió"];
+    let heading_only = heading.contains(&before.trim().trim_start_matches('¿').trim());
+    if heading_only { after.contains('?') || after.contains('¿') }
+    else { line.contains('?') || line.contains('¿') }
+}
+
+pub fn judge_report(text: &str) -> ReportVerdict {
+    let asks = markdown::prose_lines(text).into_iter().any(|line| {
+        asks_question(line) || asks_for_action(line)
+    });
+    if asks { ReportVerdict::Asks } else { ReportVerdict::Fine }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expects {
     Decide,
     Act,
-    HandedOff,
-    Finished,
     Unsure,
 }
 
-pub async fn what_node_expects(text: &str) -> Expects {
-    let out = tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new("jevi")
-            .args(["ask", EXPECTS_QUESTION, "--options", "decide,act,handed_off,finished,unsure", "-s", tail(text), "--json", "--soft", "--timeout", "8000"])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    let Ok(Ok(out)) = out else { return Expects::Unsure };
-    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return Expects::Unsure };
-    match v["answers"]["answer"]["label"].as_str() {
-        Some("decide") => Expects::Decide,
-        Some("act") => Expects::Act,
-        Some("handed_off") => Expects::HandedOff,
-        Some("finished") => Expects::Finished,
-        _ => Expects::Unsure,
+/// The sentinel may add a question or action, never infer that an unclear task is done.
+pub fn what_node_expects(text: &str) -> Expects {
+    let lines = markdown::prose_lines(text);
+    if lines.iter().any(|line| asks_for_action(line)) {
+        return Expects::Act;
     }
+    if lines.iter().any(|line| asks_question(line)) {
+        return Expects::Decide;
+    }
+    Expects::Unsure
 }
 
-const SEARCH_CONCURRENCY: usize = 8;
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
-pub async fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
-    let question = format!("Does this agent match what the person is looking for: \"{query}\"?");
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(SEARCH_CONCURRENCY));
-    let mut tasks = tokio::task::JoinSet::new();
-    for (session, text) in candidates {
-        let question = question.clone();
-        let semaphore = semaphore.clone();
-        tasks.spawn(async move {
-            let _permit = semaphore.acquire().await.ok()?;
-            let out = tokio::time::timeout(
-                Duration::from_secs(10),
-                Command::new("jevi").args(["ask", &question, "-s", &text, "--json", "--soft", "--timeout", "8000"]).kill_on_drop(true).output(),
-            )
-            .await
-            .ok()?
-            .ok()?;
-            let v: Value = serde_json::from_slice(&out.stdout).ok()?;
-            (v.get("answers")?.get("answer")?.get("verdict")?.as_str()? == "yes").then_some(session)
-        });
+/// Local word matching across node details. Results retain fleet order.
+pub fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
+    let terms = words(query);
+    if terms.is_empty() {
+        return vec![];
     }
-    let mut found = vec![];
-    while let Some(r) = tasks.join_next().await {
-        if let Ok(Some(s)) = r {
-            found.push(s);
-        }
-    }
-    found
+    candidates
+        .into_iter()
+        .filter_map(|(session, text)| {
+            let hay = words(&text);
+            terms
+                .iter()
+                .all(|term| hay.iter().any(|word| word.contains(term)))
+                .then_some(session)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -125,11 +124,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tail_keeps_the_end_where_the_question_is() {
-        let text = format!("{}should I merge the PR?", "é".repeat(5000));
-        let t = tail(&text);
-        assert!(t.ends_with("should I merge the PR?"));
-        assert_eq!(t.chars().count(), TAIL_CHARS);
-        assert_eq!(tail("corto"), "corto");
+    fn questions_and_actions_remain_visible() {
+        assert_eq!(
+            what_node_expects("Done. Should I merge the PR?"),
+            Expects::Decide
+        );
+        assert_eq!(what_node_expects("Please test on a device."), Expects::Act);
+        assert_eq!(what_node_expects("Everything committed."), Expects::Unsure);
+        assert_eq!(
+            judge_report("Summary\n\n¿Lo apruebas?"),
+            ReportVerdict::Asks
+        );
+        assert_eq!(judge_report("Everything committed."), ReportVerdict::Fine);
+        assert_eq!(
+            judge_report("```\nShould I merge?\n```\nTests pass."),
+            ReportVerdict::Fine
+        );
+    }
+
+    #[test]
+    fn imperative_requests_are_not_final_reports() {
+        for text in ["Test it on your iPhone before I publish.", "Approve it and I start.",
+            "Necesito tu token para continuar.", "Envíame la clave.", "Sign off the rollout."] {
+            assert_eq!(judge_report(text), ReportVerdict::Asks, "{text}");
+        }
+        assert_eq!(judge_report("Please note that the migration is complete."), ReportVerdict::Fine);
+        assert_eq!(judge_report("What changed? Fixed camera permissions. Tests pass."), ReportVerdict::Fine);
+        assert_eq!(judge_report("¿Qué cambió? Corregí el permiso. Pasan las pruebas."), ReportVerdict::Fine);
+        assert_eq!(judge_report("What changed? Fixed the build. Should I merge?"), ReportVerdict::Asks);
+        assert_eq!(judge_report("https://example.com/result?v=2"), ReportVerdict::Fine);
+        assert_eq!(judge_report("Thanks for your review; merged and shipped."), ReportVerdict::Fine);
+        assert_eq!(judge_report("Thanks for your approval; the release is live."), ReportVerdict::Fine);
+        for text in ["Waiting for your approval before shipping.", "We need you to approve the release.",
+            "Please note that your approval is required before release.",
+            "The build awaits your TestFlight review before release."] {
+            assert_eq!(judge_report(text), ReportVerdict::Asks, "{text}");
+        }
+        assert_eq!(what_node_expects("Can you test on your iPhone?"), Expects::Act);
+    }
+
+    #[test]
+    fn local_search_matches_words_without_a_service() {
+        let candidates = vec![
+            ("a".into(), "Lumo camera permission".into()),
+            ("b".into(), "Quill release".into()),
+        ];
+        assert_eq!(search("cam perm", candidates), vec!["a"]);
     }
 }

@@ -133,7 +133,7 @@ impl Hub {
             config,
             hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
-            report_judge: Box::new(crate::classify::Jev),
+            report_judge: Box::new(crate::classify::LocalJudge),
             starts: tokio::sync::Mutex::new(()),
             schedules,
             #[cfg(test)]

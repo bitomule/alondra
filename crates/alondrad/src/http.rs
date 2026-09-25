@@ -131,10 +131,48 @@ fn keep_flagged(home: &std::path::Path, title: &str, body: Option<&str>) {
     }
 }
 
-/// Final reports and the orchestrator's notices skip the report gate: they close a node or
-/// relay what the orchestrator checked, and a false positive cost the user exactly those.
-fn gated(kind: Option<ReportKind>, from_orchestrator: bool) -> bool {
-    !from_orchestrator && !matches!(kind, Some(ReportKind::Progress | ReportKind::Final))
+fn stored_report_kind(kind: Option<ReportKind>, looks_like_question: bool) -> ReportKind {
+    if looks_like_question && kind == Some(ReportKind::Final) {
+        ReportKind::Notice
+    } else {
+        kind.unwrap_or(ReportKind::Notice)
+    }
+}
+
+fn question_from_report(v: &View, report: &Report, at: i64) -> Question {
+    let text = format!("{}\n{}", report.title, report.body.as_deref().unwrap_or(""));
+    let request = crate::markdown::prose_lines(&text).into_iter().rev()
+        .find(|line| crate::classify::judge_report(line) == crate::classify::ReportVerdict::Asks)
+        .unwrap_or(&report.title);
+    let title: String = request.chars().take(110).collect();
+    let action = crate::classify::what_node_expects(request) == crate::classify::Expects::Act;
+    let about_pr = if ["pr #", "pull request", "merge", "fusion"].iter().any(|marker| request.to_lowercase().contains(marker)) {
+        v.report_pr(report).and_then(|id| v.prs.get(&id)).map(|p| p.number)
+    } else { None };
+    Question {
+        id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: report.session_id.clone(),
+        node_name: report.node_name.clone(),
+        title,
+        detail: report.body.clone(),
+        options: if action { answer_option::for_action() } else { vec![] },
+        links: report.links.clone(),
+        attachments: report.attachments.clone(),
+        blocking: true,
+        origin: QuestionOrigin::Ask,
+        tool_use_id: Some(format!("report:{}", report.id)),
+        to_orchestrator: report.to_orchestrator,
+        node_context: None,
+        status: QuestionStatus::Open,
+        answer: None,
+        asked_at: at,
+        action,
+        steps: vec![],
+        mission: report.mission.clone(),
+        task: report.task.clone(),
+        replaces: None,
+        about_pr,
+    }
 }
 
 fn flagged_note(user: &str) -> String {
@@ -2478,7 +2516,6 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     let Some((sid, name)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
         return err(StatusCode::BAD_REQUEST, "unknown reporting node");
     };
-    let from_orchestrator = hub.read(|v| v.nodes.get(&sid).is_some_and(|n| n.is_orchestrator));
     let task = match hub.read(|v| caller_task(v, &sid, b.task.as_deref())) {
         Ok(t) => t,
         Err((status, why)) => return err(status, why),
@@ -2508,7 +2545,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         body: b.body.clone(),
         links: b.links.clone(),
         attachments,
-        kind: b.kind.unwrap_or(ReportKind::Notice),
+        kind: stored_report_kind(b.kind, looks_like_question),
         created_at: stamp,
         read: false,
         to_orchestrator: b.to_orchestrator,
@@ -2520,19 +2557,28 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         log!("report refused for {refused_task}: {}", anomaly.reason);
         return task_refused(&refused_task, &anomaly, &hub.config.name);
     }
-    let looks_like_question = gated(b.kind, from_orchestrator)
-        && hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
+    let looks_like_question = hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
     if looks_like_question {
         log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
         keep_flagged(&hub.home, &b.title, b.body.as_deref());
     }
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
     let res = hub.append_all(|v| {
-        let posted = Event::ReportPosted(report(v, attachments.clone(), looks_like_question));
-        match v.refusal(stamp, &posted) {
-            Some(refused) => Err(refused),
-            None => Ok(vec![posted]),
+        let mut report = report(v, attachments.clone(), looks_like_question);
+        let asked = if looks_like_question {
+            let asked = Event::QuestionAsked(question_from_report(v, &report, stamp));
+            v.refusal(stamp, &asked).is_none().then_some(asked)
+        } else { None };
+        if asked.is_some() && !v.awaits_review(&report) {
+            report.read = true;
         }
+        let posted = Event::ReportPosted(report);
+        if let Some(refused) = v.refusal(stamp, &posted) {
+            return Err(refused);
+        }
+        let mut events = vec![posted];
+        events.extend(asked);
+        Ok(events)
     });
     let res = match res {
         Ok(Err((refused_task, anomaly))) => {
@@ -2540,7 +2586,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             log!("report refused for {refused_task} once it was judged: {}", anomaly.reason);
             return task_refused(&refused_task, &anomaly, &hub.config.name);
         }
-        Ok(Ok(recorded)) => Ok(recorded.into_iter().next()),
+        Ok(Ok(recorded)) => Ok(recorded.into_iter().find(|(_, e)| matches!(e, Event::ReportPosted(_)))),
         Err(e) => Err(e),
     };
     match res {
@@ -2549,7 +2595,14 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
             let mut body = json!({"id": r.id, "to_orchestrator": r.to_orchestrator, "task": task});
             if looks_like_question {
                 body["looks_like_question"] = json!(true);
-                body["note"] = json!(flagged_note(&hub.config.name));
+                let marker = format!("report:{}", r.id);
+                let raised = hub.read(|v| v.questions.values().find(|q| q.tool_use_id.as_deref() == Some(marker.as_str())).map(|q| q.id));
+                if let Some(id) = raised {
+                    body["question"] = json!(id);
+                    body["note"] = json!(format!("Delivered and opened question #{id} for the request in this report."));
+                } else {
+                    body["note"] = json!(flagged_note(&hub.config.name));
+                }
             } else if let Some((id, number)) = card {
                 body["shown_in_pr"] = json!(id);
                 body["note"] = json!(shown_in_pr_note(number, &hub.config.name));
@@ -3197,30 +3250,18 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
         return Json(json!({"via": "none", "sessions": []}));
     }
     let candidates: Vec<(String, String)> = hub.read(|v| {
-        v.nodes
-            .values()
-            .map(|n| {
-                let text = format!(
-                    "Node {} of project {}. State: {}. {}",
-                    n.display_name(),
-                    n.project(),
-                    n.state.label(),
-                    n.last_message.clone().or(n.daemon_detail.clone()).unwrap_or_default().chars().take(600).collect::<String>()
-                );
-                (n.session_id.clone(), text)
-            })
-            .collect()
+        v.nodes.values().map(|n| {
+            let tasks = v.tasks_of(&n.session_id).map(|t| format!("{} {}", t.title, t.brief.as_deref().unwrap_or(""))).collect::<Vec<_>>().join(" ");
+            let text = format!("{} {} {} {} {} {} {} {}",
+                n.display_name(), n.short_id, n.project(), n.state.label(),
+                n.mission.as_deref().unwrap_or(""),
+                n.last_message.as_deref().unwrap_or(""),
+                n.daemon_detail.as_deref().unwrap_or(""), tasks);
+            (n.session_id.clone(), text)
+        }).collect()
     });
-    let literal: Vec<&String> = candidates
-        .iter()
-        .filter(|(_, t)| q.split_whitespace().all(|w| t.to_lowercase().contains(w)))
-        .map(|(s, _)| s)
-        .collect();
-    if !literal.is_empty() {
-        return Json(json!({"via": "text", "sessions": literal}));
-    }
-    let matches = crate::classify::search(&sq.q, candidates).await;
-    Json(json!({"via": "jev", "sessions": matches}))
+    let matches = crate::classify::search(&sq.q, candidates);
+    Json(json!({"via": "local", "sessions": matches}))
 }
 
 /// A task whole, with the brief, history and anomalies the overview leaves out, and every report
@@ -5011,7 +5052,7 @@ mod tests {
         }
     }
 
-    /// A document checked against its task, then read by jev for seconds: the task was cancelled
+    /// A document checked against its task, then checked for a question: the task was cancelled
     /// meanwhile, and the document went in anyway, refused by the machine, while the node heard
     /// it was delivered.
     #[tokio::test]
@@ -5841,20 +5882,101 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a send whose attachment is gone is refused, not sent without it");
     }
 
-    /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
+    #[tokio::test]
+    async fn local_search_reads_detail_even_when_last_message_exists() {
+        let hub = temp_hub("local-search");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
+            session_id: "s".into(), short_id: "s".into(),
+            detail: Some("Camera permission review".into()),
+            last_text: Some("Unrelated update".into()), ..Default::default()
+        })).unwrap();
+        let Json(found) = search(State(hub), Query(SearchQuery { q: "camera perm".into() })).await;
+        assert_eq!(found["via"], "local");
+        assert_eq!(found["sessions"], json!(["s"]));
+    }
+
     #[test]
-    fn final_reports_and_the_orchestrator_skip_the_report_gate() {
-        let cases = [
-            ("BlurCamera: tachado de texto delicado en main y probado; nodo listo para cerrar, fase 2 pasada al orquestador", Some(ReportKind::Final), false, false),
-            ("Terminado: no queda nada pendiente mío; tus mensajes del iPhone llegaron, pero tarde", Some(ReportKind::Final), false, false),
-            ("Quill no ha recibido tu petición de cambios del PR #88: Alondra cree que tiene un menú abierto y no lo tiene. Arreglo en el PR #33", Some(ReportKind::Notice), false, true),
-            ("Las respuestas de Quill no están verificadas todavía", Some(ReportKind::Notice), true, false),
-            ("Sigo con la fase 3", Some(ReportKind::Progress), false, false),
-            ("Un aviso sin tipo", None, false, true),
-        ];
-        for (what, kind, orchestrator, expected) in cases {
-            assert_eq!(gated(kind, orchestrator), expected, "{what}");
-        }
+    fn a_final_report_with_a_request_cannot_finish_the_task() {
+        assert_eq!(stored_report_kind(Some(ReportKind::Final), true), ReportKind::Notice);
+        assert_eq!(stored_report_kind(Some(ReportKind::Final), false), ReportKind::Final);
+    }
+
+    #[test]
+    fn flagged_final_report_produces_an_answerable_question() {
+        let v = View::default();
+        let report = Report {
+            id: 1, session_id: "s".into(), node_name: None, title: "Shipped".into(),
+            body: Some("Should I merge the PR?".into()), links: vec![], attachments: vec![],
+            kind: ReportKind::Notice, created_at: 1, read: false, to_orchestrator: false,
+            mission: None, looks_like_question: true, task: None,
+        };
+        let q = question_from_report(&v, &report, 2);
+        assert_eq!(q.title, "Should I merge the PR?");
+        assert!(q.blocking);
+        assert_eq!(q.origin, QuestionOrigin::Ask);
+    }
+
+    #[tokio::test]
+    async fn final_report_request_is_a_visible_question_not_a_final() {
+        let hub = started("report-request", &["s"]);
+        let mut body = report_body("s", ReportKind::Final, &[]);
+        body.title = "Shipped".into();
+        body.body = Some("Should I merge the PR?".into());
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let id = said["question"].as_u64().expect("request becomes an answerable question");
+        let Json(o) = overview(State(hub.clone())).await;
+        assert!(o["open_questions"].as_array().unwrap().iter().any(|q| q["id"] == id));
+        assert!(o["news"].as_array().unwrap().is_empty(), "request and source report form one card");
+        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().kind), ReportKind::Notice);
+    }
+
+    #[tokio::test]
+    async fn report_request_about_open_pr_raises_one_card() {
+        const PR: &str = "https://github.com/bitomule/alondra/pull/102";
+        let hub = started("report-pr-request", &["s"]);
+        hub.append(Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None }).unwrap();
+        let mut body = report_body("s", ReportKind::Final, &[PR]);
+        body.body = Some("Should I merge PR #102?".into());
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let id = said["question"].as_u64().expect("request on reviewed PR must be answerable");
+        let Json(o) = overview(State(hub.clone())).await;
+        assert!(o["open_questions"].as_array().unwrap().iter().any(|q| q["id"] == id));
+        assert_eq!(hub.read(|v| v.questions[&id].about_pr), Some(102));
+        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().read), true);
+        assert!(o["news"].as_array().unwrap().is_empty(), "request and source report form one card");
+    }
+
+    #[tokio::test]
+    async fn a_document_request_keeps_its_review_card() {
+        let hub = started("document-request", &["s"]);
+        let mut body = report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]);
+        body.body = Some("Can you review this plan?".into());
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(said["question"].is_number());
+        assert_eq!(hub.read(|v| v.reviews_awaiting_user().count()), 1);
+        assert!(!hub.read(|v| v.reports.values().next().unwrap().read));
+    }
+
+    #[tokio::test]
+    async fn unrelated_request_is_not_bound_to_a_pr() {
+        const PR: &str = "https://github.com/bitomule/alondra/pull/102";
+        let hub = started("unrelated-report-request", &["s"]);
+        hub.append(Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None }).unwrap();
+        let mut body = report_body("s", ReportKind::Final, &[]);
+        body.body = Some("Please send me the API key for the separate campaign.".into());
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(said["question"].is_null(), "a separate request needs its own task: {said}");
+        assert_eq!(hub.read(|v| v.questions.len()), 0);
+        assert!(!hub.read(|v| v.reports.values().next().unwrap().read));
+        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().kind), ReportKind::Notice);
+        hub.append(Event::PrMerged { id: 1, method: alondra_core::pr::MergeMethod::Merge }).unwrap();
+        assert!(!hub.read(|v| v.reports.values().next().unwrap().read), "unanswered request survives an unrelated PR merge");
+        let Json(o) = overview(State(hub.clone())).await;
+        assert!(!o["news"].as_array().unwrap().is_empty(), "the request remains visible after merge");
     }
 
     #[test]

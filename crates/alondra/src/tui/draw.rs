@@ -1084,15 +1084,15 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
                 let n = idx.len();
                 trf!("{n} by text", "{n} por texto")
             }
-            (_, Some((idx, Some(_)))) if idx.is_empty() => tr!("nothing by text nor according to jev", "nada por texto ni según jev").into(),
+            (_, Some((idx, Some(_)))) if idx.is_empty() => tr!("nothing found locally", "sin resultados locales").into(),
             (_, Some((idx, Some(via)))) => {
                 let n = idx.len();
                 trf!("{n} according to {via}", "{n} según {via}")
             }
-            (Remote::Pending, _) => tr!("nothing by text · asking jev…", "nada por texto · preguntando a jev…").into(),
+            (Remote::Pending, _) => tr!("searching local details…", "buscando en detalles locales…").into(),
             (Remote::Failed(e), _) => {
                 let e = md::one_line(e);
-                trf!("jev failed: {e}", "jev falló: {e}")
+                trf!("local search failed: {e}", "falló la búsqueda local: {e}")
             }
             (Remote::Idle, _) if !q.is_empty() => tr!("nothing by text", "nada por texto").into(),
             _ => String::new(),
@@ -1134,7 +1134,7 @@ fn draw_fleet(f: &mut Frame, app: &mut App, area: Rect) {
     }
     if lines.is_empty() {
         let msg = match app.search.as_ref().map(|s| &s.remote) {
-            Some(Remote::Pending) => tr!("Asking jev…", "Preguntando a jev…"),
+            Some(Remote::Pending) => tr!("Searching locally…", "Buscando localmente…"),
             Some(_) => tr!("Nothing matches the search.", "Nada coincide con la búsqueda."),
             None => tr!("No nodes yet.", "Todavía no hay nodos."),
         };
@@ -1864,7 +1864,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("⏎ · o", tr!("on Archived: show or hide the archived tasks", "en Archivadas: mostrar u ocultar las archivadas")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
-        row("/", tr!("search; if text finds nothing, it asks jev", "buscar; si el texto no encuentra nada, pregunta a jev")),
+        row("/", tr!("search names and local node details", "buscar nombres y detalles locales")),
         row("r · ⏎", tr!("message the node · its terminal", "mensaje al nodo · su terminal")),
         row("o", tr!("expand the node's detail to full screen", "expandir el detalle del nodo a pantalla completa")),
         row("x", tr!("close the node (twice to confirm; never discards work)", "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)")),

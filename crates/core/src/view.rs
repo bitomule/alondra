@@ -318,7 +318,7 @@ impl View {
                 }
             }),
             Event::ReportPosted(r) => {
-                let settled = self.about_settled_pr(r) || self.about_approved_artifact(r);
+                let settled = !r.looks_like_question && (self.about_settled_pr(r) || self.about_approved_artifact(r));
                 let node = self.node_mut(&r.session_id, at);
                 let signal = match r.kind {
                     ReportKind::Final => Some(TurnSignal::Finished),
@@ -602,7 +602,7 @@ impl View {
     /// A PR card that leaves for good (merged, closed or set aside) takes the reports inside it
     /// along: they count as read, so their node is reviewed.
     fn read_reports_in(&mut self, pr_id: u64, at: Millis) {
-        let inside: Vec<u64> = self.reports.values().filter(|r| !r.read && self.report_pr(r) == Some(pr_id)).map(|r| r.id).collect();
+        let inside: Vec<u64> = self.reports.values().filter(|r| !r.read && !r.looks_like_question && self.report_pr(r) == Some(pr_id)).map(|r| r.id).collect();
         for id in inside {
             let Some(r) = self.reports.get_mut(&id) else { continue };
             r.read = true;
@@ -997,7 +997,7 @@ impl View {
         let absorbed = self.absorbed_reports();
         let stacked = self.stacked_reports();
         self.reports.values().rev().filter(move |r| {
-            let parked = self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
+            let parked = !r.looks_like_question && self.report_pr(r).is_some_and(|id| self.prs.get(&id).is_some_and(|p| p.awaiting_push()));
             !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !absorbed.contains(&r.id) && !stacked.contains(&r.id) && !parked && !self.left_out.contains(&r.session_id)
         })
     }
@@ -1005,7 +1005,7 @@ impl View {
     /// A report of a task another card can carry: unread, not progress, not for the orchestrator,
     /// not a review card and not in a PR card.
     fn carriable(&self, r: &Report) -> Option<String> {
-        let carriable = !r.read && !r.to_orchestrator && r.kind != ReportKind::Progress && !is_review(r) && self.report_pr(r).is_none();
+        let carriable = !r.read && !r.looks_like_question && !r.to_orchestrator && r.kind != ReportKind::Progress && !is_review(r) && self.report_pr(r).is_none();
         carriable.then(|| self.report_task(r).map(|t| t.id.clone())).flatten()
     }
 
@@ -1356,6 +1356,19 @@ mod tests {
         assert!(v.reports[&1].read, "merged: nothing left for the user to do on it");
         assert!(!v.reports[&2].read, "only set aside: the user has not settled it");
         assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), vec![2]);
+        let Event::ReportPosted(mut flagged) = report(3, "https://github.com/a/b/pull/61") else { unreachable!() };
+        flagged.kind = ReportKind::Notice;
+        flagged.body = Some("Please send me the deployment key.".into());
+        flagged.looks_like_question = true;
+        v.apply(9, 9000, &Event::ReportPosted(flagged));
+        assert!(!v.reports[&3].read, "a new unanswered request survives a settled PR");
+        assert!(v.inbox_reports().any(|r| r.id == 3));
+        v.approved_artifacts.insert(ARTIFACT.into(), 9000);
+        let Event::ReportPosted(mut flagged_artifact) = report(4, ARTIFACT) else { unreachable!() };
+        flagged_artifact.kind = ReportKind::Document;
+        flagged_artifact.looks_like_question = true;
+        v.apply(10, 10000, &Event::ReportPosted(flagged_artifact));
+        assert!(!v.reports[&4].read, "a new request survives an older artifact approval");
     }
 
     #[test]
@@ -1899,6 +1912,32 @@ mod tests {
         assert!(v.reviews_awaiting_user().any(|r| r.id == 7));
         assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
         assert!(v.report_stack(&v.reports[&7]).is_empty(), "the review card carries nothing a question took");
+    }
+
+    #[test]
+    fn a_flagged_request_remains_its_own_card_when_an_older_question_is_answered() {
+        let mut v = run(&[hook("s", "UserPromptSubmit"), Event::QuestionAsked(question(1, "s", QuestionOrigin::Ask))]);
+        let Event::ReportPosted(mut flagged) = report(7, "s", ReportKind::Notice, 3000) else { unreachable!() };
+        flagged.looks_like_question = true;
+        v.apply(3, 3000, &Event::ReportPosted(flagged));
+        assert!(v.question_reports(&v.questions[&1]).is_empty());
+        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
+        v.apply(4, 4000, &Event::QuestionAnswered { id: 1, answer: Answer { text: "Yes".into(), option: None, by: None, device: None, at: 4000 } });
+        assert!(!v.reports[&7].read);
+        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
+    }
+
+    #[test]
+    fn a_flagged_request_is_not_stacked_under_an_ordinary_report() {
+        let mut v = run(&[hook("s", "UserPromptSubmit")]);
+        let Event::ReportPosted(mut flagged) = report(7, "s", ReportKind::Notice, 2000) else { unreachable!() };
+        flagged.looks_like_question = true;
+        v.apply(2, 2000, &Event::ReportPosted(flagged));
+        v.apply(3, 3000, &report(8, "s", ReportKind::Notice, 3000));
+        assert!(v.report_stack(&v.reports[&8]).is_empty());
+        v.apply(4, 4000, &Event::ReportRead { id: 8 });
+        assert!(!v.reports[&7].read);
+        assert_eq!(v.inbox_reports().map(|r| r.id).collect::<Vec<_>>(), [7]);
     }
 
     /// R#223 (document, with its attachment) and R#224 "Informe … entregado (#223)" (alondra/

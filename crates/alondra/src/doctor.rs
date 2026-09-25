@@ -193,46 +193,6 @@ pub fn hooks_port_check(port: u16) -> Option<Check> {
     })
 }
 
-pub fn jevi_doctor_has_key(text: &str) -> bool {
-    text.lines().any(|l| {
-        let l = l.trim();
-        l.starts_with("key:") && l.trim_start_matches("key:").trim() == "present"
-    })
-}
-
-pub fn jevi_ask_ok(stdout: &str) -> Result<(), String> {
-    let v: Value = serde_json::from_str(stdout.lines().find(|l| l.trim_start().starts_with('{')).unwrap_or("")).map_err(|e| e.to_string())?;
-    if v.get("ok") == Some(&Value::Bool(true)) && v.pointer("/answers/answer").is_some() {
-        Ok(())
-    } else {
-        Err(v.get("error").map(|e| e.to_string()).unwrap_or_else(|| v.to_string()).chars().take(200).collect())
-    }
-}
-
-pub fn jevi_checks() -> Vec<Check> {
-    let install = tr!("install jevi from its repo (see INSTALL.md) and put it on PATH", "instala jevi desde su repo (ver INSTALL.md) y ponlo en el PATH");
-    let Some((_, version)) = output("jevi", &["--version"], Duration::from_secs(5)) else {
-        return vec![check("jevi", Status::Fail, tr!("jevi is not on PATH", "jevi no está en el PATH"), install)];
-    };
-    let version = version.trim().to_string();
-    let set_key = tr!("pbpaste | jevi config set-key openrouter", "pbpaste | jevi config set-key openrouter");
-    let mut out = vec![check("jevi", Status::Pass, version, "")];
-    match output("jevi", &["doctor"], Duration::from_secs(10)) {
-        Some((_, text)) if jevi_doctor_has_key(&text) => out.push(check("jevi key", Status::Pass, tr!("jevi has a key", "jevi tiene clave"), "")),
-        _ => {
-            out.push(check("jevi key", Status::Fail, tr!("jevi has no key", "jevi no tiene clave"), set_key));
-            return out;
-        }
-    }
-    let ask = output("jevi", &["ask", "Is this a greeting?", "-s", "hello", "--json", "--soft", "--timeout", "8000"], Duration::from_secs(12));
-    out.push(match ask.map(|(_, t)| jevi_ask_ok(&t)) {
-        Some(Ok(())) => check("jevi ask", Status::Pass, tr!("jevi answers", "jevi responde"), ""),
-        Some(Err(e)) => check("jevi ask", Status::Fail, trf!("jevi does not answer: {e}", "jevi no responde: {e}"), "jevi doctor --live"),
-        None => check("jevi ask", Status::Fail, tr!("jevi did not answer in 12 s", "jevi no respondió en 12 s"), "jevi doctor --live"),
-    });
-    out
-}
-
 pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -> Check {
     let fix = tr!(
         "alondra setup --apns-key-path … --apns-key-id … --apns-team-id … --apns-topic <your bundle ID>",
@@ -341,7 +301,6 @@ pub fn run(json_out: bool) -> Result<()> {
 
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
-    checks.extend(jevi_checks());
     let tuicr = output("tuicr", &["--version"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tuicr_check(tuicr.as_deref()));
 
@@ -401,16 +360,6 @@ mod tests {
 
     fn local() -> Config {
         Config::resolve("/h".into(), &FileConfig { name: Some("Ana".into()), wake: Some(true), ..Default::default() }, |_| None, || None)
-    }
-
-    #[test]
-    fn jevi_output_is_read_without_the_key() {
-        assert!(jevi_doctor_has_key("provider:  openrouter\nkey:       present\nmodel: x"));
-        assert!(!jevi_doctor_has_key("key:       MISSING"));
-        assert!(!jevi_doctor_has_key(""));
-        assert!(jevi_ask_ok(r#"{"ok":true,"answers":{"answer":{"verdict":"yes"}}}"#).is_ok());
-        assert!(jevi_ask_ok(r#"{"ok":false,"error":"no key"}"#).unwrap_err().contains("no key"));
-        assert!(jevi_ask_ok("garbage").is_err());
     }
 
     #[test]
