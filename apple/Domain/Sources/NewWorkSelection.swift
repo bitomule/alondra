@@ -25,7 +25,7 @@ public struct NewWorkSelection: Sendable, Equatable {
     }
 
     public mutating func set(_ spec: OptionSpec, to choice: OptionChoice) {
-        guard specs.contains(spec) else { return }
+        guard specs.contains(spec), accepts(choice, for: spec) else { return }
         chosen[spec.id] = choice == spec.default ? nil : choice
     }
 
