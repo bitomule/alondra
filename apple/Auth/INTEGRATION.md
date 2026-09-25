@@ -26,6 +26,13 @@ use these claims as user identity or authorization**. The backend is the JWT
 verification and authorization boundary. If client-side identity is ever
 displayed or trusted, add JWKS signature validation first.
 
+`AuthSession.verifiedSubject()` obtains `sub` from the issuer's HTTPS UserInfo
+endpoint using the current bearer token. Discovery requires that endpoint to
+stay on the issuer host and under its realm path; the transport refuses
+redirects. The method discards a result that arrives after logout or account
+switch. Pass this value to pairing as `owner_sub` for correlation. The relay
+still verifies the bearer token and its subject independently.
+
 ## H integration steps (single owner of app roots and APIClient)
 
 1. Add `//apple/Auth:AlondraAuth` to `AlondraiOSEntry` in `apple/BUILD.bazel`.
@@ -38,15 +45,11 @@ displayed or trusted, add JWKS signature validation first.
    sends actions. Cancel the login effect on dismissal/account switch. A new
    login or logout cancels any older browser session; a late callback from that
    session cannot replace the newer account.
-3. Extend `AlondraAPIClient` with an optional async bearer provider so
-   `send(_:)` and `upload(_:)` obtain a fresh token before signing/transport.
-   Set `Authorization: Bearer <token>` on the exact `URLRequest` to be sent.
-   Preserve the existing device signature and canonical method/path/body;
-   neither authorization header nor token changes the signed body. Do not
-   attach a token to loopback health, initial pairing or other explicitly
-   public endpoints. Do attach one to relay reads, writes, long polls, push
-   registration and uploads. A 401 refresh/retry policy needs endpoint
-   idempotency; do not automatically replay mutations.
+3. Construct `AlondraRelayClient` with an async bearer provider from this
+   AuthSession. The relay client enforces HTTPS and signs its separate
+   `x-device-*` challenge. Keep `AlondraAPIClient` for the local daemon only;
+   it must not carry an OIDC bearer to HTTP loopback/LAN URLs. Do not
+   automatically replay a mutation after 401 or network ambiguity.
 4. Include login subject/session identity in the iOS sync-session key and
    invalidate snapshot, in-flight requests, command gate, push registration
    and pending navigation on login/logout/account switch. Pairing remains a

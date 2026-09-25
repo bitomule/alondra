@@ -6,6 +6,11 @@ private struct Discovery: Decodable {
     let issuer: String
     let authorization_endpoint: URL
     let token_endpoint: URL
+    let userinfo_endpoint: URL?
+}
+
+private struct UserInfo: Decodable {
+    let sub: String
 }
 
 private struct TokenResponse: Decodable {
@@ -133,6 +138,30 @@ public actor AuthSession {
         return try await task.value
     }
 
+    /// Reads the subject from the issuer's HTTPS UserInfo endpoint using the current bearer.
+    /// This value is for pairing/account correlation; the relay still verifies the JWT itself.
+    /// No claim from the locally decoded, unsigned ID-token payload is used as identity.
+    public func verifiedSubject() async throws -> String {
+        let startedAt = epoch
+        let token = try await bearerToken()
+        guard epoch == startedAt else { throw CancellationError() }
+        let document = try await discovery()
+        guard epoch == startedAt else { throw CancellationError() }
+        guard let endpoint = document.userinfo_endpoint else { throw AuthError.invalidDiscovery }
+        var request = URLRequest(url: endpoint)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let response = try await transport.send(request)
+        try Task.checkCancellation()
+        guard epoch == startedAt else { throw CancellationError() }
+        guard response.status == 200 else { throw AuthError.httpStatus(response.status) }
+        let subject = try JSONDecoder().decode(UserInfo.self, from: response.body).sub
+        guard !subject.isEmpty, subject.utf8.count <= 256,
+              subject.utf8.allSatisfy({ $0 > 31 && $0 != 127 }) else { throw AuthError.invalidToken }
+        return subject
+    }
+
     /// UI may show a signed-in state without starting a refresh request.
     public func hasSession() throws -> Bool { try storage.read() != nil }
 
@@ -171,7 +200,8 @@ public actor AuthSession {
         let document = try JSONDecoder().decode(Discovery.self, from: response.body)
         guard document.issuer == configuration.issuer.absoluteString,
               Self.allowedEndpoint(document.authorization_endpoint, issuer: configuration.issuer),
-              Self.allowedEndpoint(document.token_endpoint, issuer: configuration.issuer)
+              Self.allowedEndpoint(document.token_endpoint, issuer: configuration.issuer),
+              document.userinfo_endpoint.map({ Self.allowedEndpoint($0, issuer: configuration.issuer) }) ?? true
         else { throw AuthError.invalidDiscovery }
         return document
     }

@@ -55,6 +55,53 @@ private struct InvalidDiscoveryTransport: AuthHTTPTransport {
     }
 }
 
+private actor UserInfoTransport: AuthHTTPTransport {
+    private let holdUserInfo: Bool
+    private var userInfoStarted = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+    private var userInfoAuthorization: String?
+
+    init(holdUserInfo: Bool = false) { self.holdUserInfo = holdUserInfo }
+
+    func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
+        if request.url!.path.hasSuffix("openid-configuration") {
+            return AuthHTTPResponse(status: 200, body: Data("""
+            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            """.utf8))
+        }
+        if request.httpMethod == "POST" {
+            return AuthSessionTests.tokens(access: "access-for-userinfo", refresh: "rotated", idToken: nil)
+        }
+        userInfoAuthorization = request.value(forHTTPHeaderField: "Authorization")
+        userInfoStarted = true
+        startWaiter?.resume()
+        startWaiter = nil
+        if holdUserInfo { await withCheckedContinuation { responseWaiter = $0 } }
+        return AuthHTTPResponse(status: 200, body: Data("{\"sub\":\"owner-1\"}".utf8))
+    }
+
+    func waitForUserInfo() async {
+        if userInfoStarted { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func releaseUserInfo() {
+        responseWaiter?.resume()
+        responseWaiter = nil
+    }
+
+    func authorization() -> String? { userInfoAuthorization }
+}
+
+private struct OffIssuerUserInfoTransport: AuthHTTPTransport {
+    func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
+        AuthHTTPResponse(status: 200, body: Data("""
+        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","userinfo_endpoint":"https://attacker.example/userinfo"}
+        """.utf8))
+    }
+}
+
 private struct FixtureBrowser: AuthBrowser {
     let callback: @Sendable (URL) -> URL
     func authenticate(url: URL, callbackScheme: String, generation: Int) async throws -> URL { callback(url) }
@@ -157,6 +204,37 @@ private final class FlowEvidence: @unchecked Sendable {
 }
 
 final class AuthSessionTests: XCTestCase {
+    func testVerifiedSubjectUsesPinnedUserInfoAndBearer() async throws {
+        let transport = UserInfoTransport()
+        let browser = FixtureBrowser { _ in XCTFail("Browser should not open"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: MemoryStorage("refresh"))
+
+        let subject = try await session.verifiedSubject()
+        let authorization = await transport.authorization()
+        XCTAssertEqual(subject, "owner-1")
+        XCTAssertEqual(authorization, "Bearer access-for-userinfo")
+    }
+
+    func testLogoutWhileUserInfoPendingCannotReturnOldSubject() async throws {
+        let transport = UserInfoTransport(holdUserInfo: true)
+        let browser = FixtureBrowser { _ in XCTFail("Browser should not open"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: MemoryStorage("refresh"))
+        let pending = Task { try await session.verifiedSubject() }
+        await transport.waitForUserInfo()
+        try await session.logout()
+        await transport.releaseUserInfo()
+        do { _ = try await pending.value; XCTFail("Old account subject must not escape") }
+        catch is CancellationError { }
+    }
+
+    func testUserInfoEndpointMustStayUnderIssuer() async throws {
+        let browser = FixtureBrowser { _ in XCTFail("Browser should not open"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: OffIssuerUserInfoTransport(), browser: browser,
+                                  storage: MemoryStorage("refresh"))
+        do { _ = try await session.verifiedSubject(); XCTFail("Expected rejected discovery") }
+        catch AuthError.invalidDiscovery { }
+    }
+
     func testLoginUsesPKCEAndPersistsRefreshOnlyAfterValidCallback() async throws {
         let storage = MemoryStorage()
         let evidence = FlowEvidence()
