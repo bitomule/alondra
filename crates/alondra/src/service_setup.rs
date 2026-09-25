@@ -85,12 +85,18 @@ fn public_keys(signing: &[u8; 32], agreement: &[u8; 32]) -> Result<(String, Stri
 
 fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
     let dir = home.join("service-keys");
-    fs::create_dir_all(&dir)?;
-    let dir_meta = fs::symlink_metadata(&dir)?;
-    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
-        bail!("service key directory must be a real directory");
-    }
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    fs::create_dir_all(home)?;
+    let dir_exists = match fs::symlink_metadata(&dir) {
+        Ok(dir_meta) => {
+            if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
+                bail!("service key directory must be a real directory");
+            }
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
     let signing_path = dir.join(SIGNING_FILE);
     let agreement_path = dir.join(AGREEMENT_FILE);
     let public_path = dir.join("public.json");
@@ -99,7 +105,7 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
         agreement_path.exists(),
         public_path.exists(),
     ];
-    if files.iter().any(|exists| *exists) && !files.iter().all(|exists| *exists) {
+    if dir_exists && !files.iter().all(|exists| *exists) {
         bail!("incomplete service key set; refusing to replace an existing Mac identity");
     }
     if files.iter().all(|exists| *exists) {
@@ -135,20 +141,34 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     );
-    write_private(&signing_path, &signing)?;
-    write_private(&agreement_path, &agreement)?;
     let identity = PublicMac {
         mac_id,
         signing_key,
         agreement_key,
     };
+    // A crash before rename leaves only an unused staging directory. The visible
+    // identity is either complete or absent, so retry can generate a fresh one.
+    let stage = home.join(format!(
+        ".service-keys-staging-{}",
+        URL_SAFE_NO_PAD.encode(random::<16>()?)
+    ));
+    fs::create_dir(&stage)?;
+    fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))?;
+    write_private(&stage.join(SIGNING_FILE), &signing)?;
+    write_private(&stage.join(AGREEMENT_FILE), &agreement)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(public_path)?;
+        .open(stage.join("public.json"))?;
     file.write_all(&serde_json::to_vec_pretty(&identity)?)?;
     file.sync_all()?;
+    fs::File::open(&stage)?.sync_all()?;
+    if fs::symlink_metadata(&dir).is_ok() {
+        bail!("service key directory appeared during setup; retry after inspecting it");
+    }
+    fs::rename(&stage, &dir)?;
+    fs::File::open(home)?.sync_all()?;
     Ok((identity, SigningKey::from_slice(&signing)?))
 }
 
@@ -208,7 +228,7 @@ fn register(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<(
     }
 }
 
-fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str) -> Result<bool> {
+fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool) -> Result<bool> {
     let path = home.join(SERVICE_FILE);
     let expected = ServiceConfig {
         relay_url: RELAY.into(),
@@ -230,6 +250,9 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str) -> Result<bo
         }
         return Ok(false);
     }
+    if !write {
+        return Ok(false);
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -244,21 +267,15 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str) -> Result<bo
 pub fn enroll(home: &Path) -> Result<bool> {
     let account = crate::account::ensure_token_for_enrollment()?;
     let (identity, signing) = load_or_create_keys(home)?;
-    let existing = home.join(SERVICE_FILE);
-    if existing.exists() {
-        // Check the local account binding before sending a network request.
-        let config: ServiceConfig = toml::from_str(&fs::read_to_string(&existing)?)?;
-        if config.owner_sub != account.sub || config.mac_id != identity.mac_id {
-            bail!("this Mac is already enrolled for a different account or identity");
-        }
-    }
+    // Validate every field of any existing configuration before changing relay state.
+    service_file(home, &identity, &account.sub, false)?;
     println!(
         "Registering Mac {} with the Alondra service…",
         identity.mac_id
     );
     register(&identity, &signing, &account.access_token)
         .context("registering this Mac with the Alondra service")?;
-    let created = service_file(home, &identity, &account.sub)?;
+    let created = service_file(home, &identity, &account.sub, true)?;
     println!("Mac {} enrolled in Alondra service.", identity.mac_id);
     Ok(created)
 }
@@ -285,6 +302,44 @@ mod tests {
                 & 0o077
                 == 0
         );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn interrupted_staging_does_not_block_a_new_complete_identity() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-service-staging-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(home.join(".service-keys-staging-interrupted")).unwrap();
+        fs::write(
+            home.join(".service-keys-staging-interrupted/signing.key"),
+            "partial",
+        )
+        .unwrap();
+        let (identity, _) = load_or_create_keys(&home).unwrap();
+        assert!(identity.mac_id.starts_with("mac-"));
+        assert!(home.join("service-keys/agreement.key").is_file());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn existing_config_is_checked_before_enrollment() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-service-config-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&home).unwrap();
+        let (identity, _) = load_or_create_keys(&home).unwrap();
+        assert!(!service_file(&home, &identity, "owner", false).unwrap());
+        assert!(service_file(&home, &identity, "owner", true).unwrap());
+        assert!(!service_file(&home, &identity, "owner", false).unwrap());
+        let path = home.join(SERVICE_FILE);
+        let changed = fs::read_to_string(&path)
+            .unwrap()
+            .replace("service-keys/signing.key", "old-signing.key");
+        fs::write(&path, changed).unwrap();
+        assert!(service_file(&home, &identity, "owner", false).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 }
