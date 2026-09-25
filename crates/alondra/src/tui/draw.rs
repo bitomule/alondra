@@ -284,7 +284,15 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
         let frequency = if s["frequency"] == "weekly" { tr!("Weekly", "Semanal") } else { tr!("Daily", "Diaria") };
         let h = s["hour"].as_u64().unwrap_or(0);
         let m = s["minute"].as_u64().unwrap_or(0);
-        let weekday = s["weekday"].as_u64().map(|d| format!(" · {}", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].get(d as usize).unwrap_or(&"?"))).unwrap_or_default();
+        let weekday = s["weekday"].as_u64().map(|d| {
+            let name = match d {
+                0 => tr!("Sun", "dom"), 1 => tr!("Mon", "lun"),
+                2 => tr!("Tue", "mar"), 3 => tr!("Wed", "mié"),
+                4 => tr!("Thu", "jue"), 5 => tr!("Fri", "vie"),
+                6 => tr!("Sat", "sáb"), _ => "?",
+            };
+            format!(" · {name}")
+        }).unwrap_or_default();
         let next = if s["status"] == "waiting" {
             tr!("when the orchestrator returns", "cuando vuelva el orquestador").to_string()
         } else {
@@ -1597,7 +1605,8 @@ fn composer_action(t: &Target) -> &'static str {
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
     if app.schedules_open {
-        return vec![k("j/k", tr!("move", "mover")), k("n", tr!("new", "nueva")), k("e", tr!("edit", "editar")), k("p", tr!("pause", "pausa")), k("⏎", tr!("run", "ejecuta")), k("d d", tr!("delete", "borra")), k("Esc", tr!("back", "atrás"))];
+        let enabled = app.schedules.get(app.schedule_idx).and_then(|s| s["enabled"].as_bool()).unwrap_or(true);
+        return vec![k("j/k", tr!("move", "mover")), k("n", tr!("new", "nueva")), k("e", tr!("edit", "editar")), k("p", if enabled { tr!("pause", "pausa") } else { tr!("resume", "reanuda") }), k("⏎", tr!("run", "ejecuta")), k("d d", tr!("delete", "borra")), k("Esc", tr!("back", "atrás"))];
     }
     if let Some(c) = app.composer.as_ref() {
         if let Some(form) = c.form.as_ref() {
