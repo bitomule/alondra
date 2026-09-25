@@ -6,3 +6,4 @@ signing/signing.bzl
 .claude/
 
 /.build/
+.DS_Store

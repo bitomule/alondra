@@ -29,6 +29,7 @@ swift_library(
 
 macos_application(
     name = "AlondraMac",
+    app_icons = glob(["IconConcepts/Alondra.icon/**"]),
     bundle_id = MAC_BUNDLE_ID,
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"],
@@ -54,6 +55,7 @@ swift_library(
 
 ios_application(
     name = "AlondraiOS",
+    app_icons = glob(["IconConcepts/Alondra.icon/**"]),
     bundle_id = IOS_BUNDLE_ID,
     provisioning_profile = "//signing:" + IOS_PROFILE,
     bundle_name = "Alondra",
