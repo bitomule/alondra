@@ -131,10 +131,12 @@ fn keep_flagged(home: &std::path::Path, title: &str, body: Option<&str>) {
     }
 }
 
-/// Final reports and the orchestrator's notices skip the report gate: they close a node or
-/// relay what the orchestrator checked, and a false positive cost the user exactly those.
-fn gated(kind: Option<ReportKind>, from_orchestrator: bool) -> bool {
-    !from_orchestrator && !matches!(kind, Some(ReportKind::Progress | ReportKind::Final))
+fn stored_report_kind(kind: Option<ReportKind>, looks_like_question: bool) -> ReportKind {
+    if looks_like_question && kind == Some(ReportKind::Final) {
+        ReportKind::Notice
+    } else {
+        kind.unwrap_or(ReportKind::Notice)
+    }
 }
 
 fn flagged_note(user: &str) -> String {
@@ -2478,7 +2480,6 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     let Some((sid, name)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
         return err(StatusCode::BAD_REQUEST, "unknown reporting node");
     };
-    let from_orchestrator = hub.read(|v| v.nodes.get(&sid).is_some_and(|n| n.is_orchestrator));
     let task = match hub.read(|v| caller_task(v, &sid, b.task.as_deref())) {
         Ok(t) => t,
         Err((status, why)) => return err(status, why),
@@ -2508,7 +2509,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         body: b.body.clone(),
         links: b.links.clone(),
         attachments,
-        kind: b.kind.unwrap_or(ReportKind::Notice),
+        kind: stored_report_kind(b.kind, looks_like_question),
         created_at: stamp,
         read: false,
         to_orchestrator: b.to_orchestrator,
@@ -2520,8 +2521,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         log!("report refused for {refused_task}: {}", anomaly.reason);
         return task_refused(&refused_task, &anomaly, &hub.config.name);
     }
-    let looks_like_question = gated(b.kind, from_orchestrator)
-        && hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
+    let looks_like_question = hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
     if looks_like_question {
         log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
         keep_flagged(&hub.home, &b.title, b.body.as_deref());
@@ -3219,8 +3219,8 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
     if !literal.is_empty() {
         return Json(json!({"via": "text", "sessions": literal}));
     }
-    let matches = crate::classify::search(&sq.q, candidates).await;
-    Json(json!({"via": "jev", "sessions": matches}))
+    let matches = crate::classify::search(&sq.q, candidates);
+    Json(json!({"via": "local", "sessions": matches}))
 }
 
 /// A task whole, with the brief, history and anomalies the overview leaves out, and every report
@@ -5011,7 +5011,7 @@ mod tests {
         }
     }
 
-    /// A document checked against its task, then read by jev for seconds: the task was cancelled
+    /// A document checked against its task, then checked for a question: the task was cancelled
     /// meanwhile, and the document went in anyway, refused by the machine, while the node heard
     /// it was delivered.
     #[tokio::test]
@@ -5841,20 +5841,10 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a send whose attachment is gone is refused, not sent without it");
     }
 
-    /// The reports the gate refused on 23-24 Sep, from ~/.alondra/rejected-reports.jsonl.
     #[test]
-    fn final_reports_and_the_orchestrator_skip_the_report_gate() {
-        let cases = [
-            ("BlurCamera: tachado de texto delicado en main y probado; nodo listo para cerrar, fase 2 pasada al orquestador", Some(ReportKind::Final), false, false),
-            ("Terminado: no queda nada pendiente mío; tus mensajes del iPhone llegaron, pero tarde", Some(ReportKind::Final), false, false),
-            ("Quill no ha recibido tu petición de cambios del PR #88: Alondra cree que tiene un menú abierto y no lo tiene. Arreglo en el PR #33", Some(ReportKind::Notice), false, true),
-            ("Las respuestas de Quill no están verificadas todavía", Some(ReportKind::Notice), true, false),
-            ("Sigo con la fase 3", Some(ReportKind::Progress), false, false),
-            ("Un aviso sin tipo", None, false, true),
-        ];
-        for (what, kind, orchestrator, expected) in cases {
-            assert_eq!(gated(kind, orchestrator), expected, "{what}");
-        }
+    fn a_final_report_with_a_request_cannot_finish_the_task() {
+        assert_eq!(stored_report_kind(Some(ReportKind::Final), true), ReportKind::Notice);
+        assert_eq!(stored_report_kind(Some(ReportKind::Final), false), ReportKind::Final);
     }
 
     #[test]

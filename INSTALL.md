@@ -12,7 +12,6 @@ What gets installed:
 | `alondra`, the CLI/TUI and the nodes' MCP server | `~/.local/bin/alondra` |
 | Settings, database, logs, APNs key | `~/.alondra/` |
 | Claude Code plugin `alondra` | this repo, registered as the marketplace `alondra`; alondrad loads it only into the sessions it launches, never into every session |
-| `jevi` (required: node state, report filter, search) | `~/.cargo/bin/jevi` |
 | iOS app (on the iPhone) and Mac app | built here with Bazel, signed with your Apple team |
 
 Nothing comes from Homebrew or TestFlight except the generic tools in step 1. Keep the
@@ -27,18 +26,15 @@ Run every command from the root of this repo unless a step says otherwise.
 - Xcode 26 or later, opened once (licence accepted), with its command line tools selected.
 - [Homebrew](https://brew.sh) only to get the generic tools below.
 - `bazelisk` (it downloads the Bazel version pinned in `.bazelversion`). You do **not** need
-  Rust for Alondra: Bazel's `rules_rust` downloads its own toolchain. You do need Rust for
-  jevi (step 2).
+  Rust for Alondra: Bazel's `rules_rust` downloads its own toolchain.
 - Claude Code with background sessions (`claude --bg`), logged in.
 - `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in, with access to
-  `bitomule/alondra` and `bitomule/jevi`), `jq`, and `tuicr` 0.26 or later (the TUI opens a
+  `bitomule/alondra`), `jq`, and `tuicr` 0.26 or later (the TUI opens a
   PR's diff in it; `alondra setup` installs it if it is missing).
 
 ```bash
 xcode-select --install 2>/dev/null; sudo xcodebuild -license accept
 brew install bazelisk tmux gh jq tuicr
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # only for jevi
-. "$HOME/.cargo/env"
 ```
 
 **Check**
@@ -46,45 +42,16 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # only
 ```bash
 uname -m; sw_vers -productVersion; xcodebuild -version | head -1; xcode-select -p
 bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version; tuicr --version
-claude --version; claude --help | grep -c -- '--bg'; cargo --version
-gh repo view bitomule/jevi --json name -q .name
+claude --version; claude --help | grep -c -- '--bg'
 ```
 
 **Success:** `arm64`; macOS `26.x` or later; `Xcode 26.x` or later; a path inside
 `Xcode*.app/Contents/Developer` (not `/Library/Developer/CommandLineTools`: if so, run
 `sudo xcode-select -s /Applications/Xcode.app`); `bazel 8.4.2` (run it from the repo, it reads
 `.bazelversion`); `tmux 3.x`; gh logged in (if not: `gh auth login`); `jq-1.x`; a Claude Code
-version; a number ≥ 1; a cargo version (if rustup says no default toolchain:
-`rustup default stable`); `jevi`.
+version and a number ≥ 1.
 
-## 2. jevi
-
-jevi is a small CLI that asks a model yes/no questions about a text. Alondra uses it to read
-each node's state, to filter reports and for search. It uses OpenRouter, so you need your own
-OpenRouter key (https://openrouter.ai/keys): ask the human for it.
-
-```bash
-gh repo clone bitomule/jevi ~/Projects/jevi
-cargo install --locked --path ~/Projects/jevi
-```
-
-Store the key without leaving it in the shell history. Ask the human to copy the key to the
-clipboard, then:
-
-```bash
-pbpaste | jevi config set-key openrouter
-```
-
-**Check**
-
-```bash
-command -v jevi; jevi --version; jevi doctor --live
-```
-
-**Success:** `~/.cargo/bin/jevi` (if not found, add `~/.cargo/bin` to `PATH` in `~/.zshrc`);
-`jevi 0.x`; `jevi doctor` prints `key:       present` and a live request with its latency.
-
-## 3. Build and install alondra and alondrad
+## 2. Build and install alondra and alondrad
 
 The first build downloads Bazel, the Rust toolchain and the crates: several minutes.
 
@@ -109,9 +76,9 @@ command -v alondra alondrad; alondra --help | head -3; alondra config
 **Success:** both paths in `~/.local/bin`; the help text; `alondra config` prints the settings
 in effect (defaults at this point: `port = 47800`, `listen = 127.0.0.1`).
 
-## 4. Configure: `alondra setup`
+## 3. Configure: `alondra setup`
 
-`alondra setup` writes `~/.alondra/config.toml` (and `apns.json` in step 5), installs the
+`alondra setup` writes `~/.alondra/config.toml` (and `apns.json` in step 4), installs the
 launchd service (`~/Library/LaunchAgents/dev.alondra.alondrad.plist`), adds this repo as a
 Claude Code plugin marketplace (alondrad finds the plugin there and loads it into each session
 it launches) and, at the end, shows the pairing QR. It does not enable the plugin for every
@@ -126,9 +93,9 @@ Values to pass:
 - For the iPhone to reach this Mac on the same Wi-Fi: `--listen 0.0.0.0` and
   `--public-url http://<LocalHostName>.local:47800`, where `<LocalHostName>` is
   `scutil --get LocalHostName`. Anyone on that network can reach the port; use it on a network
-  you trust. For access from outside home see step 7 instead.
+  you trust. For access from outside home see step 6 instead.
 
-Leave pairing for step 6 (`--skip-pair`): the app is not on the iPhone yet.
+Leave pairing for step 5 (`--skip-pair`): the app is not on the iPhone yet.
 
 ```bash
 H=$(scutil --get LocalHostName)
@@ -150,11 +117,11 @@ alondra config; curl -s http://127.0.0.1:47800/v1/health | jq .config; alondra d
 
 **Success:** `alondra config` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
 answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`, `launchd`,
-`claude`, `plugin`, `tmux`, `jevi`, `jevi key`, `jevi ask`, `tuicr`. Expected at this point: `!` for
-`apns` (step 5) and `pairing` (step 6). Only the sessions Alondra launches load the plugin;
+`claude`, `plugin`, `tmux`, `tuicr`. Expected at this point: `!` for
+`apns` (step 4) and `pairing` (step 5). Only the sessions Alondra launches load the plugin;
 any other Claude session never talks to Alondra.
 
-## 5. Notifications with your own Apple developer account
+## 4. Notifications with your own Apple developer account
 
 This needs a paid Apple Developer Program membership. Pick a bundle ID prefix you own, e.g.
 `com.<you>.alondra`. Three IDs are used:
@@ -165,7 +132,7 @@ This needs a paid Apple Developer Program membership. Pick a bundle ID prefix yo
 | Notification service extension | `com.<you>.alondra.NotificationService` |
 | Mac app (not signed with a profile, no portal work) | `com.<you>.alondra.mac` |
 
-### 5a. Bundle IDs, push, certificate, device, profiles
+### 4a. Bundle IDs, push, certificate, device, profiles
 
 With the [`asc`](https://github.com/rudrankriyam/App-Store-Connect-CLI) CLI, if installed and
 logged in (`asc auth status`):
@@ -206,7 +173,7 @@ for p in signing/*.mobileprovision; do security cms -D -i "$p" | plutil -extract
 matching the table, and `development` for the app profile (the extension profile has no
 `aps-environment`; an error on that line for it is fine).
 
-### 5b. APNs key
+### 4b. APNs key
 
 On https://developer.apple.com/account/resources/authkeys: Keys → + → name "Alondra APNs",
 check **Apple Push Notifications service (APNs)** → Continue → Register → Download. It can be
@@ -232,7 +199,7 @@ the key (test token rejected as expected)`. `✗ apns push  Apple rejects the ke
 {"reason":"InvalidProviderToken"}` means the key ID, team ID and key file do not belong
 together: fix them and rerun the same setup command with `--force`.
 
-### 5c. Signing file and the apps
+### 4c. Signing file and the apps
 
 ```bash
 cp signing/signing.example.bzl signing/signing.bzl
@@ -240,7 +207,7 @@ cp signing/signing.example.bzl signing/signing.bzl
 
 Edit `signing/signing.bzl` (git-ignored): `IOS_BUNDLE_ID = "com.<you>.alondra"`; keep the
 other lines, which derive `.mac` and `.NotificationService` from it and name the two profiles
-downloaded in 5a. The team comes from the profiles.
+downloaded in 4a. The team comes from the profiles.
 
 Build and install the iOS app on the iPhone (USB or same Wi-Fi, unlocked, Developer Mode on:
 Settings → Privacy & Security → Developer Mode):
@@ -274,7 +241,7 @@ ls ~/Applications/Alondra.app
 iPhone, open Alondra and allow notifications. If iOS says the developer is untrusted:
 Settings → General → VPN & Device Management → trust it.
 
-## 6. Pair the iPhone
+## 5. Pair the iPhone
 
 ```bash
 alondra pair
@@ -293,9 +260,9 @@ alondra devices; alondra doctor
 proof: `claude --bg --name "test/alondra" -- "Use the alondra ask tool to ask me yes or no."`
 makes the question appear on the iPhone with a notification.
 
-## 7. Remote access (optional)
+## 6. Remote access (optional)
 
-- **Same Wi-Fi:** what step 4 set up (`listen 0.0.0.0`, `http://<LocalHostName>.local:47800`).
+- **Same Wi-Fi:** what step 3 set up (`listen 0.0.0.0`, `http://<LocalHostName>.local:47800`).
 - **Outside home: Tailscale.** Install Tailscale on the Mac and the iPhone, same tailnet. Serve
   the daemon over HTTPS (the iOS app only allows plain HTTP to local names and IPs, so a
   `*.ts.net` name needs HTTPS). The daemon can go back to listening only on this Mac:
@@ -309,7 +276,7 @@ makes the question appear on the iPhone with a notification.
   **Check:** from the iPhone with Wi-Fi off, the app loads the fleet;
   `curl -s https://<mac>.<tailnet>.ts.net/v1/health | jq .ok` from any tailnet device.
 
-## 8. Troubleshooting: `alondra doctor`
+## 7. Troubleshooting: `alondra doctor`
 
 `alondra doctor` (or `--json` for agents) prints one line per check, and under each failure the
 command that fixes it. It exits with 1 when any check is ✗.
@@ -323,12 +290,9 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `claude` | Claude Code is not on `PATH` | install Claude Code |
 | `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra setup` (or the `claude plugin disable … --scope …` doctor prints) |
 | `tmux` | tmux missing: stopped nodes cannot be woken | `brew install tmux` |
-| `jevi` | jevi not on `PATH` | step 2; add `~/.cargo/bin` to `PATH` |
-| `jevi key` | no OpenRouter key stored | `pbpaste \| jevi config set-key openrouter` |
-| `jevi ask` | jevi has a key but no answer (network, credit, bad key) | `jevi doctor --live` |
-| `apns` | ! no `apns.json`: no notifications. ✗ invalid file or the `.p8` is missing | step 5b |
-| `apns push` | Apple rejects the key (403) or answers oddly | check key ID, team ID and topic; rerun the step 5b setup command with `--force` |
-| `pairing` | no paired device | step 6 |
+| `apns` | ! no `apns.json`: no notifications. ✗ invalid file or the `.p8` is missing | step 4b |
+| `apns push` | Apple rejects the key (403) or answers oddly | check key ID, team ID and topic; rerun the step 4b setup command with `--force` |
+| `pairing` | no paired device | step 5 |
 
 Other problems:
 
@@ -337,7 +301,7 @@ Other problems:
   `--force` to overwrite, or `--from-plist <old plist>` to migrate an old service.
 - **The build fails on signing** (`signing/signing.bzl not found` is only a warning):
   `signing/signing.bzl` names a profile file that is not in `signing/`, or the profile does
-  not include this iPhone or your certificate. Redo 5a.
+  not include this iPhone or your certificate. Redo 4a.
 - **The iPhone cannot reach the Mac on Wi-Fi:** `curl http://<LocalHostName>.local:47800/v1/health`
   from the Mac must answer; allow incoming connections to `alondrad` if the macOS firewall
   asks; the iPhone must allow Local Network access for Alondra (Settings → Privacy).

@@ -52,8 +52,8 @@ enum Cmd {
         revoke: Option<String>,
     },
     #[command(about = tr!(
-        "Check the whole installation: daemon, service, plugin, jevi, notifications, tmux",
-        "Comprueba toda la instalación: servidor, servicio, plugin, jevi, notificaciones, tmux"
+        "Check the whole installation: daemon, service, plugin, notifications, tmux",
+        "Comprueba toda la instalación: servidor, servicio, plugin, notificaciones, tmux"
     ))]
     Doctor {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]

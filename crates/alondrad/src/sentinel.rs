@@ -6,7 +6,7 @@ use alondra_core::pr::PrState;
 use alondra_core::tasks::TaskEvent;
 use alondra_core::{states, upkeep};
 use alondra_core::{
-    Event, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
+    Event, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, View, answer_option, now_millis,
 };
 
 use crate::classify::{Expects, what_node_expects};
@@ -22,7 +22,7 @@ const MARK: &str = "sentinel:";
 const GRACE: Duration = Duration::from_secs(180);
 const NUDGE_COOLDOWN_MS: i64 = 6 * 3600 * 1000;
 /// A node without the plugin may be parked on a terminal menu; the menu watcher gets this long
-/// to find it before jev reads its last message.
+/// to find it before the sentinel reads its last message.
 const MENU_FIRST_MS: i64 = 90 * 1000;
 
 /// A free node whose close was refused (work not saved elsewhere, a prompt on screen) is tried
@@ -114,7 +114,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
     for (session, due_key) in due {
         let Some(said) = hub.read(|v| v.nodes.get(&session).map(what_it_said)) else { continue };
         let expects = match &said {
-            Some(text) => what_node_expects(text).await,
+            Some(text) => what_node_expects(text),
             None => Expects::Unsure,
         };
         hub.append_with(|v| {
@@ -231,21 +231,7 @@ fn reply_on_its_way(v: &View, node: &Node) -> bool {
 }
 
 fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
-    match expects {
-        Expects::Finished | Expects::HandedOff if reported_this_episode(v, node) => None,
-        Expects::Finished => {
-            let report = finished_report(v, node);
-            let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
-            (!repeated).then_some(Event::ReportPosted(report))
-        }
-        Expects::HandedOff => {
-            let mut report = finished_report(v, node);
-            report.read = true;
-            let repeated = v.reports.values().filter(|r| r.session_id == node.session_id).max_by_key(|r| r.id).is_some_and(|r| r.body == report.body);
-            (!repeated).then_some(Event::ReportPosted(report))
-        }
-        other => Some(Event::QuestionAsked(question_for(v, node, other))),
-    }
+    (!reported_this_episode(v, node)).then(|| Event::QuestionAsked(question_for(v, node, expects)))
 }
 
 fn is_sentinel(q: &Question) -> bool {
@@ -261,7 +247,7 @@ fn moved_on(v: &View, node: &Node, q: &Question, now: i64) -> bool {
 }
 
 /// Only nodes the state machine handed over: idle, with no work in sight, nothing in the inbox and
-/// no reply of David's on its way. A node with fresh evidence of work never reaches jev.
+/// no reply of David's on its way. A node with fresh evidence of work never reaches the terminal check.
 fn needs_attention(v: &View, node: &Node, now: i64) -> bool {
     let asked_this_turn = node.turn_signal == Some(alondra_core::TurnSignal::Asked);
     let hung_task = node.evidence.as_ref().is_some_and(|e| e.signal == alondra_core::Signal::BackgroundSuspect);
@@ -314,33 +300,6 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
     }
 }
 
-fn finished_report(v: &View, node: &Node) -> Report {
-    let said = what_it_said(node).unwrap_or_default();
-    let first = first_line(&said);
-    let first_sentence = first.split_inclusive(". ").next().unwrap_or(first).trim();
-    let (title, body) = if first_sentence.is_empty() {
-        (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None)
-    } else {
-        headline(&said, first_sentence)
-    };
-    Report {
-        id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
-        session_id: node.session_id.clone(),
-        node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
-        title,
-        body,
-        links: vec![],
-        attachments: vec![],
-        kind: ReportKind::Notice,
-        created_at: now_millis(),
-        read: false,
-        to_orchestrator: false,
-        mission: node.mission.clone(),
-        looks_like_question: false,
-        task: v.fact_task(&node.session_id, None),
-    }
-}
-
 /// The chosen line becomes a plain-text title and leaves the body, so nothing is said twice.
 fn headline(message: &str, chosen: &str) -> (String, Option<String>) {
     let title = cap(&plain(chosen));
@@ -357,6 +316,7 @@ fn last_question(message: &str) -> Option<&str> {
     markdown::prose_lines(message).into_iter().rev().find(|l| l.ends_with('?'))
 }
 
+#[cfg(test)]
 fn first_line(message: &str) -> &str {
     markdown::prose_lines(message).into_iter().find(|l| !l.is_empty()).unwrap_or_default()
 }
@@ -473,17 +433,14 @@ mod tests {
         v.nodes.get_mut("s").unwrap().mission = Some("Ship Lumo 4.5".into());
         let Some(Event::QuestionAsked(q)) = settle(&v, &v.nodes["s"], Expects::Decide) else { panic!() };
         assert_eq!(q.mission.as_deref(), Some("Ship Lumo 4.5"));
-        let Some(Event::ReportPosted(r)) = settle(&v, &v.nodes["s"], Expects::Finished) else { panic!() };
-        assert_eq!(r.mission.as_deref(), Some("Ship Lumo 4.5"));
     }
 
     #[test]
-    fn a_node_that_is_done_gets_a_final_report_not_a_question() {
+    fn a_completion_claim_stays_pending_until_a_real_report_arrives() {
         let mut v = waiting_view("Task complete and reported to hive/corpus-router.\nEverything committed locally.");
-        let event = settle(&v, &v.nodes["s"], Expects::Finished).unwrap();
-        let Event::ReportPosted(r) = &event else { panic!() };
-        assert_eq!(r.kind, ReportKind::Notice);
-        assert_eq!(r.title, "Task complete and reported to hive/corpus-router.");
+        let event = settle(&v, &v.nodes["s"], what_node_expects("Task complete.")).unwrap();
+        let Event::QuestionAsked(q) = &event else { panic!() };
+        assert_eq!(q.title, "Everything committed locally.");
         v.apply(4, 4000, &event);
         assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
@@ -496,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_with_a_task_still_running_never_reaches_jev() {
+    fn a_node_with_a_task_still_running_never_reaches_terminal_check() {
         let mut v = waiting_view("Release build running in the background; I will upload it when it finishes.");
         v.apply(3, 3000, &Event::DaemonSeen(DaemonObservation {
             session_id: "s".into(),
@@ -513,11 +470,11 @@ mod tests {
     }
 
     #[test]
-    fn the_same_finished_report_is_not_posted_twice() {
+    fn an_unclear_turn_is_not_asked_twice() {
         let mut v = waiting_view("Task complete.");
-        let first = settle(&v, &v.nodes["s"], Expects::Finished).unwrap();
+        let first = settle(&v, &v.nodes["s"], Expects::Unsure).unwrap();
         v.apply(4, 4000, &first);
-        assert!(settle(&v, &v.nodes["s"], Expects::Finished).is_none());
+        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
     }
 
     #[test]
@@ -540,21 +497,16 @@ mod tests {
     }
 
     #[test]
-    fn the_title_is_not_repeated_in_the_body_and_has_no_markdown() {
-        let v = waiting_view("Ya no. `d0b8007a` **es exactamente el fix**. Main ya lo tiene.");
-        let Event::ReportPosted(r) = settle(&v, &v.nodes["s"], Expects::Finished).unwrap() else { panic!() };
-        assert_eq!(r.title, "Ya no.");
-        assert_eq!(r.body.as_deref(), Some("`d0b8007a` **es exactamente el fix**. Main ya lo tiene."));
+    fn a_terminal_question_has_a_plain_title_and_context() {
+        let v = waiting_view("¿Lo apruebas? `d0b8007a` **es exactamente el fix**.");
+        let Event::QuestionAsked(q) = settle(&v, &v.nodes["s"], Expects::Decide).unwrap() else { panic!() };
+        assert_eq!(q.title, "¿Lo apruebas? d0b8007a es exactamente el fix.");
     }
 
     #[test]
-    fn a_result_handed_to_another_agent_stays_out_of_the_users_inbox() {
-        let mut v = waiting_view("Informe enviado al orchestrator. 4 de las 5 ramas ya están en main.");
-        let event = settle(&v, &v.nodes["s"], Expects::HandedOff).unwrap();
-        let Event::ReportPosted(r) = &event else { panic!() };
-        assert!(r.read);
-        v.apply(4, 4000, &event);
-        assert!(!needs_attention(&v, &v.nodes["s"], v.nodes["s"].last_seen));
+    fn a_handoff_claim_without_a_report_stays_visible() {
+        let v = waiting_view("Informe enviado al orchestrator. 4 de las 5 ramas ya están en main.");
+        assert!(matches!(settle(&v, &v.nodes["s"], Expects::Unsure), Some(Event::QuestionAsked(_))));
     }
 
     #[test]
@@ -657,40 +609,16 @@ mod tests {
         }
     }
 
-    /// R#31 (hive/auditoria-jev-alondra, 23 Sep): "Looks finished" three minutes after the node's
-    /// own final reports R#29 and R#30.
     #[test]
-    fn no_terminal_report_over_the_nodes_own() {
-        let own = |kind: ReportKind, at: i64| {
-            Event::ReportPosted(Report {
-                id: 1, session_id: "s".into(), node_name: None, title: "Auditoría rehecha".into(), body: Some("Detalle".into()),
-                links: vec![], attachments: vec![], kind, created_at: at, read: false, to_orchestrator: false, mission: None, looks_like_question: false,
-                task: None,
-            })
-        };
-        let handed = |at: i64| vec![message(1, MessageFrom::User, at), Event::MessageHanded { id: 1 }];
-        let turn = |event: &str| Event::Hook(HookEvent { session_id: "s".into(), event: event.into(), last_message: Some("Task complete.".into()), ..Default::default() });
-        let new_turn = || vec![turn("UserPromptSubmit"), turn("Stop")];
-        let cases: Vec<(&str, Vec<Event>, Expects, bool)> = vec![
-            ("the node reported nothing", vec![], Expects::Finished, true),
-            ("the node reported final", vec![own(ReportKind::Final, 2200)], Expects::Finished, false),
-            ("the node sent a notice", vec![own(ReportKind::Notice, 2200)], Expects::Finished, false),
-            ("handed off after its own report", vec![own(ReportKind::Final, 2200)], Expects::HandedOff, false),
-            ("its report was before the last message", [vec![own(ReportKind::Final, 2200)], handed(2600)].concat(), Expects::Finished, true),
-            ("never messaged, its report was in an earlier turn", [vec![own(ReportKind::Final, 2200)], new_turn()].concat(), Expects::Finished, true),
-            ("never messaged, a report in an earlier turn and one in this one", [vec![own(ReportKind::Final, 2200)], new_turn(), vec![own(ReportKind::Notice, 3400)]].concat(), Expects::Finished, false),
-            ("messaged, then a new turn after its report", [vec![own(ReportKind::Final, 2200)], handed(2600), new_turn()].concat(), Expects::Finished, true),
-        ];
-        for (what, events, expects, posts) in cases {
-            let mut v = waiting_view("Task complete.");
-            for (i, e) in events.iter().enumerate() {
-                v.apply(10 + i as u64, 2200 + i as i64 * 400, e);
-            }
-            assert_eq!(matches!(settle(&v, &v.nodes["s"], expects), Some(Event::ReportPosted(_))), posts, "{what}");
-        }
-        let mut v = waiting_view(ASKS);
-        v.apply(10, 2200, &own(ReportKind::Final, 2200));
-        assert!(matches!(settle(&v, &v.nodes["s"], Expects::Decide), Some(Event::QuestionAsked(_))), "a question is still built from the terminal");
+    fn a_report_in_the_same_episode_prevents_a_duplicate_card() {
+        let mut v = waiting_view("Task complete.");
+        v.apply(10, 2200, &Event::ReportPosted(alondra_core::Report {
+            id: 1, session_id: "s".into(), node_name: None, title: "Task complete".into(), body: None,
+            links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final,
+            created_at: 2200, read: false, to_orchestrator: false, mission: None,
+            looks_like_question: false, task: None,
+        }));
+        assert!(settle(&v, &v.nodes["s"], Expects::Unsure).is_none());
     }
 
     fn replay(fixture: &str, mut each: impl FnMut(u64, &View)) {

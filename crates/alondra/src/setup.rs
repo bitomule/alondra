@@ -502,7 +502,6 @@ pub fn run(args: Args) -> Result<()> {
             execute(step)?;
         }
     }
-    jevi_hint();
     let config = Config::resolve(paths.alondra_home.clone(), &plan.config, env, config::system_name);
     if args.dry_run {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
@@ -581,20 +580,6 @@ fn execute(step: &Step) -> Result<()> {
         Step::Unchanged { .. } | Step::Warn(_) => {}
     }
     Ok(())
-}
-
-fn jevi_hint() {
-    let checks = crate::doctor::jevi_checks();
-    if checks.iter().all(|c| c.status == crate::doctor::Status::Pass) {
-        return;
-    }
-    println!("{}", tr!(
-        "! jevi is part of Alondra: it reads node state, filters reports and powers search.",
-        "! jevi es parte de Alondra: lee el estado de los nodos, filtra los informes y hace la búsqueda."
-    ));
-    for c in checks.iter().filter(|c| c.status != crate::doctor::Status::Pass) {
-        println!("  {} → {}", c.detail, c.fix);
-    }
 }
 
 fn pair_when_ready(config: &Config) -> Result<()> {
