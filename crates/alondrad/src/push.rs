@@ -209,7 +209,7 @@ fn report_payload(r: &Report, badge: usize) -> Value {
     let who = r.node_name.clone().unwrap_or_else(|| "a node".into());
     json!({
         "aps": {"alert": {"title": r.title, "body": format!("{kind} · {who}")}, "category": "ALONDRA_READ",
-                "thread-id": r.session_id, "badge": badge},
+                "thread-id": r.session_id, "badge": badge, "mutable-content": 1},
         "alondra": {"kind": "report", "id": r.id, "report_kind": kind_key(r.kind)}
     })
 }
@@ -399,6 +399,13 @@ mod tests {
             links: url.map(|u| vec![alondra_core::Link { url: u.into(), title: None }]).unwrap_or_default(),
             attachments: vec![], kind, created_at: 0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
         }
+    }
+
+    #[test]
+    fn report_push_invokes_extension_before_read_action_is_shown() {
+        let payload = report_payload(&report(1, "s", ReportKind::Notice, None), 1);
+        assert_eq!(payload["aps"]["category"], "ALONDRA_READ");
+        assert_eq!(payload["aps"]["mutable-content"], 1);
     }
 
     fn question(id: u64, sid: &str, blocking: bool) -> Question {
