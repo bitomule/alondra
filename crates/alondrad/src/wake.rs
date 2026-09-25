@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alondra_core::event::CompactionStep;
 use alondra_core::{Event, now_millis, upkeep};
 
 use crate::hub::Hub;
@@ -66,6 +67,7 @@ pub async fn run(hub: Arc<Hub>) {
     let mut backoff = Backoff::default();
     loop {
         hub.wait_event(Duration::from_secs(10)).await;
+        compact_waiting(&hub).await;
         let due: Vec<(String, String, Pending)> = hub.read(|v| {
             v.nodes
                 .values()
@@ -110,6 +112,43 @@ pub async fn run(hub: Arc<Hub>) {
                 Err(e) => log!("delivery task broken for {short}: {e}"),
             }
         }
+    }
+}
+
+/// Types `/compact` into the nodes that wait for one before their next task, and gives up on a
+/// compaction that never ended, so what waits behind it goes in.
+async fn compact_waiting(hub: &Hub) {
+    let now = now_millis();
+    let (to_type, overdue): (Vec<(String, String)>, Vec<(String, String)>) = hub.read(|v| {
+        let waiting = v.nodes.values().filter(|n| n.in_daemon && n.compaction.is_some());
+        let (overdue, rest): (Vec<_>, Vec<_>) = waiting.partition(|n| upkeep::compaction_overdue(n, now));
+        let ids = |n: &&alondra_core::Node| (n.session_id.clone(), n.short_id.clone());
+        (rest.iter().filter(|n| n.compaction.is_some_and(|c| c.typed_at.is_none())).map(ids).collect(), overdue.iter().map(ids).collect())
+    });
+    for (session_id, short) in overdue {
+        log!("{short} did not finish compacting in time; typing its messages anyway");
+        let _ = hub.append(Event::Compaction { session_id, step: CompactionStep::GaveUp });
+    }
+    for (session_id, short) in to_type {
+        let own = hub.own_attach(&short);
+        let typing = short.clone();
+        let outcome = tokio::task::spawn_blocking(move || type_into(&typing, upkeep::COMPACT_COMMAND)).await;
+        drop(own);
+        let step = match outcome {
+            Ok(Ok(())) => {
+                log!("compacting {short} before its next task");
+                CompactionStep::Typed
+            }
+            Ok(Err(e)) => {
+                log!("could not compact {short}, typing its messages anyway: {e}");
+                CompactionStep::GaveUp
+            }
+            Err(e) => {
+                log!("compaction task broken for {short}: {e}");
+                CompactionStep::GaveUp
+            }
+        };
+        let _ = hub.append(Event::Compaction { session_id, step });
     }
 }
 

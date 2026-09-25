@@ -1828,6 +1828,36 @@
           }
         }
       }
+    },
+    "Keep it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conservarlo"
+          }
+        }
+      }
+    },
+    "Close it and discard its work": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrarlo y tirar su trabajo"
+          }
+        }
+      }
+    },
+    "Resume it": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Que lo retome"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

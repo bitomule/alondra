@@ -423,6 +423,22 @@ impl View {
                 }
                 None
             }
+            Event::ContextMeasured { session_id, percent, window } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.context = Some(crate::model::ContextUse { percent: *percent, window: *window, at });
+                }
+                None
+            }
+            Event::Compaction { session_id, step } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.compaction = match step {
+                        crate::event::CompactionStep::Requested => Some(crate::model::Compaction { requested_at: at, typed_at: None }),
+                        crate::event::CompactionStep::Typed => node.compaction.map(|c| crate::model::Compaction { typed_at: Some(at), ..c }),
+                        crate::event::CompactionStep::GaveUp => None,
+                    };
+                }
+                None
+            }
             Event::Clock { machine_strained } => {
                 self.machine_strained = *machine_strained;
                 let sessions: Vec<String> = self.nodes.keys().cloned().collect();
@@ -561,6 +577,10 @@ impl View {
             "SessionStart" => {
                 node.busy = false;
                 node.tool = None;
+            }
+            "PostCompact" => {
+                node.compaction = None;
+                node.context = None;
             }
             "UserPromptSubmit" => {
                 node.turn_since = at;
@@ -897,7 +917,8 @@ impl View {
     /// what Alondra queued only while the node may take it and was not done since.
     pub fn deliverable_messages(&self, session_id: &str) -> impl Iterator<Item = &Message> {
         let node = self.nodes.get(session_id);
-        self.pending_messages(session_id).filter(move |m| {
+        let compacting = node.is_some_and(|n| n.compaction.is_some());
+        self.pending_messages(session_id).filter(move |_| !compacting).filter(move |m| {
             m.from != MessageFrom::Alondra || node.is_some_and(|n| self.may_alondra_write(n) && n.done_at.is_none_or(|done| m.created_at > done))
         })
     }

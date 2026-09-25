@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use alondra_core::options::{OptionsFile, Resolved};
 use alondra_core::tasks::{Dependency, NewTask, Start, Task, TaskOptions, TaskState};
+use alondra_core::event::CompactionStep;
 use alondra_core::{Attachment, Event, Message, MessageAbout, MessageFrom, Millis, View, now_millis};
 use axum::http::StatusCode;
 use serde::Deserialize;
@@ -163,7 +164,8 @@ pub fn task_launch(hub: &Hub, id: &str, prompt: &str, effort: Option<&str>) -> R
     Ok((task_options(hub, &task, effort), request, prompt))
 }
 
-/// Gives the task to the node, when it is not its yet, and types it the text about it.
+/// Gives the task to the node, when it is not its yet, and types it the text about it: after a
+/// `/compact` when the node is idle with its context full past `compact_idle_nodes_at`.
 pub fn hand(hub: &Hub, id: &str, session_id: &str, text: String, from: MessageFrom, attachments: Vec<Attachment>) -> Result<Message, Refusal> {
     let recorded = hub.append_all(|v| {
         if hub.is_closing(session_id) {
@@ -175,6 +177,9 @@ pub fn hand(hub: &Hub, id: &str, session_id: &str, text: String, from: MessageFr
         let mut events = vec![];
         if !v.board.tasks[id].is_assigned_to(session_id) {
             events.push(Event::TaskAssigned { task: id.to_string(), session_id: session_id.to_string(), agent_id: None });
+        }
+        if v.nodes.get(session_id).is_some_and(|n| alondra_core::upkeep::compaction_due(v, n, now_millis(), hub.config.compact_idle_nodes_at)) {
+            events.push(Event::Compaction { session_id: session_id.to_string(), step: CompactionStep::Requested });
         }
         events.push(Event::MessageQueued(Message {
             id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
@@ -892,6 +897,61 @@ mod tests {
     fn send_task(hub: &Arc<Hub>, key: &str, task: &str) -> impl Future<Output = Response> + use<> {
         let b: crate::http::MessageBody = serde_json::from_value(json!({"text": "Take this one.", "from": "orchestrator", "task": task})).unwrap();
         crate::http::send_message(State(hub.clone()), UrlPath(key.to_string()), Json(b))
+    }
+
+    fn hook(sid: &str, event: &str) -> Event {
+        Event::Hook(alondra_core::HookEvent { session_id: sid.into(), event: event.into(), ..Default::default() })
+    }
+
+    /// Reusing an idle node whose context is past `compact_idle_nodes_at` types `/compact` first
+    /// and holds the task's text until the node's `PostCompact`: the new task starts from a
+    /// summary of the old work, not on top of it. Below the threshold, in a turn, or with the
+    /// setting off, the text goes straight in.
+    #[tokio::test]
+    async fn an_idle_node_full_of_context_is_compacted_before_its_new_task_is_typed() {
+        let (hub, home) = fleet("compact");
+        let cwd = home.display().to_string();
+        hub.append(seen("s2", "app/busy")).unwrap();
+        hub.append(hook("s2", "UserPromptSubmit")).unwrap();
+        hub.append(seen("s3", "app/light")).unwrap();
+        for (sid, percent) in [("s0", 45.0), ("s2", 80.0), ("s3", 20.0)] {
+            hub.append(Event::ContextMeasured { session_id: sid.into(), percent, window: 1_000_000 }).unwrap();
+        }
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [
+            {"title": "Model", "brief": "b", "assignee": "new", "cwd": cwd},
+            {"title": "UI", "brief": "b", "assignee": "new", "cwd": cwd},
+            {"title": "Docs", "brief": "b", "assignee": "new", "cwd": cwd},
+        ]}))).ok().unwrap();
+        let task = |i: usize| d["tasks"][i]["id"].as_str().unwrap().to_string();
+        let typeable = |sid: &str| hub.read(|v| v.deliverable_messages(sid).count());
+        let compacting = |sid: &str| hub.read(|v| v.nodes[sid].compaction.is_some());
+
+        assert_eq!(body(send_task(&hub, "app/old", &task(0)).await).await.0, StatusCode::OK);
+        assert!(compacting("s0"), "45 % is past the 30 % threshold");
+        assert_eq!(typeable("s0"), 0, "the task's text waits for the compaction");
+        hub.append(Event::Compaction { session_id: "s0".into(), step: CompactionStep::Typed }).unwrap();
+        assert_eq!(typeable("s0"), 0, "for its end, not for /compact to be typed");
+        hub.append(hook("s0", "PostCompact")).unwrap();
+        assert_eq!(typeable("s0"), 1, "the compaction ended: the task goes in");
+        assert!(hub.read(|v| v.nodes["s0"].context.is_none()), "the measure from before the compaction is void");
+
+        assert_eq!(body(send_task(&hub, "app/busy", &task(1)).await).await.0, StatusCode::OK);
+        assert!(!compacting("s2"), "a node in a turn is not compacted: /compact would queue behind the turn");
+        assert_eq!(typeable("s2"), 1);
+
+        assert_eq!(body(send_task(&hub, "app/light", &task(2)).await).await.0, StatusCode::OK);
+        assert!(!compacting("s3"), "20 % is below the threshold");
+        assert_eq!(typeable("s3"), 1);
+
+        let off = alondra_core::config::Config::resolve(home.join("off"), &alondra_core::config::FileConfig::default(), |k| (k == "ALONDRA_COMPACT_IDLE_NODES_AT").then(|| "off".to_string()), || Some("Ana".into()));
+        let hub = Arc::new(Hub::open(off, false).unwrap());
+        hub.append(seen("s0", "app/old")).unwrap();
+        hub.append(Event::ContextMeasured { session_id: "s0".into(), percent: 90.0, window: 200_000 }).unwrap();
+        let options = alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("app"), None);
+        hub.append(Event::RequestSent { request_id: "r-1".into(), options, text: Some("x".into()), attachments: vec![] }).unwrap();
+        let d = define(&hub, definition(json!({"request": "r-1", "tasks": [{"title": "Model", "brief": "b", "assignee": "new", "cwd": cwd}]}))).ok().unwrap();
+        assert_eq!(body(send_task(&hub, "app/old", d["tasks"][0]["id"].as_str().unwrap()).await).await.0, StatusCode::OK);
+        assert!(!hub.read(|v| v.nodes["s0"].compaction.is_some()), "compact_idle_nodes_at = off");
     }
 
     /// The start loop launched a node for the task; before that node showed up, `send` gave the

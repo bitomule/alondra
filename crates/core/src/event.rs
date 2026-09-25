@@ -157,6 +157,11 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A node's status line reported how full its context window is.
+    ContextMeasured { session_id: String, percent: f64, window: u64 },
+    /// A step of the `/compact` Alondra runs in an idle node before typing it a new task. The
+    /// node's `PostCompact` hook ends it.
+    Compaction { session_id: String, step: CompactionStep },
     /// From here on every task change is recorded as a task event. Written once, by the first
     /// daemon that records them.
     TasksRecorded,
@@ -195,6 +200,15 @@ pub enum Event {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum CompactionStep {
+    Requested,
+    Typed,
+    /// It could not be typed, or no `PostCompact` came in time: what waits for it goes in anyway.
+    GaveUp,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewVerdict {
     Comments,
     Approved,
@@ -214,7 +228,9 @@ impl Event {
             | Event::WaitingMachine { session_id, .. }
             | Event::AttachChanged { session_id, .. }
             | Event::MenuSeen { session_id, .. }
-            | Event::Resumed { session_id, .. } => Some(session_id),
+            | Event::Resumed { session_id, .. }
+            | Event::ContextMeasured { session_id, .. }
+            | Event::Compaction { session_id, .. } => Some(session_id),
             Event::QuestionAsked(q) => Some(&q.session_id),
             Event::ReportPosted(r) => Some(&r.session_id),
             Event::MessageQueued(m) => Some(&m.session_id),
@@ -244,6 +260,8 @@ impl Event {
             Event::Pruned { .. } => "pruned",
             Event::OrchestratorLaunched { .. } => "orchestrator_launched",
             Event::Resumed { .. } => "resumed",
+            Event::ContextMeasured { .. } => "context_measured",
+            Event::Compaction { .. } => "compaction",
             Event::AttachChanged { .. } => "attach_changed",
             Event::MenuSeen { .. } => "menu_seen",
             Event::PrOpened { .. } => "pr_opened",

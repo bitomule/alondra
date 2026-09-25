@@ -40,8 +40,10 @@ claude --bg --name "app/fix" --plugin-dir ~/Projects/alondra/plugin \
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
-`close_free_nodes_after`). An `ALONDRA_*` environment
-variable overrides the file; `alondra config` shows the values in effect.
+`close_free_nodes_after`, `compact_idle_nodes_at`, `archived_tasks_days`). An `ALONDRA_*` environment
+variable overrides the file; `alondra config` shows the values in effect. What Alondra does with
+idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
+[docs/idle-nodes.md](docs/idle-nodes.md).
 
 **The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin --plugin-dir
 ~/Projects/alondra/plugin-orchestrator` and the same mark: the node's hooks plus the `fleet`,

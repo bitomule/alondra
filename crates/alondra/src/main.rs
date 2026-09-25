@@ -5,6 +5,7 @@ mod client;
 mod doctor;
 mod mcp;
 mod setup;
+mod statusline;
 mod tui;
 
 use std::time::Duration;
@@ -73,6 +74,9 @@ enum Cmd {
         #[arg(long, env = "ALONDRA_ROLE", default_value = "node")]
         role: String,
     },
+    /// Status line of the sessions Alondra launches: reports their context, then shows the user's own
+    #[command(hide = true)]
+    Statusline,
     /// Retired: sessions started with an older plugin still call it from their Stop hook
     #[command(hide = true)]
     Inbox,
@@ -117,6 +121,7 @@ fn main() -> Result<()> {
         Some(Cmd::Setup(args)) => setup::run(*args),
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
         Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
+        Some(Cmd::Statusline) => statusline::run(),
         Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
     }
@@ -136,6 +141,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("service_label", c.service_label.clone()),
         ("resume_dead_nodes", c.resume_dead_nodes.to_string()),
         ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
+        ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("archived_tasks_days", c.archived_tasks_days.to_string()),
     ];
     match get {

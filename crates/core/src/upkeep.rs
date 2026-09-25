@@ -2,9 +2,9 @@
 //! had work, and close a node that has been free for long when the user asked for that. Both read
 //! stored events only, so a restart of alondrad neither repeats an attempt nor forgets one.
 
-use crate::model::{Message, MessageFrom, Millis, Node, TurnSignal};
+use crate::model::{Message, MessageFrom, Millis, Node, Question, QuestionOrigin, QuestionStatus, TurnSignal};
 use crate::states;
-use crate::tasks::{Task, TaskState};
+use crate::tasks::Task;
 use crate::view::View;
 
 const MINUTE: Millis = 60 * 1000;
@@ -130,24 +130,123 @@ pub fn resume_failed_message(view: &View, node: &Node, user: &str, at: Millis) -
     view.alondra_message(&orchestrator.session_id, text, at)
 }
 
-/// A node Alondra closes by itself once it has been free for `after` (`close_free_nodes_after`):
-/// nothing runs in it, nobody is at its terminal, nothing is on its way to it, and none of its
-/// tasks is running, waiting for the user, in review or closing.
-pub fn free_to_close(view: &View, node: &Node, now: Millis, after: Millis) -> bool {
-    let sid = node.session_id.as_str();
-    let quiet_since = [node.last_stop_at, node.handed_at, node.exited_at].into_iter().flatten().fold(node.last_seen, Millis::max);
-    let task_open = view.tasks_of(sid).any(|t| matches!(t.state, TaskState::Running | TaskState::NeedsYou | TaskState::InReview | TaskState::Closing));
-    let asks = view.questions.values().any(|q| q.session_id == sid && q.status.is_open());
+/// No turn runs in the node and nothing works for it in the background: typing into it starts a
+/// turn rather than joining one.
+pub fn idle(view: &View, node: &Node, now: Millis) -> bool {
     node.watched()
         && !node.busy
         && !node.waiting_permission
         && node.menu_waiting.is_none()
-        && now - quiet_since >= after
-        && !task_open
-        && !asks
-        && !states::watching(view, node, now)
+        && node.background.is_empty()
         && !states::works(view, node, now)
-        && view.deliverable_messages(sid).next().is_none()
+}
+
+pub const COMPACT_COMMAND: &str = "/compact";
+/// A `/compact` whose `PostCompact` has not come by then is given up: what waits for it goes in.
+/// Claude Code sends no `PostCompact` when there is too little to compact.
+pub const COMPACTION_TIMEOUT_MS: Millis = 10 * MINUTE;
+
+/// The node is about to get a task and is idle with its context at least `at_percent` full: it
+/// is compacted before the task is typed, so the new work starts from a summary of the old.
+pub fn compaction_due(view: &View, node: &Node, now: Millis, at_percent: Option<f64>) -> bool {
+    let full = at_percent.zip(node.context).is_some_and(|(limit, c)| c.percent >= limit);
+    full && !node.is_orchestrator && node.compaction.is_none() && idle(view, node, now)
+}
+
+pub fn compaction_overdue(node: &Node, now: Millis) -> bool {
+    node.compaction.is_some_and(|c| now - c.typed_at.unwrap_or(c.requested_at) >= COMPACTION_TIMEOUT_MS)
+}
+
+fn quiet_since(node: &Node) -> Millis {
+    [node.last_stop_at, node.handed_at, node.exited_at].into_iter().flatten().fold(node.last_seen, Millis::max)
+}
+
+/// The node has been idle for `after`: nobody is at its terminal, nothing is on its way to it,
+/// and it is not the orchestrator, which Alondra keeps alive.
+pub fn idle_for(view: &View, node: &Node, now: Millis, after: Millis) -> bool {
+    !node.is_orchestrator
+        && idle(view, node, now)
+        && node.compaction.is_none()
+        && now - quiet_since(node) >= after
+        && !states::watching(view, node, now)
+        && view.deliverable_messages(&node.session_id).next().is_none()
+}
+
+/// What the node leaves unfinished, as far as the view knows: its tasks not done or cancelled and
+/// its open questions. Its worktree is checked apart (`worktree::leftovers`).
+pub fn pending_work(view: &View, node: &Node) -> Vec<String> {
+    let sid = node.session_id.as_str();
+    let tasks = view.tasks_of(sid).filter(|t| !t.state.finished()).map(|t| format!("task {} “{}” is {}", t.id, t.title, t.state.name().replace('_', " ")));
+    let asks = view.questions.values().filter(|q| q.session_id == sid && q.status.is_open()).map(|q| format!("question #{} “{}” waits for an answer", q.id, q.title));
+    tasks.chain(asks).collect()
+}
+
+/// A node Alondra closes by itself once it has been idle for `after` (`close_free_nodes_after`)
+/// with nothing unfinished. Its worktree must hold nothing the remote's default branch lacks,
+/// which alondrad checks before closing it.
+pub fn free_to_close(view: &View, node: &Node, now: Millis, after: Millis) -> bool {
+    idle_for(view, node, now, after) && pending_work(view, node).is_empty()
+}
+
+pub const IDLE_CLOSE_KEY: &str = "idle-close@";
+pub const KEEP: &str = "Keep it";
+pub const DISCARD: &str = "Close it and discard its work";
+pub const RESUME: &str = "Resume it";
+
+pub fn is_idle_close(q: &Question) -> bool {
+    q.tool_use_id.as_deref().is_some_and(|k| k.starts_with(IDLE_CLOSE_KEY))
+}
+
+/// The question for a node idle for `after` that Alondra may not close: keep it, close it
+/// discarding what it left, or have it resume. Once per idle stretch, and not while the node
+/// already has a question in front of the user.
+pub fn idle_close_question(view: &View, node: &Node, pending: &[String], after: Millis, at: Millis) -> Option<Question> {
+    let key = format!("{IDLE_CLOSE_KEY}{}", quiet_since(node));
+    let asked = view.questions.values().any(|q| q.session_id == node.session_id && (q.status.is_open() || q.tool_use_id.as_deref() == Some(key.as_str())));
+    if pending.is_empty() || asked {
+        return None;
+    }
+    let days = (after as f64 / (24.0 * 60.0 * MINUTE as f64)).round().max(1.0);
+    let span = if days == 1.0 { "1 day".to_string() } else { format!("{days} days") };
+    let name = node.display_name();
+    let detail = format!(
+        "{name} has done nothing for {span}, but Alondra does not close it because it has unfinished work:\n\n{}\n\n\
+         - {KEEP}: Alondra leaves it as it is and does not ask again until it works and goes idle again.\n\
+         - {DISCARD}: Alondra deletes its worktree and closes it: uncommitted changes are lost, its commits stay on its local branch.\n\
+         - {RESUME}: Alondra tells {name} to pick the work up again.",
+        pending.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+    );
+    let option = |label: &str| crate::model::QuestionOption { label: label.into(), description: None };
+    Some(Question {
+        id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: node.session_id.clone(),
+        node_name: Some(name.to_string()),
+        title: format!("{name} has been idle for {span} with unfinished work: keep it, close it or resume it?"),
+        detail: Some(detail),
+        options: vec![option(KEEP), option(DISCARD), option(RESUME)],
+        links: vec![],
+        attachments: vec![],
+        blocking: false,
+        origin: QuestionOrigin::Ask,
+        tool_use_id: Some(key),
+        to_orchestrator: false,
+        node_context: None,
+        status: QuestionStatus::Open,
+        answer: None,
+        asked_at: at,
+        action: false,
+        steps: vec![],
+        mission: node.mission.clone(),
+        replaces: None,
+        task: view.fact_task(&node.session_id, None),
+    })
+}
+
+pub fn resume_idle_text(user: &str, question: &Question) -> String {
+    format!(
+        "[Alondra] You have been idle for days with unfinished work, and {user} wants you to pick it up: finish it, or say through Alondra what stops you.\n\n{}",
+        question.detail.as_deref().unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -284,5 +383,34 @@ mod tests {
         let mut orchestrator = run(&done(&[]));
         orchestrator.apply(9, T0, &Event::MarkedOrchestrator { session_id: "s".into() });
         assert!(!free_to_close(&orchestrator, &orchestrator.nodes["s"], T0 + 3 * H, 2 * H), "the orchestrator is never closed");
+        assert!(!idle_for(&orchestrator, &orchestrator.nodes["s"], T0 + 3 * H, 2 * H), "nor asked about");
+    }
+
+    #[test]
+    fn a_compaction_holds_what_is_queued_until_it_ends_or_is_given_up() {
+        use crate::event::CompactionStep;
+        let idle = [seen("working", Some(7)), hook("s", "UserPromptSubmit"), final_report(), hook("s", "Stop")];
+        let measured = |percent: f64| Event::ContextMeasured { session_id: "s".into(), percent, window: 200_000 };
+        let v = run(&[&idle[..], &[measured(29.0)]].concat());
+        let now = T0 + 60 * SEC;
+        assert!(!compaction_due(&v, &v.nodes["s"], now, Some(30.0)), "below the threshold");
+        let v = run(&[&idle[..], &[measured(30.0)]].concat());
+        assert!(compaction_due(&v, &v.nodes["s"], now, Some(30.0)), "at the threshold");
+        assert!(!compaction_due(&v, &v.nodes["s"], now, None), "the setting off");
+        let busy = run(&[&idle[..], &[measured(90.0), hook("s", "UserPromptSubmit")]].concat());
+        assert!(!compaction_due(&busy, &busy.nodes["s"], now, Some(30.0)), "in a turn");
+
+        let mut v = run(&[&idle[..], &[measured(60.0), Event::Compaction { session_id: "s".into(), step: CompactionStep::Requested }]].concat());
+        let task = Message {
+            id: 1, session_id: "s".into(), from: MessageFrom::Orchestrator, text: "[Task t-2] Next".into(), answers_question: None, created_at: T0,
+            handed_at: None, delivered_at: None, about: None, attachments: vec![],
+        };
+        v.apply(20, T0 + 7 * SEC, &Event::MessageQueued(task));
+        assert_eq!(v.deliverable_messages("s").count(), 0);
+        let requested = v.nodes["s"].compaction.unwrap().requested_at;
+        assert!(!compaction_overdue(&v.nodes["s"], requested + COMPACTION_TIMEOUT_MS - 1));
+        assert!(compaction_overdue(&v.nodes["s"], requested + COMPACTION_TIMEOUT_MS), "no PostCompact came: Claude Code sends none when there is too little to compact");
+        v.apply(21, T0 + 8 * SEC, &Event::Compaction { session_id: "s".into(), step: CompactionStep::GaveUp });
+        assert_eq!(v.deliverable_messages("s").count(), 1, "given up, the task goes in");
     }
 }
