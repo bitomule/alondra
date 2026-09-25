@@ -214,14 +214,6 @@ fn what_it_said(node: &Node) -> Option<String> {
     message.or(needs).map(str::to_string)
 }
 
-/// The node already reported since the last message reached it or its current turn began,
-/// whichever is later: its own words stand, and a report Alondra builds from its terminal would
-/// only repeat or contradict them. An older report is about something else.
-fn reported_this_episode(v: &View, node: &Node) -> bool {
-    let since = node.episode_since.max(node.turn_since);
-    v.reports.values().any(|r| r.session_id == node.session_id && r.created_at >= since)
-}
-
 /// Something David said is on its way to the node: an answer not yet delivered, or a message from
 /// him or the orchestrator not yet typed in. What the node shows now is from before it.
 fn reply_on_its_way(v: &View, node: &Node) -> bool {
@@ -231,7 +223,7 @@ fn reply_on_its_way(v: &View, node: &Node) -> bool {
 }
 
 fn settle(v: &View, node: &Node, expects: Expects) -> Option<Event> {
-    (!reported_this_episode(v, node)).then(|| Event::QuestionAsked(question_for(v, node, expects)))
+    Some(Event::QuestionAsked(question_for(v, node, expects)))
 }
 
 fn is_sentinel(q: &Question) -> bool {
@@ -610,15 +602,16 @@ mod tests {
     }
 
     #[test]
-    fn a_report_in_the_same_episode_prevents_a_duplicate_card() {
-        let mut v = waiting_view("Task complete.");
+    fn a_progress_report_does_not_hide_a_later_terminal_question() {
+        let mut v = waiting_view("Should I merge the PR?");
         v.apply(10, 2200, &Event::ReportPosted(alondra_core::Report {
-            id: 1, session_id: "s".into(), node_name: None, title: "Task complete".into(), body: None,
-            links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final,
+            id: 1, session_id: "s".into(), node_name: None, title: "Still working".into(), body: None,
+            links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Progress,
             created_at: 2200, read: false, to_orchestrator: false, mission: None,
             looks_like_question: false, task: None,
         }));
-        assert!(settle(&v, &v.nodes["s"], Expects::Unsure).is_none());
+        let Event::QuestionAsked(q) = settle(&v, &v.nodes["s"], what_node_expects("Should I merge the PR?")).unwrap() else { panic!() };
+        assert_eq!(q.title, "Should I merge the PR?");
     }
 
     fn replay(fixture: &str, mut each: impl FnMut(u64, &View)) {

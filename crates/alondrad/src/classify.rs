@@ -29,37 +29,49 @@ impl JudgesReports for LocalJudge {
     }
 }
 
+fn asks_for_action(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Read each sentence or clause, so a request after a status update is still found.
+    lower.split(['.', ';', ':']).any(|part| {
+        let part = part.trim().trim_start_matches(['-', '*', ' ']);
+        if (part.starts_with("please note") || part.starts_with("ten en cuenta"))
+            && !["approval is required", "approve", "need you to", "need your", "aprobación es necesaria", "necesito tu"]
+                .iter().any(|marker| part.contains(marker)) {
+            return false;
+        }
+        [
+            "please ", "could you ", "can you ", "you need to ", "i need you to ",
+            "approve ", "review ", "test ", "confirm ", "send me ", "provide ",
+            "sign off ", "choose ", "decide ",
+            "por favor ", "puedes ", "podrías ", "necesito que ", "necesita que ",
+            "necesito tu ", "necesito tus ", "necesitamos tu ", "necesitamos tus ",
+            "revisa ", "confirma ", "aprueba ", "prueba ", "decide ", "elige ",
+            "envíame ", "enviame ", "mándame ", "mandame ", "pásame ", "pasame ", "dame ",
+        ].iter().any(|marker| part.starts_with(marker))
+            || ["need your approval", "need you to ", "require your approval", "your approval is required",
+                "waiting for your ", "waits for your ", "awaits your ",
+                "esperando tu ", "a la espera de tu ",
+                "necesito tu aprobación",
+                "tu aprobación es necesaria"].iter().any(|marker| part.contains(marker))
+    })
+}
+
 /// Flag an explicit question or request. An ambiguous report remains visible in the inbox.
+fn asks_question(line: &str) -> bool {
+    let lower = line.trim().trim_start_matches(['#', '*', '-', ' ']).to_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") { return false; }
+    let (before, after) = lower.split_once('?').unwrap_or((&lower, ""));
+    let heading = ["what changed", "what was tested", "how was it tested", "qué cambió", "que cambió"];
+    let heading_only = heading.contains(&before.trim().trim_start_matches('¿').trim());
+    if heading_only { after.contains('?') || after.contains('¿') }
+    else { line.contains('?') || line.contains('¿') }
+}
+
 pub fn judge_report(text: &str) -> ReportVerdict {
     let asks = markdown::prose_lines(text).into_iter().any(|line| {
-        let lower = line.to_lowercase();
-        line.contains('?')
-            || line.contains('¿')
-            || [
-                "please ",
-                "could you ",
-                "can you ",
-                "need you to ",
-                "your approval",
-                "you need to ",
-                "por favor ",
-                "puedes ",
-                "podrías ",
-                "necesito que ",
-                "necesita que ",
-                "tu aprobación",
-                "revisa ",
-                "confirma ",
-                "aprueba ",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker))
+        asks_question(line) || asks_for_action(line)
     });
-    if asks {
-        ReportVerdict::Asks
-    } else {
-        ReportVerdict::Fine
-    }
+    if asks { ReportVerdict::Asks } else { ReportVerdict::Fine }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,32 +84,11 @@ pub enum Expects {
 /// The sentinel may add a question or action, never infer that an unclear task is done.
 pub fn what_node_expects(text: &str) -> Expects {
     let lines = markdown::prose_lines(text);
-    if lines
-        .iter()
-        .any(|line| line.contains('?') || line.contains('¿'))
-    {
-        return Expects::Decide;
-    }
-    let lower = lines.join(" ").to_lowercase();
-    if [
-        "please ",
-        "could you ",
-        "can you ",
-        "need you to ",
-        "you need to ",
-        "por favor ",
-        "necesito que ",
-        "necesita que ",
-        "revisa ",
-        "confirma ",
-        "aprueba ",
-        "test on ",
-        "prueba en ",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
-    {
+    if lines.iter().any(|line| asks_for_action(line)) {
         return Expects::Act;
+    }
+    if lines.iter().any(|line| asks_question(line)) {
+        return Expects::Decide;
     }
     Expects::Unsure
 }
@@ -110,7 +101,7 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Word and prefix matching across locally held node details. Results retain fleet order.
+/// Local word matching across node details. Results retain fleet order.
 pub fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
     let terms = words(query);
     if terms.is_empty() {
@@ -122,7 +113,7 @@ pub fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
             let hay = words(&text);
             terms
                 .iter()
-                .all(|term| hay.iter().any(|word| word.starts_with(term)))
+                .all(|term| hay.iter().any(|word| word.contains(term)))
                 .then_some(session)
         })
         .collect()
@@ -149,6 +140,27 @@ mod tests {
             judge_report("```\nShould I merge?\n```\nTests pass."),
             ReportVerdict::Fine
         );
+    }
+
+    #[test]
+    fn imperative_requests_are_not_final_reports() {
+        for text in ["Test it on your iPhone before I publish.", "Approve it and I start.",
+            "Necesito tu token para continuar.", "Envíame la clave.", "Sign off the rollout."] {
+            assert_eq!(judge_report(text), ReportVerdict::Asks, "{text}");
+        }
+        assert_eq!(judge_report("Please note that the migration is complete."), ReportVerdict::Fine);
+        assert_eq!(judge_report("What changed? Fixed camera permissions. Tests pass."), ReportVerdict::Fine);
+        assert_eq!(judge_report("¿Qué cambió? Corregí el permiso. Pasan las pruebas."), ReportVerdict::Fine);
+        assert_eq!(judge_report("What changed? Fixed the build. Should I merge?"), ReportVerdict::Asks);
+        assert_eq!(judge_report("https://example.com/result?v=2"), ReportVerdict::Fine);
+        assert_eq!(judge_report("Thanks for your review; merged and shipped."), ReportVerdict::Fine);
+        assert_eq!(judge_report("Thanks for your approval; the release is live."), ReportVerdict::Fine);
+        for text in ["Waiting for your approval before shipping.", "We need you to approve the release.",
+            "Please note that your approval is required before release.",
+            "The build awaits your TestFlight review before release."] {
+            assert_eq!(judge_report(text), ReportVerdict::Asks, "{text}");
+        }
+        assert_eq!(what_node_expects("Can you test on your iPhone?"), Expects::Act);
     }
 
     #[test]
