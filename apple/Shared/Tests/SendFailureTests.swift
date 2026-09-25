@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraAPIClient
 import Foundation
 import Testing
 
@@ -56,137 +57,124 @@ import Testing
         #expect(error.isTransient == transient)
     }
 
-    @Test func retriesBackOffUpToAMinute() {
-        let waits = (0..<8).map { FleetStore.retryWait(attempt: $0, base: .seconds(2)) }
-        #expect(waits.prefix(4) == [.seconds(2), .seconds(4), .seconds(8), .seconds(16)])
-        #expect(waits.last == .seconds(60))
-    }
 }
 
 @MainActor
-@Suite struct SendQueueTests {
-    /// What each attempt gets back, in order; the last one repeats.
-    private actor Script {
-        let outcomes: [(any Error)?]
-        var count = 0
-
-        init(_ outcomes: [(any Error)?]) {
-            self.outcomes = outcomes
+@Suite struct CommandFailureTests {
+    private actor ReplyTransport: HTTPTransport {
+        var paths: [String] = []
+        func send(_ request: URLRequest, policy: RequestPolicy) async throws -> HTTPResponse {
+            let path = request.url?.path() ?? ""
+            paths.append(path)
+            if path.hasSuffix("/read") { throw URLError(.timedOut) }
+            return HTTPResponse(status: 200, body: Data("{}".utf8))
         }
-
-        func next() throws {
-            let outcome = outcomes[min(count, outcomes.count - 1)]
-            count += 1
-            if let outcome { throw outcome }
+        func upload(_ request: URLRequest, body: Data, progress: @escaping @Sendable (Double) -> Void) async throws -> HTTPResponse {
+            Issue.record("Reply must not upload")
+            return HTTPResponse(status: 500, body: Data())
         }
     }
 
-    private static func refusal(_ status: Int, _ json: String) -> any Error {
-        AlondraError.from(status: status, body: Data(json.utf8))
-    }
-
-    private static let overviewJSON = #"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[],"disk_available":1,"unreliable":false},"prs":[{"id":54,"url":"https://github.com/a/b/pull/54","repo":"a/b","number":54,"session_id":"s","title":"t","opened_at":1,"state":"open","additions":0,"deletions":0,"changed_files":0,"checks":[],"merge_methods":["merge"]}]}"#
-
-    private func decoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
+    private struct TestSigner: RequestSigner {
+        let deviceID = "phone"
+        let signatureByte: UInt8
+        func signature(for message: Data) throws -> Data { Data([signatureByte]) }
     }
 
     private func overview() throws -> Overview {
-        try decoder().decode(Overview.self, from: Data(Self.overviewJSON.utf8))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
     }
 
-    private func pullRequest() throws -> InboxItem {
-        .pullRequest(try #require(try overview().prs?.first))
+    private actor Counter {
+        var calls = 0
+        func sent() { calls += 1 }
     }
 
-    private func settle(_ fleet: FleetStore) async {
-        for _ in 0..<400 where !fleet.pendingSends.isEmpty {
-            try? await Task.sleep(for: .milliseconds(5))
+    @Test func anUnansweredMutationIsNeverRetriedOnReconnect() async throws {
+        let client = AlondraClient(base: URL(string: "http://127.0.0.1:47800")!)
+        let fleet = FleetStore(client: client)
+        let counter = Counter()
+        let accepted = await fleet.perform(.send("node-1")) { _ in
+            await counter.sent()
+            throw URLError(.timedOut)
         }
+        #expect(!accepted, "unknown is not a confirmed send")
+        #expect(fleet.uncertainSends.count == 1)
+        #expect(await counter.calls == 1)
+        fleet.apply(try overview())
+        #expect(fleet.connection == .online)
+        #expect(await counter.calls == 1, "reconnect must not dispatch the mutation again")
+        fleet.dismissUncertainSends()
+        #expect(fleet.uncertainSends.isEmpty)
+        #expect(await counter.calls == 1)
     }
 
-    struct Case: Sendable, CustomTestStringConvertible {
-        let name: String
-        let outcomes: [(any Error)?]
-        let cardBack: Bool
-        let notice: String?
-        let stuck: Int
-        var testDescription: String { name }
-    }
-
-    static let cases: [Case] = [
-        Case(name: "back after two failures", outcomes: [AlondraError.unreachable, URLError(.timedOut), nil], cardBack: false, notice: nil, stuck: 0),
-        Case(name: "already merged, alondrad says so with a 200", outcomes: [URLError(.timedOut), nil], cardBack: false, notice: nil, stuck: 0),
-        Case(name: "gh refuses, alondrad's own 502", outcomes: [URLError(.timedOut), refusal(502, #"{"error":"not mergeable","kind":"merge_refused"}"#)], cardBack: true, notice: "GitHub didn’t merge it: not mergeable", stuck: 0),
-        Case(name: "no longer open", outcomes: [URLError(.timedOut), refusal(409, #"{"error":"pull/54 is no longer open","kind":"pr_not_open"}"#)], cardBack: true, notice: "This PR is no longer open", stuck: 0),
-        Case(name: "never answers", outcomes: [AlondraError.unreachable], cardBack: true, notice: nil, stuck: 1),
-    ]
-
-    @Test(arguments: cases)
-    func aPendingSendEndsWithWhatTheServerSaid(_ c: Case) async throws {
-        let fleet = FleetStore(retryDelay: .milliseconds(1), stuckAfter: .milliseconds(150))
-        let script = Script(c.outcomes)
-        let item = try pullRequest()
-        let ok = await fleet.resolve(item) { _ in try await script.next() }
-        #expect(ok, "the card leaves; what was sent is not lost")
-        #expect(fleet.pendingSends.count == 1)
-        await settle(fleet)
-        #expect(fleet.pendingSends.isEmpty)
-        #expect(fleet.isHidden(item.id) == !c.cardBack)
-        #expect(fleet.notice?.text == c.notice.map { "Couldn’t send: \($0)" })
-        #expect(fleet.notice?.failure ?? true)
-        #expect(fleet.stuckSends.count == c.stuck)
-        if c.stuck > 0 {
-            fleet.dismissStuckSends()
-            #expect(fleet.stuckSends.isEmpty)
+    @Test func anUnansweredCommandCannotBeSentToAnotherServer() async throws {
+        let a = AlondraClient(base: URL(string: "http://a.example")!)
+        let b = AlondraClient(base: URL(string: "http://b.example")!)
+        let fleet = FleetStore(client: a)
+        let counter = Counter()
+        _ = await fleet.perform(.newRequest) { _ in
+            await counter.sent()
+            throw URLError(.timedOut)
         }
+        #expect(fleet.uncertainSends.count == 1)
+        fleet.use(b)
+        #expect(fleet.uncertainSends.isEmpty)
+        #expect(await counter.calls == 1)
     }
 
-    enum Wake: String, CaseIterable, Sendable {
-        case foreground, reconnect
+    @Test func rotatingCredentialAtSameAddressClearsPresentationAndUncertainCommands() async throws {
+        let base = URL(string: "http://a.example")!
+        let client = AlondraClient(base: base, signer: TestSigner(signatureByte: 1))
+        let newClient = AlondraClient(base: base, signer: TestSigner(signatureByte: 2))
+        let fleet = FleetStore(client: client)
+        _ = await fleet.perform(.newRequest) { _ in throw URLError(.timedOut) }
+        #expect(fleet.uncertainSends.count == 1)
+        fleet.setConnection(.online)
+        fleet.resetPresentationForIdentityChange()
+        fleet.use(newClient)
+        #expect(fleet.uncertainSends.isEmpty)
+        #expect(fleet.connection == .connecting)
+        #expect(fleet.overview == nil)
+        #expect(try fleet.client.signer?.signature(for: Data()) == Data([2]))
     }
 
-    @Test(arguments: Wake.allCases)
-    func aPendingSendGoesOutAtOnceWhenTheAppCanReachAlondraAgain(_ wake: Wake) async throws {
-        let fleet = FleetStore(retryDelay: .seconds(30), stuckAfter: .seconds(600))
-        let script = Script([AlondraError.unreachable, nil])
-        let item = try pullRequest()
-        _ = await fleet.resolve(item) { _ in try await script.next() }
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(fleet.pendingSends.count == 1, "the backoff alone would wait 30 s")
-        switch wake {
-        case .foreground: fleet.retryPendingSends()
-        case .reconnect: fleet.apply(try overview())
+    @Test func replyWithLostReadResponseDoesNotRepeatMessageOnReconnect() async throws {
+        let transport = ReplyTransport()
+        let client = AlondraClient(base: URL(string: "https://a.example")!, transport: transport)
+        let fleet = FleetStore(client: client)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let report = try decoder.decode(Report.self, from: Data(#"{"id":7,"session_id":"node-1","title":"Review","links":[],"attachments":[],"kind":"final","created_at":1}"#.utf8))
+        let confirmed = await fleet.reply(to: report, text: "Please fix this")
+        #expect(!confirmed)
+        #expect(fleet.uncertainSends.map(\.kind) == [.replyToReport(7)])
+        fleet.apply(try overview())
+        #expect(await transport.paths == ["/v1/nodes/node-1/messages", "/v1/reports/7/read"])
+    }
+
+    @Test func oldInFlightResponseCannotModifyNewServerPresentation() async throws {
+        let a = AlondraClient(base: URL(string: "https://a.example")!)
+        let b = AlondraClient(base: URL(string: "https://b.example")!)
+        let fleet = FleetStore(client: a)
+        let entered = AsyncStream.makeStream(of: Void.self)
+        let release = AsyncStream.makeStream(of: Void.self)
+        let attempt = Task {
+            await fleet.perform(.newRequest) { _ in
+                entered.continuation.yield(())
+                for await _ in release.stream { break }
+                throw URLError(.timedOut)
+            }
         }
-        await settle(fleet)
-        #expect(fleet.pendingSends.isEmpty)
-        #expect(await script.count == 2)
-    }
-
-    @Test func aPendingCardStaysOutOfTheInboxWhileTheOverviewStillListsIt() async throws {
-        let fleet = FleetStore(retryDelay: .seconds(30), stuckAfter: .seconds(600))
-        let item = try pullRequest()
-        fleet.apply(try overview())
-        _ = await fleet.resolve(item) { _ in throw AlondraError.unreachable }
-        fleet.apply(try overview())
-        #expect(fleet.isHidden(item.id))
-        #expect(!fleet.inbox.contains { $0.id == item.id })
-    }
-
-    /// pr-card-ask review, 24 Sep: asking about a PR never parks its card, so sending it through
-    /// `resolve` (which hides the card until the next full reload) undid the fix. The one Ask every
-    /// screen uses must leave a still-live card exactly where it was, even while it waits to go out.
-    @Test func askingAboutAPullRequestNeverHidesItsCard() async throws {
-        let nowhere = AlondraClient(base: try #require(URL(string: "http://127.0.0.1:9")))
-        let fleet = FleetStore(client: nowhere, retryDelay: .seconds(30), stuckAfter: .seconds(600))
-        let item = try pullRequest()
-        fleet.apply(try overview())
-        guard case .pullRequest(let pr) = item else { return }
-        let ok = await fleet.ask(onPullRequest: pr.id, text: "Does it build?")
-        #expect(ok, "kept to send again, not lost")
-        #expect(!fleet.isHidden(item.id))
-        #expect(fleet.inbox.contains { $0.id == item.id })
+        for await _ in entered.stream { break }
+        fleet.use(b)
+        release.continuation.yield(())
+        #expect(await attempt.value == false)
+        #expect(fleet.uncertainSends.isEmpty)
+        #expect(fleet.client.base == b.base)
+        #expect(fleet.connection == .connecting)
     }
 }

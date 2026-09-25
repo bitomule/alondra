@@ -102,7 +102,7 @@ struct AttachedQuestion: View {
         replyFocused = false
         sending = true
         Task {
-            let answered = await fleet.resolve(.question(question)) { [attachments] client in
+            let answered = await fleet.resolve(.question(question), kind: .answer(id)) { [attachments] client in
                 try await client.answer(id, text: text, option: option, attachments: try await attachments.storedIDs(using: client))
             }
             if !answered { sending = false }

@@ -155,12 +155,12 @@ struct PullRequestDetail: View {
 
     private func merge(_ method: String) {
         let id = pr.id
-        Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.mergePullRequest(id, method: method) } }
+        Task { _ = await store.resolve(.pullRequest(pr), kind: .mergePullRequest(id)) { try await $0.mergePullRequest(id, method: method) } }
     }
 
     private func resolveConflicts() {
         let id = pr.id
-        Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.resolveConflicts(onPullRequest: id) } }
+        Task { _ = await store.resolve(.pullRequest(pr), kind: .resolveConflicts(id)) { try await $0.resolveConflicts(onPullRequest: id) } }
     }
 
     @ViewBuilder
@@ -213,7 +213,7 @@ struct PullRequestDetail: View {
     private func requestChanges() {
         let (id, text, attachments) = (pr.id, review, draft.attachments)
         Task {
-            if await store.resolve(.pullRequest(pr), { client in
+            if await store.resolve(.pullRequest(pr), kind: .requestChanges(id), { client in
                 try await client.requestChanges(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
             }) {
                 drafts.discard(InboxItem.pullRequest(pr).id)
@@ -223,7 +223,7 @@ struct PullRequestDetail: View {
 
     private func setAside() {
         let id = pr.id
-        Task { _ = await store.resolve(.pullRequest(pr)) { try await $0.dismissPullRequest(id) } }
+        Task { _ = await store.resolve(.pullRequest(pr), kind: .dismissPullRequest(id)) { try await $0.dismissPullRequest(id) } }
     }
 }
 

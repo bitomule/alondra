@@ -24,6 +24,9 @@ final class LocalDevice {
     }
 
     var isPaired: Bool { client.signer != nil }
+    var credentialRevision: String? {
+        (client.signer as? AlondraDeviceIdentity.DeviceSigner)?.key.publicKey.x963Representation.base64EncodedString()
+    }
 
     /// `/v1/pairing` only answers loopback callers, so the Mac can pair itself without asking David.
     func pair() async throws {

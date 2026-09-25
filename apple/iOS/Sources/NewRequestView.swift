@@ -177,7 +177,7 @@ struct NewRequestView: View {
         let body = (options?.options ?? WorkOptions()).body(text: trimmed)
         sending = true
         Task {
-            let ok = await fleet.perform { [attachments] client in
+            let ok = await fleet.perform(.newRequest) { [attachments] client in
                 var body = body
                 body.attachments = try await attachments.storedIDs(using: client)
                 try await client.newRequest(body)

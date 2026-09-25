@@ -69,8 +69,11 @@ private struct RootView: View {
     private struct SyncKey: Hashable {
         let url: String
         let device: String?
+        let credentialRevision: String?
         let active: Bool
     }
+
+    @State private var appliedCredentialRevision: String?
 
     var body: some View {
         TabView(selection: $tab) {
@@ -99,7 +102,6 @@ private struct RootView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            fleet.retryPendingSends()
             await push.refreshAuthorization()
         }
         .task(id: scenePhase) {
@@ -108,11 +110,16 @@ private struct RootView: View {
         }
         .overlay(alignment: .bottom) { NoticeToast() }
         .closeRefusalAlert(fleet)
-        .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
+        .task(id: SyncKey(url: serverURL, device: pairing.deviceID, credentialRevision: pairing.credentialRevision, active: scenePhase != .background)) {
             guard scenePhase != .background else { return }
             if let url = AlondraClient.serverURL(serverURL) {
                 let client = AlondraClient(base: url, device: "iphone", signer: pairing.signer(for: url))
+                if appliedCredentialRevision != nil, appliedCredentialRevision != pairing.credentialRevision,
+                   fleet.client.identity == client.identity {
+                    fleet.resetPresentationForIdentityChange()
+                }
                 fleet.use(client)
+                appliedCredentialRevision = pairing.credentialRevision
                 push.scheduleSync()
             }
             await fleet.run()
@@ -144,22 +151,12 @@ private struct NoticeToast: View {
                     }
                     .id(notice.id)
             }
-            if !fleet.pendingSends.isEmpty {
-                Label(String(localized: "Alondra isn’t responding; \(fleet.pendingSends.count) pending, retrying"), systemImage: "arrow.clockwise")
-                    .font(.footnote.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(.regular, in: .capsule)
-                    .transition(.opacity)
-            }
-            if !fleet.stuckSends.isEmpty {
+            if !fleet.uncertainSends.isEmpty {
                 Button {
-                    fleet.dismissStuckSends()
+                    fleet.dismissUncertainSends()
                 } label: {
                     HStack(spacing: 10) {
-                        Label(String(localized: "Couldn’t send \(fleet.stuckSends.count): Alondra didn’t answer for 2 minutes"), systemImage: "exclamationmark.triangle.fill")
+                        Label("Check Alondra: \(fleet.uncertainActionDescription) may have completed", systemImage: "exclamationmark.triangle.fill")
                             .lineLimit(2)
                         Image(systemName: "xmark")
                             .font(.caption.weight(.bold))
@@ -179,8 +176,7 @@ private struct NoticeToast: View {
         }
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: fleet.notice)
-        .animation(.snappy, value: fleet.pendingSends.count)
-        .animation(.snappy, value: fleet.stuckSends)
+        .animation(.snappy, value: fleet.uncertainSends)
         .sensoryFeedback(trigger: fleet.notice) { _, new in
             new?.failure == true ? .error : nil
         }

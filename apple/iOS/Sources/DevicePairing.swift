@@ -42,6 +42,7 @@ final class DevicePairing {
     }
 
     var isPaired: Bool { signer != nil }
+    var credentialRevision: String? { signer?.key.publicKey.x963Representation.base64EncodedString() }
 
     /// A signer belongs to exactly one server. Use this for all client construction,
     /// especially when Settings tests a candidate URL before switching servers.

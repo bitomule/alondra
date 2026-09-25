@@ -1,10 +1,14 @@
 import Foundation
 import Observation
 import SwiftUI
+import AlondraCommands
 
 @MainActor
 @Observable
 public final class FleetStore {
+    public typealias MutationKind = CommandKind
+    public typealias MutationGate = CommandGate
+    public typealias MutationScope = CommandScope
     public enum Connection: Equatable, Sendable {
         case connecting
         case online
@@ -16,11 +20,13 @@ public final class FleetStore {
         public let id = UUID()
         public let itemID: String
         public let label: String
+        public let kind: MutationKind
         public let action: @Sendable (AlondraClient) async throws -> Void
 
-        public init(itemID: String, label: String, action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+        public init(itemID: String, label: String, kind: MutationKind, action: @escaping @Sendable (AlondraClient) async throws -> Void) {
             self.itemID = itemID
             self.label = label
+            self.kind = kind
             self.action = action
         }
     }
@@ -56,17 +62,27 @@ public final class FleetStore {
     public private(set) var client: AlondraClient
     private let animated: Bool
     private let retryDelay: Duration
-    private let stuckAfter: Duration
+    private let commandGate: CommandGate
+    private var credentialRevision: String
+    private var credentialGeneration: UInt64 = 0
     private var syncTask: Task<Void, Never>?
     @ObservationIgnored private var documents: [String: String] = [:]
     /// What a node's own route last said its threads do, kept for when asking it again fails.
     @ObservationIgnored var threadsShown: (session: String, threads: [NodeActivity])?
 
-    public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2), stuckAfter: Duration = .seconds(120)) {
+    public init(client: AlondraClient = .local, animated: Bool = false, retryDelay: Duration = .seconds(2), stuckAfter: Duration = .seconds(120), commandGate: CommandGate? = nil, commandScope: CommandScope? = nil) {
+        let revision = commandScope?.credentialRevision ?? UUID().uuidString
+        let generation = commandScope?.generation ?? 0
         self.client = client
         self.animated = animated
         self.retryDelay = retryDelay
-        self.stuckAfter = stuckAfter
+        self.credentialRevision = revision
+        self.credentialGeneration = generation
+        self.commandGate = commandGate ?? CommandGate(scope: CommandScope(server: client.base, deviceID: client.signer?.deviceID ?? client.device, credentialRevision: revision, generation: generation))
+    }
+
+    private func commandScope(_ client: AlondraClient) -> CommandScope {
+        CommandScope(server: client.base, deviceID: client.signer?.deviceID ?? client.device, credentialRevision: credentialRevision, generation: credentialGeneration)
     }
 
     public var connected: Bool { connection == .online }
@@ -157,11 +173,24 @@ public final class FleetStore {
         }
     }
 
-    public func use(_ client: AlondraClient) {
-        guard client.identity != self.client.identity else { return }
-        let sameServer = client.base == self.client.base
+    public func use(_ client: AlondraClient, commandScope nextScope: CommandScope? = nil) {
+        let identityChanged = client.identity != self.client.identity
         self.client = client
-        guard !sameServer else { return }
+        if let nextScope {
+            if commandScope(client) != nextScope || identityChanged {
+                resetPresentationForIdentityChange(to: nextScope)
+            }
+        } else if identityChanged {
+            resetPresentationForIdentityChange()
+        }
+    }
+
+    /// The root calls this on every credential generation change, even if URL and device ID
+    /// are unchanged. It invalidates any in-flight mutation's right to update presentation.
+    public func resetPresentationForIdentityChange(to nextScope: CommandScope? = nil) {
+        credentialRevision = nextScope?.credentialRevision ?? UUID().uuidString
+        credentialGeneration = nextScope?.generation ?? (credentialGeneration &+ 1)
+        uncertainSends = []
         overview = nil
         hidden = []
         ring = InboxRing()
@@ -186,16 +215,20 @@ public final class FleetStore {
 
     public func run() async {
         while !Task.isCancelled {
+            let revision = credentialRevision
+            let pollingClient = client
             do {
-                let fresh = try await client.overview()
+                let fresh = try await pollingClient.overview()
+                guard revision == credentialRevision else { continue }
                 apply(fresh)
-                try await client.waitForChange(after: fresh.tick)
+                try await pollingClient.waitForChange(after: fresh.tick)
             } catch where error.isCancellation {
                 return
             } catch let error as URLError where error.code == .timedOut && connection == .online {
                 continue
             } catch {
                 if Task.isCancelled { return }
+                guard revision == credentialRevision else { continue }
                 connection = (error as? AlondraError) == .unauthorized ? .unpaired : .offline(error.friendlyDescription)
                 try? await Task.sleep(for: retryDelay)
             }
@@ -203,13 +236,24 @@ public final class FleetStore {
     }
 
     public func refresh() async {
+        let revision = credentialRevision
+        let pollingClient = client
         do {
-            apply(try await client.overview())
+            let fresh = try await pollingClient.overview()
+            guard revision == credentialRevision else { return }
+            apply(fresh)
         } catch AlondraError.unauthorized {
+            guard revision == credentialRevision else { return }
             connection = .unpaired
         } catch where !error.isCancellation {
+            guard revision == credentialRevision else { return }
             connection = .offline(error.friendlyDescription)
         } catch {}
+    }
+
+    /// Projection seam for the root's SyncSession; FleetStore does not own that poll loop.
+    public func setConnection(_ state: Connection) {
+        connection = state
     }
 
     public func apply(_ fresh: Overview) {
@@ -221,7 +265,7 @@ public final class FleetStore {
             if !hidden.isSubset(of: live) { hidden.formIntersection(live) }
             connection = .online
         }
-        if reconnected { retryPendingSends() }
+        // A reconnect only refreshes state. An unanswered mutation must never be replayed.
     }
 
     public func focus(_ item: InboxItem) {
@@ -245,20 +289,22 @@ public final class FleetStore {
     }
 
     @discardableResult
-    public func resolve(_ item: InboxItem, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+    public func resolve(_ item: InboxItem, kind: MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
         let client = client
         animate(.spring(duration: 0.55, bounce: 0.2)) {
             ring.resolve(item, in: ordered)
             _ = hidden.insert(item.id)
         }
-        resolvedCount += 1
-        do {
-            try await action(client)
+        let result = await submit(kind, itemID: item.id, using: client, action)
+        switch result {
+        case .confirmed:
+            resolvedCount += 1
             return true
-        } catch where error.isTransient {
-            queue(itemID: item.id, action)
-            return true
-        } catch {
+        case .unknown:
+            hidden.remove(item.id)
+            return false
+        case .obsolete: return false
+        case .rejected(let error):
             animate(.spring(duration: 0.5, bounce: 0.2)) {
                 _ = hidden.remove(item.id)
             }
@@ -267,109 +313,42 @@ public final class FleetStore {
         }
     }
 
-    public func perform(_ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
-        do {
-            try await action(client)
-            return true
-        } catch where error.isTransient {
-            queue(itemID: nil, action)
-            return true
-        } catch {
+    public func perform(_ kind: MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        let result = await submit(kind, itemID: nil, using: client, action)
+        switch result {
+        case .confirmed: return true
+        case .unknown: return false
+        case .obsolete: return false
+        case .rejected(let error):
             report(error)
             return false
         }
     }
 
-    /// What the user sent while alondrad could not be reached: kept and sent again with backoff
-    /// until it goes through, the server answers it for a real reason, or `stuckAfter` passes.
-    public struct PendingSend: Identifiable, Sendable {
-        public let id = UUID()
-        public let itemID: String?
-        let queuedAt: ContinuousClock.Instant
-        let action: @Sendable (AlondraClient) async throws -> Void
+    public private(set) var uncertainSends: [UncertainCommand] = []
+    public var uncertainActionDescription: String {
+        uncertainSends.first?.kind.userFacingDescription ?? String(localized: "Action", table: "AlondraShared", bundle: #bundle)
     }
 
-    /// A send that got no answer from alondrad for `stuckAfter`: shown until the user dismisses it,
-    /// and its card is back in the inbox to be acted on again.
-    public struct StuckSend: Identifiable, Equatable, Sendable {
-        public let id: UUID
-        public let itemID: String?
+    /// Dismiss the warning after the user checks the server state. This never resends a command.
+    public func dismissUncertainSends() {
+        let ids = uncertainSends.map(\.id)
+        for itemID in uncertainSends.compactMap(\.itemID) { hidden.remove(itemID) }
+        uncertainSends = []
+        Task { for id in ids { await commandGate.dismiss(id) } }
     }
 
-    public private(set) var pendingSends: [PendingSend] = []
-    public private(set) var stuckSends: [StuckSend] = []
-    @ObservationIgnored private var retryLoop: Task<Void, Never>?
-    @ObservationIgnored private var retryPause: Task<Void, Never>?
-
-    /// Backoff between retries of a pending send: doubling from `retryDelay`, capped at a minute.
-    public nonisolated static func retryWait(attempt: Int, base: Duration) -> Duration {
-        min(base * (1 << min(attempt, 10)), .seconds(60))
-    }
-
-    private func queue(itemID: String?, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
-        if let itemID {
-            pendingSends.removeAll { $0.itemID == itemID }
-            stuckSends.removeAll { $0.itemID == itemID }
+    private func submit(_ kind: CommandKind, itemID: String?, using client: AlondraClient, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> CommandResult {
+        guard self.client.identity == client.identity else { return .obsolete }
+        let scope = commandScope(client)
+        await commandGate.use(scope)
+        guard self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
+        let result = await commandGate.submit(kind, itemID: itemID, in: scope, isUnknown: { $0.isTransient || $0.isCancellation }) {
+            try await action(client)
         }
-        pendingSends.append(PendingSend(itemID: itemID, queuedAt: .now, action: action))
-        startRetrying()
-    }
-
-    /// Sends what is pending now instead of waiting out the backoff: the connection is back or the
-    /// app came to the foreground.
-    public func retryPendingSends() {
-        guard !pendingSends.isEmpty else { return }
-        retryPause?.cancel()
-        startRetrying()
-    }
-
-    public func dismissStuckSends() {
-        stuckSends = []
-    }
-
-    private func startRetrying() {
-        guard retryLoop == nil else { return }
-        retryLoop = Task { [weak self] in
-            await self?.retryUntilDrained()
-        }
-    }
-
-    private func retryUntilDrained() async {
-        var attempt = 0
-        while let deadline = pendingSends.map({ $0.queuedAt + stuckAfter }).min() {
-            let wait = min(Self.retryWait(attempt: attempt, base: retryDelay), max(deadline - .now, .zero))
-            let pause = Task { _ = try? await Task.sleep(for: wait) }
-            retryPause = pause
-            await pause.value
-            attempt = pause.isCancelled ? 0 : attempt + 1
-            for pending in pendingSends {
-                await send(pending)
-            }
-        }
-        retryLoop = nil
-        retryPause = nil
-    }
-
-    private func send(_ pending: PendingSend) async {
-        guard pendingSends.contains(where: { $0.id == pending.id }) else { return }
-        do {
-            try await pending.action(client)
-            pendingSends.removeAll { $0.id == pending.id }
-        } catch where error.isTransient || error.isCancellation {
-            guard ContinuousClock.now - pending.queuedAt >= stuckAfter else { return }
-            settle(pending)
-            stuckSends.append(StuckSend(id: pending.id, itemID: pending.itemID))
-        } catch {
-            settle(pending)
-            report(error)
-        }
-    }
-
-    private func settle(_ pending: PendingSend) {
-        pendingSends.removeAll { $0.id == pending.id }
-        if let itemID = pending.itemID {
-            animate(.spring(duration: 0.5, bounce: 0.2)) { _ = hidden.remove(itemID) }
-        }
+        guard self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
+        if case .unknown(let command) = result { uncertainSends.append(command) }
+        return result
     }
 
     public func isHidden(_ itemID: String) -> Bool {
@@ -386,15 +365,15 @@ public final class FleetStore {
         }
     }
 
-    private func resolving(_ id: String, _ work: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+    private func resolving(_ id: String, kind: CommandKind, _ work: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
         hidden.insert(id)
-        do {
-            try await work(client)
-            return true
-        } catch where error.isTransient {
-            queue(itemID: id, work)
-            return true
-        } catch {
+        switch await submit(kind, itemID: id, using: client, work) {
+        case .confirmed: return true
+        case .unknown:
+            hidden.remove(id)
+            return false
+        case .obsolete: return false
+        case .rejected(let error):
             hidden.remove(id)
             lastError = error.localizedDescription
             return false
@@ -403,21 +382,21 @@ public final class FleetStore {
 
     @discardableResult
     public func answer(_ question: Question, text: String, option: String? = nil, attachments: Attachments? = nil) async -> Bool {
-        await resolving("q\(question.id)") { client in
+        await resolving("q\(question.id)", kind: .answer(question.id)) { client in
             try await client.answer(question.id, text: text, option: option, attachments: await attachments?.storedIDs(using: client) ?? [])
         }
     }
 
     @discardableResult
     public func moreContext(_ question: Question, note: String, attachments: Attachments? = nil) async -> Bool {
-        await resolving("q\(question.id)") { client in
+        await resolving("q\(question.id)", kind: .moreContext(question.id)) { client in
             try await client.moreContext(question.id, note: note, attachments: await attachments?.storedIDs(using: client) ?? [])
         }
     }
 
     @discardableResult
     public func reply(to report: Report, text: String, attachments: Attachments? = nil) async -> Bool {
-        await resolving("r\(report.id)") { client in
+        await resolving("r\(report.id)", kind: .replyToReport(report.id)) { client in
             try await client.send(to: report.sessionId, text: text, attachments: await attachments?.storedIDs(using: client) ?? [])
             try await client.markRead(report.id)
         }
@@ -425,14 +404,14 @@ public final class FleetStore {
 
     @discardableResult
     public func markRead(_ report: Report) async -> Bool {
-        await resolving("r\(report.id)") { client in
+        await resolving("r\(report.id)", kind: .markRead(report.id)) { client in
             try await client.markRead(report.id)
         }
     }
 
     @discardableResult
     public func review(_ report: Report, _ verdict: ReviewVerdict) async -> Bool {
-        await resolving("r\(report.id)") { client in
+        await resolving("r\(report.id)", kind: .review(report.id)) { client in
             try await client.review(report.id, verdict)
         }
     }
@@ -447,38 +426,37 @@ public final class FleetStore {
     /// A refusal is alondrad's answer about the node, shown as `refusal`; a failure means the
     /// request itself did not get through.
     private func close(session: String, force: Bool) async -> CloseOutcome {
-        do {
-            try await client.closeNode(session, force: force)
-            return .closed
-        } catch let refused as CloseRefused {
+        let result = await submit(.closeNode(session), itemID: nil, using: client) {
+            try await $0.closeNode(session, force: force)
+        }
+        switch result {
+        case .confirmed: return .closed
+        case .unknown, .obsolete: return .failed
+        case .rejected(let refused as CloseRefused):
             refusal = refused.message
             return .refused
-        } catch {
+        case .rejected(let error):
             lastError = error.localizedDescription
             return .failed
         }
     }
 
     public func newRequest(_ body: NewRequestBody, attachments: Attachments? = nil) async -> Bool {
-        do {
+        await perform(.newRequest) { client in
             var body = body
             body.attachments = try await attachments?.storedIDs(using: client) ?? []
             try await client.newRequest(body)
-            return true
-        } catch {
-            lastError = error.localizedDescription
-            return false
         }
     }
 
     @discardableResult
     public func cancel(_ task: WorkTask) async -> Bool {
-        await taskAction { try await $0.cancelTask(task.id) }
+        await taskAction(.cancelTask(task.id)) { try await $0.cancelTask(task.id) }
     }
 
     @discardableResult
     public func reopen(_ task: WorkTask) async -> Bool {
-        await taskAction { try await $0.reopenTask(task.id) }
+        await taskAction(.reopenTask(task.id)) { try await $0.reopenTask(task.id) }
     }
 
     /// Withdraws a request the orchestrator has not defined, so it stops waiting to be and can be
@@ -486,13 +464,7 @@ public final class FleetStore {
     @discardableResult
     public func withdraw(_ request: WorkRequest) async -> Bool {
         guard request.canWithdraw else { return false }
-        do {
-            try await client.withdrawRequest(request.id)
-            return true
-        } catch {
-            report(error)
-            return false
-        }
+        return await perform(.withdrawRequest(request.id)) { try await $0.withdrawRequest(request.id) }
     }
 
     public var canArchive: Bool { !archiveUnavailable && board.hasArchivable }
@@ -508,33 +480,37 @@ public final class FleetStore {
     /// where it is.
     @discardableResult
     public func ask(onPullRequest id: UInt64, text: String, attachments: Attachments? = nil) async -> Bool {
-        await perform { [attachments] client in
+        await perform(.askOnPullRequest(id)) { [attachments] client in
             try await client.ask(onPullRequest: id, text: text, attachments: try await attachments?.storedIDs(using: client) ?? [])
         }
     }
 
     @discardableResult
     public func archiveCompleted() async -> Bool {
-        do {
-            try await client.archiveCompletedTasks()
-            return true
-        } catch AlondraError.unexpected(404) {
+        let result = await submit(.archiveCompleted, itemID: nil, using: client) {
+            try await $0.archiveCompletedTasks()
+        }
+        switch result {
+        case .confirmed: return true
+        case .unknown, .obsolete: return false
+        case .rejected(let error) where (error as? AlondraError) == .unexpected(404):
             archiveUnavailable = true
             return false
-        } catch {
+        case .rejected(let error):
             report(error)
             return false
         }
     }
 
-    private func taskAction(_ action: @Sendable (AlondraClient) async throws -> Void) async -> Bool {
-        do {
-            try await action(client)
-            return true
-        } catch AlondraError.unexpected(404) {
+    private func taskAction(_ kind: MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> Bool {
+        let result = await submit(kind, itemID: nil, using: client, action)
+        switch result {
+        case .confirmed: return true
+        case .unknown, .obsolete: return false
+        case .rejected(let error) where (error as? AlondraError) == .unexpected(404):
             taskActionsUnavailable = true
             return false
-        } catch {
+        case .rejected(let error):
             report(error)
             return false
         }
@@ -566,10 +542,8 @@ public final class FleetStore {
     }
 
     public func send(to node: Node, text: String, attachments: Attachments? = nil) async {
-        do {
-            try await client.send(to: node.sessionId, text: text, attachments: await attachments?.storedIDs(using: client) ?? [])
-        } catch {
-            lastError = error.localizedDescription
+        _ = await perform(.send(node.sessionId)) { client in
+            try await client.send(to: node.sessionId, text: text, attachments: try await attachments?.storedIDs(using: client) ?? [])
         }
     }
 }

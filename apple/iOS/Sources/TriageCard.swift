@@ -55,7 +55,7 @@ struct TriageCard: View {
             .onChange(of: fleet.handoff?.id, initial: true) {
                 guard let handoff = fleet.handoff, handoff.itemID == item.id else { return }
                 fleet.handoff = nil
-                resolve(stamp(for: handoff.label), handoff.action)
+                resolve(stamp(for: handoff.label), kind: handoff.kind, handoff.action)
             }
     }
 
@@ -499,7 +499,7 @@ struct TriageCard: View {
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "Reply to \(item.nodeName ?? String(localized: "this node"))…")) {
                     let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                    resolve(Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)) { [attachments] client in
+                    resolve(Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky), kind: .replyToReport(report.id)) { [attachments] client in
                         try await client.send(to: report.sessionId, text: text, attachments: try await attachments.storedIDs(using: client))
                         try await client.markRead(report.id)
                     }
@@ -546,7 +546,7 @@ struct TriageCard: View {
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "What should change?")) {
                     let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                    resolve(Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)) { [attachments] client in
+                    resolve(Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn), kind: .requestChanges(pr.id)) { [attachments] client in
                         try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
                     }
                 }
@@ -645,13 +645,13 @@ struct TriageCard: View {
             replyFocused = true
             return
         }
-        resolve(stamp(for: option.label)) { try await $0.answer(question.id, text: option.label, option: option.label) }
+        resolve(stamp(for: option.label), kind: .answer(question.id)) { try await $0.answer(question.id, text: option.label, option: option.label) }
     }
 
     private func send(answerTo question: Question) {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         let option = pickedOption?.label
-        resolve(option.map(stamp(for:)) ?? Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky)) { [attachments] client in
+        resolve(option.map(stamp(for:)) ?? Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky), kind: .answer(question.id)) { [attachments] client in
             try await client.answer(question.id, text: text, option: option, attachments: try await attachments.storedIDs(using: client))
         }
     }
@@ -659,13 +659,13 @@ struct TriageCard: View {
     private func requestContext() {
         guard case .question(let question) = item else { return }
         let note = contextNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        resolve(Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate)) {
+        resolve(Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate), kind: .moreContext(question.id)) {
             try await $0.moreContext(question.id, note: note)
         }
     }
 
     private func markRead(_ report: Report) {
-        resolve(stamp(for: HandoffLabel.read)) { try await $0.markRead(report.id) }
+        resolve(stamp(for: HandoffLabel.read), kind: .markRead(report.id)) { try await $0.markRead(report.id) }
     }
 
     private func review(_ report: Report, _ verdict: ReviewVerdict) {
@@ -673,7 +673,7 @@ struct TriageCard: View {
         case .comments: Stamp(label: String(localized: "Comments sent"), symbol: "text.bubble.fill", tint: Palette.sky)
         case .approved: Stamp(label: String(localized: "Approved"), symbol: "checkmark.seal.fill", tint: actionTint)
         }
-        resolve(stamp) { try await $0.review(report.id, verdict) }
+        resolve(stamp, kind: .review(report.id)) { try await $0.review(report.id, verdict) }
     }
 
     private func stamp(for label: String) -> Stamp {
@@ -711,10 +711,10 @@ struct TriageCard: View {
     }
 
     private func settle(_ outcome: PullRequestOutcome, of pr: PullRequest) {
-        resolve(stamp(for: outcome.handoffLabel)) { try await pr.perform(outcome, using: $0) }
+        resolve(stamp(for: outcome.handoffLabel), kind: outcome.commandKind(for: pr.id)) { try await pr.perform(outcome, using: $0) }
     }
 
-    private func resolve(_ stamp: Stamp, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+    private func resolve(_ stamp: Stamp, kind: FleetStore.MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         guard self.stamp == nil else { return }
         replyFocused = false
         withAnimation(.spring(duration: 0.35, bounce: 0.4)) { self.stamp = stamp }
@@ -723,7 +723,7 @@ struct TriageCard: View {
         let fleet = fleet
         Task {
             try? await Task.sleep(for: .milliseconds(520))
-            let ok = await fleet.resolve(item, action)
+            let ok = await fleet.resolve(item, kind: kind, action)
             if !ok {
                 withAnimation(.spring(duration: 0.3)) { self.stamp = nil }
             }

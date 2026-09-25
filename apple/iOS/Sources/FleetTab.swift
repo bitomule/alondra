@@ -450,7 +450,7 @@ struct NodeDetail: View {
         let session = node.sessionId
         sending = true
         Task {
-            let ok = await fleet.perform { [attachments] client in
+            let ok = await fleet.perform(.send(session)) { [attachments] client in
                 try await client.send(to: session, text: text, attachments: try await attachments.storedIDs(using: client))
             }
             sending = false
@@ -517,7 +517,7 @@ extension NodeOccupancy {
 extension FleetStore {
     @discardableResult
     func close(_ request: CloseRequest) async -> Bool {
-        let ok = await perform { try await $0.closeNode(request.session, force: true) }
+        let ok = await perform(.closeNode(request.session)) { try await $0.closeNode(request.session, force: true) }
         if ok { notice = Notice(String(localized: "\(request.name) closed")) }
         return ok
     }

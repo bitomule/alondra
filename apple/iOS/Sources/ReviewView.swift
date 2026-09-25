@@ -204,7 +204,7 @@ struct ReviewView: View {
                         .disabled(!hasFeedback || sending)
                         if let approve = approveOption(question) {
                             Button {
-                                finish(approve) { try await $0.answer(question.id, text: approve, option: approve) }
+                                finish(approve, kind: .answer(question.id)) { try await $0.answer(question.id, text: approve, option: approve) }
                             } label: {
                                 Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
                                     .frame(maxWidth: .infinity)
@@ -234,7 +234,7 @@ struct ReviewView: View {
                         .tint(Palette.dawn)
                         .disabled(!hasFeedback || sending)
                         Button {
-                            finish(HandoffLabel.read) { try await $0.markRead(report.id) }
+                            finish(HandoffLabel.read, kind: .markRead(report.id)) { try await $0.markRead(report.id) }
                         } label: {
                             Label("Mark as Read", systemImage: "checkmark")
                                 .frame(maxWidth: .infinity)
@@ -261,16 +261,16 @@ struct ReviewView: View {
         switch item {
         case .question(let question):
             let change = changeOption(question)
-            finish(change ?? HandoffLabel.answered) { [attachments] client in
+            finish(change ?? HandoffLabel.answered, kind: .answer(question.id)) { [attachments] client in
                 try await client.answer(question.id, text: text, option: change, attachments: try await attachments.storedIDs(using: client))
             }
         case .report(let report):
-            finish(HandoffLabel.sent) { [attachments] client in
+            finish(HandoffLabel.sent, kind: .replyToReport(report.id)) { [attachments] client in
                 try await client.send(to: report.sessionId, text: text, attachments: try await attachments.storedIDs(using: client))
                 try await client.markRead(report.id)
             }
         case .pullRequest(let pr):
-            finish(HandoffLabel.sent) { [attachments] client in
+            finish(HandoffLabel.sent, kind: .requestChanges(pr.id)) { [attachments] client in
                 try await client.requestChanges(onPullRequest: pr.id, text: text, attachments: try await attachments.storedIDs(using: client))
             }
         }
@@ -286,7 +286,7 @@ struct ReviewView: View {
             return
         }
         let text = hasFeedback ? feedbackText : option.label
-        finish(option.label) { [attachments] client in
+        finish(option.label, kind: .answer(question.id)) { [attachments] client in
             try await client.answer(question.id, text: text, option: option.label, attachments: try await attachments.storedIDs(using: client))
         }
     }
@@ -301,9 +301,9 @@ struct ReviewView: View {
         return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
     }
 
-    private func finish(_ label: String, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
+    private func finish(_ label: String, kind: FleetStore.MutationKind, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) {
         sending = true
-        let handoff = FleetStore.Handoff(itemID: item.id, label: label, action: action)
+        let handoff = FleetStore.Handoff(itemID: item.id, label: label, kind: kind, action: action)
         let fleet = fleet
         dismiss()
         Task {

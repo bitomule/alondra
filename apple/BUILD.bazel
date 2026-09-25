@@ -15,6 +15,7 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple/APIClient:AlondraAPIClient",
+        "//apple/Data/Commands:AlondraCommands",
         "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
         "@swiftpkg_highlightswift//:HighlightSwift",

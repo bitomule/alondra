@@ -1,0 +1,11 @@
+# D1b command boundary
+
+`CommandGate` records only the operation kind, current server/device/credential scope, card ID and an unknown result. The send closure is held only for its first execution and is never saved for replay. `FleetStore` currently bridges legacy call sites into this boundary; the TCA use cases should submit typed commands directly when each feature migrates.
+
+The current daemon has no general idempotency key or duplicate-result contract. A timeout, lost connection or cancellation after dispatch is therefore an unknown outcome. Reconnection may fetch a snapshot, but must not resend a mutation. The composer keeps its draft and an affected card becomes visible again so the user can inspect server state before deciding to act again. A fresh server/credential generation clears presentation state and invalidates in-flight results.
+
+The unknown-outcome list is currently only in memory. It contains action type and target, but no payload or resend closure; the UI identifies the first uncertain action. A crash or relaunch loses this warning. Before deployment, either persist non-executable outcome metadata by stable credential scope and provide manual reconciliation, or complete and physically verify the backend's durable idempotency/outbox contract. This PR does not treat a missing snapshot item or HTTP 404 as proof that a write did not occur.
+
+Before enabling any automatic retry, agree with the backend on key placement, duplicate response semantics, retention, and reconciliation for every mutating route. The key must bind immutable payload bytes and the authenticated device/server identity. Test a lost HTTP response after the server commits the operation, then verify exactly one side effect across reconnect and process restart.
+
+The root can project `SyncSession` into the temporary `FleetStore` with `apply(_:)` and `setConnection(_:)`; it must use a single app-owned `CommandGate` and a monotonically increasing `CommandScope.generation` across Mac windows. On a credential change, call `await gate.use(nextScope)` and `fleet.use(newClient, commandScope: nextScope)` in each window, even if URL and device ID remain equal. The gate rejects a delayed old `use` call, so it cannot roll back to an earlier identity. It must not start `FleetStore.run()` once SyncSession owns polling.
