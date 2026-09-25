@@ -560,7 +560,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
 fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
     let path = std::env::temp_dir().join(format!("alondra-schedule-{}-{}.json", std::process::id(), now_millis()));
     let mut body = existing.clone().unwrap_or_else(|| json!({
-        "title": "", "text": "", "project": null, "options": {},
+        "title": "", "text": "", "project": null, "options": {}, "disallowed_tools": [],
         "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1,
         "interval": 1, "start_at": now_millis() + 3_600_000, "enabled": true
     }));

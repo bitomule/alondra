@@ -3,6 +3,20 @@ use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 
 #[test]
+fn managed_sessions_redirect_cron_create_to_alondra_schedules() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+        .arg("hook")
+        .env("ALONDRA_LAUNCHED", "1")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"PreToolUse","tool_name":"CronCreate","tool_input":{"cron":"0 9 * * 1"}}"#).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("schedule_create"));
+}
+
+#[test]
 fn hook_cli_sends_json_to_local_daemon_and_returns_its_reply() {
     let home = std::env::temp_dir().join(format!("alondra-cli-hook-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);

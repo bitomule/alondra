@@ -25,6 +25,8 @@ pub struct Schedule {
     pub project: Option<String>,
     #[serde(default)]
     pub options: std::collections::BTreeMap<String, alondra_core::options::Choice>,
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
     pub frequency: Frequency,
     pub hour: u8,
     pub minute: u8,
@@ -54,6 +56,8 @@ pub struct Draft {
     project: Option<String>,
     #[serde(default)]
     options: std::collections::BTreeMap<String, alondra_core::options::Choice>,
+    #[serde(default)]
+    disallowed_tools: Vec<String>,
     frequency: Frequency,
     hour: u8,
     minute: u8,
@@ -82,6 +86,9 @@ impl Draft {
             return Err("one-time date must be in the future".into());
         }
         if self.project.as_ref().is_some_and(|p| p.trim().is_empty()) { return Err("project cannot be empty".into()); }
+        if self.disallowed_tools.len() > 100 || self.disallowed_tools.iter().any(|p| p.is_empty() || p.len() > 200 || p.chars().any(char::is_whitespace) || p.starts_with('-')) {
+            return Err("disallowed tools must be at most 100 nonempty tool patterns without spaces or flags".into());
+        }
         let loaded = crate::options::load(hub);
         loaded.file.resolve(self.project.as_deref(), &self.options).map_err(|e| e.to_string())?;
         let root = loaded.file.projects_root(&crate::options::user_home());
@@ -98,7 +105,7 @@ impl Draft {
     fn into_schedule(self, id: String, revision: i64) -> Schedule {
         let next_run = self.enabled.then(|| next_after(self.frequency, self.hour, self.minute, self.weekday, self.interval, self.start_at, now_millis())).flatten();
         Schedule { id, title: self.title.trim().into(), text: self.text.trim().into(), project: self.project,
-            options: self.options, frequency: self.frequency, hour: self.hour, minute: self.minute,
+            options: self.options, disallowed_tools: self.disallowed_tools, frequency: self.frequency, hour: self.hour, minute: self.minute,
             weekday: self.weekday, interval: self.interval, start_at: self.start_at, enabled: self.enabled, next_run, last_run: None,
             last_request: None, last_error: None, status: "never_run".into(), revision }
     }
@@ -186,7 +193,8 @@ impl Schedules {
         }
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schedules (id TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS schedule_failed_launches (request TEXT PRIMARY KEY);")?;
+            CREATE TABLE IF NOT EXISTS schedule_failed_launches (request TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS schedule_launch_tools (request TEXT PRIMARY KEY, patterns TEXT NOT NULL);")?;
         // A process killed after claiming must never replay that dispatch on restart.
         conn.execute("UPDATE schedules SET body=json_set(body, '$.status', 'interrupted', '$.last_error', 'Alondra stopped while sending this run') WHERE json_extract(body, '$.status')='launching'", [])?;
         // Older versions waited for an orchestrator. Keep their due time and dispatch directly.
@@ -212,6 +220,18 @@ impl Schedules {
         let conn = self.0.lock().unwrap();
         conn.execute("INSERT INTO schedules(id,body) VALUES(?1,?2)",
             params![schedule.id, serde_json::to_string(schedule)?])?;
+        Ok(())
+    }
+
+    pub fn tools_for_request(&self, request: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.0.lock().unwrap();
+        let patterns: Option<String> = conn.query_row("SELECT patterns FROM schedule_launch_tools WHERE request=?1", [request], |r| r.get(0)).optional()?;
+        patterns.map(|p| serde_json::from_str(&p).map_err(Into::into)).transpose().map(|p| p.unwrap_or_default())
+    }
+
+    fn remember_tools(&self, request: &str, patterns: &[String]) -> anyhow::Result<()> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("INSERT INTO schedule_launch_tools(request, patterns) VALUES(?1, ?2)", params![request, serde_json::to_string(patterns)?])?;
         Ok(())
     }
 
@@ -357,6 +377,10 @@ async fn dispatch(hub: Arc<Hub>, id: &str, due_only: bool) -> Response {
         return error(StatusCode::BAD_REQUEST, message);
     }
     let request = format!("r-{}-{}", now_millis(), crate::auth::random_hex(4));
+    if let Err(e) = hub.schedules.remember_tools(&request, &s.disallowed_tools) {
+        let _ = hub.schedules.finish(id, None, Some(&e.to_string()));
+        return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
     let node_name = format!("scheduled/{}-{}", &s.id[..s.id.len().min(8)], crate::auth::random_hex(4));
     let recorded = hub.append_all(|v| Ok::<_, String>(vec![
         Event::RequestSent { request_id: request.clone(), options: resolved.clone(), text: Some(s.text.clone()), attachments: vec![] },
@@ -443,7 +467,7 @@ mod tests {
     fn claim_is_durable_and_never_claims_twice() {
         let path = std::env::temp_dir().join(format!("schedule-{}.db", crate::auth::random_hex(6)));
         let store = Schedules::open(&path).unwrap();
-        let s = Draft { title: "Review".into(), text: "Review project".into(), project: None,
+        let s = Draft { title: "Review".into(), text: "Review project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 0, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 }.into_schedule("one".into(), 1);
         store.save(&s).unwrap();
@@ -453,6 +477,21 @@ mod tests {
         let store = Schedules::open(&path).unwrap();
         assert_eq!(store.get("one").unwrap().unwrap().status, "interrupted");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn scheduled_tool_policy_survives_a_restart_and_is_scoped_to_its_request() {
+        let path = std::env::temp_dir().join(format!("schedule-tools-{}.db", crate::auth::random_hex(6)));
+        let policy = vec!["mcp__revenuecat__create-*".to_string(), "mcp__revenuecat__update-*".to_string()];
+        {
+            let store = Schedules::open(&path).unwrap();
+            store.remember_tools("r-protected", &policy).unwrap();
+        }
+        let store = Schedules::open(&path).unwrap();
+        assert_eq!(store.tools_for_request("r-protected").unwrap(), policy);
+        assert!(store.tools_for_request("r-other").unwrap().is_empty());
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -477,7 +516,7 @@ mod tests {
             assert_eq!(std::fs::metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
             assert_eq!(std::fs::metadata(home.join("schedules.db")).unwrap().permissions().mode() & 0o777, 0o600);
         }
-        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None,
+        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec!["mcp__revenuecat__create-*".into()],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 };
         let created = create(State(hub.clone()), Json(draft)).await;
@@ -496,6 +535,11 @@ mod tests {
         let started = crate::orchestrate::start_due(&hub, &launcher, &crate::prs::GhCli, &mut Default::default()).await;
         assert_eq!(started.len(), 1);
         assert_eq!(launcher.0.lock().unwrap().len(), 1);
+        let calls = launcher.0.lock().unwrap();
+        let flags = &calls[0];
+        let deny = flags.iter().position(|arg| arg == "--disallowedTools").expect("scheduled launch carries tool policy");
+        assert_eq!(flags[deny + 1], "mcp__revenuecat__create-*");
+        drop(calls);
         assert!(hub.read(|v| v.messages.is_empty()));
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -514,7 +558,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("schedule-failure-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config.clone(), false).unwrap());
-        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None,
+        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 };
         let created = create(State(hub.clone()), Json(draft)).await;
@@ -537,7 +581,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("schedule-retry-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config, false).unwrap());
-        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None,
+        let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 };
         let created = create(State(hub.clone()), Json(draft)).await;

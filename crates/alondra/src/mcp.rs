@@ -117,6 +117,17 @@ fn tools(role: Role, user: &str) -> Value {
         json!({"name": "report", "description": format!("The answer goes as kind final with the file in attachments: {user} sees you are done and the task closes. A short finding goes as notice, which changes nothing for the task. document is only for a claude.ai artifact you want {user} to review, its URL in links; a decision for {user} is never a report, it is ask, with the file attached and the options. With to_orchestrator: true it is a handoff for the orchestrator instead — use it for \"someone should continue this\" when you have nothing left of your own pending. Alondra rejects reports that only give progress. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
         json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}, "task": {"type": "string", "description": "The task the question is for, when you work on several"}}, "required": ["id"]}}),
         json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
+        json!({"name": "schedule_create", "description": format!("Create a durable scheduled Alondra task for {user}. Use this instead of CronCreate for work that should continue beyond this Claude session. Times use the Mac's local timezone. Ask only if the mission, project or time cannot be inferred from the conversation."), "inputSchema": {"type": "object", "properties": {
+            "title": {"type": "string"}, "text": {"type": "string", "description": "Self-contained mission for a fresh node"},
+            "project": {"type": ["string", "null"], "description": "Folder name directly under ~/Projects, or null for the Projects folder"},
+            "frequency": {"type": "string", "enum": ["daily", "weekly", "every_hours", "every_days", "every_months", "once"]},
+            "hour": {"type": "integer", "minimum": 0, "maximum": 23}, "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+            "weekday": {"type": ["integer", "null"], "description": "For weekly: Sunday 0, Monday 1, through Saturday 6"},
+            "interval": {"type": ["integer", "null"], "description": "For every_hours/days/months: interval from 1 to 365"},
+            "start_at": {"type": ["integer", "null"], "description": "Unix milliseconds for once or interval anchor"},
+            "options": {"type": "object", "description": "Alondra launch choices, e.g. pr: review or auto_merge, effort: normal"},
+            "disallowed_tools": {"type": "array", "items": {"type": "string"}, "description": "Optional Claude tool deny patterns"}
+        }, "required": ["title", "text", "project", "frequency", "hour", "minute"]}}),
     ];
     if role == Role::Node {
         list.push(json!({"name": "claim_task", "description": "Bind this subagent to the task its parent delegated. Pass the exact opaque Alondra claim token from the first line of your Agent prompt before any other tool.", "inputSchema": {"type": "object", "properties": {"token": {"type": "string", "description": "The Alondra claim token injected into this Agent prompt"}}, "required": ["token"]}}));
@@ -272,6 +283,11 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         "new_task" if role == Role::Node => {
             let r = client.post("/v1/tasks/new", &merge(pick(args, &["title", "brief", "task"]), &who))?;
             r.get("next").and_then(Value::as_str).unwrap_or("Task opened.").to_string()
+        }
+        "schedule_create" => {
+            let r = client.post("/v1/schedules", args)?;
+            format!("Scheduled in Alondra: {} (id {}). Next run: {}. The task is visible under Scheduled Tasks.",
+                r["title"].as_str().unwrap_or("task"), r["id"].as_str().unwrap_or("unknown"), r["next_run"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "none".into()))
         }
         "focus" if role == Role::Node => {
             let r = client.post("/v1/focus", &merge(pick(args, &["task", "minutes"]), &who))?;
