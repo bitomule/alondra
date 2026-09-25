@@ -688,7 +688,7 @@ impl View {
             (Event::ArtifactReviewed { report, verdict }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, Some((*report, *verdict)), at)),
             (Event::ReportRead { .. }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, None, at)),
             (Event::DaemonSeen(d), _) => self.bind_launch_of(&d.session_id),
-            (Event::Launched { name, request_id, auto_merge, task, title }, _) => match task {
+            (Event::Launched { name, request_id, auto_merge, task, title, .. }, _) => match task {
                 Some(task) => self.launched_for(task),
                 None => self.launched(name, title.as_deref(), Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
             },
@@ -822,7 +822,7 @@ impl View {
     }
 
     /// The orchestrator works on no task.
-    fn drop_tasks(&mut self, session_id: &str) {
+    pub(crate) fn drop_tasks(&mut self, session_id: &str) {
         let ids: Vec<String> = self.board.tasks.values().filter(|t| t.is_assigned_to(session_id) || t.id == task_id(session_id)).map(|t| t.id.clone()).collect();
         for id in ids {
             if let Some(task) = self.board.tasks.remove(&id) {
@@ -1332,7 +1332,7 @@ mod tests {
     #[test]
     fn an_auto_merge_task_does_not_wait_for_its_pr() {
         let mut run = Run::new();
-        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix"));
+        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None, session: None }).on(seen("app/fix"));
         assert!(run.task().launched && run.task().options.auto_merge);
         run.on(opened()).on(report(1, ReportKind::Final, &[PR])).pr(|p| p.state = PrState::Merged);
         assert_eq!(run.states(), vec![Running, Done, Done]);
@@ -1345,7 +1345,7 @@ mod tests {
         let mut run = Run::new();
         run.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
         assert_eq!(run.view.board.request_state("r-1"), RequestState::Defining);
-        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None, title: None });
+        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None, title: None, session: None });
         let task = run.task();
         assert_eq!((task.request.as_str(), task.options.effort.as_deref(), task.options.project.as_deref()), ("r-1", Some("hard"), Some("app")));
         assert_eq!(run.view.board.requests.keys().collect::<Vec<_>>(), vec!["r-1"], "the made-up request is gone");
@@ -1513,7 +1513,7 @@ mod tests {
             let options = crate::options::Resolved { project: Some("app".into()), auto_merge: true, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None };
             let mut d = Daemon::new();
             d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
-            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None, title: None });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None, title: None, session: None });
             let id = d.view.board.tasks.keys().next().cloned().expect("the launch made its task");
             assert_eq!(d.view.board.tasks[&id].assignee, None, "no node yet");
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
@@ -1704,7 +1704,7 @@ mod tests {
         }
 
         fn launched_for(task: &str, name: &str) -> Event {
-            Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
+            Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None, session: None }
         }
 
         fn seen_as(sid: &str, name: &str) -> Event {
@@ -1781,7 +1781,7 @@ mod tests {
         #[test]
         fn a_merge_on_github_moves_the_task_even_where_alondra_would_not_have_merged() {
             let mut d = Daemon::new();
-            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix")).on(hook(UPS)).on(opened());
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None, session: None }).on(seen("app/fix")).on(hook(UPS)).on(opened());
             d.github(1, |p| p.checks = vec![crate::pr::Check { name: "ci".into(), state: CheckState::Running, url: None }]);
             d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
             let t = d.task("s");
@@ -1829,14 +1829,14 @@ mod tests {
         #[test]
         fn a_launched_task_goes_by_the_title_it_was_given_and_its_node_still_takes_it() {
             let mut d = Daemon::new();
-            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: Some("Fix the login crash".into()) });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: Some("Fix the login crash".into()), session: None });
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
             let t = d.task("s");
             assert_eq!((t.title.as_str(), t.launch_name(), d.view.board.tasks.len()), ("Fix the login crash", "app/fix", 1));
             assert_eq!(d.replayed(|_| true).board, d.view.board);
 
             let mut plain = Daemon::new();
-            plain.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None }).on(seen("app/fix"));
+            plain.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None, session: None }).on(seen("app/fix"));
             assert_eq!(plain.task("s").title, "app/fix", "without a title it goes by its node's name");
         }
 

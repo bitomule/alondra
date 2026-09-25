@@ -6,6 +6,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -17,6 +23,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -29,6 +41,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 2592000
           }
         ]
@@ -41,6 +59,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 2592000
           }
         ]
@@ -53,6 +77,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 2592000
           }
         ]
@@ -65,6 +95,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -77,6 +113,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -88,6 +130,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -99,6 +147,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -110,6 +164,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -121,6 +181,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
@@ -132,6 +198,12 @@
           {
             "type": "http",
             "url": "http://127.0.0.1:47800/hook",
+            "headers": {
+              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
+            },
+            "allowedEnvVars": [
+              "ALONDRA_LAUNCHED"
+            ],
             "timeout": 5
           }
         ]
