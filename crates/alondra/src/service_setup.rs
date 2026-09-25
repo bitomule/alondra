@@ -51,7 +51,8 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 }
 
 fn read_private(path: &Path) -> Result<[u8; 32]> {
-    if fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
         bail!(
             "private key file has unsafe permissions: {}",
             path.display()
@@ -238,7 +239,13 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool)
         agreement_key_path: format!("service-keys/{AGREEMENT_FILE}"),
         devices: vec![],
     };
-    if path.exists() {
+    let existing_path = match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => true,
+        Ok(_) => bail!("service.toml must be a regular file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if existing_path {
         let existing: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
         if existing.mac_id != expected.mac_id
             || existing.owner_sub != expected.owner_sub
