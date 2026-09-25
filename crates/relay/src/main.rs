@@ -177,11 +177,11 @@ async fn enroll(
     uri: Uri,
     body: Bytes,
 ) -> ApiResult {
+    let _gate = server.device_gate.write().await;
     let mac = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &body, now_ms())
         .map_err(|_| unauthorized())?;
-    let _gate = server.device_gate.write().await;
     if body.len() > 4096 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
@@ -201,11 +201,11 @@ async fn revoke(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
+    let _gate = server.device_gate.write().await;
     let mac = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &[], now_ms())
         .map_err(|_| unauthorized())?;
-    let _gate = server.device_gate.write().await;
     server
         .auth
         .revoke(&mac, &id)
