@@ -1,8 +1,9 @@
 mod auth;
+mod push;
 mod state;
 
 use alondra_e2e::EnvelopeV1;
-use auth::{Auth, Config, PhoneDevice};
+use auth::{Auth, Config, PhoneDevice, PushRegistration};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -24,6 +25,7 @@ use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
     auth: Auth,
+    apns: Option<push::Apns>,
     queue: Queue,
     work_waiters: Arc<Semaphore>,
     change_waiters: Arc<Semaphore>,
@@ -39,6 +41,8 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/bootstrap", get(bootstrap))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
+        .route("/v1/push/register", post(register_push))
+        .route("/v1/mac/push", post(send_push))
         .route("/v1/requests", post(submit))
         .route("/v1/requests/{id}", get(request_status))
         .route("/v1/changes", get(changes))
@@ -152,6 +156,102 @@ async fn revoke(
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
     server.queue.purge_phone(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn register_push(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if server.apns.is_none() {
+        return Err(error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable"));
+    }
+    let _gate = server.device_gate.read().await;
+    let who = server
+        .auth
+        .authenticate_phone(&headers, &method, &uri, &body, now_ms())
+        .await
+        .map_err(|_| unauthorized())?;
+    if body.len() > 1024 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let registration: PushRegistration = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
+    push::validate_registration(&registration)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
+    server
+        .auth
+        .register_push(&who.device_id, registration)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "push_registration_failed"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushRequest {
+    device_id: String,
+    envelope: EnvelopeV1,
+}
+
+async fn send_push(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    let apns = server
+        .apns
+        .as_ref()
+        .ok_or_else(|| error(StatusCode::SERVICE_UNAVAILABLE, "push_unavailable"))?;
+    // Keep the read gate through APNs acceptance: a completed revocation cannot be followed by a new send.
+    let _gate = server.device_gate.read().await;
+    let mac = server
+        .auth
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
+        .map_err(|_| unauthorized())?;
+    if body.len() > 4096 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let request: PushRequest = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
+    let e = &request.envelope;
+    let now = now_ms();
+    if e.kind != "push"
+        || e.route != mac.device_id
+        || e.sender != mac.device_id
+        || e.recipient != request.device_id
+        || e.expires_at_ms <= now
+        || e.expires_at_ms > now.saturating_add(state::MAX_LIFETIME_MS)
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_push_route"));
+    }
+    e.verify_signature(
+        &server.auth.mac_key().map_err(|_| unauthorized())?,
+        &mac.device_id,
+        &request.device_id,
+        &mac.device_id,
+        now,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
+    let registration = server
+        .auth
+        .push_registration(&request.device_id)
+        .ok_or_else(|| error(StatusCode::NOT_FOUND, "push_registration_not_found"))?;
+    let payload_bytes = serde_json::to_vec(&push::payload(e, &registration.push_binding))
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
+    if payload_bytes.len() > 4096 {
+        return Err(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "apns_payload_too_large",
+        ));
+    }
+    apns.send(&registration, e)
+        .await
+        .map_err(|_| error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"))?;
+    Ok(StatusCode::ACCEPTED.into_response())
 }
 
 fn parse_envelope(
@@ -466,11 +566,13 @@ async fn main() -> anyhow::Result<()> {
     let path = std::env::var("ALONDRA_RELAY_CONFIG")?;
     let config: Config = serde_json::from_slice(&std::fs::read(path)?)?;
     let listen = config.listen.clone();
+    let apns = config.apns.clone().map(push::Apns::open).transpose()?;
     let auth = Auth::open(config).await?;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
     let server = Arc::new(Server {
         auth,
+        apns,
         queue: Queue::new(),
         work_waiters: Arc::new(Semaphore::new(16)),
         change_waiters: Arc::new(Semaphore::new(64)),
@@ -571,6 +673,13 @@ mod http_tests {
     async fn test_server(
         mac_key: &SigningKey,
     ) -> (String, Arc<Server>, tokio::task::JoinHandle<()>) {
+        test_server_with_apns(mac_key, None).await
+    }
+
+    async fn test_server_with_apns(
+        mac_key: &SigningKey,
+        apns_endpoint: Option<String>,
+    ) -> (String, Arc<Server>, tokio::task::JoinHandle<()>) {
         let registry = std::env::temp_dir().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
             std::process::id(),
@@ -587,11 +696,13 @@ mod http_tests {
             mac_id: "mac-1".into(),
             mac_signing_key: key_bytes(mac_key),
             device_registry_path: registry,
+            apns: None,
         };
         let auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
             auth,
+            apns: apns_endpoint.map(push::Apns::test),
             queue: Queue::new(),
             work_waiters: Arc::new(Semaphore::new(16)),
             change_waiters: Arc::new(Semaphore::new(64)),
@@ -606,6 +717,326 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    async fn encrypted_push_requires_both_identities_and_purges_registration_on_revoke() {
+        use std::sync::Mutex;
+        let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = delivered.clone();
+        let apns_router = Router::new().route(
+            "/3/device/{token}",
+            post(move |Json(body): Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    let reject = body["alondra"]["envelope"]["request_id"] == "push-reject";
+                    captured.lock().unwrap().push(body);
+                    if reject {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        StatusCode::OK
+                    }
+                }
+            }),
+        );
+        let apns_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let apns_url = format!("http://{}", apns_listener.local_addr().unwrap());
+        let apns_task = tokio::spawn(async move {
+            axum::serve(apns_listener, apns_router).await.unwrap();
+        });
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let phone_sign = SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let phone_ecdh = SecretKey::from_slice(&[23u8; 32]).unwrap();
+        let (url, server, relay_task) = test_server_with_apns(&mac_sign, Some(apns_url)).await;
+        server
+            .auth
+            .enroll(PhoneDevice {
+                device_id: "phone-push".into(),
+                owner_sub: "owner".into(),
+                signing_key: key_bytes(&phone_sign),
+            })
+            .unwrap();
+        let epoch = server.auth.server_epoch();
+        let client = reqwest::Client::new();
+        let now = now_ms();
+        let binding = URL_SAFE_NO_PAD.encode([3u8; 32]);
+        let registration = PushRegistration {
+            token: "ab".repeat(32),
+            environment: "sandbox".into(),
+            push_binding: binding.clone(),
+        };
+        let reg_body = serde_json::to_vec(&registration).unwrap();
+        let path = "/v1/push/register";
+        let intruder = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .bearer_auth(jwt("intruder", now))
+                .body(reg_body.clone()),
+            &phone_sign,
+            "phone-push",
+            "POST",
+            path,
+            &reg_body,
+            50,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(intruder.status(), StatusCode::UNAUTHORIZED);
+        let wrong_key = SigningKey::from_slice(&[24u8; 32]).unwrap();
+        let forged = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .bearer_auth(jwt("owner", now))
+                .body(reg_body.clone()),
+            &wrong_key,
+            "phone-push",
+            "POST",
+            path,
+            &reg_body,
+            51,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+        let mut invalid_registration = registration.clone();
+        invalid_registration.push_binding.push('=');
+        let invalid_body = serde_json::to_vec(&invalid_registration).unwrap();
+        let invalid = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .bearer_auth(jwt("owner", now))
+                .body(invalid_body.clone()),
+            &phone_sign,
+            "phone-push",
+            "POST",
+            path,
+            &invalid_body,
+            60,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let registered = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .bearer_auth(jwt("owner", now))
+                .body(reg_body.clone()),
+            &phone_sign,
+            "phone-push",
+            "POST",
+            path,
+            &reg_body,
+            52,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(registered.status(), StatusCode::NO_CONTENT);
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored["push"]["phone-push"]["push_binding"], binding);
+
+        let envelope = EnvelopeV1::seal_random(
+            Context {
+                route: "mac-1",
+                sender: "mac-1",
+                recipient: "phone-push",
+                request_id: "push-1",
+                kind: "push",
+                expires_at_ms: now_ms() + 120_000,
+            },
+            br#"{"title":"private title","push_binding":"inside"}"#,
+            &mac_sign,
+            &phone_ecdh.public_key(),
+        )
+        .unwrap();
+        let body =
+            serde_json::to_vec(&json!({"device_id":"phone-push","envelope":envelope})).unwrap();
+        let path = "/v1/mac/push";
+        let forged = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(body.clone()),
+            &wrong_key,
+            "mac-1",
+            "POST",
+            path,
+            &body,
+            53,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+        let mut wrong_route: Value = serde_json::from_slice(&body).unwrap();
+        wrong_route["device_id"] = json!("other-phone");
+        let wrong_body = serde_json::to_vec(&wrong_route).unwrap();
+        let wrong = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(wrong_body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &wrong_body,
+            54,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+        let oversized = vec![b'x'; 4097];
+        let large = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(oversized.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &oversized,
+            55,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let too_large_for_apns = (2500..3100)
+            .step_by(20)
+            .find_map(|length| {
+                let envelope = EnvelopeV1::seal_random(
+                    Context {
+                        route: "mac-1",
+                        sender: "mac-1",
+                        recipient: "phone-push",
+                        request_id: "push-large",
+                        kind: "push",
+                        expires_at_ms: now_ms() + 120_000,
+                    },
+                    &vec![b'a'; length],
+                    &mac_sign,
+                    &phone_ecdh.public_key(),
+                )
+                .unwrap();
+                let body =
+                    serde_json::to_vec(&json!({"device_id":"phone-push","envelope":envelope}))
+                        .unwrap();
+                (body.len() <= 4096
+                    && serde_json::to_vec(&push::payload(&envelope, &binding))
+                        .unwrap()
+                        .len()
+                        > 4096)
+                    .then_some(body)
+            })
+            .expect("APNs overhead creates a 4 KiB payload boundary below the request limit");
+        let apns_large = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .body(too_large_for_apns.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &too_large_for_apns,
+            58,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(apns_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let accepted = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &body,
+            56,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+        {
+            let pushed = delivered.lock().unwrap();
+            assert_eq!(pushed.len(), 1);
+            assert_eq!(pushed[0]["aps"]["alert"]["body"], "Nueva actividad");
+            assert_eq!(pushed[0]["aps"]["mutable-content"], 1);
+            assert_eq!(pushed[0]["alondra"]["push_binding"], binding);
+            assert!(pushed[0].to_string().contains("ciphertext"));
+            assert!(!pushed[0].to_string().contains("private title"));
+        }
+
+        let rejected_envelope = EnvelopeV1::seal_random(
+            Context {
+                route: "mac-1",
+                sender: "mac-1",
+                recipient: "phone-push",
+                request_id: "push-reject",
+                kind: "push",
+                expires_at_ms: now_ms() + 120_000,
+            },
+            br#"{"event":"unreadable"}"#,
+            &mac_sign,
+            &phone_ecdh.public_key(),
+        )
+        .unwrap();
+        let rejected_body =
+            serde_json::to_vec(&json!({"device_id":"phone-push","envelope":rejected_envelope}))
+                .unwrap();
+        let rejected = sign(
+            &epoch,
+            client
+                .post(format!("{url}{path}"))
+                .body(rejected_body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &rejected_body,
+            59,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(
+            rejected.status(),
+            StatusCode::BAD_GATEWAY,
+            "APNs rejection must not look accepted"
+        );
+
+        server.auth.revoke("phone-push").unwrap();
+        assert!(server.auth.push_registration("phone-push").is_none());
+        let persisted: Value = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert!(persisted["push"].as_object().unwrap().is_empty());
+        let denied = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &body,
+            57,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+        relay_task.abort();
+        apns_task.abort();
     }
 
     #[tokio::test]
@@ -1143,6 +1574,7 @@ mod http_tests {
                 std::process::id(),
                 NEXT_TEST_REGISTRY.fetch_add(1, Ordering::Relaxed)
             )),
+            apns: None,
         };
         let auth = Auth::open(config).await.unwrap();
         let now = now_ms();

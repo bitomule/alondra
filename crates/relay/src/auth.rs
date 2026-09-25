@@ -34,6 +34,17 @@ pub struct Config {
     /// SEC1 uncompressed P-256 public key, base64url without padding.
     pub mac_signing_key: String,
     pub device_registry_path: PathBuf,
+    /// Optional APNs signing credential. Push endpoints fail closed when omitted.
+    #[serde(default)]
+    pub apns: Option<crate::push::ApnsConfig>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PushRegistration {
+    pub token: String,
+    pub environment: String,
+    pub push_binding: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -47,12 +58,15 @@ pub struct PhoneDevice {
 struct DeviceRegistry {
     devices: HashMap<String, PhoneDevice>,
     revoked_ids: HashSet<String>,
+    push: HashMap<String, PushRegistration>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct StoredDeviceRegistry {
     devices: Vec<PhoneDevice>,
     revoked_ids: Vec<String>,
+    #[serde(default)]
+    push: HashMap<String, PushRegistration>,
 }
 
 #[derive(Deserialize)]
@@ -140,12 +154,13 @@ impl Auth {
         };
         let devices = if config.device_registry_path.exists() {
             let raw = std::fs::read(&config.device_registry_path)?;
-            let (list, revoked_ids) = match serde_json::from_slice(&raw)? {
+            let (list, revoked_ids, push) = match serde_json::from_slice(&raw)? {
                 RegistryOnDisk::Current(StoredDeviceRegistry {
                     devices,
                     revoked_ids,
-                }) => (devices, revoked_ids),
-                RegistryOnDisk::Legacy(devices) => (devices, Vec::new()),
+                    push,
+                }) => (devices, revoked_ids, push),
+                RegistryOnDisk::Legacy(devices) => (devices, Vec::new(), HashMap::new()),
             };
             let devices: HashMap<_, _> =
                 list.into_iter().map(|d| (d.device_id.clone(), d)).collect();
@@ -153,9 +168,13 @@ impl Auth {
             if devices.keys().any(|id| revoked_ids.contains(id)) {
                 bail!("device registry contains active and revoked duplicate ID");
             }
+            if push.keys().any(|id| !devices.contains_key(id)) {
+                bail!("push registration references an inactive device");
+            }
             DeviceRegistry {
                 devices,
                 revoked_ids,
+                push,
             }
         } else {
             DeviceRegistry::default()
@@ -216,15 +235,42 @@ impl Auth {
             return Ok(());
         }
         let previous = registry.devices.remove(device_id);
+        let previous_push = registry.push.remove(device_id);
         registry.revoked_ids.insert(device_id.to_owned());
         if let Err(e) = self.persist_registry(&registry) {
             registry.revoked_ids.remove(device_id);
             if let Some(previous) = previous {
                 registry.devices.insert(device_id.to_owned(), previous);
             }
+            if let Some(previous) = previous_push {
+                registry.push.insert(device_id.to_owned(), previous);
+            }
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Store token and binding atomically with device state; an old binding cannot remain after revoke.
+    pub fn register_push(&self, device_id: &str, registration: PushRegistration) -> Result<()> {
+        crate::push::validate_registration(&registration)?;
+        let mut registry = self.devices.lock().unwrap();
+        if !registry.devices.contains_key(device_id) || registry.revoked_ids.contains(device_id) {
+            bail!("unknown or revoked device");
+        }
+        let old = registry.push.insert(device_id.to_owned(), registration);
+        if let Err(e) = self.persist_registry(&registry) {
+            if let Some(old) = old {
+                registry.push.insert(device_id.to_owned(), old);
+            } else {
+                registry.push.remove(device_id);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn push_registration(&self, device_id: &str) -> Option<PushRegistration> {
+        self.devices.lock().unwrap().push.get(device_id).cloned()
     }
 
     fn persist_registry(&self, registry: &DeviceRegistry) -> Result<()> {
@@ -237,6 +283,7 @@ impl Auth {
             &serde_json::to_vec(&StoredDeviceRegistry {
                 devices,
                 revoked_ids,
+                push: registry.push.clone(),
             })?,
         )
     }
