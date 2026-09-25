@@ -319,6 +319,17 @@ pub fn find_repo(start: &Path) -> Option<PathBuf> {
     start.ancestors().find(|d| d.join(".claude-plugin/marketplace.json").is_file() && d.join("plugin").is_dir()).map(Path::to_path_buf)
 }
 
+/// A release can carry the marketplace next to its binaries, without a source checkout.
+fn installed_package() -> Option<(PathBuf, PathBuf)> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bin = executable.parent()?.to_path_buf();
+    let package = bin.parent()?;
+    (bin.join("alondrad").is_file())
+        .then(|| find_repo(package))
+        .flatten()
+        .map(|assets| (bin, assets))
+}
+
 fn prompt(question: &str, default: &str) -> Result<String> {
     let mut out = std::io::stderr();
     if default.is_empty() {
@@ -471,9 +482,10 @@ pub fn run(args: Args) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok();
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
+    let packaged = installed_package();
     let paths = Paths {
-        bin: args.bin.clone().unwrap_or_else(|| home.join(".local/bin")),
-        repo: args.repo.clone().or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
+        bin: args.bin.clone().or_else(|| packaged.as_ref().map(|(bin, _)| bin.clone())).unwrap_or_else(|| home.join(".local/bin")),
+        repo: args.repo.clone().or_else(|| packaged.as_ref().map(|(_, assets)| assets.clone())).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
         uid: unsafe { libc::getuid() },
         home,
         alondra_home,

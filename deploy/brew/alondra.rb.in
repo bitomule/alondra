@@ -1,0 +1,16 @@
+cask "alondra" do
+  version "@VERSION@"
+  sha256 "@SHA256@"
+
+  url "@DOWNLOAD_URL@"
+  name "Alondra"
+  desc "Private task and notification bridge for Claude on macOS"
+  homepage "https://davidcollado.dev"
+
+  app "alondra/Alondra.app"
+  binary "alondra/bin/alondra"
+
+  caveats <<~EOS
+    Run `alondra setup --service` to sign in and finish the installation.
+  EOS
+end

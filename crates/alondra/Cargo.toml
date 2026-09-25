@@ -18,6 +18,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
 ureq.workspace = true
+url = "2.5.7"
+ring = "0.17.14"
+subtle = "2.6.1"
+security-framework = "3.7.0"
 libc.workspace = true
 rusqlite.workspace = true
 pulldown-cmark = { version = "0.13.4", default-features = false }

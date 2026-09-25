@@ -1,6 +1,7 @@
 #[macro_use]
 mod i18n;
 mod attach;
+mod account;
 mod client;
 mod doctor;
 mod mcp;
@@ -27,6 +28,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = tr!("Sign in to the Alondra service in your browser", "Inicia sesión en el servicio Alondra desde el navegador"))]
+    Login,
+    #[command(about = tr!("Show the signed-in Alondra service account", "Muestra la cuenta conectada al servicio Alondra"))]
+    Account,
+    #[command(about = tr!("Sign out of the Alondra service on this Mac", "Cierra la sesión del servicio Alondra en este Mac"))]
+    Logout,
     #[command(about = tr!("Text summary: open questions, fleet and machine", "Resumen en texto: preguntas abiertas, flota y máquina"))]
     Status,
     #[command(about = tr!("Answer a question by its number", "Contesta una pregunta por su número"))]
@@ -109,6 +116,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None => tui::run(),
+        Some(Cmd::Login) => account::login(),
+        Some(Cmd::Account) => account::status(),
+        Some(Cmd::Logout) => account::logout(),
         Some(Cmd::Status) => status(),
         Some(Cmd::Answer { id, text }) => {
             Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
