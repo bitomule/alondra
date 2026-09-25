@@ -3,6 +3,41 @@ import Foundation
 /// The part of an APNs payload used by both the app and the service extension.
 /// It deliberately has no dependency on application state, networking, or TCA.
 public enum NotificationPayload {
+    /// Context label echoed by APNs. It never carries credentials or signing material.
+    public struct Binding: Hashable, Sendable {
+        public let value: String
+
+        public init?(_ value: String) {
+            guard value.count == 43,
+                  value.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }),
+                  let bytes = Data(base64Encoded: value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="),
+                  bytes.count == 32,
+                  bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") == value
+            else { return nil }
+            self.value = value
+        }
+
+        public init?(userInfo: [AnyHashable: Any]) {
+            guard let alondra = userInfo["alondra"] as? [String: Any],
+                  let value = alondra["push_binding"] as? String else { return nil }
+            self.init(value)
+        }
+    }
+
+    /// An inbox item cannot be routed or acted on without its APNs context label.
+    public struct BoundItem: Sendable {
+        public let item: Item
+        public let binding: Binding
+
+        public init?(userInfo: [AnyHashable: Any]) {
+            guard let item = Item(userInfo: userInfo), let binding = Binding(userInfo: userInfo) else { return nil }
+            self.item = item
+            self.binding = binding
+        }
+
+        public func matches(_ currentBinding: Binding?) -> Bool { binding == currentBinding }
+    }
+
     public struct Item: Hashable, Sendable {
         public enum Kind: String, Sendable {
             case question, report, pr
@@ -59,11 +94,50 @@ public enum NotificationPayload {
         public static let read = "ALONDRA_READ"
         public static let questionPrefix = "ALONDRA_Q_"
 
-        public static func questionID(_ id: UInt64) -> String { questionPrefix + String(id) }
+        public struct QuestionIdentity: Equatable, Sendable {
+            public let binding: Binding
+            public let id: UInt64
+        }
 
-        public static func questionID(from identifier: String) -> UInt64? {
+        public static func questionID(_ id: UInt64, binding: Binding) -> String {
+            questionPrefix + binding.value + "_" + String(id)
+        }
+
+        public static func questionID(from identifier: String) -> QuestionIdentity? {
             guard identifier.hasPrefix(questionPrefix) else { return nil }
-            return UInt64(identifier.dropFirst(questionPrefix.count))
+            let suffix = identifier.dropFirst(questionPrefix.count)
+            guard suffix.count > 44,
+                  let binding = Binding(String(suffix.prefix(43))),
+                  suffix.dropFirst(43).first == "_",
+                  let id = UInt64(suffix.dropFirst(44)) else { return nil }
+            return QuestionIdentity(binding: binding, id: id)
+        }
+
+        public struct Retention: Equatable, Sendable {
+            public let identifiers: Set<String>
+            public let dynamicOrder: [String]
+        }
+
+        /// Bound dynamic categories globally. An arriving push does not prove its
+        /// pairing is the active one, so an old binding never purges a newer one.
+        public static func retainedCategoryIDs(
+            from identifiers: [String],
+            previousOrder: [String],
+            incoming: String?,
+            limit: Int
+        ) -> Retention {
+            let known = Set(identifiers.filter { questionID(from: $0) != nil })
+            var seen = Set<String>()
+            let ordered = previousOrder.filter { known.contains($0) && seen.insert($0).inserted }
+            let missing = known.subtracting(seen).sorted()
+            var dynamic = missing + ordered
+            if let incoming, questionID(from: incoming) != nil {
+                dynamic.removeAll { $0 == incoming }
+                dynamic.append(incoming)
+            }
+            dynamic = Array(dynamic.suffix(max(0, limit)))
+            let other = identifiers.filter { questionID(from: $0) == nil }
+            return Retention(identifiers: Set(other).union(dynamic), dynamicOrder: dynamic)
         }
     }
 

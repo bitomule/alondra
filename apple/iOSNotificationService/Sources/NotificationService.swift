@@ -14,8 +14,14 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         let delivery = Delivery(content: content, handler: contentHandler)
         self.delivery = delivery
+        guard let binding = NotificationPayload.Binding(userInfo: content.userInfo) else {
+            content.categoryIdentifier = ""
+            delivery.finish(category: nil)
+            return
+        }
         Task {
-            let category = await QuestionCategories.register(NotificationPayload.Question(userInfo: content.userInfo))
+            let question = NotificationPayload.Question(userInfo: content.userInfo)
+            let category = await QuestionCategories.register(question, binding: binding)
             delivery.finish(category: category)
         }
     }
@@ -91,7 +97,7 @@ enum QuestionCategories {
 
     /// `setNotificationCategories` registers asynchronously; handing the content back before
     /// the new category is visible shows the notification without its buttons.
-    static func register(_ question: NotificationPayload.Question?) async -> String? {
+    static func register(_ question: NotificationPayload.Question?, binding: NotificationPayload.Binding) async -> String? {
         // Notification service instances can run in separate processes. Their common
         // extension container gives flock a lock shared by those processes.
         guard let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
@@ -103,20 +109,26 @@ enum QuestionCategories {
         guard flock(fd, LOCK_EX) == 0 else { return nil }
         defer { flock(fd, LOCK_UN) }
         let center = UNUserNotificationCenter.current()
-        let identifier = question.map { NotificationPayload.Category.questionID($0.id) }
+        let identifier = question.map { NotificationPayload.Category.questionID($0.id, binding: binding) }
         let existing = await center.notificationCategories()
-        let recent = existing
-            .compactMap { category in NotificationPayload.Category.questionID(from: category.identifier).map { (id: $0, category: category) } }
-            .filter { $0.id != question?.id }
-            .sorted { $0.id < $1.id }
-            .suffix(limit - 1)
-            .map(\.category)
+        let orderURL = directory.appending(path: "notification-category-order.json")
+        let previousOrder = (try? Data(contentsOf: orderURL))
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        let retention = NotificationPayload.Category.retainedCategoryIDs(
+            from: existing.map(\.identifier), previousOrder: previousOrder,
+            incoming: identifier, limit: limit
+        )
         let fixedIDs = Set(fixedCategories.map(\.identifier))
-        let other = existing.filter {
-            NotificationPayload.Category.questionID(from: $0.identifier) == nil && !fixedIDs.contains($0.identifier)
+        let retained = existing.filter {
+            retention.identifiers.contains($0.identifier) && !fixedIDs.contains($0.identifier) && $0.identifier != identifier
         }
-        var categories = other.union(recent).union(fixedCategories)
+        var categories = retained.union(fixedCategories)
         if let question, let identifier { categories.insert(category(for: question, identifier: identifier)) }
+        do {
+            try JSONEncoder().encode(retention.dynamicOrder).write(to: orderURL, options: .atomic)
+        } catch {
+            return nil
+        }
         center.setNotificationCategories(categories)
         for _ in 0..<registrationPolls {
             let visible = await center.notificationCategories()

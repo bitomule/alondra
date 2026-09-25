@@ -72,6 +72,7 @@ swift_library(
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",
+        "//apple/Data/PushBinding:AlondraPushBinding",
         "//apple/Data/Sync:AlondraSync",
         "//apple/DeviceIdentity:AlondraDeviceIdentity",
         "//apple/NotificationPayload:AlondraNotificationPayload",

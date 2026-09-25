@@ -63,15 +63,16 @@ struct TriageView: View {
         .sensoryFeedback(.success, trigger: fleet.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: fleet.skippedCount)
         .task(id: push.route) {
-            guard push.route != nil else { return }
+            guard let route = push.route, push.isCurrent(route) else { push.route = nil; return }
             await fleet.refresh()
-            open(push.route, giveUp: fleet.connected)
+            open(route, giveUp: fleet.connected)
         }
         .onChange(of: fleet.inbox) { open(push.route, giveUp: false) }
     }
 
     private func open(_ route: NotificationRoute?, giveUp: Bool) {
         guard let route else { return }
+        guard push.isCurrent(route) else { push.route = nil; return }
         guard let item = fleet.inbox.first(where: { $0.id == route.itemID }) else {
             if giveUp {
                 push.route = nil

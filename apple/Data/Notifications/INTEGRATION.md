@@ -14,13 +14,26 @@ categories at launch. Every APNs payload that needs a category **must** include
 before the first delivery. Question/permission/plan payloads already do. The
 daemon's report payload (`ALONDRA_READ`) gains that field in backend PR #130,
 commit `2c899d8`. Merge and deploy that backend change before this iOS app version.
-The backend push binding must also be active for the paired iPhone.
+The backend push binding must also be active for the paired iPhone. Registration
+now sends a canonical 43-character base64url `push_binding` generated from 32
+random bytes and stored for the current server URL, device ID, and credential.
+Changing any of those rotates the binding. APNs must echo it inside `alondra`;
+payloads without a matching binding cannot open an item or send an action.
+Dynamic question categories include the binding in their IDs. The extension
+keeps at most 20 recognized dynamic categories globally, ordered by a small
+ledger in its own container under the category lock. It cannot infer the
+current pairing from the binding of a delayed APNs message, so a late A push
+does not purge recently registered B categories. Unrecognized category IDs,
+including other `ALONDRA_Q_` prefixes, are preserved. Delivered-notification
+cleanup only touches the current binding. Send-failure notices
+carry no action category or original payload.
 
 D1b's `CommandGate` is now in main, but this headless path still calls
 `NotificationAction.execute(using:)` once; it never automatically retries a
 mutation after a timeout. Wire it to the final typed transport when the
 backend idempotency contract is final. Persist unknown outcomes in the D1b
-journal before treating notification actions as release ready.
+journal before treating notification actions as release ready. This PR does not
+implement the journal or enable mutation replay.
 The server may have committed an action before the client observes a timeout;
 repeating it by hand can produce a duplicate. Resolve that unknown outcome
 using the final D1b receipt/status endpoint before enabling retries.

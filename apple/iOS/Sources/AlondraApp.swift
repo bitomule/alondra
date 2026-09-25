@@ -99,7 +99,7 @@ private struct RootView: View {
         .tabBarMinimizeBehavior(.onScrollDown)
         .onChange(of: fleet.focusRequest) { context.feature.send(.focusTriage) }
         .onChange(of: fleet.queue.count) { _, count in context.feature.send(.inboxCountChanged(count)) }
-        .onChange(of: push.route) { if push.route != nil { context.feature.send(.focusTriage) } }
+        .onChange(of: push.route) { if let route = push.route, push.isCurrent(route) { context.feature.send(.focusTriage) } }
         .task(id: pairing.revision) {
             context.feature.send(.pairingChanged)
         }
