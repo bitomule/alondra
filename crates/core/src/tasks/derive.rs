@@ -73,7 +73,7 @@ fn blocker(q: &Question) -> Blocker {
         QuestionOrigin::Permission | QuestionOrigin::Elicitation => BlockerKind::Permission,
         QuestionOrigin::Ask | QuestionOrigin::AskUserQuestion | QuestionOrigin::Plan | QuestionOrigin::Classifier => BlockerKind::Question,
     };
-    Blocker { kind, question: q.id, since: q.asked_at }
+    Blocker { kind, question: q.id, since: q.asked_at, asked: q.origin == QuestionOrigin::Ask, about_pr: q.about_pr }
 }
 
 fn is_document(r: &Report) -> bool {
@@ -398,6 +398,8 @@ impl View {
             waiting_on: unready.clone().map(|(d, _)| d.clone()).next(),
             cancelled_dependency: unready.filter(|(_, t)| t.is_some_and(|t| t.state == TaskState::Cancelled)).map(|(d, _)| d.clone()).next(),
             unmerged_dependency: dependencies.filter_map(|(_, t)| t).flat_map(|t| self.open_prs(t)).map(|p| p.number).next(),
+            started: task.awaiting.is_some(),
+            awaited_merge: task.awaiting.and_then(|id| self.prs.get(&id)).filter(|p| p.state == PrState::Open).map(|p| p.number),
             blocker: task.blocker,
             unmerged_pr: self.open_prs(task).filter(|p| !p.auto_merge).map(|p| p.number).next(),
             unreviewed_document: task.documents.iter().copied().find(|id| self.review_pending(*id)),
@@ -827,6 +829,7 @@ impl View {
             state_since: at,
             created_at: at,
             final_report: None,
+            awaiting: None,
             launched: false,
             launched_at: None,
             launched_as: None,
@@ -985,11 +988,13 @@ impl View {
     }
 
     /// David or the orchestrator wrote to the node: that reopens a done task, and sends one in
-    /// review back to work.
+    /// review, or one that waited for a dependency's merge, back to work.
     fn written_to(&mut self, id: &str, by: Item, at: Millis) -> Option<String> {
+        let started = self.board.tasks.get(id).is_some_and(|t| t.awaiting.is_some());
         let event = match self.task_state(id)? {
             TaskState::Done => TaskEvent::Reopen,
             TaskState::InReview => TaskEvent::ChangesRequested { on: by },
+            TaskState::WaitingDependency if started => TaskEvent::ChangesRequested { on: by },
             TaskState::WaitingDependency | TaskState::Running | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => return None,
         };
         self.fact(id, event, at).then(|| id.to_string())
@@ -1094,15 +1099,22 @@ impl View {
         }
     }
 
-    /// Tasks whose every dependency now has its PR open or is done start: they build on top.
+    /// Tasks whose every dependency now has its PR open or is done start: they build on top. A
+    /// task that waited for a dependency's merge goes on once that PR is no longer open.
     fn dependencies_ready(&mut self, at: Millis) -> Vec<String> {
         let ready: Vec<(String, String)> = self
             .board
             .tasks
             .values()
             .filter(|t| t.state == TaskState::WaitingDependency && t.recorded == self.recording())
-            .filter(|t| self.task_guards(t).waiting_on.is_none())
-            .filter_map(|t| Some((t.id.clone(), t.depends_on.last()?.clone())))
+            .filter(|t| {
+                let g = self.task_guards(t);
+                g.waiting_on.is_none() && g.awaited_merge.is_none()
+            })
+            .filter_map(|t| {
+                let awaited = t.awaiting.and_then(|pr| self.prs.get(&pr)).and_then(|p| p.task.clone()).filter(|d| t.depends_on.contains(d));
+                Some((t.id.clone(), awaited.or_else(|| t.depends_on.last().cloned())?))
+            })
             .collect();
         ready.into_iter().filter(|(id, dependency)| self.fact(id, TaskEvent::DependencyReady { task: dependency.clone() }, at)).map(|(id, _)| id).collect()
     }
@@ -1337,7 +1349,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         })
     }
@@ -1356,7 +1368,7 @@ mod tests {
         run.on(opened()).on(report(1, ReportKind::Final, &[PR]));
         assert_eq!(run.task().final_report, Some(1));
         run.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
-        run.message(1, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }));
+        run.message(1, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1, task: None }));
         assert_eq!(run.states(), vec![InReview, InReview, Done], "the merge notice does not reopen it");
         assert_eq!(run.task().prs, vec![1]);
     }
@@ -1473,7 +1485,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         }));
         assert_eq!(run.task().state, NeedsYou);
@@ -1747,7 +1759,7 @@ mod tests {
             d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(reported(1, "s", ReportKind::Final, &[PR]));
             assert!(d.view.merge_finishes_task(1), "the node gets no merge notice");
             d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
-            let notice = Message { id: 1, session_id: "s".into(), from: MessageFrom::Alondra, text: "merged".into(), answers_question: None, created_at: 0, handed_at: None, delivered_at: None, attachments: vec![], about: Some(MessageAbout::PrMerged { pr_id: 1 }) };
+            let notice = Message { id: 1, session_id: "s".into(), from: MessageFrom::Alondra, text: "merged".into(), answers_question: None, created_at: 0, handed_at: None, delivered_at: None, attachments: vec![], about: Some(MessageAbout::PrMerged { pr_id: 1, task: None }) };
             d.on(Event::MessageQueued(notice)).on(Event::MessageHanded { id: 1 });
             assert_eq!(d.task("s").state, Done);
 
@@ -1763,7 +1775,10 @@ mod tests {
         #[test]
         fn a_merge_withdraws_only_the_questions_of_its_own_task() {
             const PR78: &str = "https://github.com/a/alondra/pull/78";
-            let link = |q: &mut Question| q.links = vec![Link { url: PR78.into(), title: None }];
+            let link = |q: &mut Question| {
+                q.links = vec![Link { url: PR78.into(), title: None }];
+                q.about_pr = Some(78);
+            };
             let mut d = Daemon::new();
             d.on(hook_of("a", UPS)).on(hook_of("b", UPS)).on(opened_by(PR78, "a"));
             d.on(asked(1, "a", link)).on(asked(2, "b", link)).on(asked(3, "b", |q| {
@@ -1775,6 +1790,69 @@ mod tests {
             let status = |id: u64| d.view.questions[&id].status;
             assert_eq!((status(1), status(2), status(3)), (QuestionStatus::Withdrawn, QuestionStatus::Open, QuestionStatus::Open));
             assert_eq!(d.task("b").state, NeedsYou);
+        }
+
+        /// t-47328, 25 Sep: PR card 99 (bitomule/alondra#102) waited for David's review. Question #253
+        /// (how #102 ships) and #254 (a cron that #102 breaks) both went into its card, and merging
+        /// #102 withdrew #254 unanswered. Now #253 says it is about #102 and joins the card, #254 is
+        /// refused, and the node opens a task for the cron, where #254 waits for David whatever
+        /// happens to #102.
+        #[test]
+        fn a_question_about_other_work_goes_in_its_own_task_and_the_merge_leaves_it() {
+            const PR102: &str = "https://github.com/bitomule/alondra/pull/102";
+            let on = |task: &'static str, about_pr: Option<u64>| {
+                move |q: &mut Question| {
+                    q.task = Some(task.into());
+                    q.about_pr = about_pr;
+                    q.links = vec![Link { url: PR102.into(), title: None }];
+                }
+            };
+            let created = |id: &str, title: &str| {
+                Event::TaskCreated(NewTask {
+                    id: id.into(),
+                    request: "r-1".into(),
+                    title: title.into(),
+                    brief: None,
+                    depends_on: vec![],
+                    options: TaskOptions::default(),
+                    session_id: Some("s".into()),
+                    launched: false,
+                    launched_as: None,
+                    start: None,
+                })
+            };
+            let mut d = Daemon::new();
+            d.on(created("t-47328", "Only the sessions Alondra launches")).on(hook_of("s", UPS));
+            d.on(Event::PrOpened { url: PR102.into(), session_id: "s".into(), task: Some("t-47328".into()) });
+            assert_eq!(state(&d, "t-47328"), InReview);
+
+            d.on(asked(253, "s", on("t-47328", Some(102))));
+            assert_eq!(state(&d, "t-47328"), NeedsYou);
+            assert_eq!(d.view.question_pr(&d.view.questions[&253]), Some(1), "#253 is about #102: it shows in its card");
+            d.on(answered(253));
+            assert_eq!(state(&d, "t-47328"), InReview, "#102 still waits for David");
+
+            let before = d.view.board.clone();
+            let refusal = d.refusal(asked(254, "s", on("t-47328", None)));
+            assert_eq!(
+                refusal.as_deref(),
+                Some("PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and ask there")
+            );
+            assert_eq!(d.view.board, before, "a refusal moves nothing");
+
+            d.on(created("t-2", "Deliver the efficiency cron without Alondra"));
+            let cron = &d.view.board.tasks["t-2"];
+            assert_eq!((cron.request.as_str(), cron.assignee.as_ref().map(|a| a.session_id.as_str()), cron.state, cron.recorded), ("r-1", Some("s"), Running, true));
+            d.on(asked(254, "s", on("t-2", None)));
+            assert_eq!((state(&d, "t-2"), state(&d, "t-47328")), (NeedsYou, InReview), "#254 waits on its own task");
+            assert_eq!(d.view.question_pr(&d.view.questions[&254]), None, "a link to #102 does not put it in #102's card");
+
+            d.on(asked(255, "s", on("t-47328", Some(102))));
+            d.on(Event::PrMerged { id: 1, method: MergeMethod::Merge });
+            let status = |id: u64| d.view.questions[&id].status;
+            assert_eq!((status(255), status(254)), (QuestionStatus::Withdrawn, QuestionStatus::Open), "the merge settles what was about #102 and leaves the cron's question");
+            assert_eq!(state(&d, "t-2"), NeedsYou);
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
         }
 
         /// sin-dormidos (~4 h) and maquina-de-estados (3 h), 23-24 Sep: leftover background tasks
@@ -1795,7 +1873,7 @@ mod tests {
         fn a_tasks_pr_reports_and_question_are_one_card() {
             const PR50: &str = "https://github.com/a/alondra/pull/50";
             let mut d = Daemon::new();
-            d.on(hook_of("s", UPS)).on(opened_by(PR50, "s")).on(reported(146, "s", ReportKind::Notice, &[PR50])).on(reported(147, "s", ReportKind::Final, &[])).on(asked(1, "s", |_| {}));
+            d.on(hook_of("s", UPS)).on(opened_by(PR50, "s")).on(reported(146, "s", ReportKind::Notice, &[PR50])).on(reported(147, "s", ReportKind::Final, &[])).on(asked(1, "s", |q| q.about_pr = Some(50)));
             let v = &d.view;
             assert_eq!(v.prs_awaiting_user().count(), 1);
             assert_eq!(v.question_pr(&v.questions[&1]), Some(1));
@@ -1903,7 +1981,7 @@ mod tests {
         #[test]
         fn a_node_closed_while_its_pr_waits_leaves_the_task_in_review_and_the_merge_finishes_it() {
             let mut d = Daemon::new();
-            d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(asked(1, "s", |_| {}));
+            d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(asked(1, "s", |q| q.about_pr = Some(7)));
             assert_eq!(state(&d, "t-s"), NeedsYou);
             d.on(Event::NodeRemoved { session_id: "s".into() });
             let t = &d.view.board.tasks["t-s"];
@@ -1943,7 +2021,7 @@ mod tests {
             let mut d = Daemon::new();
             d.on(hook_of("s", UPS)).on(opened_by(PR, "s")).on(reported(1, "s", ReportKind::Final, &[PR]));
             assert!(d.view.merge_finishes_task(1));
-            d.on(asked(1, "s", |_| {})).on(answered(1));
+            d.on(asked(1, "s", |q| q.about_pr = Some(7))).on(answered(1));
             assert_eq!(d.task("s").final_report, None);
             assert!(!d.view.merge_finishes_task(1), "the node gets the merge notice");
             d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });

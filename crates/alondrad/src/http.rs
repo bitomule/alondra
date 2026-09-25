@@ -75,6 +75,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/tasks", post(define_tasks))
         .route("/v1/tasks/archive", post(archive_tasks))
+        .route("/v1/tasks/new", post(new_task))
         .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -399,7 +400,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         steps: vec![],
         mission: None,
         task: view.fact_task(&h.session_id, h.agent_id.as_deref()),
-        replaces: None,
+        replaces: None, about_pr: None,
     }
 }
 
@@ -904,7 +905,7 @@ pub(crate) async fn merge(hub: &Arc<Hub>, id: u64, method: alondra_core::pr::Mer
     };
     let (plan, finishes) = hub.read(|v| (v.retarget_plan(id), v.merge_finishes_task(id)));
     if !finishes {
-        let _ = tell_about_pr(hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }), vec![]);
+        let _ = tell_about_pr(hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id, task: None }), vec![]);
     }
     hub.append(Event::PrMerged { id, method }).map_err(MergeRefusal::Failed)?;
     let moved = crate::prs::retarget(hub, &plan, gh).await;
@@ -1523,6 +1524,10 @@ struct AskBody {
     /// The task it is for; needed only by a node with several open tasks.
     #[serde(default)]
     task: Option<String>,
+    /// The number of the task's open PR whose content or shipping the answer changes: the card
+    /// goes inside that PR's card.
+    #[serde(default)]
+    about_pr: Option<u64>,
 }
 
 fn yes() -> bool {
@@ -1618,7 +1623,7 @@ fn task_refusal_text(task: &str, refused: &alondra_core::tasks::Anomaly, user: &
              (to_orchestrator: true), or hand the follow-up to it with report(kind: final, to_orchestrator: true).",
             refused.state.label()
         ),
-        TaskEvent::BlockerRaised { .. } => format!(
+        TaskEvent::BlockerRaised { .. } if refused.reason.ends_with(alondra_core::tasks::STILL_OPEN) => format!(
             "Each task puts one question at a time in front of {user}. Wait for its answer; if this one changes it, send it again \
              with replaces set to its number; if it no longer matters, withdraw it first."
         ),
@@ -1630,6 +1635,69 @@ fn task_refusal_text(task: &str, refused: &alondra_core::tasks::Anomaly, user: &
 
 fn task_refused(task: &str, refused: &alondra_core::tasks::Anomaly, user: &str) -> Response {
     (StatusCode::CONFLICT, Json(json!({"error": task_refusal_text(task, refused, user), "kind": "task_refused", "task": task}))).into_response()
+}
+
+fn task_has_open_pr(v: &View, task: &str, number: u64) -> bool {
+    let Some(t) = v.board.tasks.get(task) else { return false };
+    t.prs.iter().filter_map(|id| v.prs.get(id)).any(|p| p.number == number && p.state == alondra_core::pr::PrState::Open)
+}
+
+#[derive(Deserialize)]
+struct NewTaskBody {
+    #[serde(flatten)]
+    caller: Caller,
+    title: String,
+    #[serde(default)]
+    brief: Option<String>,
+    /// The task the new work splits from; needed only by a node with several open tasks.
+    #[serde(default)]
+    task: Option<String>,
+}
+
+/// A node opens a task of its own for work that is not its task's: it joins the same request,
+/// with the node as assignee, so a question about it does not sit on a PR under review.
+async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Response {
+    if let Some(r) = outside_caller(&hub, &b.caller).or_else(|| caller_probe_refused(&hub, &b.caller)) {
+        return r;
+    }
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "A task needs a one-line title saying what the separate work is. Nothing was recorded.");
+    }
+    let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
+        return err(StatusCode::BAD_REQUEST, "unknown node: session_id is missing and no pid matches");
+    };
+    let from = match hub.read(|v| caller_task(v, &sid, b.task.as_deref())) {
+        Ok(Some(t)) => t,
+        Ok(None) => return err(StatusCode::FORBIDDEN, "The orchestrator defines tasks with define_tasks; new_task is for a node's separate work. Nothing was recorded."),
+        Err((status, why)) => return err(status, why),
+    };
+    let brief = b.brief.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let recorded = hub.append_with(|v| {
+        let source = v.board.tasks.get(&from)?;
+        Some(Event::TaskCreated(alondra_core::tasks::NewTask {
+            id: format!("t-{}", v.seq + 1),
+            request: source.request.clone(),
+            title: title.clone(),
+            brief: brief.clone(),
+            depends_on: vec![],
+            options: source.options.clone(),
+            session_id: Some(sid.clone()),
+            launched: false,
+            launched_as: None,
+            start: None,
+        }))
+    });
+    match recorded {
+        Ok(Some((_, Event::TaskCreated(t)))) => Json(json!({
+            "id": t.id,
+            "request": t.request,
+            "next": format!("Task {} is yours, in the same request as {from}. Ask about it with task: {}, and name the task in every call from now on.", t.id, t.id),
+        }))
+        .into_response(),
+        Ok(_) => err(StatusCode::NOT_FOUND, format!("task {from} does not exist. Nothing was recorded.")),
+        Err(e) => internal(e),
+    }
 }
 
 /// A card Alondra built from the node's terminal that still stands for its task: the node's own
@@ -1679,6 +1747,12 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
         b.replaces = hub.read(|v| terminal_card_of(v, task));
     }
     note_prs(&hub, &b.caller, &question_texts(&b), task.clone()).await;
+    if let Some(n) = b.about_pr
+        && !hub.read(|v| task.as_deref().is_some_and(|t| task_has_open_pr(v, t, n)))
+    {
+        let of = task.as_deref().map_or_else(|| "any task of yours".to_string(), |t| format!("task {t}"));
+        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("about_pr: PR #{n} is not an open PR of {of}; send it again without about_pr. Nothing was recorded."));
+    }
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let question = |v: &View, attachments: Vec<Attachment>| Question {
@@ -1703,6 +1777,7 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
         mission: None,
         task: task.clone(),
         replaces: b.replaces,
+        about_pr: b.about_pr,
     };
     let attachments = store_attachments(&hub.home, &format!("q-{stamp}"), &b.attachments);
     let res = hub.append_all(|v| {
@@ -3324,7 +3399,7 @@ mod tests {
             to_orchestrator: true,
             steps: vec![],
             related: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         };
         let (status, asked) = status_and_body(ask(State(hub.clone()), Json(ask_body)).await).await;
@@ -3557,7 +3632,7 @@ mod tests {
     fn ask_body(sid: &str, title: &str) -> AskBody {
         AskBody {
             caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
-            attachments: vec![], blocking: true, to_orchestrator: false, steps: vec![], related: None, replaces: None, task: None,
+            attachments: vec![], blocking: true, to_orchestrator: false, steps: vec![], related: None, replaces: None, about_pr: None, task: None,
         }
     }
 
@@ -3688,6 +3763,62 @@ mod tests {
                 assert_eq!(card_task, expected, "{what}: a refused card is not recorded");
             }
         }
+    }
+
+    /// t-47328 (25 Sep): with PR #102 waiting for review, question #254 about a cron went into its
+    /// card and the merge withdrew it unanswered.
+    #[tokio::test]
+    async fn a_question_while_a_pr_waits_for_review_is_about_it_or_goes_in_a_new_task() {
+        use alondra_core::tasks::TaskState;
+        const PR102: &str = "https://github.com/bitomule/alondra/pull/102";
+        let hub = started("one-pending-point", &["s"]);
+        hub.append(Event::PrOpened { url: PR102.into(), session_id: "s".into(), task: None }).unwrap();
+        let links = vec![Link { url: PR102.into(), title: None }];
+        let deploy = AskBody { about_pr: Some(102), links: links.clone(), ..ask_body("s", "¿Apago el plugin global al desplegar la #102?") };
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(deploy)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        hub.append(Event::QuestionAnswered { id: 1, answer: Answer { text: "Ya".into(), option: None, by: None, device: None, at: 0 } }).unwrap();
+
+        let cron = || AskBody { links: links.clone(), ..ask_body("s", "¿Meto el cron de eficiencia en Alondra?") };
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(cron())).await).await;
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("task_refused")), "{said}");
+        assert_eq!(
+            said["error"],
+            "Nothing was recorded: PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and ask there."
+        );
+        let (status, said) = status_and_body(request_action(State(hub.clone()), Json(AskBody { steps: vec!["Edita su run.sh".into()], ..ask_body("s", "Cambia la entrega del cron") })).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "an action about other work too: {said}");
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { about_pr: Some(103), ..ask_body("s", "¿Y la #103?") })).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        assert_eq!(said["error"], "about_pr: PR #103 is not an open PR of task t-s; send it again without about_pr. Nothing was recorded.");
+        assert_eq!(hub.read(|v| (v.questions.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "nothing recorded, no anomaly");
+
+        let body = |sid: &str, title: &str| NewTaskBody {
+            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false },
+            title: title.into(),
+            brief: Some("El cron del 30-09 entrega con el report de Alondra, que ya no tendrá.".into()),
+            task: None,
+        };
+        let (status, said) = status_and_body(new_task(State(hub.clone()), Json(body("s", "  "))).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+        let (status, said) = status_and_body(new_task(State(hub.clone()), Json(body("s", "Entrega del cron de eficiencia"))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let id = said["id"].as_str().unwrap_or_default().to_string();
+        let request = hub.read(|v| v.board.tasks["t-s"].request.clone());
+        assert_eq!(said["request"].as_str(), Some(request.as_str()), "the same request: {said}");
+        assert!(said["next"].as_str().unwrap_or_default().contains(&format!("task: {id}")), "{said}");
+
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some(id.clone()), ..cron() })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let moved = |hub: &Hub| hub.read(|v| v.board.tasks.get(&id).map(|t| (t.request.clone(), t.assignee.clone().map(|a| a.session_id), t.recorded, t.state)));
+        let expected = Some((request, Some("s".to_string()), true, TaskState::NeedsYou));
+        assert_eq!(moved(&hub), expected, "the node's own task, in the same request, waiting for David");
+        assert_eq!(moved(&hub_at_home_of(&hub)), expected, "its TaskCreated is in the log: a replay keeps it");
+
+        let orchestrated = started("new-task-orchestrator", &["orch"]);
+        orchestrated.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        let (status, said) = status_and_body(new_task(State(orchestrated.clone()), Json(body("orch", "Otra cosa"))).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "the orchestrator defines tasks instead: {said}");
     }
 
     /// A node's call that its task cannot take is refused and the node is told what to do,
@@ -4079,7 +4210,7 @@ mod tests {
         hub.append(Event::QuestionAsked(Question {
             id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open, answer: None,
-            asked_at: 0, action: false, steps: vec![], mission: None, task: None, replaces: None,
+            asked_at: 0, action: false, steps: vec![], mission: None, task: None, replaces: None, about_pr: None,
         })).unwrap();
         let (status, said) = status_and_body(reopen_task(State(hub.clone()), Path("t-s".into())).await).await;
         assert_eq!((status, said["kind"].as_str(), said["error"].as_str()), (StatusCode::CONFLICT, Some("task_refused"), Some("only a done or cancelled task can be reopened")));
@@ -4314,7 +4445,7 @@ mod tests {
                 id, session_id: sid.into(), node_name: None, title: "¿Arranco las capturas?".into(), detail: None, options: vec![], links: vec![],
                 attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
                 status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
-                replaces: None,
+                replaces: None, about_pr: None,
                 task: None,
             };
             hub.append(Event::QuestionAsked(asked(1, "mine"))).unwrap();
@@ -4336,7 +4467,7 @@ mod tests {
                 to_orchestrator: false,
                 steps: vec![],
                 related: c.related.clone(),
-                replaces: c.replaces,
+                replaces: c.replaces, about_pr: None,
                 task: None,
             };
             let (status, said) = status_and_body(ask(State(hub.clone()), Json(body)).await).await;
@@ -4382,7 +4513,7 @@ mod tests {
                 id: 1, session_id: "s".into(), node_name: None, title: "¿Sigo?".into(), detail: None, options: vec![], links: vec![],
                 attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false,
                 node_context: None, status: QuestionStatus::Open, answer: None, asked_at: now_millis(), action: false, steps: vec![], mission: None,
-                replaces: None,
+                replaces: None, about_pr: None,
                 task: None,
             })).unwrap();
             if let Some(earlier) = earlier {
@@ -4629,7 +4760,7 @@ mod tests {
             let response = match kind {
                 NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
                     caller, title: "¿Sigo?".into(), detail: Some(text.clone()), options: vec![], links, attachments: vec![], blocking: true,
-                    to_orchestrator: false, steps: vec![], related: None, replaces: None,
+                    to_orchestrator: false, steps: vec![], related: None, replaces: None, about_pr: None,
                     task: None,
                 })).await,
                 NewCard::Report => report(State(hub.clone()), Json(ReportBody {
@@ -4693,7 +4824,7 @@ mod tests {
             id: 1, session_id: "1234abcd-interactive".into(), node_name: None, title: "t".into(), detail: None, options: vec![], links: vec![],
             attachments: vec![], blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None,
             status: QuestionStatus::Open, answer: None, asked_at: 1, action: false, steps: vec![], mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         })).unwrap();
         let (status, body) = status_and_body(close_node(State(hub.clone()), Path("1234abcd-interactive".into()), axum::body::Bytes::from_static(b"{}")).await).await;
@@ -4810,7 +4941,7 @@ mod tests {
         assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::Done);
 
         let pr = hub.read(|v| v.prs[&1].clone());
-        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
+        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1, task: None }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
         let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from), attachments: vec![], task: None }));
         assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
         assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");
@@ -4912,7 +5043,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         };
         let cases = [
@@ -5560,7 +5691,7 @@ mod owned_session_tests {
             to_orchestrator: false,
             steps: vec![],
             related: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         }
     }

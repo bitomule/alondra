@@ -126,7 +126,7 @@ fn not_handable(v: &View, id: &str, to: Option<&str>, now: Millis) -> Option<Ref
     let Some(task) = v.board.tasks.get(id) else { return Some((StatusCode::NOT_FOUND, format!("task {id} does not exist"))) };
     let conflict = |why: String| Some((StatusCode::CONFLICT, why));
     match task.state {
-        TaskState::WaitingDependency => {
+        TaskState::WaitingDependency if task.awaiting.is_none() => {
             let on = v.task_guards(task).waiting_on.unwrap_or_default();
             return conflict(format!("{id} has not started: it waits for {on}, and Alondra starts it when {on} has its PR open or is done"));
         }

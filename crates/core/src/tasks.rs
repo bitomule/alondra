@@ -11,10 +11,12 @@ use crate::model::{Attachment, Millis};
 mod archive;
 mod define;
 mod derive;
+mod waits;
 
 pub use archive::Archive;
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
 pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
+pub use waits::{Named, merge_notice_text, pr_numbers_in};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -146,6 +148,15 @@ pub struct Blocker {
     pub kind: BlockerKind,
     pub question: u64,
     pub since: Millis,
+    /// Raised by the node's own `ask` or `request_action`, the only cards held to the task's PR
+    /// under review. Claude Code's prompts and menus and the cards Alondra builds from the
+    /// terminal are facts it never refuses; so are the blockers recorded before this marker
+    /// existed, which replay exactly as they were.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
+    /// The number of the task's PR under review the node said the card is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_pr: Option<u64>,
 }
 
 /// What an event is about.
@@ -163,7 +174,11 @@ pub enum Item {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskEvent {
     /// A task this one depends on has its PR open, or is done: this one can build on top of it.
+    /// For a task waiting for a dependency's merge: that PR is merged, or no longer open.
     DependencyReady { task: String },
+    /// The node's turn ended with nothing of the task left to do before a dependency's PR is
+    /// merged: the task waits for that merge.
+    AwaitsMerge { pr: u64 },
     /// The node asked a question, hit a permission prompt or requested an action of David's.
     BlockerRaised {
         blocker: Blocker,
@@ -197,6 +212,7 @@ impl TaskEvent {
     pub fn name(&self) -> &'static str {
         match self {
             TaskEvent::DependencyReady { .. } => "dependency_ready",
+            TaskEvent::AwaitsMerge { .. } => "awaits_merge",
             TaskEvent::BlockerRaised { .. } => "blocker_raised",
             TaskEvent::PrOpened { .. } => "pr_opened",
             TaskEvent::DocumentSent { .. } => "document_sent",
@@ -224,6 +240,11 @@ pub struct Guards {
     pub cancelled_dependency: Option<String>,
     /// A PR of a task this one depends on that is not merged yet: this task's PRs merge after it.
     pub unmerged_dependency: Option<u64>,
+    /// The task started, and waits for the merge of a dependency's PR: what its node does or is
+    /// told about it moves it as if it were running.
+    pub started: bool,
+    /// The number of the dependency's PR the task waits to see merged, while it is still open.
+    pub awaited_merge: Option<u64>,
     /// What already blocks the task on David.
     pub blocker: Option<Blocker>,
     /// The number of a PR of the task still waiting for David's merge.
@@ -277,10 +298,26 @@ fn nothing_to_answer() -> Refused {
     refused("no question of the task is open")
 }
 
+/// How the reason ends when a task already has its one blocker.
+pub const STILL_OPEN: &str = "is still open";
+
 fn blocked(g: &Guards) -> Result<(), Refused> {
     match g.blocker {
-        Some(b) => Err(refused(format!("{} #{} is still open", b.kind.noun(), b.question))),
+        Some(b) => Err(refused(format!("{} #{} {STILL_OPEN}", b.kind.noun(), b.question))),
         None => Ok(()),
+    }
+}
+
+/// While a PR of the task waits for review, that PR is the task's one pending point: the node's
+/// own card has to be about it, and other work goes in a task of its own (t-47328: question #254,
+/// about a cron, sat in PR #102's card and went with its merge unanswered).
+fn about_the_review(b: &Blocker, g: &Guards) -> Result<(), Refused> {
+    match g.unmerged_pr {
+        Some(n) if b.asked && b.about_pr.is_none() => Err(refused(format!(
+            "PR #{n} waits for review. If the answer changes what PR #{n} contains or how it ships, resend with about_pr: {n}. \
+             Otherwise open a separate task with new_task and ask there"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -344,9 +381,27 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
     use TaskEvent as E;
     use TaskState::*;
     match (state, event) {
-        (WaitingDependency, E::DependencyReady { .. }) => Ok(if g.waiting_on.is_some() { WaitingDependency } else { Running }),
+        (WaitingDependency, E::DependencyReady { .. }) => Ok(if g.waiting_on.is_some() || g.awaited_merge.is_some() { WaitingDependency } else { Running }),
         (Running | NeedsYou | InReview | Closing | Done | Cancelled, E::DependencyReady { .. }) => Ok(state),
 
+        (Running | WaitingDependency, E::AwaitsMerge { .. }) => Ok(WaitingDependency),
+        (NeedsYou | InReview | Closing, E::AwaitsMerge { .. }) => Ok(state),
+        (Done, E::AwaitsMerge { .. }) => Err(is_done()),
+        (Cancelled, E::AwaitsMerge { .. }) => Err(is_cancelled()),
+
+        (
+            WaitingDependency,
+            event @ (E::BlockerRaised { .. }
+            | E::PrOpened { .. }
+            | E::DocumentSent { .. }
+            | E::AutoMerged { .. }
+            | E::FinalReport { .. }
+            | E::Answered { .. }
+            | E::ChangesRequested { .. }
+            | E::NodeUpdated { .. }
+            | E::Merged { .. }
+            | E::ReviewClosed { .. }),
+        ) if g.started => transition(Running, event, g),
         (
             WaitingDependency,
             E::BlockerRaised { .. }
@@ -361,8 +416,11 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
             | E::ReviewClosed { .. },
         ) => Err(not_started(g)),
 
-        (Running | NeedsYou | InReview | Closing, E::BlockerRaised { replaces, .. }) => {
-            if *replaces { Ok(NeedsYou) } else { blocked(g).map(|()| NeedsYou) }
+        (Running | NeedsYou | InReview | Closing, E::BlockerRaised { blocker, replaces }) => {
+            if !*replaces {
+                blocked(g)?;
+            }
+            about_the_review(blocker, g).map(|()| NeedsYou)
         }
         (Done, E::BlockerRaised { .. }) => Err(is_done()),
         (Cancelled, E::BlockerRaised { .. }) => Err(is_cancelled()),
@@ -387,7 +445,7 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Done, E::FinalReport { .. }) => Ok(Done),
         (Cancelled, E::FinalReport { .. }) => Err(is_cancelled()),
 
-        (NeedsYou, E::Answered { .. }) => Ok(Running),
+        (NeedsYou, E::Answered { .. }) => Ok(if g.reviews_left() { InReview } else { Running }),
         (Running | InReview | Closing | Done | Cancelled, E::Answered { .. }) => Err(nothing_to_answer()),
 
         (InReview | Closing, E::ChangesRequested { .. }) => Ok(Running),
@@ -510,6 +568,9 @@ pub struct Task {
     /// The node's final report while its work still waited for David.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_report: Option<u64>,
+    /// The PR card of a dependency whose merge the task, already started, waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<u64>,
     /// A launch was matched to the task's node.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub launched: bool,
@@ -583,7 +644,8 @@ impl Task {
         self.launched_as.as_deref().unwrap_or(&self.title)
     }
 
-    /// What a move leaves the task holding: the blocker it raised, the final report it sent.
+    /// What a move leaves the task holding: the blocker it raised, the final report it sent, the
+    /// dependency's PR it waits to see merged.
     fn hold(&mut self, event: &TaskEvent, to: TaskState) {
         match event {
             TaskEvent::BlockerRaised { blocker, .. } => {
@@ -592,16 +654,20 @@ impl Task {
             }
             TaskEvent::FinalReport { report } => self.final_report = Some(*report),
             TaskEvent::ChangesRequested { .. } | TaskEvent::Reopen | TaskEvent::Answered { .. } => self.final_report = None,
+            TaskEvent::AwaitsMerge { pr } if to == TaskState::WaitingDependency => self.awaiting = Some(*pr),
             _ => {}
         }
         if to != TaskState::NeedsYou {
             self.blocker = None;
         }
+        if to != TaskState::WaitingDependency {
+            self.awaiting = None;
+        }
     }
 
     /// What the task holds after its history, worked out again once part of it was taken out.
     pub(crate) fn rehold(&mut self) {
-        (self.blocker, self.final_report) = (None, None);
+        (self.blocker, self.final_report, self.awaiting) = (None, None, None);
         for i in 0..self.history.len() {
             let (event, to) = (self.history[i].event.clone(), self.history[i].to);
             self.hold(&event, to);
@@ -702,6 +768,7 @@ impl Board {
             state_since: at,
             created_at: at,
             final_report: None,
+            awaiting: None,
             launched: t.launched,
             launched_at: t.launched.then_some(at),
             launched_as: t.launched_as.clone(),
@@ -733,11 +800,12 @@ mod tests {
     use super::*;
     use TaskState::*;
 
-    const Q: Blocker = Blocker { kind: BlockerKind::Question, question: 7, since: 0 };
+    const Q: Blocker = Blocker { kind: BlockerKind::Question, question: 7, since: 0, asked: false, about_pr: None };
 
     fn every_event() -> Vec<TaskEvent> {
         let all = vec![
             TaskEvent::DependencyReady { task: "t-a".into() },
+            TaskEvent::AwaitsMerge { pr: 1 },
             TaskEvent::BlockerRaised { blocker: Q, replaces: false },
             TaskEvent::PrOpened { pr: 1 },
             TaskEvent::DocumentSent { report: 2 },
@@ -754,6 +822,7 @@ mod tests {
         for e in &all {
             match e {
                 TaskEvent::DependencyReady { .. }
+                | TaskEvent::AwaitsMerge { .. }
                 | TaskEvent::BlockerRaised { .. }
                 | TaskEvent::PrOpened { .. }
                 | TaskEvent::DocumentSent { .. }
@@ -777,8 +846,9 @@ mod tests {
     /// Every (state, event) pair with nothing in the way: no blocker, nothing under review, no
     /// dependency left, checks passed, not auto-merge. Columns follow `TaskState::ALL`:
     /// waiting_dependency, running, needs_you, in_review, closing, done, cancelled.
-    const MATRIX: [Row; 13] = [
+    const MATRIX: [Row; 14] = [
         ("dependency_ready", [Some(Running), Some(Running), Some(NeedsYou), Some(InReview), Some(Closing), Some(Done), Some(Cancelled)]),
+        ("awaits_merge", [Some(WaitingDependency), Some(WaitingDependency), Some(NeedsYou), Some(InReview), Some(Closing), None, None]),
         ("blocker_raised", [None, Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), None, None]),
         ("pr_opened", [None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
         ("document_sent", [None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
@@ -821,10 +891,22 @@ mod tests {
         let failed = Guards { checks_failed: Some(151), ..Guards::default() };
         let below = Guards { unmerged_dependency: Some(149), ..Guards::default() };
         let cancelled = Guards { waiting_on: Some("t-a".into()), cancelled_dependency: Some("t-a".into()), ..Guards::default() };
+        let awaiting = Guards { started: true, awaited_merge: Some(264), ..Guards::default() };
+        let started = Guards { started: true, ..Guards::default() };
         let replacing = TaskEvent::BlockerRaised { blocker: Q, replaces: true };
         let e = |name: &str| every_event().into_iter().find(|e| e.name() == name).unwrap();
         let cases: Vec<(TaskState, TaskEvent, &Guards, Result<TaskState, &str>)> = vec![
             (WaitingDependency, e("dependency_ready"), &waiting, Ok(WaitingDependency)),
+            (WaitingDependency, e("dependency_ready"), &awaiting, Ok(WaitingDependency)),
+            (WaitingDependency, e("dependency_ready"), &started, Ok(Running)),
+            (WaitingDependency, e("blocker_raised"), &awaiting, Ok(NeedsYou)),
+            (WaitingDependency, e("pr_opened"), &awaiting, Ok(InReview)),
+            (WaitingDependency, e("document_sent"), &awaiting, Ok(InReview)),
+            (WaitingDependency, e("final_report"), &awaiting, Ok(Done)),
+            (WaitingDependency, e("changes_requested"), &awaiting, Ok(Running)),
+            (WaitingDependency, e("answered"), &awaiting, Err("no question of the task is open")),
+            (WaitingDependency, e("reopen"), &awaiting, Err("only a done or cancelled task can be reopened")),
+            (WaitingDependency, e("cancel"), &awaiting, Ok(Cancelled)),
             (Running, e("blocker_raised"), &blocker, Err("question #7 is still open")),
             (NeedsYou, e("blocker_raised"), &blocker, Err("question #7 is still open")),
             (NeedsYou, replacing, &blocker, Ok(NeedsYou)),
@@ -891,6 +973,31 @@ mod tests {
         }
     }
 
+    /// t-47328 (25 Sep): PR #102 waited for review when its node asked #253 (how #102 ships) and
+    /// #254 (a cron #102 breaks). Both joined the PR's card; the merge withdrew #254 unanswered.
+    #[test]
+    fn a_pr_under_review_is_the_tasks_one_pending_point() {
+        let review = Guards { unmerged_pr: Some(102), ..Guards::default() };
+        let raised = |kind, asked, about_pr| TaskEvent::BlockerRaised { blocker: Blocker { kind, asked, about_pr, ..Q }, replaces: false };
+        let other_work = Err(refused(
+            "PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. \
+             Otherwise open a separate task with new_task and ask there",
+        ));
+        for state in [Running, InReview, Closing] {
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, None), &review), other_work, "{state:?}: #254, about other work");
+            assert_eq!(transition(state, &raised(BlockerKind::Action, true, None), &review), other_work, "{state:?}: an action about other work");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, Some(102)), &review), Ok(NeedsYou), "{state:?}: #253, about the PR");
+            assert_eq!(transition(state, &raised(BlockerKind::Permission, false, None), &review), Ok(NeedsYou), "{state:?}: Claude Code's prompt is a fact");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, false, None), &review), Ok(NeedsYou), "{state:?}: a menu, a terminal card, or a blocker recorded before the marker");
+            assert_eq!(transition(state, &raised(BlockerKind::Question, true, None), &Guards::default()), Ok(NeedsYou), "{state:?}: no PR under review");
+        }
+        let replacing = TaskEvent::BlockerRaised { blocker: Blocker { asked: true, ..Q }, replaces: true };
+        assert_eq!(transition(NeedsYou, &replacing, &Guards { blocker: Some(Q), ..review.clone() }), other_work, "replacing a question does not skip the review");
+        let answered = TaskEvent::Answered { question: 253 };
+        assert_eq!(transition(NeedsYou, &answered, &review), Ok(InReview), "answered while the PR still waits: back in review, not running");
+        assert_eq!(transition(NeedsYou, &answered, &Guards::default()), Ok(Running));
+    }
+
     fn task(state: TaskState) -> Task {
         Task {
             id: "t-s".into(),
@@ -908,6 +1015,7 @@ mod tests {
             state_since: 0,
             created_at: 0,
             final_report: None,
+            awaiting: None,
             launched: false,
             launched_at: None,
             launched_as: None,

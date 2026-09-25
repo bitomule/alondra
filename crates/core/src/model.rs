@@ -313,6 +313,10 @@ pub struct Node {
     pub usage_limited_at: Option<Millis>,
     #[serde(default)]
     pub signal_at: Option<Millis>,
+    /// The task the node's declaration named: it says nothing about its other tasks. None covers
+    /// every task of the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_task: Option<String>,
     #[serde(default)]
     pub episode_since: Millis,
     /// When the node last became done: what Alondra queued for it before then is void.
@@ -408,6 +412,7 @@ impl Node {
             background: vec![],
             usage_limited_at: None,
             signal_at: None,
+            signal_task: None,
             episode_since: 0,
             done_at: None,
             turn_since: 0,
@@ -427,6 +432,7 @@ impl Node {
         self.episode_since = at;
         self.turn_signal = None;
         self.signal_at = None;
+        self.signal_task = None;
     }
 
     /// Background nodes the sentinel looks after: the Claude daemon runs them and nobody is
@@ -575,6 +581,11 @@ pub struct Question {
     /// The question of the node it replaces, withdrawn once this one is recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<u64>,
+    /// The number of the PR of its task under review that the node said it is about: the
+    /// question shows in that PR's card and goes when the PR is merged or closed. A link to a PR
+    /// is only context and never does either (t-47328, question #254).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_pr: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -663,7 +674,12 @@ pub struct Message {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessageAbout {
-    PrMerged { pr_id: u64 },
+    /// A PR was merged: the node's own, or, with `task`, one that task of the node depends on.
+    PrMerged {
+        pr_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+    },
     /// David's verdict on an artifact the node sent for review: its comments to read, or approval.
     ArtifactReview { report_id: u64 },
     /// The orchestrator wrote to the node about one of its tasks, or handed it a new one.

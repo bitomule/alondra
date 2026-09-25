@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::pr::PrState;
+use alondra_core::tasks::TaskEvent;
 use alondra_core::{states, upkeep};
 use alondra_core::{
     Event, MessageFrom, Node, NodeState, Question, QuestionOrigin, QuestionStatus, Report, ReportKind, View, answer_option, now_millis,
@@ -51,6 +52,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         hub.append(Event::Clock { machine_strained: strained })?;
     }
     let user = hub.config.name.clone();
+    follow_merges(hub, &user, now_millis())?;
     let now = now_millis();
     let stalled: Vec<String> = hub.read(|v| {
         v.nodes.values().filter(|n| n.state == NodeState::Stalled || states::idle_task(v, n, now).is_some()).map(|n| n.session_id.clone()).collect()
@@ -120,6 +122,28 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
             if needs_attention(v, node, now_millis()) && key(node) == due_key { settle(v, node, expects) } else { None }
         })?;
         memory.settled.insert(due_key);
+    }
+    Ok(())
+}
+
+/// Keeps what nodes wait on in step with the merges: every merge reaches the nodes of the tasks
+/// it concerns; a running task with nothing left but a dependency's merge waits for it; a quiet
+/// node hears about the PRs its last words wait on that were merged since, or have no card.
+pub(crate) fn follow_merges(hub: &Hub, user: &str, now: i64) -> anyhow::Result<()> {
+    let batch = |due: Vec<Event>| if due.is_empty() { Err(()) } else { Ok(due) };
+    hub.append_all(|v| batch(v.merge_notices_due(now).into_iter().map(Event::MessageQueued).collect()))?.ok();
+    let waiting: Vec<(String, u64)> = hub.read(|v| v.nodes.values().filter_map(|n| states::awaits_merge(v, n, now)).map(|(t, p)| (t.id.clone(), p.id)).collect());
+    for (task, pr) in waiting {
+        hub.append_all(|v| {
+            let still = v.board.tasks.get(&task).and_then(|t| v.awaitable_merge(t)).is_some_and(|p| p.id == pr);
+            batch(if still { vec![Event::TaskMoved { task: task.clone(), event: TaskEvent::AwaitsMerge { pr } }] } else { vec![] })
+        })?
+        .ok();
+    }
+    let quiet: Vec<String> = hub.read(|v| v.nodes.values().filter(|n| n.watched()).map(|n| n.session_id.clone()).collect());
+    for session in quiet {
+        hub.append_all(|v| batch(v.nodes.get(&session).map(|n| states::stale_wait_messages(v, n, user, now)).unwrap_or_default().into_iter().map(Event::MessageQueued).collect()))?
+            .ok();
     }
     Ok(())
 }
@@ -286,7 +310,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         steps: vec![],
         mission: node.mission.clone(),
         task: v.fact_task(&node.session_id, None),
-        replaces: None,
+        replaces: None, about_pr: None,
     }
 }
 
@@ -605,7 +629,7 @@ mod tests {
             action: false,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         }
     }
@@ -787,5 +811,76 @@ mod tests {
         close_idle_nodes(&hub, &mut refused, after, &claude, &trees).await;
         assert_eq!(hub.read(|v| v.questions.values().filter(|q| upkeep::is_idle_close(q)).count()), 2, "asked once per idle stretch");
         assert_eq!(claude.0.lock().unwrap().len(), 2, "nothing more is closed");
+    }
+
+    /// Request r-1790284418392 (t-48599): the beta t-44137 depended on PR #264 of t-44136, both
+    /// on one node. The sweep shows the beta waiting for that merge, and the merge reaches the
+    /// node once, naming the beta.
+    #[test]
+    fn a_sweep_follows_the_merge_a_dependent_task_waits_for() {
+        use alondra_core::tasks::{NewTask, Start, TaskOptions, TaskState};
+        use alondra_core::{MessageAbout, Report, ReportKind};
+        let home = std::env::temp_dir().join(format!("alondra-sentinel-merges-{}-{}", std::process::id(), now_millis()));
+        let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
+        let hub = Hub::open(config, false).unwrap();
+        let u = "a7e1d69b";
+        let hook = |event: &str| Event::Hook(HookEvent { session_id: u.into(), event: event.into(), ..Default::default() });
+        let task = |id: &str, depends_on: &[&str]| {
+            Event::TaskCreated(NewTask {
+                id: id.into(),
+                request: "r-1790284418392".into(),
+                title: id.into(),
+                brief: None,
+                depends_on: depends_on.iter().map(|d| d.to_string()).collect(),
+                options: TaskOptions::default(),
+                session_id: None,
+                launched: false,
+                launched_as: None,
+                start: Some(Start::Node { session_id: u.into() }),
+            })
+        };
+        let assigned = |id: &str| Event::TaskAssigned { task: id.into(), session_id: u.into(), agent_id: None };
+        let report = Report {
+            id: 243,
+            session_id: u.into(),
+            node_name: None,
+            title: "PR #264".into(),
+            body: None,
+            links: vec![],
+            attachments: vec![],
+            kind: ReportKind::Final,
+            created_at: now_millis(),
+            read: false,
+            to_orchestrator: false,
+            mission: None,
+            looks_like_question: false,
+            task: Some("t-44136".into()),
+        };
+        for e in [
+            Event::TasksRecorded,
+            task("t-44136", &[]),
+            task("t-44137", &["t-44136"]),
+            Event::DaemonSeen(DaemonObservation { session_id: u.into(), short_id: u.into(), pid: Some(1), state: Some("working".into()), ..Default::default() }),
+            assigned("t-44136"),
+            hook("UserPromptSubmit"),
+            Event::PrOpened { url: "https://github.com/acmecorp-private/Redraft/pull/264".into(), session_id: u.into(), task: Some("t-44136".into()) },
+            assigned("t-44137"),
+            Event::ReportPosted(report),
+            hook("Stop"),
+        ] {
+            hub.append(e).unwrap();
+        }
+        let later = now_millis() + 10 * 60_000;
+        let state = |id: &str| hub.read(|v| v.board.tasks[id].state);
+        follow_merges(&hub, "David", later).unwrap();
+        assert_eq!((state("t-44136"), state("t-44137")), (TaskState::InReview, TaskState::WaitingDependency));
+
+        hub.append(Event::PrMerged { id: 1, method: alondra_core::pr::MergeMethod::Merge }).unwrap();
+        assert_eq!((state("t-44136"), state("t-44137")), (TaskState::Done, TaskState::Running));
+        let notices = || hub.read(|v| v.messages.values().filter(|m| m.session_id == u && m.about == Some(MessageAbout::PrMerged { pr_id: 1, task: Some("t-44137".into()) })).count());
+        for _ in 0..2 {
+            follow_merges(&hub, "David", later + 60_000).unwrap();
+        }
+        assert_eq!(notices(), 1);
     }
 }

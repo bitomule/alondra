@@ -239,6 +239,7 @@ pub fn idle_close_question(view: &View, node: &Node, pending: &[String], after: 
         mission: node.mission.clone(),
         replaces: None,
         task: view.fact_task(&node.session_id, None),
+        about_pr: None,
     })
 }
 
@@ -285,7 +286,7 @@ mod tests {
         Event::QuestionAsked(Question {
             id: 1, session_id: "s".into(), node_name: None, title: "Deploy?".into(), detail: None, options: vec![], links: vec![], attachments: vec![],
             blocking: true, origin: QuestionOrigin::Ask, tool_use_id: None, to_orchestrator: false, node_context: None, status: QuestionStatus::Open,
-            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, replaces: None, task: None,
+            answer: None, asked_at: T0, action: false, steps: vec![], mission: None, replaces: None, about_pr: None, task: None,
         })
     }
 

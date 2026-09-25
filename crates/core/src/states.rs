@@ -9,7 +9,7 @@ use crate::model::{
     BackgroundItem, BackgroundKind, Evidence, Message, MessageFrom, Millis, Node, NodeState, NodeStatus, OrchestratorState, QuestionStatus, ReportKind, Signal,
     TurnSignal,
 };
-use crate::pr::PrState;
+use crate::pr::{PrState, PullRequest};
 use crate::tasks::{BlockerKind, Task, TaskState};
 use crate::view::View;
 
@@ -270,14 +270,26 @@ pub const TASK_ACTION: &str = "a task of the node waits for the user's action";
 pub const MERGE_NOTICE_DUE: &str = "the merge of its PR has yet to reach it";
 pub const REVIEW_REPLY_DUE: &str = "the user's review has yet to reach it";
 pub const TASK_IDLE: &str = "a task of the node should move and its turn ended without a declaration";
+pub const TASK_AWAITS_MERGE: &str = "its task has nothing left but a dependency's PR to see merged";
 pub const TASK_AUTO_MERGING: &str = "Alondra waits on GitHub to merge a PR of its task";
 pub const TASK_DELIVERED: &str = "its task runs and it delivered a report";
 pub const TASK_IN_REVIEW: &str = "a task of the node waits for the user's review";
 pub const TASK_WAITING: &str = "its task waits for another task";
 pub const TASKS_FINISHED: &str = "every task of the node is finished";
 /// Every row `from_tasks` can give, in the order it tries them.
-pub const TASK_ROWS: &[&str] =
-    &[TASK_ASKS, TASK_ACTION, MERGE_NOTICE_DUE, REVIEW_REPLY_DUE, TASK_IDLE, TASK_AUTO_MERGING, TASK_DELIVERED, TASK_IN_REVIEW, TASK_WAITING, TASKS_FINISHED];
+pub const TASK_ROWS: &[&str] = &[
+    TASK_ASKS,
+    TASK_ACTION,
+    MERGE_NOTICE_DUE,
+    REVIEW_REPLY_DUE,
+    TASK_IDLE,
+    TASK_AWAITS_MERGE,
+    TASK_AUTO_MERGING,
+    TASK_DELIVERED,
+    TASK_IN_REVIEW,
+    TASK_WAITING,
+    TASKS_FINISHED,
+];
 
 /// What the node's tasks make of it, over what it shows of its own: waiting for the user's
 /// answer or action (its task's blocker, or an open card the machine could not take), and, when
@@ -310,11 +322,14 @@ fn from_tasks(view: &View, node: &Node, now: Millis, own: &Row<NodeState>, own_a
     }
     let since = |states: &[TaskState]| tasks.iter().filter(|t| states.contains(&t.state)).map(|t| t.state_since).max();
     if let Some(at) = since(&[TaskState::Running, TaskState::Closing]) {
+        let working = tasks.iter().filter(|t| matches!(t.state, TaskState::Running | TaskState::Closing));
         return if idle_task(view, node, now).is_some() {
             said(NodeState::Stalled, TASK_IDLE, Signal::TurnEndedUndeclared, node.last_stop_at.unwrap_or(at))
+        } else if awaits_merge(view, node, now).is_some() {
+            said(NodeState::WaitingMerge, TASK_AWAITS_MERGE, Signal::PrAwaitingUser, at)
         } else if tasks.iter().any(|t| view.auto_merge_pending(t, now)) {
             said(NodeState::WaitingMerge, TASK_AUTO_MERGING, Signal::PrAwaitingUser, at)
-        } else if matches!(node.turn_signal, Some(TurnSignal::Delivered | TurnSignal::Finished)) {
+        } else if matches!(node.turn_signal, Some(TurnSignal::Delivered | TurnSignal::Finished)) && working.clone().any(|t| declared_for(node, t)) {
             said(NodeState::Delivered, TASK_DELIVERED, Signal::Report, node.signal_at.unwrap_or(at))
         } else {
             None
@@ -448,28 +463,108 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
     nudge_then_orchestrator(view, node)
 }
 
-/// The running (or closing: after its merge) task of a node idle when it should work: its turn
-/// ended, it shows no work and it declared nothing. A task whose auto-merge PR Alondra is waiting on GitHub to merge waits on
-/// GitHub, not on its node; a node whose process died is restarted instead (`upkeep`).
-pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
+/// What the node declared in its episode covers the task: a declaration covers the task it
+/// named, or every task of the node when it named none. A wait for the machine covers them all.
+pub fn declared_for(node: &Node, task: &Task) -> bool {
+    match node.turn_signal {
+        None => false,
+        Some(TurnSignal::WaitingMachine) => true,
+        Some(_) => node.signal_task.as_deref().is_none_or(|t| t == task.id),
+    }
+}
+
+/// The node's turn ended and nothing moves it: no work in sight, nothing on screen waiting for
+/// anyone, nothing from David, the orchestrator or a merge on its way to it.
+fn quiet(view: &View, node: &Node, now: Millis) -> bool {
     let turn_ended = node.last_stop_at.is_some_and(|stop| stop >= node.episode_since && stop >= node.turn_since);
-    let idle = node.watched()
+    node.watched()
         && node.has_plugin
         && turn_ended
-        && node.turn_signal.is_none()
         && !node.usage_limited
         && !node.waiting_permission
         && node.menu_waiting.is_none()
         && node.background.is_empty()
         && !crate::upkeep::died_working(node)
         && !crate::upkeep::stopped_on_purpose(node)
-        && !watching(view, node, now)
         && !works(view, node, now)
-        && !view.deliverable_messages(&node.session_id).any(|m| m.from != MessageFrom::Alondra || view.is_merge_notice(m));
-    if !idle {
+        && !view.deliverable_messages(&node.session_id).any(|m| m.from != MessageFrom::Alondra || view.is_merge_notice(m))
+}
+
+/// The running (or closing: after its merge) task of a node idle when it should work: its turn
+/// ended, it shows no work and it declared nothing about that task. A task whose auto-merge PR
+/// Alondra is waiting on GitHub to merge waits on GitHub, not on its node; one that can only
+/// wait for a dependency's merge waits on that merge (`awaits_merge`); a node whose process died
+/// is restarted instead (`upkeep`).
+pub fn idle_task<'a>(view: &'a View, node: &Node, now: Millis) -> Option<&'a Task> {
+    if !quiet(view, node, now) || watching(view, node, now) {
         return None;
     }
-    view.tasks_of(&node.session_id).find(|t| matches!(t.state, TaskState::Running | TaskState::Closing) && !view.auto_merge_pending(t, now))
+    view.tasks_of(&node.session_id).find(|t| {
+        matches!(t.state, TaskState::Running | TaskState::Closing) && !declared_for(node, t) && !view.auto_merge_pending(t, now) && view.awaitable_merge(t).is_none()
+    })
+}
+
+/// The running task of a quiet node that has nothing left but a dependency's PR to see merged,
+/// and that PR: whatever the node said, the task waits for that merge. A node waiting for the
+/// machine waits for the machine.
+pub fn awaits_merge<'a>(view: &'a View, node: &Node, now: Millis) -> Option<(&'a Task, &'a PullRequest)> {
+    if node.turn_signal == Some(TurnSignal::WaitingMachine) || !quiet(view, node, now) {
+        return None;
+    }
+    view.tasks_of(&node.session_id).find_map(|t| Some((t, view.awaitable_merge(t)?)))
+}
+
+/// What a quiet node with work left hears about the PRs its last words name: one merged after
+/// its turn began, which it cannot know about, and one with no card, which the user does not
+/// see. Once per PR. A merge counts as a merge notice for its task, so the node's declarations
+/// before it lapse when it lands.
+pub fn stale_wait_messages(view: &View, node: &Node, user: &str, now: Millis) -> Vec<Message> {
+    let Some(open) = view.tasks_of(&node.session_id).find(|t| !t.state.finished()) else { return vec![] };
+    if !quiet(view, node, now) || !view.may_alondra_write(node) {
+        return vec![];
+    }
+    let told = |url: &str, since: Millis| view.messages.values().any(|m| m.session_id == node.session_id && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.contains(url));
+    let mut next_id = view.messages.keys().next_back().copied().unwrap_or(0);
+    let mut said = vec![];
+    for named in view.named_prs(node) {
+        let (text, about) = match named {
+            crate::tasks::Named::Card(p) => {
+                let Some(merged) = p.merged_at.filter(|m| p.state == PrState::Merged && *m > node.turn_since && !told(&p.url, *m)) else { continue };
+                let of = view.pr_task_of(p).map(|t| format!(" of {} “{}”", t.id, t.title)).unwrap_or_default();
+                let text = format!(
+                    "[Alondra] {} (PR #{}{of}), which your last message waits on, was merged {} min ago. Carry on with what waited for it.",
+                    p.url,
+                    p.number,
+                    (now - merged) / MINUTE
+                );
+                let task = (p.session_id != node.session_id).then(|| open.id.clone());
+                (text, Some(crate::model::MessageAbout::PrMerged { pr_id: p.id, task }))
+            }
+            crate::tasks::Named::Uncarded(url) => {
+                if told(&url, 0) {
+                    continue;
+                }
+                let text = format!(
+                    "[Alondra] {url}, which your last message names, has no card in Alondra, so {user} does not see it. If it waits for {user}'s review, `report` with a link to it: that gives it its card."
+                );
+                (text, None)
+            }
+        };
+        next_id += 1;
+        said.push(Message {
+            id: next_id,
+            session_id: node.session_id.clone(),
+            from: MessageFrom::Alondra,
+            text,
+            answers_question: None,
+            created_at: now,
+            handed_at: None,
+            delivered_at: None,
+            about,
+            attachments: vec![],
+        });
+    }
+    said
 }
 
 /// What Alondra does about a node idle when it should work: what it does about a stalled one,
@@ -688,7 +783,7 @@ mod tests {
             action,
             steps: vec![],
             mission: None,
-            replaces: None,
+            replaces: None, about_pr: None,
             task: None,
         })
     }
@@ -822,7 +917,8 @@ mod tests {
         waiting.apply(99, T0 + 60_000, &Event::Clock { machine_strained: false });
         let n = &waiting.nodes["s"];
         assert_eq!((n.state, n.evidence.as_ref().map(|e| e.row.as_str())), (NodeState::WaitingMerge, Some(TASK_WAITING)), "a task waiting for another");
-        let reached = |name: &str| name == TASK_WAITING || cases.iter().any(|c| c.row == name);
+        let asserted_apart = [TASK_WAITING, TASK_AWAITS_MERGE];
+        let reached = |name: &str| asserted_apart.contains(&name) || cases.iter().any(|c| c.row == name);
         for name in NODE_TABLE.iter().map(|r| r.name).chain(TASK_ROWS.iter().copied()) {
             assert!(reached(name), "no case reaches the row {name:?}");
         }
@@ -1200,7 +1296,7 @@ mod tests {
             created_at: T0,
             handed_at: None,
             delivered_at: None,
-            about: Some(crate::model::MessageAbout::PrMerged { pr_id: 1 }),
+            about: Some(crate::model::MessageAbout::PrMerged { pr_id: 1, task: None }),
             attachments: vec![],
         };
         [Event::MessageQueued(m), Event::MessageHanded { id: 9 }]
