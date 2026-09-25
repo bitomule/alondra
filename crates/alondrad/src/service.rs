@@ -274,22 +274,26 @@ impl Service {
     }
 
     async fn sync_revocations(&self, epoch: &[u8; 16], synced: &mut HashSet<String>) -> Result<()> {
-        for (id, device) in &self.devices {
-            if self.auth.approved_key_matches(id, &device.signing)
-                && !self.journal.enrollment_revoked(id)?
-                && !self.journal.enrollment_pending(id)?
-            {
+        // Walk the durable enrollment journal, not service.toml. An operator may
+        // remove a device from that file while the connector is stopped; the
+        // relay must still receive its signed revocation on the next start.
+        for (id, state) in self.journal.enrollments()? {
+            let approved = self
+                .devices
+                .get(&id)
+                .is_some_and(|device| self.auth.approved_key_matches(&id, &device.signing));
+            if approved && state == "active" {
                 continue;
             }
-            self.journal.revoke_enrollment(id)?;
-            if synced.contains(id) {
+            self.journal.revoke_enrollment(&id)?;
+            if synced.contains(&id) {
                 continue;
             }
             let path = format!("/v1/devices/{id}");
             self.signed(Method::DELETE, &path, Vec::new(), epoch)
                 .await?
                 .error_for_status()?;
-            synced.insert(id.clone());
+            synced.insert(id);
         }
         Ok(())
     }
@@ -489,6 +493,12 @@ impl Journal {
         c.pragma_update(None, "synchronous", "FULL")?;
         Ok(c)
     }
+    fn enrollments(&self) -> Result<Vec<(String, String)>> {
+        let c = self.db()?;
+        let mut query = c.prepare("SELECT device_id,state FROM service_enrollments")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
     fn reserve_enrollment(&self, id: &str, signing_key: &[u8]) -> Result<EnrollmentDecision> {
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -535,6 +545,7 @@ impl Journal {
         )?;
         Ok(())
     }
+    #[cfg(test)]
     fn enrollment_revoked(&self, id: &str) -> Result<bool> {
         let c = self.db()?;
         Ok(c.query_row(
@@ -545,6 +556,7 @@ impl Journal {
         .optional()?
         .is_some_and(|state| state == "revoked"))
     }
+    #[cfg(test)]
     fn enrollment_pending(&self, id: &str) -> Result<bool> {
         let c = self.db()?;
         Ok(c.query_row(
@@ -911,7 +923,7 @@ mod tests {
                 },
             )]),
             auth: Arc::new(Auth::open(&home).unwrap()),
-            journal: Journal::open(journal_path).unwrap(),
+            journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
         };
         restarted.enroll(&[9u8; 16]).await.unwrap();
@@ -1047,6 +1059,27 @@ mod tests {
             enrollments.load(Ordering::SeqCst),
             1,
             "local revoke remains denied after restart and reconnect"
+        );
+        let removed_from_config = Service {
+            relay: service.relay.clone(),
+            client: Client::new(),
+            mac_id: service.mac_id.clone(),
+            owner_sub: service.owner_sub.clone(),
+            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
+            devices: HashMap::new(),
+            auth: Arc::new(Auth::open(&home).unwrap()),
+            journal: Journal::open(journal_path).unwrap(),
+            local_port,
+        };
+        removed_from_config
+            .sync_revocations(&[12u8; 16], &mut HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            deletions.load(Ordering::SeqCst),
+            3,
+            "removing a phone from service.toml must not suppress its relay revocation"
         );
         let revoked = EnvelopeV1::seal_random(
             EnvelopeContext {
