@@ -1,17 +1,33 @@
-cask "alondra" do
-  version "@VERSION@"
-  sha256 "@SHA256@"
-
-  url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-macos.zip"
-  name "Alondra"
-  desc "Private task and notification bridge for Claude on macOS"
+class Alondra < Formula
+  desc "Private task and notification bridge for Claude"
   homepage "https://davidcollado.dev"
+  version "@VERSION@"
 
-  app "Alondra.app"
-  binary "#{appdir}/Alondra.app/Contents/MacOS/alondra"
-  binary "#{appdir}/Alondra.app/Contents/MacOS/alondrad"
+  depends_on :macos
 
-  caveats <<~EOS
-    Run `alondra setup` to sign in and configure this Mac.
-  EOS
+  on_arm do
+    url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
+    sha256 "@ARM_SHA256@"
+  end
+
+  on_intel do
+    url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-x86_64-apple-darwin.tar.gz"
+    sha256 "@INTEL_SHA256@"
+  end
+
+  def install
+    bin.install "alondra", "alondrad"
+    (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator"
+  end
+
+  def caveats
+    <<~EOS
+      Run `alondra setup` to sign in, install the Claude plugins, and start the daemon.
+      Run it again after `brew upgrade alondra` to restart the daemon on the new version.
+    EOS
+  end
+
+  test do
+    assert_match "Alondra", shell_output("#{bin}/alondra --help")
+  end
 end

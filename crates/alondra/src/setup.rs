@@ -325,9 +325,12 @@ fn installed_package() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    if let Some(package) = brew_package_for_executable(executable) {
+        return Some(package);
+    }
     let bin = executable.parent()?.to_path_buf();
-    // /Applications/Alondra.app is stable across Homebrew upgrades. A Caskroom
-    // staging path disappears on upgrade and must never enter launchd or Claude.
+    // Direct app bundles remain supported for development and future standalone Mac
+    // releases. Homebrew uses an independent CLI/daemon formula below.
     let contents = bin.parent()?;
     if bin.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
         return None;
@@ -337,6 +340,28 @@ fn package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
         .then(|| find_repo(&package))
         .flatten()
         .map(|assets| (bin, assets))
+}
+
+fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    // Homebrew launches the real executable from its versioned Cellar keg. Persist
+    // paths through opt/alondra so launchd and Claude survive a formula upgrade.
+    let bin = executable.parent()?;
+    let keg = bin.parent()?;
+    let rack = keg.parent()?;
+    let cellar = rack.parent()?;
+    if executable.file_name()? != "alondra"
+        || bin.file_name()? != "bin"
+        || rack.file_name()? != "alondra"
+        || cellar.file_name()? != "Cellar"
+    {
+        return None;
+    }
+    let stable = cellar.parent()?.join("opt/alondra");
+    let assets = stable.join("libexec/alondra");
+    (stable.join("bin/alondrad").is_file())
+        .then(|| find_repo(&assets))
+        .flatten()
+        .map(|assets| (stable.join("bin"), assets))
 }
 
 pub fn local_host_name() -> Option<String> {
@@ -467,6 +492,8 @@ pub fn run(args: Args) -> Result<()> {
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
     let packaged = installed_package();
+    let brew_executable = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())
+        .filter(|p| brew_package_for_executable(p).is_some());
     let paths = Paths {
         bin: args.bin.clone().or_else(|| packaged.as_ref().map(|(bin, _)| bin.clone())).unwrap_or_else(|| home.join(".local/bin")),
         repo: args.repo.clone().or_else(|| packaged.as_ref().map(|(_, assets)| assets.clone())).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
@@ -508,12 +535,30 @@ pub fn run(args: Args) -> Result<()> {
         matches!(step, Step::Run { program, args } if program == "launchctl"
             && matches!(args.first().map(String::as_str), Some("bootstrap" | "kickstart")))
     });
-    if service_created && seen.binaries && seen.service_loaded && !launched_by_plan {
+    let restarted_for_enrollment = service_created && seen.binaries && seen.service_loaded && !launched_by_plan;
+    if restarted_for_enrollment {
         let target = format!("gui/{}/{}", paths.uid, label);
         execute(&Step::Run {
             program: "launchctl".into(),
             args: vec!["kickstart".into(), "-k".into(), target],
         })?;
+    }
+    if !args.dry_run && !args.skip_service && seen.binaries
+        && let Some(executable) = brew_executable
+    {
+        let stamp = paths.alondra_home.join("brew-keg-path");
+        let current = executable.to_string_lossy().into_owned();
+        let changed = std::fs::read_to_string(&stamp).ok().as_deref() != Some(current.as_str());
+        if changed && seen.service_loaded && !launched_by_plan && !restarted_for_enrollment {
+            let target = format!("gui/{}/{}", paths.uid, label);
+            execute(&Step::Run {
+                program: "launchctl".into(),
+                args: vec!["kickstart".into(), "-k".into(), target],
+            })?;
+        }
+        if changed {
+            execute(&Step::Write { path: stamp, contents: current, private: true })?;
+        }
     }
     let config = Config::resolve(paths.alondra_home.clone(), &plan.config, env, config::system_name);
     if args.dry_run {
@@ -643,6 +688,26 @@ mod tests {
         std::fs::write(bin.join("alondrad"), "").unwrap();
         std::fs::write(assets.join(".claude-plugin/marketplace.json"), "{}").unwrap();
         assert_eq!(package_for_executable(&bin.join("alondra")), Some((bin, assets)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn homebrew_formula_uses_stable_opt_paths_for_daemon_and_plugins() {
+        let root = std::env::temp_dir().join(format!("alondra-brew-package-test-{}", std::process::id()));
+        let keg = root.join("Cellar/alondra/0.1.0");
+        let bin = keg.join("bin");
+        let assets = keg.join("libexec/alondra");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(assets.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(assets.join("plugin")).unwrap();
+        std::fs::write(bin.join("alondra"), "").unwrap();
+        std::fs::write(bin.join("alondrad"), "").unwrap();
+        std::fs::write(assets.join(".claude-plugin/marketplace.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("opt")).unwrap();
+        std::os::unix::fs::symlink(&keg, root.join("opt/alondra")).unwrap();
+        let stable = root.join("opt/alondra");
+        assert_eq!(package_for_executable(&bin.join("alondra")),
+            Some((stable.join("bin"), stable.join("libexec/alondra"))));
         std::fs::remove_dir_all(root).unwrap();
     }
 
