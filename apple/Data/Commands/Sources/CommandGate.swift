@@ -2,7 +2,7 @@ import Foundation
 
 /// Describes the effect for reconciliation. The payload stays with the caller until it has
 /// been sent once; no closure or payload is retained for an automatic replay.
-public enum CommandKind: Hashable, Sendable {
+public enum CommandKind: Hashable, Sendable, Codable {
     case answer(UInt64)
     case moreContext(UInt64)
     case markRead(UInt64)
@@ -25,7 +25,7 @@ public enum CommandKind: Hashable, Sendable {
 
 }
 
-public struct CommandScope: Hashable, Sendable {
+public struct CommandScope: Hashable, Sendable, Codable {
     public let server: URL
     public let deviceID: String
     public let credentialRevision: String
@@ -37,9 +37,14 @@ public struct CommandScope: Hashable, Sendable {
         self.credentialRevision = credentialRevision
         self.generation = generation
     }
+
+    /// Generations can restart at launch; the credential revision is the durable identity.
+    public func sameIdentity(as other: Self) -> Bool {
+        server == other.server && deviceID == other.deviceID && credentialRevision == other.credentialRevision
+    }
 }
 
-public struct UncertainCommand: Identifiable, Equatable, Sendable {
+public struct UncertainCommand: Identifiable, Equatable, Sendable, Codable {
     public let id: UUID
     public let scope: CommandScope
     public let kind: CommandKind
@@ -66,19 +71,52 @@ public actor CommandGate {
     public private(set) var scope: CommandScope
     public private(set) var uncertain: [UncertainCommand] = []
     private var generation: UInt64 = 0
+    private let journal: (any CommandJournaling)?
+    private var loaded = false
+    private var pending: [UncertainCommand] = []
+    private var mutationVersion: UInt64 = 0
 
-    public init(scope: CommandScope) { self.scope = scope }
+    public init(scope: CommandScope, journal: (any CommandJournaling)? = nil) {
+        self.scope = scope
+        self.journal = journal
+    }
 
-    public func use(_ next: CommandScope) {
+    /// Loads warnings for this identity. The gate also calls this before its first send.
+    /// A failed read blocks submission; it must not silently forget a prior attempt.
+    @discardableResult public func restore() async throws -> [UncertainCommand] {
+        guard let journal else { loaded = true; return uncertain }
+        let restoringScope = scope
+        let restoringGeneration = generation
+        let restoringVersion = mutationVersion
+        let records = try await journal.records()
+        guard restoringScope == scope, restoringGeneration == generation,
+              restoringVersion == mutationVersion else { return uncertain }
+        let relevant = records.filter { $0.command.scope.sameIdentity(as: restoringScope) }
+        uncertain = relevant.filter { $0.state == .pending || $0.state == .unknown }.map(\.command)
+        loaded = true
+        return uncertain
+    }
+
+    public func use(_ next: CommandScope) async {
         guard next != scope else { return }
         guard next.generation > scope.generation else { return }
         scope = next
         generation &+= 1
+        mutationVersion &+= 1
         uncertain = []
+        pending = []
+        loaded = false
+        // The next submission will fail closed if this identity cannot be read.
+        _ = try? await restore()
     }
 
-    public func dismiss(_ id: UUID) {
+    public func dismiss(_ id: UUID) async {
+        if let journal {
+            do { try await journal.remove(id) }
+            catch { return } // Keep the warning if the file could not be removed.
+        }
         uncertain.removeAll { $0.id == id }
+        mutationVersion &+= 1
     }
 
     public func submit(
@@ -90,13 +128,74 @@ public actor CommandGate {
     ) async -> CommandResult {
         guard expectedScope == scope else { return .obsolete }
         let submittedGeneration = generation
+        if !loaded {
+            do { try await restore() }
+            catch { return .rejected(error) }
+        }
+        guard expectedScope == scope, submittedGeneration == generation else { return .obsolete }
+        if let existing = (pending + uncertain).first(where: { $0.kind == kind && $0.itemID == itemID && $0.scope.sameIdentity(as: expectedScope) }) {
+            return .unknown(existing)
+        }
+        let command = UncertainCommand(id: UUID(), scope: expectedScope, kind: kind, itemID: itemID)
+        pending.append(command)
+        mutationVersion &+= 1
+        if let journal {
+            do {
+                if case .existing(let existing) = try await journal.reserve(command) {
+                    pending.removeAll { $0.id == command.id }
+                    mutationVersion &+= 1
+                    guard submittedGeneration == generation else { return .obsolete }
+                    if !uncertain.contains(where: { $0.id == existing.id }) { uncertain.append(existing) }
+                    return .unknown(existing)
+                }
+            }
+            catch {
+                pending.removeAll { $0.id == command.id }
+                mutationVersion &+= 1
+                return .rejected(error)
+            }
+        }
+        // The actor may have reentered while persisting. Never send from a stale scope.
+        guard expectedScope == scope, submittedGeneration == generation else {
+            pending.removeAll { $0.id == command.id }
+            mutationVersion &+= 1
+            return .obsolete
+        }
         do {
             try await operation()
-            return submittedGeneration == generation ? .confirmed : .obsolete
+            guard submittedGeneration == generation else { return .obsolete }
+            if let journal {
+                do { try await journal.save(.init(command: command, state: .confirmed)) }
+                catch {
+                    pending.removeAll { $0.id == command.id }
+                    mutationVersion &+= 1
+                    guard submittedGeneration == generation else { return .obsolete }
+                    uncertain.append(command)
+                    return .unknown(command)
+                }
+            }
+            pending.removeAll { $0.id == command.id }
+            mutationVersion &+= 1
+            guard submittedGeneration == generation else { return .obsolete }
+            uncertain.removeAll { $0.id == command.id }
+            return .confirmed
         } catch {
             guard submittedGeneration == generation else { return .obsolete }
-            guard isUnknown(error) else { return .rejected(error) }
-            let command = UncertainCommand(id: UUID(), scope: expectedScope, kind: kind, itemID: itemID)
+            let outcome: CommandJournalState = isUnknown(error) ? .unknown : .confirmed
+            if let journal {
+                do { try await journal.save(.init(command: command, state: outcome)) }
+                catch {
+                    pending.removeAll { $0.id == command.id }
+                    mutationVersion &+= 1
+                    guard submittedGeneration == generation else { return .obsolete }
+                    uncertain.append(command)
+                    return .unknown(command)
+                }
+            }
+            pending.removeAll { $0.id == command.id }
+            mutationVersion &+= 1
+            guard submittedGeneration == generation else { return .obsolete }
+            guard outcome == .unknown else { return .rejected(error) }
             uncertain.append(command)
             return .unknown(command)
         }
