@@ -321,25 +321,7 @@ pub fn find_repo(start: &Path) -> Option<PathBuf> {
 /// A release can carry the marketplace next to its binaries, without a source checkout.
 fn installed_package() -> Option<(PathBuf, PathBuf)> {
     let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
-    package_for_executable(&executable)
-}
-
-fn package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
-    if let Some(package) = brew_package_for_executable(executable) {
-        return Some(package);
-    }
-    let bin = executable.parent()?.to_path_buf();
-    // Direct app bundles remain supported for development and future standalone Mac
-    // releases. Homebrew uses an independent CLI/daemon formula below.
-    let contents = bin.parent()?;
-    if bin.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
-        return None;
-    }
-    let package = contents.join("Resources/alondra");
-    (bin.join("alondrad").is_file())
-        .then(|| find_repo(&package))
-        .flatten()
-        .map(|assets| (bin, assets))
+    brew_package_for_executable(&executable)
 }
 
 fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -519,6 +501,9 @@ pub fn run(args: Args) -> Result<()> {
         }
         bail!(tr!("setup stopped", "setup detenido"));
     }
+    if !args.dry_run && !args.skip_service && !seen.binaries {
+        bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
+    }
     let service_created = if !args.dry_run {
         crate::service_setup::enroll(&paths.alondra_home)?
     } else {
@@ -651,22 +636,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_free_app_layout_uses_stable_app_paths() {
-        let root = std::env::temp_dir().join(format!("alondra-package-test-{}", std::process::id()));
-        let contents = root.join("Alondra.app/Contents");
-        let bin = contents.join("MacOS");
-        let assets = contents.join("Resources/alondra");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(assets.join(".claude-plugin")).unwrap();
-        std::fs::create_dir_all(assets.join("plugin")).unwrap();
-        std::fs::write(bin.join("alondra"), "").unwrap();
-        std::fs::write(bin.join("alondrad"), "").unwrap();
-        std::fs::write(assets.join(".claude-plugin/marketplace.json"), "{}").unwrap();
-        assert_eq!(package_for_executable(&bin.join("alondra")), Some((bin, assets)));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn homebrew_formula_uses_stable_opt_paths_for_daemon_and_plugins() {
         let root = std::env::temp_dir().join(format!("alondra-brew-package-test-{}", std::process::id()));
         let keg = root.join("Cellar/alondra/0.1.0");
@@ -681,7 +650,7 @@ mod tests {
         std::fs::create_dir_all(root.join("opt")).unwrap();
         std::os::unix::fs::symlink(&keg, root.join("opt/alondra")).unwrap();
         let stable = root.join("opt/alondra");
-        assert_eq!(package_for_executable(&bin.join("alondra")),
+        assert_eq!(brew_package_for_executable(&bin.join("alondra")),
             Some((stable.join("bin"), stable.join("libexec/alondra"))));
         std::fs::remove_dir_all(root).unwrap();
     }
