@@ -1,4 +1,5 @@
 mod auth;
+mod pairing;
 mod push;
 mod state;
 
@@ -27,6 +28,7 @@ struct Server {
     auth: Auth,
     apns: Option<push::Apns>,
     queue: Queue,
+    pairing: pairing::Mailbox,
     work_waiters: Arc<Semaphore>,
     change_waiters: Arc<Semaphore>,
     requests: Arc<Semaphore>,
@@ -39,6 +41,10 @@ fn router(server: Arc<Server>) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
+        .route("/v1/pairings", post(pairing_open))
+        .route("/v1/pairings/{id}", get(pairing_pending))
+        .route("/v1/pairings/{id}/candidates", post(pairing_candidate))
+        .route("/v1/pairings/{id}/approval", post(pairing_approve).get(pairing_approval))
         .route("/v1/macs", post(enroll_mac))
         .route("/v1/macs/{id}", axum::routing::delete(revoke_mac))
         .route("/v1/devices", post(enroll))
@@ -77,6 +83,92 @@ async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
         StatusCode::OK,
         Json(json!({"protocol":1,"epoch":server.epoch})),
     )
+}
+
+async fn pairing_open(
+    State(server): State<Arc<Server>>, headers: HeaderMap, method: Method, uri: Uri, body: Bytes,
+) -> ApiResult {
+    if body.len() > 2048 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms())
+        .map_err(|_| unauthorized())?;
+    let request: pairing::SessionRequest = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_pairing_session"))?;
+    if request.mac_id != mac.device_id { return Err(unauthorized()); }
+    server.pairing.open(request, &mac.owner_sub, now_ms())
+        .map_err(|code| error(StatusCode::CONFLICT, code))?;
+    Ok(StatusCode::CREATED.into_response())
+}
+
+async fn pairing_pending(
+    State(server): State<Arc<Server>>, Path(id): Path<String>, headers: HeaderMap,
+    method: Method, uri: Uri,
+) -> ApiResult {
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &[], now_ms())
+        .map_err(|_| unauthorized())?;
+    match server.pairing.mac(&id, &mac.device_id, now_ms()) {
+        Ok(Some(candidate)) => Ok(Json(candidate).into_response()),
+        Ok(None) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(_) => Err(error(StatusCode::NOT_FOUND, "pairing_not_found")),
+    }
+}
+
+async fn pairing_candidate(
+    State(server): State<Arc<Server>>, Path(id): Path<String>, headers: HeaderMap,
+    method: Method, uri: Uri, body: Bytes,
+) -> ApiResult {
+    if body.len() > 16 * 1024 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
+    let request: pairing::CandidateRequest = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_candidate"))?;
+    let (mac_id, owner) = server.pairing.route(&id, now_ms())
+        .map_err(|_| error(StatusCode::NOT_FOUND, "pairing_not_found"))?;
+    let who = server.auth.authenticate_pairing_candidate(
+        &headers, &method, &uri, &body, now_ms(), &request.device_id, &request.signing_key, &mac_id,
+    ).await.map_err(|_| unauthorized())?;
+    if who.owner_sub != owner { return Err(unauthorized()); }
+    server.pairing.candidate(&id, request, &who.owner_sub, now_ms())
+        .map_err(|code| error(StatusCode::CONFLICT, code))?;
+    Ok(StatusCode::ACCEPTED.into_response())
+}
+
+async fn pairing_approve(
+    State(server): State<Arc<Server>>, Path(id): Path<String>, headers: HeaderMap,
+    method: Method, uri: Uri, body: Bytes,
+) -> ApiResult {
+    if body.len() > 4096 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms())
+        .map_err(|_| unauthorized())?;
+    let proof: pairing::ApprovalProof = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_approval"))?;
+    let mac_record = server.auth.mac_public_identity(&mac.device_id)
+        .map_err(|_| unauthorized())?;
+    if proof.approval.mac_signing_key != mac_record.signing_key
+        || proof.approval.mac_agreement_key != mac_record.agreement_key
+    { return Err(error(StatusCode::BAD_REQUEST, "approval_mac_key_mismatch")); }
+    pairing::verify_proof(&proof)
+        .map_err(|code| error(StatusCode::BAD_REQUEST, code))?;
+    server.auth.phone_for_mac(&proof.approval.device_id, &mac)
+        .map_err(|_| error(StatusCode::CONFLICT, "device_not_enrolled"))?;
+    server.pairing.approve(&id, proof, &mac.device_id, &mac.owner_sub, now_ms())
+        .map_err(|code| error(StatusCode::CONFLICT, code))?;
+    Ok(StatusCode::ACCEPTED.into_response())
+}
+
+async fn pairing_approval(
+    State(server): State<Arc<Server>>, Path(id): Path<String>, headers: HeaderMap,
+    method: Method, uri: Uri,
+) -> ApiResult {
+    let device_id = headers.get("x-device-id").and_then(|v| v.to_str().ok())
+        .ok_or_else(unauthorized)?;
+    let (mac_id, key) = server.pairing.candidate_key(&id, device_id, now_ms())
+        .map_err(|_| error(StatusCode::NOT_FOUND, "pairing_not_found"))?;
+    let who = server.auth.authenticate_pairing_candidate(
+        &headers, &method, &uri, &[], now_ms(), device_id, &key, &mac_id,
+    ).await.map_err(|_| unauthorized())?;
+    match server.pairing.approval(&id, device_id, &who.owner_sub, now_ms()) {
+        Ok(Some(proof)) => Ok(Json(proof).into_response()),
+        Ok(None) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(_) => Err(error(StatusCode::NOT_FOUND, "pairing_not_found")),
+    }
 }
 
 async fn enroll_mac(
@@ -654,6 +746,7 @@ async fn main() -> anyhow::Result<()> {
         auth,
         apns,
         queue: Queue::new(),
+        pairing: pairing::Mailbox::default(),
         work_waiters: Arc::new(Semaphore::new(16)),
         change_waiters: Arc::new(Semaphore::new(64)),
         requests: Arc::new(Semaphore::new(128)),
@@ -785,6 +878,7 @@ mod http_tests {
             auth,
             apns: apns_endpoint.map(push::Apns::test),
             queue: Queue::new(),
+            pairing: pairing::Mailbox::default(),
             work_waiters: Arc::new(Semaphore::new(16)),
             change_waiters: Arc::new(Semaphore::new(64)),
             requests: Arc::new(Semaphore::new(128)),

@@ -672,6 +672,12 @@ impl Auth {
         verifying_key(&mac.signing_key)
     }
 
+
+    pub fn mac_public_identity(&self, mac_id: &str) -> Result<MacDevice> {
+        self.ensure_registry_ready()?;
+        self.devices.lock().unwrap().macs.get(mac_id).cloned().context("unknown Mac")
+    }
+
     pub fn server_epoch(&self) -> [u8; 16] {
         self.verifier.lock().unwrap().server_epoch()
     }
@@ -752,6 +758,32 @@ impl Auth {
             device_id: id.into(),
             owner_sub: sub,
         })
+    }
+
+    /// A candidate is not enrolled yet. Its account token and proof of possession of the
+    /// advertised signing key are both required before its opaque request enters the mailbox.
+    pub async fn authenticate_pairing_candidate(
+        &self,
+        headers: &HeaderMap,
+        method: &Method,
+        uri: &Uri,
+        body: &[u8],
+        now_ms: u64,
+        device_id: &str,
+        signing_key: &str,
+        mac_id: &str,
+    ) -> Result<Identity> {
+        if !valid_device_id(device_id) || !device_id.starts_with("phone-") {
+            bail!("invalid candidate ID");
+        }
+        canonical_public_key(signing_key)?;
+        let token = header(headers, "authorization")?
+            .strip_prefix("Bearer ")
+            .context("expected Bearer token")?;
+        let sub = self.verify_jwt(token, now_ms).await?;
+        self.mac_for_owner(mac_id, &sub)?;
+        self.verify_device(headers, method, uri, body, now_ms, device_id, signing_key)?;
+        Ok(Identity { device_id: device_id.to_owned(), owner_sub: sub })
     }
 
     pub fn phone_key(&self, device_id: &str) -> Result<VerifyingKey> {

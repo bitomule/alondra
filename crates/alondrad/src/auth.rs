@@ -13,6 +13,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -110,6 +111,31 @@ impl Auth {
         self.save(&next).map_err(|e| e.to_string())?;
         *devices = next;
         Ok(device)
+    }
+
+    /// The service CLI calls this only after a human accepts the encrypted candidate on
+    /// this Mac. Reuse the daemon's registry lock, avoiding concurrent file rewrites.
+    pub fn approve_service(&self, id: &str, name: &str, signing_key: &str) -> Result<(), String> {
+        if !id.starts_with("phone-") || id.len() > 128
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || name.len() > 80 || name.chars().any(char::is_control)
+        { return Err("invalid service device".into()); }
+        let raw = URL_SAFE_NO_PAD.decode(signing_key).map_err(|_| "invalid service signing key")?;
+        let key = VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "invalid service signing key")?;
+        if raw.len() != 65 || raw[0] != 4 || URL_SAFE_NO_PAD.encode(&raw) != signing_key {
+            return Err("noncanonical service signing key".into());
+        }
+        let public_key = B64.encode(key.to_sec1_bytes());
+        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        if let Some(existing) = devices.iter().find(|d| d.id == id) {
+            return if existing.public_key == public_key { Ok(()) } else { Err("device ID already has another key".into()) };
+        }
+        let mut next = devices.clone();
+        next.push(Device { id: id.into(), name: name.into(), public_key,
+            created_at: now_millis(), last_seen: None });
+        self.save(&next).map_err(|e| e.to_string())?;
+        *devices = next;
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<Device> {
@@ -274,6 +300,21 @@ mod tests {
         let code = auth.new_pairing_code();
         assert!(auth.pair(&code, "a", &public).is_ok());
         assert!(auth.pair(&code, "b", &public).is_err());
+    }
+
+    #[test]
+    fn service_approval_is_idempotent_for_same_key_and_rejects_replacement() {
+        let dir = std::env::temp_dir().join(format!("alondra-service-approval-{}", random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = Auth::open(&dir).unwrap();
+        let first = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let second = SigningKey::from_slice(&[8u8; 32]).unwrap();
+        let first_key = URL_SAFE_NO_PAD.encode(first.verifying_key().to_sec1_bytes());
+        let second_key = URL_SAFE_NO_PAD.encode(second.verifying_key().to_sec1_bytes());
+        auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
+        auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
+        assert!(auth.approve_service("phone-test", "other", &second_key).is_err());
+        assert_eq!(Auth::open(&dir).unwrap().list().len(), 1);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod client;
 mod doctor;
 mod mcp;
 mod service_setup;
+mod service_pair;
 mod setup;
 mod statusline;
 mod state;
@@ -137,6 +138,7 @@ fn main() -> Result<()> {
             let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
             attach::attach(&short, attach::Over::Shell)
         }
+        Some(Cmd::Pair { url: None }) if client::config().home.join("service.toml").exists() => service_pair::run(&client::config().home),
         Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
             Some(url) => pair(&url),
             None => anyhow::bail!(tr!(

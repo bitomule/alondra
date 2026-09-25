@@ -34,6 +34,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/push/check", post(push_check))
         .route("/v1/pairing", post(new_pairing))
         .route("/v1/pair", post(pair))
+        .route("/v1/service/approve-device", post(service_approve_device))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
         .route("/v1/overview", get(overview))
@@ -1067,6 +1068,21 @@ async fn pair(Extension(auth): Extension<Arc<Auth>>, Json(b): Json<PairBody>) ->
     match auth.pair(&b.code, &b.device_name, &b.public_key) {
         Ok(d) => Json(json!({"device_id": d.id})).into_response(),
         Err(e) => err(StatusCode::UNAUTHORIZED, e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceApproveBody { device_id: String, name: String, signing_key: String }
+
+async fn service_approve_device(
+    Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap, Json(body): Json<ServiceApproveBody>,
+) -> Response {
+    if let Some(response) = local_only(&peer, &headers) { return response; }
+    match auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => err(StatusCode::CONFLICT, error),
     }
 }
 
