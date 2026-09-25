@@ -204,7 +204,7 @@ public struct FleetView: View {
                             .tag(Selection.node(node.sessionId))
                             .contextMenu {
                                 Button(role: .destructive) {
-                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName)
                                 } label: {
                                     Label("Close Node…", systemImage: "xmark.bin")
                                 }

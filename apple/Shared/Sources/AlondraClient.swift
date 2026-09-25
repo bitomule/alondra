@@ -202,22 +202,6 @@ public struct AlondraClient: Sendable {
         }
     }
 
-    /// The report is read even when alondrad refuses the close: the user has read it, and the
-    /// refusal says what to do about the node.
-    public func readAndClose(_ report: Report) async throws {
-        try await Self.readAndClose(close: { try await closeNode(report.sessionId) }, markRead: { try await markRead(report.id) })
-    }
-
-    public static func readAndClose(close: () async throws -> Void, markRead: () async throws -> Void) async throws {
-        do {
-            try await close()
-        } catch let refused as CloseRefused {
-            try await markRead()
-            throw refused
-        }
-        try await markRead()
-    }
-
     public func send(to session: String, text: String, attachments: [String] = []) async throws {
         try await post("v1/nodes/\(session)/messages", ["text": text, "from": "david", "attachments": attachments])
     }

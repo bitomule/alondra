@@ -254,23 +254,14 @@ public struct Report: Codable, Identifiable, Hashable, Sendable {
         }
     }
 
-    public var isFinal: Bool { kind == "final" }
-
     public enum PrimaryAction: Sendable {
         case markRead
-        case readAndClose
         /// It sends an artifact for review: its node waits until David approves it or sends his comments.
         case review
     }
 
-    public func primaryAction(nodeFound: Bool) -> PrimaryAction {
-        if !artifacts.isEmpty { return .review }
-        return isFinal && nodeFound ? .readAndClose : .markRead
-    }
-
-    /// The node this card may offer to close: never the orchestrator, which Alondra keeps alive.
-    public func closableNode(_ node: Node?) -> Node? {
-        node.flatMap { $0.isOrchestrator ? nil : $0 }
+    public func primaryAction() -> PrimaryAction {
+        artifacts.isEmpty ? .markRead : .review
     }
 }
 

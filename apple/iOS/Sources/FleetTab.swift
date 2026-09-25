@@ -41,7 +41,7 @@ struct FleetTab: View {
                             .listRowBackground(Palette.card.opacity(0.85))
                             .swipeActions(edge: .trailing) {
                                 Button {
-                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName)
                                 } label: {
                                     Label("Close Node", systemImage: "xmark.bin")
                                 }
@@ -49,7 +49,7 @@ struct FleetTab: View {
                             }
                             .contextMenu {
                                 Button(role: .destructive) {
-                                    closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                                    closing = CloseRequest(session: node.sessionId, name: node.displayName)
                                 } label: {
                                     Label("Close Node", systemImage: "xmark.bin")
                                 }
@@ -239,7 +239,7 @@ struct NodeDetail: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button(role: .destructive) {
-                            closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .node)
+                            closing = CloseRequest(session: node.sessionId, name: node.displayName)
                         } label: {
                             Label("Close Node", systemImage: "xmark.bin")
                         }

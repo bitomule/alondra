@@ -15,7 +15,6 @@ struct ReviewView: View {
     @State private var attachments = Attachments()
     @State private var composing: MarkdownBlock?
     @State private var sending = false
-    @State private var closing: CloseRequest?
     @FocusState private var generalFocused: Bool
 
     private var kind: Kind { Kind(item) }
@@ -61,22 +60,6 @@ struct ReviewView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .safeAreaBar(edge: .bottom) { actionBar }
-        .toolbar {
-            if case .report(let report) = item, let node = report.closableNode(fleet.node(report.sessionId)), report.primaryAction(nodeFound: true) == .markRead {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(role: .destructive) {
-                        closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                    } label: {
-                        Label("Read and Close Node", systemImage: "xmark.bin")
-                    }
-                    .disabled(sending)
-                }
-            }
-        }
-        .closeConfirmation($closing) { _ in
-            guard case .report(let report) = item else { return }
-            finish(HandoffLabel.readAndClosed) { try await $0.readAndClose(report) }
-        }
         .sheet(item: $composing) { block in
             CommentSheet(block: block, initial: comments[block.draftKey] ?? "") { text in
                 withAnimation(.spring(duration: 0.4, bounce: 0.25)) {
@@ -199,12 +182,6 @@ struct ReviewView: View {
         }
     }
 
-    private var closableNode: Node? {
-        guard case .report(let report) = item, let node = report.closableNode(fleet.node(report.sessionId)),
-              report.primaryAction(nodeFound: true) == .readAndClose else { return nil }
-        return node
-    }
-
     private var reportTint: Color {
         kind.tint == Palette.sky ? Palette.skyDeep : Palette.ember
     }
@@ -262,21 +239,10 @@ struct ReviewView: View {
                             Label("Mark as Read", systemImage: "checkmark")
                                 .frame(maxWidth: .infinity)
                         }
-                        .modifier(GlassEmphasis(prominent: closableNode == nil))
+                        .modifier(GlassEmphasis(prominent: true))
                         .tint(reportTint)
                         .disabled(sending)
                     }
-                }
-                if let node = closableNode {
-                    Button {
-                        closing = CloseRequest(session: node.sessionId, name: node.displayName, kind: .readAndClose)
-                    } label: {
-                        Label("Read and Close Node", systemImage: "xmark.bin")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(reportTint)
-                    .disabled(sending)
                 }
             }
             .controlSize(.large)

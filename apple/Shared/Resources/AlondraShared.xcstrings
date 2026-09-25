@@ -401,16 +401,6 @@
         }
       }
     },
-    "Mark as read and close %@?": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "¿Marcar como leído y cerrar %@?"
-          }
-        }
-      }
-    },
     "Memory in use: %lld%% (%@ available). Below 15%% free, Alondra tells the orchestrator not to launch nodes.": {
       "localizations": {
         "es": {
@@ -547,16 +537,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Progreso"
-          }
-        }
-      }
-    },
-    "Read and Close Node": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leer y cerrar nodo"
           }
         }
       }

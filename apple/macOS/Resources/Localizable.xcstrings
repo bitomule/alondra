@@ -691,16 +691,6 @@
         }
       }
     },
-    "Mark as read and close the node that sent it (claude rm)": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Marca como leído y cierra el nodo que lo envió (claude rm)"
-          }
-        }
-      }
-    },
     "Memory": {
       "localizations": {
         "es": {
@@ -1037,16 +1027,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pregunta"
-          }
-        }
-      }
-    },
-    "Read and Close Node…": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Leer y cerrar nodo…"
           }
         }
       }
