@@ -138,8 +138,17 @@ impl EnvelopeV1 {
         {
             return Err(Error::InvalidField);
         }
-        for s in [&self.route, &self.sender, &self.recipient, &self.request_id] {
+        for s in [&self.route, &self.sender, &self.recipient] {
             validate_text(s)?;
+        }
+        if self.request_id.is_empty()
+            || self.request_id.len() > 128
+            || self
+                .request_id
+                .bytes()
+                .any(|b| !b.is_ascii_alphanumeric() && b != b'_' && b != b'-')
+        {
+            return Err(Error::InvalidField);
         }
         Ok(())
     }
@@ -614,6 +623,19 @@ mod tests {
         let mut e = original;
         e.nonce = URL_SAFE_NO_PAD.encode([0u8; 12]);
         assert_eq!(check(e), Err(Error::InvalidSignature));
+    }
+
+    #[test]
+    fn request_id_is_safe_for_relay_path_segments() {
+        let mut e = fixture();
+        for invalid in ["", "a/b", "a?b", "a.b", "a b"] {
+            e.request_id = invalid.into();
+            assert_eq!(e.authenticated_header(), Err(Error::InvalidField));
+        }
+        e.request_id = "a".repeat(129);
+        assert_eq!(e.authenticated_header(), Err(Error::InvalidField));
+        e.request_id = "f4A_0-1".into();
+        assert!(e.authenticated_header().is_ok());
     }
 
     #[test]
