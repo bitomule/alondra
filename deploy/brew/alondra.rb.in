@@ -2,15 +2,16 @@ cask "alondra" do
   version "@VERSION@"
   sha256 "@SHA256@"
 
-  url "@DOWNLOAD_URL@"
+  url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-macos.zip"
   name "Alondra"
   desc "Private task and notification bridge for Claude on macOS"
   homepage "https://davidcollado.dev"
 
-  app "alondra/Alondra.app"
-  binary "alondra/bin/alondra"
+  app "Alondra.app"
+  binary "#{appdir}/Alondra.app/Contents/MacOS/alondra"
+  binary "#{appdir}/Alondra.app/Contents/MacOS/alondrad"
 
   caveats <<~EOS
-    Run `alondra setup --service` to sign in and finish the installation.
+    Run `alondra login` to sign in, then `alondra setup` to configure this Mac.
   EOS
 end

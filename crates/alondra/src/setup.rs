@@ -101,6 +101,7 @@ pub struct Observed {
     pub apns_key_exists: bool,
     pub claude: bool,
     pub marketplace: bool,
+    pub marketplace_path: Option<PathBuf>,
     /// Alondra's plugins that a global install enables in every session, with the scope of
     /// each install.
     pub enabled_globally: Vec<(String, String)>,
@@ -252,7 +253,12 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 .into(),
             ));
         } else {
-            if !seen.marketplace {
+            if seen.marketplace_path.as_ref().is_some_and(|p| paths.repo.as_ref().is_some_and(|wanted| p != wanted)) {
+                steps.push(claude(&["plugin", "marketplace", "remove", MARKETPLACE]));
+                if let Some(repo) = &paths.repo {
+                    steps.push(claude(&["plugin", "marketplace", "add", &repo.display().to_string()]));
+                }
+            } else if !seen.marketplace {
                 match &paths.repo {
                     Some(repo) => steps.push(claude(&["plugin", "marketplace", "add", &repo.display().to_string()])),
                     None => steps.push(Step::Warn(
@@ -322,10 +328,20 @@ pub fn find_repo(start: &Path) -> Option<PathBuf> {
 /// A release can carry the marketplace next to its binaries, without a source checkout.
 fn installed_package() -> Option<(PathBuf, PathBuf)> {
     let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    package_for_executable(&executable)
+}
+
+fn package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
     let bin = executable.parent()?.to_path_buf();
-    let package = bin.parent()?;
+    // /Applications/Alondra.app is stable across Homebrew upgrades. A Caskroom
+    // staging path disappears on upgrade and must never enter launchd or Claude.
+    let contents = bin.parent()?;
+    if bin.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    let package = contents.join("Resources/alondra");
     (bin.join("alondrad").is_file())
-        .then(|| find_repo(package))
+        .then(|| find_repo(&package))
         .flatten()
         .map(|assets| (bin, assets))
 }
@@ -447,6 +463,14 @@ pub fn has_marketplace() -> bool {
         .is_some_and(|a| a.iter().any(|m| m.get("name").and_then(Value::as_str) == Some(MARKETPLACE)))
 }
 
+fn marketplace_path() -> Option<PathBuf> {
+    command_ok("claude", &["plugin", "marketplace", "list", "--json"])
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_array().cloned())
+        .and_then(|a| a.into_iter().find(|m| m.get("name").and_then(Value::as_str) == Some(MARKETPLACE)))
+        .and_then(|m| m.get("path").and_then(Value::as_str).map(PathBuf::from))
+}
+
 fn other_services(paths: &Paths, label: &str) -> Vec<PathBuf> {
     let own = paths.plist(label);
     let Ok(dir) = std::fs::read_dir(paths.home.join("Library/LaunchAgents")) else { return vec![] };
@@ -472,6 +496,7 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
         apns_key_exists: apns.is_some_and(|a| a.key_path.is_file()),
         claude: args.skip_plugin || command_ok("claude", &["--version"]).is_some(),
         marketplace: !args.skip_plugin && has_marketplace(),
+        marketplace_path: if args.skip_plugin { None } else { marketplace_path() },
         enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
         tuicr: command_ok("tuicr", &["--version"]).is_some(),
         brew: command_ok("brew", &["--version"]).is_some(),
@@ -626,6 +651,31 @@ pub fn pairing_url(config: &Config) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_free_app_layout_uses_stable_app_paths() {
+        let root = std::env::temp_dir().join(format!("alondra-package-test-{}", std::process::id()));
+        let contents = root.join("Alondra.app/Contents");
+        let bin = contents.join("MacOS");
+        let assets = contents.join("Resources/alondra");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(assets.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(assets.join("plugin")).unwrap();
+        std::fs::write(bin.join("alondra"), "").unwrap();
+        std::fs::write(bin.join("alondrad"), "").unwrap();
+        std::fs::write(assets.join(".claude-plugin/marketplace.json"), "{}").unwrap();
+        assert_eq!(package_for_executable(&bin.join("alondra")), Some((bin, assets)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_package_replaces_a_marketplace_at_the_old_location() {
+        let seen = Observed { marketplace: true, marketplace_path: Some("/old/alondra".into()), ..fresh() };
+        let p = plan(&named("Ana"), None, &Args::default(), &paths(), &seen);
+        let commands = runs(&p);
+        assert!(commands.iter().any(|c| c == "claude plugin marketplace remove alondra"));
+        assert!(commands.iter().any(|c| c == "claude plugin marketplace add /src/alondra"));
+    }
 
     fn paths() -> Paths {
         Paths {

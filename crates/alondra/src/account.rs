@@ -134,6 +134,26 @@ fn post_form(http: &ureq::Agent, url: &str, fields: &[(&str, &str)]) -> Result<(
     Ok((status, body))
 }
 
+fn revoke_token(http: &ureq::Agent, d: &Discovery, refresh_token: &str) -> Result<()> {
+    let url = d
+        .revocation_endpoint
+        .as_deref()
+        .context("issuer has no revocation endpoint")?;
+    let (status, _) = post_form(
+        http,
+        url,
+        &[
+            ("client_id", CLIENT_ID),
+            ("token", refresh_token),
+            ("token_type_hint", "refresh_token"),
+        ],
+    )?;
+    if status != 200 {
+        bail!("OIDC token revocation failed ({status})");
+    }
+    Ok(())
+}
+
 fn userinfo(http: &ureq::Agent, d: &Discovery, access_token: &str) -> Result<Userinfo> {
     let mut response = http
         .get(&d.userinfo_endpoint)
@@ -208,6 +228,25 @@ fn callback_target(raw: &str, expected_state: &str, expected_port: u16) -> Resul
     Ok(Some(code))
 }
 
+fn read_request(reader: &mut impl Read) -> Result<String> {
+    let mut request = Vec::with_capacity(512);
+    let mut chunk = [0u8; 1024];
+    while request.len() < 8192 {
+        let size = reader.read(&mut chunk)?;
+        if size == 0 {
+            bail!("incomplete callback HTTP request");
+        }
+        request.extend_from_slice(&chunk[..size]);
+        if request.len() > 8192 {
+            bail!("callback HTTP request too large");
+        }
+        if request.windows(4).any(|part| part == b"\r\n\r\n") {
+            return Ok(std::str::from_utf8(&request)?.to_owned());
+        }
+    }
+    bail!("callback HTTP request too large")
+}
+
 fn receive_callback(listener: TcpListener, state: &str) -> Result<String> {
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -219,13 +258,11 @@ fn receive_callback(listener: TcpListener, state: &str) -> Result<String> {
                     continue;
                 }
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-                let mut bytes = [0u8; 8192];
-                let count = stream.read(&mut bytes)?;
-                let raw = std::str::from_utf8(&bytes[..count]).context("invalid callback HTTP")?;
-                let result = callback_target(raw, state, port);
+                let result =
+                    read_request(&mut stream).and_then(|raw| callback_target(&raw, state, port));
                 let success = matches!(result, Ok(Some(_)));
                 respond(&mut stream, success);
-                if let Some(code) = result? {
+                if let Ok(Some(code)) = result {
                     return Ok(code);
                 }
             }
@@ -268,6 +305,7 @@ fn stored() -> Result<Session> {
 }
 
 pub fn login() -> Result<()> {
+    let previous = stored().ok();
     let http = agent();
     let d = discovery(&http)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -321,6 +359,13 @@ pub fn login() -> Result<()> {
         sub: user.sub,
         refresh_token: refresh,
     };
+    if let Some(previous) = previous
+        && previous.refresh_token != session.refresh_token
+        && let Err(error) = revoke_token(&http, &d, &previous.refresh_token)
+    {
+        let _ = revoke_token(&http, &d, &session.refresh_token);
+        return Err(error.context("previous session could not be revoked; old Keychain login kept"));
+    }
     set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&session)?)?;
     println!(
         "Signed in as {}.",
@@ -367,24 +412,13 @@ pub fn status() -> Result<()> {
 pub fn logout() -> Result<()> {
     let session = stored()?;
     let http = agent();
-    let mut revoked = false;
-    if let Ok(d) = discovery(&http)
-        && let Some(url) = d.revocation_endpoint
-    {
-        revoked = post_form(
-            &http,
-            &url,
-            &[
-                ("client_id", CLIENT_ID),
-                ("token", &session.refresh_token),
-                ("token_type_hint", "refresh_token"),
-            ],
-        ).is_ok_and(|(status, _)| status == 200);
-    }
+    let remote_revoked = discovery(&http)
+        .and_then(|d| revoke_token(&http, &d, &session.refresh_token))
+        .is_ok();
     delete_generic_password(KEYCHAIN_SERVICE, ISSUER)?;
     println!("Signed out on this Mac.");
-    if !revoked {
-        eprintln!("Could not confirm server-side token revocation; existing sessions expire under Keycloak policy.");
+    if !remote_revoked {
+        eprintln!("Could not confirm server-side revocation while offline; the local Keychain token was removed. Other copies remain valid until Keycloak expires them.");
     }
     Ok(())
 }
@@ -392,6 +426,36 @@ pub fn logout() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Fragmented {
+        chunks: Vec<&'static [u8]>,
+    }
+
+    impl Read for Fragmented {
+        fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+            if self.chunks.is_empty() {
+                return Ok(0);
+            }
+            let part = self.chunks.remove(0);
+            target[..part.len()].copy_from_slice(part);
+            Ok(part.len())
+        }
+    }
+
+    #[test]
+    fn callback_http_can_arrive_in_multiple_reads() {
+        let mut request = Fragmented {
+            chunks: vec![
+                b"GET /oauth2redirect/alondra-cli?state=ok&code=abc HTTP/1.1\r\nHo",
+                b"st: 127.0.0.1:1234\r\n\r\n",
+            ],
+        };
+        let raw = read_request(&mut request).unwrap();
+        assert_eq!(
+            callback_target(&raw, "ok", 1234).unwrap(),
+            Some("abc".into())
+        );
+    }
 
     #[test]
     fn callback_rejects_missing_or_wrong_state_and_duplicate_codes() {
