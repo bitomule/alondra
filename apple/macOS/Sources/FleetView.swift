@@ -7,6 +7,7 @@ enum Selection: Hashable {
     case node(String)
     case task(String)
     case request(String)
+    case schedules
 }
 
 extension EnvironmentValues {
@@ -176,25 +177,25 @@ public struct FleetView: View {
                     SidebarCountHeader(title: String(localized: "Pull Requests"), count: store.inbox.count(where: \.isPullRequest), tint: .purple)
                 }
             }
-            if !store.board.requests.isEmpty || !store.board.tasks.isEmpty {
-                Section(isExpanded: $tasksExpanded) {
-                    ForEach(taskGroups) { group in
-                        DisclosureGroup(isExpanded: expansion(for: group)) {
-                            ForEach(group.tasks) { task in
-                                TaskRow(task: task, store: store)
-                                    .tag(Selection.task(task.id))
-                            }
-                            ForEach(group.requests) { request in
-                                DefiningRow(request: request, store: store)
-                                    .tag(Selection.request(request.id))
-                            }
-                        } label: {
-                            TaskGroupLabel(group: group)
+            Section(isExpanded: $tasksExpanded) {
+                Label("Scheduled Tasks", systemImage: "calendar.badge.clock")
+                    .tag(Selection.schedules)
+                ForEach(taskGroups) { group in
+                    DisclosureGroup(isExpanded: expansion(for: group)) {
+                        ForEach(group.tasks) { task in
+                            TaskRow(task: task, store: store)
+                                .tag(Selection.task(task.id))
                         }
+                        ForEach(group.requests) { request in
+                            DefiningRow(request: request, store: store)
+                                .tag(Selection.request(request.id))
+                        }
+                    } label: {
+                        TaskGroupLabel(group: group)
                     }
-                } header: {
-                    SidebarCountHeader(title: String(localized: "Tasks"), count: store.board.openCount, tint: .gray)
                 }
+            } header: {
+                SidebarCountHeader(title: String(localized: "Tasks"), count: store.board.openCount, tint: .gray)
             }
             ForEach(filteredProjects, id: \.name) { project in
                 Section(isExpanded: expansion(for: project.name)) {
@@ -224,6 +225,8 @@ public struct FleetView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .schedules:
+            ScheduledTasksView(client: store.client)
         case .item(let id):
             if let item = store.item(id: id) {
                 ItemDetail(item: item, store: store, drafts: drafts)

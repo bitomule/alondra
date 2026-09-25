@@ -57,6 +57,9 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/orchestrator", post(mark_orchestrator))
         .route("/v1/launch", post(launch))
         .route("/v1/requests", post(new_request))
+        .route("/v1/schedules", get(crate::schedules::list).post(crate::schedules::create))
+        .route("/v1/schedules/{id}", axum::routing::put(crate::schedules::update).delete(crate::schedules::delete))
+        .route("/v1/schedules/{id}/run", post(crate::schedules::run_now))
         .route("/v1/requests/{id}/close", post(close_request))
         .route("/v1/options", get(options_catalog))
         .route("/v1/projects", get(projects))
@@ -2668,17 +2671,17 @@ async fn projects(State(hub): State<AppState>) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
-struct RequestBody {
-    text: String,
+pub(crate) struct RequestBody {
+    pub(crate) text: String,
     #[serde(default)]
-    attachments: Vec<String>,
+    pub(crate) attachments: Vec<String>,
     #[serde(default)]
-    project: Option<String>,
+    pub(crate) project: Option<String>,
     #[serde(default)]
-    options: std::collections::BTreeMap<String, alondra_core::options::Choice>,
+    pub(crate) options: std::collections::BTreeMap<String, alondra_core::options::Choice>,
     /// `owner/repo#n` or the issue's URL.
     #[serde(default)]
-    issue: Option<String>,
+    pub(crate) issue: Option<String>,
 }
 
 fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_id: &str, options: &alondra_core::options::Resolved, issue: Option<&str>) -> String {
@@ -2719,7 +2722,7 @@ async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) ->
     new_request_with(hub, b, &crate::prs::GhCli).await
 }
 
-async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh) -> Response {
+pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh) -> Response {
     let attachments = match attached(&hub, &b.attachments) {
         Ok(a) => a,
         Err(r) => return r,
@@ -2749,7 +2752,7 @@ async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::G
         }
         None => None,
     };
-    let request_id = format!("r-{}", now_millis());
+    let request_id = format!("r-{}-{}", now_millis(), crate::auth::random_hex(4));
     let sent = Event::RequestSent { request_id: request_id.clone(), options: resolved.clone(), text: Some(b.text.clone()), attachments: attachments.clone() };
     if let Err(e) = hub.append(sent) {
         return internal(e);

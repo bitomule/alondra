@@ -16,6 +16,7 @@ mod options;
 mod orchestrate;
 mod plugins;
 mod prs;
+mod schedules;
 mod push;
 mod sentinel;
 mod store;
@@ -60,6 +61,9 @@ async fn main() -> Result<()> {
     tokio::spawn(sentinel::run(hub.clone()));
     tokio::spawn(prs::run(hub.clone()));
     tokio::spawn(orchestrate::run(hub.clone()));
+    if config.wake {
+        tokio::spawn(schedules::run(hub.clone()));
+    }
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
     let push = Arc::new(push::Push::open(&config.home)?);

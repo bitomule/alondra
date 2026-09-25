@@ -45,6 +45,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         match app.screen {
             Screen::Inbox => draw_inbox(f, app, body),
+            Screen::Tasks if app.schedules_open => draw_schedules(f, app, body),
             Screen::Tasks => tasks::draw_tasks(f, app, body),
             Screen::Fleet => draw_fleet(f, app, body),
         }
@@ -260,6 +261,72 @@ pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
     s
 }
 
+fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
+    let [list, detail] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
+    let box_list = panel(Line::from(tr!(" Scheduled tasks ", " Tareas programadas ").bold()), true);
+    let inner = box_list.inner(list);
+    f.render_widget(box_list, list);
+    if app.schedules.is_empty() {
+        f.render_widget(Paragraph::new(tr!("No schedules yet. Press n to create one.", "No hay tareas programadas. Pulsa n para crear una.")).wrap(Wrap { trim: true }), inner);
+    } else {
+        let lines: Vec<Line> = app.schedules.iter().enumerate().map(|(i, s)| {
+            let title = s["title"].as_str().unwrap_or("Untitled");
+            let marker = if i == app.schedule_idx { "▶" } else { " " };
+            let state = if s["enabled"].as_bool() == Some(true) { "●" } else { "○" };
+            Line::from(format!("{marker} {state} {title}"))
+        }).collect();
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+    let box_detail = panel(Line::from(tr!(" Schedule ", " Programación ").bold()), false);
+    let inner = box_detail.inner(detail);
+    f.render_widget(box_detail, detail);
+    if let Some(s) = app.schedules.get(app.schedule_idx) {
+        let frequency = if s["frequency"] == "weekly" { tr!("Weekly", "Semanal") } else { tr!("Daily", "Diaria") };
+        let h = s["hour"].as_u64().unwrap_or(0);
+        let m = s["minute"].as_u64().unwrap_or(0);
+        let weekday = s["weekday"].as_u64().map(|d| format!(" · {}", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].get(d as usize).unwrap_or(&"?"))).unwrap_or_default();
+        let next = if s["status"] == "waiting" {
+            tr!("when the orchestrator returns", "cuando vuelva el orquestador").to_string()
+        } else {
+            s["next_run"].as_i64().map(|at| format!("{} {}", tr!("in", "en"), span_to(at - now_millis()))).unwrap_or_else(|| tr!("paused", "pausada").into())
+        };
+        let status = match s["last_state"].as_str().or_else(|| s["status"].as_str()) {
+            Some("failed") => tr!("failed", "fallida"),
+            Some("interrupted") => tr!("interrupted", "interrumpida"),
+            Some("waiting") => tr!("waiting for orchestrator", "en espera del orquestador"),
+            Some("sent") => tr!("sent", "enviada"),
+            Some("done") => tr!("done", "terminada"),
+            Some("in_progress") => tr!("in progress", "en marcha"),
+            Some("defining") => tr!("preparing", "preparando"),
+            _ => "",
+        };
+        let last = s["last_run"].as_i64().map(|at| format!("{} · {status}", ago(at))).unwrap_or_else(|| tr!("never", "nunca").into());
+        let mut lines = vec![
+            Line::from(s["title"].as_str().unwrap_or("").to_string().bold()),
+            Line::default(),
+            Line::from(format!("{frequency}{weekday} · {h:02}:{m:02}")),
+            Line::from(format!("{}: {next}", tr!("Next", "Próxima"))),
+            Line::from(format!("{}: {last}", tr!("Last", "Última"))),
+            Line::from(format!("{}: {}", tr!("Project", "Proyecto"), s["project"].as_str().unwrap_or("—"))),
+            Line::default(),
+        ];
+        if let Some(error) = s["last_error"].as_str() {
+            let error = if error == "the orchestrator is not connected to Alondra" { tr!("The orchestrator is offline", "El orquestador no está conectado") } else { error };
+            lines.push(Line::from(error.to_string().red()));
+        }
+        if let Some(request) = s["last_request"].as_str() { lines.push(Line::from(format!("Request: {request}"))); }
+        if let Some(nodes) = s["last_nodes"].as_array() { for node in nodes { if let Some(node) = node.as_str() { lines.push(Line::from(format!("Node: {node}"))); } } }
+        lines.push(Line::default());
+        lines.push(Line::from(s["text"].as_str().unwrap_or("").to_string()));
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    }
+}
+
+fn span_to(ms: i64) -> String {
+    let minutes = (ms / 60_000).max(0);
+    if minutes < 60 { format!("{minutes}m") } else if minutes < 1440 { format!("{}h", minutes / 60) } else { format!("{}d", minutes / 1440) }
+}
+
 fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let m = &app.data.machine;
     let tab = |label: String, active: bool| {
@@ -273,6 +340,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let (inbox, tasks, fleet) = (app.inbox_count(), app.open_task_count(), app.data.nodes.len());
     left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
     left.push(tab(trf!("Tasks {tasks}", "Tareas {tasks}"), app.screen == Screen::Tasks));
+    if app.schedules_open { left.push(tab(tr!("Scheduled", "Programadas").into(), true)); }
     left.push(tab(trf!("Fleet {fleet}", "Flota {fleet}"), app.screen == Screen::Fleet));
     if app.offline {
         left.push(Span::raw(" "));
@@ -1528,6 +1596,9 @@ fn composer_action(t: &Target) -> &'static str {
 
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+    if app.schedules_open {
+        return vec![k("j/k", tr!("move", "mover")), k("n", tr!("new", "nueva")), k("e", tr!("edit", "editar")), k("p", tr!("pause", "pausa")), k("⏎", tr!("run", "ejecuta")), k("d d", tr!("delete", "borra")), k("Esc", tr!("back", "atrás"))];
+    }
     if let Some(c) = app.composer.as_ref() {
         if let Some(form) = c.form.as_ref() {
             if form.popup.is_some() {
@@ -1608,7 +1679,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         if !app.archive_missing {
             v.push(k("Shift+A", tr!("archive finished", "archivar terminadas")));
         }
-        v.extend([k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
+        v.extend([k("s", tr!("scheduled", "programadas")), k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
         return v;
     }
     if app.screen == Screen::Fleet {

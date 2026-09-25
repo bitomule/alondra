@@ -454,6 +454,17 @@ impl Client {
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
 
+    pub fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        let bytes = serde_json::to_vec(body)?;
+        let mut req = self.agent.put(format!("{}{path}", self.base)).header("content-type", "application/json");
+        if let Some(s) = &self.signer {
+            for (k, v) in s.sign("PUT", path, &bytes) { req = req.header(k, v); }
+        }
+        let resp = req.send(&bytes[..]).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
+        let (_, text) = Self::check(resp)?;
+        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
     /// Copies a file into Alondra's storage; the answer carries the upload's id.
     pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<Value> {
         let path = format!("/v1/uploads?name={}", crate::mcp::urlencode(name));

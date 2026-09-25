@@ -335,6 +335,7 @@ pub enum Flow {
     Quit,
     Attach(String),
     Review { id: u64, number: u64, dir: std::path::PathBuf },
+    EditSchedule(Option<Value>),
 }
 
 pub struct App {
@@ -343,6 +344,10 @@ pub struct App {
     pub loaded: bool,
     pub offline: bool,
     pub screen: Screen,
+    pub schedules_open: bool,
+    pub schedules: Vec<Value>,
+    pub schedule_idx: usize,
+    schedule_delete: Option<(String, i64)>,
     pub sel: Option<Key>,
     sel_idx: usize,
     pub list_scroll: usize,
@@ -519,6 +524,20 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             repaint(terminal, &mut app)?;
                             break;
                         }
+                        Flow::EditSchedule(existing) => {
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            ratatui::restore();
+                            let result = edit_schedule(existing);
+                            *terminal = ratatui::init();
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            match result {
+                                Ok(Some(())) => { app.flash(tr!("Schedule saved", "Programación guardada")); app.reload_schedules(); }
+                                Ok(None) => app.flash(tr!("No changes saved", "No se guardaron cambios")),
+                                Err(e) => app.fail(e.to_string()),
+                            }
+                            repaint(terminal, &mut app)?;
+                            break;
+                        }
                         Flow::Go => {}
                     },
                     Event::Paste(s) => app.on_paste(&s),
@@ -536,6 +555,36 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
         }
         dirty |= app.on_timers();
     }
+}
+
+fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
+    let path = std::env::temp_dir().join(format!("alondra-schedule-{}-{}.json", std::process::id(), now_millis()));
+    let mut body = existing.clone().unwrap_or_else(|| json!({
+        "title": "", "text": "", "project": null, "options": {},
+        "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1, "enabled": true
+    }));
+    let before = serde_json::to_vec_pretty(&body)?;
+    use std::io::Write;
+    #[cfg(unix)] use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)] file.mode(0o600);
+    file.open(&path)?.write_all(&before)?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+    let status = std::process::Command::new(editor).arg(&path).status();
+    let edited = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    if !status?.success() { anyhow::bail!("editor exited without saving"); }
+    let edited = edited?;
+    if edited == before { return Ok(None); }
+    body = serde_json::from_slice(&edited).map_err(|e| anyhow::anyhow!("Invalid schedule JSON: {e}"))?;
+    let client = Client::for_user(Duration::from_secs(15));
+    if let Some(id) = existing.as_ref().and_then(|v| v["id"].as_str()) {
+        client.put(&format!("/v1/schedules/{}", urlencode(id)), &body)?;
+    } else {
+        client.post("/v1/schedules", &body)?;
+    }
+    Ok(Some(()))
 }
 
 pub fn who(name: &Option<String>, session: &str) -> String {
@@ -618,6 +667,10 @@ impl App {
             loaded: false,
             offline: false,
             screen: Screen::Inbox,
+            schedules_open: false,
+            schedules: vec![],
+            schedule_idx: 0,
+            schedule_delete: None,
             sel: None,
             sel_idx: 0,
             list_scroll: 0,
@@ -1086,6 +1139,9 @@ impl App {
             self.help_key(k);
             return Flow::Go;
         }
+        if self.schedules_open {
+            return self.schedule_key(k);
+        }
         if self.composer.is_some() {
             self.composer_key(k);
             return Flow::Go;
@@ -1130,6 +1186,7 @@ impl App {
                 KeyCode::BackTab => self.switch_screen_back(),
                 KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet { Screen::Inbox } else { Screen::Fleet }),
                 KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
+                KeyCode::Char('s') if self.screen == Screen::Tasks => { self.schedules_open = true; self.reload_schedules(); },
                 KeyCode::Char('M') => self.message_orchestrator(),
                 _ => {
                     return match self.screen {
@@ -1167,12 +1224,65 @@ impl App {
 
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
+        self.schedules_open = false;
         self.focus = Pane::List;
         self.fleet_zoom = false;
         self.task_zoom = false;
         self.threads_asked = None;
         self.reconcile_tasks();
         self.load_threads();
+    }
+
+    fn reload_schedules(&mut self) {
+        match Client::for_user(Duration::from_secs(5)).get::<Value>("/v1/schedules") {
+            Ok(value) => {
+                self.schedules = value["schedules"].as_array().cloned().unwrap_or_default();
+                self.schedule_idx = self.schedule_idx.min(self.schedules.len().saturating_sub(1));
+            }
+            Err(e) => self.fail(format!("Schedules: {e}")),
+        }
+    }
+
+    fn schedule_key(&mut self, k: KeyEvent) -> Flow {
+        let selected = self.schedules.get(self.schedule_idx).cloned();
+        match k.code {
+            KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => self.schedules_open = false,
+            KeyCode::Char('j') | KeyCode::Down => { self.schedule_idx = (self.schedule_idx + 1).min(self.schedules.len().saturating_sub(1)); self.schedule_delete = None; },
+            KeyCode::Char('k') | KeyCode::Up => { self.schedule_idx = self.schedule_idx.saturating_sub(1); self.schedule_delete = None; },
+            KeyCode::Char('n') => return Flow::EditSchedule(None),
+            KeyCode::Char('e') => if let Some(value) = selected { return Flow::EditSchedule(Some(value)); },
+            KeyCode::Char('r') => self.reload_schedules(),
+            KeyCode::Char('p') => if let Some(mut value) = selected {
+                let id = value["id"].as_str().unwrap_or("").to_owned();
+                let enabled = value["enabled"].as_bool().unwrap_or(false);
+                value["enabled"] = json!(!enabled);
+                match Client::for_user(Duration::from_secs(15)).put(&format!("/v1/schedules/{}", urlencode(&id)), &value) {
+                    Ok(_) => self.reload_schedules(), Err(e) => self.fail(e.to_string()),
+                }
+            },
+            KeyCode::Enter => if let Some(value) = selected {
+                let id = value["id"].as_str().unwrap_or("");
+                match Client::for_user(Duration::from_secs(15)).post(&format!("/v1/schedules/{}/run", urlencode(id)), &json!({})) {
+                    Ok(_) => { self.flash(tr!("Sent to the orchestrator", "Enviado al orquestador")); self.reload_schedules(); },
+                    Err(e) => { self.fail(e.to_string()); self.reload_schedules(); },
+                }
+            },
+            KeyCode::Char('d') => if let Some(value) = selected {
+                let id = value["id"].as_str().unwrap_or("");
+                let now = now_millis();
+                if self.schedule_delete.as_ref().is_some_and(|(pending, until)| pending == id && now < *until) {
+                    self.schedule_delete = None;
+                    match Client::for_user(Duration::from_secs(15)).delete(&format!("/v1/schedules/{}", urlencode(id))) {
+                        Ok(()) => self.reload_schedules(), Err(e) => self.fail(e.to_string()),
+                    }
+                } else {
+                    self.schedule_delete = Some((id.to_string(), now + 4000));
+                    self.flash(tr!("Press d again to delete this schedule", "Pulsa d otra vez para borrar esta programación"));
+                }
+            },
+            _ => {}
+        }
+        Flow::Go
     }
 
     fn message_orchestrator(&mut self) {

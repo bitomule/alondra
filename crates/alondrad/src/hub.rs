@@ -63,6 +63,7 @@ pub struct Hub {
     pub report_judge: Box<dyn crate::classify::JudgesReports>,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
+    pub schedules: crate::schedules::Schedules,
     /// Runs once as clients are about to be told of a change, so a test can record something then.
     #[cfg(test)]
     before_telling: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -72,6 +73,10 @@ impl Hub {
     pub fn open(config: Config, hold_enabled: bool) -> Result<Self> {
         let home = config.home.clone();
         std::fs::create_dir_all(home.join("files"))?;
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
+        }
         let mut store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         view.backfill_created_at();
@@ -108,6 +113,7 @@ impl Hub {
         let (tick, _) = watch::channel(0);
         let (changes, _) = watch::channel(0);
         let shown = crate::http::overview_digest(&view, now_millis());
+        let schedules = crate::schedules::Schedules::open(&home.join("schedules.db"))?;
         Ok(Hub {
             writer: Mutex::new(store),
             view: RwLock::new(view),
@@ -129,6 +135,7 @@ impl Hub {
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
             report_judge: Box::new(crate::classify::Jev),
             starts: tokio::sync::Mutex::new(()),
+            schedules,
             #[cfg(test)]
             before_telling: Mutex::new(None),
         })
