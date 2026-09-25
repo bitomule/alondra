@@ -162,6 +162,9 @@ pub enum Event {
     ArchivedPruned { before: Millis },
     /// The orchestrator named a request.
     RequestTitled { request_id: String, title: String },
+    /// David or the orchestrator named a task, replacing whatever it fell back to (most often a
+    /// node's own name): it sticks, `follow_node` never overwrites it again.
+    TaskTitled { task: String, title: String },
     /// The orchestrator closed a request that needed no task: it answered it, or David withdrew it.
     RequestClosed {
         request_id: String,
@@ -242,6 +245,7 @@ impl Event {
             Event::TasksArchived(_) => "tasks_archived",
             Event::ArchivedPruned { .. } => "archived_pruned",
             Event::RequestTitled { .. } => "request_titled",
+            Event::TaskTitled { .. } => "task_titled",
             Event::RequestClosed { .. } => "request_closed",
             Event::Clock { .. } => "clock",
             Event::RequestSent { .. } => "request_sent",

@@ -78,6 +78,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/v1/tasks/{id}/reopen", post(reopen_task))
+        .route("/v1/tasks/{id}/title", post(title_task))
         .route("/v1/file", get(file))
         .route("/v1/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_UPLOAD_BYTES + 64 * 1024)))
         .layer(Extension(auth))
@@ -2719,6 +2720,27 @@ async fn reopen_task(State(hub): State<AppState>, Path(id): Path<String>) -> Res
     move_task(&hub, &id, alondra_core::tasks::TaskEvent::Reopen)
 }
 
+#[derive(Deserialize)]
+struct TitleBody {
+    title: String,
+}
+
+/// David or the orchestrator gives a task a short human title, replacing whatever it fell back
+/// to (a node's own name, most often, per t-47118). Once titled, `follow_node` never overwrites
+/// it again, however the node it runs on is renamed or bound to a request later.
+async fn title_task(State(hub): State<AppState>, Path(id): Path<String>, Json(b): Json<TitleBody>) -> Response {
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "a title cannot be empty");
+    }
+    let recorded = hub.append_with(|v| v.board.tasks.contains_key(&id).then(|| Event::TaskTitled { task: id.clone(), title: title.clone() }));
+    match recorded {
+        Ok(Some(_)) => Json(json!({"id": id, "title": title})).into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, format!("task {id} does not exist")),
+        Err(e) => internal(e),
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct ArchiveBody {
     #[serde(default)]
@@ -3956,6 +3978,29 @@ mod tests {
         assert_eq!(said["task"]["history"][1]["event"], json!({"kind": "cancel", "reason": "ya no hace falta"}));
         assert_eq!(said["task"]["auto_merge_pending"], false);
         let (status, _) = status_and_body(task_detail(State(hub.clone()), Path("t-9".into())).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// David or the orchestrator retitles a task (t-47118: a task titled after its own node's
+    /// name, and nothing could rename it). It sticks: a later rename of the node does not undo it.
+    #[tokio::test]
+    async fn david_or_the_orchestrator_retitles_a_task_and_it_sticks() {
+        let hub = started("retitle", &["s"]);
+        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = hub.read(|v| v.board.tasks["t-s"].title.clone());
+        let (status, said) = status_and_body(title_task(State(hub.clone()), Path("t-s".into()), Json(TitleBody { title: "  Fix the timeout  ".into() })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(said["title"].as_str(), Some("Fix the timeout"), "trimmed");
+        assert!(hub.read(|v| v.board.tasks["t-s"].titled && v.board.tasks["t-s"].title == "Fix the timeout"));
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), name: Some("renamed/node".into()), pid: Some(1), ..Default::default() })).unwrap();
+        assert_eq!(hub.read(|v| v.board.tasks["t-s"].title.clone()), "Fix the timeout", "a rename of the node does not undo an explicit title");
+        assert_ne!(before, "Fix the timeout");
+
+        let (status, said) = status_and_body(title_task(State(hub.clone()), Path("t-s".into()), Json(TitleBody { title: "   ".into() })).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
+
+        let (status, _) = status_and_body(title_task(State(hub.clone()), Path("t-9".into()), Json(TitleBody { title: "Anything".into() })).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 

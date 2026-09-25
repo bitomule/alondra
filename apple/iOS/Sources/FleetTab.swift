@@ -151,7 +151,7 @@ struct NodeRow: View {
                     .lineLimit(1)
                 }
                 if !tasks.isEmpty {
-                    NodeTasks(tasks: tasks)
+                    NodeTasks(tasks: tasks, nodeDisplayName: node.displayName)
                         .padding(.top, 5)
                 } else if !oneLine.isEmpty {
                     Text(oneLine)
@@ -190,6 +190,7 @@ struct StateGlyph: View {
 /// A node's tasks under it, each with its state.
 struct NodeTasks: View {
     let tasks: [WorkTask]
+    let nodeDisplayName: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -197,7 +198,7 @@ struct NodeTasks: View {
                 HStack(alignment: .top, spacing: 8) {
                     Glyph(task: task, size: .tiny)
                         .padding(.top, 1)
-                    (Text(task.title).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
+                    (Text(task.fleetRowTitle(nodeDisplayName: nodeDisplayName)).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
                         + Text(verbatim: " · \(task.state.label)").font(.caption.weight(.semibold)).foregroundStyle(task.tint))
                         .lineLimit(2)
                 }
@@ -289,7 +290,7 @@ struct NodeDetail: View {
                                     HStack(spacing: 10) {
                                         Glyph(task: task, size: .small)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(task.title)
+                                            Text(task.fleetRowTitle(nodeDisplayName: node.displayName))
                                                 .font(.subheadline.weight(.semibold))
                                                 .foregroundStyle(Palette.ink)
                                                 .multilineTextAlignment(.leading)

@@ -283,6 +283,17 @@ import Testing
         #expect(board.rowTitle(of: tasks[3]) == "Task d")
     }
 
+    /// t-47118: Fleet showed a task titled "alondra/estados-por-tarea" — its own node's name —
+    /// right under that same name. A task's title next to its own node never repeats it.
+    @Test func aTasksFleetRowTitleNeverRepeatsItsOwnNodesName() throws {
+        let named = try Self.task("a", created: 1)
+        #expect(named.fleetRowTitle(nodeDisplayName: "alondra/other") == "Task a", "a real title passes through")
+        let fallenBack: WorkTask = try Self.decode(
+            #"{"id":"t-b","request":"r-1","title":"alondra/estados-por-tarea","depends_on":[],"options":{"auto_merge":false},"assignee":{"session_id":"s1"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"running","state_since":1,"created_at":1}"#
+        )
+        #expect(fallenBack.fleetRowTitle(nodeDisplayName: "alondra/estados-por-tarea") == WorkTask.mainTaskLabel, "the fallback title, repeated, reads as the node's main task instead")
+    }
+
     @Test func openWorkGoesByItsLastChangeAndFinishedWorkTheLastToFinishFirst() throws {
         let tasks = [
             try Self.work("a", request: "r-a", at: 50),

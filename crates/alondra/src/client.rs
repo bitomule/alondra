@@ -94,6 +94,16 @@ impl std::ops::Deref for ClientTask {
     }
 }
 
+impl ClientTask {
+    /// This task's title next to its own node in the Fleet list or detail: itself, unless the
+    /// title is only the node's own name repeated — the fallback a task gets until something
+    /// names it for real (`TaskTitled`, t-47118). Then it reads as the node's main task, not the
+    /// name shown twice.
+    pub fn fleet_title(&self, node: &FleetNode) -> String {
+        if self.title == node.display_name() { tr!("main task", "tarea principal").to_string() } else { self.title.clone() }
+    }
+}
+
 /// Keeps every entry this build understands, so a state it does not know yet costs that entry,
 /// not the whole overview.
 fn lenient<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>

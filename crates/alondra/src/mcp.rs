@@ -124,6 +124,7 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or working on tasks it depends on, that depend on it, or of the same request. Each comes with why, its open tasks and whether it is free or busy.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}}}}),
             json!({"name": "cancel", "description": format!("Cancel a task that should not go on (dropped, or replaced by another). {user} sees it as cancelled. Its node is not told: send it what to do."), "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}, "reason": {"type": "string", "description": format!("Why, in one line, for {user}")}}, "required": ["task"]}}),
             json!({"name": "reopen", "description": "Reopen a done or cancelled task: it is running again. A task no node took starts as it was defined; otherwise send its node what is left, with task.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}),
+            json!({"name": "title_task", "description": format!("Give a task a short human title, a few words {user} reads in place of a node's name. Use it on a task whose title is still the node it runs on (its fallback until something names it): once you title it, nothing overwrites it again."), "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "The task id (t-…)"}, "title": {"type": "string", "description": "The new title, a few words"}}, "required": ["task", "title"]}}),
             json!({"name": "close_request", "description": format!("Close a request that needs no task: a question or a status check you answered (answer: what you told {user}, in one line), or one {user} withdrew (withdrawn: true). It shows as done. A request with tasks is done when they are."), "inputSchema": {"type": "object", "properties": {
                 "request": {"type": "string", "description": "The request_id (r-…)"},
                 "answer": {"type": "string", "description": format!("What you told {user}, in one line")},
@@ -300,6 +301,12 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             let body = if name == "cancel" { pick(args, &["reason"]) } else { json!({}) };
             let r = client.post(&format!("/v1/tasks/{}/{name}", urlencode(task)), &body)?;
             format!("{task} is {} now.", r.get("state").and_then(Value::as_str).unwrap_or("changed").replace('_', " "))
+        }
+        "title_task" if role == Role::Orchestrator => {
+            let task = args.get("task").and_then(Value::as_str).unwrap_or("");
+            let title = args.get("title").and_then(Value::as_str).unwrap_or("");
+            client.post(&format!("/v1/tasks/{}/title", urlencode(task)), &json!({"title": title}))?;
+            format!("{task} is now titled \"{title}\".")
         }
         other => anyhow::bail!("unknown tool: {other}"),
     })
