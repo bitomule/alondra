@@ -158,7 +158,10 @@ impl Queue {
         inner.revision += 1;
         let revision = inner.revision;
         let j = inner.jobs.get_mut(&id).unwrap();
-        j.status = JobStatus::Dispatched;
+        // A durable Mac receipt survives a lease retry; never downgrade it.
+        if j.status == JobStatus::Queued || j.status == JobStatus::Dispatched {
+            j.status = JobStatus::Dispatched;
+        }
         j.dispatched_at_ms = Some(now_ms);
         j.revision = revision;
         let item = WorkItem {
@@ -266,6 +269,22 @@ impl Queue {
         Ok(j.phone_id.clone())
     }
 
+    /// Drop pending and completed ciphertext for a revoked phone immediately.
+    pub fn purge_phone(&self, phone_id: &str) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        let before = inner.jobs.len();
+        inner.jobs.retain(|_, j| j.phone_id != phone_id);
+        let removed = before - inner.jobs.len();
+        if removed > 0 {
+            inner.revision += 1;
+        }
+        drop(inner);
+        if removed > 0 {
+            self.changed.notify_waiters();
+        }
+        removed
+    }
+
     pub fn changes(
         &self,
         owner_sub: &str,
@@ -367,7 +386,13 @@ mod tests {
             "a",
             "a Mac crash after receipt must permit replay from its durable receipt"
         );
-        q.mark_received("mac", "a", LEASE_MS * 2 + 5).unwrap();
+        assert_eq!(
+            q.get("user", "phone", "a", LEASE_MS * 2 + 5)
+                .unwrap()
+                .status,
+            JobStatus::Received,
+            "redelivery must retain the Mac's durable receipt"
+        );
         assert_eq!(
             q.respond("mac", "phone", "a", env("a"), LEASE_MS * 2 + 6)
                 .unwrap()

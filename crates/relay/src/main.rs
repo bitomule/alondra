@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
     auth: Auth,
@@ -28,6 +28,7 @@ struct Server {
     work_waiters: Arc<Semaphore>,
     change_waiters: Arc<Semaphore>,
     requests: Arc<Semaphore>,
+    device_gate: Arc<RwLock<()>>,
     epoch: String,
 }
 
@@ -36,6 +37,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/healthz", get(health))
         .route("/v1/bootstrap", get(bootstrap))
         .route("/v1/devices", post(enroll))
+        .route("/v1/devices/{id}", axum::routing::delete(revoke))
         .route("/v1/requests", post(submit))
         .route("/v1/requests/{id}", get(request_status))
         .route("/v1/changes", get(changes))
@@ -108,6 +110,7 @@ async fn enroll(
         .auth
         .authenticate_mac(&headers, &method, &uri, &body, now_ms())
         .map_err(|_| unauthorized())?;
+    let _gate = server.device_gate.write().await;
     if body.len() > 4096 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
@@ -118,6 +121,26 @@ async fn enroll(
         .enroll(device)
         .map_err(|_| error(StatusCode::CONFLICT, "device_enrollment_failed"))?;
     Ok((StatusCode::CREATED, Json(json!({"ok":true}))).into_response())
+}
+
+async fn revoke(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+) -> ApiResult {
+    server
+        .auth
+        .authenticate_mac(&headers, &method, &uri, &[], now_ms())
+        .map_err(|_| unauthorized())?;
+    let _gate = server.device_gate.write().await;
+    server
+        .auth
+        .revoke(&id)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
+    server.queue.purge_phone(&id);
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 fn parse_envelope(
@@ -150,9 +173,11 @@ async fn submit(
     uri: Uri,
     body: Bytes,
 ) -> ApiResult {
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_phone(&headers, &method, &uri, &body, now_ms())
+        .await
         .map_err(|_| unauthorized())?;
     let (fields, v) = parse_envelope(&body, state::MAX_ENVELOPE_BYTES)?;
     if fields.kind != "request"
@@ -211,9 +236,11 @@ async fn request_status(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
+        .await
         .map_err(|_| unauthorized())?;
     let result = server
         .queue
@@ -241,9 +268,12 @@ async fn changes(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
+    // The read lock covers this bounded poll so revocation cannot race a ciphertext read.
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
+        .await
         .map_err(|_| unauthorized())?;
     if query.epoch.as_deref().is_some_and(|e| e != server.epoch) {
         return Err((
@@ -434,9 +464,19 @@ async fn main() -> anyhow::Result<()> {
         work_waiters: Arc::new(Semaphore::new(16)),
         change_waiters: Arc::new(Semaphore::new(64)),
         requests: Arc::new(Semaphore::new(128)),
+        device_gate: Arc::new(RwLock::new(())),
         epoch,
     });
     let listener = tokio::net::TcpListener::bind(&listen).await?;
+    let refreshing = server.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+            if refreshing.auth.refresh_jwks().await.is_err() {
+                eprintln!("alondra-relay: JWKS refresh failed; cached keys expire after one hour");
+            }
+        }
+    });
     println!("alondra-relay listening on {listen}");
     axum::serve(listener, router(server)).await?;
     Ok(())
@@ -461,8 +501,9 @@ mod http_tests {
         URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes())
     }
 
-    fn jwt(sub: &str, now: u64) -> String {
-        let h = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"test-key"}"#);
+    fn jwt_with(sub: &str, now: u64, kid: &str, private_key: &[u8]) -> String {
+        let h =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"alg":"RS256","kid":kid})).unwrap());
         let p = URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&json!({
                 "iss":"https://id.example/realms/alondra", "aud":"alondra-relay", "sub":sub,
@@ -471,9 +512,7 @@ mod http_tests {
             .unwrap(),
         );
         let signed = format!("{h}.{p}");
-        let key =
-            RsaKeyPair::from_pkcs8(include_bytes!("../tests/fixtures/rsa-test-only.pkcs8.der"))
-                .unwrap();
+        let key = RsaKeyPair::from_pkcs8(private_key).unwrap();
         let mut sig = vec![0; key.public().modulus_len()];
         key.sign(
             &RSA_PKCS1_SHA256,
@@ -483,6 +522,15 @@ mod http_tests {
         )
         .unwrap();
         format!("{signed}.{}", URL_SAFE_NO_PAD.encode(sig))
+    }
+
+    fn jwt(sub: &str, now: u64) -> String {
+        jwt_with(
+            sub,
+            now,
+            "test-key",
+            include_bytes!("../tests/fixtures/rsa-test-only.pkcs8.der"),
+        )
     }
 
     #[allow(clippy::too_many_arguments)] // Mirrors the signed HTTP request inputs in integration tests.
@@ -536,6 +584,7 @@ mod http_tests {
             work_waiters: Arc::new(Semaphore::new(16)),
             change_waiters: Arc::new(Semaphore::new(64)),
             requests: Arc::new(Semaphore::new(128)),
+            device_gate: Arc::new(RwLock::new(())),
             epoch,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -883,6 +932,70 @@ mod http_tests {
             StatusCode::UNAUTHORIZED,
             "old signed epoch must fail after restart"
         );
+        let revoke_path = "/v1/devices/phone-1";
+        let unauthorized_revoke = sign(
+            &epoch,
+            client.delete(format!("{url}{revoke_path}")),
+            &wrong_sign,
+            "mac-1",
+            "DELETE",
+            revoke_path,
+            &[],
+            16,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(unauthorized_revoke.status(), StatusCode::UNAUTHORIZED);
+        assert!(server.auth.is_phone_registered("phone-1"));
+        let revoked = sign(
+            &epoch,
+            client.delete(format!("{url}{revoke_path}")),
+            &mac_sign,
+            "mac-1",
+            "DELETE",
+            revoke_path,
+            &[],
+            14,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+        assert!(!server.auth.is_phone_registered("phone-1"));
+        assert_eq!(
+            server
+                .queue
+                .changes("owner", "phone-1", 0, now_ms())
+                .1
+                .len(),
+            0,
+            "revocation purges even completed ciphertext"
+        );
+        let persisted: Vec<PhoneDevice> = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            persisted.is_empty(),
+            "revocation must survive relay restart"
+        );
+        let denied = sign(
+            &epoch,
+            client
+                .get(format!("{url}{status_path}"))
+                .bearer_auth(jwt("owner", now)),
+            &phone_sign,
+            "phone-1",
+            "GET",
+            status_path,
+            &[],
+            15,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
         restarted_join.abort();
         join.abort();
     }
@@ -945,5 +1058,69 @@ mod http_tests {
             "rollback must not revive a pruned nonce"
         );
         join.abort();
+    }
+
+    #[tokio::test]
+    async fn keycloak_jwks_rotation_fetches_unknown_kid_and_removes_retired_key() {
+        let current = Arc::new(std::sync::RwLock::new(
+            include_bytes!("../tests/fixtures/jwks.json").to_vec(),
+        ));
+        let serving = current.clone();
+        let jwks_router = Router::new().route(
+            "/certs",
+            get(move || {
+                let bytes = serving.read().unwrap().clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], bytes) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let jwks_url = format!("http://{}/certs", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, jwks_router).await.unwrap();
+        });
+        let mac_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let config = Config {
+            listen: "127.0.0.1:0".into(),
+            issuer: "https://id.example/realms/alondra".into(),
+            audience: "alondra-relay".into(),
+            jwks_url,
+            owner_sub: "owner".into(),
+            mac_id: "mac-1".into(),
+            mac_signing_key: key_bytes(&mac_key),
+            device_registry_path: std::env::temp_dir().join(format!(
+                "alondra-jwks-rotation-{}-{}.json",
+                std::process::id(),
+                NEXT_TEST_REGISTRY.fetch_add(1, Ordering::Relaxed)
+            )),
+        };
+        let auth = Auth::open(config).await.unwrap();
+        let now = now_ms();
+        let old = jwt("owner", now);
+        assert_eq!(auth.verify_jwt(&old, now).await.unwrap(), "owner");
+        *current.write().unwrap() = include_bytes!("../tests/fixtures/jwks-rotated.json").to_vec();
+        let rotated = jwt_with(
+            "owner",
+            now,
+            "rotated-key",
+            include_bytes!("../tests/fixtures/rsa-rotated-test-only.pkcs8.der"),
+        );
+        assert_eq!(
+            auth.verify_jwt(&rotated, now).await.unwrap(),
+            "owner",
+            "unknown kid triggers one bounded JWKS fetch"
+        );
+        assert!(
+            auth.verify_jwt(&old, now).await.is_err(),
+            "retired key must disappear when JWKS rotates"
+        );
+        *current.write().unwrap() = include_bytes!("../tests/fixtures/jwks.json").to_vec();
+        auth.refresh_jwks().await.unwrap();
+        assert_eq!(
+            auth.verify_jwt(&old, now).await.unwrap(),
+            "owner",
+            "periodic refresh path replaces key set too"
+        );
+        assert!(auth.verify_jwt(&rotated, now).await.is_err());
+        handle.abort();
     }
 }

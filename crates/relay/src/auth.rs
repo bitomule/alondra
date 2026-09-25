@@ -8,11 +8,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
+    time::{Duration, Instant},
 };
+use tokio::sync::Mutex as AsyncMutex;
 
 const CLOCK_SKEW_MS: u64 = 120_000;
 const MAX_NONCES: usize = 100_000;
+const MAX_JWKS_BYTES: usize = 64 * 1024;
+const JWKS_TIMEOUT: Duration = Duration::from_secs(5);
+const JWKS_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+const UNKNOWN_KID_RETRY: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
@@ -62,6 +68,10 @@ struct Claims {
     nbf: Option<u64>,
 }
 type RsaJwks = HashMap<String, (Vec<u8>, Vec<u8>)>;
+struct CachedJwks {
+    keys: RsaJwks,
+    refreshed_at: Instant,
+}
 
 #[derive(Clone, Debug)]
 pub struct Identity {
@@ -71,7 +81,9 @@ pub struct Identity {
 
 pub struct Auth {
     pub config: Config,
-    jwks: RsaJwks,
+    jwks: RwLock<CachedJwks>,
+    jwks_refresh: AsyncMutex<()>,
+    last_unknown_refresh: Mutex<Option<Instant>>,
     devices: Mutex<HashMap<String, PhoneDevice>>,
     verifier: Mutex<HttpChallengeVerifier>,
 }
@@ -91,18 +103,15 @@ impl Auth {
             bail!("JWKS URL must use HTTPS (localhost allowed for tests)");
         }
         verifying_key(&config.mac_signing_key).context("invalid bootstrap Mac signing key")?;
-        let jwks: Jwks = reqwest::Client::new()
-            .get(&config.jwks_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let jwks = fetch_jwks(&config.jwks_url).await?;
         Self::from_jwks(config, jwks)
     }
 
     fn from_jwks(config: Config, jwks: Jwks) -> Result<Self> {
-        let jwks = parse_jwks(jwks)?;
+        let jwks = CachedJwks {
+            keys: parse_jwks(jwks)?,
+            refreshed_at: Instant::now(),
+        };
         let devices = if config.device_registry_path.exists() {
             let raw = std::fs::read(&config.device_registry_path)?;
             let list: Vec<PhoneDevice> = serde_json::from_slice(&raw)?;
@@ -114,7 +123,9 @@ impl Auth {
             .map_err(|_| anyhow::anyhow!("could not initialize device challenge verifier"))?;
         Ok(Self {
             config,
-            jwks,
+            jwks: RwLock::new(jwks),
+            jwks_refresh: AsyncMutex::new(()),
+            last_unknown_refresh: Mutex::new(None),
             devices: Mutex::new(devices),
             verifier: Mutex::new(verifier),
         })
@@ -157,6 +168,29 @@ impl Auth {
         Ok(())
     }
 
+    /// A Mac-signed revocation removes the public key durably before queued data is purged.
+    pub fn revoke(&self, device_id: &str) -> Result<()> {
+        let mut devices = self.devices.lock().unwrap();
+        let Some(previous) = devices.remove(device_id) else {
+            return Ok(());
+        };
+        let mut sorted: Vec<_> = devices.values().cloned().collect();
+        sorted.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+        if let Err(e) = write_atomic(
+            &self.config.device_registry_path,
+            &serde_json::to_vec(&sorted)?,
+        ) {
+            devices.insert(device_id.to_owned(), previous);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn is_phone_registered(&self, device_id: &str) -> bool {
+        self.devices.lock().unwrap().contains_key(device_id)
+    }
+
     pub fn authenticate_mac(
         &self,
         headers: &HeaderMap,
@@ -180,7 +214,7 @@ impl Auth {
         })
     }
 
-    pub fn authenticate_phone(
+    pub async fn authenticate_phone(
         &self,
         headers: &HeaderMap,
         method: &Method,
@@ -195,7 +229,7 @@ impl Auth {
         let token = token
             .strip_prefix("Bearer ")
             .context("expected Bearer token")?;
-        let sub = self.verify_jwt(token, now_ms)?;
+        let sub = self.verify_jwt(token, now_ms).await?;
         let id = header(headers, "x-device-id")?;
         let device = self
             .devices
@@ -233,7 +267,39 @@ impl Auth {
         self.verifier.lock().unwrap().server_epoch()
     }
 
-    fn verify_jwt(&self, jwt: &str, now_ms: u64) -> Result<String> {
+    /// Replace the complete key set; removed Keycloak keys stop validating immediately.
+    pub async fn refresh_jwks(&self) -> Result<()> {
+        let _guard = self.jwks_refresh.lock().await;
+        let keys = parse_jwks(fetch_jwks(&self.config.jwks_url).await?)?;
+        *self.jwks.write().unwrap() = CachedJwks {
+            keys,
+            refreshed_at: Instant::now(),
+        };
+        Ok(())
+    }
+
+    async fn refresh_for_unknown_kid(&self, kid: &str) -> Result<()> {
+        let _guard = self.jwks_refresh.lock().await;
+        if self.jwks.read().unwrap().keys.contains_key(kid) {
+            return Ok(());
+        }
+        let now = Instant::now();
+        {
+            let mut last = self.last_unknown_refresh.lock().unwrap();
+            if last.is_some_and(|t| now.duration_since(t) < UNKNOWN_KID_RETRY) {
+                bail!("unknown JWT key ID");
+            }
+            *last = Some(now);
+        }
+        let keys = parse_jwks(fetch_jwks(&self.config.jwks_url).await?)?;
+        *self.jwks.write().unwrap() = CachedJwks {
+            keys,
+            refreshed_at: Instant::now(),
+        };
+        Ok(())
+    }
+
+    pub(crate) async fn verify_jwt(&self, jwt: &str, now_ms: u64) -> Result<String> {
         if jwt.len() > 8192 {
             bail!("JWT too large");
         }
@@ -248,15 +314,27 @@ impl Auth {
         if header.alg != "RS256" {
             bail!("unsupported JWT algorithm");
         }
-        let (n, e) = self.jwks.get(&header.kid).context("unknown JWT key ID")?;
+        if header.kid.is_empty() || header.kid.len() > 128 {
+            bail!("invalid JWT key ID");
+        }
+        if !self.jwks.read().unwrap().keys.contains_key(&header.kid) {
+            self.refresh_for_unknown_kid(&header.kid).await?;
+        }
         let signature = URL_SAFE_NO_PAD.decode(s)?;
-        RsaPublicKeyComponents { n, e }
-            .verify(
-                &RSA_PKCS1_2048_8192_SHA256,
-                format!("{h}.{p}").as_bytes(),
-                &signature,
-            )
-            .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
+        {
+            let jwks = self.jwks.read().unwrap();
+            if jwks.refreshed_at.elapsed() > JWKS_MAX_AGE {
+                bail!("JWKS cache expired");
+            }
+            let (n, e) = jwks.keys.get(&header.kid).context("unknown JWT key ID")?;
+            RsaPublicKeyComponents { n, e }
+                .verify(
+                    &RSA_PKCS1_2048_8192_SHA256,
+                    format!("{h}.{p}").as_bytes(),
+                    &signature,
+                )
+                .map_err(|_| anyhow::anyhow!("invalid JWT signature"))?;
+        }
         let c: Claims = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(p)?)?;
         let now_s = now_ms / 1000;
         if c.iss != self.config.issuer
@@ -345,6 +423,28 @@ fn parse_jwks(jwks: Jwks) -> Result<RsaJwks> {
         bail!("JWKS has no RS256 signing keys");
     }
     Ok(result)
+}
+
+async fn fetch_jwks(url: &str) -> Result<Jwks> {
+    let client = reqwest::Client::builder()
+        .timeout(JWKS_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_JWKS_BYTES as u64)
+    {
+        bail!("JWKS response too large");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_JWKS_BYTES {
+            bail!("JWKS response too large");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body)?)
 }
 
 fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
