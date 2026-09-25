@@ -26,7 +26,7 @@ swift_test(
     name = "AlondraSharedTests",
     srcs = glob(["Shared/Tests/**/*.swift"]),
     data = ["//fixtures/markdown"],
-    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient"],
+    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands"],
 )
 
 swift_library(

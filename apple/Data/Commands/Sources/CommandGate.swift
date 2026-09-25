@@ -75,6 +75,8 @@ public actor CommandGate {
     private var loaded = false
     private var pending: [UncertainCommand] = []
     private var mutationVersion: UInt64 = 0
+    private var dismissalInFlight = false
+    private var dismissalWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(scope: CommandScope, journal: (any CommandJournaling)? = nil) {
         self.scope = scope
@@ -98,6 +100,10 @@ public actor CommandGate {
     }
 
     public func use(_ next: CommandScope) async {
+        // A dismissal accepted for the old scope must finish before a new scope activates.
+        while dismissalInFlight {
+            await withCheckedContinuation { dismissalWaiters.append($0) }
+        }
         guard next != scope else { return }
         guard next.generation > scope.generation else { return }
         scope = next
@@ -110,7 +116,17 @@ public actor CommandGate {
         _ = try? await restore()
     }
 
-    public func dismiss(_ id: UUID) async {
+    /// A delayed UI dismissal must never remove a warning after its credential changed.
+    public func dismiss(_ id: UUID, in expectedScope: CommandScope) async {
+        guard expectedScope == scope, !dismissalInFlight,
+              uncertain.contains(where: { $0.id == id }) else { return }
+        dismissalInFlight = true
+        defer {
+            dismissalInFlight = false
+            let waiters = dismissalWaiters
+            dismissalWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
         if let journal {
             do { try await journal.remove(id) }
             catch { return } // Keep the warning if the file could not be removed.

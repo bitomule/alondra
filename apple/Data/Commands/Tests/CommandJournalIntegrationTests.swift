@@ -17,6 +17,21 @@ import AlondraCommands
         return (directory, FileCommandJournal(directory: directory))
     }
 
+    @Test func delayedDismissalCannotEraseWarningAfterScopeSwitch() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let command = UncertainCommand(id: UUID(), scope: scope, kind: .newRequest, itemID: nil)
+        try await journal.save(.init(command: command, state: .unknown))
+        let gate = CommandGate(scope: scope, journal: journal)
+        #expect(try await gate.restore() == [command])
+        let other = CommandScope(server: URL(string: "https://other.example")!, deviceID: "phone-1",
+            credentialRevision: "key-2", generation: 5)
+        await gate.use(other)
+        await gate.dismiss(command.id, in: scope)
+        #expect(try await journal.records().contains { $0.command.id == command.id })
+    }
+
+
     @Test func pendingAtCrashBecomesUnknownAndCannotSendAgainAfterRelaunch() async throws {
         let (directory, journal) = try temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }

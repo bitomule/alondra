@@ -45,9 +45,10 @@ final class IOSAppSync {
             initialInvalidConfiguration: configuredURL == nil ? String(localized: "Invalid server URL") : nil
         )
         if configuredURL == nil { fleet.suspendForInvalidConfiguration(String(localized: "Invalid server URL")) }
+        Task { await fleet.restoreUncertainSends() }
     }
 
-    private static func identity(for client: AlondraClient) -> IOSSyncIdentity {
+    static func identity(for client: AlondraClient) -> IOSSyncIdentity {
         let revision = (client.signer as? DeviceSigner)?.key.publicKey.x963Representation.base64EncodedString() ?? "unpaired"
         return IOSSyncIdentity(
             server: client.base,
@@ -56,7 +57,7 @@ final class IOSAppSync {
         )
     }
 
-    private static func commandScope(for identity: IOSSyncIdentity, generation: UInt64) -> CommandScope {
+    static func commandScope(for identity: IOSSyncIdentity, generation: UInt64) -> CommandScope {
         CommandScope(
             server: identity.server,
             deviceID: identity.deviceID,
@@ -90,6 +91,7 @@ final class IOSAppSync {
         isConfigurationSuspended = false
         commandGeneration &+= 1
         fleet.use(client, commandScope: Self.commandScope(for: next, generation: commandGeneration))
+        await fleet.restoreUncertainSends()
         await session.use(
             AlondraAPIClient(base: client.base, device: client.device, signer: client.signer, transport: transport),
             credentialRevision: next.credentialRevision

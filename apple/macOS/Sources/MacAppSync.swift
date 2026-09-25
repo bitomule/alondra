@@ -44,7 +44,11 @@ final class MacAppSync {
             generation: 0
         )
         commandScope = scope
-        commandGate = CommandGate(scope: scope)
+        commandGate = CommandGate(
+            scope: scope,
+            journal: FileCommandJournal(directory: CommandJournalLocation.applicationSupport(
+                bundleID: Bundle.main.bundleIdentifier ?? "com.bitomule.alondra.mac"))
+        )
         session = SyncSession(
             client: AlondraAPIClient(base: client.base, device: client.device, signer: client.signer, transport: transport),
             credentialRevision: identity.credentialRevision
@@ -64,6 +68,7 @@ final class MacAppSync {
     func register(_ bridge: MacLegacyProjection) {
         windows.removeAll { $0.value == nil }
         windows.append(WeakWindowBridge(bridge))
+        Task { await bridge.fleet.restoreUncertainSends() }
     }
 
     /// Capture the command scope at the user gesture, before Swift schedules an async task.
@@ -101,6 +106,8 @@ final class MacAppSync {
         guard scope.generation > activatedGeneration else { return }
         activatedGeneration = scope.generation
         await commandGate.use(scope)
+        guard scope == commandScope else { return }
+        for window in windows { await window.value?.fleet.restoreUncertainSends() }
         guard scope == commandScope else { return }
         await session.use(
             AlondraAPIClient(base: client.base, device: client.device, signer: client.signer, transport: transport),

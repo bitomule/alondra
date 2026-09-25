@@ -420,7 +420,7 @@ struct ErrorBanner: View {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text("Check Alondra: \(store.uncertainActionDescription) may have completed").lineLimit(2)
                     Button {
-                        store.dismissUncertainSends()
+                        Task { await store.dismissUncertainSends() }
                     } label: {
                         Image(systemName: "xmark").font(.caption.weight(.bold))
                     }

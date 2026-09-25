@@ -1,5 +1,6 @@
 import AlondraShared
 import AlondraAPIClient
+import AlondraCommands
 import Foundation
 import Testing
 
@@ -106,9 +107,38 @@ import Testing
         fleet.apply(try overview())
         #expect(fleet.connection == .online)
         #expect(await counter.calls == 1, "reconnect must not dispatch the mutation again")
-        fleet.dismissUncertainSends()
+        await fleet.dismissUncertainSends()
         #expect(fleet.uncertainSends.isEmpty)
         #expect(await counter.calls == 1)
+    }
+
+    @Test func relaunchedFleetRestoresWarningAndBlocksDuplicateSend() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fleet-command-journal-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = AlondraClient(base: URL(string: "https://example.test")!)
+        let scope = CommandScope(server: client.base, deviceID: client.device,
+            credentialRevision: "test-key", generation: 1)
+        let first = FleetStore(client: client,
+            commandGate: CommandGate(scope: scope, journal: FileCommandJournal(directory: directory)),
+            commandScope: scope)
+        let sent = await first.perform(.newRequest) { _ in throw URLError(.timedOut) }
+        #expect(!sent)
+        #expect(first.uncertainSends.count == 1)
+
+        let relaunchedScope = CommandScope(server: client.base, deviceID: client.device,
+            credentialRevision: "test-key", generation: 1)
+        let relaunched = FleetStore(client: client,
+            commandGate: CommandGate(scope: relaunchedScope, journal: FileCommandJournal(directory: directory)),
+            commandScope: relaunchedScope)
+        await relaunched.restoreUncertainSends()
+        #expect(relaunched.uncertainSends.map(\.id) == first.uncertainSends.map(\.id))
+        let duplicate = await relaunched.perform(.newRequest) { _ in
+            Issue.record("An unresolved command was sent again after app restart")
+        }
+        #expect(!duplicate)
+        await relaunched.dismissUncertainSends()
+        #expect(relaunched.uncertainSends.isEmpty)
     }
 
     @Test func anUnansweredCommandCannotBeSentToAnotherServer() async throws {

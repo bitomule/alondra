@@ -360,12 +360,40 @@ public final class FleetStore {
         uncertainSends.first?.kind.userFacingDescription ?? String(localized: "Action", table: "AlondraShared", bundle: #bundle)
     }
 
-    /// Dismiss the warning after the user checks the server state. This never resends a command.
-    public func dismissUncertainSends() {
-        let ids = uncertainSends.map(\.id)
-        for itemID in uncertainSends.compactMap(\.itemID) { hidden.remove(itemID) }
-        uncertainSends = []
-        Task { for id in ids { await commandGate.dismiss(id) } }
+    /// Restore only warnings for the current credential. A read failure remains visible and
+    /// CommandGate refuses to send until the journal can be read again.
+    public func restoreUncertainSends() async {
+        let scope = commandScope(client)
+        await commandGate.use(scope)
+        guard commandsEnabled, commandScope(client) == scope else { return }
+        do {
+            let restored = try await commandGate.restore()
+            guard commandsEnabled, commandScope(client) == scope else { return }
+            uncertainSends = restored
+            for itemID in restored.compactMap(\.itemID) { hidden.remove(itemID) }
+        } catch {
+            guard commandsEnabled, commandScope(client) == scope else { return }
+            lastError = String(localized: "Cannot read saved command history")
+        }
+    }
+
+    /// Dismiss only after the journal has removed every warning. This never resends a command.
+    public func dismissUncertainSends() async {
+        let scope = commandScope(client)
+        let dismissed = uncertainSends
+        let ids = dismissed.map(\.id)
+        for id in ids {
+            guard commandScope(client) == scope else { return }
+            await commandGate.dismiss(id, in: scope)
+        }
+        let remaining = await commandGate.uncertain
+        guard commandScope(client) == scope else { return }
+        guard ids.allSatisfy({ id in !remaining.contains(where: { $0.id == id }) }) else {
+            lastError = String(localized: "Cannot update saved command history")
+            return
+        }
+        for itemID in dismissed.compactMap(\.itemID) { hidden.remove(itemID) }
+        uncertainSends.removeAll { command in ids.contains(command.id) }
     }
 
     private func submit(_ kind: CommandKind, itemID: String?, using client: AlondraClient, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async -> CommandResult {
@@ -377,7 +405,10 @@ public final class FleetStore {
             try await action(client)
         }
         guard commandsEnabled, self.client.identity == client.identity, commandScope(client) == scope else { return .obsolete }
-        if case .unknown(let command) = result { uncertainSends.append(command) }
+        if case .unknown(let command) = result,
+           !uncertainSends.contains(where: { $0.id == command.id }) {
+            uncertainSends.append(command)
+        }
         return result
     }
 

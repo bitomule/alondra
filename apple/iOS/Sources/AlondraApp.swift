@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraCommands
 import AlondraiOSFeature
 import ComposableArchitecture
 import SwiftUI
@@ -22,8 +23,20 @@ struct AlondraApp: App {
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    let fleet = FleetStore(client: AlondraClient(base: AlondraClient.defaultURL, device: "iphone"), animated: true, retryDelay: .seconds(3))
     let pairing = DevicePairing()
+    lazy var fleet: FleetStore = {
+        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
+        let base = AlondraClient.serverURL(address) ?? AlondraClient.defaultURL
+        let signer = pairing.signer(for: base)
+        let client = AlondraClient(base: base, device: "iphone", signer: signer)
+        let scope = IOSAppSync.commandScope(for: IOSAppSync.identity(for: client), generation: 1)
+        let gate = CommandGate(
+            scope: scope,
+            journal: FileCommandJournal(directory: CommandJournalLocation.applicationSupport(
+                bundleID: Bundle.main.bundleIdentifier ?? "com.bitomule.alondra"))
+        )
+        return FleetStore(client: client, animated: true, retryDelay: .seconds(3), commandGate: gate, commandScope: scope)
+    }()
     lazy var push = PushCenter(fleet: fleet, pairing: pairing)
     lazy var sync = IOSAppSync(fleet: fleet, pairing: pairing, push: push)
     private lazy var responder = NotificationResponder(push: push)
@@ -136,7 +149,7 @@ private struct NoticeToast: View {
             }
             if !fleet.uncertainSends.isEmpty {
                 Button {
-                    fleet.dismissUncertainSends()
+                    Task { await fleet.dismissUncertainSends() }
                 } label: {
                     HStack(spacing: 10) {
                         Label("Check Alondra: \(fleet.uncertainActionDescription) may have completed", systemImage: "exclamationmark.triangle.fill")
