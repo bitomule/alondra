@@ -122,6 +122,41 @@ final class SyncSessionIntegrationTests: XCTestCase {
         await transport.waitForCancellations(1)
     }
 
+    func testIdenticalOverviewRefetchPublishesOneFreshRevisionToBothWindows() async throws {
+        let transport = ControlledTransport()
+        let session = SyncSession(client: AlondraAPIClient(base: base, transport: transport), credentialRevision: "local")
+        var first = await session.subscribe().makeAsyncIterator()
+        var second = await session.subscribe().makeAsyncIterator()
+        let body = try overview(7)
+
+        await transport.waitForRequests(1)
+        await transport.respond(0, body: body)
+        let firstSnapshot = await nextSnapshot(from: &first)
+        let secondSnapshot = await nextSnapshot(from: &second)
+        let initialFirst = try XCTUnwrap(firstSnapshot)
+        let initialSecond = try XCTUnwrap(secondSnapshot)
+        XCTAssertEqual(initialFirst.publicationRevision, initialSecond.publicationRevision)
+
+        await transport.waitForRequests(2)
+        await transport.respond(1, body: #"{"tick":7}"#)
+        await transport.waitForRequests(3)
+        await transport.respond(2, body: body)
+        let firstRefresh = await nextSnapshot(from: &first)
+        let secondRefresh = await nextSnapshot(from: &second)
+        let refreshedFirst = try XCTUnwrap(firstRefresh)
+        let refreshedSecond = try XCTUnwrap(secondRefresh)
+
+        XCTAssertEqual(refreshedFirst.snapshot, initialFirst.snapshot)
+        XCTAssertEqual(refreshedFirst.publicationRevision, initialFirst.publicationRevision + 1)
+        XCTAssertEqual(refreshedFirst.publicationRevision, refreshedSecond.publicationRevision)
+        XCTAssertNotEqual(refreshedFirst, initialFirst,
+                          "A fresh identical overview must pass the app projection cache and settle a pending push route")
+        await transport.waitForRequests(4)
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 4, "Both windows must still share one long poll")
+        await session.stop()
+    }
+
     func testSignerSwitchDiscardsOldOverviewAndStartsFreshPoll() async throws {
         let transport = ControlledTransport()
         let old = AlondraAPIClient(base: base, signer: TestSigner(deviceID: "device", marker: "old-key"), transport: transport)

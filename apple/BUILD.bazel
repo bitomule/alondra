@@ -78,6 +78,7 @@ swift_library(
         "//apple/NotificationPayload:AlondraNotificationPayload",
         "//apple/iOS/Feature:AlondraiOSFeature",
         "//apple/Features/Settings:AlondraSettingsFeature",
+        "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

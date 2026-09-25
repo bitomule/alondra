@@ -54,6 +54,8 @@ public struct TriageFeature {
         public var presentedID: String?
         public var notice: String?
         public var hasSnapshot = false
+        /// Increases for every accepted overview, including one with unchanged card IDs.
+        public var snapshotRevision: UInt64 = 0
         public var workingNodes = 0
         public var waitingNodes = 0
         public var totalNodes = 0
@@ -67,7 +69,29 @@ public struct TriageFeature {
             InboxRing(cursor: cursor).arranged(items.filter { !hiddenIDs.contains($0.id) })
         }
 
+        public var position: Int {
+            InboxRing(cursor: cursor).frontIndex(in: items.filter { !hiddenIDs.contains($0.id) })
+        }
+
         public var presentedItem: InboxItem? { items.first { $0.id == presentedID } }
+
+        public var routeTargets: [String: String] {
+            var targets: [String: String] = [:]
+            for item in queue {
+                targets[item.id] = item.id
+                if case .pullRequest(let pr) = item {
+                    for question in questions(forPullRequest: pr.id) { targets["q\(question.id)"] = item.id }
+                    for report in reports(forPullRequest: pr.id) { targets["r\(report.id)"] = item.id }
+                }
+            }
+            return targets
+        }
+
+        /// A push for a child of an open PR opens the one visible parent card.
+        public func routeTarget(for id: String) -> InboxItem? {
+            guard let targetID = routeTargets[id] else { return nil }
+            return queue.first { $0.id == targetID }
+        }
 
         public func questions(forPullRequest id: UInt64) -> [Question] { questionsByPullRequest[id] ?? [] }
         public func reports(forPullRequest id: UInt64) -> [Report] { reportsByPullRequest[id] ?? [] }
@@ -79,7 +103,8 @@ public struct TriageFeature {
                 && lhs.hiddenIDs == rhs.hiddenIDs
                 && lhs.pendingIDs == rhs.pendingIDs && lhs.cursor == rhs.cursor
                 && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice
-                && lhs.hasSnapshot == rhs.hasSnapshot && lhs.workingNodes == rhs.workingNodes
+                && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
+                && lhs.workingNodes == rhs.workingNodes
                 && lhs.waitingNodes == rhs.waitingNodes && lhs.totalNodes == rhs.totalNodes
                 && lhs.skippedCount == rhs.skippedCount && lhs.resolvedCount == rhs.resolvedCount
                 && lhs.subscriptionID == rhs.subscriptionID
@@ -94,7 +119,9 @@ public struct TriageFeature {
         case inboxUpdated(TriageInboxUpdate)
         case focus(String)
         case skip(String)
+        case skipIfCurrent(String, TriageIdentity?)
         case review(String)
+        case route(String, opensDetail: Bool)
         case hide(String)
         case mutationFinished(String, TriageIdentity, TriageMutationOutcome)
         case dismissReview
@@ -140,6 +167,7 @@ public struct TriageFeature {
                 state.questionsByPullRequest = inbox.questionsByPullRequest
                 state.reportsByPullRequest = inbox.reportsByPullRequest
                 state.hasSnapshot = true
+                state.snapshotRevision &+= 1
                 state.workingNodes = inbox.workingNodes
                 state.waitingNodes = inbox.waitingNodes
                 state.totalNodes = inbox.totalNodes
@@ -157,17 +185,21 @@ public struct TriageFeature {
                 ring.focus(item)
                 state.cursor = ring.cursor
                 return .none
+            case .skipIfCurrent(let id, let identity):
+                guard state.identity == identity else { return .none }
+                return skip(&state, id: id)
             case .skip(let id):
-                let queue = state.queue
-                guard queue.count > 1, let item = queue.first(where: { $0.id == id }) else { return .none }
-                var ring = InboxRing(cursor: state.cursor)
-                ring.move(from: item, by: 1, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
-                state.cursor = ring.cursor
-                state.skippedCount += 1
-                return .none
+                return skip(&state, id: id)
             case .review(let id):
                 guard state.queue.contains(where: { $0.id == id }) else { return .none }
                 state.presentedID = id
+                return .none
+            case .route(let id, let opensDetail):
+                guard let item = state.routeTarget(for: id) else { return .none }
+                var ring = InboxRing(cursor: state.cursor)
+                ring.focus(item)
+                state.cursor = ring.cursor
+                if opensDetail { state.presentedID = item.id }
                 return .none
             case .hide(let id):
                 guard let item = state.queue.first(where: { $0.id == id }),
@@ -187,9 +219,7 @@ public struct TriageFeature {
                 guard state.identity == identity, state.pendingIDs.remove(id) != nil else { return .none }
                 switch result {
                 case .confirmed:
-                    // A prior snapshot may have omitted this card before the acknowledgement.
-                    // Keep it suppressed if a delayed older snapshot reintroduces it. A later
-                    // post-confirmation snapshot that omits it clears the tombstone below.
+                    // A later snapshot that omits the card clears this tombstone.
                     state.hiddenIDs.insert(id)
                     state.resolvedCount += 1
                 case .rejected(let reason):
@@ -210,6 +240,16 @@ public struct TriageFeature {
                 return .none
             }
         }
+    }
+
+    private func skip(_ state: inout State, id: String) -> Effect<Action> {
+        let queue = state.queue
+        guard queue.count > 1, let item = queue.first(where: { $0.id == id }) else { return .none }
+        var ring = InboxRing(cursor: state.cursor)
+        ring.move(from: item, by: 1, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
+        state.cursor = ring.cursor
+        state.skippedCount += 1
+        return .none
     }
 
     private func resetPresentation(_ state: inout State) {

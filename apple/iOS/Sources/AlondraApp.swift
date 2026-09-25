@@ -1,6 +1,7 @@
 import AlondraShared
 import AlondraCommands
 import AlondraiOSFeature
+import AlondraTriageFeature
 import ComposableArchitecture
 import SwiftUI
 import UIKit
@@ -82,9 +83,9 @@ private struct RootView: View {
         @Bindable var feature = context.feature
         return TabView(selection: $feature.tab) {
             Tab("Waiting for You", systemImage: "tray.full", value: IOSRootFeature.Tab.triage) {
-                TriageView()
+                TriageView(store: context.triage)
             }
-            .badge(feature.connection == .unpaired ? 0 : feature.inboxCount)
+            .badge(feature.connection == .unpaired ? 0 : context.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: IOSRootFeature.Tab.tasks) {
                 TasksTab()
             }
@@ -98,7 +99,7 @@ private struct RootView: View {
         .id(feature.presentationGeneration)
         .tabBarMinimizeBehavior(.onScrollDown)
         .onChange(of: fleet.focusRequest) { context.feature.send(.focusTriage) }
-        .onChange(of: fleet.queue.count) { _, count in context.feature.send(.inboxCountChanged(count)) }
+        .onChange(of: context.triage.queue.count) { _, count in context.feature.send(.inboxCountChanged(count)) }
         .onChange(of: push.route) { if let route = push.route, push.isCurrent(route) { context.feature.send(.focusTriage) } }
         .task(id: pairing.revision) {
             context.feature.send(.pairingChanged)
@@ -108,12 +109,14 @@ private struct RootView: View {
             context.feature.send(.activityActive(sceneID, scenePhase == .active))
         }
         .onDisappear {
+            services.detachTriage(sceneID: sceneID)
             context.feature.send(.sceneActive(false))
             context.feature.send(.activityActive(sceneID, false))
         }
         .overlay(alignment: .bottom) { NoticeToast() }
         .closeRefusalAlert(fleet)
         .task(id: SyncKey(url: serverURL, revision: pairing.revision)) {
+            services.attachTriage(context.triage, sceneID: sceneID)
             context.feature.send(.configurationChanged(serverURL))
         }
     }

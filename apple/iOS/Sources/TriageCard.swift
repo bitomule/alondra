@@ -7,6 +7,9 @@ struct TriageCard: View {
     let zoom: Namespace.ID
     let onReview: () -> Void
     let onSkip: () -> Void
+    let onHide: () -> Void
+    let questions: [Question]
+    let reports: [Report]
 
     @Environment(FleetStore.self) private var fleet
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -247,10 +250,10 @@ struct TriageCard: View {
                 earlierReports(earlier)
             }
         case .pullRequest(let pr):
-            ForEach(fleet.reports(forPullRequest: pr.id)) { report in
+            ForEach(reports) { report in
                 AttachedReport(report: report)
             }
-            ForEach(fleet.questions(forPullRequest: pr.id)) { question in
+            ForEach(questions) { question in
                 AttachedQuestion(question: question)
             }
             Text(pr.summary)
@@ -664,7 +667,7 @@ struct TriageCard: View {
     }
 
     private func markRead(_ report: Report) {
-        resolve(stamp(for: HandoffLabel.read), kind: .markRead(report.id)) { try await $0.markRead(report.id) }
+        onHide()
     }
 
     private func review(_ report: Report, _ verdict: ReviewVerdict) {
@@ -710,6 +713,7 @@ struct TriageCard: View {
     }
 
     private func settle(_ outcome: PullRequestOutcome, of pr: PullRequest) {
+        if outcome == .setAside { onHide(); return }
         resolve(stamp(for: outcome.handoffLabel), kind: outcome.commandKind(for: pr.id)) { try await pr.perform(outcome, using: $0) }
     }
 

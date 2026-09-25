@@ -4,6 +4,7 @@ import AlondraDeviceIdentity
 import AlondraiOSFeature
 import AlondraShared
 import AlondraSync
+import AlondraTriageFeature
 import ComposableArchitecture
 import Foundation
 import SwiftUI
@@ -24,6 +25,64 @@ final class IOSAppSync {
     private var activityTask: Task<Void, Never>?
     private var activityGeneration: UInt64 = 0
     private var lastProjection: (state: SyncState, update: IOSRootUpdate)?
+    private var triageScenes: [UUID: StoreOf<TriageFeature>] = [:]
+    private var triageObservers: [UUID: AsyncStream<TriageInboxUpdate>.Continuation] = [:]
+    private var lastTriageUpdate: TriageInboxUpdate?
+
+    private var triageIdentity: TriageIdentity {
+        TriageIdentity(server: identity.server, deviceID: identity.deviceID,
+            credentialRevision: identity.credentialRevision, generation: commandGeneration)
+    }
+
+    func attachTriage(_ store: StoreOf<TriageFeature>, sceneID: UUID) {
+        triageScenes[sceneID] = store
+        store.send(.identityChanged(triageIdentity))
+        store.send(.appeared)
+    }
+
+    func detachTriage(sceneID: UUID) {
+        if let store = triageScenes.removeValue(forKey: sceneID) { store.send(.disappeared) }
+    }
+
+    func observeTriage() -> AsyncStream<TriageInboxUpdate> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<TriageInboxUpdate>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        triageObservers[id] = continuation
+        if let lastTriageUpdate, lastTriageUpdate.identity == triageIdentity {
+            continuation.yield(lastTriageUpdate)
+        }
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor [weak self] in _ = self?.triageObservers.removeValue(forKey: id) }
+        }
+        return stream
+    }
+
+    private func resetTriageIdentity() {
+        lastTriageUpdate = nil
+        for store in triageScenes.values { store.send(.identityChanged(triageIdentity)) }
+    }
+
+    func mutateTriage(_ kind: CommandKind, itemID: String, expected: TriageIdentity) async -> TriageMutationOutcome {
+        guard expected == triageIdentity else { return .obsolete }
+        let client = fleet.client
+        let result = await fleet.submitCommand(kind, itemID: itemID,
+            expectedCredentialRevision: expected.credentialRevision, using: client) { client in
+            switch kind {
+            case .markRead(let id): try await client.markRead(id)
+            case .dismissPullRequest(let id): try await client.dismissPullRequest(id)
+            default: throw TriageAdapterError.unsupported
+            }
+        }
+        guard expected == triageIdentity else { return .obsolete }
+        switch result {
+        case .confirmed: return .confirmed
+        case .unknown: return .unknown
+        case .obsolete: return .obsolete
+        case .rejected(let error): return .rejected(error.localizedDescription)
+        }
+    }
+
+    private enum TriageAdapterError: Error { case unsupported }
 
     init(fleet: FleetStore, pairing: DevicePairing, push: PushCenter) {
         self.fleet = fleet
@@ -71,6 +130,8 @@ final class IOSAppSync {
         guard configuredAddress == serverAddress else { return }
         guard let url = AlondraClient.serverURL(serverAddress) else {
             configurationEpoch &+= 1
+            commandGeneration &+= 1
+            resetTriageIdentity()
             let reason = String(localized: "Invalid server URL")
             activityGeneration &+= 1
             activityTask?.cancel()
@@ -90,6 +151,7 @@ final class IOSAppSync {
         identity = next
         isConfigurationSuspended = false
         commandGeneration &+= 1
+        resetTriageIdentity()
         fleet.use(client, commandScope: Self.commandScope(for: next, generation: commandGeneration))
         await fleet.restoreUncertainSends()
         await session.use(
@@ -106,7 +168,9 @@ final class IOSAppSync {
         let epoch = configurationEpoch
         let current = await session.state
         guard epoch == configurationEpoch else { return nil }
-        guard value.generation == current.generation, value.identity == current.identity else { return nil }
+        guard value.generation == current.generation,
+              value.identity == current.identity,
+              value.publicationRevision == current.publicationRevision else { return nil }
         let eventIdentity = IOSSyncIdentity(
             server: value.identity.server,
             deviceID: value.identity.deviceID,
@@ -118,6 +182,8 @@ final class IOSAppSync {
         } else if case .invalidConfiguration = value.connection {
             return nil
         }
+        // A revision belongs to one SyncSession publication, not one scene. Reusing that
+        // publication across windows is safe; an identical later overview must project again.
         if let lastProjection, lastProjection.state == value {
             let cached = lastProjection.update
             return IOSRootUpdate(
@@ -169,6 +235,12 @@ final class IOSAppSync {
         }
         if let overview { fleet.apply(overview) }
         fleet.setConnection(legacyConnection)
+        let triageSnapshot: Overview?
+        if case .online = value.connection { triageSnapshot = overview }
+        else { triageSnapshot = nil }
+        let triageUpdate = TriageInboxUpdate(identity: triageIdentity, overview: triageSnapshot)
+        lastTriageUpdate = triageUpdate
+        for observer in triageObservers.values { observer.yield(triageUpdate) }
         if overview != nil { push.inboxChanged(pending: fleet.queue) }
         let update = IOSRootUpdate(
             identity: eventIdentity,
@@ -230,8 +302,19 @@ final class IOSAppSync {
 @MainActor
 final class IOSWindowContext {
     let feature: StoreOf<IOSRootFeature>
+    let triage: StoreOf<TriageFeature>
 
     init(services: IOSAppSync) {
+        triage = Store(initialState: TriageFeature.State()) {
+            TriageFeature()
+        } withDependencies: {
+            $0.triageService = TriageService(
+                observe: { [services] in await services.observeTriage() },
+                mutate: { [services] kind, itemID, identity in
+                    await services.mutateTriage(kind, itemID: itemID, expected: identity)
+                }
+            )
+        }
         feature = Store(initialState: IOSRootFeature.State()) {
             IOSRootFeature()
         } withDependencies: {

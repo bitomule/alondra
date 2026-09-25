@@ -39,12 +39,16 @@ public enum SyncConnection: Equatable, Sendable {
 public struct SyncState: Equatable, Sendable {
     public let identity: SyncIdentity
     public let generation: UInt64
+    /// Changes once per session publication, even when an overview has identical contents.
+    /// Scene subscribers observe the same revision for the same fetch.
+    public let publicationRevision: UInt64
     public let connection: SyncConnection
     public let snapshot: SyncSnapshot?
 
-    public init(identity: SyncIdentity, generation: UInt64, connection: SyncConnection, snapshot: SyncSnapshot?) {
+    public init(identity: SyncIdentity, generation: UInt64, connection: SyncConnection, snapshot: SyncSnapshot?, publicationRevision: UInt64 = 0) {
         self.identity = identity
         self.generation = generation
+        self.publicationRevision = publicationRevision
         self.connection = connection
         self.snapshot = snapshot
     }
@@ -62,6 +66,7 @@ public actor SyncSession {
     public private(set) var state: SyncState
     private let retryDelay: Duration
     private var generation: UInt64 = 0
+    private var publicationRevision: UInt64 = 0
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<SyncState>.Continuation] = [:]
 
@@ -125,7 +130,7 @@ public actor SyncSession {
         loop = nil
         for continuation in subscribers.values { continuation.finish() }
         subscribers.removeAll()
-        state = SyncState(identity: identity, generation: generation, connection: .connecting, snapshot: state.snapshot)
+        state = stamped(SyncState(identity: identity, generation: generation, connection: .connecting, snapshot: state.snapshot))
     }
 
     private func removeSubscriber(_ id: UUID) {
@@ -140,7 +145,7 @@ public actor SyncSession {
         } else {
             connection = .connecting
         }
-        state = SyncState(identity: identity, generation: generation, connection: connection, snapshot: state.snapshot)
+        state = stamped(SyncState(identity: identity, generation: generation, connection: connection, snapshot: state.snapshot))
     }
 
     private func startIfNeeded() {
@@ -154,8 +159,20 @@ public actor SyncSession {
     }
 
     private func publish(_ next: SyncState) {
-        state = next
-        for continuation in subscribers.values { continuation.yield(next) }
+        let published = stamped(next)
+        state = published
+        for continuation in subscribers.values { continuation.yield(published) }
+    }
+
+    private func stamped(_ next: SyncState) -> SyncState {
+        publicationRevision &+= 1
+        return SyncState(
+            identity: next.identity,
+            generation: next.generation,
+            connection: next.connection,
+            snapshot: next.snapshot,
+            publicationRevision: publicationRevision
+        )
     }
 
     private func publish(_ connection: SyncConnection, snapshot: SyncSnapshot? = nil) {
