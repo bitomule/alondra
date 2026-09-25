@@ -175,6 +175,11 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
 
 fn http() -> ureq::Agent {
     ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .build(),
+        )
         .timeout_global(Some(Duration::from_secs(15)))
         .max_redirects(0)
         .http_status_as_error(false)

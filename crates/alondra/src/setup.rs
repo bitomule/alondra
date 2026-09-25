@@ -507,9 +507,6 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
 }
 
 pub fn run(args: Args) -> Result<()> {
-    if args.service && args.skip_service {
-        bail!("--service cannot be combined with --skip-service");
-    }
     let env = |k: &str| std::env::var(k).ok();
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
@@ -542,6 +539,9 @@ pub fn run(args: Args) -> Result<()> {
     let service_created = if args.service && !args.dry_run {
         crate::service_setup::enroll(&paths.alondra_home)?
     } else {
+        if args.service {
+            println!("would sign in and enroll this Mac with the Alondra service");
+        }
         false
     };
     for step in &plan.steps {
