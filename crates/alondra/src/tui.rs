@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::{Node, Question, QuestionOption, QuestionOrigin, Report, ReviewVerdict, now_millis};
+use alondra_core::tasks::TaskState;
 use anyhow::Result;
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -313,7 +314,7 @@ enum Msg {
     Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
     /// A task's history, or whether alondrad has no route for it.
-    TaskHistory { id: String, since: i64, history: Result<(Vec<alondra_core::tasks::Transition>, Vec<alondra_core::Report>), bool> },
+    TaskHistory { id: String, since: i64, history: Result<(Vec<alondra_core::tasks::Transition>, Vec<alondra_core::Report>, Option<String>), bool> },
     /// A cancel or reopen: what to flash, or why it failed and whether alondrad has no route for it.
     TaskAction(Result<String, (String, bool)>),
     /// An archive of what is finished, told like a task action.
@@ -347,6 +348,7 @@ pub struct App {
     pub schedules_open: bool,
     pub schedules: Vec<Value>,
     pub schedule_idx: usize,
+    pub schedule_scroll: usize,
     schedule_delete: Option<(String, i64)>,
     pub sel: Option<Key>,
     sel_idx: usize,
@@ -398,6 +400,7 @@ pub struct App {
     /// Each task's history by id, with the `state_since` it was fetched at.
     pub histories: HashMap<String, (i64, Vec<alondra_core::tasks::Transition>)>,
     pub task_reports: HashMap<String, Vec<alondra_core::Report>>,
+    pub task_briefs: HashMap<String, String>,
     history_asked: HashSet<(String, i64)>,
     history_missing: bool,
     pub task_actions_missing: bool,
@@ -414,6 +417,7 @@ pub struct App {
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
     last_clock: i64,
+    last_task_animation: i64,
     tx: SyncSender<Msg>,
 }
 
@@ -671,6 +675,7 @@ impl App {
             schedules_open: false,
             schedules: vec![],
             schedule_idx: 0,
+            schedule_scroll: 0,
             schedule_delete: None,
             sel: None,
             sel_idx: 0,
@@ -716,6 +721,7 @@ impl App {
             task_zoom: false,
             histories: HashMap::new(),
             task_reports: HashMap::new(),
+            task_briefs: HashMap::new(),
             history_asked: HashSet::new(),
             history_missing: false,
             task_actions_missing: false,
@@ -728,6 +734,7 @@ impl App {
             cmdline: None,
             keymap: Keymap::default(),
             last_clock: now_millis(),
+            last_task_animation: now_millis() / 500,
             tx,
         }
     }
@@ -1083,6 +1090,10 @@ impl App {
         }
         if now - self.last_clock >= CLOCK_MS {
             self.last_clock = now;
+            dirty = true;
+        }
+        if self.screen == Screen::Tasks && self.data.tasks.iter().any(|task| task.state == TaskState::Running && task.archived_at.is_none()) && now / 500 != self.last_task_animation {
+            self.last_task_animation = now / 500;
             dirty = true;
         }
         if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
@@ -1555,7 +1566,7 @@ impl App {
                     self.mark_read(&r);
                 }
             }
-            KeyCode::Char(c @ '1'..='9') => {
+            KeyCode::Char(c @ '1'..='9') if k.modifiers.is_empty() => {
                 if let Some(q) = self.selected_question() {
                     self.choose(&q, c as usize - '1' as usize);
                 } else if let Some(p) = self.selected_pr() {
@@ -2812,6 +2823,18 @@ pub(crate) mod tests {
         let Some(Composer { target: Target::Answer { id: 2, option, .. }, .. }) = &app.composer else { panic!("no composer") };
         assert_eq!(option.as_deref(), Some("Not yet"));
         assert!(app.pending_merge.is_none(), "the PR is not merged from its question");
+    }
+
+    #[test]
+    fn modified_digits_do_not_answer_cards() {
+        let (mut app, _rx) = app_with(vec![]);
+        app.data.open_questions.push(asked_on_pr(2, 4));
+        app.reconcile();
+        app.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::SUPER));
+        assert!(app.composer.is_none());
+        assert!(app.pending_merge.is_none());
+        press(&mut app, "2");
+        assert!(matches!(app.composer.as_ref().map(|c| &c.target), Some(Target::Answer { id: 2, .. })));
     }
 
     #[test]

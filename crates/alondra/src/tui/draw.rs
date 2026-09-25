@@ -261,23 +261,62 @@ pub(super) fn pr_summary(p: &crate::client::PrCard) -> String {
     s
 }
 
-fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
+fn draw_schedules(f: &mut Frame, app: &mut App, area: Rect) {
     let [list, detail] = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
     let box_list = panel(Line::from(tr!(" Scheduled tasks ", " Tareas programadas ").bold()), true);
     let inner = box_list.inner(list);
     f.render_widget(box_list, list);
     if app.schedules.is_empty() {
-        f.render_widget(Paragraph::new(tr!("No schedules yet. Press n to create one.", "No hay tareas programadas. Pulsa n para crear una.")).wrap(Wrap { trim: true }), inner);
+        let lines = vec![
+            Line::from(Span::styled(tr!(" No schedules yet", " Sin programaciones"), Style::new().fg(DIM))),
+            Line::default(),
+            Line::from(vec![keycap("n"), Span::raw(tr!(" create a schedule", " crear una programación"))]),
+            Line::default(),
+            Line::from(Span::styled(tr!("Standalone launchd crons are managed separately.", "Los cron independientes de launchd se gestionan aparte."), Style::new().fg(DIM))),
+        ];
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
     } else {
-        let lines: Vec<Line> = app.schedules.iter().enumerate().map(|(i, s)| {
-            let title = s["title"].as_str().unwrap_or(tr!("Untitled", "Sin título"));
-            let marker = if i == app.schedule_idx { "▶" } else { " " };
-            let state = if s["enabled"].as_bool() == Some(true) { "●" } else { "○" };
-            Line::from(format!("{marker} {state} {title}"))
-        }).collect();
-        f.render_widget(Paragraph::new(lines), inner);
+        let projects = app.schedules.iter().map(|s| schedule_project(s)).collect::<Vec<_>>();
+        let mut names = Vec::<String>::new();
+        for name in &projects { if !names.contains(name) { names.push(name.clone()); } }
+        let mut lines = Vec::new();
+        let mut selected_line = 0;
+        for (group, project) in names.iter().enumerate() {
+            if group > 0 { lines.push(Line::default()); }
+            let count = projects.iter().filter(|p| *p == project).count();
+            lines.push(Line::from(Span::styled(format!(" ◆ {project} ({count})"), Style::new().fg(Color::Cyan).bold())));
+            for (i, schedule) in app.schedules.iter().enumerate().filter(|(i, _)| projects[*i] == *project) {
+                let selected = i == app.schedule_idx;
+                if selected { selected_line = lines.len(); }
+                let enabled = schedule["enabled"].as_bool().unwrap_or(true);
+                let failed = schedule["last_state"] == "failed" || schedule["status"] == "failed";
+                let (glyph, color) = if failed { ("!", Color::LightRed) } else if enabled { ("●", Color::LightGreen) } else { ("○", DIM) };
+                let title = schedule["title"].as_str().unwrap_or(tr!("Untitled", "Sin título"));
+                let title = title.strip_prefix(&format!("{project} · ")).unwrap_or(title);
+                let next = if enabled { schedule["next_run"].as_i64().map(|at| format!("{} {}", tr!("in", "en"), span_to(at - now_millis()))).unwrap_or_default() } else { tr!("paused", "pausada").to_string() };
+                let width = inner.width as usize;
+                let right = str_width(&next);
+                let title_width = width.saturating_sub(right + 6);
+                let title = truncate(title, title_width);
+                let gap = width.saturating_sub(str_width(&title) + right + 5);
+                lines.push(fit(vec![
+                    Span::styled(if selected { "▌ " } else { "  " }, Style::new().fg(ACCENT)),
+                    Span::styled(format!("{glyph} "), Style::new().fg(color).bold()),
+                    Span::styled(title, Style::new().fg(if enabled { Color::Reset } else { DIM })),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(next, Style::new().fg(if failed { Color::LightRed } else { DIM })),
+                ], width));
+            }
+        }
+        let height = inner.height as usize;
+        if selected_line < app.schedule_scroll { app.schedule_scroll = selected_line; }
+        if selected_line >= app.schedule_scroll + height { app.schedule_scroll = selected_line + 1 - height; }
+        app.schedule_scroll = app.schedule_scroll.min(lines.len().saturating_sub(height));
+        let total = lines.len();
+        f.render_widget(Paragraph::new(lines).scroll((app.schedule_scroll as u16, 0)), inner);
+        scrollbar(f, inner, total, app.schedule_scroll);
     }
-    let box_detail = panel(Line::from(tr!(" Schedule ", " Programación ").bold()), false);
+    let box_detail = panel(Line::from(tr!(" Schedule ", " Programación ").bold()), false).title_bottom(Line::from(vec![keycap("⏎"), Span::raw(tr!(" run ", " ejecutar ")), keycap("p"), Span::raw(tr!(" pause ", " pausar ")), keycap("e"), Span::raw(tr!(" edit ", " editar "))]).right_aligned());
     let inner = box_detail.inner(detail);
     f.render_widget(box_detail, detail);
     if let Some(s) = app.schedules.get(app.schedule_idx) {
@@ -319,15 +358,21 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
             _ => "",
         };
         let last = s["last_run"].as_i64().map(|at| format!("{} · {status}", ago(at))).unwrap_or_else(|| tr!("never", "nunca").into());
+        let enabled = s["enabled"].as_bool().unwrap_or(true);
+        let state = if enabled { tr!("● Active", "● Activa") } else { tr!("○ Paused", "○ Pausada") };
+        let schedule = if matches!(s["frequency"].as_str(), Some("every_hours" | "every_days" | "every_months" | "once")) {
+            frequency
+        } else { format!("{frequency}{weekday} · {h:02}:{m:02}") };
+        let label = |name: &'static str, value: String| Line::from(vec![Span::styled(format!("  {name:<11}"), Style::new().fg(DIM)), Span::styled(value, Style::new().fg(SOFT))]);
         let mut lines = vec![
-            Line::from(s["title"].as_str().unwrap_or("").to_string().bold()),
+            Line::from(Span::styled(format!(" {}", s["title"].as_str().unwrap_or("")), Style::new().bold())),
+            Line::from(Span::styled(format!(" {state}"), Style::new().fg(if enabled { Color::LightGreen } else { DIM }))),
             Line::default(),
-            Line::from(if matches!(s["frequency"].as_str(), Some("every_hours" | "every_days" | "every_months" | "once")) {
-                frequency
-            } else { format!("{frequency}{weekday} · {h:02}:{m:02}") }),
-            Line::from(format!("{}: {next}", tr!("Next", "Próxima"))),
-            Line::from(format!("{}: {last}", tr!("Last", "Última"))),
-            Line::from(format!("{}: {}", tr!("Project", "Proyecto"), s["project"].as_str().unwrap_or(tr!("Projects folder", "Carpeta Proyectos")))),
+            Line::from(Span::styled(tr!(" ─ SCHEDULE", " ─ HORARIO"), Style::new().fg(Color::Cyan).bold())),
+            label(tr!("Frequency", "Frecuencia"), schedule),
+            label(tr!("Next", "Próxima"), next),
+            label(tr!("Last", "Última"), last),
+            label(tr!("Project", "Proyecto"), schedule_project(s)),
             Line::default(),
         ];
         if let Some(error) = s["last_error"].as_str() {
@@ -336,9 +381,21 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
         }
         if let Some(request) = s["last_request"].as_str() { lines.push(Line::from(format!("{}: {request}", tr!("Request", "Petición")))); }
         if let Some(nodes) = s["last_nodes"].as_array() { for node in nodes { if let Some(node) = node.as_str() { lines.push(Line::from(format!("{}: {node}", tr!("Node", "Nodo")))); } } }
-        lines.push(Line::default());
-        lines.push(Line::from(s["text"].as_str().unwrap_or("").to_string()));
+        if let Some(text) = s["text"].as_str().filter(|text| !text.trim().is_empty()) {
+            lines.push(Line::from(Span::styled(tr!(" ─ TASK", " ─ ENCARGO"), Style::new().fg(Color::Cyan).bold())));
+            lines.push(Line::from(format!(" {text}")));
+        }
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    }
+}
+
+fn schedule_project(schedule: &serde_json::Value) -> String {
+    let project = schedule["project"].as_str().filter(|name| !name.trim().is_empty());
+    match project {
+        Some("alondra") => "Alondra".into(),
+        Some("kestrel") => "Kestrel".into(),
+        Some(name) => name.to_string(),
+        None => tr!("Other", "Otros").into(),
     }
 }
 
@@ -369,8 +426,10 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let mut left = vec![Span::styled(" Alondra ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
     let (inbox, tasks, fleet) = (app.inbox_count(), app.open_task_count(), app.data.nodes.len());
     left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
-    left.push(tab(trf!("Tasks {tasks}", "Tareas {tasks}"), app.screen == Screen::Tasks));
-    if app.schedules_open { left.push(tab(tr!("Scheduled", "Programadas").into(), true)); }
+    left.push(tab(trf!("Tasks {tasks}", "Tareas {tasks}"), app.screen == Screen::Tasks && !app.schedules_open));
+    if app.screen == Screen::Tasks {
+        left.push(tab(tr!("Scheduled [s]", "Programadas [s]").into(), app.schedules_open));
+    }
     left.push(tab(trf!("Fleet {fleet}", "Flota {fleet}"), app.screen == Screen::Fleet));
     if app.offline {
         left.push(Span::raw(" "));
@@ -1698,19 +1757,21 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         let folds = matches!(app.task_sel, Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived));
         let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel"))];
         if folds {
-            v.push(k("⏎", tr!("open/fold", "abrir/plegar")));
-        } else {
-            v.extend([k("o", tr!("expand", "expandir")), k("r", tr!("message", "mensaje")), k("⏎", tr!("its terminal", "su terminal"))]);
+            v.push(k("⏎", tr!("show/hide", "mostrar/ocultar")));
+        } else if app.selected_task().is_some() {
+            v.extend([k("o", tr!("detail", "detalle")), k("⏎", tr!("its terminal", "su terminal")), k("r", tr!("message", "mensaje"))]);
         }
+        v.push(k("s", tr!("scheduled", "programadas")));
         if app.selected_defining_request().is_some() {
             v.push(k("x", tr!("withdraw", "retirar")));
-        } else if !app.task_actions_missing {
-            v.extend([k("x", tr!("cancel", "descartar")), k("Shift+R", tr!("reopen", "reabrir"))]);
+        } else if let Some(task) = app.selected_task() && !app.task_actions_missing {
+            if task.state.finished() { v.push(k("Shift+R", tr!("reopen", "reabrir"))); }
+            else { v.push(k("x", tr!("cancel", "descartar"))); }
         }
-        if !app.archive_missing {
+        if app.task_sel == Some(super::tasks::TaskKey::Finished) && !app.archive_missing {
             v.push(k("Shift+A", tr!("archive finished", "archivar terminadas")));
         }
-        v.extend([k("s", tr!("scheduled", "programadas")), k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
+        v.extend([k("Tab", tr!("fleet", "flota")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
         return v;
     }
     if app.screen == Screen::Fleet {
@@ -1907,6 +1968,24 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn schedules_group_by_app_and_keep_contextual_shortcuts() {
+        let (mut app, _rx) = app_with(vec![]);
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        app.loaded = true;
+        app.screen = super::super::Screen::Tasks;
+        app.schedules_open = true;
+        app.schedules = serde_json::json!([
+            {"title":"Kestrel · lunes","project":"kestrel","enabled":true,"frequency":"weekly","weekday":1,"hour":9,"minute":0,"next_run":alondra_core::now_millis()+86_400_000,"text":"Revisar PR"},
+            {"title":"Lumo · semanal","project":"Lumo","enabled":false,"frequency":"weekly","weekday":4,"hour":10,"minute":0,"text":"Revisar ASO"},
+            {"title":"Kestrel · jueves","project":"kestrel","enabled":true,"frequency":"weekly","weekday":4,"hour":9,"minute":0,"next_run":alondra_core::now_millis()+2*86_400_000,"text":"Revisar issues"}
+        ]).as_array().unwrap().clone();
+        let rendered = screen(&mut app, 130, 33);
+        assert!(rendered.contains("◆ Kestrel (2)") && rendered.contains("◆ Lumo (1)"), "{rendered}");
+        assert!(rendered.find("lunes").unwrap() < rendered.find("jueves").unwrap() && rendered.find("jueves").unwrap() < rendered.find("◆ Lumo").unwrap(), "{rendered}");
+        assert!(rendered.contains("HORARIO") && rendered.contains("ENCARGO") && rendered.contains("pausada"), "{rendered}");
     }
 
     #[test]
@@ -2309,4 +2388,5 @@ mod tests {
             }
         }
     }
+
 }
