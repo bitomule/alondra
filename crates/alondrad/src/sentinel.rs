@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use alondra_core::pr::PrState;
 use alondra_core::tasks::TaskEvent;
 use alondra_core::{states, upkeep};
 use alondra_core::{
@@ -9,8 +10,10 @@ use alondra_core::{
 };
 
 use crate::classify::{Expects, what_node_expects};
+use crate::http::Agents;
 use crate::hub::Hub;
 use crate::markdown;
+use crate::worktree::Worktrees;
 
 const EVERY: Duration = Duration::from_secs(15);
 const DEBOUNCE: Duration = Duration::from_secs(1);
@@ -66,7 +69,7 @@ async fn sweep(hub: &Hub, memory: &mut Memory) -> anyhow::Result<()> {
         {}
     }
     if let Some(after) = hub.config.close_free_nodes_after {
-        close_free_nodes(hub, memory, after).await;
+        close_idle_nodes(hub, &mut memory.close_refused, after, &crate::http::ClaudeAgents, &crate::worktree::Git).await;
     }
     let now = now_millis();
     let stale: Vec<u64> = hub.read(|v| {
@@ -156,27 +159,44 @@ pub(crate) fn nudge_defining_requests(hub: &Hub, now: i64) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Closes the nodes free for `after` through the fleet's close, which keeps unsaved work. One it
-/// refused is left alone for a while instead of being tried on every sweep.
-async fn close_free_nodes(hub: &Hub, memory: &mut Memory, after: Duration) {
-    memory.close_refused.retain(|_, at| at.elapsed() < CLOSE_RETRY);
+/// Closes the nodes idle for `after` with nothing unfinished, through the fleet's close, and asks
+/// the user about those that have something unfinished. A node refused or asked about is left
+/// alone for a while instead of being looked at on every sweep.
+pub(crate) async fn close_idle_nodes(hub: &Hub, refused: &mut HashMap<String, std::time::Instant>, after: Duration, claude: &impl Agents, trees: &impl Worktrees) {
+    refused.retain(|_, at| at.elapsed() < CLOSE_RETRY);
     let now = now_millis();
-    let free: Vec<(String, String)> = hub.read(|v| {
+    let ms = after.as_millis() as i64;
+    let idle: Vec<(String, String, Vec<String>, bool)> = hub.read(|v| {
         v.nodes
             .values()
-            .filter(|n| !memory.close_refused.contains_key(&n.session_id) && upkeep::free_to_close(v, n, now, after.as_millis() as i64))
-            .map(|n| (n.session_id.clone(), n.display_name().to_string()))
+            .filter(|n| !refused.contains_key(&n.session_id) && upkeep::idle_for(v, n, now, ms))
+            .map(|n| {
+                let prs: Vec<_> = v.prs.values().filter(|p| p.session_id == n.session_id).collect();
+                let merged = !prs.is_empty() && prs.iter().all(|p| p.state == PrState::Merged);
+                (n.session_id.clone(), n.display_name().to_string(), upkeep::pending_work(v, n), merged)
+            })
             .collect()
     });
-    for (session, name) in free {
-        let response = crate::http::close_with(hub, &session, false, Some(after), &crate::http::ClaudeAgents).await;
-        if response.status().is_success() {
-            log!("closed {name}: free for {} min with no task open", after.as_secs() / 60);
+    for (session, name, mut pending, merged_by_pr) in idle {
+        pending.extend(trees.unfinished(&session, merged_by_pr).await);
+        if pending.is_empty() {
+            let response = crate::http::close_with(hub, &session, false, Some(after), claude).await;
+            if response.status().is_success() {
+                log!("closed {name}: idle for {} h with nothing unfinished", after.as_secs() / 3600);
+                continue;
+            }
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap_or_default();
+            log!("did not close the idle node {name}: {}", String::from_utf8_lossy(&body));
+            refused.insert(session, std::time::Instant::now());
             continue;
         }
-        let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap_or_default();
-        log!("did not close the free node {name}: {}", String::from_utf8_lossy(&body));
-        memory.close_refused.insert(session, std::time::Instant::now());
+        refused.insert(session.clone(), std::time::Instant::now());
+        let asked = hub.append_with(|v| v.nodes.get(&session).and_then(|n| upkeep::idle_close_question(v, n, &pending, ms, now_millis())).map(Event::QuestionAsked));
+        match asked {
+            Ok(Some(_)) => log!("asked about {name}: idle for {} h with unfinished work", after.as_secs() / 3600),
+            Ok(None) => {}
+            Err(e) => log!("could not ask about the idle node {name}: {e}"),
+        }
     }
 }
 
@@ -357,7 +377,7 @@ fn cap(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::{DaemonObservation, HookEvent, Message};
+    use alondra_core::{DaemonObservation, HookEvent, Message, Question};
 
     fn waiting_view(last: &str) -> View {
         let mut v = View::default();
@@ -710,6 +730,87 @@ mod tests {
             }
         });
         assert!(nudged.is_empty(), "handed to the sentinel after {nudged:?}");
+    }
+
+    /// `claude rm` as the test sees it: it records every call and every close goes through.
+    #[derive(Default)]
+    struct FakeAgents(std::sync::Mutex<Vec<String>>);
+
+    impl Agents for FakeAgents {
+        async fn run(&self, args: &[&str]) -> Result<String, String> {
+            self.0.lock().unwrap().push(args.join(" "));
+            Ok(if args[0] == "rm" { format!("removed {}", args[1]) } else { "[]".into() })
+        }
+    }
+
+    /// Worktrees as they would look: what each session left, and whether every PR it opened was
+    /// merged when Alondra asked.
+    #[derive(Default)]
+    struct FakeTrees(std::sync::Mutex<Vec<(String, bool)>>, HashMap<String, Vec<String>>);
+
+    impl Worktrees for FakeTrees {
+        async fn unfinished(&self, session_id: &str, merged_by_pr: bool) -> Vec<String> {
+            self.0.lock().unwrap().push((session_id.to_string(), merged_by_pr));
+            self.1.get(session_id).cloned().unwrap_or_default()
+        }
+    }
+
+    fn seen(sid: &str) -> Event {
+        Event::DaemonSeen(DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(format!("app/{sid}")), pid: Some(1), ..Default::default() })
+    }
+
+    /// Idle for the set time: a node with all its work on the default branch is closed; one with
+    /// work left in its worktree or an unfinished task is not, and the user is asked once what to
+    /// do with it; the orchestrator is never touched.
+    #[tokio::test]
+    async fn a_node_idle_for_the_set_time_is_closed_only_with_its_work_merged_and_otherwise_the_user_is_asked() {
+        let home = std::env::temp_dir().join(format!("alondra-sentinel-idle-{}-{}", std::process::id(), now_millis()));
+        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
+        assert_eq!(config.close_free_nodes_after, Some(Duration::from_secs(7 * 86_400)), "a week unless set");
+        let hub = Hub::open(config, false).unwrap();
+        for sid in ["clean", "unpushed", "tasked", "orch"] {
+            hub.append(seen(sid)).unwrap();
+        }
+        hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
+            id: "t-1".into(), request: "r-1".into(), title: "Menu model".into(), brief: None, depends_on: vec![], options: Default::default(),
+            session_id: Some("tasked".into()), launched: false, launched_as: None, start: None,
+        }))
+        .unwrap();
+        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/7".into(), session_id: "clean".into(), task: None }).unwrap();
+        let pr = hub.read(|v| *v.prs.keys().next().unwrap());
+        hub.append(Event::PrMerged { id: pr, method: alondra_core::pr::MergeMethod::Squash }).unwrap();
+        let trees = FakeTrees(Default::default(), HashMap::from([("unpushed".to_string(), vec!["2 commit(s) not pushed in /w/unpushed".to_string()])]));
+        let claude = FakeAgents::default();
+        let after = Duration::from_millis(1);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        hub.append(Event::ReportPosted(alondra_core::Report {
+            id: 1, session_id: "clean".into(), node_name: None, title: "Merged".into(), body: None, links: vec![], attachments: vec![],
+            kind: alondra_core::ReportKind::Final, created_at: now_millis(), read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
+        }))
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(hub.read(|v| upkeep::pending_work(v, &v.nodes["clean"])), Vec::<String>::new(), "its task is done");
+        let mut refused = HashMap::new();
+        close_idle_nodes(&hub, &mut refused, after, &claude, &trees).await;
+        assert_eq!(*claude.0.lock().unwrap(), ["rm clean", "agents --json --all"], "only the node with nothing unfinished is closed");
+        let looked: Vec<(String, bool)> = trees.0.lock().unwrap().clone();
+        assert!(looked.contains(&("clean".to_string(), true)), "its merged PR stands for a squash merge: {looked:?}");
+        assert!(!looked.iter().any(|(s, _)| s == "orch"), "the orchestrator is never looked at");
+
+        let asked: Vec<Question> = hub.read(|v| v.questions.values().filter(|q| upkeep::is_idle_close(q)).cloned().collect());
+        let about = |sid: &str| asked.iter().find(|q| q.session_id == sid).unwrap_or_else(|| panic!("no question about {sid}")).clone();
+        assert!(about("unpushed").detail.unwrap().contains("2 commit(s) not pushed"));
+        assert!(about("tasked").detail.unwrap().contains("task t-1 “Menu model” is running"));
+        let options: Vec<String> = about("tasked").options.into_iter().map(|o| o.label).collect();
+        assert_eq!(options, [upkeep::KEEP, upkeep::DISCARD, upkeep::RESUME]);
+        assert_eq!(asked.len(), 2);
+
+        refused.clear();
+        close_idle_nodes(&hub, &mut refused, after, &claude, &trees).await;
+        assert_eq!(hub.read(|v| v.questions.values().filter(|q| upkeep::is_idle_close(q)).count()), 2, "asked once per idle stretch");
+        assert_eq!(claude.0.lock().unwrap().len(), 2, "nothing more is closed");
     }
 
     /// Request r-1790284418392 (t-48599): the beta t-44137 depended on PR #264 of t-44136, both

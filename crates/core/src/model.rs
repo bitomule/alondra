@@ -338,6 +338,27 @@ pub struct Node {
     pub exited_at: Option<Millis>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed: Option<ResumeAttempt>,
+    /// How full its context window was at its last model call, as its status line saw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUse>,
+    /// A `/compact` Alondra runs before typing the node its next task: what is queued for it
+    /// waits until the compaction ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<Compaction>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct ContextUse {
+    pub percent: f64,
+    pub window: u64,
+    pub at: Millis,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Compaction {
+    pub requested_at: Millis,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_at: Option<Millis>,
 }
 
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
@@ -400,6 +421,8 @@ impl Node {
             ledger: Ledger::default(),
             exited_at: None,
             resumed: None,
+            context: None,
+            compaction: None,
         }
     }
 

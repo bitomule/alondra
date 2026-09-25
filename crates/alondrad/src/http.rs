@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
-    QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states,
+    QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states, upkeep,
 };
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::Extension;
@@ -65,6 +65,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/search", get(search))
         .route("/v1/health", get(health))
         .route("/v1/activity", post(activity))
+        .route("/v1/context", post(context_measured))
         .route("/v1/prs/{id}/merge", post(merge_pr))
         .route("/v1/prs/{id}/changes", post(request_pr_changes))
         .route("/v1/prs/{id}/ask", post(ask_about_pr))
@@ -1164,6 +1165,19 @@ async fn activity(State(hub): State<AppState>, Json(b): Json<ActivityBody>) -> J
     Json(json!({"ok": true}))
 }
 
+/// A node's status line reporting how full its context is (`alondra statusline`). Recorded when
+/// the whole percentage or the window changes, and only for a node Alondra follows.
+async fn context_measured(State(hub): State<AppState>, Json(p): Json<Value>) -> Json<Value> {
+    let (Some(session_id), Some(percent), Some(window)) = (str_field(&p, "session_id"), p.get("percent").and_then(Value::as_f64), p.get("window").and_then(Value::as_u64)) else {
+        return Json(json!({}));
+    };
+    let changed = hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| n.context.is_none_or(|c| c.percent.round() != percent.round() || c.window != window)));
+    if changed && let Err(e) = hub.append(Event::ContextMeasured { session_id, percent, window }) {
+        log!("could not record a context measure: {e}");
+    }
+    Json(json!({}))
+}
+
 async fn health(State(hub): State<AppState>) -> Json<Value> {
     let c = &hub.config;
     Json(json!({"ok": true, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
@@ -1171,6 +1185,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
                            "resume_dead_nodes": c.resume_dead_nodes,
                            "close_free_nodes_after_secs": c.close_free_nodes_after.map(|d| d.as_secs()),
+                           "compact_idle_nodes_at": c.compact_idle_nodes_at,
                            "archived_tasks_days": c.archived_tasks_days,
                            "home": c.home.display().to_string()}}))
 }
@@ -1859,7 +1874,19 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     if hub.release_hold(id, held) {
         return Json(json!({"id": id, "delivered": "hook"})).into_response();
     }
-    let reply = if q.action {
+    let idle_close = upkeep::is_idle_close(&q);
+    if idle_close && matches!(b.option.as_deref(), Some(upkeep::KEEP | upkeep::DISCARD)) {
+        if let Err(e) = hub.append(Event::QuestionDelivered { id }) {
+            return internal(e);
+        }
+        if b.option.as_deref() == Some(upkeep::KEEP) {
+            return Json(json!({"id": id, "kept": true})).into_response();
+        }
+        return close_discarding(&hub, &q.session_id, &ClaudeAgents).await;
+    }
+    let reply = if idle_close && b.option.as_deref() == Some(upkeep::RESUME) {
+        upkeep::resume_idle_text(&user, &q)
+    } else if q.action {
         action_reply(&answer, &user)
     } else {
         let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
@@ -2440,6 +2467,15 @@ pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Op
         }
     }
     err(StatusCode::CONFLICT, format!("claude rm said '{said}' but {short} is still listed by claude agents"))
+}
+
+/// The user chose to close an idle node with unfinished work: its worktree goes, whatever it
+/// holds, and then the node closes the usual way.
+async fn close_discarding(hub: &Hub, session_id: &str, claude: &impl Agents) -> Response {
+    if let Err(why) = crate::worktree::discard(session_id).await {
+        return err(StatusCode::CONFLICT, format!("could not delete the node's worktree, so it was not closed: {why}"));
+    }
+    close_with(hub, session_id, false, None, claude).await
 }
 
 /// An interactive session is not a job `claude rm` knows, and the user may be typing in it: Alondra
@@ -4059,6 +4095,42 @@ mod tests {
         let (status, said) = status_and_body(close_with(&hub, "zzfree00-1", false, None, &claude).await).await;
         assert_eq!(status, StatusCode::OK, "David's own close still goes through: {said}");
         assert_eq!(claude.0.lock().unwrap().first().map(String::as_str), Some("rm zzfree00"));
+    }
+
+    /// The question about a node idle for a week with unfinished work: keeping it types nothing,
+    /// resuming tells the node what it left and that David wants it done, and discarding closes it.
+    #[tokio::test]
+    async fn the_answer_about_an_idle_node_keeps_it_resumes_it_or_closes_it() {
+        let hub = started("idle-answer", &["kept", "resumed"]);
+        let pending = vec!["task t-kept “Menu” is running".to_string()];
+        let asked = |sid: &str| {
+            hub.append_with(|v| upkeep::idle_close_question(v, &v.nodes[sid], &pending, 7 * 86_400_000, now_millis()).map(Event::QuestionAsked))
+                .unwrap()
+                .map(|(_, e)| if let Event::QuestionAsked(q) = e { q.id } else { unreachable!() })
+                .unwrap()
+        };
+        let choose = |id: u64, option: &str| {
+            let body = AnswerBody { text: option.into(), option: Some(option.into()), by: None, attachments: vec![] };
+            answer(State(hub.clone()), None, Path(id), Json(body))
+        };
+        let typed = |sid: &str| hub.read(|v| v.pending_messages(sid).map(|m| m.text.clone()).collect::<Vec<_>>());
+
+        let keep = asked("kept");
+        assert_eq!(status_and_body(choose(keep, upkeep::KEEP).await).await.0, StatusCode::OK);
+        assert!(typed("kept").is_empty(), "keeping it types nothing into it");
+        assert_eq!(hub.read(|v| v.questions[&keep].status), QuestionStatus::Delivered);
+
+        let resume = asked("resumed");
+        assert_eq!(status_and_body(choose(resume, upkeep::RESUME).await).await.0, StatusCode::OK);
+        let told = typed("resumed");
+        assert!(told.len() == 1 && told[0].starts_with("[Alondra] You have been idle") && told[0].contains("Ana wants you to pick it up") && told[0].contains("t-kept"), "{told:?}");
+
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "zzidle00-1".into(), short_id: "zzidle00".into(), pid: Some(1), ..Default::default() }))
+            .unwrap();
+        let claude = FakeAgents::default();
+        let (status, said) = status_and_body(close_discarding(&hub, "zzidle00-1", &claude).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(claude.0.lock().unwrap().first().map(String::as_str), Some("rm zzidle00"));
     }
 
     /// Holds every report it reads until the test lets it go.

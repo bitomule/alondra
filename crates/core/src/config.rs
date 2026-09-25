@@ -8,6 +8,9 @@ pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
 pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
+pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
+pub const OFF: &str = "off";
 
 /// What `config.toml` says. Every key is optional: a missing key falls back to the default,
 /// and an environment variable beats the file.
@@ -32,9 +35,13 @@ pub struct FileConfig {
     pub service_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_dead_nodes: Option<bool>,
-    /// How long a node stays free before Alondra closes it, as `30m`, `2h` or `1d`.
+    /// How long a node stays idle before Alondra closes it, as `30m`, `2h` or `7d`, or `off`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_free_nodes_after: Option<String>,
+    /// How full an idle node's context may be, in percent, before Alondra compacts it to give it
+    /// a new task. 0 turns it off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_idle_nodes_at: Option<f64>,
     /// Days an archived task is kept before Alondra forgets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_tasks_days: Option<f64>,
@@ -44,7 +51,10 @@ impl FileConfig {
     pub fn parse(text: &str) -> Result<Self, String> {
         let file: FileConfig = toml::from_str(text).map_err(|e| e.to_string())?;
         if let Some(after) = &file.close_free_nodes_after {
-            parse_duration(after).map_err(|e| format!("close_free_nodes_after: {e}"))?;
+            parse_switchable_duration(after).map_err(|e| format!("close_free_nodes_after: {e}"))?;
+        }
+        if file.compact_idle_nodes_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
+            return Err("compact_idle_nodes_at: a percentage from 0 (off) to 100".into());
         }
         Ok(file)
     }
@@ -58,9 +68,14 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, archived_tasks_days);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, archived_tasks_days);
         self
     }
+}
+
+/// A duration, or `off` for none.
+pub fn parse_switchable_duration(text: &str) -> Result<Option<Duration>, String> {
+    if text.trim().eq_ignore_ascii_case(OFF) { Ok(None) } else { parse_duration(text).map(Some) }
 }
 
 /// `90s`, `30m`, `2h`, `1.5d`: a positive number and its unit.
@@ -96,8 +111,12 @@ pub struct Config {
     pub sandbox: bool,
     /// Restart a node whose process ended while it still had work. Only with `wake`.
     pub resume_dead_nodes: bool,
-    /// Close a node once it has been free this long. Off unless set.
+    /// Close a node once it has been idle this long with nothing pending, or ask the user when
+    /// something is. A week unless set; `None` is off.
     pub close_free_nodes_after: Option<Duration>,
+    /// Compact an idle node whose context is at least this full, in percent, before typing it
+    /// a new task. 30 unless set; `None` is off.
+    pub compact_idle_nodes_at: Option<f64>,
     pub archived_tasks_days: f64,
 }
 
@@ -165,8 +184,16 @@ impl Config {
             sandbox: var("ALONDRA_SANDBOX").is_some_and(flag),
             resume_dead_nodes: var("ALONDRA_RESUME_DEAD_NODES").map(flag).or(file.resume_dead_nodes).unwrap_or(true),
             close_free_nodes_after: var("ALONDRA_CLOSE_FREE_NODES_AFTER")
-                .and_then(|v| parse_duration(&v).ok())
-                .or_else(|| file.close_free_nodes_after.as_deref().and_then(|v| parse_duration(v).ok())),
+                .and_then(|v| parse_switchable_duration(&v).ok())
+                .or_else(|| file.close_free_nodes_after.as_deref().and_then(|v| parse_switchable_duration(v).ok()))
+                .unwrap_or(Some(DEFAULT_CLOSE_FREE_NODES_AFTER)),
+            compact_idle_nodes_at: Some(
+                var("ALONDRA_COMPACT_IDLE_NODES_AT")
+                    .and_then(|v| if v.eq_ignore_ascii_case(OFF) { Some(0.0) } else { v.parse::<f64>().ok().filter(|p| (0.0..=100.0).contains(p)) })
+                    .or(file.compact_idle_nodes_at)
+                    .unwrap_or(DEFAULT_COMPACT_IDLE_NODES_AT),
+            )
+            .filter(|p| *p > 0.0),
             archived_tasks_days: var("ALONDRA_ARCHIVED_TASKS_DAYS")
                 .and_then(|v| v.parse().ok())
                 .or(file.archived_tasks_days)
@@ -281,10 +308,12 @@ mod tests {
     }
 
     #[test]
-    fn dead_nodes_are_resumed_and_free_nodes_kept_unless_the_config_says_otherwise() {
+    fn dead_nodes_are_resumed_and_idle_nodes_closed_after_a_week_unless_the_config_says_otherwise() {
         let c = resolve(&FileConfig::default(), &[]);
         assert!(c.resume_dead_nodes);
-        assert_eq!(c.close_free_nodes_after, None);
+        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7 * 86_400)));
+        assert_eq!(resolve(&FileConfig::parse("close_free_nodes_after = \"off\"").unwrap(), &[]).close_free_nodes_after, None);
+        assert_eq!(resolve(&FileConfig::default(), &[("ALONDRA_CLOSE_FREE_NODES_AFTER", "off")]).close_free_nodes_after, None);
 
         let file = FileConfig::parse("resume_dead_nodes = false\nclose_free_nodes_after = \"2h\"\n").unwrap();
         let c = resolve(&file, &[]);
@@ -297,6 +326,19 @@ mod tests {
         assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7200)), "a broken env value falls through to the file");
 
         assert!(FileConfig::parse("close_free_nodes_after = \"2 hours\"").unwrap_err().contains("close_free_nodes_after"), "a typo in the file is an error, not silently off");
+        assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
+    }
+
+    #[test]
+    fn idle_nodes_are_compacted_from_thirty_percent_unless_the_config_says_otherwise() {
+        assert_eq!(resolve(&FileConfig::default(), &[]).compact_idle_nodes_at, Some(30.0));
+        let file = FileConfig::parse("compact_idle_nodes_at = 50\n").unwrap();
+        assert_eq!(resolve(&file, &[]).compact_idle_nodes_at, Some(50.0));
+        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "20")]).compact_idle_nodes_at, Some(20.0));
+        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "off")]).compact_idle_nodes_at, None);
+        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "lots")]).compact_idle_nodes_at, Some(50.0), "a broken env value falls through to the file");
+        assert_eq!(resolve(&FileConfig::parse("compact_idle_nodes_at = 0").unwrap(), &[]).compact_idle_nodes_at, None);
+        assert!(FileConfig::parse("compact_idle_nodes_at = 130").unwrap_err().contains("compact_idle_nodes_at"));
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 

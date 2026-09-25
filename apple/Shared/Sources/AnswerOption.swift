@@ -10,6 +10,9 @@ public enum AnswerOption {
     public static let moreContext = "I need more context"
     public static let done = "Done"
     public static let cannot = "I can't / explain"
+    public static let keepIdleNode = "Keep it"
+    public static let discardIdleNode = "Close it and discard its work"
+    public static let resumeIdleNode = "Resume it"
 
     public static func displayLabel(_ label: String) -> String {
         switch label {
@@ -20,6 +23,9 @@ public enum AnswerOption {
         case moreContext: String(localized: "I need more context", table: "AlondraShared", bundle: #bundle)
         case done: String(localized: "Done", table: "AlondraShared", bundle: #bundle)
         case cannot: String(localized: "I can't / explain", table: "AlondraShared", bundle: #bundle)
+        case keepIdleNode: String(localized: "Keep it", table: "AlondraShared", bundle: #bundle)
+        case discardIdleNode: String(localized: "Close it and discard its work", table: "AlondraShared", bundle: #bundle)
+        case resumeIdleNode: String(localized: "Resume it", table: "AlondraShared", bundle: #bundle)
         default: label
         }
     }
