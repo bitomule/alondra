@@ -320,14 +320,7 @@ impl View {
         {
             return vec![task.id.clone()];
         }
-        let mut ids: Vec<String> = self.tasks_of(session_id).filter(|t| !t.state.finished()).map(|t| t.id.clone()).collect();
-        if ids.is_empty() {
-            ids = self.tasks_of(session_id).map(|t| t.id.clone()).collect();
-        }
-        if ids.is_empty() {
-            ids.extend(self.first_task(session_id).map(|(id, _)| id));
-        }
-        ids
+        self.tasks_of(session_id).filter(|t| !t.state.finished()).map(|t| t.id.clone()).collect()
     }
 
     /// The task a PR the node opened is for, in this order: the task its title, body or branch

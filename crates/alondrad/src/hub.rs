@@ -175,10 +175,9 @@ impl Hub {
         let recorded = store.transaction(|tx| {
             let mut recorded = vec![];
             for mut event in events {
-                if let Event::Hook(h) = &mut event
-                    && h.task_ids.is_empty()
-                {
+                if let Event::Hook(h) = &mut event {
                     h.task_ids = next.hook_task_ids(&h.session_id, h.agent_id.as_deref(), h.task.as_deref());
+                    h.task_id = (h.task_ids.len() == 1).then(|| h.task_ids[0].clone());
                 }
                 for e in next.tasks_before(&event) {
                     let s = Store::append_in(tx, at, &e)?;
@@ -479,6 +478,39 @@ mod tests {
         assert_eq!(hub.read(Clone::clone), before);
         let after: i64 = db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
         assert_eq!(after, count);
+    }
+
+    #[test]
+    fn hook_has_a_single_task_id_only_when_attribution_is_unique() {
+        let hub = hub("hook-attribution");
+        let observed = |hub: &Hub, named: Option<&str>| {
+            let mut hook = alondra_core::HookEvent {
+                session_id: "s".into(), event: "PreToolUse".into(),
+                task: named.map(str::to_string), ..Default::default()
+            };
+            // Inputs may carry stale attribution; the writer derives it from its own view.
+            hook.task_id = Some("stale".into());
+            hook.task_ids = vec!["stale".into()];
+            let (_, Event::Hook(hook)) = hub.append_with(|_| Some(Event::Hook(hook))).unwrap().unwrap() else { panic!("hook was not recorded") };
+            hook
+        };
+        let before = observed(&hub, None);
+        assert_eq!(before.task_id, None);
+        assert!(before.task_ids.is_empty());
+        for id in ["t-a", "t-b"] {
+            hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
+                id: id.into(), request: "r-1".into(), title: id.into(), brief: None,
+                depends_on: vec![], options: Default::default(), session_id: Some("s".into()),
+                launched: false, launched_as: None, start: None,
+            })).unwrap();
+            if id == "t-a" {
+                assert_eq!(observed(&hub, None).task_id.as_deref(), Some("t-a"));
+            }
+        }
+        let ambiguous = observed(&hub, None);
+        assert_eq!(ambiguous.task_id, None);
+        assert_eq!(ambiguous.task_ids, ["t-a", "t-b"]);
+        assert_eq!(observed(&hub, Some("t-b")).task_id.as_deref(), Some("t-b"));
     }
 
     #[test]

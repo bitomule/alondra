@@ -243,6 +243,7 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
         agent_id: str_field(&p, "agent_id"),
         agent_type: str_field(&p, "agent_type"),
         task: named_task(tool.as_deref(), p.get("tool_input")),
+        task_id: None,
         task_ids: vec![],
         detail: hook_detail(&event, &p),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
@@ -258,11 +259,7 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
             return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook admission failed: {e}"));
         }
     }
-    if let Err(e) = hub.append_with(|v| {
-        let mut observed = h.clone();
-        observed.task_ids = v.hook_task_ids(&session_id, h.agent_id.as_deref(), h.task.as_deref());
-        Some(Event::Hook(observed))
-    }) {
+    if let Err(e) = hub.append(Event::Hook(h.clone())) {
         log!("hook lost: {e}");
         return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook could not be recorded: {e}"));
     }

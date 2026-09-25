@@ -1113,6 +1113,9 @@ mod tests {
         assert_eq!(v.hook_task_ids("s", None, None), vec!["t-a", "t-b"]);
         assert_eq!(v.hook_task_ids("s", None, Some("t-b")), vec!["t-b"]);
         assert_eq!(v.hook_task_ids("s", None, Some("not-mine")), vec!["t-a", "t-b"]);
+        v.board.tasks.get_mut("t-a").unwrap().state = crate::tasks::TaskState::Done;
+        v.board.tasks.get_mut("t-b").unwrap().state = crate::tasks::TaskState::Done;
+        assert!(v.hook_task_ids("s", None, None).is_empty());
     }
 
     /// A node from a snapshot older than `created_at` gets `state_since` as a stand-in, so it

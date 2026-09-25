@@ -29,6 +29,10 @@ pub struct HookEvent {
     /// The task an Alondra tool call names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// A single task verified from the named call, agent binding, or sole assigned task.
+    /// Session-wide hooks on a multi-task node have no unique task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     /// Tasks the hook may concern. A main thread can coordinate several, so this is a set of
     /// candidates rather than a guessed single task ID.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
