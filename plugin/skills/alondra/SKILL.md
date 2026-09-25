@@ -77,11 +77,11 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
 The orchestrator can give you another task while you work: Alondra types it in as
 "[Alondra] A new task for you, from the orchestrator: t-… “…”", and a message about one of your
 tasks starts with "[Task t-… “…”]".
-- Work each task in a subagent of its own (Agent tool), named after the task (`name: "t-12"`),
-  with the task's brief as its prompt, so the tasks never share a context. Subagents have
-  Alondra's tools: when the node has several tasks, each subagent first calls `select_task`
-  with its assigned `t-…` ID, before any Bash, edit, or other tool. Alondra blocks unbound
-  subagents' tools until this succeeds and does not let a bound subagent switch tasks. The
+- Work each task in a subagent of its own (Agent tool), with its prompt starting with
+  `Alondra task: t-…` followed by the task brief, so the tasks never share a context. Alondra
+  adds a unique claim token to that Agent prompt. Each subagent calls `claim_task` with that
+  token before any Bash, edit, or other tool. Alondra binds it to the parent's task, blocks
+  unbound subagents' tools, and does not let a bound subagent switch tasks. The
   subagent asks, reports and opens its PR itself, passing `task` on every
   `ask`, `request_action`, `report` and `withdraw`.
 - A task on a different branch gets its own worktree. A subagent's automatic worktree always

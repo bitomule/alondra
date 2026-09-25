@@ -37,10 +37,24 @@ pub struct HookEvent {
     /// candidates rather than a guessed single task ID.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_ids: Vec<String>,
+    /// A parent Agent call reserves this task for the child carrying this opaque token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_task: Option<String>,
+    /// The token presented by a child's successful claim_task call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_token: Option<String>,
+    /// PermissionDenied synthesized after this hook itself rejected a tool, rather than a
+    /// later denial of an Agent call that had already reserved a task.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub local_denial: bool,
     /// Short event-specific context from hooks that are not tool calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
+
+fn is_false(value: &bool) -> bool { !value }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct DaemonObservation {

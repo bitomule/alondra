@@ -75,7 +75,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/tasks", post(define_tasks))
         .route("/v1/tasks/archive", post(archive_tasks))
         .route("/v1/tasks/new", post(new_task))
-        .route("/v1/tasks/select", post(select_task))
+        .route("/v1/tasks/claim", post(claim_task))
         .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -212,6 +212,53 @@ fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
+/// The parent owns the decision about which task it delegates. For a main thread with several
+/// tasks it must put this exact marker on the first line of Agent's prompt. A bound subagent
+/// inherits its own task; a node with one open task has only one possible choice.
+fn agent_spawn_task(v: &View, h: &HookEvent, input: &Value) -> Result<Option<String>, String> {
+    if h.event != "PreToolUse" || h.tool_name.as_deref() != Some("Agent") {
+        return Ok(None);
+    }
+    if let Some(id) = h.tool_use_id.as_deref()
+        && v.spawn_reservations.contains_key(&format!("{}:{id}", h.session_id))
+    {
+        return Err("This Agent tool call already has a task reservation. Start a fresh Agent call.".into());
+    }
+    let tasks = v.hook_task_ids(&h.session_id, h.agent_id.as_deref(), None);
+    if tasks.is_empty() {
+        return Ok(None);
+    }
+    if let Some(agent) = h.agent_id.as_deref()
+        && let Some(bound) = v
+            .nodes
+            .get(&h.session_id)
+            .and_then(|n| n.ledger.bound(agent))
+    {
+        return Ok(Some(bound.to_string()));
+    }
+    if tasks.len() == 1 {
+        return Ok(Some(tasks[0].clone()));
+    }
+    let prompt = input
+        .pointer("/tool_input/prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let first = prompt.lines().next().unwrap_or("").trim();
+    let Some(task) = first.strip_prefix("Alondra task: ").map(str::trim) else {
+        return Err(format!(
+            "This node has several tasks ({}). Start the Agent prompt with `Alondra task: t-…` naming the task delegated to this subagent.",
+            tasks.join(", ")
+        ));
+    };
+    if !tasks.iter().any(|candidate| candidate == task) {
+        return Err(format!(
+            "Task {task} is not an open task assigned to this node. Choose one of: {}.",
+            tasks.join(", ")
+        ));
+    }
+    Ok(Some(task.to_string()))
+}
+
 /// The plugin's hooks send `ALONDRA_LAUNCHED` in this header: set in the sessions Alondra
 /// launches, empty in any other.
 fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
@@ -225,35 +272,105 @@ fn hook_denial(v: &View, h: &HookEvent, input: &Value) -> Option<String> {
     {
         return Some(reason);
     }
-    let agent = h.agent_id.as_deref()?;
-    if matches!(h.event.as_str(), "PreToolUse" | "PermissionRequest")
-        && let Some(bound) = v.nodes.get(&h.session_id).and_then(|n| n.ledger.bound(agent))
-        && !v.board.tasks.get(bound).is_some_and(|t| t.is_assigned_to(&h.session_id))
+    if h.event == "PreToolUse"
+        && h.tool_name
+            .as_deref()
+            .is_some_and(|t| t.ends_with("__claim_task"))
+        && h.agent_id.is_none()
     {
-        return Some(format!("This subagent was bound to task {bound}, which is no longer assigned to this session. Start a new subagent for current work."));
+        return Some(
+            "claim_task must be called inside the child subagent, not by its parent.".into(),
+        );
+    }
+    let agent = h.agent_id.as_deref()?;
+    if h.event == "PreToolUse"
+        && h.tool_name
+            .as_deref()
+            .is_some_and(|t| t.ends_with("__claim_task"))
+    {
+        let token = input
+            .pointer("/tool_input/token")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let Some(reservation) = v.spawn_reservations.get(token).filter(|r| !r.claimed) else {
+            return Some("Unknown or already claimed Alondra spawn token. Ask the parent to launch a new Agent.".into());
+        };
+        if reservation.session_id != h.session_id
+            || !v
+                .board
+                .tasks
+                .get(&reservation.task)
+                .is_some_and(|t| t.is_assigned_to(&h.session_id) && !t.state.finished())
+        {
+            return Some("This spawn token no longer belongs to an open task on this node.".into());
+        }
+        if let Some(assigned) = v.tasks_of(&h.session_id).find(|t| {
+            t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == Some(agent)
+                && !t.state.finished()
+        }) && assigned.id != reservation.task
+        {
+            return Some(format!("This subagent is assigned to task {}; it cannot claim task {}.", assigned.id, reservation.task));
+        }
+        if let Some(bound) = v
+            .nodes
+            .get(&h.session_id)
+            .and_then(|n| n.ledger.bound(agent))
+        {
+            return Some(format!(
+                "This subagent is already bound to task {bound}; it cannot claim another spawn token."
+            ));
+        }
+        return None;
+    }
+    if matches!(h.event.as_str(), "PreToolUse" | "PermissionRequest")
+        && let Some(bound) = v
+            .nodes
+            .get(&h.session_id)
+            .and_then(|n| n.ledger.bound(agent))
+        && !v
+            .board
+            .tasks
+            .get(bound)
+            .is_some_and(|t| t.is_assigned_to(&h.session_id) && !t.state.finished())
+    {
+        return Some(format!(
+            "This subagent was bound to task {bound}, which is no longer open and assigned to this session. Start a new subagent for current work."
+        ));
     }
     if h.event == "PreToolUse"
         && let Some(requested) = h.task.as_deref()
-        && let Some(bound) = v.nodes.get(&h.session_id).and_then(|n| n.ledger.bound(agent))
+        && let Some(bound) = v
+            .nodes
+            .get(&h.session_id)
+            .and_then(|n| n.ledger.bound(agent))
         && bound != requested
     {
-        return Some(format!("This subagent is bound to Alondra task {bound}; it cannot use task {requested}. Start a separate subagent for the other task."));
+        return Some(format!(
+            "This subagent is bound to Alondra task {bound}; it cannot use task {requested}. Start a separate subagent for the other task."
+        ));
     }
     if !matches!(h.event.as_str(), "PreToolUse" | "PermissionRequest") {
         return None;
     }
-    if h.event == "PreToolUse" && h.tool_name.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
+    if v.nodes.get(&h.session_id).is_some_and(|n| n.is_orchestrator)
+        || !v.tasks_of(&h.session_id).any(|t| !t.state.finished())
+    {
         return None;
     }
-    let candidates = v.hook_task_ids(&h.session_id, Some(agent), None);
-    if candidates.len() <= 1 {
+    if v.nodes
+        .get(&h.session_id)
+        .and_then(|n| n.ledger.bound(agent))
+        .is_some()
+    {
         return None;
     }
-    let choices = candidates.join(", ");
     if h.event == "PermissionRequest" {
-        Some(format!("This subagent must call Alondra select_task before requesting permission. Open tasks: {choices}."))
+        Some("This subagent must claim its parent's Alondra task token before requesting permission.".into())
     } else {
-        Some(format!("This subagent is not bound to a task. Call Alondra select_task with the task ID from your assignment before using {}. Open tasks: {choices}.", h.tool_name.as_deref().unwrap_or("this tool")))
+        Some(format!(
+            "This subagent is not bound to a task. Call Alondra claim_task with the token in your Agent prompt before using {}. If the prompt has no token, ask the parent to launch a new Agent for the task.",
+            h.tool_name.as_deref().unwrap_or("this tool")
+        ))
     }
 }
 
@@ -270,7 +387,7 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
         return Json(json!({})).into_response();
     }
     let tool = str_field(&p, "tool_name");
-    let h = HookEvent {
+    let mut h = HookEvent {
         session_id: session_id.clone(),
         event: event.clone(),
         tool_name: tool.clone(),
@@ -285,6 +402,10 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
         task: named_task(tool.as_deref(), p.get("tool_input")),
         task_id: None,
         task_ids: vec![],
+        spawn_token: None,
+        spawn_task: None,
+        claim_token: None,
+        local_denial: false,
         detail: hook_detail(&event, &p),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
@@ -300,15 +421,83 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
         }
     }
     let mut denied = None;
+    let mut updated_agent_input = None;
     let recorded = hub.append_all(|v| {
         denied = hook_denial(v, &h, &p);
+        if denied.is_none() && event == "PreToolUse" && tool.as_deref() == Some("Agent") {
+            match agent_spawn_task(v, &h, &p) {
+                Ok(Some(task)) => {
+                    if let Some(id) = h.tool_use_id.as_deref()
+                        && let Some(mut input) =
+                            p.get("tool_input").and_then(Value::as_object).cloned()
+                        && let Some(prompt) = input.get("prompt").and_then(Value::as_str)
+                    {
+                        let token = format!("{session_id}:{id}");
+                        input.insert(
+                            "prompt".into(),
+                            Value::String(format!("Alondra claim token: {token}\n{prompt}")),
+                        );
+                        updated_agent_input = Some(Value::Object(input));
+                        h.spawn_token = Some(token);
+                        h.spawn_task = Some(task.clone());
+                        h.task = Some(task);
+                    } else {
+                        denied = Some(
+                            "Cannot launch a task subagent without Agent prompt and tool_use_id."
+                                .into(),
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(reason) => denied = Some(reason),
+            }
+        }
+        if event == "PostToolUse"
+            && h.agent_id.is_some()
+            && tool.as_deref().is_some_and(|t| t.ends_with("__claim_task"))
+        {
+            h.claim_token = p
+                .pointer("/tool_input/token")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(reservation) = h
+                .claim_token
+                .as_ref()
+                .and_then(|t| v.spawn_reservations.get(t))
+                .filter(|r| !r.claimed)
+                && reservation.session_id == session_id
+                && v.board
+                    .tasks
+                    .get(&reservation.task)
+                    .is_some_and(|t| t.is_assigned_to(&session_id) && !t.state.finished())
+            {
+                h.task = Some(reservation.task.clone());
+            } else {
+                h.claim_token = None;
+            }
+        }
+        if event == "PostToolUse"
+            && tool.as_deref() == Some("Agent")
+            && let Some(reservation) = h
+                .tool_use_id
+                .as_ref()
+                .and_then(|id| v.spawn_reservations.get(&format!("{session_id}:{id}")))
+        {
+            h.task = Some(reservation.task.clone());
+        }
         let mut events = vec![Event::Hook(h.clone())];
         if let Some(reason) = &denied {
             events.push(Event::Hook(HookEvent {
-                session_id: h.session_id.clone(), event: "PermissionDenied".into(),
-                tool_name: h.tool_name.clone(), tool_use_id: h.tool_use_id.clone(),
-                agent_id: h.agent_id.clone(), agent_type: h.agent_type.clone(),
-                task: h.task.clone(), detail: Some(reason.clone()), ..Default::default()
+                session_id: h.session_id.clone(),
+                event: "PermissionDenied".into(),
+                tool_name: h.tool_name.clone(),
+                tool_use_id: h.tool_use_id.clone(),
+                agent_id: h.agent_id.clone(),
+                agent_type: h.agent_type.clone(),
+                task: h.task.clone(),
+                detail: Some(reason.clone()),
+                local_denial: true,
+                ..Default::default()
             }));
         }
         Ok::<_, ()>(events)
@@ -324,6 +513,9 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
             _ => Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": reason}})).into_response(),
         };
+    }
+    if let Some(input) = updated_agent_input {
+        return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": input}})).into_response();
     }
     if event == "PostToolUse"
         && let Some(command) = p.pointer("/tool_input/command").and_then(Value::as_str).filter(|c| crate::prs::runs_pr_create(c))
@@ -350,19 +542,23 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
             log!("could not act on a stalled node: {e}");
         }
     }
-    let unbound_subagent_tasks = || hub.read(|v| {
-        if h.agent_id.is_none() { return vec![]; }
-        let candidates = v.hook_task_ids(&session_id, h.agent_id.as_deref(), None);
-        (candidates.len() > 1).then_some(candidates).unwrap_or_default()
-    });
     if event == "SubagentStart" {
-        let candidates = unbound_subagent_tasks();
-        if !candidates.is_empty() {
+        let unbound = h.agent_id.as_deref().is_some_and(|agent| {
+            hub.read(|v| {
+                v.nodes.get(&session_id).is_some_and(|n| !n.is_orchestrator && n.ledger.bound(agent).is_none())
+                    && v.tasks_of(&session_id).any(|t| !t.state.finished())
+            })
+        });
+        if unbound {
             return Json(json!({"hookSpecificOutput": {"hookEventName": "SubagentStart",
-                "additionalContext": format!("This node has several Alondra tasks ({}). Before other tools, call Alondra select_task with the task ID in your assignment. Tools without a verified task are blocked so work from different subagents is not mixed.", candidates.join(", "))}})).into_response();
+                "additionalContext": "Before any work or other tool, call Alondra claim_task with the exact `Alondra claim token` in your Agent prompt. That token binds you to the task your parent delegated. If no token is in your prompt, stop and ask the parent to relaunch you for a task."}})).into_response();
         }
     }
-    if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
+    if event == "PreToolUse"
+        && tool
+            .as_deref()
+            .is_some_and(|t| t.starts_with("mcp__plugin_alondra"))
+    {
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
             "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
@@ -2955,25 +3151,52 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
 /// A task whole, with the brief, history and anomalies the overview leaves out, and every report
 /// of it Alondra still keeps: the overview carries only the newest reports of the fleet.
 #[derive(Deserialize)]
-struct SelectTaskBody {
-    task: String,
+struct ClaimTaskBody {
+    token: String,
     #[serde(flatten)]
     caller: Caller,
 }
 
-/// Validate a subagent's declared task. Its successful PostToolUse hook records the binding.
-async fn select_task(State(hub): State<AppState>, Json(body): Json<SelectTaskBody>) -> Response {
+/// Resolve the opaque token inserted into one Agent prompt to the task selected by its parent.
+/// The successful PostToolUse hook records the binding for that child's agent_id.
+async fn claim_task(State(hub): State<AppState>, Json(body): Json<ClaimTaskBody>) -> Response {
     if let Some(response) = outside_caller(&hub, &body.caller) {
         return response;
     }
     let result = hub.read(|v| {
-        let (sid, _) = resolve_caller(v, &body.caller).ok_or((StatusCode::FORBIDDEN, "caller session is unknown".to_string()))?;
-        let task = v.board.tasks.get(body.task.trim()).ok_or((StatusCode::NOT_FOUND, format!("task {} does not exist", body.task)))?;
+        let (sid, _) = resolve_caller(v, &body.caller).ok_or((
+            StatusCode::FORBIDDEN,
+            "caller session is unknown".to_string(),
+        ))?;
+        let reservation = v
+            .spawn_reservations
+            .get(body.token.trim())
+            .filter(|r| !r.claimed)
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "unknown or already claimed spawn token".to_string(),
+            ))?;
+        if reservation.session_id != sid {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "spawn token belongs to another session".into(),
+            ));
+        }
+        let task = v.board.tasks.get(&reservation.task).ok_or((
+            StatusCode::NOT_FOUND,
+            "reserved task no longer exists".to_string(),
+        ))?;
         if !task.is_assigned_to(&sid) {
-            return Err((StatusCode::FORBIDDEN, format!("task {} is not assigned to this session", task.id)));
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("task {} is not assigned to this session", task.id),
+            ));
         }
         if task.state.finished() {
-            return Err((StatusCode::CONFLICT, format!("task {} is already finished", task.id)));
+            return Err((
+                StatusCode::CONFLICT,
+                format!("task {} is already finished", task.id),
+            ));
         }
         Ok(task.id.clone())
     });
@@ -3700,16 +3923,16 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{said}");
         let payloads = [
             json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests"}}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests", "prompt": "Check the tests"}}),
             json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
-            json!({"session_id": "s", "hook_event_name": "PostToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "mcp__plugin_alondra_alondra__report", "tool_use_id": "u2", "tool_input": {"task": "t-s", "title": "Tests pass"}}),
+            json!({"session_id": "s", "hook_event_name": "PostToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "u2", "tool_input": {"token": "s:m1"}}),
             json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
         ];
         for p in payloads {
             hook(State(hub.clone()), launched(), Json(p)).await;
         }
         let stored = hub.read(|v| v.nodes["s"].ledger.clone());
-        assert_eq!(stored.bound, vec![(Some("a1".to_string()), "t-s".to_string())], "the subagent bound itself with the task its Alondra call named");
+        assert_eq!(stored.bound, vec![(Some("a1".to_string()), "t-s".to_string())], "the subagent claimed its parent's task");
         let Json(o) = overview(State(hub.clone())).await;
         let node = &o["nodes"][0];
         assert!(node.get("ledger").is_none(), "clients get it as activity: {node}");
@@ -3743,109 +3966,400 @@ mod tests {
     async fn a_subagents_card_without_task_goes_to_the_task_it_bound_itself_to() {
         use alondra_core::tasks::{NewTask, TaskOptions};
         let hub = started("bound", &["s"]);
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        let (status, said) = status_and_body(
+            report(
+                State(hub.clone()),
+                Json(report_body("s", ReportKind::Notice, &[])),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{said}");
         hub.append(Event::TaskCreated(NewTask {
-            id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-            session_id: Some("s".into()), launched: false, launched_as: None, start: None,
+            id: "t-other".into(),
+            request: "r-s".into(),
+            title: "Other".into(),
+            brief: None,
+            depends_on: vec![],
+            options: TaskOptions::default(),
+            session_id: Some("s".into()),
+            launched: false,
+            launched_as: None,
+            start: None,
         }))
         .unwrap();
-        let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| {
-            json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "tool_name": "mcp__plugin_alondra_alondra__ask", "tool_use_id": id, "tool_input": {"task": task, "title": "¿Sigo?"}})
+        let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "tool_name": "mcp__plugin_alondra_alondra__ask", "tool_use_id": id, "tool_input": {"task": task, "title": "¿Sigo?"}});
+        let agent_call = json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-card",
+            "tool_input": {"prompt": "Alondra task: t-other\nHandle the question", "description": "Handle the question"}});
+        let (_, response) =
+            status_and_body(hook(State(hub.clone()), launched(), Json(agent_call)).await).await;
+        let token = response["hookSpecificOutput"]["updatedInput"]["prompt"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("Alondra claim token: ")
+            .unwrap();
+        let claim_tool = |event: &str| {
+            json!({"session_id": "s", "hook_event_name": event, "agent_id": "a1",
+            "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "claim-card", "tool_input": {"token": token}})
         };
-        for p in [ask_tool("a1", "PreToolUse", "b1", Some("t-other")), ask_tool("a1", "PostToolUse", "b1", Some("t-other"))] {
-            hook(State(hub.clone()), launched(), Json(p)).await;
-        }
+        hook(
+            State(hub.clone()),
+            launched(),
+            Json(claim_tool("PreToolUse")),
+        )
+        .await;
+        let (status, _) = status_and_body(
+            claim_task(
+                State(hub.clone()),
+                Json(ClaimTaskBody {
+                    token: token.into(),
+                    caller: Caller {
+                        session_id: Some("s".into()),
+                        pids: vec![],
+                        launched: true,
+                    },
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        hook(
+            State(hub.clone()),
+            launched(),
+            Json(claim_tool("PostToolUse")),
+        )
+        .await;
         let asked = |hub: Arc<Hub>, agent: &'static str, id: &'static str| async move {
-            hook(State(hub.clone()), launched(), Json(ask_tool(agent, "PreToolUse", id, None))).await;
-            let answer = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo con esto?"))).await).await;
-            hook(State(hub.clone()), launched(), Json(ask_tool(agent, "PostToolUse", id, None))).await;
+            hook(
+                State(hub.clone()),
+                launched(),
+                Json(ask_tool(agent, "PreToolUse", id, None)),
+            )
+            .await;
+            let answer = status_and_body(
+                ask(State(hub.clone()), Json(ask_body("s", "¿Sigo con esto?"))).await,
+            )
+            .await;
+            hook(
+                State(hub.clone()),
+                launched(),
+                Json(ask_tool(agent, "PostToolUse", id, None)),
+            )
+            .await;
             answer
         };
         let (status, said) = asked(hub.clone(), "a1", "c1").await;
         assert_eq!(status, StatusCode::OK, "{said}");
-        let task = hub.read(|v| v.questions.values().next_back().and_then(|q| q.task.clone()));
-        assert_eq!(task.as_deref(), Some("t-other"), "the subagent's own task, although the node has two open");
+        let task = hub.read(|v| {
+            v.questions
+                .values()
+                .next_back()
+                .and_then(|q| q.task.clone())
+        });
+        assert_eq!(
+            task.as_deref(),
+            Some("t-other"),
+            "the subagent's own task, although the node has two open"
+        );
         let (status, said) = asked(hub.clone(), "a2", "d1").await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a subagent that never named its task still has to: {said}");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a subagent that never named its task still has to: {said}"
+        );
     }
 
     #[tokio::test]
-    async fn simultaneous_subagents_must_select_their_own_task_before_tools() {
+    async fn simultaneous_subagents_claim_their_parents_task_before_tools() {
         use alondra_core::tasks::{CardTask, NewTask, TaskOptions};
         let hub = started("strict-subagents", &["s"]);
-        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        let (status, _) = status_and_body(
+            report(
+                State(hub.clone()),
+                Json(report_body("s", ReportKind::Notice, &[])),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         hub.append(Event::TaskCreated(NewTask {
-            id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None,
-            depends_on: vec![], options: TaskOptions::default(), session_id: Some("s".into()),
-            launched: false, launched_as: None, start: None,
-        })).unwrap();
+            id: "t-other".into(),
+            request: "r-s".into(),
+            title: "Other".into(),
+            brief: None,
+            depends_on: vec![],
+            options: TaskOptions::default(),
+            session_id: Some("s".into()),
+            launched: false,
+            launched_as: None,
+            start: None,
+        }))
+        .unwrap();
         let agent_hook = |agent: &str, event: &str, tool: &str, id: &str, task: Option<&str>| {
             json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "agent_type": "Explore",
                 "tool_name": tool, "tool_use_id": id, "tool_input": {"task": task, "command": "cargo test"}})
         };
         let start = json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"});
-        let (_, context) = status_and_body(hook(State(hub.clone()), launched(), Json(start)).await).await;
-        assert!(context["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("select_task"));
+        let (_, context) =
+            status_and_body(hook(State(hub.clone()), launched(), Json(start)).await).await;
+        assert!(
+            context["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("claim_task")
+        );
         let bash = |agent: &str, id: &str| agent_hook(agent, "PreToolUse", "Bash", id, None);
-        let (_, denied) = status_and_body(hook(State(hub.clone()), launched(), Json(bash("a1", "u1"))).await).await;
+        let (_, denied) =
+            status_and_body(hook(State(hub.clone()), launched(), Json(bash("a1", "u1"))).await)
+                .await;
         assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert!(hub.read(|v| v.nodes["s"].ledger.threads.iter().find(|t| t.agent_id.as_deref() == Some("a1")).unwrap().tool.is_none()),
-            "a denied tool must not remain in flight");
+        assert!(
+            hub.read(|v| v.nodes["s"]
+                .ledger
+                .threads
+                .iter()
+                .find(|t| t.agent_id.as_deref() == Some("a1"))
+                .unwrap()
+                .tool
+                .is_none()),
+            "a denied tool must not remain in flight"
+        );
         let permission = agent_hook("a2", "PermissionRequest", "Bash", "u2", None);
-        let (_, denied) = status_and_body(hook(State(hub.clone()), launched(), Json(permission)).await).await;
+        let (_, denied) =
+            status_and_body(hook(State(hub.clone()), launched(), Json(permission)).await).await;
         assert_eq!(denied["hookSpecificOutput"]["decision"]["behavior"], "deny");
         assert!(hub.read(|v| v.questions.is_empty()));
         let permission_hook = |agent: &str| HookEvent {
-            session_id: "s".into(), event: "PermissionRequest".into(), agent_id: Some(agent.into()),
-            tool_name: Some("Bash".into()), ..Default::default()
+            session_id: "s".into(),
+            event: "PermissionRequest".into(),
+            agent_id: Some(agent.into()),
+            tool_name: Some("Bash".into()),
+            ..Default::default()
         };
-        assert_eq!(hub.read(|v| held_question(v, &json!({"tool_input": {"command": "cargo test"}}),
-            &permission_hook("a1"), QuestionOrigin::Permission).task), None,
-            "an unbound subagent's permission cannot block an arbitrary task");
-        let (status, _) = status_and_body(select_task(State(hub.clone()), Json(SelectTaskBody {
-            task: "t-s".into(), caller: Caller { session_id: Some("s".into()), pids: vec![], launched: true },
-        })).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, _) = status_and_body(select_task(State(hub.clone()), Json(SelectTaskBody {
-            task: "missing".into(), caller: Caller { session_id: Some("s".into()), pids: vec![], launched: true },
-        })).await).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        for (agent, task) in [("a1", "t-s"), ("a2", "t-other")] {
-            let tool = "mcp__plugin_alondra_alondra__select_task";
-            for event in ["PreToolUse", "PostToolUse"] {
-                let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(agent_hook(agent, event, tool, "bind", Some(task)))).await).await;
-                assert_ne!(response["hookSpecificOutput"]["permissionDecision"], "deny", "{agent} {event}: {response}");
-            }
-            let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(bash(agent, &format!("work-{agent}")))).await).await;
-            assert_ne!(response["hookSpecificOutput"]["permissionDecision"], "deny", "{agent}: {response}");
+        assert_eq!(
+            hub.read(|v| held_question(
+                v,
+                &json!({"tool_input": {"command": "cargo test"}}),
+                &permission_hook("a1"),
+                QuestionOrigin::Permission
+            )
+            .task),
+            None,
+            "an unbound subagent's permission cannot block an arbitrary task"
+        );
+        let (_, missing_marker) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "no-task",
+            "tool_input": {"prompt": "Do work", "description": "Work"}
+        }))).await).await;
+        assert_eq!(
+            missing_marker["hookSpecificOutput"]["permissionDecision"],
+            "deny"
+        );
+        let mut tokens = Vec::new();
+        for (id, task) in [("spawn-a", "t-s"), ("spawn-b", "t-other")] {
+            let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+                "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": id,
+                "tool_input": {"prompt": format!("Alondra task: {task}\nDo work"), "description": "Work", "subagent_type": "Explore"}
+            }))).await).await;
+            let prompt = response["hookSpecificOutput"]["updatedInput"]["prompt"]
+                .as_str()
+                .unwrap();
+            let token = prompt
+                .lines()
+                .next()
+                .unwrap()
+                .strip_prefix("Alondra claim token: ")
+                .unwrap()
+                .to_string();
+            assert!(prompt.contains(&format!("Alondra task: {task}")));
+            tokens.push(token);
         }
-        let mut seen = Vec::new();
-        crate::store::Store::open(&hub.home.join("alondra.db")).unwrap().replay(0, |_, _, event| {
-            if let Event::Hook(h) = event
-                && h.event == "PreToolUse"
-                && h.tool_name.as_deref() == Some("Bash")
-                && h.tool_use_id.as_deref().is_some_and(|id| id.starts_with("work-"))
-            {
-                seen.push((h.agent_id.unwrap(), h.task_id.unwrap()));
+        assert_ne!(tokens[0], tokens[1]);
+        let (_, duplicate) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-a",
+            "tool_input": {"prompt": "Alondra task: t-other\nDo the other task", "description": "Other"}
+        }))).await).await;
+        assert_eq!(duplicate["hookSpecificOutput"]["permissionDecision"], "deny");
+        hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "spawn-b"
+        }))).await;
+        assert!(hub.read(|v| v.spawn_reservations.contains_key(&tokens[1])), "a background Agent may finish before its child claims");
+        let (status, _) = status_and_body(
+            claim_task(
+                State(hub.clone()),
+                Json(ClaimTaskBody {
+                    token: "missing".into(),
+                    caller: Caller {
+                        session_id: Some("s".into()),
+                        pids: vec![],
+                        launched: true,
+                    },
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        for (agent, token) in [("a2", &tokens[1]), ("a1", &tokens[0])] {
+            let tool = "mcp__plugin_alondra_alondra__claim_task";
+            for event in ["PreToolUse", "PostToolUse"] {
+                let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+                    "session_id": "s", "hook_event_name": event, "agent_id": agent, "agent_type": "Explore",
+                    "tool_name": tool, "tool_use_id": format!("bind-{agent}"), "tool_input": {"token": token}
+                }))).await).await;
+                assert_ne!(
+                    response["hookSpecificOutput"]["permissionDecision"], "deny",
+                    "{agent} {event}: {response}"
+                );
+                if event == "PreToolUse" {
+                    let (status, _) = status_and_body(
+                        claim_task(
+                            State(hub.clone()),
+                            Json(ClaimTaskBody {
+                                token: token.to_string(),
+                                caller: Caller {
+                                    session_id: Some("s".into()),
+                                    pids: vec![],
+                                    launched: true,
+                                },
+                            }),
+                        )
+                        .await,
+                    )
+                    .await;
+                    assert_eq!(status, StatusCode::OK);
+                }
             }
-        }).unwrap();
-        assert_eq!(seen, [("a1".into(), "t-s".into()), ("a2".into(), "t-other".into())]);
-        assert_eq!(hub.read(|v| held_question(v, &json!({"tool_input": {"command": "cargo test"}}),
-            &permission_hook("a1"), QuestionOrigin::Permission).task), Some("t-s".into()));
-        assert_eq!(hub.read(|v| held_question(v, &json!({"tool_input": {"command": "cargo test"}}),
-            &permission_hook("a2"), QuestionOrigin::Permission).task), Some("t-other".into()));
-        let (_, denied) = status_and_body(hook(State(hub.clone()), launched(),
-            Json(agent_hook("a1", "PreToolUse", "mcp__plugin_alondra_alondra__report", "wrong", Some("t-other")))).await).await;
+            let (_, response) = status_and_body(
+                hook(
+                    State(hub.clone()),
+                    launched(),
+                    Json(bash(agent, &format!("work-{agent}"))),
+                )
+                .await,
+            )
+            .await;
+            assert_ne!(
+                response["hookSpecificOutput"]["permissionDecision"], "deny",
+                "{agent}: {response}"
+            );
+        }
+        assert!(!hub.read(|v| v.spawn_reservations.contains_key(&tokens[1])), "background reservation is removed after the child claims");
+        hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "spawn-a"
+        }))).await;
+        assert!(!hub.read(|v| v.spawn_reservations.contains_key(&tokens[0])), "foreground reservation is removed after Agent finishes");
+        let (_, repeated_claim) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a3",
+            "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "again", "tool_input": {"token": tokens[0]}
+        }))).await).await;
+        assert_eq!(repeated_claim["hookSpecificOutput"]["permissionDecision"], "deny");
+        hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-failed",
+            "tool_input": {"prompt": "Alondra task: t-other\nTry", "description": "Try"}
+        }))).await;
+        assert!(hub.read(|v| v.spawn_reservations.contains_key("s:spawn-failed")));
+        hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PermissionDenied", "tool_name": "Agent", "tool_use_id": "spawn-failed"
+        }))).await;
+        assert!(!hub.read(|v| v.spawn_reservations.contains_key("s:spawn-failed")), "a real Agent denial clears the reservation");
+        let mut seen = Vec::new();
+        crate::store::Store::open(&hub.home.join("alondra.db"))
+            .unwrap()
+            .replay(0, |_, _, event| {
+                if let Event::Hook(h) = event
+                    && h.event == "PreToolUse"
+                    && h.tool_name.as_deref() == Some("Bash")
+                    && h.tool_use_id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("work-"))
+                {
+                    seen.push((h.agent_id.unwrap(), h.task_id.unwrap()));
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            [("a2".into(), "t-other".into()), ("a1".into(), "t-s".into())]
+        );
+        assert_eq!(
+            hub.read(|v| held_question(
+                v,
+                &json!({"tool_input": {"command": "cargo test"}}),
+                &permission_hook("a1"),
+                QuestionOrigin::Permission
+            )
+            .task),
+            Some("t-s".into())
+        );
+        assert_eq!(
+            hub.read(|v| held_question(
+                v,
+                &json!({"tool_input": {"command": "cargo test"}}),
+                &permission_hook("a2"),
+                QuestionOrigin::Permission
+            )
+            .task),
+            Some("t-other".into())
+        );
+        let (_, denied) = status_and_body(
+            hook(
+                State(hub.clone()),
+                launched(),
+                Json(agent_hook(
+                    "a1",
+                    "PreToolUse",
+                    "mcp__plugin_alondra_alondra__report",
+                    "wrong",
+                    Some("t-other"),
+                )),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert_eq!(hub.read(|v| v.card_task("s", Some("t-other"), Some("a1"))),
-            Err(CardTask::BoundElsewhere { bound: "t-s".into(), requested: "t-other".into() }));
-        hub.append(Event::TaskAssigned { task: "t-s".into(), session_id: "another-session".into(), agent_id: None }).unwrap();
-        let (_, denied) = status_and_body(hook(State(hub.clone()), launched(), Json(bash("a1", "after-reassignment"))).await).await;
-        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny",
-            "a stale binding must never fall back to the other task");
+        assert_eq!(
+            hub.read(|v| v.card_task("s", Some("t-other"), Some("a1"))),
+            Err(CardTask::BoundElsewhere {
+                bound: "t-s".into(),
+                requested: "t-other".into()
+            })
+        );
+        hub.append(Event::TaskAssigned {
+            task: "t-s".into(),
+            session_id: "another-session".into(),
+            agent_id: None,
+        })
+        .unwrap();
+        let (_, denied) = status_and_body(
+            hook(
+                State(hub.clone()),
+                launched(),
+                Json(bash("a1", "after-reassignment")),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            denied["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a stale binding must never fall back to the other task"
+        );
         assert_eq!(hub.read(|v| v.fact_task("s", Some("a1"))), None);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_subagents_do_not_need_a_task_claim() {
+        let hub = started("orchestrator-agents", &["s"]);
+        hub.append(Event::MarkedOrchestrator { session_id: "s".into() }).unwrap();
+        let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
+            "session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1",
+            "tool_name": "Bash", "tool_use_id": "work", "tool_input": {"command": "true"}
+        }))).await).await;
+        assert_ne!(response["hookSpecificOutput"]["permissionDecision"], "deny");
     }
 
     fn ask_body(sid: &str, title: &str) -> AskBody {

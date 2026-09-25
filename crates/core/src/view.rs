@@ -51,8 +51,21 @@ pub struct View {
     /// of the inbox.
     #[serde(default)]
     pub left_out: std::collections::BTreeSet<String>,
+    /// Agent tool calls waiting for their child to claim its parent's task. The token is
+    /// injected into that specific Agent prompt, so concurrent launches never use FIFO order.
+    #[serde(default)]
+    pub spawn_reservations: BTreeMap<String, SpawnReservation>,
     #[serde(skip)]
     pub(crate) task_pass: crate::tasks::Pass,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SpawnReservation {
+    pub session_id: String,
+    pub task: String,
+    pub at: Millis,
+    pub claimed: bool,
+    pub agent_completed: bool,
 }
 
 const USAGE_LIMIT_ERRORS: &[&str] = &["rate_limit", "overloaded", "billing_error"];
@@ -125,6 +138,15 @@ impl View {
                 }
             }
         }
+        for (token, reservation) in &self.spawn_reservations {
+            if token.is_empty() || reservation.session_id.is_empty() || reservation.task.is_empty()
+            {
+                issues.push("empty subagent spawn reservation".into());
+            }
+            if !token.starts_with(&format!("{}:", reservation.session_id)) || (reservation.claimed && reservation.agent_completed) {
+                issues.push(format!("invalid subagent spawn reservation {token}"));
+            }
+        }
         issues
     }
 
@@ -184,6 +206,7 @@ impl View {
         self.approved_artifacts.retain(|_, at| *at >= before);
         self.removed.retain(|_, at| *at >= before);
         self.launched_sessions.retain(|_, at| *at >= before);
+        self.spawn_reservations.retain(|_, r| r.at >= before);
         let keep = self.tasks_to_keep();
         self.board.prune(before, |t| keep.contains(&t.id));
         let board = &self.board.requests;
@@ -615,6 +638,54 @@ impl View {
     }
 
     fn apply_hook(&mut self, at: Millis, h: &HookEvent) {
+        if h.event == "PreToolUse"
+            && let (Some(token), Some(task)) = (&h.spawn_token, &h.spawn_task)
+        {
+            self.spawn_reservations.insert(
+                token.clone(),
+                SpawnReservation {
+                    session_id: h.session_id.clone(),
+                    task: task.clone(),
+                    at,
+                    claimed: false,
+                    agent_completed: false,
+                },
+            );
+        }
+        if h.event == "PostToolUse"
+            && let Some(token) = &h.claim_token
+        {
+            if let Some(r) = self.spawn_reservations.get_mut(token) {
+                r.claimed = true;
+                if r.agent_completed {
+                    self.spawn_reservations.remove(token);
+                }
+            }
+        }
+        if h.event == "PostToolUse"
+            && h.tool_name.as_deref() == Some("Agent")
+            && let Some(id) = &h.tool_use_id
+            && let Some(r) = self
+                .spawn_reservations
+                .get_mut(&format!("{}:{id}", h.session_id))
+        {
+            r.agent_completed = true;
+            if r.claimed {
+                self.spawn_reservations
+                    .remove(&format!("{}:{id}", h.session_id));
+            }
+        }
+        if (h.event == "PostToolUseFailure" || (h.event == "PermissionDenied" && !h.local_denial))
+            && h.tool_name.as_deref() == Some("Agent")
+            && let Some(id) = &h.tool_use_id
+        {
+            self.spawn_reservations
+                .remove(&format!("{}:{id}", h.session_id));
+        }
+        if h.event == "SessionEnd" {
+            self.spawn_reservations
+                .retain(|_, r| r.session_id != h.session_id);
+        }
         let handed: Vec<u64> = self
             .messages
             .values()
