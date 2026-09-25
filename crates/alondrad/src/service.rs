@@ -163,7 +163,8 @@ impl Service {
         }
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(45))
+            // PR merge and GitHub issue refresh can take close to 90 seconds locally.
+            .timeout(Duration::from_secs(95))
             .build()?;
         let journal = Journal::open(home.join("service-receipts.sqlite"))?;
         Ok(Some(Self {
@@ -425,11 +426,7 @@ impl Service {
     }
 
     async fn dispatch(&self, request: &LocalRequest) -> Result<Value> {
-        let method = match request.method.as_str() {
-            "GET" if request.path == "/v1/overview" && request.body.is_none() => Method::GET,
-            "POST" if answer_path(&request.path) && request.body.is_some() => Method::POST,
-            _ => bail!("local operation is not approved for service access"),
-        };
+        let method = approved_method(request)?;
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
         if let Some(body) = &request.body {
@@ -450,14 +447,94 @@ impl Service {
     }
 }
 
-fn answer_path(path: &str) -> bool {
-    let Some(id) = path
-        .strip_prefix("/v1/questions/")
-        .and_then(|s| s.strip_suffix("/answer"))
-    else {
-        return false;
+fn id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn number(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u64>().is_ok()
+}
+
+fn one_id_path<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    path.strip_prefix(prefix).filter(|s| id(s))
+}
+
+fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|s| s.strip_suffix(action))
+        .is_some_and(|s| if numeric { number(s) } else { id(s) })
+}
+
+/// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
+/// There is deliberately no general URL proxy, no pairing/device management, and no upload.
+fn approved_method(request: &LocalRequest) -> Result<Method> {
+    let raw = request.path.as_str();
+    if raw.len() > 4096 || raw.contains(['#', '\\']) {
+        bail!("local operation is not approved for service access");
+    }
+    let (path, query) = raw.split_once('?').map_or((raw, None), |(p, q)| (p, Some(q)));
+    if !path.starts_with("/v1/") || path.contains('%') || path.contains("//") || path.contains("/./") || path.contains("/../") {
+        bail!("local operation is not approved for service access");
+    }
+    let query_ok = match (path, query) {
+        (_, None) => true,
+        ("/v1/options", Some(q)) => single_query(q, "project", 2048),
+        ("/v1/issues", Some(q)) => single_query_value(q, "refresh", &["1"]),
+        ("/v1/search", Some(q)) => single_query(q, "q", 2048),
+        ("/v1/file", Some(q)) => single_query(q, "path", 2048),
+        (p, Some(q)) if one_id_path(p, "/v1/nodes/").is_some() => single_query_value(q, "limit", &["1"]),
+        _ => false,
     };
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+    if !query_ok {
+        bail!("local operation is not approved for service access");
+    }
+    let allowed = match request.method.as_str() {
+        "GET" if request.body.is_none() => {
+            matches!(path, "/v1/overview" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
+                || one_id_path(path, "/v1/tasks/").is_some()
+                || one_id_path(path, "/v1/nodes/").is_some()
+                || id_action(path, "/v1/nodes/", "/activity", false)
+                || id_action(path, "/v1/prs/", "/diff", true)
+        }
+        "POST" if request.body.is_some() && query.is_none() => {
+            matches!(path, "/v1/requests" | "/v1/tasks/archive" | "/v1/activity" | "/v1/schedules")
+                || id_action(path, "/v1/questions/", "/answer", true)
+                || id_action(path, "/v1/questions/", "/more-context", true)
+                || id_action(path, "/v1/prs/", "/merge", true)
+                || id_action(path, "/v1/prs/", "/changes", true)
+                || id_action(path, "/v1/prs/", "/ask", true)
+                || id_action(path, "/v1/prs/", "/resolve-conflicts", true)
+                || id_action(path, "/v1/prs/", "/dismiss", true)
+                || id_action(path, "/v1/tasks/", "/cancel", false)
+                || id_action(path, "/v1/tasks/", "/reopen", false)
+                || id_action(path, "/v1/requests/", "/close", false)
+                || id_action(path, "/v1/reports/", "/read", true)
+                || id_action(path, "/v1/reports/", "/review", true)
+                || id_action(path, "/v1/nodes/", "/close", false)
+                || id_action(path, "/v1/nodes/", "/messages", false)
+                || id_action(path, "/v1/schedules/", "/run", false)
+        }
+        "PUT" if request.body.is_some() && query.is_none() => one_id_path(path, "/v1/schedules/").is_some(),
+        "DELETE" if request.body.is_none() && query.is_none() => one_id_path(path, "/v1/schedules/").is_some(),
+        _ => false,
+    };
+    if !allowed {
+        bail!("local operation is not approved for service access");
+    }
+    Ok(Method::from_bytes(request.method.as_bytes())?)
+}
+
+fn single_query(query: &str, key: &str, max_value_bytes: usize) -> bool {
+    // Reject ambiguous/double encoded query values and all extra parameters.
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    matches!(pairs.next(), Some((k, v)) if k == key && !v.is_empty() && v.len() <= max_value_bytes)
+        && pairs.next().is_none()
+}
+
+fn single_query_value(query: &str, key: &str, values: &[&str]) -> bool {
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    matches!(pairs.next(), Some((k, v)) if k == key && values.contains(&v.as_ref()))
+        && pairs.next().is_none()
 }
 
 enum Disposition {
@@ -635,14 +712,45 @@ mod tests {
     };
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
-        assert!(answer_path("/v1/questions/123/answer"));
-        for p in [
-            "/v1/questions/../answer",
-            "/v1/questions/1%2f../answer",
-            "/v1/questions/1/answer?x=1",
-            "/v1/questions/-1/answer",
+        let accepts = |method: &str, path: &str, body: Option<Value>| approved_method(&LocalRequest {
+            method: method.into(), path: path.into(), body
+        }).is_ok();
+        for path in [
+            "/v1/overview", "/v1/tasks/task-1", "/v1/nodes/session_1/activity",
+            "/v1/prs/7/diff", "/v1/search?q=hello%20world",
+            "/v1/file?path=%2FUsers%2Fme%2Ffile.txt", "/v1/options?project=foo",
         ] {
-            assert!(!answer_path(p));
+            assert!(accepts("GET", path, None), "{path}");
+        }
+        for path in [
+            "/v1/questions/123/answer", "/v1/questions/123/more-context",
+            "/v1/prs/7/merge", "/v1/prs/7/changes", "/v1/prs/7/ask",
+            "/v1/prs/7/resolve-conflicts", "/v1/prs/7/dismiss",
+            "/v1/tasks/task_1/cancel", "/v1/tasks/archive", "/v1/requests",
+            "/v1/nodes/session-1/messages", "/v1/nodes/session-1/close",
+            "/v1/schedules/schedule-1/run", "/v1/reports/1/review",
+        ] {
+            assert!(accepts("POST", path, Some(json!({}))), "{path}");
+        }
+        assert!(accepts("PUT", "/v1/schedules/schedule-1", Some(json!({}))));
+        assert!(accepts("DELETE", "/v1/schedules/schedule-1", None));
+        for (method, path, body) in [
+            ("POST", "/v1/questions/../answer", Some(json!({}))),
+            ("POST", "/v1/questions/1%2f../answer", Some(json!({}))),
+            ("POST", "/v1/questions/1/answer?x=1", Some(json!({}))),
+            ("POST", "/v1/questions/-1/answer", Some(json!({}))),
+            ("GET", "/v1/overview?next=/v1/pairing", None),
+            ("GET", "//evil.example/v1/overview", None),
+            ("GET", "/v1/search?q=hello&path=secret", None),
+            ("GET", "/v1/nodes/s?limit=2000", None),
+            ("POST", "/v1/uploads", Some(json!({}))),
+            ("POST", "/v1/pairing", Some(json!({}))),
+            ("DELETE", "/v1/devices/phone", None),
+            ("GET", "/v1/overview", Some(json!({}))),
+            ("POST", "/v1/requests", None),
+            ("GET", "/v1/prs/7/diff#fragment", None),
+        ] {
+            assert!(!accepts(method, path, body), "{method} {path}");
         }
     }
     #[test]
