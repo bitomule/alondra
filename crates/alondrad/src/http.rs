@@ -76,6 +76,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/tasks", post(define_tasks))
         .route("/v1/tasks/archive", post(archive_tasks))
         .route("/v1/tasks/new", post(new_task))
+        .route("/v1/focus", post(focus))
         .route("/v1/candidates", get(task_candidates))
         .route("/v1/tasks/{id}", get(task_detail))
         .route("/v1/tasks/{id}/cancel", post(cancel_task))
@@ -212,6 +213,20 @@ fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
+/// The task an `Agent` call launches its subagent for: the one its description or prompt names
+/// after “Alondra task:”, when they name only one.
+fn launch_marker(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+    tool.filter(|t| *t == alondra_core::activity::AGENT_TOOL)?;
+    let input = input?;
+    let marked: std::collections::BTreeSet<&str> =
+        ["description", "prompt"].iter().filter_map(|k| input.get(k)?.as_str()).flat_map(alondra_core::tasks::marked_tasks).collect();
+    let mut ids = marked.into_iter();
+    match (ids.next(), ids.next()) {
+        (Some(id), None) => Some(id.to_string()),
+        _ => None,
+    }
+}
+
 /// The plugin's hooks send `ALONDRA_LAUNCHED` in this header: set in the sessions Alondra
 /// launches, empty in any other.
 fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
@@ -238,7 +253,7 @@ async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(
         cwd: str_field(&p, "cwd"),
         agent_id: str_field(&p, "agent_id"),
         agent_type: str_field(&p, "agent_type"),
-        task: named_task(tool.as_deref(), p.get("tool_input")),
+        task: named_task(tool.as_deref(), p.get("tool_input")).or_else(|| launch_marker(tool.as_deref(), p.get("tool_input"))),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     match hub.admit(&session_id, launched_mark(&headers)) {
@@ -260,7 +275,7 @@ async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(
         && let Some(command) = p.pointer("/tool_input/command").and_then(Value::as_str).filter(|c| crate::prs::runs_pr_create(c))
         && let Some(url) = p.get("tool_response").and_then(crate::prs::created_pr)
     {
-        let task = hub.read(|v| v.pr_task_for(&session_id, h.agent_id.as_deref(), &[command]));
+        let task = hub.read(|v| v.pr_task_for(&session_id, h.agent_id.as_deref(), &[command], now_millis()));
         let (hub, session_id) = (hub.clone(), session_id.clone());
         tokio::spawn(async move {
             crate::prs::open_confirmed(&hub, &session_id, vec![url.clone()], task).await;
@@ -1596,7 +1611,7 @@ fn caller_task(v: &View, sid: &str, named: Option<&str>) -> Result<Option<String
         return Ok(None);
     }
     let agent = v.alondra_caller(sid).flatten();
-    v.card_task(sid, named, agent).map(Some).map_err(|e| match e {
+    v.called_task(sid, named, agent, now_millis()).map(Some).map_err(|e| match e {
         CardTask::Unknown(id) => (StatusCode::NOT_FOUND, format!("task: {id} does not exist. Nothing was recorded.")),
         CardTask::NotYours(id) => (StatusCode::FORBIDDEN, format!("task: {id} is not yours. Nothing was recorded.")),
         CardTask::Several(ids) => {
@@ -1697,6 +1712,62 @@ async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Re
         .into_response(),
         Ok(_) => err(StatusCode::NOT_FOUND, format!("task {from} does not exist. Nothing was recorded.")),
         Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct FocusBody {
+    #[serde(flatten)]
+    caller: Caller,
+    task: String,
+    #[serde(default)]
+    minutes: Option<u32>,
+}
+
+/// Why a node cannot focus on the task it named, if it cannot: it must be an open task of its own.
+fn focus_refusal(v: &View, sid: &str, task: &str) -> Option<(StatusCode, String)> {
+    if v.nodes.get(sid).is_some_and(|n| n.is_orchestrator) {
+        return Some((StatusCode::FORBIDDEN, "The orchestrator works on no task of its own. Nothing was recorded.".into()));
+    }
+    match v.board.tasks.get(task) {
+        None => Some((StatusCode::NOT_FOUND, format!("task: {task} does not exist. Nothing was recorded."))),
+        Some(t) if !t.is_assigned_to(sid) => Some((StatusCode::FORBIDDEN, format!("task: {task} is not yours. Nothing was recorded."))),
+        Some(t) if t.state.finished() => {
+            Some((StatusCode::UNPROCESSABLE_ENTITY, format!("task: {task} is {}; focus on one of your open tasks. Nothing was recorded.", t.state.label())))
+        }
+        Some(_) => None,
+    }
+}
+
+/// A node says which of its tasks it works on now. Until the focus expires or another replaces
+/// it, what its threads do with no task of their own, and its PRs and cards that name none, count
+/// for that task.
+async fn focus(State(hub): State<AppState>, Json(b): Json<FocusBody>) -> Response {
+    use alondra_core::activity::{FOCUS_DEFAULT_MINUTES, FOCUS_MAX_MINUTES};
+    if let Some(r) = outside_caller(&hub, &b.caller) {
+        return r;
+    }
+    let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
+        return err(StatusCode::BAD_REQUEST, "unknown node: session_id is missing and no pid matches");
+    };
+    let task = b.task.trim().to_string();
+    let minutes = b.minutes.unwrap_or(FOCUS_DEFAULT_MINUTES).clamp(1, FOCUS_MAX_MINUTES);
+    let mut refused = None;
+    let recorded = hub.append_with(|v| match focus_refusal(v, &sid, &task) {
+        Some(why) => {
+            refused = Some(why);
+            None
+        }
+        None => Some(Event::Focused { session_id: sid.clone(), task: task.clone(), minutes }),
+    });
+    match (recorded, refused) {
+        (Ok(Some(_)), _) => {
+            let until = hub.read(|v| v.nodes.get(&sid).and_then(|n| n.ledger.focus.as_ref()).map(|f| f.until));
+            Json(json!({"task": task, "minutes": minutes, "until": until})).into_response()
+        }
+        (Ok(None), Some((status, why))) => err(status, why),
+        (Ok(None), None) => err(StatusCode::BAD_REQUEST, "unknown node: session_id is missing and no pid matches"),
+        (Err(e), _) => internal(e),
     }
 }
 
@@ -3627,6 +3698,47 @@ mod tests {
         assert_eq!(task.as_deref(), Some("t-other"), "the subagent's own task, although the node has two open");
         let (status, said) = asked(hub.clone(), "a2", "d1").await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "a subagent that never named its task still has to: {said}");
+    }
+
+    /// The marker an `Agent` call carries is kept in its hook event, so a replay binds its subagent
+    /// the same way; a focus names the task of a card that names none, and replays too.
+    #[tokio::test]
+    async fn a_marked_launch_and_a_focus_reach_the_log_and_name_the_task_of_what_names_none() {
+        use alondra_core::tasks::{NewTask, TaskOptions};
+        let hub = started("tie", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        hub.append(Event::TaskCreated(NewTask {
+            id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
+            session_id: Some("s".into()), launched: false, launched_as: None, start: None,
+        }))
+        .unwrap();
+        let payloads = [
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Fix the cron", "prompt": "Alondra task: t-other\n\nFix it."}}),
+            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"}),
+            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m2", "tool_input": {"description": "Alondra task: t-s, then Alondra task: t-other", "prompt": "Both"}}),
+            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a2", "agent_type": "general-purpose"}),
+        ];
+        for p in payloads {
+            hook(State(hub.clone()), launched(), Json(p)).await;
+        }
+        let ledger = |hub: &Hub| hub.read(|v| v.nodes["s"].ledger.clone());
+        assert_eq!(ledger(&hub).launched, vec![("a1".to_string(), "t-other".to_string())], "a call that names two tasks gives none");
+
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo?"))).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "several open tasks and no focus: {said}");
+        let focus_on = |task: &str, minutes: Option<u32>| FocusBody { caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false }, task: task.into(), minutes };
+        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-missing", None))).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
+        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-other", Some(1000)))).await).await;
+        assert_eq!((status, said["minutes"].as_u64()), (StatusCode::OK, Some(240)), "{said}");
+        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-s", None))).await).await;
+        assert_eq!((status, said["task"].as_str(), said["minutes"].as_u64()), (StatusCode::OK, Some("t-s"), Some(30)), "{said}");
+
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo?"))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!(hub.read(|v| v.questions.values().next_back().and_then(|q| q.task.clone())).as_deref(), Some("t-s"), "the focus names its task");
+        assert_eq!(ledger(&hub_at_home_of(&hub)), ledger(&hub), "the log replays into the same ledger");
     }
 
     fn ask_body(sid: &str, title: &str) -> AskBody {

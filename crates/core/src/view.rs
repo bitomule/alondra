@@ -445,6 +445,12 @@ impl View {
                 }
                 None
             }
+            Event::Focused { session_id, task, minutes } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.ledger.focus = Some(crate::model::Focus { task: task.clone(), until: at + Millis::from(*minutes) * 60_000 });
+                }
+                None
+            }
             Event::Clock { machine_strained } => {
                 self.machine_strained = *machine_strained;
                 let sessions: Vec<String> = self.nodes.keys().cloned().collect();

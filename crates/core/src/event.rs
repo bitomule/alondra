@@ -26,7 +26,8 @@ pub struct HookEvent {
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
-    /// The task an Alondra tool call names.
+    /// The task an Alondra tool call names, or the one an `Agent` call names after “Alondra task:”
+    /// in its description or prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
 }
@@ -157,6 +158,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// A node said which of its tasks it works on now: until `minutes` go by or it says another,
+    /// what its threads do with no task of their own counts for this one.
+    Focused { session_id: String, task: String, minutes: u32 },
     /// A node's status line reported how full its context window is.
     ContextMeasured { session_id: String, percent: f64, window: u64 },
     /// A step of the `/compact` Alondra runs in an idle node before typing it a new task. The
@@ -230,7 +234,8 @@ impl Event {
             | Event::MenuSeen { session_id, .. }
             | Event::Resumed { session_id, .. }
             | Event::ContextMeasured { session_id, .. }
-            | Event::Compaction { session_id, .. } => Some(session_id),
+            | Event::Compaction { session_id, .. }
+            | Event::Focused { session_id, .. } => Some(session_id),
             Event::QuestionAsked(q) => Some(&q.session_id),
             Event::ReportPosted(r) => Some(&r.session_id),
             Event::MessageQueued(m) => Some(&m.session_id),
@@ -262,6 +267,7 @@ impl Event {
             Event::Resumed { .. } => "resumed",
             Event::ContextMeasured { .. } => "context_measured",
             Event::Compaction { .. } => "compaction",
+            Event::Focused { .. } => "focused",
             Event::AttachChanged { .. } => "attach_changed",
             Event::MenuSeen { .. } => "menu_seen",
             Event::PrOpened { .. } => "pr_opened",
