@@ -18,6 +18,11 @@ extension FleetStore {
         news.contains { $0.id == report.id }
     }
 
+    /// The dependency's PR a started task waits to see merged.
+    public func awaitedPullRequest(of task: WorkTask) -> PullRequest? {
+        task.awaiting.flatMap { id in overview?.prs?.first { $0.id == id } }
+    }
+
     /// The task's PRs that are still open, bottom of their train first.
     public func pullRequests(of task: WorkTask) -> [PullRequest] {
         (overview?.prs ?? []).filter { task.prs.contains($0.id) || $0.task == task.id }.sorted(by: PullRequest.newestTrainsFirst)
@@ -109,6 +114,9 @@ extension FleetStore {
             guard let document = task.documents.reversed().lazy.compactMap(report).first else { return nil }
             return String(localized: "document: \(document.title)", table: "AlondraShared", bundle: #bundle)
         case .waitingDependency:
+            if let awaited = awaitedPullRequest(of: task) {
+                return String(localized: "waits for PR #\(String(awaited.number)) to be merged", table: "AlondraShared", bundle: #bundle)
+            }
             if let pr = pullRequests(of: task).first, let below = pr.belowNumber {
                 return String(localized: "PR #\(String(pr.number)) on top of #\(String(below))", table: "AlondraShared", bundle: #bundle)
             }
@@ -123,6 +131,10 @@ extension FleetStore {
     /// Why a task waits, in a sentence, for its detail.
     public func waitingReason(for task: WorkTask) -> String? {
         guard task.state == .waitingDependency else { return nil }
+        if let awaited = awaitedPullRequest(of: task) {
+            let title = awaited.task.flatMap { board.task($0)?.title } ?? awaited.title
+            return String(localized: "It started, and what is left of it waits for PR #\(String(awaited.number)) of “\(title)” to be merged: it goes on once that PR is merged.", table: "AlondraShared", bundle: #bundle)
+        }
         let pending = board.dependencies(of: task).filter { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }
         guard let first = pending.first else { return nil }
         return String(localized: "It starts once “\(first.title)” (\(first.state.label)) has its PR open, builds on top of it, and its own PR merges after that one.", table: "AlondraShared", bundle: #bundle)
@@ -171,6 +183,7 @@ extension WorkTask.Transition {
     public var summary: String {
         switch event.kind {
         case "dependency_ready": String(localized: "a task it builds on has its PR open", table: "AlondraShared", bundle: #bundle)
+        case "awaits_merge": String(localized: "the node has nothing left but the merge of a PR it builds on", table: "AlondraShared", bundle: #bundle)
         case "blocker_raised":
             switch event.blocker?.kind {
             case "permission": String(localized: "the node needs a permission", table: "AlondraShared", bundle: #bundle)

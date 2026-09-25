@@ -1828,6 +1828,36 @@
           }
         }
       }
+    },
+    "the node has nothing left but the merge of a PR it builds on": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "al nodo solo le queda que se fusione un PR del que depende"
+          }
+        }
+      }
+    },
+    "waits for PR #%@ to be merged": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "espera a que se fusione el PR #%@"
+          }
+        }
+      }
+    },
+    "It started, and what is left of it waits for PR #%@ of “%@” to be merged: it goes on once that PR is merged.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empezó, y lo que le queda espera a que se fusione el PR #%@ de «%@»: sigue en cuanto se fusione."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

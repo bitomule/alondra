@@ -904,7 +904,7 @@ pub(crate) async fn merge(hub: &Arc<Hub>, id: u64, method: alondra_core::pr::Mer
     };
     let (plan, finishes) = hub.read(|v| (v.retarget_plan(id), v.merge_finishes_task(id)));
     if !finishes {
-        let _ = tell_about_pr(hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id }), vec![]);
+        let _ = tell_about_pr(hub, &pr, text, MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: id, task: None }), vec![]);
     }
     hub.append(Event::PrMerged { id, method }).map_err(MergeRefusal::Failed)?;
     let moved = crate::prs::retarget(hub, &plan, gh).await;
@@ -4869,7 +4869,7 @@ mod tests {
         assert_eq!(hub.read(|v| v.nodes["s"].state), alondra_core::NodeState::Done);
 
         let pr = hub.read(|v| v.prs[&1].clone());
-        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1 }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
+        assert_eq!(tell_about_pr(&hub, &pr, "[Alondra] Ana merged it.".into(), MessageFrom::Alondra, Some(MessageAbout::PrMerged { pr_id: 1, task: None }), vec![]).unwrap(), "o", "Alondra's notice goes to the orchestrator");
         let send = |from: MessageFrom| send_message(State(hub.clone()), Path("s".into()), Json(MessageBody { text: "go on".into(), from: Some(from), attachments: vec![], task: None }));
         assert_eq!(status_and_body(send(MessageFrom::Alondra).await).await.0, StatusCode::CONFLICT);
         assert_eq!(hub.read(|v| v.pending_messages("s").count()), 0, "nothing of Alondra's is queued for the done node");

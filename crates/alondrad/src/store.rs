@@ -193,7 +193,8 @@ mod tests {
             NodeState::Done => !tasks.is_empty() && !finished,
             NodeState::WaitingMerge => {
                 let due = v.merge_notice_due(&n.session_id).is_some() || v.review_reply_due(&n.session_id).is_some();
-                !due && !any(&[TaskState::InReview, TaskState::WaitingDependency]) && !tasks.iter().any(|t| v.auto_merge_pending(t, now))
+                let waits = tasks.iter().any(|t| v.auto_merge_pending(t, now)) || states::awaits_merge(v, n, now).is_some();
+                !due && !any(&[TaskState::InReview, TaskState::WaitingDependency]) && !waits
             }
             NodeState::Stalled => n.evidence.as_ref().is_none_or(|e| e.signal != alondra_core::Signal::CallStuck) && !any(&[TaskState::Running, TaskState::Closing]),
             NodeState::Delivered => any(&[TaskState::InReview]) || finished,
