@@ -375,7 +375,7 @@ impl Service {
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::Executing => {
-                let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}))?;
+                let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
@@ -386,11 +386,17 @@ impl Service {
                 self.journal.executing(&e.sender, &e.request_id, &digest)?;
                 let result = match self.dispatch(&request).await {
                     Ok(value) => value,
+                    Err(error) if error.is::<ResponseTooLarge>() => {
+                        json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
+                    }
+                    Err(error) if request.method == "GET" => {
+                        json!({"status":502,"error":"read_failed","detail":error.to_string()})
+                    }
                     Err(error) => {
                         json!({"status":503,"error":"uncertain","detail":error.to_string()})
                     }
                 };
-                let bytes = self.encode_response(e, device, &result)?;
+                let bytes = self.encode_response(e, device, &result, &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
@@ -407,6 +413,7 @@ impl Service {
         request: &EnvelopeV1,
         device: &Device,
         result: &Value,
+        local_request: &LocalRequest,
     ) -> Result<Vec<u8>> {
         let seal = |value: &Value| -> Result<Vec<u8>> {
             let payload = serde_json::to_vec(value)?;
@@ -432,7 +439,7 @@ impl Service {
         }
         // A JSON string containing many escaped bytes can expand far beyond the
         // raw local response cap. Persist a small encrypted error as the receipt.
-        let fallback = seal(&json!({"status":502,"error":"response_too_large","detail":"Mac response exceeded the encrypted relay limit; an action may already have completed"}))?;
+        let fallback = seal(&json!({"status":502,"error":"response_too_large","detail":response_size_detail(local_request)}))?;
         if fallback.len() > MAX_RELAY_RESPONSE {
             bail!("encrypted fallback response exceeds relay limit");
         }
@@ -459,11 +466,30 @@ async fn bounded_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
-            bail!("local response exceeds encrypted relay limit");
+            return Err(ResponseTooLarge.into());
         }
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[derive(Debug)]
+struct ResponseTooLarge;
+
+impl std::fmt::Display for ResponseTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "local response exceeds encrypted relay limit")
+    }
+}
+
+impl std::error::Error for ResponseTooLarge {}
+
+fn response_size_detail(request: &LocalRequest) -> &'static str {
+    if request.method == "GET" {
+        "Mac response exceeded the encrypted relay limit"
+    } else {
+        "Mac response exceeded the encrypted relay limit; an action may already have completed"
+    }
 }
 
 fn id(s: &str) -> bool {
@@ -788,7 +814,9 @@ mod tests {
         let exact = client.get(format!("http://127.0.0.1:{port}/exact")).send().await.unwrap();
         assert_eq!(bounded_response(exact).await.unwrap().len(), MAX_LOCAL_RESPONSE);
         let large = client.get(format!("http://127.0.0.1:{port}/large")).send().await.unwrap();
-        assert!(bounded_response(large).await.unwrap_err().to_string().contains("encrypted relay limit"));
+        let oversized = bounded_response(large).await.unwrap_err();
+        assert!(oversized.is::<ResponseTooLarge>());
+        assert!(oversized.to_string().contains("encrypted relay limit"));
         task.abort();
     }
     #[test]
@@ -1095,7 +1123,8 @@ mod tests {
         )
         .unwrap();
         let oversized = service.encode_response(&e, service.devices.get("phone-1").unwrap(),
-            &json!({"status":200,"body":{"text":"\u{0}".repeat(MAX_LOCAL_RESPONSE)}})).unwrap();
+            &json!({"status":200,"body":{"text":"\u{0}".repeat(MAX_LOCAL_RESPONSE)}}),
+            &LocalRequest { method: "GET".into(), path: "/v1/file?path=test".into(), body: None }).unwrap();
         assert!(oversized.len() <= MAX_RELAY_RESPONSE);
         let oversized_envelope: EnvelopeV1 = serde_json::from_slice(&oversized).unwrap();
         let opened = oversized_envelope.open(service.signing.verifying_key(), &phone_agreement,
