@@ -241,7 +241,7 @@ public struct ScheduledTasksView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(String(localized: "Last", table: "AlondraShared", bundle: #bundle))
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text("\(Date(timeIntervalSince1970: Double(last) / 1000).formatted(date: .abbreviated, time: .shortened)) · \(stateLabel(task.lastState ?? task.status))")
+                            Text("\(Date(timeIntervalSince1970: Double(last) / 1000).formatted(date: .abbreviated, time: .shortened)) · \(stateLabel(task.lastError == nil ? (task.lastState ?? task.status) : task.status))")
                         }
                     }
                     if let lastError = task.lastError {
