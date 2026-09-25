@@ -13,7 +13,13 @@ swift_deps.from_package(
     resolved = "//:Package.resolved",
     swift = "//:Package.swift",
 )
-use_repo(swift_deps, "swift_deps_info", "swift_package", "swiftpkg_highlightswift")
+use_repo(
+    swift_deps,
+    "swift_deps_info",
+    "swift_package",
+    "swiftpkg_highlightswift",
+    "swiftpkg_swift_composable_architecture",
+)
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(edition = "2024")
