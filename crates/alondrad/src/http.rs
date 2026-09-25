@@ -70,6 +70,7 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/prs/{id}/ask", post(ask_about_pr))
         .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
         .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
+        .route("/v1/prs/{id}/task", post(reassign_pr))
         .route("/v1/prs/{id}/diff", get(pr_diff))
         .route("/v1/tasks", post(define_tasks))
         .route("/v1/tasks/archive", post(archive_tasks))
@@ -218,12 +219,17 @@ async fn hook(State(hub): State<AppState>, Json(p): Json<Value>) -> Response {
         return Json(json!({})).into_response();
     }
     if event == "PostToolUse"
-        && p.pointer("/tool_input/command").and_then(Value::as_str).is_some_and(crate::prs::runs_pr_create)
+        && let Some(command) = p.pointer("/tool_input/command").and_then(Value::as_str).filter(|c| crate::prs::runs_pr_create(c))
         && let Some(url) = p.get("tool_response").and_then(crate::prs::created_pr)
     {
-        let task = hub.read(|v| v.fact_task(&session_id, h.agent_id.as_deref()));
+        let task = hub.read(|v| v.pr_task_for(&session_id, h.agent_id.as_deref(), &[command]));
         let (hub, session_id) = (hub.clone(), session_id.clone());
-        tokio::spawn(async move { crate::prs::open_confirmed(&hub, &session_id, vec![url], task).await });
+        tokio::spawn(async move {
+            crate::prs::open_confirmed(&hub, &session_id, vec![url.clone()], task).await;
+            if let Err(e) = hub.append_with(|v| v.pr_task_question(&url, now_millis()).map(Event::MessageQueued)) {
+                log!("could not ask {session_id} which task {url} is for: {e}");
+            }
+        });
     }
     if event == "Stop"
         && let Some(r) = hand_over_at_turn_end(&hub, &session_id)
@@ -1075,6 +1081,38 @@ async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
 async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     match hub.append(Event::PrDismissed { id }) {
         Ok(_) => Json(json!({"id": id})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReassignBody {
+    task: String,
+}
+
+/// David or the orchestrator moves a PR card to the task of its node it is for. The task it was
+/// on goes back to where its own facts leave it; the named one takes the PR as it is now.
+async fn reassign_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ReassignBody>) -> Response {
+    let task = b.task.trim().to_string();
+    let mut from: Option<String> = None;
+    let recorded = hub.append_all(|v| {
+        let Some(pr) = v.prs.get(&id) else { return Err(err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"))) };
+        if !v.board.tasks.contains_key(&task) {
+            return Err(err(StatusCode::NOT_FOUND, format!("task {task} does not exist")));
+        }
+        if !v.may_take_pr(&task, id) {
+            return Err(refused(StatusCode::CONFLICT, "other_node", format!("{task} is not a task of the node that opened {}", pr.url)));
+        }
+        from = v.pr_task_of(pr).map(|t| t.id.clone());
+        Ok(if from.as_deref() == Some(task.as_str()) { vec![] } else { vec![Event::PrReassigned { pr: id, task: task.clone() }] })
+    });
+    match recorded {
+        Ok(Ok(_)) => {
+            let states: serde_json::Map<String, Value> =
+                hub.read(|v| [Some(&task), from.as_ref()].into_iter().flatten().filter_map(|t| Some((t.clone(), json!(v.board.tasks.get(t)?.state)))).collect());
+            Json(json!({"id": id, "task": task, "from": from, "states": states})).into_response()
+        }
+        Ok(Err(refusal)) => refusal,
         Err(e) => internal(e),
     }
 }
@@ -4252,6 +4290,114 @@ mod tests {
         }
         assert_eq!(github.asked.lock().unwrap().len(), 1);
         assert!(card_urls(&hub).is_empty());
+    }
+
+    /// Node s with its own task, and with t-2 too when `second`: what the orchestrator gave it later.
+    fn node_with_tasks(tag: &str, second: bool) -> Arc<Hub> {
+        let hub = started(tag, &["s"]);
+        hub.append(Event::ReportPosted(Report {
+            id: 0, session_id: "s".into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
+            kind: ReportKind::Notice, created_at: 0, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
+        })).unwrap();
+        if second {
+            let t2 = alondra_core::tasks::NewTask {
+                id: "t-2".into(), request: "r-2".into(), title: "Otra".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, launched_as: None, start: None,
+            };
+            hub.append(Event::TaskCreated(t2)).unwrap();
+        }
+        hub
+    }
+
+    async fn main_thread_calls(hub: &Arc<Hub>, event: &str, tool: &str, input: Value) {
+        let p = json!({"hook_event_name": event, "session_id": "s", "tool_name": tool, "tool_use_id": "q", "tool_input": input});
+        hook(State(hub.clone()), Json(p)).await;
+    }
+
+    fn alondra_told(hub: &Hub) -> Vec<String> {
+        hub.read(|v| v.messages.values().filter(|m| m.session_id == "s" && m.from == MessageFrom::Alondra).map(|m| m.text.clone()).collect())
+    }
+
+    fn pr_task_of(hub: &Hub, id: u64) -> Option<String> {
+        hub.read(|v| v.pr_task_of(&v.prs[&id]).map(|t| t.id.clone()))
+    }
+
+    fn task_state(hub: &Hub, id: &str) -> alondra_core::tasks::TaskState {
+        hub.read(|v| v.board.tasks[id].state)
+    }
+
+    /// 25 Sep 00:01, events 45820-45839: the main thread of 7e661a50 had asked once about
+    /// t-44370, then opened #98 and #99 for its own review, and both went to t-44370.
+    #[tokio::test]
+    async fn a_pr_the_main_thread_opens_among_several_tasks_is_asked_about_not_guessed() {
+        use alondra_core::tasks::TaskState::{InReview, Running};
+        const ASK: &str = "mcp__plugin_alondra_alondra__ask";
+        const PR98: &str = "https://github.com/o/r/pull/98";
+        let hub = node_with_tasks("attribution", true);
+        main_thread_calls(&hub, "PreToolUse", ASK, json!({"task": "t-2"})).await;
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some("t-2".into()), ..ask_body("s", "¿Rediseño el TUI así?") })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        main_thread_calls(&hub, "PostToolUse", ASK, json!({"task": "t-2"})).await;
+        hub.append(Event::QuestionAnswered { id: 1, answer: answered("Sí", None) }).unwrap();
+
+        post_tool_use(&hub, "gh pr create --title 'Review fixes' --body 'What the review found'", &format!("{PR98}\n")).await;
+        assert_eq!(pr_task_of(&hub, 1), None, "the card opens with no task");
+        assert_eq!((task_state(&hub, "t-2"), task_state(&hub, "t-s")), (Running, Running));
+        let told = alondra_told(&hub);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].starts_with("[Alondra] PR #98: which task is it for?") && told[0].contains("- t-2: Otra") && told[0].contains("- t-s: "), "{}", told[0]);
+
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(ReportBody { task: Some("t-s".into()), ..report_body("s", ReportKind::Notice, &[PR98]) })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert_eq!((pr_task_of(&hub, 1).as_deref(), task_state(&hub, "t-s"), task_state(&hub, "t-2")), (Some("t-s"), InReview, Running), "the node's report says which");
+    }
+
+    #[tokio::test]
+    async fn a_pr_goes_to_the_task_its_text_names_or_to_the_only_open_one_without_a_word() {
+        let cases: &[(&str, bool, &str, &str)] = &[
+            ("two tasks, the body names one", true, "gh pr create --title Fix --body \"Fixes.\n\nAlondra task: t-s\"", "t-s"),
+            ("two tasks, the branch names one", true, "gh pr create --head redesign/t-2-tui --fill", "t-2"),
+            ("one task, nothing named", false, "gh pr create --fill", "t-s"),
+        ];
+        for &(what, second, command, task) in cases {
+            let hub = node_with_tasks("pr-named", second);
+            post_tool_use(&hub, command, "https://github.com/o/r/pull/12\n").await;
+            assert_eq!(pr_task_of(&hub, 1).as_deref(), Some(task), "{what}");
+            assert_eq!(task_state(&hub, task), alondra_core::tasks::TaskState::InReview, "{what}");
+            assert!(alondra_told(&hub).is_empty(), "{what}: nothing to ask");
+        }
+    }
+
+    /// The repair for 25 Sep 00:01: #98 and #99 go back to the review's task, t-44370 goes back
+    /// to running, and a restart replays the same board.
+    #[tokio::test]
+    async fn a_pr_moved_to_its_task_leaves_the_other_where_its_facts_say_and_survives_a_restart() {
+        let hub = node_with_tasks("reassign", true);
+        hub.append(Event::Hook(HookEvent { session_id: "o".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        status_and_body(report(State(hub.clone()), Json(report_body("o", ReportKind::Notice, &[]))).await).await;
+        for n in [98, 99] {
+            hub.append(Event::PrOpened { url: format!("https://github.com/o/r/pull/{n}"), session_id: "s".into(), task: Some("t-2".into()) }).unwrap();
+        }
+        for id in [1, 2] {
+            hub.append(Event::PrMerged { id, method: alondra_core::pr::MergeMethod::Merge }).unwrap();
+        }
+        assert_eq!(task_state(&hub, "t-2"), alondra_core::tasks::TaskState::Closing);
+
+        let move_pr = |id: u64, task: &str| reassign_pr(State(hub.clone()), Path(id), Json(ReassignBody { task: task.into() }));
+        let (status, said) = status_and_body(move_pr(1, "t-o").await).await;
+        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("other_node")), "{said}");
+        assert_eq!(status_and_body(move_pr(9, "t-s").await).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(status_and_body(move_pr(1, "t-9").await).await.0, StatusCode::NOT_FOUND);
+
+        let (status, said) = status_and_body(move_pr(1, "t-s").await).await;
+        assert_eq!((status, said["from"].as_str()), (StatusCode::OK, Some("t-2")), "{said}");
+        let (_, said) = status_and_body(move_pr(2, "t-s").await).await;
+        assert_eq!(said["states"], json!({"t-s": "closing", "t-2": "running"}));
+        let seq = hub.read(|v| v.seq);
+        let (status, said) = status_and_body(move_pr(2, "t-s").await).await;
+        assert_eq!((status, said["from"].as_str(), hub.read(|v| v.seq)), (StatusCode::OK, Some("t-s"), seq), "already there: nothing recorded");
+
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        assert_eq!(reopened.read(|v| v.board.clone()), hub.read(|v| v.board.clone()));
     }
 
     #[tokio::test]

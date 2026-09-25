@@ -207,9 +207,9 @@ pub struct Ledger {
     /// The main thread first, then the subagents in the order they started.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<Thread>,
-    /// The task each thread bound itself to with its first Alondra call naming one, by agent id
-    /// (none: the main thread). Kept after a subagent stops: `SendMessage` continues it under
-    /// the same id.
+    /// The task each subagent bound itself to with its first Alondra call naming one, by agent
+    /// id. Kept after a subagent stops: `SendMessage` continues it under the same id. An entry
+    /// without an id, left by older daemons for a main thread, binds nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bound: Vec<(Option<String>, String)>,
 }

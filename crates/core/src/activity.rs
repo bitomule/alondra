@@ -38,12 +38,16 @@ impl Ledger {
         &mut self.threads[i]
     }
 
-    pub fn bound(&self, agent_id: Option<&str>) -> Option<&str> {
-        self.bound.iter().find(|(a, _)| a.as_deref() == agent_id).map(|(_, t)| t.as_str())
+    /// The task a subagent bound itself to. The main thread coordinates every task of its node and
+    /// binds to none.
+    pub fn bound(&self, agent_id: &str) -> Option<&str> {
+        self.bound.iter().find(|(a, _)| a.as_deref() == Some(agent_id)).map(|(_, t)| t.as_str())
     }
 
     /// What a hook says about the thread it fired in. `binds` tells whether the task the hook
-    /// names is one this node may bind to.
+    /// names is one this node may bind to. Only a subagent binds, with its first Alondra call that
+    /// names a task; the main thread's `task` is for that call alone. 25 Sep 00:01: the main thread
+    /// of 7e661a50 asked once for t-44370 and everything it did after counted as t-44370.
     fn on_hook(&mut self, h: &HookEvent, at: Millis, binds: bool) {
         let agent = h.agent_id.as_deref();
         self.thread(None, at);
@@ -80,10 +84,11 @@ impl Ledger {
         let alondra_call = h.event == "PostToolUse" && h.tool_name.as_deref().is_some_and(|t| t.starts_with(ALONDRA_TOOLS));
         if alondra_call
             && binds
+            && let Some(agent) = agent
             && self.bound(agent).is_none()
             && let Some(task) = &h.task
         {
-            self.bound.push((agent.map(str::to_string), task.clone()));
+            self.bound.push((Some(agent.to_string()), task.clone()));
         }
     }
 
@@ -126,7 +131,7 @@ impl View {
     }
 
     /// The node's only open task, or its only task: everything the node does is that task's.
-    fn single_task(&self, session_id: &str) -> Option<&str> {
+    pub(crate) fn single_task(&self, session_id: &str) -> Option<&str> {
         let mine: Vec<&Task> = self.tasks_of(session_id).collect();
         let open: Vec<&Task> = mine.iter().copied().filter(|t| !t.state.finished()).collect();
         match (open.as_slice(), mine.as_slice()) {
@@ -146,7 +151,7 @@ impl View {
             .map(|t| {
                 let agent = t.agent_id.as_deref();
                 let assigned = agent.and_then(|a| self.tasks_of(sid).find(|task| task.assignee.as_ref().is_some_and(|x| x.agent_id.as_deref() == Some(a))).map(|task| task.id.as_str()));
-                let task = node.ledger.bound(agent).or(assigned).or(single);
+                let task = agent.and_then(|a| node.ledger.bound(a)).or(assigned).or(single);
                 Activity {
                     agent_id: t.agent_id.clone(),
                     agent_type: t.agent_type.clone(),
@@ -258,6 +263,22 @@ mod tests {
 
         run.hook("SubagentStop", EXPLORE, None, None).hook("SubagentStart", EXPLORE, None, None);
         assert_eq!(run.activity().last().and_then(|a| a.task.clone()).as_deref(), Some("t-other"), "SendMessage continues it under the same id");
+    }
+
+    /// 25 Sep 00:01: the main thread of 7e661a50 asked once for t-44370, and everything it did
+    /// after counted as t-44370.
+    #[test]
+    fn the_main_thread_never_binds_to_the_task_one_of_its_calls_names() {
+        const ASK: &str = "mcp__plugin_alondra_alondra__ask";
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None).second_task();
+        run.hook("PreToolUse", None, Some((ASK, "q")), None).hook("PostToolUse", None, Some((ASK, "q")), Some("t-other"));
+        run.hook("PreToolUse", None, Some(("Bash", "b")), None);
+        assert_eq!(run.rows(), vec![row(None, None, Some("Bash"))], "it coordinates both tasks");
+        assert!(run.view.nodes["s"].ledger.bound.is_empty());
+
+        run.hook("SubagentStart", EXPLORE, None, None).hook("PostToolUse", EXPLORE, Some((ASK, "a")), Some("t-other"));
+        assert_eq!(run.activity()[1].task.as_deref(), Some("t-other"), "a subagent still binds");
     }
 
     #[test]

@@ -4,12 +4,14 @@
 //! of sessions first seen before then (older logs) are still read from the session's events by
 //! the same rules: each session is one request with one task.
 
+use std::collections::BTreeSet;
+
 use crate::event::{Event, ReviewVerdict};
-use crate::model::{MessageAbout, MessageFrom, Millis, Question, QuestionOrigin, Report, ReportKind, TurnSignal};
+use crate::model::{Message, MessageAbout, MessageFrom, Millis, Question, QuestionOrigin, Report, ReportKind, TurnSignal};
 use crate::pr::{CheckState, PrState, PullRequest};
 use crate::view::View;
 
-use super::{Assignee, Blocker, BlockerKind, Guards, Item, Launch, NewTask, Request, Task, TaskEvent, TaskOptions, TaskState};
+use super::{Assignee, Blocker, BlockerKind, Guards, Item, Launch, NewTask, Request, Task, TaskEvent, TaskOptions, TaskState, Transition};
 
 /// A launch and a node of the same name go together when the node appeared this close to it.
 pub const LAUNCH_WINDOW: Millis = 10 * 60 * 1000;
@@ -35,8 +37,13 @@ pub enum Pass {
 pub enum Before {
     Nothing,
     Pr(Option<PullRequest>),
-    LastPr(u64),
+    /// The newest card before a PR was reported, and the card of its URL that had no task yet.
+    Opened { last: u64, orphan: Option<u64> },
+    /// The card before GitHub's news, and whether it had no task yet.
+    Updated { old: Option<PullRequest>, orphan: bool },
     Reviewing(Vec<u64>),
+    /// The task a PR was on before it was moved.
+    Reassigned(Option<String>),
 }
 
 /// Why a new card cannot go to the task a node named, or to any without one.
@@ -80,6 +87,37 @@ fn file_report(task: &mut Task, report: u64, document: bool) {
     }
 }
 
+fn about_pr(event: &TaskEvent, pr: u64) -> bool {
+    match event {
+        TaskEvent::PrOpened { pr: p } | TaskEvent::AutoMerged { pr: p } => *p == pr,
+        TaskEvent::ChangesRequested { on } | TaskEvent::NodeUpdated { on } => *on == Item::Pr(pr),
+        TaskEvent::Merged { item } | TaskEvent::ReviewClosed { item } => *item == Item::Pr(pr),
+        _ => false,
+    }
+}
+
+/// The task ids a text mentions, each with whether it follows “Alondra task:”. An id starts a
+/// word (`at-12` mentions none) and runs to the end of it, so a branch `t-12-fix` mentions
+/// `t-12-fix`, which `View::named_task` shortens to the task it finds.
+fn task_mentions(text: &str) -> Vec<(&str, bool)> {
+    const MARKER: &str = "alondra task:";
+    let mut found = vec![];
+    let mut from = 0;
+    while let Some(i) = text[from..].find("t-").map(|i| from + i) {
+        from = i + 2;
+        let starts_word = text[..i].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '-' || c == '_'));
+        let len = text[from..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).unwrap_or(text.len() - from);
+        if !starts_word || len == 0 {
+            continue;
+        }
+        let before = text[..i].trim_end_matches([' ', '\t', '`', '*', '"', '\'']);
+        let cut = before.len().saturating_sub(MARKER.len());
+        let marked = before.len() >= MARKER.len() && before.is_char_boundary(cut) && before[cut..].eq_ignore_ascii_case(MARKER);
+        found.push((text[i..from + len].trim_end_matches('-'), marked));
+    }
+    found
+}
+
 fn checks_failed(pr: &PullRequest) -> Option<u64> {
     pr.checks.iter().any(|c| matches!(c.state, CheckState::Failed | CheckState::Running)).then_some(pr.number)
 }
@@ -102,6 +140,7 @@ fn may_move_tasks(event: &Event) -> bool {
         | Event::PrDismissed { .. }
         | Event::PrChangesRequested { .. }
         | Event::PrAsked { .. }
+        | Event::PrReassigned { .. }
         | Event::NodeRemoved { .. }
         | Event::DaemonSeen(_)
         | Event::Launched { .. }
@@ -144,8 +183,13 @@ impl View {
         self.card_task_id(r.task.as_ref(), &r.session_id).and_then(|id| self.board.tasks.get(&id))
     }
 
+    /// The task a PR card is for: the one it was given, or for a card from before cards carried
+    /// one, the task that lists it. None while nothing said which: Alondra asked the node.
     pub fn pr_task_of(&self, p: &PullRequest) -> Option<&Task> {
-        self.card_task_id(p.task.as_ref(), &p.session_id).and_then(|id| self.board.tasks.get(&id))
+        match &p.task {
+            Some(id) => self.board.tasks.get(id),
+            None => self.board.tasks.values().find(|t| t.prs.contains(&p.id)),
+        }
     }
 
     fn pr_task(&self, pr: u64) -> Option<String> {
@@ -186,20 +230,25 @@ impl View {
         Some((id, Event::TaskCreated(new)))
     }
 
+    /// The open task a subagent of the node works on: assigned to it, or the one it bound itself
+    /// to (`activity`).
+    fn agent_task(&self, session_id: &str, agent_id: &str) -> Option<&Task> {
+        let bound = self.nodes.get(session_id).and_then(|n| n.ledger.bound(agent_id));
+        self.tasks_of(session_id)
+            .filter(|t| !t.state.finished())
+            .find(|t| t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == Some(agent_id) || bound == Some(t.id.as_str()))
+    }
+
     /// The task a new card of the node goes to: the one it names, else its only open task, else
     /// its newest, else the one its first card gives it. A subagent's card goes to the open task
-    /// it works on: assigned to it, or the one it bound itself to (`activity`).
+    /// it works on.
     pub fn card_task(&self, session_id: &str, named: Option<&str>, agent_id: Option<&str>) -> Result<String, CardTask> {
         if let Some(id) = named.map(str::trim).filter(|t| !t.is_empty()) {
             let task = self.board.tasks.get(id).ok_or_else(|| CardTask::Unknown(id.to_string()))?;
             return if task.is_assigned_to(session_id) { Ok(task.id.clone()) } else { Err(CardTask::NotYours(id.to_string())) };
         }
         let open: Vec<&Task> = self.tasks_of(session_id).filter(|t| !t.state.finished()).collect();
-        let bound = agent_id.and_then(|a| self.nodes.get(session_id)?.ledger.bound(Some(a)));
-        let by_agent = open.iter().find(|t| {
-            agent_id.is_some() && (t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == agent_id || bound == Some(t.id.as_str()))
-        });
-        match (open.as_slice(), by_agent) {
+        match (open.as_slice(), agent_id.and_then(|a| self.agent_task(session_id, a))) {
             (_, Some(t)) => Ok(t.id.clone()),
             ([one], None) => Ok(one.id.clone()),
             ([], None) => Ok(self.session_task(session_id).map(|t| t.id.clone()).or_else(|| self.first_task(session_id).map(|(id, _)| id)).unwrap_or_else(|| task_id(session_id))),
@@ -208,7 +257,8 @@ impl View {
     }
 
     /// The task a card of a fact (a hook, a menu, the sentinel) goes to: it cannot be refused,
-    /// so with several open tasks it goes to the newest. The orchestrator's cards have none.
+    /// so with several open tasks it goes to the newest. The orchestrator's cards have none. A PR
+    /// never goes by it: see `pr_task_for`.
     pub fn fact_task(&self, session_id: &str, agent_id: Option<&str>) -> Option<String> {
         if self.nodes.get(session_id).is_none_or(|n| n.is_orchestrator) {
             return None;
@@ -217,6 +267,77 @@ impl View {
             Ok(id) => Some(id),
             Err(_) => self.session_task(session_id).map(|t| t.id.clone()),
         }
+    }
+
+    /// The task a PR the node opened is for, in this order: the task its title, body or branch
+    /// names (“Alondra task: t-…”), the task of the subagent that opened it, the node's only open
+    /// task (its only task when none is open). None when the node works on several and nothing
+    /// says which: Alondra asks the node instead of guessing. 25 Sep 00:01: the main thread of
+    /// 7e661a50 opened #98 and #99 for its review, and both went to t-44370, its newest task.
+    pub fn pr_task_for(&self, session_id: &str, agent_id: Option<&str>, texts: &[&str]) -> Option<String> {
+        if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
+            return None;
+        }
+        self.named_task(session_id, texts)
+            .or_else(|| agent_id.and_then(|a| self.agent_task(session_id, a)).map(|t| t.id.clone()))
+            .or_else(|| self.single_task(session_id).map(str::to_string))
+    }
+
+    /// The node's task a PR's text names: the one after “Alondra task:”, else the only open task
+    /// it mentions.
+    fn named_task(&self, session_id: &str, texts: &[&str]) -> Option<String> {
+        let mine = |id: &str| self.board.tasks.get(id).filter(|t| t.is_assigned_to(session_id));
+        let resolve = |mention: &str| {
+            let mut id = mention;
+            loop {
+                if let Some(t) = mine(id) {
+                    return Some(t);
+                }
+                id = &id[..id.rfind('-').filter(|&i| i > 1)?];
+            }
+        };
+        let named: Vec<(&Task, bool)> = texts.iter().flat_map(|t| task_mentions(t)).filter_map(|(id, marked)| resolve(id).map(|t| (t, marked))).collect();
+        if let Some((t, _)) = named.iter().find(|(_, marked)| *marked) {
+            return Some(t.id.clone());
+        }
+        let open: BTreeSet<&str> = named.iter().filter(|(t, _)| !t.state.finished()).map(|(t, _)| t.id.as_str()).collect();
+        match (open.first(), open.len()) {
+            (Some(id), 1) => Some(id.to_string()),
+            _ => None,
+        }
+    }
+
+    /// The task GitHub's copy of a PR names in its title, body or branch.
+    fn marked_task(&self, pr: u64) -> Option<String> {
+        let p = self.prs.get(&pr)?;
+        self.named_task(&p.session_id, &[&p.title, p.body.as_deref().unwrap_or_default(), p.head.as_deref().unwrap_or_default()])
+    }
+
+    fn untasked_pr(&self, url: &str) -> Option<u64> {
+        let (repo, number) = crate::pr::parse_url(url)?;
+        self.prs.values().find(|p| p.repo == repo && p.number == number && self.pr_task_of(p).is_none()).map(|p| p.id)
+    }
+
+    /// Whether the task can take the PR card: it is a task of the node that opened it.
+    pub fn may_take_pr(&self, task: &str, pr: u64) -> bool {
+        let opener = self.prs.get(&pr).map(|p| p.session_id.as_str());
+        self.board.tasks.get(task).is_some_and(|t| opener.is_some_and(|s| t.is_assigned_to(s)))
+    }
+
+    /// What Alondra types into a node, once, when a PR it opened got no task: it works on several
+    /// and nothing said which.
+    pub fn pr_task_question(&self, url: &str, at: Millis) -> Option<Message> {
+        let (repo, number) = crate::pr::parse_url(url)?;
+        let pr = self.prs.values().find(|p| p.repo == repo && p.number == number)?;
+        if self.pr_task_of(pr).is_some() || self.nodes.get(&pr.session_id).is_none_or(|n| n.is_orchestrator) {
+            return None;
+        }
+        let open: Vec<String> = self.tasks_of(&pr.session_id).filter(|t| !t.state.finished()).map(|t| format!("- {}: {}", t.id, t.title)).collect();
+        let text = format!(
+            "[Alondra] PR #{number}: which task is it for? Report it with `task`, or add “Alondra task: t-…” to its body. Your open tasks:\n{}",
+            open.join("\n")
+        );
+        self.alondra_message(&pr.session_id, text, at)
     }
 
     fn review_pending(&self, report: u64) -> bool {
@@ -305,8 +426,16 @@ impl View {
 
     pub fn before_tasks(&self, event: &Event) -> Before {
         match event {
-            Event::PrOpened { .. } => Before::LastPr(self.prs.keys().next_back().copied().unwrap_or(0)),
-            Event::PrUpdated(p) => Before::Pr(self.prs.get(&p.id).cloned()),
+            Event::PrOpened { url, task, .. } => Before::Opened {
+                last: self.prs.keys().next_back().copied().unwrap_or(0),
+                orphan: task.as_ref().and_then(|_| self.untasked_pr(url)),
+            },
+            Event::PrUpdated(p) => {
+                let old = self.prs.get(&p.id).cloned();
+                let orphan = old.as_ref().is_some_and(|o| self.pr_task_of(o).is_none());
+                Before::Updated { old, orphan }
+            }
+            Event::PrReassigned { pr, .. } => Before::Reassigned(self.pr_task(*pr)),
             Event::PrMerged { id, .. } | Event::PrDismissed { id } => Before::Pr(self.prs.get(id).cloned()),
             Event::ReportRead { id } | Event::ArtifactReviewed { report: id, .. } => {
                 let task = self.reports.get(id).and_then(|r| self.report_task(r));
@@ -417,17 +546,23 @@ impl View {
                     self.bring_back_parked_prs(&id);
                 }
             }
-            (Event::PrOpened { session_id, task, .. }, Before::LastPr(last)) => {
+            (Event::PrOpened { session_id, task, .. }, Before::Opened { last, orphan }) => {
+                let named = task.clone().filter(|t| self.board.tasks.contains_key(t));
                 let opened: Vec<u64> = self.prs.range(last + 1..).map(|(id, _)| *id).collect();
-                let id = task.clone().filter(|t| self.board.tasks.contains_key(t)).or_else(|| self.session_task(session_id).map(|t| t.id.clone()));
+                let id = named.clone().or_else(|| self.pr_task_for(session_id, None, &[]));
                 for pr in opened {
                     self.put_pr_in_task(pr, id.clone());
                 }
+                if let Some(pr) = *orphan {
+                    let fits = named.filter(|t| self.may_take_pr(t, pr));
+                    self.put_pr_in_task(pr, fits);
+                }
             }
             (Event::PrUpdated(p), _) => {
-                let task = self.pr_task(p.id);
+                let task = self.pr_task(p.id).or_else(|| self.marked_task(p.id));
                 self.put_pr_in_task(p.id, task);
             }
+            (Event::PrReassigned { pr, task }, Before::Reassigned(from)) => self.reassign_pr(*pr, from.as_deref(), task),
             _ => {}
         }
     }
@@ -523,7 +658,7 @@ impl View {
                     moved.extend(self.written_to(&tid, Item::Terminal, at));
                 }
             }
-            (Event::PrOpened { .. }, Before::LastPr(last)) => {
+            (Event::PrOpened { .. }, Before::Opened { last, orphan }) => {
                 let opened: Vec<u64> = self.prs.range(last + 1..).map(|(id, _)| *id).collect();
                 for pr in opened {
                     let Some(id) = self.pr_task(pr) else { continue };
@@ -532,8 +667,16 @@ impl View {
                         moved.push(id);
                     }
                 }
+                if let Some(pr) = orphan {
+                    moved.extend(self.pr_joined(pr, at));
+                }
             }
-            (Event::PrUpdated(p), Before::Pr(Some(old))) => moved.extend(self.pr_changed(&old, p.id, at)),
+            (Event::PrUpdated(p), Before::Updated { orphan: true, .. }) => moved.extend(self.pr_joined(p.id, at)),
+            (Event::PrUpdated(p), Before::Updated { old: Some(old), .. }) => moved.extend(self.pr_changed(&old, p.id, at)),
+            (Event::PrReassigned { pr, task }, Before::Reassigned(from)) if from.as_ref() != Some(task) && self.pr_task(*pr).as_ref() == Some(task) => {
+                moved.extend(from);
+                moved.extend(self.pr_joined(*pr, at));
+            }
             (Event::PrMerged { id, .. } | Event::PrDismissed { id }, Before::Pr(Some(old))) => moved.extend(self.pr_changed(&old, *id, at)),
             (Event::PrChangesRequested { id } | Event::PrAsked { id }, _) => {
                 if let Some(tid) = self.pr_task(*id)
@@ -552,6 +695,67 @@ impl View {
             _ => {}
         }
         moved
+    }
+
+    /// A PR that joins its task late (a report named the task, GitHub's copy names it, or David
+    /// moved it there) brings what already happened to it: it was opened, and merged or closed if
+    /// it was. A finished task that gets a merged or closed PR only lists it.
+    fn pr_joined(&mut self, pr: u64, at: Millis) -> Option<String> {
+        let id = self.pr_task(pr)?;
+        let (state, auto_merged) = self.prs.get(&pr).map(|p| (p.state, p.auto_merge))?;
+        let mut moved = state == PrState::Open && self.own_pr_on_done_task(&id, pr) && self.fact(&id, TaskEvent::Reopen, at);
+        if self.task_state(&id).is_none_or(|s| s.finished() || s == TaskState::WaitingDependency) {
+            return moved.then_some(id);
+        }
+        moved |= self.fact(&id, TaskEvent::PrOpened { pr }, at);
+        moved |= match state {
+            PrState::Merged if auto_merged => self.fact(&id, TaskEvent::AutoMerged { pr }, at),
+            PrState::Merged => self.fact(&id, TaskEvent::Merged { item: Item::Pr(pr) }, at),
+            PrState::Closed | PrState::Dismissed => self.fact(&id, TaskEvent::ReviewClosed { item: Item::Pr(pr) }, at),
+            PrState::Open | PrState::Unknown => false,
+        };
+        moved.then_some(id)
+    }
+
+    /// David or the orchestrator said which task a PR is for. It leaves the task it was given,
+    /// which goes back to where its own facts leave it; the task it joins takes it in `moved_by`.
+    fn reassign_pr(&mut self, pr: u64, from: Option<&str>, to: &str) {
+        if from == Some(to) || !self.may_take_pr(to, pr) {
+            return;
+        }
+        if let Some(p) = self.prs.get_mut(&pr) {
+            p.task = None;
+        }
+        if let Some(from) = from {
+            if let Some(t) = self.board.tasks.get_mut(from) {
+                t.prs.retain(|id| *id != pr);
+            }
+            self.drop_pr_facts(from, pr);
+        }
+        self.put_pr_in_task(pr, Some(to.to_string()));
+    }
+
+    /// Takes the facts of a PR that was never the task's out of it: its history up to the PR's
+    /// first fact stays, and the facts after it are applied again without the PR's, so the task
+    /// is where its own facts leave it. A fact the machine no longer takes is left out.
+    fn drop_pr_facts(&mut self, id: &str, pr: u64) {
+        let Some(task) = self.board.tasks.get_mut(id) else { return };
+        task.anomalies.retain(|a| !about_pr(&a.event, pr));
+        let Some(first) = task.history.iter().position(|h| about_pr(&h.event, pr)) else { return };
+        let later: Vec<Transition> = task.history.split_off(first);
+        task.state = later[0].from;
+        task.state_since = task.history.iter().rev().find(|h| h.from != h.to).map_or(task.created_at, |h| h.at);
+        task.rehold();
+        for h in later.into_iter().filter(|h| !about_pr(&h.event, pr)) {
+            let Some(task) = self.board.tasks.get(id) else { return };
+            let g = self.guards_for(task, &h.event);
+            if super::transition(task.state, &h.event, &g).is_ok() {
+                let _ = self.board.apply_fact(id, h.event, &g, h.at);
+            }
+        }
+        if let Some(t) = self.board.tasks.get_mut(id).filter(|t| !t.state.finished()) {
+            t.archived_at = None;
+        }
     }
 
     /// The node that works on a done task opened a new PR for it: the task has work again.
@@ -1651,6 +1855,108 @@ mod tests {
             d.on(asked(2, "s", |q| q.task = Some("t-2".into())));
             assert_eq!(d.view.board.tasks["t-2"].blocker.map(|b| b.question), Some(2));
             assert_eq!(d.view.board.tasks["t-s"].blocker.map(|b| b.question), Some(1));
+        }
+
+        const PR98: &str = "https://github.com/a/alondra/pull/98";
+        const PR99: &str = "https://github.com/a/alondra/pull/99";
+
+        /// Node s works on its own task t-s and on t-2, which the orchestrator gave it later: node
+        /// 7e661a50 with its review and t-44370 on 25 Sep.
+        fn two_tasks() -> Daemon {
+            let mut d = Daemon::new();
+            d.on(hook_of("s", UPS)).on(asked(1, "s", |_| {})).on(answered(1));
+            let second = crate::tasks::NewTask { id: "t-2".into(), request: "r-1".into(), title: "Second".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: Some("s".into()), launched: false, launched_as: None, start: None };
+            d.on(Event::TaskCreated(second));
+            d
+        }
+
+        fn pr_for(url: &str, task: Option<&str>) -> Event {
+            Event::PrOpened { url: url.into(), session_id: "s".into(), task: task.map(Into::into) }
+        }
+
+        fn pr_task(d: &Daemon, id: u64) -> Option<String> {
+            d.view.pr_task_of(&d.view.prs[&id]).map(|t| t.id.clone())
+        }
+
+        #[test]
+        fn a_pr_goes_to_the_task_it_names_or_its_subagent_works_on_and_is_never_guessed() {
+            let mut d = two_tasks();
+            d.on(hook_of("o", UPS)).on(asked(2, "o", |_| {}));
+            d.on(Event::Hook(HookEvent {
+                session_id: "s".into(),
+                event: "PostToolUse".into(),
+                agent_id: Some("a1".into()),
+                tool_name: Some("mcp__plugin_alondra_alondra__report".into()),
+                task: Some("t-2".into()),
+                ..Default::default()
+            }));
+            let cases: &[(&str, Option<&str>, &str, Option<&str>)] = &[
+                ("the main thread, nothing named", None, "gh pr create --fill", None),
+                ("the marker in the body", None, "gh pr create --title Fix --body \"Fixes.\n\nAlondra task: t-s\"", Some("t-s")),
+                ("the marker in bold, the id in backticks", None, "--body '**Alondra task:** `t-2`'", Some("t-2")),
+                ("the id alone, in the branch", None, "gh pr create --head review/t-s-fixes --fill", Some("t-s")),
+                ("two ids, the marked one wins", None, "Builds on t-2. Alondra task: t-s", Some("t-s")),
+                ("two ids and no marker", None, "t-2 and t-s", None),
+                ("ids that only look like it", None, "t-22 at-2 t-2x", None),
+                ("another node's task", None, "Alondra task: t-o", None),
+                ("the subagent that bound itself to t-2", Some("a1"), "gh pr create --fill", Some("t-2")),
+                ("what the PR says wins over the subagent", Some("a1"), "Alondra task: t-s", Some("t-s")),
+            ];
+            for (what, agent, text, task) in cases {
+                assert_eq!(d.view.pr_task_for("s", *agent, &[text]).as_deref(), *task, "{what}");
+            }
+            assert_eq!(d.view.pr_task_for("o", None, &["gh pr create --fill"]).as_deref(), Some("t-o"), "a node with one open task needs no word");
+        }
+
+        /// A PR opened with no task waits for the node: a report naming its task, or GitHub's copy
+        /// naming it, gives it one, and the task takes the PR as it is by then.
+        #[test]
+        fn a_pr_left_without_a_task_joins_the_one_a_report_or_its_body_names() {
+            let mut d = two_tasks();
+            d.on(pr_for(PR98, None)).on(pr_for(PR99, None));
+            assert_eq!((pr_task(&d, 1), pr_task(&d, 2)), (None, None), "two open tasks and nothing said which");
+            assert_eq!((state(&d, "t-s"), state(&d, "t-2")), (Running, Running));
+            let asked = d.view.pr_task_question(PR98, 0).expect("the node is asked");
+            assert!(asked.text.starts_with("[Alondra] PR #98: which task is it for?") && asked.text.contains("- t-2: Second") && asked.text.contains("- t-s: "), "{}", asked.text);
+
+            d.on(pr_for(PR98, Some("t-s")));
+            assert_eq!(pr_task(&d, 1).as_deref(), Some("t-s"), "a report linking it with task");
+            assert_eq!((state(&d, "t-s"), d.view.pr_task_question(PR98, 0)), (InReview, None));
+
+            d.github(2, |p| {
+                p.state = PrState::Merged;
+                p.body = Some("Redesign.\n\nAlondra task: t-2".into());
+            });
+            assert_eq!(pr_task(&d, 2).as_deref(), Some("t-2"), "GitHub's copy names it");
+            assert_eq!(state(&d, "t-2"), Closing, "merged before it had a task: its task takes the merge");
+            d.on(pr_for(PR98, Some("t-2")));
+            assert_eq!(pr_task(&d, 1).as_deref(), Some("t-s"), "a PR with a task keeps it: moving it is David's");
+            assert_eq!(d.replayed(|_| true).board, d.view.board);
+        }
+
+        /// 25 Sep 00:01: #98 and #99 of 7e661a50's review went to t-44370 while its subagent was
+        /// still at work, and their merges sent it to closing.
+        #[test]
+        fn moving_a_pr_to_the_task_it_was_for_leaves_both_where_their_facts_say_and_replays_the_same() {
+            let mut d = two_tasks();
+            d.on(asked(2, "s", |q| q.task = Some("t-2".into()))).on(answered(2));
+            d.on(pr_for(PR98, Some("t-2"))).on(pr_for(PR99, Some("t-2")));
+            d.on(Event::PrMerged { id: 1, method: MergeMethod::Merge }).on(Event::PrMerged { id: 2, method: MergeMethod::Merge });
+            assert_eq!((state(&d, "t-2"), state(&d, "t-s")), (Closing, Running), "where the wrong attribution left them");
+
+            d.on(Event::PrReassigned { pr: 1, task: "t-s".into() });
+            assert_eq!((state(&d, "t-2"), d.view.board.tasks["t-2"].prs.clone()), (Closing, vec![2]), "#99 is still t-2's");
+            d.on(Event::PrReassigned { pr: 2, task: "t-s".into() });
+            let (a, b) = (&d.view.board.tasks["t-s"], &d.view.board.tasks["t-2"]);
+            let b_moves: Vec<&str> = b.history.iter().map(|h| h.event.name()).collect();
+            assert_eq!((b.state, b.prs.clone(), b_moves), (Running, vec![], vec!["blocker_raised", "answered"]));
+            assert_eq!((a.state, a.prs.clone()), (Closing, vec![1, 2]), "the review's task carries the merged PRs");
+            assert_eq!((pr_task(&d, 1), pr_task(&d, 2)), (Some("t-s".into()), Some("t-s".into())));
+            assert!(d.view.board.anomalies.is_empty());
+            assert_eq!(d.replayed(|_| true).board, d.view.board, "a replay moves them the same");
+
+            d.on(hook_of("o", UPS)).on(asked(3, "o", |_| {})).on(Event::PrReassigned { pr: 1, task: "t-o".into() });
+            assert_eq!(pr_task(&d, 1).as_deref(), Some("t-s"), "never to another node's task");
         }
     }
 }
