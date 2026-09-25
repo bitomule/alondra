@@ -26,6 +26,10 @@
 //! approved device agreement key in a shared Keychain access group.
 //! The standalone `tests/cryptokit_vector.swift` checks an independently reconstructed header,
 //! HKDF key, ChaChaPoly plaintext and P-256 signature against the Rust fixture.
+//! For Mac-to-relay HTTP authentication, `/v1/bootstrap` publishes a random relay epoch.
+//! The Mac signs that epoch, device ID, HTTP method/path, body digest, timestamp and a fresh
+//! 128-bit nonce. The relay uses one shared `HttpChallengeVerifier`: it rejects clock skew,
+//! repeated nonces and signatures from a prior relay process epoch.
 
 #![forbid(unsafe_code)]
 
@@ -44,6 +48,7 @@ use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 const ENVELOPE_DOMAIN: &[u8] = b"alondra-e2e-envelope-v1";
 const KEY_DOMAIN: &[u8] = b"alondra-e2e-key-v1";
@@ -59,6 +64,9 @@ pub enum Error {
     WrongIdentity,
     Expired,
     Crypto,
+    ClockSkew,
+    Replay,
+    Capacity,
 }
 
 impl std::fmt::Display for Error {
@@ -327,6 +335,7 @@ pub fn http_challenge_bytes(
     device_id: &str,
     method: &str,
     path_and_query: &str,
+    server_epoch: &[u8; 16],
     body: &[u8],
     timestamp_ms: u64,
     nonce: &[u8; 16],
@@ -345,6 +354,7 @@ pub fn http_challenge_bytes(
         device_id.as_bytes(),
         method.as_bytes(),
         path_and_query.as_bytes(),
+        server_epoch.as_slice(),
         Sha256::digest(body).as_slice(),
         timestamp_ms.to_string().as_bytes(),
         nonce.as_slice(),
@@ -354,11 +364,13 @@ pub fn http_challenge_bytes(
     Ok(bytes)
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the signed HTTP fields explicitly.
 pub fn sign_http_challenge(
     secret: &SigningKey,
     device_id: &str,
     method: &str,
     path_and_query: &str,
+    server_epoch: &[u8; 16],
     body: &[u8],
     timestamp_ms: u64,
     nonce: &[u8; 16],
@@ -367,6 +379,7 @@ pub fn sign_http_challenge(
         device_id,
         method,
         path_and_query,
+        server_epoch,
         body,
         timestamp_ms,
         nonce,
@@ -374,13 +387,14 @@ pub fn sign_http_challenge(
     Ok(URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 
-#[allow(clippy::too_many_arguments)] // Mirrors the HTTP authentication headers explicitly.
-pub fn verify_http_challenge(
+#[allow(clippy::too_many_arguments)]
+fn verify_http_signature(
     key: &VerifyingKey,
     signature: &str,
     device_id: &str,
     method: &str,
     path_and_query: &str,
+    server_epoch: &[u8; 16],
     body: &[u8],
     timestamp_ms: u64,
     nonce: &[u8; 16],
@@ -388,10 +402,93 @@ pub fn verify_http_challenge(
     let signature =
         Signature::from_slice(&decode(signature)?).map_err(|_| Error::InvalidSignature)?;
     key.verify(
-        &http_challenge_bytes(device_id, method, path_and_query, body, timestamp_ms, nonce)?,
+        &http_challenge_bytes(
+            device_id,
+            method,
+            path_and_query,
+            server_epoch,
+            body,
+            timestamp_ms,
+            nonce,
+        )?,
         &signature,
     )
     .map_err(|_| Error::InvalidSignature)
+}
+
+/// One-time verification for signed Mac HTTP requests. Keep one instance shared across all
+/// relay workers; do not create a fresh instance for every request. Rejected signatures do not
+/// consume nonces. A full live registry rejects new requests rather than evicting replay records.
+/// A fresh signed server epoch invalidates captured requests after process restart.
+pub struct HttpChallengeVerifier {
+    server_epoch: [u8; 16],
+    max_skew_ms: u64,
+    max_entries: usize,
+    used: HashMap<(String, [u8; 16]), u64>,
+}
+
+impl HttpChallengeVerifier {
+    pub fn new(max_skew_ms: u64, max_entries: usize) -> Result<Self, Error> {
+        if max_skew_ms == 0 || max_skew_ms > 300_000 || max_entries == 0 {
+            return Err(Error::InvalidField);
+        }
+        let mut server_epoch = [0u8; 16];
+        SystemRandom::new()
+            .fill(&mut server_epoch)
+            .map_err(|_| Error::Crypto)?;
+        Ok(Self {
+            server_epoch,
+            max_skew_ms,
+            max_entries,
+            used: HashMap::new(),
+        })
+    }
+
+    /// Publish this value as base64url on the bootstrap endpoint. The Mac must sign it exactly.
+    pub fn server_epoch(&self) -> [u8; 16] {
+        self.server_epoch
+    }
+
+    #[allow(clippy::too_many_arguments)] // Mirrors the HTTP authentication headers explicitly.
+    pub fn verify(
+        &mut self,
+        key: &VerifyingKey,
+        signature: &str,
+        device_id: &str,
+        method: &str,
+        path_and_query: &str,
+        body: &[u8],
+        timestamp_ms: u64,
+        nonce: &[u8; 16],
+        now_ms: u64,
+    ) -> Result<(), Error> {
+        if timestamp_ms.abs_diff(now_ms) > self.max_skew_ms {
+            return Err(Error::ClockSkew);
+        }
+        self.used
+            .retain(|_, valid_through| *valid_through >= now_ms);
+        let nonce_key = (device_id.to_owned(), *nonce);
+        if self.used.contains_key(&nonce_key) {
+            return Err(Error::Replay);
+        }
+        if self.used.len() >= self.max_entries {
+            return Err(Error::Capacity);
+        }
+        verify_http_signature(
+            key,
+            signature,
+            device_id,
+            method,
+            path_and_query,
+            &self.server_epoch,
+            body,
+            timestamp_ms,
+            nonce,
+        )?;
+        self.used
+            .insert(nonce_key, timestamp_ms.saturating_add(self.max_skew_ms));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -512,54 +609,208 @@ mod tests {
     fn http_challenge_binds_body_path_and_nonce() {
         let (sender, _, _) = keys();
         let nonce = [9u8; 16];
+        let now = 1_700_000_000_000;
+        let mut verifier = HttpChallengeVerifier::new(30_000, 2).unwrap();
+        let epoch = verifier.server_epoch();
         let sig = sign_http_challenge(
             &sender,
             "mac-1",
             "POST",
             "/v1/work?after=2",
+            &epoch,
             b"payload",
-            1_700_000_000_000,
+            now,
             &nonce,
         )
         .unwrap();
-        assert!(
-            verify_http_challenge(
-                sender.verifying_key(),
-                &sig,
-                "mac-1",
-                "POST",
-                "/v1/work?after=2",
-                b"payload",
-                1_700_000_000_000,
-                &nonce
-            )
-            .is_ok()
-        );
         assert_eq!(
-            verify_http_challenge(
+            verifier.verify(
                 sender.verifying_key(),
                 &sig,
                 "mac-1",
                 "POST",
                 "/v1/work?after=3",
                 b"payload",
-                1_700_000_000_000,
-                &nonce
+                now,
+                &nonce,
+                now
             ),
             Err(Error::InvalidSignature)
         );
         assert_eq!(
-            verify_http_challenge(
+            verifier.verify(
                 sender.verifying_key(),
                 &sig,
                 "mac-1",
                 "POST",
                 "/v1/work?after=2",
                 b"payload2",
-                1_700_000_000_000,
-                &nonce
+                now,
+                &nonce,
+                now
             ),
             Err(Error::InvalidSignature)
+        );
+        assert!(
+            verifier
+                .verify(
+                    sender.verifying_key(),
+                    &sig,
+                    "mac-1",
+                    "POST",
+                    "/v1/work?after=2",
+                    b"payload",
+                    now,
+                    &nonce,
+                    now,
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &nonce,
+                now,
+            ),
+            Err(Error::Replay)
+        );
+        let other_nonce = [10u8; 16];
+        let other_sig = sign_http_challenge(
+            &sender,
+            "mac-1",
+            "POST",
+            "/v1/work?after=2",
+            &epoch,
+            b"payload",
+            now,
+            &other_nonce,
+        )
+        .unwrap();
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &other_sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &other_nonce,
+                now + 30_001,
+            ),
+            Err(Error::ClockSkew)
+        );
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &other_sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &other_nonce,
+                now - 30_001
+            ),
+            Err(Error::ClockSkew)
+        );
+        assert!(
+            verifier
+                .verify(
+                    sender.verifying_key(),
+                    &other_sig,
+                    "mac-1",
+                    "POST",
+                    "/v1/work?after=2",
+                    b"payload",
+                    now,
+                    &other_nonce,
+                    now
+                )
+                .is_ok()
+        );
+        let third_nonce = [11u8; 16];
+        let third_sig = sign_http_challenge(
+            &sender,
+            "mac-1",
+            "POST",
+            "/v1/work?after=2",
+            &epoch,
+            b"payload",
+            now,
+            &third_nonce,
+        )
+        .unwrap();
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &third_sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &third_nonce,
+                now
+            ),
+            Err(Error::Capacity)
+        );
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &third_sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &third_nonce,
+                now + 30_001
+            ),
+            Err(Error::ClockSkew)
+        );
+        let mut restarted = HttpChallengeVerifier::new(30_000, 2).unwrap();
+        assert_ne!(restarted.server_epoch(), epoch);
+        assert_eq!(
+            restarted.verify(
+                sender.verifying_key(),
+                &sig,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                b"payload",
+                now,
+                &nonce,
+                now
+            ),
+            Err(Error::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn cryptokit_signed_http_challenge_verifies_in_rust() {
+        let (sender, _, _) = keys();
+        // Generated by tests/cryptokit_vector.swift with a fixed key and message.
+        let swift_signature = "OTD_fcE5DaYS2h3OxzmNoiI8-ozly1LuohvsX5JQLZUPaEgzerkRxk58vWO8SdKg7-zfG7FqzvoQMGbDLObsOw";
+        assert!(
+            verify_http_signature(
+                sender.verifying_key(),
+                swift_signature,
+                "mac-1",
+                "POST",
+                "/v1/work?after=2",
+                &[7u8; 16],
+                b"payload",
+                1_700_000_000_000,
+                &[9u8; 16]
+            )
+            .is_ok()
         );
     }
 

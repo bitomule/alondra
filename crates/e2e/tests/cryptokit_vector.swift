@@ -35,4 +35,12 @@ signed.append(b64(e["ciphertext"] as! String))
 let pub = try P256.Signing.PublicKey(x963Representation: b64("BG_wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW_AdxT9sCwx-7ni0DG_30lqW4igrmJzvccFEo"))
 let sig = try P256.Signing.ECDSASignature(rawRepresentation: b64(e["signature"] as! String))
 assert(pub.isValidSignature(sig, for: signed))
+// Swift -> Rust vector for the signed HTTP challenge.
+var auth = Data("alondra-http-auth-v1".utf8)
+func authFrame(_ data: Data) { var n = UInt32(data.count).bigEndian; withUnsafeBytes(of: &n) { auth.append(contentsOf: $0) }; auth.append(data) }
+for value in [Data("mac-1".utf8), Data("POST".utf8), Data("/v1/work?after=2".utf8), Data(repeating: 7, count: 16), Data(SHA256.hash(data: Data("payload".utf8))), Data("1700000000000".utf8), Data(repeating: 9, count: 16)] { authFrame(value) }
+let swiftSigner = try P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
+let swiftSignature = try swiftSigner.signature(for: auth)
+let swiftSigB64 = swiftSignature.rawRepresentation.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+print("swift_http_signature=\(swiftSigB64)")
 print("CryptoKit verified HKDF key, ChaChaPoly encryption/decryption, and P-256 signature")
