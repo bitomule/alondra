@@ -1,0 +1,11 @@
+# SyncSession integration handoff
+
+`//apple/Data/Sync:AlondraSync` depends only on `AlondraAPIClient` and owns one overview/changes loop per actor instance. The application root should keep one `SyncSession` for each active server/device credential identity and give all Mac windows streams from that same actor. Each window can retain its own selection and draft state.
+
+`SyncSession.subscribe()` returns an `AsyncStream<SyncState>`. Each value contains its `identity`, `generation`, `connection`, and complete `snapshot` together. Decode `SyncState.snapshot?.body` into the current `Overview` DTO in the presentation adapter. A new subscriber receives the current complete state, including the last snapshot during an offline interval. Rendering should replace the prior state with each value; a slow window can safely skip intermediate values without retaining a snapshot from another identity. `stop()` finishes subscriptions and cancels the in-flight poll. The last subscriber's termination also cancels it. Calling `use(_:credentialRevision:)` clears the retained snapshot, increments the generation, resets to connecting, and starts a fresh overview for existing subscribers. The caller must change `credentialRevision` when signing material rotates even if `deviceID` remains unchanged.
+
+The current wire exposes only `tick`, without a daemon epoch. Every response from `v1/overview` is treated as an authoritative full snapshot, including a lower tick after daemon restart. The actor never merges snapshots. The `/v1/changes` wait is bounded to 10 seconds so a restart cannot strand the client behind an old higher tick for the daemon's default 50 seconds; an expired wait always triggers a full overview. The generation check and API client's cancellation check prevent an old server or signer response from reaching the stream after `use`. Do not infer a durable ordering or idempotency guarantee from `tick`. The service protocol migration can replace this policy once a reviewed epoch contract exists.
+
+The module tests exercise one shared session with two subscribers. The application root must still own and share one session across Mac windows; this wiring and its end-to-end deduplication are not covered by the module tests.
+
+No app root or `apple/BUILD.bazel` was modified in this branch.
