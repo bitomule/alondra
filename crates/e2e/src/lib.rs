@@ -65,6 +65,7 @@ pub enum Error {
     Expired,
     Crypto,
     ClockSkew,
+    ClockRollback,
     Replay,
     Capacity,
 }
@@ -419,12 +420,14 @@ fn verify_http_signature(
 /// One-time verification for signed Mac HTTP requests. Keep one instance shared across all
 /// relay workers; do not create a fresh instance for every request. Rejected signatures do not
 /// consume nonces. A full live registry rejects new requests rather than evicting replay records.
-/// A fresh signed server epoch invalidates captured requests after process restart.
+/// A fresh signed server epoch invalidates captured requests after process restart. A backward
+/// wall-clock step fails closed because previously expired nonce records cannot be recovered.
 pub struct HttpChallengeVerifier {
     server_epoch: [u8; 16],
     max_skew_ms: u64,
     max_entries: usize,
     used: HashMap<(String, [u8; 16]), u64>,
+    high_water_ms: Option<u64>,
 }
 
 impl HttpChallengeVerifier {
@@ -441,6 +444,7 @@ impl HttpChallengeVerifier {
             max_skew_ms,
             max_entries,
             used: HashMap::new(),
+            high_water_ms: None,
         })
     }
 
@@ -465,6 +469,13 @@ impl HttpChallengeVerifier {
         if timestamp_ms.abs_diff(now_ms) > self.max_skew_ms {
             return Err(Error::ClockSkew);
         }
+        if self
+            .high_water_ms
+            .is_some_and(|high_water| now_ms < high_water)
+        {
+            return Err(Error::ClockRollback);
+        }
+        self.high_water_ms = Some(now_ms);
         self.used
             .retain(|_, valid_through| *valid_through >= now_ms);
         let nonce_key = (device_id.to_owned(), *nonce);
@@ -811,6 +822,98 @@ mod tests {
                 &[9u8; 16]
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn clock_rollback_cannot_replay_a_pruned_nonce() {
+        let (sender, _, _) = keys();
+        let mut verifier = HttpChallengeVerifier::new(30_000, 2).unwrap();
+        let epoch = verifier.server_epoch();
+        let t = 1_700_000_000_000;
+        let first_nonce = [31u8; 16];
+        let second_nonce = [32u8; 16];
+        let first = sign_http_challenge(
+            &sender,
+            "mac-1",
+            "POST",
+            "/v1/work",
+            &epoch,
+            b"first",
+            t,
+            &first_nonce,
+        )
+        .unwrap();
+        assert!(
+            verifier
+                .verify(
+                    sender.verifying_key(),
+                    &first,
+                    "mac-1",
+                    "POST",
+                    "/v1/work",
+                    b"first",
+                    t,
+                    &first_nonce,
+                    t
+                )
+                .is_ok()
+        );
+        let later = t + 30_001;
+        let second = sign_http_challenge(
+            &sender,
+            "mac-1",
+            "POST",
+            "/v1/work",
+            &epoch,
+            b"second",
+            later,
+            &second_nonce,
+        )
+        .unwrap();
+        assert!(
+            verifier
+                .verify(
+                    sender.verifying_key(),
+                    &second,
+                    "mac-1",
+                    "POST",
+                    "/v1/work",
+                    b"second",
+                    later,
+                    &second_nonce,
+                    later
+                )
+                .is_ok()
+        );
+        assert_eq!(verifier.used.len(), 1, "the first nonce was pruned");
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &first,
+                "mac-1",
+                "POST",
+                "/v1/work",
+                b"first",
+                t,
+                &first_nonce,
+                t
+            ),
+            Err(Error::ClockRollback)
+        );
+        assert_eq!(
+            verifier.verify(
+                sender.verifying_key(),
+                &second,
+                "mac-1",
+                "POST",
+                "/v1/work",
+                b"second",
+                later,
+                &second_nonce,
+                later
+            ),
+            Err(Error::Replay)
         );
     }
 
