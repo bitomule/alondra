@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::client::Client;
 use crate::setup;
+use crate::state;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
@@ -103,6 +104,18 @@ pub fn daemon_check(health: Result<Value, String>, local: &Config) -> Check {
                 _ => check("alondrad", Status::Pass, trf!("answers on port {port} ({version})", "responde en el puerto {port} ({version})"), ""),
             }
         }
+    }
+}
+
+pub fn state_integrity_check(health: &Value) -> Check {
+    let Some(issues) = health.get("integrity_issues").and_then(Value::as_array) else {
+        return check("state", Status::Warn, tr!("daemon does not report state integrity", "el servidor no informa de la integridad del estado"), "alondra setup");
+    };
+    if issues.is_empty() {
+        check("state", Status::Pass, tr!("node and task state passes structural checks", "el estado de nodos y tareas supera las comprobaciones estructurales"), "")
+    } else {
+        let detail = issues.iter().filter_map(Value::as_str).take(3).collect::<Vec<_>>().join("; ");
+        check("state", Status::Fail, detail, tr!("save alondra.db and inspect the daemon log before repair", "guarda alondra.db y revisa el log del servidor antes de reparar"))
     }
 }
 
@@ -306,6 +319,14 @@ pub fn run(json_out: bool) -> Result<()> {
     let client = Client::new(Duration::from_secs(5));
     let health = client.get::<Value>("/v1/health").map_err(|e| e.to_string());
     let up = health.is_ok();
+    if let Ok(value) = &health {
+        checks.push(state_integrity_check(value));
+    } else if home.join("alondra.db").exists() {
+        checks.push(match state::audit(&home) {
+            Ok((seq, tasks)) => check("state", Status::Pass, trf!("offline replay valid through event {seq}; {tasks} tasks", "reproducción sin servidor válida hasta el evento {seq}; {tasks} tareas"), ""),
+            Err(e) => check("state", Status::Fail, format!("{e:#}"), "alondra state repair (only with a complete event log and the daemon stopped)"),
+        });
+    }
     checks.push(daemon_check(health, &local));
     checks.extend(hooks_port_check(local.port));
 

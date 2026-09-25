@@ -336,6 +336,9 @@ pub struct Node {
     /// When its process last ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exited_at: Option<Millis>,
+    /// A terminal exit was observed. Late hooks and same-PID daemon sightings cannot revive it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed: Option<ResumeAttempt>,
     /// How full its context window was at its last model call, as its status line saw it.
@@ -420,6 +423,7 @@ impl Node {
             orchestrator_state: None,
             ledger: Ledger::default(),
             exited_at: None,
+            ended: false,
             resumed: None,
             context: None,
             compaction: None,

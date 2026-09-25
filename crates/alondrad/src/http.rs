@@ -36,7 +36,6 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/pair", post(pair))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
-        .route("/hook", post(hook))
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
@@ -220,11 +219,16 @@ fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
 
 /// A hook from a session Alondra does not follow ends at once with no effect: nothing is
 /// recorded and nothing is held, so Claude Code's own menus show.
-async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>) -> Response {
+pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>) -> Response {
     let Some(session_id) = str_field(&p, "session_id") else {
         return Json(json!({})).into_response();
     };
     let event = str_field(&p, "hook_event_name").unwrap_or_default();
+    // MessageDisplay is invoked for each rendered batch, synchronously with the UI. The
+    // final batch is a reliable once-per-message liveness signal without flooding the log.
+    if event == "MessageDisplay" && p.get("final") != Some(&Value::Bool(true)) {
+        return Json(json!({})).into_response();
+    }
     let tool = str_field(&p, "tool_name");
     let h = HookEvent {
         session_id: session_id.clone(),
@@ -239,6 +243,8 @@ async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(
         agent_id: str_field(&p, "agent_id"),
         agent_type: str_field(&p, "agent_type"),
         task: named_task(tool.as_deref(), p.get("tool_input")),
+        task_ids: vec![],
+        detail: hook_detail(&event, &p),
         prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
     };
     match hub.admit(&session_id, launched_mark(&headers)) {
@@ -249,12 +255,16 @@ async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(
         }
         Err(e) => {
             log!("hook lost: {e}");
-            return Json(json!({})).into_response();
+            return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook admission failed: {e}"));
         }
     }
-    if let Err(e) = hub.append(Event::Hook(h.clone())) {
+    if let Err(e) = hub.append_with(|v| {
+        let mut observed = h.clone();
+        observed.task_ids = v.hook_task_ids(&session_id, h.agent_id.as_deref(), h.task.as_deref());
+        Some(Event::Hook(observed))
+    }) {
         log!("hook lost: {e}");
-        return Json(json!({})).into_response();
+        return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook could not be recorded: {e}"));
     }
     if event == "PostToolUse"
         && let Some(command) = p.pointer("/tool_input/command").and_then(Value::as_str).filter(|c| crate::prs::runs_pr_create(c))
@@ -308,6 +318,30 @@ async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(
     }
 }
 
+/// Keep enough context to explain lifecycle hooks without storing arbitrary tool input or
+/// streaming message text. The source event name and task IDs are stored separately.
+fn hook_detail(event: &str, input: &Value) -> Option<String> {
+    let fields: &[&str] = match event {
+        "SessionStart" | "SessionEnd" | "PreCompact" | "PostCompact" => &["reason", "source", "trigger"],
+        "TaskCreated" | "TaskCompleted" => &["task_id", "task_subject", "task_description"],
+        "PermissionDenied" => &["tool_name", "permission_mode", "reason"],
+        "ConfigChange" | "InstructionsLoaded" => &["source", "file_path", "reason"],
+        "CwdChanged" | "DirectoryAdded" | "FileChanged" | "WorktreeRemove" => &["cwd", "directory", "file_path", "worktree_path"],
+        "PreModelSwitch" | "PostModelSwitch" => &["from_model", "to_model", "model", "source"],
+        "UserPromptExpansion" => &["command", "command_name"],
+        "MessageDisplay" => &["message_id", "index", "final"],
+        "PostToolBatch" => &["tool_calls_count"],
+        "ElicitationResult" => &["mcp_server_name", "action"],
+        "Notification" | "StopFailure" => &["notification_type", "error_type"],
+        _ => &[],
+    };
+    let parts: Vec<String> = fields.iter().filter_map(|key| input.get(*key).filter(|v| !v.is_null()).map(|v| {
+        let value = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+        format!("{key}={}", value.chars().take(160).collect::<String>())
+    })).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// An interactive session gets what was queued for it when its turn ends: the Stop hook's
 /// `additionalContext` keeps the turn going with the messages (code.claude.com/docs/en/hooks,
 /// "Stop decision control"). Background jobs get theirs typed in by `wake`.
@@ -329,11 +363,20 @@ fn hand_over_at_turn_end(hub: &Hub, session_id: &str) -> Option<Response> {
 struct HoldGuard {
     hub: Arc<Hub>,
     id: u64,
+    completed: bool,
 }
 
 impl Drop for HoldGuard {
     fn drop(&mut self) {
         self.hub.drop_hold(self.id);
+        if !self.completed {
+            let id = self.id;
+            if let Err(e) = self.hub.append_with(|v| v.questions.get(&id)
+                .filter(|q| matches!(q.status, QuestionStatus::Open | QuestionStatus::Answered))
+                .map(|_| Event::QuestionClosed { id, status: QuestionStatus::Orphaned, note: None })) {
+                log!("could not orphan disconnected hook question #{id}: {e}");
+            }
+        }
     }
 }
 
@@ -480,18 +523,20 @@ async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> 
         Err(e) => return internal(e),
     };
     let rx = hub.register_hold(id);
-    let _guard = HoldGuard { hub: hub.clone(), id };
+    let mut guard = HoldGuard { hub: hub.clone(), id, completed: false };
     let Ok(answer) = rx.await else {
         return Json(json!({})).into_response();
     };
-    let _ = hub.append(Event::QuestionDelivered { id });
     if let Some(text) = held_follow_up(origin, &answer)
         && let Err(e) = hub.append_with(|v| Some(follow_up_message(v, &h.session_id, &text)))
     {
         log!("could not queue the user's words after #{id}: {e}");
     }
     let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
-    Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response()
+    let mut response = Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response();
+    response.headers_mut().insert("x-alondra-hold-id", id.to_string().parse().expect("numeric hold id is an HTTP header"));
+    guard.completed = true;
+    response
 }
 
 fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &str) -> Value {
@@ -1180,7 +1225,8 @@ async fn context_measured(State(hub): State<AppState>, Json(p): Json<Value>) -> 
 
 async fn health(State(hub): State<AppState>) -> Json<Value> {
     let c = &hub.config;
-    Json(json!({"ok": true, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
+    let integrity = hub.read(View::integrity_issues);
+    Json(json!({"ok": integrity.is_empty(), "integrity_issues": integrity, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
                 "config": {"name": c.name, "port": c.port, "listen": c.listen.to_string(), "public_url": c.public_url,
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
                            "resume_dead_nodes": c.resume_dead_nodes,

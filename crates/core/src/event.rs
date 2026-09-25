@@ -29,6 +29,13 @@ pub struct HookEvent {
     /// The task an Alondra tool call names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Tasks the hook may concern. A main thread can coordinate several, so this is a set of
+    /// candidates rather than a guessed single task ID.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_ids: Vec<String>,
+    /// Short event-specific context from hooks that are not tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

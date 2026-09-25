@@ -4,14 +4,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -21,14 +15,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -39,14 +27,8 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 2592000
           }
         ]
@@ -57,14 +39,8 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 2592000
           }
         ]
@@ -75,14 +51,8 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 2592000
           }
         ]
@@ -93,14 +63,8 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -111,14 +75,8 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -128,14 +86,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -145,14 +97,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -162,14 +108,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -179,14 +119,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -196,14 +130,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]
@@ -213,14 +141,207 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47800/hook",
-            "headers": {
-              "X-Alondra-Launched": "${ALONDRA_LAUNCHED}"
-            },
-            "allowedEnvVars": [
-              "ALONDRA_LAUNCHED"
-            ],
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "DirectoryAdded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "CLAUDE.md|.claude/settings.json",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra hook",
             "timeout": 5
           }
         ]

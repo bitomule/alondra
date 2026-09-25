@@ -6,7 +6,7 @@ use std::time::Duration;
 use alondra_core::config::Config;
 use alondra_core::sessions::Admission;
 use alondra_core::{Answer, Event, HookEvent, Machine, View, now_millis};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tokio::sync::{oneshot, watch};
 
 use crate::store::Store;
@@ -77,17 +77,33 @@ impl Hub {
         view.backfill_created_at();
         view.backfill_tasks();
         let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
-        log!("{n} events replayed, {} nodes", view.nodes.len());
-        if view.board.recorded_since.is_none() {
-            let at = now_millis();
-            let seq = store.append(at, &Event::TasksRecorded)?;
-            view.apply(seq, at, &Event::TasksRecorded);
+        let issues = view.integrity_issues();
+        if !issues.is_empty() {
+            bail!("stored state failed integrity audit: {}", issues.join("; "));
         }
-        if view.launched_only_since.is_none() {
+        log!("{n} events replayed, {} nodes", view.nodes.len());
+        let record_tasks = view.board.recorded_since.is_none();
+        let launched_only = view.launched_only_since.is_none();
+        let bootstrap: Vec<Event> = [record_tasks.then_some(Event::TasksRecorded), launched_only.then_some(Event::LaunchedOnly)]
+            .into_iter().flatten().collect();
+        if !bootstrap.is_empty() {
             let at = now_millis();
-            let seq = store.append(at, &Event::LaunchedOnly)?;
-            view.apply(seq, at, &Event::LaunchedOnly);
-            log!("from now on only sessions Alondra launched are followed; {} left out", view.left_out.len());
+            let mut next = view.clone();
+            store.transaction(|tx| {
+                for event in &bootstrap {
+                    let seq = Store::append_in(tx, at, event)?;
+                    next.apply(seq, at, event);
+                }
+                let issues = next.integrity_issues();
+                if !issues.is_empty() {
+                    bail!("bootstrap failed integrity audit: {}", issues.join("; "));
+                }
+                Ok(())
+            })?;
+            view = next;
+            if launched_only {
+                log!("from now on only sessions Alondra launched are followed; {} left out", view.left_out.len());
+            }
         }
         let (tick, _) = watch::channel(0);
         let (changes, _) = watch::channel(0);
@@ -153,21 +169,37 @@ impl Hub {
         };
         let at = now_millis();
         let mut view = self.view.write().expect("view lock poisoned");
-        let mut recorded = vec![];
-        for event in events {
-            for e in view.tasks_before(&event) {
-                let s = store.append(at, &e)?;
-                view.apply(s, at, &e);
+        // Do not expose a state built from writes SQLite may still roll back. The copy also
+        // leaves the live view intact if an insert or the final commit fails.
+        let mut next = view.clone();
+        let recorded = store.transaction(|tx| {
+            let mut recorded = vec![];
+            for mut event in events {
+                if let Event::Hook(h) = &mut event
+                    && h.task_ids.is_empty()
+                {
+                    h.task_ids = next.hook_task_ids(&h.session_id, h.agent_id.as_deref(), h.task.as_deref());
+                }
+                for e in next.tasks_before(&event) {
+                    let s = Store::append_in(tx, at, &e)?;
+                    next.apply(s, at, &e);
+                }
+                let before = next.before_tasks(&event);
+                let seq = Store::append_in(tx, at, &event)?;
+                next.apply(seq, at, &event);
+                for e in next.task_moves(at, &event, before) {
+                    let s = Store::append_in(tx, at, &e)?;
+                    next.apply(s, at, &e);
+                }
+                recorded.push((seq, event));
             }
-            let before = view.before_tasks(&event);
-            let seq = store.append(at, &event)?;
-            view.apply(seq, at, &event);
-            for e in view.task_moves(at, &event, before) {
-                let s = store.append(at, &e)?;
-                view.apply(s, at, &e);
+            let issues = next.integrity_issues();
+            if !issues.is_empty() {
+                bail!("state failed integrity audit; batch rolled back: {}", issues.join("; "));
             }
-            recorded.push((seq, event));
-        }
+            Ok(recorded)
+        })?;
+        *view = next;
         let digest = crate::http::overview_digest(&view, at);
         drop(view);
         self.changed(Some(digest), None);
@@ -434,6 +466,28 @@ mod tests {
 
     fn prompt(session: &str) -> Event {
         Event::Hook(alondra_core::HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })
+    }
+
+    #[test]
+    fn failed_second_write_rolls_back_both_disk_and_live_state() {
+        let hub = hub("atomic-batch");
+        let before = hub.read(Clone::clone);
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        let count: i64 = db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_second_hook BEFORE INSERT ON events WHEN NEW.session = 'second' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
+        assert!(hub.append_all(|_| Ok::<_, ()>(vec![prompt("first"), prompt("second")])).is_err());
+        assert_eq!(hub.read(Clone::clone), before);
+        let after: i64 = db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, count);
+    }
+
+    #[test]
+    #[ignore]
+    fn replay_a_copy_of_the_real_database_passes_integrity() {
+        let home = std::path::PathBuf::from(std::env::var("ALONDRA_REPLAY_HOME").unwrap());
+        let config = Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
+        let hub = Hub::open(config, false).unwrap();
+        assert!(hub.read(|v| v.integrity_issues().is_empty()));
     }
 
     /// Records a new node from another thread just as `hub` is about to tell clients, and gives

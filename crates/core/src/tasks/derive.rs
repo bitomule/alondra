@@ -160,7 +160,7 @@ fn checks_failed(pr: &PullRequest) -> Option<u64> {
 /// Events that can move a recorded task, make one or give one to a node.
 fn may_move_tasks(event: &Event) -> bool {
     match event {
-        Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit"),
+        Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit" | "SessionEnd"),
         Event::QuestionAsked(_)
         | Event::QuestionAnswered { .. }
         | Event::QuestionClosed { .. }
@@ -304,6 +304,30 @@ impl View {
             Ok(id) => Some(id),
             Err(_) => self.session_task(session_id).map(|t| t.id.clone()),
         }
+    }
+
+    /// Attribution for every hook. A specific Alondra call or a bound subagent has one task;
+    /// an unbound main thread or subagent may concern several, so keep all candidates.
+    pub fn hook_task_ids(&self, session_id: &str, agent_id: Option<&str>, named: Option<&str>) -> Vec<String> {
+        if self.nodes.get(session_id).is_some_and(|n| n.is_orchestrator) {
+            return vec![];
+        }
+        if let Some(id) = named.filter(|id| self.board.tasks.get(*id).is_some_and(|t| t.is_assigned_to(session_id))) {
+            return vec![id.to_string()];
+        }
+        if let Some(agent) = agent_id
+            && let Some(task) = self.agent_task(session_id, agent)
+        {
+            return vec![task.id.clone()];
+        }
+        let mut ids: Vec<String> = self.tasks_of(session_id).filter(|t| !t.state.finished()).map(|t| t.id.clone()).collect();
+        if ids.is_empty() {
+            ids = self.tasks_of(session_id).map(|t| t.id.clone()).collect();
+        }
+        if ids.is_empty() {
+            ids.extend(self.first_task(session_id).map(|(id, _)| id));
+        }
+        ids
     }
 
     /// The task a PR the node opened is for, in this order: the task its title, body or branch
@@ -667,7 +691,7 @@ impl View {
     fn moved_by(&mut self, at: Millis, event: &Event, before: Before) -> Vec<String> {
         let mut moved = vec![];
         let closes_questions = match event {
-            Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure"),
+            Event::Hook(h) => matches!(h.event.as_str(), "PostToolUse" | "PostToolUseFailure" | "SessionEnd"),
             Event::QuestionAnswered { .. } | Event::QuestionClosed { .. } | Event::ProcessExited { .. } | Event::PrUpdated(_) | Event::PrMerged { .. } => true,
             _ => false,
         };

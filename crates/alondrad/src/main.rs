@@ -3,6 +3,7 @@ mod log;
 mod auth;
 mod classify;
 mod http;
+mod hook_socket;
 mod issues;
 mod keeper;
 mod hub;
@@ -39,6 +40,8 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
 
     let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
+    let hooks = hook_socket::bind(&config.home).await?;
+    tokio::spawn(hook_socket::serve(hooks, hub.clone()));
     tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
     if config.legacy_bridge {
         tokio::spawn(legacy::run(hub.clone(), claude_home.clone()));
