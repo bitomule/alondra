@@ -8,17 +8,24 @@
 //! drops such a thread once it has been silent past `BACKGROUND_SUSPECT_MS` with no tool in
 //! flight within its call limit, the same clock-and-window rule `states` uses everywhere else.
 //! The main thread is never dropped this way; `SubagentStop` still drops a subagent at once.
+//!
+//! Claude Code gives no parent call ID to SubagentStart. A child therefore binds only after it
+//! claims the token injected into its own Agent prompt. The node's focus applies to its main
+//! thread; it never assigns an unbound subagent to a task.
 
 use serde::{Deserialize, Serialize};
 
 use crate::event::HookEvent;
 use crate::model::{Ledger, Millis, Node, Thread, ToolInFlight};
 use crate::states::{BACKGROUND_SUSPECT_MS, call_limit};
-use crate::tasks::Task;
+use crate::tasks::{CardTask, Task};
 use crate::view::View;
 
 /// Alondra's own MCP tools, the ones that can name a task.
 pub const ALONDRA_TOOLS: &str = "mcp__plugin_alondra";
+
+pub const FOCUS_DEFAULT_MINUTES: u32 = 30;
+pub const FOCUS_MAX_MINUTES: u32 = 240;
 
 /// A thread as clients get it, in `activity` on each node.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -45,16 +52,16 @@ impl Ledger {
         &mut self.threads[i]
     }
 
-    /// The task a subagent bound itself to. The main thread coordinates every task of its node and
-    /// binds to none.
+    /// The task a subagent claimed with the token from its own Agent prompt.
     pub fn bound(&self, agent_id: &str) -> Option<&str> {
         self.bound.iter().find(|(a, _)| a.as_deref() == Some(agent_id)).map(|(_, t)| t.as_str())
     }
 
     /// What a hook says about the thread it fired in. `binds` tells whether the task the hook
     /// names is one this node may bind to. Only a subagent binds, with its first Alondra call that
-    /// names a task; the main thread's `task` is for that call alone. 25 Sep 00:01: the main thread
-    /// of 7e661a50 asked once for t-44370 and everything it did after counted as t-44370.
+    /// names a task; the main thread's `task` is for
+    /// that call alone. 25 Sep 00:01: the main thread of 7e661a50 asked once for t-44370 and
+    /// everything it did after counted as t-44370.
     fn on_hook(&mut self, h: &HookEvent, at: Millis, binds: bool) {
         let agent = h.agent_id.as_deref();
         self.thread(None, at);
@@ -140,6 +147,22 @@ impl View {
         }
     }
 
+    /// The task the node said it works on now (`focus`), while it lasts and is still an open task
+    /// of the node.
+    pub fn focus(&self, session_id: &str, now: Millis) -> Option<&str> {
+        let focus = self.nodes.get(session_id)?.ledger.focus.as_ref().filter(|f| now < f.until)?;
+        self.board.tasks.get(&focus.task).filter(|t| t.is_assigned_to(session_id) && !t.state.finished()).map(|t| t.id.as_str())
+    }
+
+    /// The task a node's own card goes to (`card_task`); with several open tasks and none named,
+    /// the live focus names it before the card is refused.
+    pub fn called_task(&self, session_id: &str, named: Option<&str>, agent_id: Option<&str>, now: Millis) -> Result<String, CardTask> {
+        self.card_task(session_id, named, agent_id).or_else(|e| match e {
+            CardTask::Several(_) if agent_id.is_none() => self.focus(session_id, now).map(str::to_string).ok_or(e),
+            e => Err(e),
+        })
+    }
+
     /// Which thread of the node is calling one of Alondra's tools right now: its `PreToolUse`
     /// reached Alondra before the call did. `Some(None)` is the main thread; none when no thread,
     /// or more than one, is inside such a call.
@@ -162,12 +185,14 @@ impl View {
         }
     }
 
-    /// Each thread of the node with the task it works on: the one it bound itself to, the one
-    /// assigned to it, or the node's single task. A subagent thread gone silent past its window
-    /// (`thread_alive`) is left out, as if it had sent `SubagentStop`.
+    /// Each thread of the node with the task it works on: the one it claimed or was explicitly
+    /// assigned to, the main thread's live focus, or the node's single task. A subagent
+    /// thread gone silent past its window (`thread_alive`) is left out, as if it had sent
+    /// `SubagentStop`.
     pub fn activity(&self, node: &Node, now: Millis) -> Vec<Activity> {
         let sid = node.session_id.as_str();
-        let single = self.single_task(sid);
+        let main_unbound = self.focus(sid, now).or(self.single_task(sid));
+        let subagent_unbound = self.single_task(sid);
         node.ledger
             .threads
             .iter()
@@ -175,7 +200,7 @@ impl View {
             .map(|t| {
                 let agent = t.agent_id.as_deref();
                 let assigned = agent.and_then(|a| self.tasks_of(sid).find(|task| task.assignee.as_ref().is_some_and(|x| x.agent_id.as_deref() == Some(a))).map(|task| task.id.as_str()));
-                let task = agent.and_then(|a| node.ledger.bound(a)).or(assigned).or(single);
+                let task = agent.and_then(|a| node.ledger.bound(a)).or(assigned).or(if agent.is_some() { subagent_unbound } else { main_unbound });
                 Activity {
                     agent_id: t.agent_id.clone(),
                     agent_type: t.agent_type.clone(),
@@ -195,14 +220,46 @@ mod tests {
     use crate::event::Event;
     use crate::tasks::{Assignee, TaskState};
 
+    #[derive(Clone)]
+    enum Step {
+        On(Millis, Box<Event>),
+        SecondTask,
+    }
+
     struct Run {
         view: View,
         seq: u64,
+        waited: Millis,
+        log: Vec<Step>,
     }
 
     impl Run {
         fn new() -> Self {
-            Run { view: View::default(), seq: 0 }
+            Run { view: View::default(), seq: 0, waited: 0, log: vec![] }
+        }
+
+        fn now(&self) -> Millis {
+            self.seq as Millis * 1000 + self.waited
+        }
+
+        /// The same steps into a fresh view, through a snapshot after each one, as alondrad
+        /// restarts from its last snapshot and the events after it.
+        fn replayed(&self) -> Run {
+            let mut run = Run::new();
+            for step in &self.log {
+                match step {
+                    Step::On(at, e) => {
+                        run.seq += 1;
+                        run.view.apply(run.seq, *at, e);
+                        run.waited = at - run.seq as Millis * 1000;
+                    }
+                    Step::SecondTask => {
+                        run.second_task();
+                    }
+                }
+                run.view = serde_json::from_value(serde_json::to_value(&run.view).unwrap()).unwrap();
+            }
+            run
         }
 
         fn hook(&mut self, event: &str, agent: Option<(&str, &str)>, tool: Option<(&str, &str)>, task: Option<&str>) -> &mut Self {
@@ -220,12 +277,14 @@ mod tests {
 
         fn on(&mut self, e: Event) -> &mut Self {
             self.seq += 1;
-            self.view.apply(self.seq, self.seq as Millis * 1000, &e);
+            let at = self.now();
+            self.view.apply(self.seq, at, &e);
+            self.log.push(Step::On(at, Box::new(e)));
             self
         }
 
         fn activity(&self) -> Vec<Activity> {
-            self.activity_at(self.seq as Millis * 1000)
+            self.activity_at(self.now())
         }
 
         fn activity_at(&self, now: Millis) -> Vec<Activity> {
@@ -242,8 +301,21 @@ mod tests {
             other.assignee = Some(Assignee { session_id: "s".into(), agent_id: None });
             other.state = TaskState::Running;
             self.view.board.tasks.insert(other.id.clone(), other);
+            self.log.push(Step::SecondTask);
             self
         }
+
+        fn tasks(&self) -> Vec<(Option<String>, Option<String>)> {
+            self.activity().into_iter().map(|a| (a.agent_id, a.task)).collect()
+        }
+
+        fn focus(&mut self, task: &str, minutes: u32) -> &mut Self {
+            self.on(Event::Focused { session_id: "s".into(), task: task.into(), minutes })
+        }
+    }
+
+    fn working(agent: Option<&str>, task: Option<&str>) -> (Option<String>, Option<String>) {
+        (agent.map(str::to_string), task.map(str::to_string))
     }
 
     const EXPLORE: Option<(&str, &str)> = Some(("a1", "Explore"));
@@ -379,5 +451,65 @@ mod tests {
         let now = run.seq as Millis * 1000;
         let ids: Vec<Option<String>> = run.activity_at(now).into_iter().map(|a| a.agent_id).collect();
         assert_eq!(ids, vec![None], "the subagent is gone the instant it stops, not just after the window");
+    }
+
+    const AGENT: &str = "Agent";
+    const PLAN: Option<(&str, &str)> = Some(("a2", "Plan"));
+
+    /// An Agent marker and the next SubagentStart cannot prove a parent-child relationship.
+    /// Only a successful claim_task hook can bind the child.
+    #[test]
+    fn agent_start_order_never_binds_a_subagent() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None).second_task();
+        run.hook("PreToolUse", None, Some(("Agent", "m1")), Some("t-s"));
+        run.hook("PreToolUse", None, Some(("Agent", "m2")), Some("t-other"));
+        run.hook("SubagentStart", EXPLORE, None, None);
+        run.hook("SubagentStart", Some(("a2", "Plan")), None, None);
+        assert_eq!(run.tasks(), vec![working(None, None), working(Some("a1"), None), working(Some("a2"), None)]);
+        assert!(run.view.nodes["s"].ledger.bound.is_empty());
+    }
+
+    #[test]
+    fn a_focus_applies_only_to_the_main_thread_until_it_expires_or_is_replaced() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None).second_task();
+        run.hook("PreToolUse", None, Some((AGENT, "m1")), Some("t-s")).hook("SubagentStart", EXPLORE, None, None);
+        run.focus("t-other", 30);
+        let until = run.now() + 30 * 60 * 1000;
+        run.hook("PreToolUse", None, Some(("Bash", "b1")), None).hook("SubagentStart", PLAN, None, None);
+        assert_eq!(
+            run.tasks(),
+            vec![working(None, Some("t-other")), working(Some("a1"), None), working(Some("a2"), None)],
+            "a focus cannot assign either unbound subagent"
+        );
+        run.hook("PostToolUse", EXPLORE, Some((REPORT, "claim")), Some("t-s"));
+        assert_eq!(run.tasks()[1], working(Some("a1"), Some("t-s")), "a bound subagent keeps its own task");
+        assert_eq!(run.view.called_task("s", None, None, run.now()), Ok("t-other".into()), "a card that names no task");
+
+        assert_eq!(run.activity_at(until - 1)[0].task.as_deref(), Some("t-other"));
+        assert_eq!(run.activity_at(until)[0].task, None, "30 minutes later it is over");
+        assert_eq!(run.view.called_task("s", None, None, until), Err(CardTask::Several(vec!["t-other".into(), "t-s".into()])));
+
+        run.focus("t-s", 30);
+        assert_eq!(run.tasks()[0], working(None, Some("t-s")), "a new focus replaces it");
+    }
+
+    #[test]
+    fn a_replay_through_snapshots_gives_the_same_ledger() {
+        let mut run = Run::new();
+        run.hook("UserPromptSubmit", None, None, None).second_task();
+        run.hook("PreToolUse", None, Some((AGENT, "m1")), Some("t-other")).hook("SubagentStart", EXPLORE, None, None);
+        run.focus("t-s", 30).hook("PreToolUse", None, Some(("Bash", "b1")), None);
+        run.hook("PreToolUse", None, Some((AGENT, "m2")), Some("t-other"));
+        let mut replayed = run.replayed();
+        assert_eq!(replayed.view.nodes["s"].ledger, run.view.nodes["s"].ledger);
+        assert_eq!(replayed.activity(), run.activity());
+
+        for r in [&mut run, &mut replayed] {
+            r.hook("SubagentStart", PLAN, None, None);
+        }
+        assert_eq!(replayed.tasks(), run.tasks());
+        assert_eq!(run.tasks(), vec![working(None, Some("t-s")), working(Some("a1"), None), working(Some("a2"), None)]);
     }
 }

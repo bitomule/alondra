@@ -248,6 +248,7 @@ impl View {
                 Some((d.session_id.clone(), Trigger::Daemon))
             }
             Event::ProcessExited { session_id, .. } => {
+                self.spawn_reservations.retain(|_, r| r.session_id != *session_id);
                 let node = self.node_mut(session_id, at);
                 node.alive = false;
                 node.ended = true;
@@ -260,6 +261,7 @@ impl View {
                 Some((session_id.clone(), Trigger::ProcessExit))
             }
             Event::NodeRemoved { session_id } => {
+                self.spawn_reservations.retain(|_, r| r.session_id != *session_id);
                 self.nodes.remove(session_id);
                 self.removed.insert(session_id.clone(), at);
                 for q in self.questions.values_mut() {
@@ -521,6 +523,12 @@ impl View {
                 }
                 None
             }
+            Event::Focused { session_id, task, minutes } => {
+                if let Some(node) = self.nodes.get_mut(session_id) {
+                    node.ledger.focus = Some(crate::model::Focus { task: task.clone(), until: at + Millis::from(*minutes) * 60_000 });
+                }
+                None
+            }
             Event::Clock { machine_strained } => {
                 self.machine_strained = *machine_strained;
                 let sessions: Vec<String> = self.nodes.keys().cloned().collect();
@@ -682,7 +690,7 @@ impl View {
             self.spawn_reservations
                 .remove(&format!("{}:{id}", h.session_id));
         }
-        if h.event == "SessionEnd" {
+        if matches!(h.event.as_str(), "SessionStart" | "SessionEnd") {
             self.spawn_reservations
                 .retain(|_, r| r.session_id != h.session_id);
         }

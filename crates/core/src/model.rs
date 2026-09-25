@@ -212,12 +212,21 @@ pub struct Ledger {
     /// without an id, left by older daemons for a main thread, binds nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bound: Vec<(Option<String>, String)>,
+    /// The task the node said it works on now, with `focus`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<Focus>,
 }
 
 impl Ledger {
     pub fn is_empty(&self) -> bool {
-        self.threads.is_empty() && self.bound.is_empty()
+        self.threads.is_empty() && self.bound.is_empty() && self.focus.is_none()
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Focus {
+    pub task: String,
+    pub until: Millis,
 }
 
 /// alondrad's last attempt to restart the node's process.

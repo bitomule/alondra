@@ -15,7 +15,7 @@ mod waits;
 
 pub use archive::Archive;
 pub use define::{Candidate, CandidateTask, Dependency, dependencies};
-pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, task_id};
+pub use derive::{Before, CardTask, LAUNCH_WINDOW, NODE_CLOSED, Pass, dependency_cancelled, marked_tasks, task_id};
 pub use waits::{Named, merge_notice_text, pr_numbers_in};
 
 /// What David asked for, in his words. Its state is derived from its tasks, never stored.
