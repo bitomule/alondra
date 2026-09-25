@@ -265,17 +265,24 @@ public final class FleetStore {
     }
 
     public func refresh() async {
+        await refresh(ifCurrentClientMatches: client.identity)
+    }
+
+    /// A background notification may finish after the selected server changes.
+    /// The revision also guards key rotation at the same server URL.
+    public func refresh(ifCurrentClientMatches identity: String) async {
+        guard client.identity == identity else { return }
         let revision = credentialRevision
         let pollingClient = client
         do {
             let fresh = try await pollingClient.overview()
-            guard revision == credentialRevision else { return }
+            guard revision == credentialRevision, client.identity == identity else { return }
             apply(fresh)
         } catch AlondraError.unauthorized {
-            guard revision == credentialRevision else { return }
+            guard revision == credentialRevision, client.identity == identity else { return }
             connection = .unpaired
         } catch where !error.isCancellation {
-            guard revision == credentialRevision else { return }
+            guard revision == credentialRevision, client.identity == identity else { return }
             connection = .offline(error.friendlyDescription)
         } catch {}
     }

@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraNotificationActions
 import AlondraNotificationPayload
 import Foundation
 import Observation
@@ -28,32 +29,7 @@ enum NotificationCategory {
     static let optionPrefix = NotificationPayload.Action.optionPrefix
     static let questionPrefix = NotificationPayload.Category.questionPrefix
 
-    static var all: Set<UNNotificationCategory> {
-        [
-            UNNotificationCategory(identifier: question, actions: [
-                UNTextInputNotificationAction(
-                    identifier: reply,
-                    title: String(localized: "Reply"),
-                    options: [.authenticationRequired],
-                    icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
-                    textInputButtonTitle: String(localized: "Send"),
-                    textInputPlaceholder: String(localized: "Your answer")
-                ),
-                UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: permission, actions: [
-                UNNotificationAction(identifier: allow, title: String(localized: "Allow"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: deny, title: String(localized: "Deny"), options: [.destructive], icon: UNNotificationActionIcon(systemImageName: "xmark")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: plan, actions: [
-                UNNotificationAction(identifier: approve, title: String(localized: "Approve"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: review, title: String(localized: "Review"), options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "doc.text.magnifyingglass")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: read, actions: [
-                UNNotificationAction(identifier: markRead, title: String(localized: "Mark as Read"), icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-            ], intentIdentifiers: []),
-        ]
-    }
+
 }
 
 struct NotificationResponse: Sendable {
@@ -240,25 +216,9 @@ final class PushCenter {
             route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question)
         case NotificationCategory.review:
             route = NotificationRoute(itemID: item.inboxID, opensDetail: true)
-        case NotificationCategory.reply:
-            guard let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
-            await send(response) { try await $0.answer(item.id, text: text, option: nil) }
-        case NotificationCategory.moreContext:
-            await send(response) { try await $0.moreContext(item.id, note: "") }
-        case NotificationCategory.allow:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.allow, option: AnswerOption.allow) }
-        case NotificationCategory.deny:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.deny, option: AnswerOption.deny) }
-        case NotificationCategory.approve:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.approve, option: AnswerOption.approve) }
-        case NotificationCategory.markRead:
-            await send(response) { try await $0.markRead(item.id) }
-        case let action where action.hasPrefix(NotificationCategory.optionPrefix):
-            let label = String(action.dropFirst(NotificationCategory.optionPrefix.count))
-            guard !label.isEmpty else { return }
-            await send(response) { try await $0.answer(item.id, text: label, option: label) }
         default:
-            return
+            guard let command = NotificationAction(item: item, action: response.action, text: response.text) else { return }
+            await send(response) { try await command.execute(using: $0) }
         }
     }
 
@@ -271,7 +231,9 @@ final class PushCenter {
         defer { UIApplication.shared.endBackgroundTask(background) }
         do {
             try await Self.withDeadline(Self.actionDeadline) { try await action(client) }
-            if UIApplication.shared.applicationState == .active { await fleet.refresh() }
+            if UIApplication.shared.applicationState == .active {
+                await fleet.refresh(ifCurrentClientMatches: client.identity)
+            }
         } catch {
             await reportFailure(response, reason: error.friendlyDescription)
         }

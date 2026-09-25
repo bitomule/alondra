@@ -1,0 +1,15 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraNotificationActions",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraNotificationActions",
+    visibility = ["//apple:__pkg__"],
+    deps = ["//apple:AlondraShared", "//apple/NotificationPayload:AlondraNotificationPayload"],
+)
+
+swift_test(
+    name = "AlondraNotificationActionsTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [":AlondraNotificationActions", "//apple/NotificationPayload:AlondraNotificationPayload"],
+)

@@ -41,6 +41,16 @@
         }
       }
     },
+    "Mark as Read": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leído"
+          }
+        }
+      }
+    },
     "Reply": {
       "localizations": {
         "es": {
@@ -57,6 +67,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Pedir cambios"
+          }
+        }
+      }
+    },
+    "Review": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revisar"
           }
         }
       }

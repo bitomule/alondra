@@ -71,6 +71,7 @@ swift_library(
         ":AlondraShared",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
+        "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/Data/Sync:AlondraSync",
         "//apple/DeviceIdentity:AlondraDeviceIdentity",
         "//apple/NotificationPayload:AlondraNotificationPayload",
