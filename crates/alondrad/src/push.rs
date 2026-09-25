@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::hub::Hub;
+use crate::service::Service;
 
 const JWT_LIFETIME_MS: i64 = 50 * 60 * 1000;
 const POLL: Duration = Duration::from_secs(3);
@@ -367,8 +368,14 @@ fn in_a_client(activity: &std::collections::HashMap<String, i64>, now: i64) -> b
     activity.values().any(|at| now - at <= ACTIVE_WINDOW_MS)
 }
 
-pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
-    if !push.enabled() {
+fn legacy_push_allowed(home: &Path, service_active: bool) -> bool {
+    // A broken service config must not silently restore plaintext delivery.
+    // Check on each round too: setup can create the file before restarting us.
+    !service_active && matches!(std::fs::symlink_metadata(home.join("service.toml")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
+pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) {
+    if !push.enabled() && service.is_none() {
         return;
     }
     let mut seen = hub.read(Seen::all_of);
@@ -384,7 +391,17 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
             continue;
         }
         for (payload, sound) in payloads {
-            push.broadcast(&payload, sound).await;
+            // A physical phone can retain an old APNs token under another
+            // local device ID after re-pairing. Service mode disables all
+            // plaintext direct pushes, including legacy registrations.
+            if legacy_push_allowed(&hub.home, service.is_some()) && push.enabled() {
+                push.broadcast(&payload, sound).await;
+            }
+            if let Some(service) = &service {
+                if let Err(error) = service.broadcast_push(&payload, sound).await {
+                    log!("encrypted service push failed: {error:#}");
+                }
+            }
         }
     }
 }
@@ -393,6 +410,17 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
 mod tests {
     use super::*;
     use alondra_core::Event;
+
+    #[test]
+    fn configured_service_never_falls_back_to_plaintext_push() {
+        let home = std::env::temp_dir().join(format!("alondra-push-mode-{}-{}", std::process::id(), now_millis()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(legacy_push_allowed(&home, false));
+        assert!(!legacy_push_allowed(&home, true));
+        std::fs::write(home.join("service.toml"), "invalid TOML").unwrap();
+        assert!(!legacy_push_allowed(&home, false), "invalid service configuration must fail closed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn push_binding_is_canonical_and_scoped_to_each_registration() {

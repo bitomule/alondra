@@ -3,6 +3,7 @@
 //! A device must also remain approved in the local pairing registry. Enrollment is a one-time
 //! durable attempt per device ID so a relay-side revocation survives reconnects and restarts.
 use crate::auth::Auth;
+use crate::push::valid_push_binding;
 use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -26,6 +27,10 @@ use std::{
 // Base64 adds ~33%; 180 KiB plus envelope metadata stays below the relay's 256 KiB cap.
 const MAX_LOCAL_RESPONSE: usize = 180 * 1024;
 const MAX_RELAY_RESPONSE: usize = 256 * 1024;
+// The relay wraps the envelope in a 4 KiB APNs alert. Leave room for its
+// generic aps fields, binding, JSON escaping, and future metadata.
+const MAX_PUSH_BODY: usize = 3_000;
+const MAX_PUSH_PLAINTEXT: usize = 1_500;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,7 +305,7 @@ impl Service {
         Ok(())
     }
 
-    pub async fn run(self) {
+    pub async fn run(self: Arc<Self>) {
         let mut enrolled_epoch: Option<[u8; 16]> = None;
         let mut revoked_this_epoch = HashSet::new();
         loop {
@@ -384,7 +389,7 @@ impl Service {
                     bail!("device was revoked before execution");
                 }
                 self.journal.executing(&e.sender, &e.request_id, &digest)?;
-                let result = match self.dispatch(&request).await {
+                let result = match self.dispatch(&e.sender, &request).await {
                     Ok(value) => value,
                     Err(error) if error.is::<ResponseTooLarge>() => {
                         json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
@@ -446,7 +451,18 @@ impl Service {
         Ok(fallback)
     }
 
-    async fn dispatch(&self, request: &LocalRequest) -> Result<Value> {
+    async fn dispatch(&self, sender: &str, request: &LocalRequest) -> Result<Value> {
+        if request.method == "POST" && request.path == "/v1/service/push-binding" {
+            let body = request.body.as_ref().context("push binding body required")?;
+            let binding = body.as_object()
+                .filter(|map| map.len() == 1)
+                .and_then(|map| map.get("push_binding"))
+                .and_then(Value::as_str)
+                .filter(|value| valid_push_binding(value))
+                .context("invalid push binding")?;
+            self.journal.set_push_binding(sender, binding)?;
+            return Ok(json!({"status":204}));
+        }
         let method = approved_method(request)?;
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
@@ -459,6 +475,75 @@ impl Service {
         let body = serde_json::from_slice::<Value>(&bytes)
             .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}));
         Ok(json!({"status":status,"body":body}))
+    }
+
+    /// Send one opaque notification per enrolled phone. The relay can see only
+    /// routing metadata, a random binding, and the generic APNs alert.
+    pub async fn broadcast_push(&self, payload: &Value, with_sound: bool) -> Result<()> {
+        let mut epoch = None;
+        for (id, device) in &self.devices {
+            if !self.auth.approved_key_matches(id, &device.signing)
+                || !self.journal.enrollment_active(id)? {
+                continue;
+            }
+            let Some(binding) = self.journal.push_binding(id)? else { continue };
+            let body = match self.encode_push(id, device, &binding, payload, with_sound) {
+                Ok(body) => body,
+                Err(error) => {
+                    log!("service push for {id} skipped: {error:#}");
+                    continue;
+                }
+            };
+            let epoch = match epoch {
+                Some(epoch) => epoch,
+                None => {
+                    let fresh = self.bootstrap().await?;
+                    epoch = Some(fresh);
+                    fresh
+                }
+            };
+            // Bootstrap can block on a disconnected relay. Recheck after that
+            // await so a local revocation or rotation cannot use a stale binding.
+            if !self.auth.approved_key_matches(id, &device.signing)
+                || !self.journal.enrollment_active(id)?
+                || self.journal.push_binding(id)?.as_deref() != Some(binding.as_str()) {
+                continue;
+            }
+            if let Err(error) = self.signed(Method::POST, "/v1/mac/push", body, &epoch)
+                .await.and_then(|response| response.error_for_status().map_err(Into::into)) {
+                log!("service push for {id} failed: {error:#}");
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_push(&self, id: &str, device: &Device, binding: &str, payload: &Value, with_sound: bool) -> Result<Vec<u8>> {
+        let plaintext = serde_json::to_vec(&json!({
+            "push_binding": binding,
+            "payload": payload,
+            "with_sound": with_sound,
+        }))?;
+        if plaintext.len() > MAX_PUSH_PLAINTEXT { bail!("content exceeds encrypted APNs budget"); }
+        let mut id_bytes = [0u8; 16];
+        SystemRandom::new().fill(&mut id_bytes)
+            .map_err(|_| anyhow!("OS randomness failed"))?;
+        let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
+        let envelope = EnvelopeV1::seal_random(
+            EnvelopeContext {
+                route: &self.mac_id,
+                sender: &self.mac_id,
+                recipient: id,
+                request_id: &request_id,
+                kind: "push",
+                expires_at_ms: now_ms() + 600_000,
+            },
+            &plaintext,
+            &self.signing,
+            &device.agreement,
+        ).map_err(|error| anyhow!("seal push: {error}"))?;
+        let body = serde_json::to_vec(&json!({"device_id":id,"envelope":envelope}))?;
+        if body.len() > MAX_PUSH_BODY { bail!("envelope exceeds APNs budget"); }
+        Ok(body)
     }
 }
 
@@ -598,6 +683,13 @@ struct Journal {
 }
 impl Journal {
     fn open(path: PathBuf) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            // Tighten the DB before SQLite creates WAL/SHM sidecars.
+            std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         let c = Connection::open(&path)?;
         c.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -606,7 +698,9 @@ impl Journal {
               state TEXT NOT NULL, response BLOB, PRIMARY KEY(sender, request_id));
             CREATE TABLE IF NOT EXISTS service_enrollments (
               device_id TEXT PRIMARY KEY, signing_key BLOB NOT NULL, attempted_at_ms INTEGER NOT NULL,
-              state TEXT NOT NULL);",
+              state TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS service_push_bindings (
+              device_id TEXT PRIMARY KEY, binding TEXT NOT NULL);",
         )?;
         Ok(Self { path })
     }
@@ -660,12 +754,34 @@ impl Journal {
         Ok(())
     }
     fn revoke_enrollment(&self, id: &str) -> Result<()> {
-        let c = self.db()?;
-        c.execute(
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
             "UPDATE service_enrollments SET state='revoked' WHERE device_id=?1",
             params![id],
         )?;
+        tx.execute("DELETE FROM service_push_bindings WHERE device_id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
+    }
+    fn set_push_binding(&self, id: &str, binding: &str) -> Result<()> {
+        if !valid_push_binding(binding) { bail!("invalid push binding"); }
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let updated = tx.execute(
+            "INSERT INTO service_push_bindings(device_id,binding) SELECT device_id,?2 FROM service_enrollments WHERE device_id=?1 AND state='active' ON CONFLICT(device_id) DO UPDATE SET binding=excluded.binding",
+            params![id, binding],
+        )?;
+        if updated != 1 { bail!("push device is not enrolled"); }
+        tx.commit()?;
+        Ok(())
+    }
+    fn push_binding(&self, id: &str) -> Result<Option<String>> {
+        let c = self.db()?;
+        Ok(c.query_row(
+            "SELECT b.binding FROM service_push_bindings b JOIN service_enrollments e USING(device_id) WHERE b.device_id=?1 AND e.state='active'",
+            params![id], |row| row.get(0),
+        ).optional()?)
     }
     #[cfg(test)]
     fn enrollment_revoked(&self, id: &str) -> Result<bool> {
@@ -755,6 +871,102 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    #[test]
+    fn push_binding_rotates_persists_and_is_removed_on_revocation() {
+        let path = std::env::temp_dir().join(format!(
+            "alondra-push-bindings-{}-{}.sqlite", std::process::id(), now_ms()
+        ));
+        let journal = Journal::open(path.clone()).unwrap();
+        let key = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        assert!(matches!(journal.reserve_enrollment("phone", &key.verifying_key().to_sec1_bytes()).unwrap(), EnrollmentDecision::New));
+        assert!(journal.set_push_binding("phone", &URL_SAFE_NO_PAD.encode([1u8; 32])).is_err(), "pending enrollment cannot activate push");
+        journal.activate_enrollment("phone").unwrap();
+        let first = URL_SAFE_NO_PAD.encode([1u8; 32]);
+        let second = URL_SAFE_NO_PAD.encode([2u8; 32]);
+        journal.set_push_binding("phone", &first).unwrap();
+        assert_eq!(Journal::open(path.clone()).unwrap().push_binding("phone").unwrap().as_deref(), Some(first.as_str()));
+        journal.set_push_binding("phone", &second).unwrap();
+        assert_eq!(journal.push_binding("phone").unwrap().as_deref(), Some(second.as_str()));
+        assert!(journal.set_push_binding("phone", "not-base64url").is_err());
+        journal.revoke_enrollment("phone").unwrap();
+        assert!(Journal::open(path).unwrap().push_binding("phone").unwrap().is_none());
+        assert!(journal.set_push_binding("phone", &first).is_err());
+    }
+
+    #[tokio::test]
+    async fn service_push_contains_only_ciphertext_outside_and_enforces_budget() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-encrypted-push-{}-{}", std::process::id(), now_ms()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
+        // Use the exact disk contract written by service_pair::approve: the
+        // signing key is locally approved and both phone keys are pinned in TOML.
+        for (name, bytes) in [("signing.key", [1u8; 32]), ("agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&json!([{
+            "id":"phone-1", "name":"iPhone", "created_at":0, "last_seen":null,
+            "public_key":STANDARD.encode(phone_signing.verifying_key().to_sec1_bytes())
+        }])).unwrap()).unwrap();
+        let config = format!(r#"relay_url = "http://127.0.0.1:1/"
+mac_id = "mac-1"
+owner_sub = "owner"
+signing_key_path = "signing.key"
+agreement_key_path = "agreement.key"
+[[devices]]
+device_id = "phone-1"
+signing_key = "{}"
+agreement_key = "{}"
+"#, URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes()),
+            URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_bytes()));
+        std::fs::write(home.join("service.toml"), config).unwrap();
+        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+        let device = service.devices.get("phone-1").unwrap();
+        assert!(service.auth.approved_key_matches("phone-1", &device.signing));
+        let binding = URL_SAFE_NO_PAD.encode([4u8; 32]);
+        service.journal.reserve_enrollment("phone-1", &phone_signing.verifying_key().to_sec1_bytes()).unwrap();
+        service.journal.activate_enrollment("phone-1").unwrap();
+        let request = LocalRequest {
+            method: "POST".into(), path: "/v1/service/push-binding".into(),
+            body: Some(json!({"push_binding":binding})),
+        };
+        assert_eq!(service.dispatch("phone-1", &request).await.unwrap()["status"], 204);
+        assert_eq!(service.journal.push_binding("phone-1").unwrap().as_deref(), Some(binding.as_str()));
+        let bad_request = LocalRequest {
+            method: "POST".into(), path: "/v1/service/push-binding".into(),
+            body: Some(json!({"push_binding":binding,"unexpected":true})),
+        };
+        assert!(service.dispatch("phone-1", &bad_request).await.is_err());
+        let secret = "private question title for iPhone only";
+        let payload = json!({"aps":{"alert":{"title":secret},"category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":7}});
+        let body = service.encode_push("phone-1", &device, &binding, &payload, true).unwrap();
+        assert!(body.len() <= MAX_PUSH_BODY);
+        let wire = String::from_utf8(body.clone()).unwrap();
+        assert!(!wire.contains(secret));
+        assert!(!wire.contains("ALONDRA_QUESTION"));
+        assert!(!wire.contains(&binding));
+        let decoded: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(decoded["device_id"], "phone-1");
+        let envelope: EnvelopeV1 = serde_json::from_value(decoded["envelope"].clone()).unwrap();
+        assert_eq!(envelope.kind, "push");
+        assert_eq!(envelope.route, "mac-1");
+        assert_eq!(envelope.recipient, "phone-1");
+        let plaintext = envelope.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+        let content: Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(content["push_binding"], binding);
+        assert_eq!(content["payload"], payload);
+        assert_eq!(content["with_sound"], true);
+        let huge = json!({"aps":{"alert":{"body":"x".repeat(MAX_PUSH_PLAINTEXT)}}});
+        assert!(service.encode_push("phone-1", &device, &binding, &huge, true).is_err());
+    }
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
         let accepts = |method: &str, path: &str, body: Option<Value>| approved_method(&LocalRequest {

@@ -67,13 +67,19 @@ async fn main() -> Result<()> {
     }
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
-    match service::Service::open(&config.home, config.port, auth.clone()) {
-        Ok(Some(service)) => { tokio::spawn(async move { service.run().await }); }
-        Ok(None) => {}
-        Err(error) => log!("service connector disabled: {error:#}"),
+    let service = match service::Service::open(&config.home, config.port, auth.clone()) {
+        Ok(Some(service)) => Some(Arc::new(service)),
+        Ok(None) => None,
+        Err(error) => {
+            log!("service connector disabled: {error:#}");
+            None
+        }
+    };
+    if let Some(service) = service.clone() {
+        tokio::spawn(async move { service.run().await });
     }
     let push = Arc::new(push::Push::open(&config.home)?);
-    tokio::spawn(push::run(hub.clone(), push.clone()));
+    tokio::spawn(push::run(hub.clone(), push.clone(), service));
     log!("listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
         config.home.display(),
         config.name,
