@@ -124,9 +124,14 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
 
     public var stateLabel: String { orchestratorState?.label ?? state.label }
 
+    /// Shared resource bundle owns this localization, including nodes with no project field.
+    public static var otherProjectName: String {
+        String(localized: "others", table: "AlondraShared", bundle: #bundle)
+    }
+
     public var projectName: String? {
         if isOrchestrator { return String(localized: "Orchestrator", table: "AlondraShared", bundle: #bundle) }
-        if project == "others" { return String(localized: "others", table: "AlondraShared", bundle: #bundle) }
+        if project == "others" { return Self.otherProjectName }
         return project
     }
 
