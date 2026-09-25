@@ -578,6 +578,10 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
     });
     let mut started = vec![];
     for task in due {
+        if matches!(&task.start, Some(Start::NewNode { name, .. }) if name.starts_with("scheduled/"))
+            && hub.schedules.failed_launch(&task.request).unwrap_or(true) {
+            continue;
+        }
         if !hub.read(|v| v.board.tasks.get(&task.id).is_some_and(Task::needs_start)) {
             continue;
         }
@@ -592,10 +596,16 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
             Err(why) => {
                 log!("task {} could not start: {why}", task.id);
                 given_up.insert((task.id.clone(), task.state_since));
-                tell_orchestrator(
-                    hub,
-                    format!("[Alondra] Task {} “{}” could not start: {why}. Start it with launch or send with task \"{}\", or cancel it.", task.id, task.title, task.id),
-                );
+                if matches!(&task.start, Some(Start::NewNode { name, .. }) if name.starts_with("scheduled/")) {
+                    if let Err(e) = hub.schedules.launch_failed(&task.request, &why) {
+                        log!("scheduled task {}: could not save launch error: {e}", task.id);
+                    }
+                } else {
+                    tell_orchestrator(
+                        hub,
+                        format!("[Alondra] Task {} “{}” could not start: {why}. Start it with launch or send with task \"{}\", or cancel it.", task.id, task.title, task.id),
+                    );
+                }
             }
         }
     }

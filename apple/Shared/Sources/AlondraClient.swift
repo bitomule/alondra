@@ -6,7 +6,9 @@ public struct AlondraClient: Sendable {
     public let device: String
     public let signer: (any RequestSigner)?
 
-    public static let defaultURL = URL(string: "http://127.0.0.1:47800")!
+    /// A local launch override lets simulator and Mac UI tests use an isolated daemon.
+    public static let defaultURL = ProcessInfo.processInfo.environment["ALONDRA_SERVER_URL"]
+        .flatMap { serverURL($0) } ?? URL(string: "http://127.0.0.1:47800")!
     public static let local = AlondraClient(base: defaultURL)
 
     public init(base: URL, device: String = "mac", signer: (any RequestSigner)? = nil) {
@@ -160,6 +162,24 @@ public struct AlondraClient: Sendable {
 
     public func newRequest(_ body: NewRequestBody) async throws {
         _ = try await perform("POST", "v1/requests", body: try JSONEncoder().encode(body), session: Self.session)
+    }
+
+    public func schedules() async throws -> [ScheduledTask] {
+        try Self.decoder.decode(ScheduledTaskList.self, from: try await get("v1/schedules")).schedules
+    }
+
+    public func saveSchedule(_ draft: ScheduledTaskDraft, id: String? = nil) async throws -> ScheduledTask {
+        let path = id.map { "v1/schedules/\($0)" } ?? "v1/schedules"
+        let data = try await perform(id == nil ? "POST" : "PUT", path, body: try JSONEncoder().encode(draft), session: Self.session)
+        return try Self.decoder.decode(ScheduledTask.self, from: data)
+    }
+
+    public func deleteSchedule(_ id: String) async throws {
+        _ = try await perform("DELETE", "v1/schedules/\(id)", session: Self.session)
+    }
+
+    public func runSchedule(_ id: String) async throws {
+        _ = try await perform("POST", "v1/schedules/\(id)/run", body: Data("{}".utf8), session: Self.session)
     }
 
     public func options(project: String?) async throws -> OptionsCatalog {

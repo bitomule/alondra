@@ -16,6 +16,27 @@ struct TasksTab: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     header
+                    NavigationLink {
+                        ScheduledTasksView(client: fleet.client)
+                            .background(DawnBackground())
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.title3)
+                                .foregroundStyle(Palette.dawn)
+                            Text("Scheduled Tasks")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Palette.ink)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(16)
+                        .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 18))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
                     if fleet.overview == nil {
                         ProgressView()
                             .controlSize(.large)

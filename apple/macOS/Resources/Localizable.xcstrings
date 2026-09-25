@@ -1746,7 +1746,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lo decide el orquestador"
+            "value": "El orquestador decide"
           }
         }
       }
@@ -2237,6 +2237,316 @@
           "stringUnit": {
             "state": "translated",
             "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
+          }
+        }
+      }
+    },
+    "Scheduled": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programadas"
+          }
+        }
+      }
+    },
+    "Scheduled Tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tareas programadas"
+          }
+        }
+      }
+    },
+    "Add Schedule": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir programación"
+          }
+        }
+      }
+    },
+    "Refresh": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizar"
+          }
+        }
+      }
+    },
+    "No scheduled tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay tareas programadas"
+          }
+        }
+      }
+    },
+    "Create a recurring mission for the orchestrator.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crea una misión recurrente para el orquestador."
+          }
+        }
+      }
+    },
+    "Delete": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Borrar"
+          }
+        }
+      }
+    },
+    "Run now": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ejecutar ahora"
+          }
+        }
+      }
+    },
+    "Delete scheduled task?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Borrar esta tarea programada?"
+          }
+        }
+      }
+    },
+    "Future runs will stop. Existing requests stay in Tasks.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No volverá a ejecutarse. Las solicitudes existentes seguirán en Tareas."
+          }
+        }
+      }
+    },
+    "New Schedule": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nueva programación"
+          }
+        }
+      }
+    },
+    "Edit Schedule": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editar programación"
+          }
+        }
+      }
+    },
+    "Name": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nombre"
+          }
+        }
+      }
+    },
+    "Mission instructions": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Instrucciones de la misión"
+          }
+        }
+      }
+    },
+    "When": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuándo"
+          }
+        }
+      }
+    },
+    "Repeat": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repetición"
+          }
+        }
+      }
+    },
+    "Every day": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cada día"
+          }
+        }
+      }
+    },
+    "Every week": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cada semana"
+          }
+        }
+      }
+    },
+    "Day": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Día"
+          }
+        }
+      }
+    },
+    "Hour": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hora"
+          }
+        }
+      }
+    },
+    "Minute": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minuto"
+          }
+        }
+      }
+    },
+    "Uses the Mac’s local time zone. A missed run is sent once when Alondra starts again.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa la zona horaria del Mac. Si se pierde una ejecución, Alondra la envía una sola vez al arrancar."
+          }
+        }
+      }
+    },
+    "Active": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activa"
+          }
+        }
+      }
+    },
+    "Paused": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pausada"
+          }
+        }
+      }
+    },
+    "Launch options": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opciones de lanzamiento"
+          }
+        }
+      }
+    },
+    "Could not load scheduled tasks": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudieron cargar las tareas programadas"
+          }
+        }
+      }
+    },
+    "Retry": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reintentar"
+          }
+        }
+      }
+    },
+    "More": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Más"
+          }
+        }
+      }
+    },
+    "Time": {
+      "localizations": {
+        "es": {
+         "stringUnit": {
+           "state": "translated",
+           "value": "Hora"
+          }
+        }
+      }
+    },
+    "Run": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ejecutar"
+          }
+        }
+      }
+    },
+    "What should the orchestrator do?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Qué debe hacer el orquestador?"
           }
         }
       }
