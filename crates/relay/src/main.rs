@@ -3,7 +3,7 @@ mod push;
 mod state;
 
 use alondra_e2e::EnvelopeV1;
-use auth::{Auth, Config, PhoneDevice, PushRegistration};
+use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -39,6 +39,8 @@ fn router(server: Arc<Server>) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
+        .route("/v1/macs", post(enroll_mac))
+        .route("/v1/macs/{id}", axum::routing::delete(revoke_mac))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
         .route("/v1/push/register", post(register_push))
@@ -75,6 +77,60 @@ async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
         StatusCode::OK,
         Json(json!({"protocol":1,"epoch":server.epoch})),
     )
+}
+
+async fn enroll_mac(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if body.len() > 4096 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let request: MacRegistration = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_mac_registration"))?;
+    let mac = server
+        .auth
+        .authorize_mac_enrollment(&headers, &method, &uri, &body, now_ms(), request)
+        .await
+        .map_err(|_| unauthorized())?;
+    let created = server
+        .auth
+        .enroll_mac(mac)
+        .map_err(|_| error(StatusCode::CONFLICT, "mac_enrollment_failed"))?;
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(json!({"ok":true})),
+    )
+        .into_response())
+}
+
+async fn revoke_mac(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+) -> ApiResult {
+    let _gate = server.device_gate.write().await;
+    let who = server
+        .auth
+        .authenticate_mac(&headers, &method, &uri, &[], now_ms())
+        .map_err(|_| unauthorized())?;
+    if who.device_id != id {
+        return Err(unauthorized());
+    }
+    server
+        .auth
+        .revoke_mac(&who)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_revocation_failed"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn limit_and_headers(
@@ -121,11 +177,11 @@ async fn enroll(
     uri: Uri,
     body: Bytes,
 ) -> ApiResult {
-    server
+    let _gate = server.device_gate.write().await;
+    let mac = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &body, now_ms())
         .map_err(|_| unauthorized())?;
-    let _gate = server.device_gate.write().await;
     if body.len() > 4096 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
@@ -133,7 +189,7 @@ async fn enroll(
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_device"))?;
     server
         .auth
-        .enroll(device)
+        .enroll(&mac, device)
         .map_err(|_| error(StatusCode::CONFLICT, "device_enrollment_failed"))?;
     Ok((StatusCode::CREATED, Json(json!({"ok":true}))).into_response())
 }
@@ -145,14 +201,14 @@ async fn revoke(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
-    server
+    let _gate = server.device_gate.write().await;
+    let mac = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &[], now_ms())
         .map_err(|_| unauthorized())?;
-    let _gate = server.device_gate.write().await;
     server
         .auth
-        .revoke(&id)
+        .revoke(&mac, &id)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
     server.queue.purge_phone(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -229,7 +285,10 @@ async fn send_push(
         return Err(error(StatusCode::BAD_REQUEST, "invalid_push_route"));
     }
     e.verify_signature(
-        &server.auth.mac_key().map_err(|_| unauthorized())?,
+        &server
+            .auth
+            .mac_key(&mac.device_id)
+            .map_err(|_| unauthorized())?,
         &mac.device_id,
         &request.device_id,
         &mac.device_id,
@@ -240,6 +299,10 @@ async fn send_push(
         .auth
         .push_registration(&request.device_id)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "push_registration_not_found"))?;
+    server
+        .auth
+        .phone_for_mac(&request.device_id, &mac)
+        .map_err(|_| error(StatusCode::NOT_FOUND, "push_registration_not_found"))?;
     let payload_bytes = serde_json::to_vec(&push::payload(e, &registration.push_binding))
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
     if payload_bytes.len() > 4096 {
@@ -292,9 +355,20 @@ async fn submit(
         .map_err(|_| unauthorized())?;
     let (fields, v) = parse_envelope(&body, state::MAX_ENVELOPE_BYTES)?;
     if fields.kind != "request"
-        || fields.route != server.auth.config.mac_id
-        || fields.recipient != server.auth.config.mac_id
+        || fields.route != fields.recipient
         || fields.sender != who.device_id
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
+    }
+    server
+        .auth
+        .mac_for_owner(&fields.route, &who.owner_sub)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_route"))?;
+    if server
+        .auth
+        .paired_mac_for_phone(&who.device_id, &who.owner_sub)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_route"))?
+        != fields.route
     {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_route"));
     }
@@ -313,8 +387,8 @@ async fn submit(
         .verify_signature(
             &sender_key,
             &who.device_id,
-            &server.auth.config.mac_id,
-            &server.auth.config.mac_id,
+            &fields.route,
+            &fields.route,
             now,
         )
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
@@ -446,6 +520,7 @@ async fn work(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &[], now_ms())
@@ -488,6 +563,7 @@ async fn receipt(
     uri: Uri,
     body: Bytes,
 ) -> ApiResult {
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &body, now_ms())
@@ -514,6 +590,7 @@ async fn respond(
     uri: Uri,
     body: Bytes,
 ) -> ApiResult {
+    let _gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &body, now_ms())
@@ -536,7 +613,10 @@ async fn respond(
     }
     fields
         .verify_signature(
-            &server.auth.mac_key().map_err(|_| unauthorized())?,
+            &server
+                .auth
+                .mac_key(&who.device_id)
+                .map_err(|_| unauthorized())?,
             &who.device_id,
             &phone_id,
             &who.device_id,
@@ -601,6 +681,7 @@ mod http_tests {
     use alondra_e2e::{Context, EnvelopeV1, sign_http_challenge};
     use auth::PhoneDevice;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use p256::elliptic_curve::sec1::ToSec1Point;
     use p256::{SecretKey, ecdsa::SigningKey};
     use ring::{
         rand::SystemRandom,
@@ -750,11 +831,17 @@ mod http_tests {
         let (url, server, relay_task) = test_server_with_apns(&mac_sign, Some(apns_url)).await;
         server
             .auth
-            .enroll(PhoneDevice {
-                device_id: "phone-push".into(),
-                owner_sub: "owner".into(),
-                signing_key: key_bytes(&phone_sign),
-            })
+            .enroll(
+                &auth::Identity {
+                    device_id: "mac-1".into(),
+                    owner_sub: "owner".into(),
+                },
+                PhoneDevice {
+                    device_id: "phone-push".into(),
+                    owner_sub: "owner".into(),
+                    signing_key: key_bytes(&phone_sign),
+                },
+            )
             .unwrap();
         let epoch = server.auth.server_epoch();
         let client = reqwest::Client::new();
@@ -1014,7 +1101,16 @@ mod http_tests {
             "APNs rejection must not look accepted"
         );
 
-        server.auth.revoke("phone-push").unwrap();
+        server
+            .auth
+            .revoke(
+                &auth::Identity {
+                    device_id: "mac-1".into(),
+                    owner_sub: "owner".into(),
+                },
+                "phone-push",
+            )
+            .unwrap();
         assert!(server.auth.push_registration("phone-push").is_none());
         let persisted: Value = serde_json::from_slice(
             &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
@@ -1441,7 +1537,15 @@ mod http_tests {
         .unwrap();
         assert!(!after_restart.is_phone_registered("phone-1"));
         assert!(
-            after_restart.enroll(device.clone()).is_err(),
+            after_restart
+                .enroll(
+                    &auth::Identity {
+                        device_id: "mac-1".into(),
+                        owner_sub: "owner".into()
+                    },
+                    device.clone()
+                )
+                .is_err(),
             "revoked ID must stay blocked after restart"
         );
         let reenroll_body = serde_json::to_vec(&device).unwrap();
@@ -1604,6 +1708,437 @@ mod http_tests {
             "periodic refresh path replaces key set too"
         );
         assert!(auth.verify_jwt(&rotated, now).await.is_err());
+        handle.abort();
+    }
+    #[tokio::test]
+    async fn mac_enrollment_is_owner_bound_create_only_and_durable() {
+        let pilot_key = SigningKey::from_slice(&[61u8; 32]).unwrap();
+        let mac_key = SigningKey::from_slice(&[62u8; 32]).unwrap();
+        let replaced_key = SigningKey::from_slice(&[63u8; 32]).unwrap();
+        let agreement = SecretKey::from_slice(&[64u8; 32]).unwrap();
+        let (url, server, handle) = test_server(&pilot_key).await;
+        let epoch = server.auth.server_epoch();
+        let client = reqwest::Client::new();
+        let body = serde_json::to_vec(&json!({
+            "mac_id":"mac-second", "signing_key":key_bytes(&mac_key),
+            "agreement_key":URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_point(false).as_bytes())
+        })).unwrap();
+        let path = "/v1/macs";
+        let attempt = |key: &SigningKey, owner: &str, bytes: Vec<u8>, nonce: u8| {
+            sign(
+                &epoch,
+                client
+                    .post(format!("{url}{path}"))
+                    .bearer_auth(jwt(owner, now_ms()))
+                    .body(bytes.clone()),
+                key,
+                "mac-second",
+                "POST",
+                path,
+                &bytes,
+                nonce,
+            )
+        };
+        // An account token without possession of the advertised private key cannot enroll it.
+        let stolen_account = attempt(&replaced_key, "owner2", body.clone(), 1)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stolen_account.status(), StatusCode::UNAUTHORIZED);
+        let created = attempt(&mac_key, "owner2", body.clone(), 2)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let repeated = attempt(&mac_key, "owner2", body.clone(), 3)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::OK);
+        let cross_owner = attempt(&mac_key, "owner", body.clone(), 4)
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(cross_owner.status(), StatusCode::CREATED);
+        let replaced_body = serde_json::to_vec(&json!({
+            "mac_id":"mac-second", "signing_key":key_bytes(&replaced_key),
+            "agreement_key":URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_point(false).as_bytes())
+        })).unwrap();
+        let replacement = attempt(&replaced_key, "owner2", replaced_body.clone(), 5)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replacement.status(), StatusCode::CONFLICT);
+        assert!(server.auth.mac_for_owner("mac-second", "owner2").is_ok());
+        assert!(server.auth.mac_for_owner("mac-second", "owner").is_err());
+        assert!(server.auth.mac_for_owner("mac-1", "owner2").is_err());
+        let pilot_body = serde_json::to_vec(&json!({
+            "mac_id":"mac-1", "signing_key":key_bytes(&pilot_key),
+            "agreement_key":URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_point(false).as_bytes())
+        })).unwrap();
+        let pilot_complete = sign(
+            &epoch,
+            client
+                .post(format!("{url}/v1/macs"))
+                .bearer_auth(jwt("owner", now_ms()))
+                .body(pilot_body.clone()),
+            &pilot_key,
+            "mac-1",
+            "POST",
+            "/v1/macs",
+            &pilot_body,
+            9,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(pilot_complete.status(), StatusCode::CREATED);
+        server
+            .queue
+            .submit(
+                "owner",
+                "phone-pilot",
+                "mac-1",
+                "prior-content",
+                [9; 32],
+                json!({"ciphertext":"prior-owner"}),
+                now_ms() + 60_000,
+                now_ms(),
+            )
+            .unwrap();
+        assert!(
+            server.queue.next_work("mac-second", now_ms()).is_none(),
+            "a newly registered Mac must not receive the pilot Mac's prior ciphertext"
+        );
+        // A valid account token can add a fresh Mac, but that Mac must not inherit
+        // a phone or ciphertext already paired to the pilot Mac.
+        let stolen_key = SigningKey::from_slice(&[65u8; 32]).unwrap();
+        let stolen_body = serde_json::to_vec(&json!({
+            "mac_id":"mac-stolen", "signing_key":key_bytes(&stolen_key),
+            "agreement_key":URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_point(false).as_bytes())
+        })).unwrap();
+        let fresh_mac = sign(
+            &epoch,
+            client
+                .post(format!("{url}/v1/macs"))
+                .bearer_auth(jwt("owner", now_ms()))
+                .body(stolen_body.clone()),
+            &stolen_key,
+            "mac-stolen",
+            "POST",
+            "/v1/macs",
+            &stolen_body,
+            10,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(fresh_mac.status(), StatusCode::CREATED);
+        let stolen_work = sign(
+            &epoch,
+            client.get(format!("{url}/v1/work?wait_s=0")),
+            &stolen_key,
+            "mac-stolen",
+            "GET",
+            "/v1/work?wait_s=0",
+            &[],
+            11,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(stolen_work.status(), StatusCode::NO_CONTENT);
+        let pilot_phone = PhoneDevice {
+            device_id: "phone-pilot".into(),
+            owner_sub: "owner".into(),
+            signing_key: key_bytes(&replaced_key),
+        };
+        let pilot = auth::Identity {
+            device_id: "mac-1".into(),
+            owner_sub: "owner".into(),
+        };
+        let stolen = auth::Identity {
+            device_id: "mac-stolen".into(),
+            owner_sub: "owner".into(),
+        };
+        server.auth.enroll(&pilot, pilot_phone.clone()).unwrap();
+        assert!(server.auth.enroll(&stolen, pilot_phone).is_err());
+        assert!(server.auth.revoke(&stolen, "phone-pilot").is_err());
+        assert_eq!(
+            server
+                .auth
+                .paired_mac_for_phone("phone-pilot", "owner")
+                .unwrap(),
+            "mac-1"
+        );
+        let now = now_ms();
+        let rerouted = EnvelopeV1::seal_random(
+            Context {
+                route: "mac-stolen",
+                sender: "phone-pilot",
+                recipient: "mac-stolen",
+                request_id: "reroute",
+                kind: "request",
+                expires_at_ms: now + 60_000,
+            },
+            br#"{"private":true}"#,
+            &replaced_key,
+            &agreement.public_key(),
+        )
+        .unwrap();
+        let rerouted_body = serde_json::to_vec(&rerouted).unwrap();
+        let rerouted_response = sign(
+            &epoch,
+            client
+                .post(format!("{url}/v1/requests"))
+                .bearer_auth(jwt("owner", now))
+                .body(rerouted_body.clone()),
+            &replaced_key,
+            "phone-pilot",
+            "POST",
+            "/v1/requests",
+            &rerouted_body,
+            12,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(rerouted_response.status(), StatusCode::BAD_REQUEST);
+        let new_phone = PhoneDevice {
+            device_id: "phone-owner2".into(),
+            owner_sub: "owner2".into(),
+            signing_key: key_bytes(&replaced_key),
+        };
+        assert!(
+            server
+                .auth
+                .enroll(
+                    &auth::Identity {
+                        device_id: "mac-1".into(),
+                        owner_sub: "owner".into()
+                    },
+                    new_phone.clone()
+                )
+                .is_err()
+        );
+        server
+            .auth
+            .enroll(
+                &auth::Identity {
+                    device_id: "mac-second".into(),
+                    owner_sub: "owner2".into(),
+                },
+                new_phone,
+            )
+            .unwrap();
+        let revoked = sign(
+            &epoch,
+            client.delete(format!("{url}/v1/macs/mac-second")),
+            &mac_key,
+            "mac-second",
+            "DELETE",
+            "/v1/macs/mac-second",
+            &[],
+            6,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+        assert!(!server.auth.is_mac_registered("mac-second"));
+        let revoked_work = sign(
+            &epoch,
+            client.get(format!("{url}/v1/work?wait_s=0")),
+            &mac_key,
+            "mac-second",
+            "GET",
+            "/v1/work?wait_s=0",
+            &[],
+            8,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(revoked_work.status(), StatusCode::UNAUTHORIZED);
+        let after = attempt(&mac_key, "owner2", body.clone(), 7)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::CONFLICT);
+        let restarted = Auth::test(
+            server.auth.config.clone(),
+            include_bytes!("../tests/fixtures/jwks.json"),
+        )
+        .unwrap();
+        assert!(
+            restarted.is_mac_registered("mac-1"),
+            "pilot pinned Mac migrates durably"
+        );
+        assert!(!restarted.is_mac_registered("mac-second"));
+        assert!(
+            restarted
+                .enroll_mac(auth::MacDevice {
+                    mac_id: "mac-second".into(),
+                    owner_sub: "owner2".into(),
+                    signing_key: key_bytes(&mac_key),
+                    agreement_key: URL_SAFE_NO_PAD
+                        .encode(agreement.public_key().to_sec1_point(false).as_bytes())
+                })
+                .is_err()
+        );
+        handle.abort();
+    }
+    #[tokio::test]
+    async fn registry_schema_guard_rejects_rollback_and_ambiguous_bindings() {
+        let pilot_key = SigningKey::from_slice(&[71u8; 32]).unwrap();
+        let second_key = SigningKey::from_slice(&[72u8; 32]).unwrap();
+        let (url, server, handle) = test_server(&pilot_key).await;
+        let config = server.auth.config.clone();
+        let pilot = auth::Identity {
+            device_id: "mac-1".into(),
+            owner_sub: "owner".into(),
+        };
+        server
+            .auth
+            .enroll(
+                &pilot,
+                PhoneDevice {
+                    device_id: "phone-pilot".into(),
+                    owner_sub: "owner".into(),
+                    signing_key: key_bytes(&second_key),
+                },
+            )
+            .unwrap();
+        let second = auth::MacDevice {
+            mac_id: "mac-second".into(),
+            owner_sub: "other".into(),
+            signing_key: key_bytes(&second_key),
+            agreement_key: key_bytes(&second_key),
+        };
+        server.auth.enroll_mac(second).unwrap();
+        let guarded: Value =
+            serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+        assert_eq!(guarded["schema_version"], 2);
+        assert_eq!(guarded["phone_macs"]["phone-pilot"], "mac-1");
+        assert!(
+            config
+                .device_registry_path
+                .with_extension("schema-v2")
+                .exists()
+        );
+
+        // The one-Mac pilot format can be upgraded without guessing a route.
+        let mut legacy = config.clone();
+        legacy.device_registry_path = config.device_registry_path.with_extension("pilot.json");
+        let old_phone = PhoneDevice {
+            device_id: "phone-old".into(),
+            owner_sub: "owner".into(),
+            signing_key: key_bytes(&second_key),
+        };
+        std::fs::write(
+            &legacy.device_registry_path,
+            serde_json::to_vec(&json!({
+                "devices":[old_phone], "revoked_ids":[]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let upgraded = Auth::test(
+            legacy.clone(),
+            include_bytes!("../tests/fixtures/jwks.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            upgraded.paired_mac_for_phone("phone-old", "owner").unwrap(),
+            "mac-1"
+        );
+        let upgraded_disk: Value =
+            serde_json::from_slice(&std::fs::read(&legacy.device_registry_path).unwrap()).unwrap();
+        assert_eq!(upgraded_disk["schema_version"], 2);
+        assert_eq!(upgraded_disk["phone_macs"]["phone-old"], "mac-1");
+        assert!(
+            legacy
+                .device_registry_path
+                .with_extension("schema-v2")
+                .exists()
+        );
+
+        // A multi-Mac v1 registry with a missing phone binding cannot be guessed.
+        let mut ambiguous = guarded.clone();
+        ambiguous.as_object_mut().unwrap().remove("schema_version");
+        ambiguous["phone_macs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("phone-pilot");
+        let mut imported = config.clone();
+        imported.device_registry_path =
+            config.device_registry_path.with_extension("ambiguous.json");
+        std::fs::write(
+            &imported.device_registry_path,
+            serde_json::to_vec(&ambiguous).unwrap(),
+        )
+        .unwrap();
+        assert!(Auth::test(imported, include_bytes!("../tests/fixtures/jwks.json")).is_err());
+
+        // A rolled-back binary discards unknown v2 fields; the separate guard survives.
+        let mut downgraded = guarded;
+        for field in ["schema_version", "phone_macs", "macs", "revoked_mac_ids"] {
+            downgraded.as_object_mut().unwrap().remove(field);
+        }
+        std::fs::write(
+            &config.device_registry_path,
+            serde_json::to_vec(&downgraded).unwrap(),
+        )
+        .unwrap();
+        assert!(Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).is_err());
+        handle.abort();
+        drop(url);
+    }
+
+    #[tokio::test]
+    async fn post_rename_sync_failure_poison_blocks_auth_until_restart() {
+        let pilot_key = SigningKey::from_slice(&[73u8; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[74u8; 32]).unwrap();
+        let (_url, server, handle) = test_server(&pilot_key).await;
+        let config = server.auth.config.clone();
+        let phone = PhoneDevice {
+            device_id: "phone-after-rename".into(),
+            owner_sub: "owner".into(),
+            signing_key: key_bytes(&phone_key),
+        };
+        *auth::FAIL_AFTER_RENAME_PATH.lock().unwrap() = Some(config.device_registry_path.clone());
+        assert!(
+            server
+                .auth
+                .enroll(
+                    &auth::Identity {
+                        device_id: "mac-1".into(),
+                        owner_sub: "owner".into()
+                    },
+                    phone
+                )
+                .is_err()
+        );
+        assert!(!server.auth.jwks_ready());
+        assert!(server.auth.mac_key("mac-1").is_err());
+        assert!(server.auth.phone_key("phone-after-rename").is_err());
+        assert!(
+            !server.auth.is_phone_registered("phone-after-rename"),
+            "memory rolled back"
+        );
+        let on_disk: Value =
+            serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+        assert!(
+            on_disk["devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["device_id"] == "phone-after-rename"),
+            "rename already committed on disk"
+        );
+        let restarted = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        assert!(restarted.jwks_ready());
+        assert!(restarted.is_phone_registered("phone-after-rename"));
         handle.abort();
     }
 }
