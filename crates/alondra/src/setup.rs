@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const TEMPLATE: &str = include_str!("../../../launchd/alondra.plist.in");
-pub const PLUGIN_ID: &str = "alondra@alondra";
 pub const MARKETPLACE: &str = "alondra";
 
 #[derive(clap::Args, Default)]
@@ -102,7 +101,9 @@ pub struct Observed {
     pub apns_key_exists: bool,
     pub claude: bool,
     pub marketplace: bool,
-    pub plugin: bool,
+    /// Alondra's plugins that a global install enables in every session, with the scope of
+    /// each install.
+    pub enabled_globally: Vec<(String, String)>,
     pub tuicr: bool,
     pub brew: bool,
 }
@@ -243,7 +244,13 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
     if !args.skip_plugin {
         let claude = |args: &[&str]| Step::Run { program: "claude".into(), args: args.iter().map(|s| s.to_string()).collect() };
         if !seen.claude {
-            steps.push(Step::Warn(tr!("Claude Code (`claude`) is not on PATH: the plugin is not installed.", "Claude Code (`claude`) no está en el PATH: no se instala el plugin.").into()));
+            steps.push(Step::Warn(
+                tr!(
+                    "Claude Code (`claude`) is not on PATH: Alondra's marketplace is not registered, so alondrad cannot find the plugin it launches nodes with.",
+                    "Claude Code (`claude`) no está en el PATH: no se registra el marketplace de Alondra, así que alondrad no encuentra el plugin con el que lanza los nodos."
+                )
+                .into(),
+            ));
         } else {
             if !seen.marketplace {
                 match &paths.repo {
@@ -253,8 +260,8 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                     )),
                 }
             }
-            if !seen.plugin {
-                steps.push(claude(&["plugin", "install", PLUGIN_ID]));
+            for (id, scope) in &seen.enabled_globally {
+                steps.push(claude(&["plugin", "disable", id, "--scope", scope]));
             }
         }
     }
@@ -408,11 +415,21 @@ pub fn plugin_list() -> Option<Value> {
     command_ok("claude", &["plugin", "list", "--json"]).and_then(|t| serde_json::from_str(&t).ok())
 }
 
-pub fn has_plugin(list: &Value, id: &str) -> bool {
-    list.as_array().is_some_and(|a| a.iter().any(|p| p.get("id").and_then(Value::as_str) == Some(id)))
+/// Alondra's plugins that `claude plugin list --json` shows enabled, with the scope of each
+/// install. Alondra loads its plugin only into the sessions it launches, so none should be.
+pub fn enabled_globally(list: &Value) -> Vec<(String, String)> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p.get("enabled") == Some(&Value::Bool(true)))
+        .filter_map(|p| {
+            let id = p.get("id")?.as_str().filter(|id| alondra_core::GLOBAL_PLUGINS.contains(id))?;
+            Some((id.to_string(), p.get("scope").and_then(Value::as_str).unwrap_or("user").to_string()))
+        })
+        .collect()
 }
 
-fn has_marketplace() -> bool {
+pub fn has_marketplace() -> bool {
     command_ok("claude", &["plugin", "marketplace", "list", "--json"])
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v.as_array().cloned())
@@ -444,7 +461,7 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
         apns_key_exists: apns.is_some_and(|a| a.key_path.is_file()),
         claude: args.skip_plugin || command_ok("claude", &["--version"]).is_some(),
         marketplace: !args.skip_plugin && has_marketplace(),
-        plugin: plugins.as_ref().is_some_and(|l| has_plugin(l, PLUGIN_ID)),
+        enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
         tuicr: command_ok("tuicr", &["--version"]).is_some(),
         brew: command_ok("brew", &["--version"]).is_some(),
     }
@@ -660,10 +677,36 @@ mod tests {
             vec![
                 "launchctl bootstrap gui/501 /Users/ana/Library/LaunchAgents/dev.alondra.alondrad.plist",
                 "claude plugin marketplace add /src/alondra",
-                "claude plugin install alondra@alondra",
-            ]
+            ],
+            "the plugin is not installed for every session: alondrad loads it into the ones it launches"
         );
         assert!(p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("apns.json"))));
+    }
+
+    #[test]
+    fn an_upgrade_turns_off_the_plugin_a_global_install_enables_once() {
+        let list = serde_json::json!([
+            {"id": "alondra@alondra", "scope": "user", "enabled": true, "version": "0.1.23"},
+            {"id": "alondra-orchestrator@alondra", "scope": "local", "enabled": false},
+            {"id": "other@market", "scope": "user", "enabled": true}
+        ]);
+        let seen = Observed {
+            config: Some(plan(&named("Ana"), None, &Args::default(), &paths(), &fresh()).config.render()),
+            apns: Some("{}".into()),
+            plist: Some(render_plist("dev.alondra.alondrad", &paths())),
+            service_loaded: true,
+            marketplace: true,
+            enabled_globally: enabled_globally(&list),
+            ..fresh()
+        };
+        let p = plan(&FileConfig::default(), None, &Args::default(), &paths(), &seen);
+        assert_eq!(runs(&p), vec!["claude plugin disable alondra@alondra --scope user"]);
+        assert!(writes(&p).is_empty(), "Claude Code writes its own settings: {:?}", p.steps);
+
+        let after = serde_json::json!([{"id": "alondra@alondra", "scope": "user", "enabled": false}]);
+        let again = plan(&FileConfig::default(), None, &Args::default(), &paths(), &Observed { enabled_globally: enabled_globally(&after), ..seen });
+        assert!(runs(&again).is_empty(), "a second run changes nothing: {:?}", again.steps);
+        assert!(runs(&plan(&FileConfig::default(), None, &Args { skip_plugin: true, ..Default::default() }, &paths(), &Observed { enabled_globally: enabled_globally(&list), ..fresh() })).iter().all(|r| !r.starts_with("claude")));
     }
 
     #[test]
@@ -675,7 +718,6 @@ mod tests {
             plist: Some(render_plist("dev.alondra.alondrad", &paths())),
             service_loaded: true,
             marketplace: true,
-            plugin: true,
             ..fresh()
         };
         let again = plan(&FileConfig::default(), None, &Args::default(), &paths(), &seen);
@@ -691,7 +733,6 @@ mod tests {
             plist: Some(render_plist("dev.alondra.alondrad", &paths())),
             service_loaded: true,
             marketplace: true,
-            plugin: true,
             ..fresh()
         };
         let p = plan(&FileConfig { public_url: Some("https://x.example".into()), ..Default::default() }, None, &Args::default(), &paths(), &seen);

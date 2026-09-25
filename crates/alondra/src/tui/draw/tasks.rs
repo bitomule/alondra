@@ -470,7 +470,13 @@ pub fn node_task_lines(app: &App, n: &FleetNode, width: usize, selected: bool) -
     for t in app.tasks_on(&n.session_id) {
         let (g, c) = task_glyph(t);
         lines.push(fit(
-            vec![bar(), Span::raw("    "), Span::styled(format!("{g} "), Style::new().fg(c).bold()), Span::raw(md::one_line(&t.title)), Span::styled(format!(" · {}", i18n::task_state(t.state)), Style::new().fg(c))],
+            vec![
+                bar(),
+                Span::raw("    "),
+                Span::styled(format!("{g} "), Style::new().fg(c).bold()),
+                Span::raw(md::one_line(&t.fleet_title(n))),
+                Span::styled(format!(" · {}", i18n::task_state(t.state)), Style::new().fg(c)),
+            ],
             width,
         ));
     }
@@ -488,7 +494,7 @@ pub fn node_detail_lines(app: &App, n: &FleetNode, width: usize) -> Vec<Line<'st
             lines.push(fit(
                 vec![
                     Span::styled(format!(" {g} "), Style::new().fg(c).bold()),
-                    Span::raw(md::one_line(&t.title)),
+                    Span::raw(md::one_line(&t.fleet_title(n))),
                     Span::styled(format!(" · {}", i18n::task_state(t.state)), Style::new().fg(c)),
                     Span::styled(format!(" · {}", ago(t.state_since)), Style::new().fg(DIM)),
                 ],
@@ -955,6 +961,30 @@ mod tests {
         assert!(keys(&app).contains(&"t-s1".to_string()));
         assert_eq!(app.open_task_count(), 5, "four open tasks and a request left defining");
         assert_eq!(app.tasks_on("s1").iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t-s1", "t-44370"]);
+    }
+
+    /// t-47118: Fleet showed `t-s1` titled "alondra/estados-por-tarea" — its own node's name —
+    /// right under that same name in the node's row, indistinguishable from it.
+    #[test]
+    fn a_tasks_fleet_row_never_repeats_its_own_nodes_name() {
+        let (mut app, _rx) = app_with(vec![]);
+        mockup(&mut app);
+        let now = now_millis();
+        app.data.requests.push(serde_json::from_value(json!({"id": "r-estados", "created_at": now - 12_000_000, "state": "in_progress", "tasks": ["t-s1"]})).unwrap());
+        app.data.tasks.push(
+            serde_json::from_value(json!({"id": "t-s1", "request": "r-estados", "title": "alondra/estados-por-tarea", "assignee": {"session_id": "s1"}, "prs": [98, 99],
+                                         "state": "running", "state_since": now - 5_640_000, "created_at": now - 12_000_000}))
+            .unwrap(),
+        );
+        app.screen = Screen::Fleet;
+        app.reconcile();
+        let s = screen(&mut app, 100, 40);
+        assert_eq!(
+            s.matches("alondra/estados-por-tarea").count(),
+            2,
+            "the node's own name, once in the list row and once in the detail's header — never again as its task's title:\n{s}"
+        );
+        assert_eq!(s.matches("main task").count(), 2, "the fallen-back title reads as the node's main task instead, in the list and the detail:\n{s}");
     }
 
     #[test]

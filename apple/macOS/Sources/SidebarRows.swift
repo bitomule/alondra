@@ -103,7 +103,7 @@ struct NodeRow: View {
             ForEach(tasks) { task in
                 HStack(spacing: 7) {
                     StatusDot(color: task.color, size: 6)
-                    Text(task.title)
+                    Text(task.fleetRowTitle(nodeDisplayName: node.displayName))
                         .strikethrough(task.state == .cancelled)
                         .lineLimit(1)
                 }

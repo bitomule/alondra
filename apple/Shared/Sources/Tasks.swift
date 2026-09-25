@@ -209,6 +209,16 @@ public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     /// It left a PR, a document or a final report.
     public var delivered: Bool { !prs.isEmpty || !documents.isEmpty || finalReport != nil }
 
+    /// This task's title next to its own node's Fleet row: itself, unless the title is only the
+    /// node's own name repeated — the fallback a task gets until something names it for real
+    /// (`TaskTitled`, or the request it belongs to). Showing that twice next to the node's own
+    /// name (t-47118) is a card in `main task`'s clothing instead.
+    public func fleetRowTitle(nodeDisplayName: String) -> String {
+        title == nodeDisplayName ? WorkTask.mainTaskLabel : title
+    }
+
+    public static var mainTaskLabel: String { String(localized: "main task", table: "AlondraShared", bundle: #bundle) }
+
     /// When it last moved: its last change while it is open, when it finished once it is.
     var changedAt: Int64 { state.isFinished ? stateSince : max(lastChange ?? stateSince, stateSince) }
 }

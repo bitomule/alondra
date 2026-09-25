@@ -3,12 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{Event, keeper, now_millis};
-use serde_json::Value;
 
 use crate::hub::Hub;
+use crate::plugins;
 
 const EVERY: Duration = Duration::from_secs(30);
-const MARKETPLACE: &str = "alondra";
 
 pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
     let started_at = now_millis();
@@ -25,74 +24,52 @@ async fn tick(hub: &Hub, claude_home: &Path, started_at: i64) -> anyhow::Result<
     if !hub.read(|v| keeper::should_launch(v, now_millis(), started_at)) {
         return Ok(());
     }
-    let ok = match orchestrator_plugin(claude_home) {
-        Some(plugin) => launch(&plugin, &hub.config.name).await,
+    let found = plugins::dir(claude_home, plugins::NODE).zip(plugins::dir(claude_home, plugins::ORCHESTRATOR));
+    let _launching = hub.launching();
+    let (ok, session) = match found {
+        Some((node, orchestrator)) => match launch(&node, &orchestrator, &hub.config.name).await {
+            Some(printed) => (true, alondra_core::sessions::launched_short(&printed)),
+            None => (false, None),
+        },
         None => {
             log!("keeper: no orchestrator is running and the Alondra marketplace is not registered, so there is no plugin to launch one with");
-            false
+            (false, None)
         }
     };
-    hub.append(Event::OrchestratorLaunched { ok })?;
+    hub.append(Event::OrchestratorLaunched { ok, session: session.clone() })?;
+    if let Some(short) = session {
+        hub.admit_launched(&short)?;
+    }
     Ok(())
 }
 
-/// The orchestrator plugin ships next to the node plugin, in the repo registered as the Alondra marketplace.
-fn orchestrator_plugin(claude_home: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(claude_home.join("plugins/known_marketplaces.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
-    let entry = v.get(MARKETPLACE)?;
-    let root = entry.get("installLocation").or_else(|| entry.pointer("/source/path")).and_then(Value::as_str)?;
-    let plugin = Path::new(root).join("plugin-orchestrator");
-    plugin.join(".claude-plugin/plugin.json").is_file().then_some(plugin)
-}
-
-async fn launch(plugin: &Path, user: &str) -> bool {
+/// The orchestrator gets the node plugin, for the hooks every Alondra session has, and the
+/// orchestrator plugin for its tools. What `claude --bg` printed, or None when it failed.
+async fn launch(node: &Path, orchestrator: &Path, user: &str) -> Option<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let mut cmd = tokio::process::Command::new("claude");
     cmd.current_dir(&home)
-        .args(["--bg", "--name", "orchestrator", "--plugin-dir"])
-        .arg(plugin)
+        .args(["--bg", "--name", "orchestrator"])
+        .args(plugins::launch_flags(&[node, orchestrator]))
         .args(["--permission-mode", "auto", "--"])
         .arg(keeper::mission(user))
         .kill_on_drop(true);
     match tokio::time::timeout(Duration::from_secs(60), cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => {
-            log!("keeper: no orchestrator was running; launched one with {}", plugin.display());
-            true
+            log!("keeper: no orchestrator was running; launched one with {}", orchestrator.display());
+            Some(String::from_utf8_lossy(&out.stdout).to_string())
         }
         Ok(Ok(out)) => {
             log!("keeper: launching an orchestrator failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-            false
+            None
         }
         Ok(Err(e)) => {
             log!("keeper: launching an orchestrator failed: {e}");
-            false
+            None
         }
         Err(_) => {
             log!("keeper: claude --bg did not respond within 60 s");
-            false
+            None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_plugin_is_found_through_the_registered_marketplace() {
-        let root = std::env::temp_dir().join(format!("alondra-keeper-{}", std::process::id()));
-        let repo = root.join("repo");
-        std::fs::create_dir_all(repo.join("plugin-orchestrator/.claude-plugin")).unwrap();
-        std::fs::create_dir_all(root.join("claude/plugins")).unwrap();
-        let marketplaces = root.join("claude/plugins/known_marketplaces.json");
-
-        assert_eq!(orchestrator_plugin(&root.join("claude")), None, "no marketplace file");
-        std::fs::write(&marketplaces, format!(r#"{{"alondra": {{"source": {{"source": "directory", "path": "{}"}}}}}}"#, repo.display())).unwrap();
-        assert_eq!(orchestrator_plugin(&root.join("claude")), None, "no plugin manifest");
-        std::fs::write(repo.join("plugin-orchestrator/.claude-plugin/plugin.json"), "{}").unwrap();
-        assert_eq!(orchestrator_plugin(&root.join("claude")), Some(repo.join("plugin-orchestrator")));
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

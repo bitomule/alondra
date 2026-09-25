@@ -31,6 +31,11 @@ pub trait Launcher: Sync {
     fn usage(&self) -> Option<alondra_core::usage::Usage> {
         crate::usage::current(&crate::watcher::claude_home())
     }
+
+    /// The node plugin every launched session loads.
+    fn plugin(&self) -> Option<std::path::PathBuf> {
+        crate::plugins::dir(&crate::watcher::claude_home(), crate::plugins::NODE)
+    }
 }
 
 pub struct ClaudeCli;
@@ -70,10 +75,22 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
     if !Path::new(&l.cwd).is_dir() {
         return Err((StatusCode::BAD_REQUEST, format!("directory {} does not exist", l.cwd)));
     }
-    let args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref());
+    let Some(plugin) = launcher.plugin() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Alondra's plugin was not found: the Alondra marketplace is not registered in Claude Code. Run `alondra setup` in the Alondra repo.".into(),
+        ));
+    };
+    let args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref(), &plugin);
+    let _launching = hub.launching();
     let output = launcher.run(&l.cwd, &args).await?;
-    let launched = Event::Launched { name: l.name.clone(), request_id: l.request_id.clone(), auto_merge: l.options.auto_merge, task: l.task.clone(), title: l.title.clone() };
-    hub.append(launched).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let session = alondra_core::sessions::launched_short(&output);
+    let launched = Event::Launched { name: l.name.clone(), request_id: l.request_id.clone(), auto_merge: l.options.auto_merge, task: l.task.clone(), title: l.title.clone(), session: session.clone() };
+    let internal = |e: anyhow::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    hub.append(launched).map_err(internal)?;
+    if let Some(short) = &session {
+        hub.admit_launched(short).map_err(internal)?;
+    }
     Ok(json!({"ok": true, "output": output, "auto_merge": l.options.auto_merge, "task": l.task}))
 }
 
@@ -476,7 +493,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
         Some(Start::NewNode { name, cwd, model }) => {
             let waiting = hub.read(|v| v.nodes.values().any(|n| n.name.as_deref() == Some(name) && live(v, &n.session_id) && v.tasks_of(&n.session_id).next().is_none()));
             if waiting {
-                let launched = Event::Launched { name: name.clone(), request_id: Some(task.request.clone()), auto_merge: task.options.auto_merge, task: Some(task.id.clone()), title: None };
+                let launched = Event::Launched { name: name.clone(), request_id: Some(task.request.clone()), auto_merge: task.options.auto_merge, task: Some(task.id.clone()), title: None, session: None };
                 hub.append(launched).map_err(|e| e.to_string())?;
                 return Ok(format!("in node {name}, already running"));
             }
@@ -644,6 +661,7 @@ mod tests {
     struct FakeClaude {
         launched: Mutex<Vec<(String, Vec<String>)>>,
         refuse: Option<&'static str>,
+        printed: Option<&'static str>,
     }
 
     impl FakeClaude {
@@ -662,11 +680,15 @@ mod tests {
                 return Err((StatusCode::BAD_GATEWAY, why.into()));
             }
             self.launched.lock().unwrap().push((cwd.into(), args.to_vec()));
-            Ok("started".into())
+            Ok(self.printed.unwrap_or("started").into())
         }
 
         fn usage(&self) -> Option<alondra_core::usage::Usage> {
             None
+        }
+
+        fn plugin(&self) -> Option<std::path::PathBuf> {
+            Some("/Users/x/Projects/alondra/plugin".into())
         }
     }
 
@@ -902,6 +924,22 @@ mod tests {
         hub.append(seen("s9", "app/login")).unwrap();
         let task = hub.read(|v| v.session_task("s9").map(|t| (t.title.clone(), t.launch_name().to_string())));
         assert_eq!(task, Some(("Crash del login".to_string(), "app/login".to_string())));
+    }
+
+    /// A launched node loads Alondra's plugin for itself only, and the short id `claude --bg`
+    /// printed is recorded, so the session is Alondra's even before its hooks say so.
+    #[tokio::test]
+    async fn a_launch_loads_the_plugin_and_records_the_session_it_printed() {
+        let (hub, home) = fleet("launch-plugin");
+        let printed = "backgrounded · 4e5f6a7b · app/login\n  claude agents             list sessions\n  claude attach 4e5f6a7b    open in this terminal\n";
+        let claude = FakeClaude { printed: Some(printed), ..Default::default() };
+        let b: crate::http::LaunchBody = serde_json::from_value(json!({"name": "app/login", "cwd": home.display().to_string(), "prompt": "Fix the crash."})).unwrap();
+        assert_eq!(body(crate::http::launch_with(&hub, b, &claude).await).await.0, StatusCode::OK);
+        let args = claude.launched.lock().unwrap()[0].1.clone();
+        let dir = args.iter().position(|a| a == "--plugin-dir").expect("the plugin is loaded with the launch");
+        assert_eq!(args[dir + 1], "/Users/x/Projects/alondra/plugin");
+        assert!(args.iter().any(|a| a.contains(alondra_core::LAUNCHED_ENV)), "{args:?}");
+        assert!(hub.read(|v| v.launch_printed("4e5f6a7b-1111-4222-8333-944445555666")));
     }
 
     /// A task handed to a node Alondra was closing (a free node closed on its own) was cancelled

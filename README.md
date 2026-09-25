@@ -21,27 +21,31 @@ On a new Mac, follow [`INSTALL.md`](INSTALL.md) (written for an agent to execute
 
 ```bash
 make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
-alondra setup       # config.toml, launchd service, plugin and iPhone pairing (--help, --dry-run)
+alondra setup       # config.toml, launchd service, plugin marketplace and iPhone pairing (--help, --dry-run)
 alondra doctor      # what works and what is missing, with how to fix it
 alondra             # the TUI
 alondra status      # the same as text
 ```
 
-A node connected to Alondra is launched with the plugin:
+Only the sessions Alondra launches are Alondra's. Its `launch` and `define` load the plugin into
+each node for that session alone and mark it through `--settings` (`ALONDRA_LAUNCHED`, which
+the hooks and the tools send back); background sessions keep both flags across restarts. Any
+other Claude session (a cron, your own terminal) has no plugin and stays out: no node, no task,
+no card. By hand, a node is launched the same way:
 
 ```bash
-claude --bg --name "test/alondra" --plugin-dir ~/Projects/alondra/plugin --permission-mode auto -- "<mission>"
+claude --bg --name "app/fix" --plugin-dir ~/Projects/alondra/plugin \
+  --settings '{"env": {"ALONDRA_LAUNCHED": "1"}}' --permission-mode auto -- "<mission>"
 ```
-
-or, from the orchestrator, with its `launch` tool.
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
 `close_free_nodes_after`). An `ALONDRA_*` environment
 variable overrides the file; `alondra config` shows the values in effect.
 
-**The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin-orchestrator`: the
-same hooks plus the `fleet`, `node`, `machine`, `send`, `interrupt` and `launch` tools, and
+**The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin --plugin-dir
+~/Projects/alondra/plugin-orchestrator` and the same mark: the node's hooks plus the `fleet`,
+`node`, `machine`, `send`, `interrupt` and `launch` tools, and
 `define`, `candidates`, `cancel` and `reopen` to turn the user's requests into tasks. Alondra
 notifies it on its own, every 90 s and in a single message, of:
 - new reports from the nodes;

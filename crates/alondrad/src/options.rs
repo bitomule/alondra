@@ -37,10 +37,11 @@ pub fn project_of(file: &OptionsFile, cwd: &Path) -> Option<String> {
 }
 
 /// The `claude` arguments for a launch: its name, permission mode, the flags the options set,
-/// and the prompt with the options section appended.
-pub fn launch_args(name: &str, permission_mode: Option<&str>, explicit_model: Option<&str>, prompt: &str, resolved: &Resolved, request_id: Option<&str>) -> Vec<String> {
+/// Alondra's plugin and mark, and the prompt with the options section appended.
+pub fn launch_args(name: &str, permission_mode: Option<&str>, explicit_model: Option<&str>, prompt: &str, resolved: &Resolved, request_id: Option<&str>, plugin: &Path) -> Vec<String> {
     let mut args: Vec<String> = ["--bg", "--name", name, "--permission-mode", permission_mode.unwrap_or("auto")].map(String::from).into();
     args.extend(resolved.launch_flags(explicit_model));
+    args.extend(crate::plugins::launch_flags(&[plugin]));
     args.push("--".into());
     args.push(format!("{}\n\n{}", prompt.trim_end(), resolved.mission_section(request_id)));
     args

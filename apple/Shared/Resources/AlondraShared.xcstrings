@@ -1377,6 +1377,16 @@
         }
       }
     },
+    "main task": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tarea principal"
+          }
+        }
+      }
+    },
     "in review": {
       "localizations": {
         "es": {

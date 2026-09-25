@@ -80,6 +80,41 @@ fn is_document(r: &Report) -> bool {
     r.kind == ReportKind::Document || !crate::artifact::in_report(r).is_empty()
 }
 
+/// A task's own name lets it run over 80 characters before it is cut on a word: long enough for
+/// a whole line David typed, short enough for a card's title.
+const TASK_TITLE_MAX: usize = 80;
+
+/// A line of free text, cut to its first sentence and capped on a word, for a task title made
+/// from David's own words rather than chosen for him.
+fn title_from_text(line: &str) -> String {
+    let first = line.split(". ").next().unwrap_or(line).trim();
+    if first.chars().count() <= TASK_TITLE_MAX {
+        return first.to_string();
+    }
+    let cut: String = first.chars().take(TASK_TITLE_MAX).collect();
+    let cut = cut.rsplit_once(' ').map(|(a, _)| a).unwrap_or(&cut);
+    format!("{cut}…")
+}
+
+/// The title a task falls back to until something has named it: the orchestrator's short name
+/// for its request if it gave one, else — when David wrote that request himself, not one made up
+/// to hold a bare session — the first line of what he asked, else the node's own name, which is
+/// the dead end t-47118 got stuck with (a task titled after its node, indistinguishable from it
+/// in the Fleet view).
+fn fallback_title(request: Option<&Request>, node_name: &str) -> String {
+    let Some(r) = request else { return node_name.to_string() };
+    if let Some(title) = &r.title {
+        return title.clone();
+    }
+    if !r.synthetic
+        && let Some(text) = &r.text
+        && let Some(line) = text.lines().find(|l| !l.trim().is_empty())
+    {
+        return title_from_text(line);
+    }
+    node_name.to_string()
+}
+
 fn file_report(task: &mut Task, report: u64, document: bool) {
     let list = if document { &mut task.documents } else { &mut task.notices };
     if !list.contains(&report) {
@@ -215,10 +250,12 @@ impl View {
             return Some((t.id.clone(), Event::TaskAssigned { task: t.id.clone(), session_id: session_id.to_string(), agent_id: None }));
         }
         let id = task_id(session_id);
+        let request = session_request(session_id);
+        let title = fallback_title(self.board.requests.get(&request), node.display_name());
         let new = NewTask {
             id: id.clone(),
-            request: session_request(session_id),
-            title: node.display_name().to_string(),
+            request,
+            title,
             brief: node.mission.clone(),
             depends_on: vec![],
             options: TaskOptions { auto_merge: node.name.as_ref().is_some_and(|n| self.auto_merge_nodes.contains(n)), ..TaskOptions::default() },
@@ -526,6 +563,12 @@ impl View {
                     r.title = Some(title.clone());
                 }
             }
+            (Event::TaskTitled { task, title }, _) => {
+                if let Some(t) = self.board.tasks.get_mut(task) {
+                    t.title = title.clone();
+                    t.titled = true;
+                }
+            }
             (Event::RequestClosed { request_id, answer, withdrawn }, _) => {
                 if let Some(r) = self.board.requests.get_mut(request_id) {
                     r.closed = Some(super::RequestClosure { answer: answer.clone(), withdrawn: *withdrawn, at });
@@ -690,7 +733,7 @@ impl View {
             (Event::ArtifactReviewed { report, verdict }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, Some((*report, *verdict)), at)),
             (Event::ReportRead { .. }, Before::Reviewing(pending)) => moved.extend(self.reviews_closed(pending, None, at)),
             (Event::DaemonSeen(d), _) => self.bind_launch_of(&d.session_id),
-            (Event::Launched { name, request_id, auto_merge, task, title }, _) => match task {
+            (Event::Launched { name, request_id, auto_merge, task, title, .. }, _) => match task {
                 Some(task) => self.launched_for(task),
                 None => self.launched(name, title.as_deref(), Launch { request_id: request_id.clone(), auto_merge: *auto_merge, at }),
             },
@@ -768,10 +811,12 @@ impl View {
 
     fn new_task(&self, session_id: &str, at: Millis) -> Option<Task> {
         let node = self.nodes.get(session_id).filter(|n| !n.is_orchestrator)?;
+        let request = session_request(session_id);
+        let title = fallback_title(self.board.requests.get(&request), node.display_name());
         Some(Task {
             id: task_id(session_id),
-            request: session_request(session_id),
-            title: node.display_name().to_string(),
+            request,
+            title,
             brief: node.mission.clone(),
             depends_on: vec![],
             options: TaskOptions::default(),
@@ -790,6 +835,7 @@ impl View {
             launched_as: None,
             start: None,
             recorded: false,
+            titled: false,
             history: vec![],
             anomalies: vec![],
             archived_at: None,
@@ -806,16 +852,21 @@ impl View {
         }
     }
 
-    /// A session's own task goes by its node's name and says what the daemon says it does.
+    /// A session's own task goes by its node's name until something gives it a real title (the
+    /// orchestrator's name for its request, David's own words, or an explicit `TaskTitled`), and
+    /// always carries what the daemon says the node does.
     fn follow_node(&mut self, session_id: &str) {
         let Some(node) = self.nodes.get(session_id).filter(|n| !n.is_orchestrator) else { return };
-        let (title, brief) = (node.display_name(), &node.mission);
-        let Some(task) = self.board.tasks.get_mut(&task_id(session_id)) else { return };
-        if task.title != title {
-            task.title = title.to_string();
+        let (name, brief) = (node.display_name().to_string(), node.mission.clone());
+        let id = task_id(session_id);
+        let Some(current) = self.board.tasks.get(&id) else { return };
+        let title = (!current.titled).then(|| fallback_title(self.board.requests.get(&current.request), &name)).filter(|t| *t != current.title);
+        let Some(task) = self.board.tasks.get_mut(&id) else { return };
+        if let Some(title) = title {
+            task.title = title;
         }
-        if brief.is_some() && task.brief != *brief {
-            task.brief = brief.clone();
+        if brief.is_some() && task.brief != brief {
+            task.brief = brief;
         }
     }
 
@@ -825,7 +876,7 @@ impl View {
     }
 
     /// The orchestrator works on no task.
-    fn drop_tasks(&mut self, session_id: &str) {
+    pub(crate) fn drop_tasks(&mut self, session_id: &str) {
         let ids: Vec<String> = self.board.tasks.values().filter(|t| t.is_assigned_to(session_id) || t.id == task_id(session_id)).map(|t| t.id.clone()).collect();
         for id in ids {
             if let Some(task) = self.board.tasks.remove(&id) {
@@ -1203,7 +1254,7 @@ impl View {
 mod tests {
     use super::*;
     use crate::event::{DaemonObservation, HookEvent};
-    use crate::model::{Answer, Link, Message, MessageAbout, QuestionStatus, Report};
+    use crate::model::{Answer, Attachment, Link, Message, MessageAbout, QuestionStatus, Report};
     use crate::pr::MergeMethod;
     use crate::tasks::RequestState;
     use TaskState::*;
@@ -1344,7 +1395,7 @@ mod tests {
     #[test]
     fn an_auto_merge_task_does_not_wait_for_its_pr() {
         let mut run = Run::new();
-        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix"));
+        run.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None, session: None }).on(seen("app/fix"));
         assert!(run.task().launched && run.task().options.auto_merge);
         run.on(opened()).on(report(1, ReportKind::Final, &[PR])).pr(|p| p.state = PrState::Merged);
         assert_eq!(run.states(), vec![Running, Done, Done]);
@@ -1357,7 +1408,7 @@ mod tests {
         let mut run = Run::new();
         run.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
         assert_eq!(run.view.board.request_state("r-1"), RequestState::Defining);
-        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None, title: None });
+        run.on(seen("app/fix")).on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: false, task: None, title: None, session: None });
         let task = run.task();
         assert_eq!((task.request.as_str(), task.options.effort.as_deref(), task.options.project.as_deref()), ("r-1", Some("hard"), Some("app")));
         assert_eq!(run.view.board.requests.keys().collect::<Vec<_>>(), vec!["r-1"], "the made-up request is gone");
@@ -1380,6 +1431,93 @@ mod tests {
         let mut read = Run::new();
         read.on(report(1, ReportKind::Notice, &[ARTIFACT])).on(Event::ReportRead { id: 1 });
         assert_eq!(read.states(), vec![InReview, Running], "read without a verdict");
+    }
+
+    /// David's decision on t-47118 (a document that never moved its task): the answer goes as
+    /// final with the file attached, and it both finishes the task and keeps the attachment.
+    #[test]
+    fn a_final_report_with_an_attachment_finishes_its_task_and_keeps_the_attachment() {
+        let attachment = Attachment { name: "analysis.md".into(), source_path: "/tmp/analysis.md".into(), stored_path: Some("/store/r-1/analysis.md".into()), bytes: Some(42) };
+        let mut run = Run::new();
+        run.on(Event::ReportPosted(Report {
+            id: 1,
+            session_id: "s".into(),
+            node_name: None,
+            title: "Here is the answer".into(),
+            body: Some("The analysis is done.".into()),
+            links: vec![],
+            attachments: vec![attachment.clone()],
+            kind: ReportKind::Final,
+            created_at: 0,
+            read: false,
+            to_orchestrator: false,
+            mission: None,
+            looks_like_question: false,
+            task: None,
+        }));
+        assert_eq!(run.task().state, Done);
+        assert_eq!(run.view.reports[&1].attachments, vec![attachment]);
+    }
+
+    /// Same decision: when David has to decide instead, the file goes on the `ask`, not a
+    /// standalone document, and the task waits for him.
+    #[test]
+    fn an_ask_with_an_attachment_puts_the_task_in_needs_you() {
+        let attachment = Attachment { name: "analysis.md".into(), source_path: "/tmp/analysis.md".into(), stored_path: Some("/store/q-1/analysis.md".into()), bytes: Some(42) };
+        let mut run = Run::new();
+        run.on(Event::QuestionAsked(Question {
+            id: 1,
+            session_id: "s".into(),
+            node_name: None,
+            title: "This is what is happening: do you want a task to fix it?".into(),
+            detail: None,
+            options: vec![],
+            links: vec![],
+            attachments: vec![attachment],
+            blocking: true,
+            origin: QuestionOrigin::Ask,
+            tool_use_id: None,
+            to_orchestrator: false,
+            node_context: None,
+            status: QuestionStatus::Open,
+            answer: None,
+            asked_at: 0,
+            action: false,
+            steps: vec![],
+            mission: None,
+            replaces: None,
+            task: None,
+        }));
+        assert_eq!(run.task().state, NeedsYou);
+    }
+
+    /// Fleet showed a task titled "alondra/estados-por-tarea" — its own node's name — next to
+    /// real titled tasks: a session with no request behind it falls back to its node's display
+    /// name, and nothing renamed it afterwards. `TaskTitled` fixes the "nothing" part.
+    #[test]
+    fn a_tasks_title_follows_its_node_until_something_names_it_for_real() {
+        let mut run = Run::new();
+        assert_eq!(run.task().title, run.view.nodes["s"].display_name().to_string(), "falls back to the node's own name");
+        run.on(seen("app/thing"));
+        assert_eq!(run.task().title, "app/thing", "still follows a rename: nothing has named it for real yet");
+        let id = run.task().id.clone();
+        run.on(Event::TaskTitled { task: id, title: "Fix the timeout".into() });
+        assert_eq!(run.task().title, "Fix the timeout");
+        run.on(seen("app/renamed"));
+        assert_eq!(run.task().title, "Fix the timeout", "an explicit title survives a later rename");
+    }
+
+    #[test]
+    fn the_fallback_title_prefers_the_orchestrators_name_then_davids_words_then_the_node() {
+        let node = "app/thing";
+        let synthetic = Request::new("r-1", 0, true);
+        assert_eq!(fallback_title(None, node), node, "no request at all: the node's name");
+        assert_eq!(fallback_title(Some(&synthetic), node), node, "a made-up request tells us nothing");
+        let mut real = Request::new("r-1", 0, false);
+        real.text = Some("Fix the timeout on checkout. It happens on slow networks.".into());
+        assert_eq!(fallback_title(Some(&real), node), "Fix the timeout on checkout", "David's own words, cut to a sentence");
+        real.title = Some("Checkout timeout".into());
+        assert_eq!(fallback_title(Some(&real), node), "Checkout timeout", "the orchestrator's own name wins");
     }
 
     #[test]
@@ -1525,7 +1663,7 @@ mod tests {
             let options = crate::options::Resolved { project: Some("app".into()), auto_merge: true, effort: "hard".into(), flags: Default::default(), picked: vec![], issue: None };
             let mut d = Daemon::new();
             d.on(Event::RequestSent { request_id: "r-1".into(), options, text: Some("Fix the menu".into()), attachments: vec![] });
-            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None, title: None });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: Some("r-1".into()), auto_merge: true, task: None, title: None, session: None });
             let id = d.view.board.tasks.keys().next().cloned().expect("the launch made its task");
             assert_eq!(d.view.board.tasks[&id].assignee, None, "no node yet");
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
@@ -1716,7 +1854,7 @@ mod tests {
         }
 
         fn launched_for(task: &str, name: &str) -> Event {
-            Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
+            Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None, session: None }
         }
 
         fn seen_as(sid: &str, name: &str) -> Event {
@@ -1793,7 +1931,7 @@ mod tests {
         #[test]
         fn a_merge_on_github_moves_the_task_even_where_alondra_would_not_have_merged() {
             let mut d = Daemon::new();
-            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None }).on(seen("app/fix")).on(hook(UPS)).on(opened());
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: true, task: None, title: None, session: None }).on(seen("app/fix")).on(hook(UPS)).on(opened());
             d.github(1, |p| p.checks = vec![crate::pr::Check { name: "ci".into(), state: CheckState::Running, url: None }]);
             d.on(Event::PrMerged { id: 1, method: MergeMethod::Squash });
             let t = d.task("s");
@@ -1841,14 +1979,14 @@ mod tests {
         #[test]
         fn a_launched_task_goes_by_the_title_it_was_given_and_its_node_still_takes_it() {
             let mut d = Daemon::new();
-            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: Some("Fix the login crash".into()) });
+            d.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: Some("Fix the login crash".into()), session: None });
             d.on(seen("app/fix")).on(hook(UPS)).on(question(1));
             let t = d.task("s");
             assert_eq!((t.title.as_str(), t.launch_name(), d.view.board.tasks.len()), ("Fix the login crash", "app/fix", 1));
             assert_eq!(d.replayed(|_| true).board, d.view.board);
 
             let mut plain = Daemon::new();
-            plain.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None }).on(seen("app/fix"));
+            plain.on(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None, session: None }).on(seen("app/fix"));
             assert_eq!(plain.task("s").title, "app/fix", "without a title it goes by its node's name");
         }
 

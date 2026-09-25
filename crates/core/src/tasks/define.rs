@@ -364,7 +364,7 @@ mod tests {
     }
 
     fn launched(name: &str, task: &str) -> Event {
-        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None }
+        Event::Launched { name: name.into(), request_id: Some("r-1".into()), auto_merge: false, task: Some(task.into()), title: None, session: None }
     }
 
     fn opened(sid: &str) -> Event {

@@ -8,6 +8,7 @@ pub mod keeper;
 pub mod model;
 pub mod options;
 pub mod pr;
+pub mod sessions;
 pub mod stack;
 #[cfg(test)]
 mod recorded;
@@ -25,6 +26,22 @@ pub const DEFAULT_PORT: u16 = 47800;
 
 /// How long alondrad waits for `claude --bg` to launch a node.
 pub const LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Set in every session Alondra launches, so its hooks and its tools say it is Alondra's.
+pub const LAUNCHED_ENV: &str = "ALONDRA_LAUNCHED";
+
+/// The header the plugin's hooks carry `ALONDRA_LAUNCHED` in.
+pub const LAUNCHED_HEADER: &str = "x-alondra-launched";
+
+/// Alondra's plugins as a global install enables them in every session.
+pub const GLOBAL_PLUGINS: [&str; 2] = ["alondra@alondra", "alondra-orchestrator@alondra"];
+
+/// The `--settings` of every session Alondra launches: the mark, and any global install of
+/// Alondra's plugins off, since the session loads them with `--plugin-dir`.
+pub fn launch_settings() -> String {
+    let off: serde_json::Map<String, serde_json::Value> = GLOBAL_PLUGINS.iter().map(|id| (id.to_string(), false.into())).collect();
+    serde_json::json!({"enabledPlugins": off, "env": {LAUNCHED_ENV: "1"}}).to_string()
+}
 
 pub fn now_millis() -> Millis {
     std::time::SystemTime::now()

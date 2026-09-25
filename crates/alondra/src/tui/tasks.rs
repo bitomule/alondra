@@ -703,14 +703,21 @@ impl App {
         }
     }
 
-    /// The item a key points at, for the lines a card's task adds.
+    /// The item a key points at, for the lines a card's task adds: the task's title, unless it
+    /// is only its own node's name repeated — the fallback a task gets until something names it
+    /// for real (t-47118) — right above that same name in the card's meta line. Then it reads as
+    /// the node's main task instead of showing the name twice.
     pub fn card_task_title(&self, item: &Item) -> Option<String> {
-        let key = match item {
-            Item::Q(q) => Key::Q(q.id),
-            Item::R(r) => Key::R(r.id),
-            Item::P(p) => Key::P(p.pr.id),
+        let (key, session) = match item {
+            Item::Q(q) => (Key::Q(q.id), q.session_id.as_str()),
+            Item::R(r) => (Key::R(r.id), r.session_id.as_str()),
+            Item::P(p) => (Key::P(p.pr.id), p.pr.session_id.as_str()),
         };
-        self.task_of(key).map(|t| t.title.clone())
+        let task = self.task_of(key)?;
+        match self.node(session) {
+            Some(n) => Some(task.fleet_title(n)),
+            None => Some(task.title.clone()),
+        }
     }
 }
 

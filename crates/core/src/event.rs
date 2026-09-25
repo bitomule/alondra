@@ -133,9 +133,23 @@ pub enum Event {
         /// The task's title, which otherwise is the node's name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The short id `claude --bg` printed for the node's session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     /// alondrad tried to launch an orchestrator because none was running.
-    OrchestratorLaunched { ok: bool },
+    OrchestratorLaunched {
+        ok: bool,
+        /// The short id `claude --bg` printed for its session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
+    /// Alondra first heard from a session it launched: its hooks or its tools carried Alondra's
+    /// mark, or its short id is one a launch printed. Alondra follows it from here on.
+    Joined { session_id: String },
+    /// From here on Alondra follows only the sessions it launched. Written once, by the first
+    /// daemon that does: the sessions its records cannot tie to a launch leave the view.
+    LaunchedOnly,
     /// alondrad restarted a node whose process ended while it still had work, or failed to.
     Resumed {
         session_id: String,
@@ -162,6 +176,9 @@ pub enum Event {
     ArchivedPruned { before: Millis },
     /// The orchestrator named a request.
     RequestTitled { request_id: String, title: String },
+    /// David or the orchestrator named a task, replacing whatever it fell back to (most often a
+    /// node's own name): it sticks, `follow_node` never overwrites it again.
+    TaskTitled { task: String, title: String },
     /// The orchestrator closed a request that needed no task: it answered it, or David withdrew it.
     RequestClosed {
         request_id: String,
@@ -192,6 +209,7 @@ impl Event {
             | Event::NodeRemoved { session_id }
             | Event::Acknowledged { session_id }
             | Event::MarkedOrchestrator { session_id }
+            | Event::Joined { session_id }
             | Event::Classified { session_id, .. }
             | Event::WaitingMachine { session_id, .. }
             | Event::AttachChanged { session_id, .. }
@@ -242,10 +260,13 @@ impl Event {
             Event::TasksArchived(_) => "tasks_archived",
             Event::ArchivedPruned { .. } => "archived_pruned",
             Event::RequestTitled { .. } => "request_titled",
+            Event::TaskTitled { .. } => "task_titled",
             Event::RequestClosed { .. } => "request_closed",
             Event::Clock { .. } => "clock",
             Event::RequestSent { .. } => "request_sent",
             Event::Launched { .. } => "launched",
+            Event::Joined { .. } => "joined",
+            Event::LaunchedOnly => "launched_only",
         }
     }
 }
