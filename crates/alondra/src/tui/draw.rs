@@ -270,7 +270,7 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(tr!("No schedules yet. Press n to create one.", "No hay tareas programadas. Pulsa n para crear una.")).wrap(Wrap { trim: true }), inner);
     } else {
         let lines: Vec<Line> = app.schedules.iter().enumerate().map(|(i, s)| {
-            let title = s["title"].as_str().unwrap_or("Untitled");
+            let title = s["title"].as_str().unwrap_or(tr!("Untitled", "Sin título"));
             let marker = if i == app.schedule_idx { "▶" } else { " " };
             let state = if s["enabled"].as_bool() == Some(true) { "●" } else { "○" };
             Line::from(format!("{marker} {state} {title}"))
@@ -281,7 +281,14 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
     let inner = box_detail.inner(detail);
     f.render_widget(box_detail, detail);
     if let Some(s) = app.schedules.get(app.schedule_idx) {
-        let frequency = if s["frequency"] == "weekly" { tr!("Weekly", "Semanal") } else { tr!("Daily", "Diaria") };
+        let frequency = match s["frequency"].as_str() {
+            Some("weekly") => tr!("Weekly", "Semanal").to_string(),
+            Some("every_hours") => match s["interval"].as_u64().unwrap_or(1) { 1 => tr!("Every hour", "Cada hora").into(), n => format!("{} {n} {}", tr!("Every", "Cada"), tr!("hours", "horas")) },
+            Some("every_days") => match s["interval"].as_u64().unwrap_or(1) { 1 => tr!("Every day", "Cada día").into(), n => format!("{} {n} {}", tr!("Every", "Cada"), tr!("days", "días")) },
+            Some("every_months") => match s["interval"].as_u64().unwrap_or(1) { 1 => tr!("Every month", "Cada mes").into(), n => format!("{} {n} {}", tr!("Every", "Cada"), tr!("months", "meses")) },
+            Some("once") => tr!("Once", "Una vez").to_string(),
+            _ => tr!("Daily", "Diaria").to_string(),
+        };
         let h = s["hour"].as_u64().unwrap_or(0);
         let m = s["minute"].as_u64().unwrap_or(0);
         let weekday = s["weekday"].as_u64().map(|d| {
@@ -296,7 +303,10 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
         let next = if s["status"] == "waiting" {
             tr!("when the orchestrator returns", "cuando vuelva el orquestador").to_string()
         } else {
-            s["next_run"].as_i64().map(|at| format!("{} {}", tr!("in", "en"), span_to(at - now_millis()))).unwrap_or_else(|| tr!("paused", "pausada").into())
+            s["next_run"].as_i64().map(|at| format!("{} {}", tr!("in", "en"), span_to(at - now_millis()))).unwrap_or_else(|| {
+                if s["frequency"] == "once" && s["last_run"].is_number() { tr!("completed", "terminada").into() }
+                else { tr!("paused", "pausada").into() }
+            })
         };
         let status = match s["last_state"].as_str().or_else(|| s["status"].as_str()) {
             Some("failed") => tr!("failed", "fallida"),
@@ -312,18 +322,20 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
         let mut lines = vec![
             Line::from(s["title"].as_str().unwrap_or("").to_string().bold()),
             Line::default(),
-            Line::from(format!("{frequency}{weekday} · {h:02}:{m:02}")),
+            Line::from(if matches!(s["frequency"].as_str(), Some("every_hours" | "every_days" | "every_months" | "once")) {
+                frequency
+            } else { format!("{frequency}{weekday} · {h:02}:{m:02}") }),
             Line::from(format!("{}: {next}", tr!("Next", "Próxima"))),
             Line::from(format!("{}: {last}", tr!("Last", "Última"))),
-            Line::from(format!("{}: {}", tr!("Project", "Proyecto"), s["project"].as_str().unwrap_or("—"))),
+            Line::from(format!("{}: {}", tr!("Project", "Proyecto"), s["project"].as_str().unwrap_or(tr!("Projects folder", "Carpeta Proyectos")))),
             Line::default(),
         ];
         if let Some(error) = s["last_error"].as_str() {
-            let error = if error == "the orchestrator is not connected to Alondra" { tr!("The orchestrator is offline", "El orquestador no está conectado") } else { error };
+            let error = schedule_error(error);
             lines.push(Line::from(error.to_string().red()));
         }
-        if let Some(request) = s["last_request"].as_str() { lines.push(Line::from(format!("Request: {request}"))); }
-        if let Some(nodes) = s["last_nodes"].as_array() { for node in nodes { if let Some(node) = node.as_str() { lines.push(Line::from(format!("Node: {node}"))); } } }
+        if let Some(request) = s["last_request"].as_str() { lines.push(Line::from(format!("{}: {request}", tr!("Request", "Petición")))); }
+        if let Some(nodes) = s["last_nodes"].as_array() { for node in nodes { if let Some(node) = node.as_str() { lines.push(Line::from(format!("{}: {node}", tr!("Node", "Nodo")))); } } }
         lines.push(Line::default());
         lines.push(Line::from(s["text"].as_str().unwrap_or("").to_string()));
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
@@ -333,6 +345,16 @@ fn draw_schedules(f: &mut Frame, app: &App, area: Rect) {
 fn span_to(ms: i64) -> String {
     let minutes = (ms / 60_000).max(0);
     if minutes < 60 { format!("{minutes}m") } else if minutes < 1440 { format!("{}h", minutes / 60) } else { format!("{}d", minutes / 1440) }
+}
+
+fn schedule_error(error: &str) -> &str {
+    match error {
+        "project must be one of the available project folders" => tr!("Choose an available project", "Elige un proyecto disponible"),
+        "projects directory does not exist" => tr!("The Projects folder is unavailable", "La carpeta Proyectos no está disponible"),
+        "schedule project directory does not exist" => tr!("The project folder is unavailable", "La carpeta del proyecto no está disponible"),
+        "the orchestrator is not connected to Alondra" => tr!("The orchestrator is offline", "El orquestador no está conectado"),
+        _ => error,
+    }
 }
 
 fn draw_head(f: &mut Frame, app: &App, area: Rect) {

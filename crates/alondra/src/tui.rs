@@ -561,7 +561,8 @@ fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
     let path = std::env::temp_dir().join(format!("alondra-schedule-{}-{}.json", std::process::id(), now_millis()));
     let mut body = existing.clone().unwrap_or_else(|| json!({
         "title": "", "text": "", "project": null, "options": {},
-        "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1, "enabled": true
+        "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1,
+        "interval": 1, "start_at": now_millis() + 3_600_000, "enabled": true
     }));
     let before = serde_json::to_vec_pretty(&body)?;
     use std::io::Write;
@@ -1263,7 +1264,7 @@ impl App {
             KeyCode::Enter => if let Some(value) = selected {
                 let id = value["id"].as_str().unwrap_or("");
                 match Client::for_user(Duration::from_secs(15)).post(&format!("/v1/schedules/{}/run", urlencode(id)), &json!({})) {
-                    Ok(_) => { self.flash(tr!("Sent to the orchestrator", "Enviado al orquestador")); self.reload_schedules(); },
+                    Ok(_) => { self.flash(tr!("Task created", "Tarea creada")); self.reload_schedules(); },
                     Err(e) => { self.fail(e.to_string()); self.reload_schedules(); },
                 }
             },
