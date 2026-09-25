@@ -21,6 +21,7 @@ use p256::{
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
@@ -635,7 +636,14 @@ pub fn run(home: &Path) -> Result<()> {
     p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&phone.agreement_key)?)?;
     let fingerprint =
         URL_SAFE_NO_PAD.encode(&Sha256::digest(URL_SAFE_NO_PAD.decode(&phone.signing_key)?)[..6]);
-    println!("iPhone: {}  ·  code {}", phone.display_name, fingerprint);
+    println!("Pairing request from {}.", phone.display_name);
+    print!("Enter the 8-character code shown on that iPhone: ");
+    io::stdout().flush()?;
+    let mut comparison = String::new();
+    io::stdin().read_line(&mut comparison)?;
+    if !bool::from(comparison.trim().as_bytes().ct_eq(fingerprint.as_bytes())) {
+        bail!("iPhone comparison code does not match; pairing declined");
+    }
     print!("Approve this device on this Mac? [y/N] ");
     io::stdout().flush()?;
     let mut answer = String::new();
@@ -683,11 +691,22 @@ mod tests {
             let request = String::from_utf8_lossy(&bytes[..n]);
             assert!(request.starts_with("DELETE /v1/devices/phone-test HTTP/1.1"));
             assert!(request.to_ascii_lowercase().contains("x-device-signature:"));
-            stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n").unwrap();
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
         });
         let signing = SigningKey::from_slice(&[7u8; 32]).unwrap();
-        let (status, body) = call(&http(), &origin, "DELETE", "/v1/devices/phone-test", &[],
-            "mac-test", &signing, &[3u8; 16]).unwrap();
+        let (status, body) = call(
+            &http(),
+            &origin,
+            "DELETE",
+            "/v1/devices/phone-test",
+            &[],
+            "mac-test",
+            &signing,
+            &[3u8; 16],
+        )
+        .unwrap();
         assert_eq!(status, 204);
         assert!(body.is_empty());
         server.join().unwrap();
