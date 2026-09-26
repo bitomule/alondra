@@ -38,7 +38,7 @@ struct ServiceDocumentView: View {
                 }
             }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.notice != nil || store.conflict != nil }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
+        .alert("Check Alondra", isPresented: Binding(get: { !store.noticeIsSubmissionFailure && (store.notice != nil || store.conflict != nil) }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
             if store.feedbackReadRetryAvailable { Button("Retry marking report read") { _ = store.send(.retryFeedbackRead) } }
             Button("OK") { _ = store.send(.dismissNotice) }
         } message: { Text(store.conflict ?? store.notice ?? "") }

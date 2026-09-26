@@ -103,7 +103,7 @@ struct ServicePullRequestView: View {
                 Text("The diff changed. Check each comment before confirming.").font(.caption)
                 Button("Comments match this diff") { _ = store.send(.diff(.confirmCommentsForCurrentDiff)) }
             }
-            if let error = store.diff.validationError { Text(error).font(.caption).foregroundStyle(Palette.rose) }
+            if let error = store.diff.validationError, !store.diff.validationErrorIsSubmissionFailure { Text(error).font(.caption).foregroundStyle(Palette.rose) }
             ServicePROutcome(outcome: store.pr.mutationOutcome)
             ServicePROutcome(outcome: store.diff.mutationOutcome)
         }.padding(.horizontal, 16).padding(.vertical, 10).background(.bar)
@@ -116,7 +116,7 @@ private struct ServicePROutcome: View {
             switch outcome {
             case .confirmed: EmptyView()
             case .closed: Text("This pull request is closed").font(.caption)
-            case .rejected(let message): Text(message).font(.caption).foregroundStyle(Palette.rose)
+            case .rejected: EmptyView() // Root presents the original failure toast.
             case .unknown: Text("The result is unknown. Check Alondra before taking another action.").font(.caption).foregroundStyle(Palette.dawn)
             case .obsolete: Text("The connection changed. Reopen this pull request.").font(.caption)
             }

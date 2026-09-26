@@ -1,5 +1,7 @@
 import AlondraAttachmentsFeature
 import AlondraFleetFeature
+import AlondraDomain
+import AlondraTasksFeature
 import Foundation
 import AlondraCommands
 import AlondraNewWorkFeature
@@ -200,6 +202,30 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .triage(.document(.presented(let action))):
+            return state.triage.document.flatMap { documentNotice($0, action: action) }
+        case .pullRequest(.presented(.diff(.reviewFinished(let outcome, let epoch)))):
+            guard let diff = state.pullRequest?.diff, diff.isSending, diff.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .pullRequest(.presented(.pr(.mutationFinished(let outcome, let epoch)))):
+            guard let pr = state.pullRequest?.pr, pr.isSending, pr.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .tasks(.board(.archiveFinished(let outcome, let epoch))):
+            guard state.tasks.board.isArchiving, state.tasks.board.presentationEpoch == epoch else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .tasks(.board(.commandResolved(let id, let rejection))):
+            guard state.tasks.board.archiveOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .tasks(.withdrawFinished(let id, let outcome)):
+            guard state.tasks.isWithdrawing, state.tasks.withdrawOperationRequestID == id else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .tasks(.withdrawalResolved(let id, let rejection)):
+            guard state.tasks.withdrawOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .tasks(.detail(.presented(let action))):
+            return state.tasks.detail.flatMap { taskNotice($0, action: action) }
+        case .tasks(.taskPath(.element(let id, let action))):
+            return state.tasks.taskPath[id: id].flatMap { taskNotice($0, action: action) }
         case .triage(.cards(.element(let cardID, .document(let action)))):
             return state.triage.cards[id: cardID]?.document.flatMap { documentNotice($0, action: action) }
         case .triage(.cards(.element(let cardID, .pullRequest(.diff(.reviewFinished(let outcome, let epoch)))))):
@@ -249,6 +275,23 @@ public struct ServiceRootFeature {
         case .fleet(.path(.element(let id, .node(let action)))):
             guard case .node(let node) = state.fleet.path[id: id] else { return nil }
             return nodeNotice(node, action: action)
+        default: return nil
+        }
+    }
+
+    private func rejectedTaskNotice(_ outcome: TaskMutationOutcome) -> WorkspaceNotice.Event? {
+        guard case .rejected(let message) = outcome else { return nil }
+        return .failure(couldNotSendMessage(message))
+    }
+
+    private func taskNotice(_ task: TaskDetailFeature.State, action: TaskDetailFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .mutationFinished(let outcome, _, let epoch):
+            guard task.isActing, task.presentationEpoch == epoch else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .commandResolved(let id, let rejection):
+            guard task.mutationOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
         default: return nil
         }
     }

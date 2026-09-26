@@ -159,6 +159,115 @@ struct CardRejectionIntegrationTests {
         observed.continuation.finish()
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: Route.allCases)
+    func detailRejectionUsesOneToastAndRetainsDraft(route: Route) async throws {
+        var (initial, id) = try initial(route)
+        let source = try #require(initial.triage.cards[id: id])
+        initial.triage.cards = []
+        initial.triage.document = source.document
+        initial.pullRequest = source.pullRequest
+        func detailAction(_ action: TriageCardFeature.Action) -> ServiceRootFeature.Action {
+            switch action {
+            case .document(let action): return .triage(.document(.presented(action)))
+            case .pullRequest(let action): return .pullRequest(.presented(action))
+            default: preconditionFailure("Detail test must use its real leaf action")
+            }
+        }
+        let submit: ServiceRootFeature.Action
+        switch route {
+        case .feedback: submit = .triage(.document(.presented(.sendFeedbackTapped(author: "Reviewer"))))
+        case .changes: submit = .pullRequest(.presented(.diff(.requestChangesTapped)))
+        case .ask: submit = .pullRequest(.presented(.diff(.askTapped)))
+        default: submit = detailAction(action(route))
+        }
+        let clock = TestClock()
+        let finals = LockIsolated<[String]>([])
+        let observed = AsyncStream<Void>.makeStream()
+        let notices = LockIsolated(0)
+        let file = file
+        let store = Store(initialState: initial) {
+            CombineReducers {
+                ServiceRootFeature()
+                Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { state, action in
+                    switch action {
+                    case .triage(.document(.presented(.submissionFinished))),
+                         .triage(.document(.presented(.reportFeedbackFinished))),
+                         .pullRequest(.presented(.diff(.reviewFinished))),
+                         .pullRequest(.presented(.pr(.mutationFinished))):
+                        if state.notice != nil { notices.withValue { $0 += 1 } }
+                        observed.continuation.yield(())
+                    default: break
+                    }
+                    return .none
+                }
+            }
+        } withDependencies: {
+            $0.continuousClock = clock
+            $0.questionWorkService = .init(submit: { operation in
+                finals.withValue { $0.append("review") }
+                #expect(operation == .reviewReport(id: 7, verdict: route == .approve ? .approved : .comments))
+                return route == .approve ? .forbidden("Rejected") : .conflict("Rejected")
+            }, submitReportFeedback: { request, _ in
+                finals.withValue { $0.append("feedback") }
+                #expect(request.reportID == 7 && request.attachmentIDs == ["receipt"])
+                #expect(request.text.contains("Keep this draft"))
+                return .failed("Rejected")
+            }, document: { _ in "Body" })
+            $0.pullRequestOperations = .init(diff: { _ in .init(diff: "", headSHA: "head") }, merge: { _, _ in
+                finals.withValue { $0.append("merge") }; return .rejected("Rejected")
+            }, resolveConflicts: { _ in
+                finals.withValue { $0.append("conflicts") }; return .rejected("Rejected")
+            }, setAside: { _ in
+                finals.withValue { $0.append("setAside") }; return .rejected("Rejected")
+            }, review: { id, text, attachments, kind, head in
+                finals.withValue { $0.append("diff") }
+                #expect(id == 5 && head == "head" && text.contains("Keep this draft"))
+                #expect(attachments == [.init(id: file.id, name: file.name, data: file.data, storedID: "receipt")])
+                switch (route, kind) { case (.ask, .ask), (.changes, .requestChanges): break; default: Issue.record("Wrong review operation") }
+                return .rejected("Rejected")
+            })
+        }
+        let operation = store.send(submit)
+        var iterator = observed.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(finals.value.count == 1)
+        #expect(notices.value == 1)
+        #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
+        if let document = store.triage.document {
+            #expect(document.noticeIsSubmissionFailure)
+            #expect(document.draft.general == "Keep this draft")
+            #expect(!document.completed)
+            if route == .feedback {
+                #expect(document.draft.attachmentIDs == ["receipt"])
+                #expect(document.attachmentPicker.entries.first?.draft == file)
+            }
+        } else {
+            let pr = try #require(store.pullRequest)
+            #expect(pr.diff.note == "Keep this draft")
+            #expect(pr.diff.attachmentPicker.storedIDs == ["receipt"])
+            #expect(!pr.pr.shouldDismiss && !pr.diff.shouldDismiss)
+            if route == .ask || route == .changes { #expect(pr.diff.validationErrorIsSubmissionFailure) }
+        }
+        await clock.advance(by: .seconds(6))
+        await operation.finish()
+        #expect(store.notice == nil)
+        // A delayed completion after the accepted command finished is not a new error,
+        // even if it reuses the current epoch. Neither stale nor duplicate results toast.
+        for epoch in [UInt64.max, 0] {
+            let stale: TriageCardFeature.Action
+            switch route {
+            case .feedback: stale = .document(.reportFeedbackFinished(epoch, .failed("Late")))
+            case .comments, .approve: stale = .document(.submissionFinished(epoch, .reviewReport(id: 7, verdict: .approved), .failed("Late")))
+            case .ask, .changes: stale = .pullRequest(.diff(.reviewFinished(.rejected("Late"), epoch)))
+            default: stale = .pullRequest(.pr(.mutationFinished(.rejected("Late"), epoch)))
+            }
+            await store.send(detailAction(stale)).finish()
+            #expect(store.notice == nil)
+        }
+        #expect(finals.value.count == 1)
+        observed.continuation.finish()
+    }
+
     @Test(.timeLimit(.minutes(1)), arguments: [Route.feedback, .ask, .merge])
     func uncertainCommandStaysBlockedAndOnlyMatchingRecoveryShowsRejection(route: Route) async throws {
         let (initial, id) = try initial(route)

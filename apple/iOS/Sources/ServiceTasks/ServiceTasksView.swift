@@ -74,7 +74,7 @@ struct ServiceTasksView: View {
                     Button("Settings", systemImage: "gearshape") { showSettings() }
                 }
             }
-            .navigationDestination(isPresented: Binding(get: { store.showingSchedules }, set: { store.send(.showSchedules($0)) })) { ServiceSchedulesView(store: store) }
+            .navigationDestination(isPresented: Binding(get: { store.showingSchedules }, set: { store.send(.showSchedules($0)) })) { ServiceSchedulesView(store: store).background(DawnBackground()) }
             .refreshable { await store.send(.refresh).finish() }
         } destination: { child in
             ServiceTaskDetailView(store: child, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
