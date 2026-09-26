@@ -528,10 +528,12 @@ struct ServiceTriageCard: View {
         case .report(let report):
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "Reply to \(item.nodeName ?? String(localized: "this node"))…")) {
+                    replyFocused = false
                     store.send(.send)
                 }
                 if report.primaryAction() == .review {
                     Button {
+                        replyFocused = false
                         store.send(.document(.reviewTapped(.comments)))
                     } label: {
                         Label("Rescue Comments", systemImage: "text.bubble")
@@ -541,6 +543,7 @@ struct ServiceTriageCard: View {
                     .buttonStyle(ServiceFilledStyle(tint: actionTint))
                     HStack(spacing: 24) {
                         Button {
+                            replyFocused = false
                             store.send(.document(.reviewTapped(.approved)))
                         } label: {
                             Label("Approve", systemImage: "checkmark.seal")
@@ -548,6 +551,7 @@ struct ServiceTriageCard: View {
                                 .frame(minHeight: 30)
                         }
                         Button {
+                            replyFocused = false
                             store.send(.markRead)
                         } label: {
                             Label("Mark as Read", systemImage: "checkmark")
@@ -559,6 +563,7 @@ struct ServiceTriageCard: View {
                     .buttonStyle(.plain)
                 } else {
                     Button {
+                        replyFocused = false
                         store.send(.markRead)
                     } label: {
                         Label("Mark as Read", systemImage: "checkmark")
@@ -571,9 +576,11 @@ struct ServiceTriageCard: View {
         case .pullRequest(let pr):
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "What should change?")) {
+                    replyFocused = false
                     store.send(.send)
                 }
                 Button {
+                    replyFocused = false
                     store.send(.ask)
                 } label: {
                     Label("Ask", systemImage: "questionmark.bubble")
@@ -584,9 +591,12 @@ struct ServiceTriageCard: View {
                 .buttonStyle(.plain)
                 .disabled(!store.canSend || store.busy)
                 if let child = store.scope(state: \.pullRequest, action: \.pullRequest) {
-                    ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card)
+                    ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card, willSubmit: { replyFocused = false })
                 }
-                PRFooter(pr: pr) { _ = store.send(.pullRequest(.pr(.setAsideTapped))) }
+                PRFooter(pr: pr) {
+                    replyFocused = false
+                    store.send(.pullRequest(.pr(.setAsideTapped)))
+                }
             }
         }
     }

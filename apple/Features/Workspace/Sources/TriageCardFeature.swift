@@ -54,7 +54,9 @@ public struct TriageCardFeature {
         }
         public var notice: String? {
             let questionNotice = question?.noticeIsSubmissionFailure == true ? nil : (question?.notice ?? question?.conflict)
-            return questionNotice ?? document?.notice ?? document?.conflict ?? pullRequest?.diff.validationError
+            let documentNotice = document?.noticeIsSubmissionFailure == true ? nil : (document?.notice ?? document?.conflict)
+            let diffNotice = pullRequest?.diff.validationErrorIsSubmissionFailure == true ? nil : pullRequest?.diff.validationError
+            return questionNotice ?? documentNotice ?? diffNotice
         }
     }
     public enum Action {

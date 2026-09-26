@@ -39,6 +39,7 @@ public struct DiffReviewFeature {
         public var pendingReviewKind: PendingReviewKind?
         public var mutationOutcome: PRMutationOutcome?
         public var validationError: String?
+        public var validationErrorIsSubmissionFailure = false
         public var shouldDismiss = false
         public var successfulActionCount = 0
         public var presentationEpoch: UInt64 = 0
@@ -115,6 +116,7 @@ public struct DiffReviewFeature {
                 guard state.pendingSubmission != nil else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     clearPending(&state)
+                    state.validationErrorIsSubmissionFailure = false
                     state.validationError = error.message
                     return .none
                 }
@@ -179,6 +181,7 @@ public struct DiffReviewFeature {
                 state.editingText = ""
                 state.isSending = false
                 state.mutationOutcome = nil
+                state.validationErrorIsSubmissionFailure = false
                 state.validationError = nil
                 state.shouldDismiss = false
                 return .merge(.cancel(id: state.loadID), .cancel(id: state.mutationID))
@@ -187,7 +190,7 @@ public struct DiffReviewFeature {
                 state.isOpen = pr?.state == "open"
                 state.isStale = false
                 if !state.isOpen { clearPending(&state) }
-                if !state.isOpen { state.validationError = "This PR is no longer open" }
+                if !state.isOpen { state.validationErrorIsSubmissionFailure = false; state.validationError = "This PR is no longer open" }
                 return .none
             case .snapshotUnavailable:
                 clearPending(&state)
@@ -260,6 +263,7 @@ public struct DiffReviewFeature {
                 guard state.comments.keys.allSatisfy(anchors.contains) else { return .none }
                 state.commentsDiffText = revision
                 state.commentsHeadSHA = state.loadedHeadSHA
+                state.validationErrorIsSubmissionFailure = false
                 state.validationError = nil
                 return .none
             case .cancelLineComment:
@@ -290,6 +294,7 @@ public struct DiffReviewFeature {
                 state.loadedDiffText = text.diff
                 state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
+                state.validationErrorIsSubmissionFailure = false
                 state.validationError = "The PR changed; review the new diff before sending"
                 state.submittedComments = nil
                 state.submittedNote = nil
@@ -298,6 +303,7 @@ public struct DiffReviewFeature {
             case .reviewPreflightFailed(let message, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
+                state.validationErrorIsSubmissionFailure = false
                 state.validationError = message
                 state.submittedComments = nil
                 state.submittedNote = nil
@@ -325,8 +331,10 @@ public struct DiffReviewFeature {
                     if state.hasDraft { state.mutationOutcome = nil }
                 case .closed:
                     state.isOpen = false
+                    state.validationErrorIsSubmissionFailure = false
                     state.validationError = "This PR is no longer open"
                 case .rejected(let message):
+                    state.validationErrorIsSubmissionFailure = true
                     state.validationError = message
                 case .unknown, .obsolete:
                     break
@@ -373,15 +381,19 @@ public struct DiffReviewFeature {
                                      attachments: state.attachments, files: state.files,
                                      isOpen: state.isOpen, commentsAreCurrent: !state.commentsNeedReview) {
         case .empty:
+            state.validationErrorIsSubmissionFailure = false
             state.validationError = "Add a note, line comment, or attachment"
             return .none
         case .closed:
+            state.validationErrorIsSubmissionFailure = false
             state.validationError = "This PR is no longer open"
             return .none
         case .outdatedDiff:
+            state.validationErrorIsSubmissionFailure = false
             state.validationError = "The diff changed; refresh before sending line comments"
             return .none
         case .textRequired:
+            state.validationErrorIsSubmissionFailure = false
             state.validationError = "Add a note or line comment before sending attachments"
             return .none
         case .ready(let text):
@@ -395,6 +407,7 @@ public struct DiffReviewFeature {
             }
             guard let expectedDiff = state.loadedDiffText, let expectedHead = state.loadedHeadSHA else { return .none }
             state.isSending = true
+            state.validationErrorIsSubmissionFailure = false
             state.validationError = nil
             state.mutationOutcome = nil
             state.submittedComments = state.comments

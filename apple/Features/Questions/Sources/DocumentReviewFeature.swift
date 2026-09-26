@@ -133,6 +133,8 @@ public struct DocumentReviewFeature {
         public var needsReconciliation = false
         public var conflict: String?
         public var notice: String?
+        /// Only terminal command failures use the card toast; local/recovery warnings stay inline.
+        public var noticeIsSubmissionFailure = false
         public var revision: UInt64 = 0
         public var loadRevision: UInt64 = 0
 
@@ -215,6 +217,7 @@ public struct DocumentReviewFeature {
                 guard state.pendingSubmission != nil else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     clearPending(&state)
+                    state.noticeIsSubmissionFailure = false
                     state.notice = error.message
                     return .none
                 }
@@ -247,6 +250,7 @@ public struct DocumentReviewFeature {
                 state.subject = subject
                 if oldSource != subject.sources(for: state.sourcePolicy) {
                     state.draft.comments = []
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "The document changed. Review it again before sending comments."
                     return load(&state)
                 }
@@ -268,6 +272,7 @@ public struct DocumentReviewFeature {
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.conflict = nil
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 state.revision &+= 1
                 state.loadRevision &+= 1
@@ -289,6 +294,7 @@ public struct DocumentReviewFeature {
                 case .success(let text):
                     if let previous = state.previousTextForComparison, previous != text {
                         state.draft.comments = []
+                        state.noticeIsSubmissionFailure = false
                         state.notice = "The document changed. Review it again before sending comments."
                     }
                     state.sourceText = text
@@ -319,7 +325,7 @@ public struct DocumentReviewFeature {
                 var draft = QuestionDraft()
                 draft.selectedOption = option
                 do { return submit(try answerUseCase.answer(question, draft: draft), state: &state) }
-                catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
+                catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .composeComment(let anchor):
                 clearPending(&state)
                 state.composingAnchor = anchor
@@ -362,15 +368,17 @@ public struct DocumentReviewFeature {
             case .reviewTapped(let verdict):
                 guard state.attachmentPicker.allReady else { return .none }
                 guard state.draft.attachmentIDs.isEmpty else {
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "Send feedback to include your attachments before approving the artifact."
                     return .none
                 }
                 guard canReview(state) else { return .none }
                 guard case .report(let report) = state.subject else { return .none }
                 do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
-                catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
+                catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .feedbackReadRejected(let id, let message):
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.noticeIsSubmissionFailure = false
                 state.notice = message
                 state.feedbackReadRetryAvailable = true
                 return .none
@@ -392,6 +400,7 @@ public struct DocumentReviewFeature {
                 state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
+                state.noticeIsSubmissionFailure = rejection != nil
                 state.notice = rejection
                 if rejection == nil {
                     state.completed = true
@@ -406,6 +415,7 @@ public struct DocumentReviewFeature {
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 if !cardStillOpen { state.draft = DocumentDraft() }
                 return .none
@@ -417,19 +427,22 @@ public struct DocumentReviewFeature {
                     state.completed = true
                     state.draft = DocumentDraft()
                     state.attachmentPicker = AttachmentFeature.State()
-                case .conflict(let reason): state.conflict = reason
-                case .forbidden(let reason), .failed(let reason): state.notice = reason
+                case .conflict(let reason): state.conflict = reason; state.noticeIsSubmissionFailure = true
+                case .forbidden(let reason), .failed(let reason): state.notice = reason; state.noticeIsSubmissionFailure = true
                 case .uncertainCommand(let id):
                     state.uncertainCommandID = id
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Checking its status…"
                     state.needsReconciliation = true
                 case .uncertain:
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true
                 case .obsolete: break
                 }
                 return .none
             case .dismissNotice:
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 return .none
             }
@@ -515,7 +528,7 @@ public struct DocumentReviewFeature {
             draft.text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
             draft.attachmentIDs = state.attachmentPicker.storedIDs
             do { return submit(try answerUseCase.checkedMoreContext(question, draft: draft), state: &state) }
-            catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
+            catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
         case .feedback(let author):
             do {
                 switch state.subject {
@@ -527,6 +540,7 @@ public struct DocumentReviewFeature {
                     return submit(try answerUseCase.answer(question, draft: answer), state: &state)
                 case .report(let report):
                     guard let identity = state.identity else {
+                        state.noticeIsSubmissionFailure = false
                         state.notice = "Connect a paired device before sending feedback."
                         return .none
                     }
@@ -534,6 +548,7 @@ public struct DocumentReviewFeature {
                                                              general: state.draft.general, author: author,
                                                              attachmentIDs: state.draft.attachmentIDs)
                     state.isSubmitting = true
+                    state.noticeIsSubmissionFailure = false
                     state.notice = nil
                     state.conflict = nil
                     let revision = state.revision
@@ -542,6 +557,7 @@ public struct DocumentReviewFeature {
                     }.cancellable(id: CancelID.submit)
                 }
             } catch {
+                state.noticeIsSubmissionFailure = false
                 state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
                 return .none
             }
@@ -555,6 +571,7 @@ public struct DocumentReviewFeature {
 
     private func submit(_ operation: QuestionOperation, state: inout State) -> Effect<Action> {
         state.isSubmitting = true
+        state.noticeIsSubmissionFailure = false
         state.notice = nil
         state.conflict = nil
         let revision = state.revision

@@ -263,7 +263,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.attachmentPicker.uploadNext)
         if !cancelByEditing {
             await finalResponse.release()
-            await store.receive(\.submissionFinished) { $0.isSubmitting = false; $0.notice = "Rejected" }
+            await store.receive(\.submissionFinished) { $0.isSubmitting = false; $0.notice = "Rejected"; $0.noticeIsSubmissionFailure = true }
         }
         await store.finish()
         #expect(submissions.value.count == (cancelByEditing ? 0 : 1))

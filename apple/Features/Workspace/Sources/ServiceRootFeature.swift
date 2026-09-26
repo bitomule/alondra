@@ -200,6 +200,16 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .triage(.cards(.element(let cardID, .document(let action)))):
+            return state.triage.cards[id: cardID]?.document.flatMap { documentNotice($0, action: action) }
+        case .triage(.cards(.element(let cardID, .pullRequest(.diff(.reviewFinished(let outcome, let epoch)))))):
+            guard let diff = state.triage.cards[id: cardID]?.pullRequest?.diff,
+                  diff.isSending, diff.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .triage(.cards(.element(let cardID, .pullRequest(.pr(.mutationFinished(let outcome, let epoch)))))):
+            guard let pr = state.triage.cards[id: cardID]?.pullRequest?.pr,
+                  pr.isSending, pr.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
         case .triage(.cards(.element(let cardID, .question(let action)))):
             return state.triage.cards[id: cardID]?.question.flatMap { questionNotice($0, action: action) }
         case .pullRequest(.presented(.attachedQuestion(.element(let id, .question(let action))))):
@@ -229,6 +239,27 @@ public struct ServiceRootFeature {
             return nodeNotice(node, action: action)
         default: return nil
         }
+    }
+
+    private func documentNotice(_ document: DocumentReviewFeature.State, action: DocumentReviewFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .submissionFinished(let revision, _, let outcome), .reportFeedbackFinished(let revision, let outcome):
+            guard document.isSubmitting, document.revision == revision else { return nil }
+            switch outcome {
+            case .failed(let message), .forbidden(let message), .conflict(let message):
+                return .failure(couldNotSendMessage(message))
+            default: return nil
+            }
+        case .commandResolved(let id, let rejection):
+            guard document.needsReconciliation, document.uncertainCommandID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        default: return nil
+        }
+    }
+
+    private func rejectedPRNotice(_ outcome: PRMutationOutcome) -> WorkspaceNotice.Event? {
+        guard case .rejected(let message) = outcome else { return nil }
+        return .failure(couldNotSendMessage(message))
     }
 
     private func questionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
