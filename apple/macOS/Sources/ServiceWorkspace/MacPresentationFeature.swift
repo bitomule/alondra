@@ -1,4 +1,6 @@
+import AlondraFleetFeature
 import AlondraShared
+import Foundation
 import ComposableArchitecture
 
 /// Per-window navigation and disclosure state. The service graph remains the sole
@@ -16,6 +18,17 @@ struct MacPresentationFeature {
         var collapsedProjects: Set<String> = []
         var toggledTaskGroups: Set<String> = []
         var newRequestPresented = false
+        var inboxIDs: [String] = []
+        var didAutoSelect = false
+
+        func projects(_ snapshot: FleetSnapshot?) -> [MacSidebarProject] {
+            (snapshot?.sections ?? []).compactMap { section in
+                let nodes = section.nodes.filter { entry in
+                    matches(([entry.node.displayName, section.name, entry.node.fleetLabel, entry.node.summary] + entry.tasks.map(\.title)).joined(separator: " "))
+                }
+                return nodes.isEmpty ? nil : MacSidebarProject(name: section.name, nodes: nodes)
+            }
+        }
 
         func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
         func groupExpanded(_ group: TaskStateGroup) -> Bool {
@@ -39,6 +52,7 @@ struct MacPresentationFeature {
     }
     enum Action {
         case select(Selection?)
+        case inboxChanged([String])
         case queryChanged(String)
         case tasksExpanded(Bool)
         case projectExpanded(String, Bool)
@@ -49,6 +63,19 @@ struct MacPresentationFeature {
         Reduce { state, action in
             switch action {
             case .select(let selection): state.selection = selection
+            case .inboxChanged(let ids):
+                if !state.didAutoSelect, state.selection == nil, let first = ids.first {
+                    state.didAutoSelect = true
+                    state.selection = .item(first)
+                } else if case .item(let id) = state.selection, !ids.contains(id) {
+                    if let index = state.inboxIDs.firstIndex(of: id) {
+                        let remaining = Set(ids)
+                        let next = state.inboxIDs[(index + 1)...].first(where: remaining.contains)
+                            ?? state.inboxIDs[..<index].last(where: remaining.contains)
+                        state.selection = next.map(Selection.item)
+                    } else { state.selection = ids.first.map(Selection.item) }
+                }
+                state.inboxIDs = ids
             case .queryChanged(let query): state.query = query
             case .tasksExpanded(let expanded): state.tasksExpanded = expanded
             case .projectExpanded(let name, let expanded):
@@ -60,4 +87,10 @@ struct MacPresentationFeature {
             return .none
         }
     }
+}
+
+struct MacSidebarProject: Identifiable {
+    var id: String { name }
+    let name: String
+    let nodes: [FleetNode]
 }

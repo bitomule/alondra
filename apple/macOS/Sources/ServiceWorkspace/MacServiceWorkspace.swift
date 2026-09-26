@@ -15,7 +15,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         NavigationSplitView {
             MacServiceSidebar(store: store, presentation: presentation)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
-                .searchable(text: Binding(get: { presentation.query }, set: { presentation.send(.queryChanged($0)); store.send(.fleet(.fleet(.searchChanged($0)))) }), placement: .sidebar, prompt: "Search")
+                .searchable(text: Binding(get: { presentation.query }, set: { presentation.send(.queryChanged($0)) }), placement: .sidebar, prompt: "Search")
                 .searchFocused($searchFocused)
         } detail: {
             ZStack {
@@ -78,9 +78,8 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             case .request, .schedules, nil: break
             }
         }
-        .onChange(of: store.triage.triage.queue.map(\.id)) { old, new in
-            guard case .item(let id) = presentation.selection, old.contains(id), !new.contains(id) else { return }
-            presentation.send(.select(new.first.map(MacPresentationFeature.Selection.item)))
+        .onChange(of: store.triage.triage.queue.map(\.id), initial: true) { _, ids in
+            presentation.send(.inboxChanged(ids))
         }
         .frame(minWidth: 740, minHeight: 520)
     }
@@ -114,7 +113,7 @@ private struct MacServiceSidebar: View {
                     } label: { TaskGroupLabel(group: group) }
                 }
             } header: { SidebarCountHeader(title: String(localized: "Tasks"), count: store.tasks.taskBoard.openCount, tint: .gray) }
-            ForEach(store.fleet.fleet.filteredSections) { section in
+            ForEach(presentation.withState { $0.projects(store.fleet.fleet.snapshot) }) { section in
                 Section(isExpanded: Binding(get: { presentation.withState { $0.projectExpanded(section.name) } }, set: { presentation.send(.projectExpanded(section.name, $0)) })) {
                     ForEach(section.nodes) { entry in
                         NodeRow(node: entry.node, tasks: entry.tasks).badge(entry.pendingCount)
