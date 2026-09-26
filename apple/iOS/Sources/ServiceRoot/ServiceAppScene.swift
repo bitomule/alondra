@@ -1,3 +1,4 @@
+import AlondraShared
 import AlondraAttachmentsFeature
 import AlondraDemoWorkspace
 import AlondraWorkspaceFeature
@@ -132,6 +133,8 @@ private struct ServiceRootView<AccountContent: View>: View {
                 NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }
             }
         }
+        .overlay(alignment: .bottom) { ServiceNoticeToast(store: store) }
+        .closeRefusalAlert(Binding(get: { store.closeRefusal }, set: { if $0 == nil { store.send(.dismissCloseRefusal) } }))
         .tabBarMinimizeBehavior(.onScrollDown)
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             NavigationStack {

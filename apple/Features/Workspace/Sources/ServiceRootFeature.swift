@@ -1,4 +1,6 @@
 import AlondraAttachmentsFeature
+import AlondraFleetFeature
+import Foundation
 import AlondraCommands
 import AlondraNewWorkFeature
 import AlondraPullRequestsFeature
@@ -14,6 +16,8 @@ public struct ServiceRootFeature {
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
         public var tab = Tab.inbox
         public var settingsPresented = false
+        public var notice: WorkspaceNotice?
+        public var closeRefusal: String?
         public var triage = ServiceTriageFeature.State()
         public var tasks = ServiceTasksFeature.State()
         public var fleet = ServiceFleetFeature.State()
@@ -24,6 +28,8 @@ public struct ServiceRootFeature {
     }
     public enum Action {
         case appeared, disappeared
+        case dismissNotice(UUID)
+        case dismissCloseRefusal
         case commandResolved(CommandResolution)
         case feedbackRecovered([ReportFeedbackRecoveryEvent])
         case tabSelected(State.Tab)
@@ -35,9 +41,28 @@ public struct ServiceRootFeature {
         case newRequest(NewRequestFeature.Action)
         case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
     }
+    @Dependency(\.continuousClock) var noticeClock
+    private enum NoticeCancelID { case timeout }
     @Dependency(\.serviceCommandRecovery) var recovery
     private enum RecoveryCancelID { case observation }
     public var body: some ReducerOf<Self> {
+        // Observe the accepted operation before child navigation removes its state.
+        Reduce { state, action in
+            if case .dismissNotice(let id) = action {
+                guard state.notice?.id == id else { return .none }
+                state.notice = nil
+                return .cancel(id: NoticeCancelID.timeout)
+            }
+            if case .dismissCloseRefusal = action { state.closeRefusal = nil; return .none }
+            guard let event = noticeEvent(state: state, action: action) else { return .none }
+            if case .closeRefused(let message) = event { state.closeRefusal = message; return .none }
+            let notice = WorkspaceNotice(event: event)
+            state.notice = notice
+            return .run { send in
+                try await noticeClock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
+                await send(.dismissNotice(notice.id))
+            }.cancellable(id: NoticeCancelID.timeout, cancelInFlight: true)
+        }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
@@ -95,9 +120,50 @@ public struct ServiceRootFeature {
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
                 return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .tasks, .pullRequest, .fleet, .newRequest: return .none
+            case .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
             }
         }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
+    }
+
+    private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .newRequest(.submitFinished(let result, let epoch)):
+            guard state.newRequest.isSubmitting, epoch == state.newRequest.presentationEpoch else { return nil }
+            switch result {
+            case .confirmed: return .sentToOrchestrator
+            case .failed(let message): return .failure(message)
+            default: return nil
+            }
+        case .newRequest(.commandResolved(let id, let rejection)):
+            guard state.newRequest.submissionUncertain, state.newRequest.uncertainCommandID == id else { return nil }
+            return rejection.map(WorkspaceNotice.Event.failure) ?? .sentToOrchestrator
+        case .fleet(.detail(.presented(let action))):
+            return state.fleet.detail.flatMap { nodeNotice($0, action: action) }
+        case .fleet(.path(.element(let id, .node(let action)))):
+            guard case .node(let node) = state.fleet.path[id: id] else { return nil }
+            return nodeNotice(node, action: action)
+        default: return nil
+        }
+    }
+
+    private func nodeNotice(_ node: NodeDetailFeature.State, action: NodeDetailFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .sendFinished(_, let outcome, let epoch):
+            guard node.isSending, epoch == node.presentationEpoch else { return nil }
+            switch outcome {
+            case .confirmed: return .messageSent(node.node?.displayName ?? node.sessionID)
+            case .rejected(let message): return .failure(message)
+            default: return nil
+            }
+        case .closeFinished(let outcome, let epoch):
+            guard node.isClosing, epoch == node.presentationEpoch else { return nil }
+            switch outcome {
+            case .confirmed: return .closed(node.node?.displayName ?? node.sessionID)
+            case .rejected(let message): return .closeRefused(message)
+            default: return nil
+            }
+        default: return nil
+        }
     }
 
     private func routePending(_ state: inout State) -> Effect<Action> {
@@ -148,4 +214,17 @@ public struct ServicePullRequestFeature {
             }
         }
     }
+}
+
+public struct WorkspaceNotice: Equatable, Sendable, Identifiable {
+    public enum Event: Equatable, Sendable {
+        case sentToOrchestrator, messageSent(String), closed(String), failure(String), closeRefused(String)
+    }
+    public let id = UUID()
+    public let event: Event
+    public var failure: Bool {
+        if case .failure = event { return true }
+        return false
+    }
+    public init(event: Event) { self.event = event }
 }

@@ -212,7 +212,9 @@ struct ServiceNodeView: View {
             ServiceAttachmentStrip(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
             ServiceNodeOutcome(outcome: store.sendOutcome)
-            ServiceNodeOutcome(outcome: store.closeOutcome)
+            if case .unknown = store.closeOutcome {
+                ServiceNodeOutcome(outcome: store.closeOutcome)
+            }
             messageBox(node)
         }
         .padding(.horizontal, 16)
