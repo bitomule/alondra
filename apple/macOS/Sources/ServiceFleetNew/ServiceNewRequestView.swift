@@ -125,47 +125,123 @@ private struct ServiceNewWorkOption: View {
 private struct ServiceProjectPicker: View {
     let store: StoreOf<NewRequestFeature>
     @Bindable var presentation: StoreOf<MacNewRequestPresentation>
+
+    private func pick(_ project: String?) {
+        store.send(.projectSelected(project))
+        presentation.projectPicker = false
+    }
+
+    private var shown: [String] { ProjectList.filter(store.projects, query: presentation.projectQuery) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Filter projects", text: $presentation.projectQuery).textFieldStyle(.roundedBorder)
+            TextField("Filter projects", text: $presentation.projectQuery)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { if let first = shown.first { pick(first) } }
             List {
                 if presentation.projectQuery.isEmpty {
-                    Button("The orchestrator decides") { store.send(.projectSelected(nil)); presentation.projectPicker = false }
+                    row(nil, title: String(localized: "The orchestrator decides"))
                 }
-                ForEach(ProjectList.filter(store.projects, query: presentation.projectQuery), id: \.self) { project in
-                    Button { store.send(.projectSelected(project)); presentation.projectPicker = false } label: {
-                        HStack {
-                            Text(verbatim: project)
-                            Spacer()
-                            if project == store.selection.project { Image(systemName: "checkmark").foregroundStyle(.tint) }
-                        }.contentShape(.rect)
-                    }.buttonStyle(.plain)
+                ForEach(shown, id: \.self) { row($0, title: $0) }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if shown.isEmpty && !presentation.projectQuery.isEmpty {
+                    Text("No project matches")
+                        .foregroundStyle(.secondary)
                 }
-            }.listStyle(.plain)
-        }.padding(12).frame(width: 320, height: 340)
+            }
+        }
+        .padding(12)
+        .frame(width: 320, height: 340)
+    }
+
+    private func row(_ project: String?, title: String) -> some View {
+        Button {
+            pick(project)
+        } label: {
+            HStack {
+                Text(verbatim: title)
+                Spacer()
+                if project == store.selection.project {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }
 
 private struct ServiceIssuePicker: View {
     let store: StoreOf<NewRequestFeature>
     @Bindable var presentation: StoreOf<MacNewRequestPresentation>
+
+    private func pick(_ reference: String) {
+        store.send(.issueSelected(reference))
+        presentation.issuePicker = false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("Search issues or paste an issue URL", text: Binding(get: { store.issueQuery }, set: { store.send(.issueQueryChanged($0)) })).textFieldStyle(.roundedBorder)
-            if store.isLoadingIssues { ProgressView() }
-            if let error = store.issuesError { Text(error).foregroundStyle(.red) }
-            if let pasted = store.pastedIssue {
-                Button("Use \(pasted)") { store.send(.issueSelected(pasted)); presentation.issuePicker = false }
+            HStack {
+                TextField("Filter, or paste an issue link", text: Binding(get: { store.issueQuery }, set: { store.send(.issueQueryChanged($0)) }))
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { if let first = store.pastedIssue ?? store.visibleIssues.first?.reference { pick(first) } }
+                Button {
+                    store.send(.issuesRefreshRequested)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help(Text("Search GitHub again"))
+                .accessibilityLabel(Text("Search GitHub again"))
+                .disabled(store.isLoadingIssues)
             }
-            List(store.visibleIssues) { issue in
-                Button { store.send(.issueSelected(issue.reference)); presentation.issuePicker = false } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(issue.title).fontWeight(.medium)
-                        Text(issue.reference).font(.caption).foregroundStyle(.secondary)
+            if let error = store.issuesError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
+            List {
+                if let pasted = store.pastedIssue {
+                    Button {
+                        pick(pasted)
+                    } label: {
+                        Label("Use \(pasted)", systemImage: "link")
                     }
-                }.buttonStyle(.plain)
-            }.listStyle(.plain)
-            Button("Refresh") { store.send(.issuesRefreshRequested) }.disabled(store.isLoadingIssues)
-        }.padding(12).frame(width: 440, height: 380)
+                    .buttonStyle(.plain)
+                }
+                ForEach(store.visibleIssues) { issue in
+                    Button {
+                        pick(issue.reference)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: issue.title)
+                                .lineLimit(2)
+                            Text(verbatim: ([issue.reference] + issue.labels).joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if store.isLoadingIssues && store.issues.isEmpty {
+                    ProgressView()
+                } else if store.issuesLoaded && store.visibleIssues.isEmpty && store.pastedIssue == nil {
+                    Text("No open issues match")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 440, height: 360)
+        .task { store.send(.issuesOpened) }
     }
 }
