@@ -22,7 +22,7 @@ test('expired session has no private content', async ({ page }) => {
 });
 test('Mac directory failure does not invent an empty account', async ({ page }) => {
  await session(page);
- await page.route('**/v1/macs', route => route.fulfill({ status: 503, json: { error: { code: 'mac_directory_unavailable' } } }));
+ await page.route('**/v1/account/devices', route => route.fulfill({ status: 503, json: { error: { code: 'mac_directory_unavailable' } } }));
  await page.goto('/account');
  await expect(page.getByRole('alert')).toContainText('servicio no está disponible');
  await expect(page.getByText('Tu primer Mac empieza aquí.')).toHaveCount(0);
@@ -112,4 +112,49 @@ test('admin emits link once, confirms deletion and sends CSRF/idempotency', asyn
  await page.setViewportSize({ width: 375, height: 900 });
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await page.screenshot({ path: info.outputPath('admin-mobile.png'), fullPage: true });
+});
+test('revoking a Mac requires confirmation and preserves the key after ambiguous failure', async ({ page }) => {
+ await session(page, false);
+ let revoked = false;
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [{ mac_id: 'mac-synthetic', label: 'Mac de prueba', status: revoked ? 'revoked' : 'active', reconciliation: revoked ? 'pending' : null, clients: [] }] } }));
+ const keys: string[] = [];
+ await page.route('**/v1/account/devices/macs/mac-synthetic', route => {
+  expect(route.request().method()).toBe('DELETE');
+  expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf');
+  keys.push(route.request().headers()['idempotency-key']);
+  if (keys.length === 1) return route.abort('connectionreset');
+  revoked = true;
+  return route.fulfill({ status: 202, json: { reconciliation: 'pending' } });
+ });
+ await page.goto('/account');
+ await page.getByRole('button', { name: 'Retirar acceso al Mac' }).click();
+ expect(keys).toHaveLength(0);
+ await page.getByRole('button', { name: 'Confirmar retirada de acceso' }).click();
+ await expect(page.getByRole('alert')).toContainText('No podemos confirmar');
+ await page.getByRole('button', { name: 'Confirmar retirada de acceso' }).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ expect(keys).toHaveLength(2); expect(keys[1]).toBe(keys[0]);
+ await expect(page.getByRole('button', { name: 'Retirar acceso al Mac' })).toHaveCount(0);
+ await expect(page.getByRole('status')).toContainText('Acceso retirado');
+});
+test('self deletion leaves private UI and does not query a disabled account again', async ({ page }) => {
+ await session(page, false);
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [] } }));
+ let deleted = false;
+ await page.route('**/v1/account', route => {
+  expect(route.request().method()).toBe('DELETE');
+  expect(route.request().postDataJSON()).toEqual({ confirm: true });
+  expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf');
+  deleted = true;
+  return route.fulfill({ status: 202, json: { reconciliation: 'pending' } });
+ });
+ await page.goto('/account');
+ await page.getByRole('button', { name: 'Dar de baja mi cuenta' }).click();
+ expect(deleted).toBe(false);
+ await page.getByRole('button', { name: 'Confirmar retirada de acceso' }).click();
+ await expect(page).toHaveURL(/\/account-closed\/?$/);
+ await expect(page.getByRole('heading', { name: 'Has solicitado la baja.' })).toBeVisible();
+ await expect(page.getByRole('button', { name: 'Cerrar sesión' })).toHaveCount(0);
+ await expect(page.getByText('David de prueba')).toHaveCount(0);
+ expect(deleted).toBe(true);
 });
