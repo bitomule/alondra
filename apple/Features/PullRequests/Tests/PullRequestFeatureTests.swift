@@ -56,9 +56,9 @@ struct PullRequestFeatureTests {
         let closed = try makePR(state: "closed")
         let store = TestStore(initialState: PullRequestFeature.State(pr: pr)) { PullRequestFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
-                diff: { _ in "" }, merge: { _, _ in Issue.record("merge dispatched after close"); return .confirmed },
+                diff: { _ in PRDiffSnapshot(diff: "", headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in Issue.record("merge dispatched after close"); return .confirmed },
                 resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
-                review: { _, _, _, _ in .obsolete }
+                review: { _, _, _, _, _ in .obsolete }
             )
         }
         await store.send(.chooseMergeMethod("squash")) { $0.selectedMergeMethod = "squash" }
@@ -78,10 +78,10 @@ struct PullRequestFeatureTests {
         let command = UUID()
         let store = TestStore(initialState: PullRequestFeature.State(pr: pr)) { PullRequestFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
-                diff: { _ in "" }, merge: { _, _ in .unknown(command) },
+                diff: { _ in PRDiffSnapshot(diff: "", headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in .unknown(command) },
                 resolveConflicts: { _ in Issue.record("duplicate conflict action"); return .confirmed },
                 setAside: { _ in Issue.record("duplicate set aside"); return .confirmed },
-                review: { _, _, _, _ in .obsolete }
+                review: { _, _, _, _, _ in .obsolete }
             )
         }
         await store.send(.chooseMergeMethod("squash")) { $0.selectedMergeMethod = "squash" }
@@ -113,13 +113,15 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = files
         state.loadedDiffText = "original diff"
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.commentsDiffText = "original diff"
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.comments = ["a.swift:1": "Please rename"]
         let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
-                diff: { _ in "original diff" }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
+                diff: { _ in PRDiffSnapshot(diff: "original diff", headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
                 setAside: { _ in .obsolete },
-                review: { _, _, _, _ in .closed }
+                review: { _, _, _, _, _ in .closed }
             )
         }
         await store.send(.requestChangesTapped) {
@@ -165,7 +167,7 @@ struct PullRequestFeatureTests {
             $0.pullRequestOperations = .init(
                 diff: { _ in throw PRDiffLoadError.responseTooLarge }, merge: { _, _ in .obsolete },
                 resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
-                review: { _, _, _, _ in Issue.record("review sent without verified diff"); return .confirmed }
+                review: { _, _, _, _, _ in Issue.record("review sent without verified diff"); return .confirmed }
             )
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 1 }
@@ -205,18 +207,19 @@ struct PullRequestFeatureTests {
             $0.pullRequestOperations = .init(
                 diff: { _ in throw CancellationError() }, merge: { _, _ in .obsolete },
                 resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
-                review: { _, _, _, _ in .obsolete }
+                review: { _, _, _, _, _ in .obsolete }
             )
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 1 }
         await store.send(.disappeared) { $0.isLoading = false; $0.loadGeneration = 2 }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 3 }
-        await store.send(.diffLoaded([], "stale", 1))
+        await store.send(.diffLoaded([], PRDiffSnapshot(diff: "stale", headSHA: String(repeating: "a", count: 40)), 1))
         #expect(store.state.isLoading && store.state.files == nil)
-        await store.send(.diffLoaded([], "current", 3)) {
+        await store.send(.diffLoaded([], PRDiffSnapshot(diff: "current", headSHA: String(repeating: "a", count: 40)), 3)) {
             $0.isLoading = false
             $0.files = []
             $0.loadedDiffText = "current"
+            $0.loadedHeadSHA = String(repeating: "a", count: 40)
         }
         await store.finish()
     }
@@ -235,20 +238,24 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = UnifiedDiff.parse(oldText)
         state.loadedDiffText = oldText
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.commentsDiffText = oldText
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.comments = ["a.swift:1": "Change this"]
         state.isLoading = true
         state.loadGeneration = 1
         let store = TestStore(initialState: state) { DiffReviewFeature() }
-        await store.send(.diffLoaded(UnifiedDiff.parse(newText), newText, 1)) {
+        await store.send(.diffLoaded(UnifiedDiff.parse(newText), PRDiffSnapshot(diff: newText, headSHA: String(repeating: "a", count: 40)), 1)) {
             $0.isLoading = false
             $0.files = UnifiedDiff.parse(newText)
             $0.loadedDiffText = newText
+            $0.loadedHeadSHA = String(repeating: "a", count: 40)
         }
         #expect(store.state.commentsNeedReview)
         await store.send(.requestChangesTapped) { $0.validationError = "The diff changed; refresh before sending line comments" }
         await store.send(.confirmCommentsForCurrentDiff) {
             $0.commentsDiffText = newText
+            $0.commentsHeadSHA = String(repeating: "a", count: 40)
             $0.validationError = nil
         }
         #expect(!store.state.commentsNeedReview)
@@ -270,11 +277,14 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.comments = ["a.swift:99": "No longer exists"]
         state.commentsDiffText = "old diff"
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.loadedDiffText = "new diff"
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         let store = TestStore(initialState: state) { DiffReviewFeature() }
         await store.send(.removeLineComment("a.swift:99")) {
             $0.comments = [:]
             $0.commentsDiffText = nil
+            $0.commentsHeadSHA = nil
         }
         #expect(!store.state.commentsNeedReview)
         await store.finish()
@@ -295,14 +305,16 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = UnifiedDiff.parse(diff)
         state.loadedDiffText = diff
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.commentsDiffText = diff
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.comments = ["a.swift:1": "Fix A"]
         let gate = SuspendedFirstReview()
         let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
-                diff: { _ in diff }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
+                diff: { _ in PRDiffSnapshot(diff: diff, headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
                 setAside: { _ in .obsolete },
-                review: { _, text, _, _ in await gate.submit(text) }
+                review: { _, text, _, _, _ in await gate.submit(text) }
             )
         }
         await store.send(.requestChangesTapped) {
@@ -336,6 +348,7 @@ struct PullRequestFeatureTests {
             $0.isSending = false
             $0.comments = [:]
             $0.commentsDiffText = nil
+            $0.commentsHeadSHA = nil
             $0.mutationOutcome = .confirmed
             $0.shouldDismiss = true
             $0.successfulActionCount = 2
@@ -364,13 +377,15 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = UnifiedDiff.parse(first)
         state.loadedDiffText = first
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.commentsDiffText = first
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.comments = ["a.swift:1": "Fix this"]
         let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
-                diff: { _ in latest }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
+                diff: { _ in PRDiffSnapshot(diff: latest, headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
                 setAside: { _ in .obsolete },
-                review: { _, _, _, _ in Issue.record("stale diff review sent"); return .confirmed }
+                review: { _, _, _, _, _ in Issue.record("stale diff review sent"); return .confirmed }
             )
         }
         await store.send(.requestChangesTapped) {
@@ -384,6 +399,53 @@ struct PullRequestFeatureTests {
             $0.loadGeneration = 1
             $0.files = UnifiedDiff.parse(latest)
             $0.loadedDiffText = latest
+            $0.loadedHeadSHA = String(repeating: "a", count: 40)
+            $0.validationError = "The PR changed; review the new diff before sending"
+            $0.submittedComments = nil
+            $0.submittedNote = nil
+            $0.submittedAttachments = nil
+        }
+        #expect(store.state.commentsNeedReview)
+        await store.finish()
+    }
+
+    @Test
+    func changedHeadWithIdenticalDiffStopsReviewBeforeMutation() async {
+        let first = """
+        diff --git a/a.swift b/a.swift
+        --- a/a.swift
+        +++ b/a.swift
+        @@ -1 +1 @@
+        -old
+        +first
+        """
+        let latest = first
+        var state = DiffReviewFeature.State(prID: 4)
+        state.files = UnifiedDiff.parse(first)
+        state.loadedDiffText = first
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
+        state.commentsDiffText = first
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
+        state.comments = ["a.swift:1": "Fix this"]
+        let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
+            $0.pullRequestOperations = .init(
+                diff: { _ in PRDiffSnapshot(diff: latest, headSHA: String(repeating: "b", count: 40)) }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
+                setAside: { _ in .obsolete },
+                review: { _, _, _, _, _ in Issue.record("stale diff review sent"); return .confirmed }
+            )
+        }
+        await store.send(.requestChangesTapped) {
+            $0.isSending = true
+            $0.submittedComments = ["a.swift:1": "Fix this"]
+            $0.submittedNote = ""
+            $0.submittedAttachments = []
+        }
+        await store.receive(\.reviewDiffChanged) {
+            $0.isSending = false
+            $0.loadGeneration = 1
+            $0.files = UnifiedDiff.parse(latest)
+            $0.loadedDiffText = latest
+            $0.loadedHeadSHA = String(repeating: "b", count: 40)
             $0.validationError = "The PR changed; review the new diff before sending"
             $0.submittedComments = nil
             $0.submittedNote = nil
@@ -402,12 +464,13 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = []
         state.loadedDiffText = "known diff"
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.note = "Please check"
         let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
                 diff: { _ in throw Offline.unavailable }, merge: { _, _ in .obsolete },
                 resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
-                review: { _, _, _, _ in Issue.record("mutation sent after failed preflight"); return .confirmed }
+                review: { _, _, _, _, _ in Issue.record("mutation sent after failed preflight"); return .confirmed }
             )
         }
         await store.send(.askTapped) {
@@ -481,21 +544,24 @@ struct PullRequestFeatureTests {
         var state = DiffReviewFeature.State(prID: 4)
         state.files = UnifiedDiff.parse(old)
         state.loadedDiffText = old
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
         state.commentsDiffText = old
+        state.commentsHeadSHA = String(repeating: "a", count: 40)
         state.comments = ["a.swift:1": "Fix"]
         state.isSending = true
         state.isLoading = true
         state.loadGeneration = 7
         let store = TestStore(initialState: state) { DiffReviewFeature() }
-        await store.send(.reviewDiffChanged(UnifiedDiff.parse(latest), latest, 0)) {
+        await store.send(.reviewDiffChanged(UnifiedDiff.parse(latest), PRDiffSnapshot(diff: latest, headSHA: String(repeating: "a", count: 40)), 0)) {
             $0.isSending = false
             $0.isLoading = false
             $0.loadGeneration = 8
             $0.files = UnifiedDiff.parse(latest)
             $0.loadedDiffText = latest
+            $0.loadedHeadSHA = String(repeating: "a", count: 40)
             $0.validationError = "The PR changed; review the new diff before sending"
         }
-        await store.send(.diffLoaded(UnifiedDiff.parse(old), old, 7))
+        await store.send(.diffLoaded(UnifiedDiff.parse(old), PRDiffSnapshot(diff: old, headSHA: String(repeating: "a", count: 40)), 7))
         #expect(store.state.loadedDiffText == latest && store.state.commentsNeedReview)
         await store.finish()
 

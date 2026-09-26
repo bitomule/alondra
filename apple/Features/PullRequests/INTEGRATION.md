@@ -48,13 +48,15 @@ de `apple/BUILD.bazel`, las raíces y las vistas actuales. Al conectar el módul
    review, el reducer vuelve a leer el diff por la misma identidad y exige
    igualdad exacta con lo mostrado. Si la lectura falla o difiere, no reserva
    ni envía la mutación; la persona revisa la nueva versión o reintenta la
-   carga. Una nota general también espera esa comprobación. Sigue existiendo
-   una carrera entre este GET y el POST: se necesita precondición atómica del
-   backend (`expected_head_sha`) para cerrarla del todo. Conservar las vistas de
+   carga. Una nota general también espera esa comprobación. El snapshot conserva además
+   `headSHA` por escena: el preflight exige el mismo SHA aunque el texto no haya
+   cambiado y el POST envía ese SHA como `expected_head_sha`. El backend #165
+   comprueba el head antes de entregar la review. Conservar las vistas de
    checks, descripciones, preguntas y reportes existentes como presentación
    hasta que G1 se conecte; sus datos vienen del snapshot, sin repetir entradas.
-5. El contrato backend #156, SHA `86b4c33`, devuelve diff textual en
-   `body.text`. Una respuesta local GET mayor de 180 KiB devuelve sobre cifrado
+5. El adaptador del servicio usa el contrato backend #165, SHA `a7b1e9c`:
+   `GET /v1/prs/{id}/diff-snapshot` devuelve `diff`, `head_sha`, `truncated`.
+   Un snapshot truncado se rechaza antes de crear anclas. Una respuesta local GET mayor de 180 KiB devuelve sobre cifrado
    `status:502` con `response_too_large`; mapear **solo ese código** a
    `PRDiffLoadError.responseTooLarge`. Otros fallos GET devuelven 502
    `read_failed`; no convertirlos en «diff demasiado grande» ni en diff vacío.
@@ -73,3 +75,7 @@ cambian mientras el diálogo está abierto, comentario en línea, 409 de PR cerr
 rechazo/resultado incierto sin doble envío y dos ventanas Mac con borradores
 independientes. El módulo solo comprueba decisiones; no acredita por sí mismo UI
 ni transporte E2E.
+
+Bloqueo de release pendiente: uploads cifrados de adjuntos. La composición rechaza
+reviews con adjuntos antes del CommandGate y conserva el borrador; esto no acredita
+paridad funcional ni permite dar la migración por terminada.

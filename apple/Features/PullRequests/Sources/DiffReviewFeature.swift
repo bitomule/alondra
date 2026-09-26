@@ -13,6 +13,8 @@ public struct DiffReviewFeature {
         public let prID: UInt64
         public var files: [DiffFile]?
         /// Exact raw diff text is the revision token; path:line alone cannot identify content.
+        public var loadedHeadSHA: String?
+        public var commentsHeadSHA: String?
         public var loadedDiffText: String?
         public var commentsDiffText: String?
         public var collapsed: Set<String> = []
@@ -41,13 +43,14 @@ public struct DiffReviewFeature {
 
         public var canReview: Bool {
             isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
+                && loadedHeadSHA != nil
                 && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
         }
         public var hasDraft: Bool {
             !comments.isEmpty || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
         }
         public var commentsNeedReview: Bool {
-            !comments.isEmpty && (loadedDiffText == nil || commentsDiffText != loadedDiffText)
+            !comments.isEmpty && (loadedDiffText == nil || commentsDiffText != loadedDiffText || commentsHeadSHA != loadedHeadSHA)
         }
     }
 
@@ -58,7 +61,7 @@ public struct DiffReviewFeature {
         case identityChanged
         case pullRequestChanged(PullRequest?)
         case snapshotUnavailable
-        case diffLoaded([DiffFile], String, UInt64)
+        case diffLoaded([DiffFile], PRDiffSnapshot, UInt64)
         case diffFailed(String, UInt64)
         case toggleFile(String)
         case toggleAllFiles
@@ -71,7 +74,7 @@ public struct DiffReviewFeature {
         case attachmentsChanged([PRReviewAttachment])
         case askTapped
         case requestChangesTapped
-        case reviewDiffChanged([DiffFile], String, UInt64)
+        case reviewDiffChanged([DiffFile], PRDiffSnapshot, UInt64)
         case reviewPreflightFailed(String, UInt64)
         case reviewFinished(PRMutationOutcome, UInt64)
         case commandReconciled(UUID)
@@ -95,7 +98,7 @@ public struct DiffReviewFeature {
                 return .run { send in
                     do {
                         let text = try await operations.diff(id)
-                        await send(.diffLoaded(UnifiedDiff.parse(text), text, generation))
+                        await send(.diffLoaded(UnifiedDiff.parse(text.diff), text, generation))
                     } catch PRDiffLoadError.responseTooLarge {
                         await send(.diffFailed("This diff is too large to review on this device", generation))
                     } catch where !error.isCancellation {
@@ -111,7 +114,9 @@ public struct DiffReviewFeature {
                 state.loadGeneration &+= 1
                 state.files = nil
                 state.loadedDiffText = nil
+                state.loadedHeadSHA = nil
                 state.commentsDiffText = nil
+                state.commentsHeadSHA = nil
                 state.collapsed = []
                 state.isLoading = false
                 state.loadError = nil
@@ -142,7 +147,8 @@ public struct DiffReviewFeature {
                 guard generation == state.loadGeneration, state.isLoading else { return .none }
                 state.isLoading = false
                 state.files = files
-                state.loadedDiffText = text
+                state.loadedDiffText = text.diff
+                state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.loadError = nil
                 return .none
@@ -152,6 +158,7 @@ public struct DiffReviewFeature {
                 state.loadError = error
                 state.files = nil
                 state.loadedDiffText = nil
+                state.loadedHeadSHA = nil
                 state.collapsed = []
                 return .none
             case .toggleFile(let id):
@@ -170,14 +177,14 @@ public struct DiffReviewFeature {
             case .saveLineComment(let anchor, let text):
                 guard state.editingAnchor == anchor else { return .none }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if state.comments.isEmpty, !trimmed.isEmpty { state.commentsDiffText = state.loadedDiffText }
+                if state.comments.isEmpty, !trimmed.isEmpty { state.commentsDiffText = state.loadedDiffText; state.commentsHeadSHA = state.loadedHeadSHA }
                 state.comments[anchor] = trimmed.isEmpty ? nil : trimmed
-                if state.comments.isEmpty { state.commentsDiffText = nil }
+                if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                 state.editingAnchor = nil
                 return .none
             case .removeLineComment(let anchor):
                 state.comments[anchor] = nil
-                if state.comments.isEmpty { state.commentsDiffText = nil }
+                if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                 if state.editingAnchor == anchor { state.editingAnchor = nil }
                 return .none
             case .confirmCommentsForCurrentDiff:
@@ -185,6 +192,7 @@ public struct DiffReviewFeature {
                 let anchors = Set(files.flatMap(\.lines).compactMap(\.anchor))
                 guard state.comments.keys.allSatisfy(anchors.contains) else { return .none }
                 state.commentsDiffText = revision
+                state.commentsHeadSHA = state.loadedHeadSHA
                 state.validationError = nil
                 return .none
             case .cancelLineComment:
@@ -208,7 +216,8 @@ public struct DiffReviewFeature {
                 state.loadGeneration &+= 1
                 state.isLoading = false
                 state.files = files
-                state.loadedDiffText = text
+                state.loadedDiffText = text.diff
+                state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.validationError = "The PR changed; review the new diff before sending"
                 state.submittedComments = nil
@@ -232,7 +241,7 @@ public struct DiffReviewFeature {
                     for (anchor, text) in state.submittedComments ?? [:] where state.comments[anchor] == text {
                         state.comments[anchor] = nil
                     }
-                    if state.comments.isEmpty { state.commentsDiffText = nil }
+                    if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                     if state.note == state.submittedNote { state.note = "" }
                     if state.attachments == state.submittedAttachments { state.attachments = [] }
                     state.successfulActionCount += 1
@@ -277,7 +286,7 @@ public struct DiffReviewFeature {
             state.validationError = "Add a note or line comment before sending attachments"
             return .none
         case .ready(let text):
-            guard let expectedDiff = state.loadedDiffText else { return .none }
+            guard let expectedDiff = state.loadedDiffText, let expectedHead = state.loadedHeadSHA else { return .none }
             state.isSending = true
             state.validationError = nil
             state.mutationOutcome = nil
@@ -291,11 +300,11 @@ public struct DiffReviewFeature {
                 do {
                     let currentDiff = try await operations.diff(id)
                     try Task.checkCancellation()
-                    guard currentDiff == expectedDiff else {
-                        await send(.reviewDiffChanged(UnifiedDiff.parse(currentDiff), currentDiff, epoch))
+                    guard currentDiff.diff == expectedDiff, currentDiff.headSHA == expectedHead else {
+                        await send(.reviewDiffChanged(UnifiedDiff.parse(currentDiff.diff), currentDiff, epoch))
                         return
                     }
-                    await send(.reviewFinished(await operations.review(id, text, attachments, kind), epoch))
+                    await send(.reviewFinished(await operations.review(id, text, attachments, kind, expectedHead), epoch))
                 } catch PRDiffLoadError.responseTooLarge {
                     await send(.reviewPreflightFailed("This diff is too large to verify; review was not sent", epoch))
                 } catch where !error.isCancellation {
