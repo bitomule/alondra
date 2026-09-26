@@ -74,7 +74,7 @@ private struct MacServicePairingStep: View {
                 Label("Connect your workspace", systemImage: "laptopcomputer").font(.title2.bold())
                 Text("On the Mac running Alondra, run this command in Terminal and copy the connection invitation.")
                     .foregroundStyle(.secondary)
-                Text("alondra setup").font(.system(.body, design: .monospaced))
+                Text(verbatim: "alondra pair").font(.system(.body, design: .monospaced))
                     .textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: .rect(cornerRadius: 10))
                 PasteButton(payloadType: String.self) { values in

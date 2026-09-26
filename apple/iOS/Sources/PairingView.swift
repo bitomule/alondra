@@ -99,7 +99,7 @@ struct CloudPairingScreen: View {
         case .scanning:
             Label("Open Alondra on your Mac", systemImage: "laptopcomputer").font(.headline)
             Text("Run this command in Terminal to show your connection code.").foregroundStyle(.secondary)
-            Text("alondra setup").font(.mono(.body)).textSelection(.enabled)
+            Text(verbatim: "alondra pair").font(.mono(.body)).textSelection(.enabled)
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Palette.night, in: .rect(cornerRadius: 12))
             if store.cameraReady {
