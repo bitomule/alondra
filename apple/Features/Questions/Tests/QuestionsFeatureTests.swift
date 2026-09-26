@@ -36,17 +36,17 @@ struct QuestionsFeatureTests {
         await store.finish()
     }
 
-    @Test
-    func attachedOptionWaitsForUploadOnceWithoutChangingPickedAndFailureKeepsDraft() async throws {
+    @Test(arguments: [("My explanation", "My explanation"), ("", "Allow")])
+    func attachedOptionWaitsForUploadOnceWithoutChangingPickedAndFailureKeepsDraft(text: String, sentText: String) async throws {
         let q = try question(options: #"[{"label":"Allow"}]"#)
         let attachment = AttachmentDraft(name: "a.txt", data: Data([1]))
         var state = QuestionFeature.State(question: q)
-        state.draft.text = "My explanation"
+        state.draft.text = text
         state.attachmentPicker.entries = [.init(draft: attachment, status: .uploading)]
         let clock = TestClock()
         let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { operation in
-                #expect(operation == .answer(id: 1, text: "My explanation", option: "Allow", attachments: ["stored"]))
+                #expect(operation == .answer(id: 1, text: sentText, option: "Allow", attachments: ["stored"]))
                 try? await clock.sleep(for: .seconds(1))
                 return .failed("Offline")
             }, document: { _ in "" })
@@ -54,6 +54,7 @@ struct QuestionsFeatureTests {
         await store.send(.attachedOptionTapped("Allow")) {
             var pending = $0.draft
             pending.selectedOption = "Allow"
+            pending.text = sentText
             $0.pendingAttachedAnswer = pending
         }
         await store.send(.attachedOptionTapped("Allow"))
@@ -71,7 +72,7 @@ struct QuestionsFeatureTests {
             $0.isSubmitting = false
             $0.notice = "Offline"
         }
-        #expect(store.state.draft.text == "My explanation")
+        #expect(store.state.draft.text == text)
         #expect(store.state.draft.selectedOption == nil)
         await store.finish()
     }
