@@ -659,6 +659,25 @@ mod persistent_session_tests {
     }
 
     #[test]
+    fn failed_clear_after_revocation_keeps_pending_until_idempotent_retry() {
+        let saved=RefCell::new(Some(session()));
+        let revocations=Cell::new(0);
+        let result=logout_transition(session(),
+            |pending| { *saved.borrow_mut()=Some(pending.clone()); Ok(()) },
+            |_| { revocations.set(revocations.get()+1); Ok(()) },
+            || bail!("Keychain deletion failed"));
+        assert!(result.is_err());
+        let pending=saved.borrow().as_ref().unwrap().clone();
+        assert!(require_active(&pending).is_err());
+        assert!(cached_for_session(None, &pending).is_err());
+        assert!(logout_transition(pending, |_| panic!("pending state already durable"),
+            |_| { revocations.set(revocations.get()+1); Ok(()) },
+            || { *saved.borrow_mut()=None; Ok(()) }).unwrap());
+        assert_eq!(revocations.get(),2,"revocation is retried idempotently before clearing");
+        assert!(saved.borrow().is_none());
+    }
+
+    #[test]
     fn pending_login_must_finish_revocation_before_clearing_or_authorizing() {
         let mut pending=session(); pending.state=SessionState::PendingRevocation;
         assert!(replace_previous_login(Some(&pending), |_| bail!("still offline"),
