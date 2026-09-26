@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -6,6 +7,7 @@ import Foundation
 public struct QuestionFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public var question: Question
         public var draft = QuestionDraft()
         public var isSubmitting = false
@@ -20,6 +22,7 @@ public struct QuestionFeature {
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case refreshed(Question)
         case identityChanged
         case textChanged(String)
@@ -40,8 +43,12 @@ public struct QuestionFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.draft.attachmentIDs = state.attachmentPicker.storedIDs
+                return .none
             case .refreshed(let question):
                 guard state.question.id == question.id else {
                     let revision = state.revision &+ 1
@@ -58,6 +65,7 @@ public struct QuestionFeature {
                 }
                 return .none
             case .identityChanged:
+                state.attachmentPicker = AttachmentFeature.State()
                 state.draft = QuestionDraft()
                 state.isSubmitting = false
                 state.notice = nil
@@ -80,7 +88,7 @@ public struct QuestionFeature {
                 state.draft.attachmentIDs = ids
                 return .none
             case .answerTapped, .moreContextTapped:
-                guard !state.isSubmitting, !state.completed, !state.needsReconciliation else { return .none }
+                guard state.attachmentPicker.allReady, !state.isSubmitting, !state.completed, !state.needsReconciliation else { return .none }
                 let operation: QuestionOperation
                 do {
                     if case .answerTapped = action {
@@ -106,6 +114,7 @@ public struct QuestionFeature {
                 case .confirmed:
                     state.completed = true
                     state.draft = QuestionDraft()
+                    state.attachmentPicker = AttachmentFeature.State()
                 case .conflict(let reason):
                     state.conflict = reason
                 case .forbidden(let reason), .failed(let reason):
@@ -129,6 +138,7 @@ public struct QuestionFeature {
                 if rejection == nil {
                     state.completed = true
                     state.draft = QuestionDraft()
+                    state.attachmentPicker = AttachmentFeature.State()
                 }
                 return .none
             case .reconciled(let cardStillOpen):

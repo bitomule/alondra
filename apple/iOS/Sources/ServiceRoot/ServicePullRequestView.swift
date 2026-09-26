@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraWorkspaceFeature
 import AlondraPullRequestsFeature
 import AlondraShared
@@ -49,6 +50,8 @@ struct ServicePullRequestView: View {
                     } label: { Text(file.id).font(.caption.monospaced()) }
                 }
             }
+            AttachmentPicker(store: store.scope(state: \.diff.attachmentPicker, action: \.diff.attachmentPicker))
+                .disabled(store.diff.isSending || store.diff.mutationOutcome?.uncertainID != nil)
             Section("Review") {
                 TextField("General feedback", text: Binding(get: { store.diff.note }, set: { store.send(.diff(.noteChanged($0))) }), axis: .vertical)
                     .disabled(store.diff.isSending)

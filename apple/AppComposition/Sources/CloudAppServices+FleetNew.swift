@@ -8,9 +8,16 @@ import Foundation
 extension CloudAppServices {
     public func nodeOperations() -> NodeOperations {
         NodeOperations(send: { session, message in
-            guard message.files.isEmpty else { return .rejected("File uploads are not available through the service yet. Your draft has been kept.") }
+            var stored: [String] = []
+            do {
+                for file in message.files {
+                    if let id = file.storedID { stored.append(id) }
+                    else { stored.append(try await self.uploadAttachment(file.data, name: file.name, transferID: file.id)) }
+                }
+            } catch { return .rejected(error.localizedDescription) }
+            let attachmentIDs = stored
             return await self.nodeCommand(.send(session), session: session) { api, id in
-                _ = try await api.send(AlondraEndpoints.send(to: session, text: message.text, attachments: []), operationID: id.uuidString)
+                _ = try await api.send(AlondraEndpoints.send(to: session, text: message.text, attachments: attachmentIDs), operationID: id.uuidString)
             }
         }, close: { session in
             await self.nodeCommand(.closeNode(session), session: session) { api, id in
@@ -30,8 +37,9 @@ extension CloudAppServices {
             try await self.workspaceDecode(IssueList.self, endpoint: AlondraEndpoints.issues(refresh: refresh))
         }, captureSubmissionScope: {
             guard (try? await self.checkActive()) != nil else { return nil }
-            return NewWorkSubmissionScope(upload: { _ in
-                throw ServiceWorkspaceError.uploadUnavailable
+            return NewWorkSubmissionScope(upload: { attachment in
+                if let id = attachment.storedID { return id }
+                return try await self.uploadAttachment(attachment.data, name: attachment.name, transferID: attachment.id)
             }, isCurrent: {
                 (try? await self.checkActive()) != nil
             }, create: { body in
@@ -65,9 +73,4 @@ extension CloudAppServices {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(type, from: data)
     }
-}
-
-private enum ServiceWorkspaceError: LocalizedError {
-    case uploadUnavailable
-    var errorDescription: String? { "File uploads are not available through the service yet. Your draft has been kept." }
 }

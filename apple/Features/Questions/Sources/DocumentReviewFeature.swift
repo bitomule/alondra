@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -49,6 +50,7 @@ public struct DocumentDraft: Equatable, Sendable {
 public struct DocumentReviewFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject
         public var identity: QuestionWorkIdentity?
         public var sourceText: String?
@@ -74,6 +76,7 @@ public struct DocumentReviewFeature {
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case disappeared
         case refreshed(DocumentSubject)
@@ -104,8 +107,12 @@ public struct DocumentReviewFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.draft.attachmentIDs = state.attachmentPicker.storedIDs
+                return .none
             case .appeared:
                 return load(&state)
             case .disappeared:
@@ -130,6 +137,7 @@ public struct DocumentReviewFeature {
                 }
                 return .none
             case .identityChanged(let identity):
+                state.attachmentPicker = AttachmentFeature.State()
                 state.identity = identity
                 state.draft = DocumentDraft()
                 state.sourceText = nil
@@ -186,6 +194,7 @@ public struct DocumentReviewFeature {
                 state.draft.attachmentIDs = ids
                 return .none
             case .sendFeedbackTapped(let author):
+                guard state.attachmentPicker.allReady else { return .none }
                 guard canReview(state) else { return .none }
                 do {
                     switch state.subject {
@@ -216,6 +225,11 @@ public struct DocumentReviewFeature {
                     return .none
                 }
             case .reviewTapped(let verdict):
+                guard state.attachmentPicker.allReady else { return .none }
+                guard state.draft.attachmentIDs.isEmpty else {
+                    state.notice = "Send feedback to include your attachments before approving the artifact."
+                    return .none
+                }
                 guard canReview(state) else { return .none }
                 guard case .report(let report) = state.subject else { return .none }
                 do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
@@ -247,6 +261,7 @@ public struct DocumentReviewFeature {
                 if rejection == nil {
                     state.completed = true
                     state.draft = DocumentDraft()
+                    state.attachmentPicker = AttachmentFeature.State()
                 }
                 return .none
             case .reconciled(let cardStillOpen):
@@ -266,6 +281,7 @@ public struct DocumentReviewFeature {
                 case .confirmed:
                     state.completed = true
                     state.draft = DocumentDraft()
+                    state.attachmentPicker = AttachmentFeature.State()
                 case .conflict(let reason): state.conflict = reason
                 case .forbidden(let reason), .failed(let reason): state.notice = reason
                 case .uncertainCommand(let id):

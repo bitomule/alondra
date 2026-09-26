@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -6,6 +7,7 @@ import Foundation
 public struct NodeDetailFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public let sessionID: String
         public var entry: FleetNode?
         public var acceptedTick: UInt64?
@@ -33,7 +35,7 @@ public struct NodeDetailFeature {
         public var node: Node? { entry?.node }
         public var tasks: [WorkTask] { entry?.tasks ?? [] }
         public var canSend: Bool {
-            !isStale && node != nil && !isSending && !isClosing
+            attachmentPicker.allReady && !isStale && node != nil && !isSending && !isClosing
                 && sendOutcome?.uncertainID == nil && closeOutcome?.uncertainID == nil
                 && closeOutcome != .confirmed
                 && SendNodeMessageUseCase().prepare(text: message, files: files) != nil
@@ -41,6 +43,7 @@ public struct NodeDetailFeature {
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case disappeared
         case snapshotChanged(FleetSnapshot)
@@ -69,8 +72,12 @@ public struct NodeDetailFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.files = state.attachmentPicker.entries.map { NodeFile(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
             case .appeared:
                 guard !state.isVisible else { return .none }
                 state.isVisible = true
@@ -99,6 +106,7 @@ public struct NodeDetailFeature {
                 state.isStale = true
                 return .none
             case .identityChanged:
+                state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.entry = nil
                 state.acceptedTick = nil
@@ -164,6 +172,7 @@ public struct NodeDetailFeature {
                        state.files == outgoing.files {
                         state.message = ""
                         state.files = []
+                        state.attachmentPicker = AttachmentFeature.State()
                     }
                     state.sentCount += 1
                 }

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraDomain
 import AlondraShared
 import ComposableArchitecture
@@ -7,6 +8,7 @@ import Foundation
 public struct NewRequestFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public var text = ""
         public var attachments: [NewRequestAttachment] = []
         public var selection = NewWorkSelection()
@@ -33,12 +35,13 @@ public struct NewRequestFeature {
         public var visibleIssues: [IssueSummary] { issues.filter { $0.matches(issueQuery) } }
         public var pastedIssue: String? { IssueSummary.pasted(in: issueQuery, besides: issues) }
         public var submitEnabled: Bool {
-            canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
+            attachmentPicker.allReady && canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
                 && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
         }
     }
 
     public enum Action: Sendable {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case identityChanged
         case availabilityChanged(Bool)
@@ -69,8 +72,12 @@ public struct NewRequestFeature {
     private enum CancelID { case projects, options, issues, submit }
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
             case .appeared:
                 let epoch = state.presentationEpoch
                 state.catalogGeneration &+= 1
@@ -200,6 +207,7 @@ public struct NewRequestFeature {
                 case .confirmed:
                     state.text = ""
                     state.attachments = []
+                    state.attachmentPicker = AttachmentFeature.State()
                     state.successfulSubmissionCount += 1
                 case .failed(let message):
                     state.submissionError = message
@@ -222,6 +230,7 @@ public struct NewRequestFeature {
                 if rejection == nil {
                     state.text = ""
                     state.attachments = []
+                    state.attachmentPicker = AttachmentFeature.State()
                     state.successfulSubmissionCount += 1
                 }
                 return .none
@@ -229,6 +238,7 @@ public struct NewRequestFeature {
                 guard state.submissionUncertain else { return .none }
                 state.text = ""
                 state.attachments = []
+                state.attachmentPicker = AttachmentFeature.State()
                 state.submissionError = nil
                 state.uncertainCommandID = nil
                 state.submissionUncertain = false

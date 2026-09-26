@@ -18,11 +18,13 @@ public struct NodeFile: Equatable, Sendable, Identifiable {
     public let id: UUID
     public let name: String
     public let data: Data
+    public let storedID: String?
 
-    public init(id: UUID = UUID(), name: String, data: Data) {
+    public init(id: UUID = UUID(), name: String, data: Data, storedID: String? = nil) {
         self.id = id
         self.name = name
         self.data = data
+        self.storedID = storedID
     }
 }
 

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraFleetFeature
 import AlondraShared
 import AlondraWorkspaceFeature
@@ -62,6 +63,8 @@ private struct ServiceNodeView: View {
                         }
                     }
                 }
+                AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                    .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
                 Section("Message") {
                     TextField("Message this node", text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }), axis: .vertical)
                         .lineLimit(4...12)

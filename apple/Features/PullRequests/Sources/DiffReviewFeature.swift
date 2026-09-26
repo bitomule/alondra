@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -10,6 +11,7 @@ public enum PRDiffLoadError: Error, Equatable, Sendable {
 public struct DiffReviewFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public let prID: UInt64
         public var files: [DiffFile]?
         /// Exact raw diff text is the revision token; path:line alone cannot identify content.
@@ -42,7 +44,7 @@ public struct DiffReviewFeature {
         public init(prID: UInt64) { self.prID = prID }
 
         public var canReview: Bool {
-            isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
+            attachmentPicker.allReady && isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
                 && loadedHeadSHA != nil
                 && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
         }
@@ -55,6 +57,7 @@ public struct DiffReviewFeature {
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case retryTapped
         case disappeared
@@ -87,8 +90,12 @@ public struct DiffReviewFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.attachments = state.attachmentPicker.entries.map { PRReviewAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
             case .appeared, .retryTapped:
                 guard state.isOpen, !state.isLoading else { return .none }
                 state.isLoading = true
@@ -111,6 +118,7 @@ public struct DiffReviewFeature {
                 state.isLoading = false
                 return .cancel(id: state.loadID)
             case .identityChanged:
+                state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.loadGeneration &+= 1
                 state.files = nil
@@ -244,7 +252,10 @@ public struct DiffReviewFeature {
                     }
                     if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                     if state.note == state.submittedNote { state.note = "" }
-                    if state.attachments == state.submittedAttachments { state.attachments = [] }
+                    if state.attachments == state.submittedAttachments {
+                        state.attachments = []
+                        state.attachmentPicker = AttachmentFeature.State()
+                    }
                     state.successfulActionCount += 1
                     // An edit made while the request was in flight is a new draft. Keep the
                     // screen and let the user decide whether to send it separately.

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraContracts
 import AlondraDomain
 import AlondraNewWorkFeature
@@ -46,6 +47,8 @@ struct ServiceNewRequestView: View {
                     }
                 }
             }.disabled(store.isSubmitting || store.submissionUncertain)
+            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                .disabled(store.isSubmitting || store.submissionUncertain)
             Section {
                 Button(store.isSubmitting ? "Sending…" : "Create request") { store.send(.submitTapped) }
                     .disabled(!store.submitEnabled)

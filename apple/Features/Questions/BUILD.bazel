@@ -7,6 +7,8 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple:AlondraShared",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -17,6 +19,8 @@ swift_test(
     deps = [
         ":AlondraQuestionsFeature",
         "//apple:AlondraShared",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraWorkspaceFeature
 import AlondraQuestionsFeature
 import AlondraShared
@@ -113,7 +114,9 @@ struct ServiceQuestionView: View {
                 if !store.question.isTerminalMenu {
                     Button("Ask for more context") { store.send(.moreContextTapped) }
                 }
-            }.disabled(store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
+            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
         .navigationTitle(store.question.isAction ? "Action" : "Question")
@@ -161,7 +164,7 @@ struct ServiceDocumentView: View {
                     }
                     if let markRead { Button("Mark read", action: markRead) }
                 }
-            }.disabled(store.isLoading || store.loadError != nil || store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.allReady || store.isLoading || store.loadError != nil || store.isSubmitting || store.needsReconciliation || store.completed)
             if store.feedbackReadRetryAvailable {
                 Section {
                     Button(store.isRetryingFeedbackRead ? "Checking…" : "Retry marking report read") { store.send(.retryFeedbackRead) }
@@ -169,6 +172,8 @@ struct ServiceDocumentView: View {
                     Text("Your feedback has already been delivered. This only marks the report read.").font(.caption)
                 }
             }
+            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
         .navigationTitle("Document")

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraWorkspaceFeature
 import AlondraFleetFeature
 import AlondraNewWorkFeature
@@ -45,6 +46,9 @@ private final class MacServiceWindowContext {
             $0.pullRequestOperations = prs
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
                 observeFeedback: { await services.reportFeedbackRecoveryEvents() })
+            $0.attachmentUpload = AttachmentUploadClient(upload: { draft in
+                try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id)
+            })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
             $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
