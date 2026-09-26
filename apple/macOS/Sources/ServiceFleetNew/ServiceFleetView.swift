@@ -39,55 +39,7 @@ struct ServiceFleetView: View {
     }
 }
 
-struct ServiceNodeView: View {
-    let store: StoreOf<NodeDetailFeature>
-    var body: some View {
-        Form {
-            if let node = store.node {
-                Section {
-                    Text(node.displayName).font(.title2.bold())
-                    Text(node.summary)
-                    if let cwd = node.cwd { Text(cwd).font(.caption.monospaced()).textSelection(.enabled) }
-                }
-                Section("Tasks") {
-                    ForEach(store.tasks) { task in LabeledContent(task.title, value: task.state.label) }
-                }
-                Section("Activity") {
-                    if store.isLoadingThreads { ProgressView("Refreshing activity…") }
-                    if let error = store.threadsError { Text(error).foregroundStyle(.red) }
-                    ForEach(store.threads, id: \.self) { activity in
-                        VStack(alignment: .leading) {
-                            Text(activity.thread).font(.headline)
-                            if let task = activity.task { Text(task) }
-                            if let doing = activity.doing { Text(doing).font(.caption.monospaced()) }
-                        }
-                    }
-                }
-                AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                    .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
-                Section("Message") {
-                    TextField("Message this node", text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }), axis: .vertical)
-                        .lineLimit(4...12)
-                        .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
-                    Button(store.isSending ? "Sending…" : "Send") { store.send(.sendTapped) }.disabled(!store.canSend)
-                    ServiceNodeOutcome(outcome: store.sendOutcome)
-                }
-                Section {
-                    Button("Close node", role: .destructive) { store.send(.closeRequested) }
-                        .disabled(store.isStale || store.isClosing || store.isSending || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
-                    ServiceNodeOutcome(outcome: store.closeOutcome)
-                }
-            } else { ContentUnavailableView("This node has stopped", systemImage: "desktopcomputer") }
-        }
-        .navigationTitle("Node")
-        .confirmationDialog("Close this node?", isPresented: Binding(get: { store.showCloseConfirmation }, set: { if !$0 { store.send(.closeCancelled) } })) {
-            Button("Close node", role: .destructive) { store.send(.closeConfirmed) }
-        } message: { Text("The service checks whether it is safe to stop the node before closing it.") }
-        .task { await store.send(.appeared).finish() }
-        .onDisappear { store.send(.disappeared) }
-    }
-}
-private struct ServiceNodeOutcome: View {
+struct ServiceNodeOutcome: View {
     let outcome: NodeMutationOutcome?
     var body: some View {
         switch outcome {

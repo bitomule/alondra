@@ -184,7 +184,12 @@ private struct MacServiceDetail: View {
                 ServiceDocumentView(store: child, markRead: { store.send(.triage(.triage(.hide(id)))) })
             } else { MacServiceHome(store: store, presentation: presentation) }
         case .node:
-            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) { ServiceNodeView(store: child) }
+            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) {
+                ServiceNodeView(store: child,
+                    pending: store.triage.triage.queue.filter { $0.sessionId == child.sessionID },
+                    openInbox: { presentation.send(.select(.item($0))) },
+                    openTask: { presentation.send(.select(.task($0))) })
+            }
         case .task:
             if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail.presented) {
                 ServiceTaskDetailView(store: child, context: store.tasks.detailContext,
