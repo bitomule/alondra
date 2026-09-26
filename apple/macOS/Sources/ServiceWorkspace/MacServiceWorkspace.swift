@@ -53,12 +53,10 @@ struct MacServiceWorkspace<AccountContent: View>: View {
                 Button { store.send(.tasks(.board(.archiveTapped))) } label: { Label("Archive Completed", systemImage: "archivebox") }
                     .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving || store.tasks.board.archiveOutcome?.uncertainID != nil)
                     .help("Archive completed tasks")
-                Button { store.send(.settingsPresented(true)) } label: { Label("Settings", systemImage: "gearshape") }
-                    .keyboardShortcut(",", modifiers: .command)
             }
         }
         .sheet(isPresented: Binding(get: { presentation.newRequestPresented }, set: { presentation.send(.newRequestPresented($0)) })) {
-            ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)).frame(minWidth: 600, minHeight: 520)
+            ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
         }
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             accountContent.frame(minWidth: 600, minHeight: 520)
