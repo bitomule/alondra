@@ -106,7 +106,12 @@ private struct ServiceRootView<AccountContent: View>: View {
     var body: some View {
         TabView(selection: Binding(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
-                NavigationStack { ServiceTriageView(store: store.scope(state: \.triage, action: \.triage)) }
+                NavigationStack {
+                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage))
+                        .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                            Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
+                        } }
+                }
             }.badge(store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
                 ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) })
@@ -117,9 +122,15 @@ private struct ServiceRootView<AccountContent: View>: View {
             Tab("New", systemImage: "plus.bubble", value: ServiceRootFeature.State.Tab.newRequest) {
                 NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }
             }
-            Tab("Account", systemImage: "person.crop.circle", value: ServiceRootFeature.State.Tab.account) {
-                NavigationStack { accountContent }
-            }
+        }
+        .tabBarMinimizeBehavior(.onScrollDown)
+        .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
+            NavigationStack {
+                accountContent
+                    .toolbar { ToolbarItem(placement: .cancellationAction) {
+                        Button("Close", systemImage: "xmark") { store.send(.settingsPresented(false)) }
+                    } }
+            }.presentationDetents([.medium, .large])
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }

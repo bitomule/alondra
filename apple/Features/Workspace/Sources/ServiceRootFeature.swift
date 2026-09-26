@@ -12,6 +12,7 @@ public struct ServiceRootFeature {
         public init() {}
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
         public var tab = Tab.inbox
+        public var settingsPresented = false
         public var triage = ServiceTriageFeature.State()
         public var tasks = ServiceTasksFeature.State()
         public var fleet = ServiceFleetFeature.State()
@@ -25,6 +26,7 @@ public struct ServiceRootFeature {
         case commandResolved(CommandResolution)
         case feedbackRecovered([ReportFeedbackRecoveryEvent])
         case tabSelected(State.Tab)
+        case settingsPresented(Bool)
         case focusInbox(String)
         case triage(ServiceTriageFeature.Action)
         case tasks(ServiceTasksFeature.Action)
@@ -61,6 +63,7 @@ public struct ServiceRootFeature {
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tabSelected(let tab): state.tab = tab; return .none
+            case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
                 state.tab = .inbox
                 state.pendingInboxID = id
