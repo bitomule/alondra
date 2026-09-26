@@ -176,12 +176,15 @@ struct NewRequestFeatureTests {
         initial.text = "Use the proof"
         initial.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data)]
         initial.attachmentPicker.entries = [.init(draft: draft, status: .failed("Lost receipt"))]
+        let receipt = AsyncStream<String>.makeStream()
+        let confirmation = AsyncStream<Void>.makeStream()
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
             $0.attachmentUpload = AttachmentUploadClient(upload: { retry in
                 #expect(retry.id == id)
                 #expect(retry.data == draft.data)
-                return "stored-proof"
+                for await storedID in receipt.stream { return storedID }
+                throw CancellationError()
             })
             $0.newWorkOperations = operations(upload: { attachment in
                 #expect(attachment.id == id)
@@ -189,14 +192,17 @@ struct NewRequestFeatureTests {
                 return "stored-proof"
             }, create: { body in
                 await sent.record(body)
-                return .confirmed
+                for await _ in confirmation.stream { return .confirmed }
+                return .cancelled
             })
         }
         await store.send(.submitTapped) { $0.pendingSubmission = .awaitingReceipts }
-        await store.send(.submitTapped)
-        #expect(await sent.body == nil)
         await store.receive(\.attachmentPicker.prepareForSubmission) { $0.attachmentPicker.entries[0].status = .queued }
         await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        await store.send(.submitTapped)
+        #expect(await sent.body == nil)
+        receipt.continuation.yield("stored-proof")
+        receipt.continuation.finish()
         await store.receive(\.attachmentPicker.uploaded) {
             $0.attachmentPicker.entries[0].status = .uploaded("stored-proof")
             $0.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data, storedID: "stored-proof")]
@@ -204,6 +210,8 @@ struct NewRequestFeatureTests {
             $0.isSubmitting = true
         }
         await store.receive(\.attachmentPicker.uploadNext)
+        confirmation.continuation.yield(())
+        confirmation.continuation.finish()
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
             $0.text = ""
