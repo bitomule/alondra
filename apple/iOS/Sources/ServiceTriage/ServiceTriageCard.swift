@@ -48,10 +48,10 @@ struct ServiceTriageCard: View {
             .overlay { stampOverlay }
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
-            .alert("What do you need to decide?", isPresented: Binding(get: { store.askingContext }, set: { store.send(.contextPresented($0)) })) {
-                TextField("Optional", text: Binding(get: { store.contextNote }, set: { store.send(.contextChanged($0)) }))
+            .alert("What do you need to decide?", isPresented: Binding(get: { store.askingContext }, set: { _ = store.send(.contextPresented($0)) })) {
+                TextField("Optional", text: Binding(get: { store.contextNote }, set: { _ = store.send(.contextChanged($0)) }))
                 Button("Cancel", role: .cancel) {}
-                Button("Ask for Context") { store.send(.requestContext) }
+                Button("Ask for Context") { _ = store.send(.requestContext) }
             } message: {
                 Text("The node will explain and ask again.")
             }
@@ -451,7 +451,7 @@ struct ServiceTriageCard: View {
     private func nodeContext(_ context: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.spring(duration: 0.35)) { store.send(.toggleNodeContext) }
+                withAnimation(.spring(duration: 0.35)) { _ = store.send(.toggleNodeContext) }
             } label: {
                 HStack {
                     Label("What the node said last", systemImage: "text.quote")
@@ -558,7 +558,7 @@ struct ServiceTriageCard: View {
                 if let child = store.scope(state: \.pullRequest, action: \.pullRequest) {
                     ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card)
                 }
-                PRFooter(pr: pr) { store.send(.pullRequest(.pr(.setAsideTapped))) }
+                PRFooter(pr: pr) { _ = store.send(.pullRequest(.pr(.setAsideTapped))) }
             }
         }
     }
@@ -570,7 +570,7 @@ struct ServiceTriageCard: View {
                     Text(pickedOption.displayLabel)
                         .font(.caption.weight(.bold))
                     Button {
-                        withAnimation(.spring(duration: 0.3)) { store.send(.clearOption) }
+                        withAnimation(.spring(duration: 0.3)) { _ = store.send(.clearOption) }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
@@ -588,7 +588,7 @@ struct ServiceTriageCard: View {
                 if let attachmentStore {
                     ServiceAttachButton(store: attachmentStore).padding(.leading, 6).padding(.bottom, 4)
                 }
-                TextField(placeholder, text: Binding(get: { store.reply }, set: { store.send(.replyChanged($0)) }), axis: .vertical)
+                TextField(placeholder, text: Binding(get: { store.reply }, set: { _ = store.send(.replyChanged($0)) }), axis: .vertical)
                     .lineLimit(1...5)
                     .focused($replyFocused)
                     .padding(.trailing, 16)

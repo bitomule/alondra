@@ -20,7 +20,7 @@ struct ServiceTriageView: View {
             } else if store.triage.queue.isEmpty {
                 ServiceEmptyTriage(nodes: store.nodes).transition(.opacity.combined(with: .scale(scale: 0.96)))
             } else {
-                ServiceCardStack(store: store, zoom: zoom) { store.send(.open($0.id)) }
+                ServiceCardStack(store: store, zoom: zoom) { _ = store.send(.open($0.id)) }
                     .padding(.horizontal, 14).padding(.bottom, 8).transition(.opacity)
             }
         }
@@ -34,14 +34,14 @@ struct ServiceTriageView: View {
                     .accessibilityLabel("Mac Status")
             }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil }, set: { if !$0 { store.send(.triage(.dismissNotice)) } })) {
-            Button("OK") { store.send(.triage(.dismissNotice)) }
+        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil }, set: { if !$0 { _ = store.send(.triage(.dismissNotice)) } })) {
+            Button("OK") { _ = store.send(.triage(.dismissNotice)) }
         } message: { Text(store.triage.notice ?? "") }
         .navigationDestination(item: $store.scope(state: \.question, action: \.question)) { child in
             ServiceQuestionView(store: child).navigationTransition(.zoom(sourceID: "q\(child.question.id)", in: zoom))
         }
         .navigationDestination(item: $store.scope(state: \.document, action: \.document)) { child in
-            ServiceDocumentView(store: child, markRead: { store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
+            ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
                 .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { keyboardVisible = true } }
@@ -49,7 +49,7 @@ struct ServiceTriageView: View {
         .sensoryFeedback(.success, trigger: store.triage.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: store.triage.skippedCount)
         .task { await store.send(.triage(.appeared)).finish() }
-        .onDisappear { store.send(.triage(.disappeared)) }
+        .onDisappear { _ = store.send(.triage(.disappeared)) }
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -130,7 +130,7 @@ private struct ServiceCardStack: View {
         if let child = store.scope(state: \.cards, action: \.cards).first(where: { $0.id == item.id }) {
             ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.task(for: item),
                 isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
-                onHide: { store.send(.triage(.hide(item.id))) },
+                onHide: { _ = store.send(.triage(.hide(item.id))) },
                 questions: { if case .pullRequest(let pr) = item { return store.triage.questionsByPullRequest[pr.id] ?? [] }; return [] }(),
                 reports: { if case .pullRequest(let pr) = item { return store.triage.reportsByPullRequest[pr.id] ?? [] }; return [] }())
         }
@@ -170,7 +170,7 @@ private struct ServiceCardStack: View {
         } completion: {
             var instant = Transaction(); instant.disablesAnimations = true
             withTransaction(instant) { drag = 0 }
-            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { store.send(.triage(.skipIfCurrent(item.id, identity))) }
+            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { _ = store.send(.triage(.skipIfCurrent(item.id, identity))) }
         }
     }
 
@@ -395,12 +395,12 @@ struct ServiceQuestionView: View {
                     }
                 }
                 if !store.question.isTerminalMenu {
-                    TextField("Write your answer", text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                    TextField("Write your answer", text: Binding(get: { store.draft.text }, set: { _ = store.send(.textChanged($0)) }), axis: .vertical)
                         .lineLimit(4...12)
                 }
-                Button(store.isSubmitting ? "Sending…" : "Send answer") { store.send(.answerTapped) }
+                Button(store.isSubmitting ? "Sending…" : "Send answer") { _ = store.send(.answerTapped) }
                 if !store.question.isTerminalMenu {
-                    Button("Ask for more context") { store.send(.moreContextTapped) }
+                    Button("Ask for more context") { _ = store.send(.moreContextTapped) }
                 }
             }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
             AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))

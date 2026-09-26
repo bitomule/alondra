@@ -25,6 +25,32 @@ struct ServiceDocumentView: View {
     }
 
     var body: some View {
+        documentContent
+        .scrollDismissesKeyboard(.interactively)
+        .background(DawnBackground(glow: kind.tint))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .safeAreaBar(edge: .bottom) { actionBar }
+        .sheet(item: Binding(get: { composing }, set: { _ = store.send(.composeComment($0?.draftKey)) })) { block in
+            ServiceCommentSheet(block: block, initial: comments[block.draftKey] ?? "", text: Binding(get: { store.composingText }, set: { _ = store.send(.composingTextChanged($0)) })) { text in
+                withAnimation(.spring(duration: 0.4, bounce: 0.25)) {
+                    _ = store.send(.commentChanged(anchor: block.draftKey, quote: block.plainText, text: text))
+                }
+            }
+        }
+        .alert("Check Alondra", isPresented: Binding(get: { store.notice != nil || store.conflict != nil }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
+            if store.feedbackReadRetryAvailable { Button("Retry marking report read") { _ = store.send(.retryFeedbackRead) } }
+            Button("OK") { _ = store.send(.dismissNotice) }
+        } message: { Text(store.conflict ?? store.notice ?? "") }
+        .sensoryFeedback(.selection, trigger: composing?.id)
+        .sensoryFeedback(.success, trigger: comments.count) { old, new in new > old }
+        .task { await store.send(.appeared).finish() }
+        .onDisappear { _ = store.send(.disappeared) }
+        .onChange(of: store.generalFocusRequest) { _, _ in generalFocused = true }
+        .onChange(of: store.completed) { _, completed in if completed { dismiss() } }
+    }
+
+    private var documentContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -44,28 +70,6 @@ struct ServiceDocumentView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
-        .scrollDismissesKeyboard(.interactively)
-        .background(DawnBackground(glow: kind.tint))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
-        .safeAreaBar(edge: .bottom) { actionBar }
-        .sheet(item: Binding(get: { composing }, set: { store.send(.composeComment($0?.draftKey)) })) { block in
-            ServiceCommentSheet(block: block, initial: comments[block.draftKey] ?? "", text: Binding(get: { store.composingText }, set: { store.send(.composingTextChanged($0)) })) { text in
-                withAnimation(.spring(duration: 0.4, bounce: 0.25)) {
-                    store.send(.commentChanged(anchor: block.draftKey, quote: block.plainText, text: text))
-                }
-            }
-        }
-        .alert("Check Alondra", isPresented: Binding(get: { store.notice != nil || store.conflict != nil }, set: { if !$0 { store.send(.dismissNotice) } })) {
-            if store.feedbackReadRetryAvailable { Button("Retry marking report read") { store.send(.retryFeedbackRead) } }
-            Button("OK") { store.send(.dismissNotice) }
-        } message: { Text(store.conflict ?? store.notice ?? "") }
-        .sensoryFeedback(.selection, trigger: composing?.id)
-        .sensoryFeedback(.success, trigger: comments.count) { old, new in new > old }
-        .task { await store.send(.appeared).finish() }
-        .onDisappear { store.send(.disappeared) }
-        .onChange(of: store.generalFocusRequest) { _, _ in generalFocused = true }
-        .onChange(of: store.completed) { _, completed in if completed { dismiss() } }
     }
 
     private var header: some View {
@@ -101,7 +105,7 @@ struct ServiceDocumentView: View {
             } description: {
                 Text(loadError)
             } actions: {
-                Button("Try Again") { store.send(.appeared) }
+                Button("Try Again") { _ = store.send(.appeared) }
                     .buttonStyle(.glass)
             }
             .frame(maxWidth: .infinity)
@@ -125,7 +129,7 @@ struct ServiceDocumentView: View {
                             store.send(.composeComment(block.draftKey))
                         }
                     case .table(let rows):
-                        ServiceTableRows(rows: rows, comments: comments, tint: kind.tint) { store.send(.composeComment($0.draftKey)) }
+                        ServiceTableRows(rows: rows, comments: comments, tint: kind.tint) { _ = store.send(.composeComment($0.draftKey)) }
                     }
                 }
             }
@@ -159,13 +163,13 @@ struct ServiceDocumentView: View {
                     Text(comments[block.draftKey] ?? "")
                         .font(.subheadline)
                 }
-                .onTapGesture { store.send(.composeComment(block.draftKey)) }
+                .onTapGesture { _ = store.send(.composeComment(block.draftKey)) }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
-            TextField("General comment (optional)", text: Binding(get: { store.draft.general }, set: { store.send(.generalChanged($0)) }), axis: .vertical)
+            TextField("General comment (optional)", text: Binding(get: { store.draft.general }, set: { _ = store.send(.generalChanged($0)) }), axis: .vertical)
                 .lineLimit(2...8)
                 .focused($generalFocused)
                 .padding(14)
@@ -219,7 +223,7 @@ struct ServiceDocumentView: View {
                         .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
                         .tint(Palette.dawn)
                         .disabled(!hasFeedback || sending)
-                    case .report(let report):
+                    case .report:
                         Button {
                             store.send(.submitFeedback(author: "David"))
                         } label: {
