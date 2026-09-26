@@ -56,6 +56,8 @@ fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
+    alondra_core::home_lock::ensure_ready(&config.home)?;
     if let Some(device) = diagnostic {
         let auth = Arc::new(auth::Auth::open(&config.home)?);
         let service = service::Service::open(&config.home, config.port, auth)?

@@ -32,6 +32,8 @@ struct ServiceConfig {
     owner_sub: String,
     signing_key_path: String,
     agreement_key_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal_path: Option<String>,
     devices: Vec<ServiceDevice>,
 }
 #[derive(Serialize, Deserialize)]
@@ -551,6 +553,8 @@ fn confirm_and_persist_candidate(
 }
 
 pub fn run(home: &Path) -> Result<()> {
+    let _home_lock = alondra_core::home_lock::HomeLock::shared(home)?;
+    alondra_core::home_lock::ensure_ready(home)?;
     let path = home.join("service.toml");
     let mut config: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
     let origin = url::Url::parse(&config.relay_url)?;
@@ -565,7 +569,7 @@ pub fn run(home: &Path) -> Result<()> {
         bail!("invalid service relay origin");
     }
     let public: PublicMac =
-        serde_json::from_slice(&fs::read(home.join("service-keys/public.json"))?)?;
+        serde_json::from_slice(&fs::read(alondra_core::home_lock::public_identity_path(home)?)?)?;
     if config.mac_id != public.mac_id {
         bail!("service Mac ID differs from its public identity");
     }
@@ -776,6 +780,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let config = ServiceConfig {
+            journal_path: None,
             relay_url: "https://example.test/".into(),
             mac_id: "mac-a".into(),
             owner_sub: "owner".into(),

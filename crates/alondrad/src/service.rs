@@ -94,6 +94,8 @@ struct Config {
     owner_sub: String,
     signing_key_path: PathBuf,
     agreement_key_path: PathBuf,
+    #[serde(default)]
+    journal_path: Option<PathBuf>,
     devices: Vec<DeviceConfig>,
 }
 
@@ -304,7 +306,16 @@ impl Service {
             // PR merge and GitHub issue refresh can take close to 90 seconds locally.
             .timeout(Duration::from_secs(95))
             .build()?;
-        let journal = Journal::open(home.join("service-receipts.sqlite"))?;
+        let journal_path = match config.journal_path {
+            Some(path) => {
+                anyhow::ensure!(!path.is_absolute() && path.components().all(|c| matches!(c, std::path::Component::Normal(_))), "service journal must be relative to HOME");
+                let joined = home.join(&path);
+                anyhow::ensure!(joined.parent().context("journal parent")?.canonicalize()?.starts_with(home.canonicalize()?), "service journal escapes HOME");
+                joined
+            }
+            None => home.join("service-receipts.sqlite"),
+        };
+        let journal = Journal::open(journal_path)?;
         Ok(Some(Self {
             relay,
             client,

@@ -149,7 +149,7 @@ impl Auth {
         #[derive(Deserialize)]
         struct PublicMac { mac_id: String, signing_key: String }
         let home = self.path.parent().ok_or("missing Alondra home")?;
-        let public: PublicMac = serde_json::from_slice(&std::fs::read(home.join("service-keys/public.json"))
+        let public: PublicMac = serde_json::from_slice(&std::fs::read(alondra_core::home_lock::public_identity_path(home).map_err(|_| "service identity path invalid")?)
             .map_err(|_| "service public identity unavailable")?).map_err(|_| "service public identity invalid")?;
         let wire = URL_SAFE_NO_PAD.decode(&public.signing_key).map_err(|_| "service public key invalid")?;
         let key = VerifyingKey::from_sec1_bytes(&wire).map_err(|_| "service public key invalid")?;
