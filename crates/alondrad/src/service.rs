@@ -472,8 +472,17 @@ impl Service {
         let response = builder.send().await?;
         let status = response.status().as_u16();
         let bytes = bounded_response(response).await?;
-        let body = serde_json::from_slice::<Value>(&bytes)
-            .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}));
+        let file_success = request.method == "GET"
+            && request.path.split('?').next() == Some("/v1/file")
+            && (200..300).contains(&status);
+        // File contents are text even when they happen to be valid JSON. Error
+        // responses and JSON API endpoints retain their structured bodies.
+        let body = if file_success {
+            json!({"text":String::from_utf8_lossy(&bytes)})
+        } else {
+            serde_json::from_slice::<Value>(&bytes)
+                .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}))
+        };
         Ok(json!({"status":status,"body":body}))
     }
 
@@ -1010,6 +1019,54 @@ agreement_key = "{}"
         ] {
             assert!(!accepts(method, path, body), "{method} {path}");
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_preserves_json_file_text_without_wrapping_json_endpoints_or_errors() {
+        const JSON_FILE: &str = "{\n  \"text\": \"contenido á\", \"count\": 3\n}\n";
+        const MARKDOWN_FILE: &str = "# Documento\n\nTexto **literal**: á.\n";
+        let router = Router::new()
+            .route("/v1/file", get(|axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>| async move {
+                match query.get("path").map(String::as_str) {
+                    Some("json.md") => (StatusCode::OK, JSON_FILE),
+                    Some("markdown.md") => (StatusCode::OK, MARKDOWN_FILE),
+                    Some("scalar.md") => (StatusCode::OK, "null"),
+                    _ => (StatusCode::NOT_FOUND, r#"{"error":"file_not_found"}"#),
+                }
+            }))
+            .route("/v1/prs/7/diff-snapshot", get(|| async {
+                axum::Json(json!({"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(axum::serve(listener, router).into_future());
+        let home = std::env::temp_dir().join(format!("alondra-file-contract-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&home).unwrap();
+        let service = Service {
+            relay: Url::parse("http://127.0.0.1:1/").unwrap(), client: Client::new(),
+            mac_id: "mac-test".into(), owner_sub: "owner".into(),
+            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
+            auth: Arc::new(Auth::open(&home).unwrap()),
+            journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
+        };
+        for (file, text) in [("json.md", JSON_FILE), ("markdown.md", MARKDOWN_FILE), ("scalar.md", "null")] {
+            let response = service.dispatch("client-test", &LocalRequest {
+                method: "GET".into(), path: format!("/v1/file?path={file}"), body: None,
+            }).await.unwrap();
+            assert_eq!(response, json!({"status":200,"body":{"text":text}}), "{file}");
+        }
+        for (path, expected) in [
+            ("/v1/file?path=missing.md", json!({"status":404,"body":{"error":"file_not_found"}})),
+            ("/v1/prs/7/diff-snapshot", json!({"status":200,"body":{"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}})),
+        ] {
+            assert_eq!(service.dispatch("client-test", &LocalRequest {
+                method: "GET".into(), path: path.into(), body: None,
+            }).await.unwrap(), expected);
+        }
+        task.abort();
+        drop(service);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
