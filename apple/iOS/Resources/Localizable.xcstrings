@@ -1,6 +1,46 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%lld feedback messages were not sent; review your drafts": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mensajes de comentarios no enviados: %lld; revisa tus borradores"
+          }
+        }
+      }
+    },
+    "%lld operations are still unconfirmed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operaciones que siguen sin confirmar: %lld"
+          }
+        }
+      }
+    },
+    "%lld operations unconfirmed; checking their status": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operaciones sin confirmar: %lld; comprobando su estado"
+          }
+        }
+      }
+    },
+    "Feedback delivered; %lld reports could not be marked read": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comentarios entregados; informes que no se pudieron marcar como leídos: %lld"
+          }
+        }
+      }
+    },
     "%@ On": {
       "localizations": {
         "es": {
