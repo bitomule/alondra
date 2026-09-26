@@ -31,6 +31,9 @@ pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Acco
     sqlx::raw_sql(include_str!("../../migrations/0001_management.sql"))
         .execute(&pool)
         .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0003_device_revocations.sql"))
+        .execute(&pool)
+        .await?;
     admin.close().await;
     let management = Management {
         pool,
@@ -463,6 +466,64 @@ async fn management_existing_account_email_requires_deletion_before_new_invitati
     }
     assert!(
         db.create_invitation(admin.id, "existing@example.com", 300)
+            .await
+            .is_ok()
+    );
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn management_self_deletion_is_explicit_nonadmin_and_last_admin_safe() -> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    let key = AdminRequest::new(
+        "self-delete-admin-0001",
+        "self_delete",
+        &serde_json::json!({"confirm":true}),
+        false,
+    )?;
+    assert_eq!(
+        db.delete_self_request(admin.id, &key)
+            .await
+            .err()
+            .unwrap()
+            .downcast_ref::<DomainError>(),
+        Some(&DomainError::Forbidden)
+    );
+    assert!(
+        db.active_identity(&db.issuer, "stable-admin-sub")
+            .await
+            .is_ok()
+    );
+    let invitation = db
+        .create_invitation(admin.id, "self@example.com", 300)
+        .await?;
+    let account = db
+        .reserve_acceptance(&invitation.token, "Self")
+        .await?
+        .complete("self-sub")
+        .await?;
+    let key = AdminRequest::new(
+        "self-delete-user-00001",
+        "self_delete",
+        &serde_json::json!({"confirm":true}),
+        false,
+    )?;
+    let deleted = db.delete_self_request(account.id, &key).await?;
+    assert_eq!(deleted.status, "deleting");
+    assert!(db.active_identity(&db.issuer, "self-sub").await.is_err());
+    assert!(
+        db.delete_self_request(account.id, &key).await.is_err(),
+        "inactive account cannot acquire new authority on replay"
+    );
+    let jobs: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM management_outbox WHERE account_id=$1")
+            .bind(account.id)
+            .fetch_one(&db.pool)
+            .await?;
+    assert_eq!(jobs, 3);
+    assert!(
+        db.active_identity(&db.issuer, "stable-admin-sub")
             .await
             .is_ok()
     );

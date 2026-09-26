@@ -300,6 +300,7 @@ async fn enroll(
     }
     let device: PhoneDevice = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_device"))?;
+    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&device.device_id)).await.map_err(authentication_error)?;
     server
         .auth
         .enroll(&mac, device)
@@ -424,6 +425,7 @@ async fn send_push(
             "apns_payload_too_large",
         ));
     }
+    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&request.device_id)).await.map_err(authentication_error)?;
     apns.send(&registration, e)
         .await
         .map_err(|_| error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"))?;
@@ -590,7 +592,7 @@ async fn changes(
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        server.auth.require_active_owner(&who.owner_sub).await.map_err(authentication_error)?;
+        server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
         let (revision, events) =
             server
                 .queue
@@ -612,7 +614,7 @@ async fn changes(
                 .into_response());
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            server.auth.require_active_owner(&who.owner_sub).await.map_err(authentication_error)?;
+            server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
             drop(permit);
             return Ok((
                 StatusCode::OK,
@@ -652,7 +654,7 @@ async fn work(
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        server.auth.require_active_owner(&who.owner_sub).await.map_err(authentication_error)?;
+        server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
         if let Some(item) = server.queue.next_work(&who.device_id, now_ms()) {
             drop(permit);
             return Ok((
@@ -666,7 +668,7 @@ async fn work(
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            server.auth.require_active_owner(&who.owner_sub).await.map_err(authentication_error)?;
+            server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
             drop(permit);
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
@@ -741,6 +743,7 @@ async fn respond(
             now_ms(),
         )
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
+    server.auth.require_live_route(&who.owner_sub,&who.device_id,Some(&phone_id)).await.map_err(authentication_error)?;
     let status = server
         .queue
         .respond(&who.device_id, &phone_id, &id, v, now_ms())
@@ -946,6 +949,58 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    #[ignore="requires disposable local PostgreSQL"]
+    async fn management_http_own_device_revocation_isolated_immediate_and_reconciled()->anyhow::Result<()> {
+        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        for (email,subject) in [("first@example.com","owner"),("second@example.com","other")] {
+            let invite=db.create_invitation(admin.id,email,300).await?;
+            db.reserve_acceptance(&invite.token,"Owner").await?.complete(subject).await?;
+        }
+        let mac_key=SigningKey::from_slice(&[21u8;32]).unwrap();let phone_key=SigningKey::from_slice(&[22u8;32]).unwrap();
+        let (url,server,join)=test_server_with_management(&mac_key,None,Some(db.clone())).await;
+        server.auth.enroll_mac(auth::MacDevice{mac_id:"mac-other".into(),owner_sub:"other".into(),signing_key:key_bytes(&mac_key),agreement_key:key_bytes(&phone_key)})?;
+        for (mac,owner,id) in [("mac-1","owner","client-first"),("mac-other","other","client-other")] {
+            server.auth.enroll(&auth::Identity{device_id:mac.into(),owner_sub:owner.into()},PhoneDevice{device_id:id.into(),owner_sub:owner.into(),signing_key:key_bytes(&phone_key)})?;
+        }
+        let client=reqwest::Client::new();
+        let auth=jwt("owner",now_ms());
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"].as_array().unwrap().len(),1);assert_eq!(listing["macs"][0]["mac_id"],"mac-1");
+        assert_eq!(listing["macs"][0]["clients"][0]["device_id"],"client-first");
+        assert!(!listing.to_string().contains("signing_key"));assert!(!listing.to_string().contains("client-other"));
+        let denied=client.delete(format!("{url}/v1/account/devices/clients/client-other")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-foreign-0001").send().await?;
+        assert_eq!(denied.status(),StatusCode::NOT_FOUND);
+        let path="/v1/changes?since=0&wait_s=25";
+        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","GET",path,&[],181).send();
+        let pending=tokio::spawn(pending);
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {while server.change_waiters.available_permits()==64 {tokio::task::yield_now().await;}}).await?;
+        let response=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???.status(),StatusCode::FORBIDDEN);
+        assert!(server.auth.phone_key("client-first").is_ok(),"SQL tombstone must deny before registry worker runs");
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"][0]["clients"][0]["status"],"revoked");assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"pending");
+        let body=serde_json::to_vec(&json!({"device_id":"client-first","owner_sub":"owner","signing_key":key_bytes(&phone_key)}))?;
+        let response=sign(&server.auth.server_epoch(),client.post(format!("{url}/v1/devices")).body(body.clone()),&mac_key,"mac-1","POST","/v1/devices",&body,182).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"a Mac signature cannot resurrect a PG-revoked binding");
+        let repeated=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
+        assert_eq!(repeated.status(),StatusCode::CONFLICT);
+        assert!(management::worker::step(&server).await?);
+        assert!(server.auth.phone_key("client-first").is_err());assert!(server.auth.phone_key("client-other").is_ok());
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"completed");
+        let response=client.delete(format!("{url}/v1/account/devices/macs/mac-1")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-mac-00001").send().await?;
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&mac_key,"mac-1","GET","/v1/work?wait_s=0",&[],183).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        assert!(management::worker::step(&server).await?);assert!(!server.auth.is_mac_registered("mac-1"));assert!(server.auth.is_mac_registered("mac-other"));
+        let response=client.delete(format!("{url}/v1/account")).bearer_auth(&auth).header("Idempotency-Key","self-delete-confirm-0001").json(&json!({"confirm":false})).send().await?;
+        assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(db.active_identity("https://id.example/realms/alondra","owner").await.is_ok());
+        join.abort();management::tests::cleanup(db,schema).await
     }
 
     #[tokio::test]

@@ -16,7 +16,13 @@ use std::time::{Duration, Instant};
 
 pub fn routes() -> Router<Arc<Server>> {
     Router::new()
-        .route("/v1/account", get(account))
+        .route("/v1/account", get(account).delete(delete_self))
+        .route("/v1/account/devices", get(account_devices))
+        .route("/v1/account/devices/macs/{id}", delete(revoke_own_mac))
+        .route(
+            "/v1/account/devices/clients/{id}",
+            delete(revoke_own_client),
+        )
         .route("/v1/admin/accounts", get(accounts))
         .route("/v1/admin/accounts/{id}/disable", post(disable))
         .route("/v1/admin/accounts/{id}", delete(remove_account))
@@ -82,6 +88,183 @@ async fn actor(server: &Server, headers: &HeaderMap) -> std::result::Result<Acco
 async fn account(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiResult {
     Ok(Json(json!({"account":actor(&server,&headers).await?})).into_response())
 }
+#[derive(serde::Serialize)]
+struct ClientMetadata {
+    device_id: String,
+    label: Option<String>,
+    status: &'static str,
+    reconciliation: Option<&'static str>,
+}
+#[derive(serde::Serialize)]
+struct MacMetadata {
+    mac_id: String,
+    label: Option<String>,
+    status: &'static str,
+    reconciliation: Option<&'static str>,
+    clients: Vec<ClientMetadata>,
+}
+async fn owned_metadata(
+    server: &Server,
+    actor: &Account,
+    headers: &HeaderMap,
+) -> std::result::Result<Vec<MacMetadata>, Response> {
+    let owner = server
+        .auth
+        .account_owner(headers, now_ms())
+        .await
+        .map_err(|e| crate::authentication_error(e).into_response())?;
+    let revoked = db(server)?
+        .revoked_devices(actor.id)
+        .await
+        .map_err(failure)?;
+    let mut rows = server
+        .auth
+        .account_device_metadata(&owner)
+        .map_err(failure)?
+        .into_iter()
+        .map(|(mac_id, clients)| MacMetadata {
+            mac_id,
+            label: None,
+            status: "active",
+            reconciliation: None,
+            clients: clients
+                .into_iter()
+                .map(|device_id| ClientMetadata {
+                    device_id,
+                    label: None,
+                    status: "active",
+                    reconciliation: None,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    for r in revoked {
+        let index = if let Some(i) = rows.iter().position(|m| m.mac_id == r.mac_id) {
+            i
+        } else {
+            rows.push(MacMetadata {
+                mac_id: r.mac_id.clone(),
+                label: None,
+                status: "revoked",
+                reconciliation: None,
+                clients: Vec::new(),
+            });
+            rows.len() - 1
+        };
+        let mac = &mut rows[index];
+        let reconciliation = Some(if r.state == "completed" {
+            "completed"
+        } else {
+            "pending"
+        });
+        if r.kind == "mac" {
+            mac.status = "revoked";
+            mac.reconciliation = reconciliation;
+        } else if let Some(client) = mac.clients.iter_mut().find(|c| c.device_id == r.device_id) {
+            client.status = "revoked";
+            client.reconciliation = reconciliation;
+        } else {
+            mac.clients.push(ClientMetadata {
+                device_id: r.device_id,
+                label: None,
+                status: "revoked",
+                reconciliation,
+            });
+        }
+    }
+    for mac in &mut rows {
+        if mac.status == "revoked" {
+            for client in &mut mac.clients {
+                client.status = "revoked";
+                client.reconciliation = mac.reconciliation;
+            }
+        }
+        mac.clients.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    }
+    rows.sort_by(|a, b| a.mac_id.cmp(&b.mac_id));
+    Ok(rows)
+}
+async fn account_devices(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiResult {
+    let actor = actor(&server, &headers).await?;
+    Ok(Json(json!({"macs":owned_metadata(&server,&actor,&headers).await?})).into_response())
+}
+async fn revoke_owned(
+    server: Arc<Server>,
+    headers: HeaderMap,
+    id: String,
+    kind: &str,
+) -> ApiResult {
+    let actor = actor(&server, &headers).await?;
+    let metadata = owned_metadata(&server, &actor, &headers).await?;
+    let mac = metadata
+        .iter()
+        .find(|m| {
+            if kind == "mac" {
+                m.mac_id == id
+            } else {
+                m.clients.iter().any(|c| c.device_id == id)
+            }
+        })
+        .ok_or_else(|| failure(DomainError::NotFound.into()))?;
+    let key = request(
+        &headers,
+        "revoke_device",
+        json!({"kind":kind,"id":id}),
+        false,
+    )?;
+    db(&server)?
+        .revoke_device_request(actor.id, kind, &id, &mac.mac_id, &key)
+        .await
+        .map_err(failure)?;
+    server.queue.changed.notify_waiters();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"status":"revoked","reconciliation":"pending"})),
+    )
+        .into_response())
+}
+async fn revoke_own_mac(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    revoke_owned(server, headers, id, "mac").await
+}
+async fn revoke_own_client(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    revoke_owned(server, headers, id, "client").await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteSelfBody {
+    confirm: bool,
+}
+async fn delete_self(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Json(body): Json<DeleteSelfBody>,
+) -> ApiResult {
+    if !body.confirm {
+        return Err(failure(DomainError::InvalidInput.into()));
+    }
+    let actor = actor(&server, &headers).await?;
+    let key = request(&headers, "self_delete", json!({"confirm":true}), false)?;
+    let account = db(&server)?
+        .delete_self_request(actor.id, &key)
+        .await
+        .map_err(failure)?;
+    server.queue.changed.notify_waiters();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"account":account,"reconciliation":"pending"})),
+    )
+        .into_response())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pagination {

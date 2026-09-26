@@ -1,5 +1,6 @@
 //! Private product access. Identity and administration never grant content keys.
 //! External side effects are reconciled separately from PostgreSQL transactions.
+pub mod devices;
 pub mod http;
 pub mod keycloak;
 pub mod worker;
@@ -334,14 +335,21 @@ impl Management {
         Account::from_row(&row)
     }
     async fn admin_tx(&self, actor: Uuid) -> Result<Transaction<'_, Postgres>> {
+        self.actor_tx(actor, true).await
+    }
+    async fn actor_tx(
+        &self,
+        actor: Uuid,
+        require_admin: bool,
+    ) -> Result<Transaction<'_, Postgres>> {
         let mut tx = self.pool.begin().await?;
         // Serializes administrator lifecycle checks, including the last-admin invariant.
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(ADMIN_LOCK)
             .execute(&mut *tx)
             .await?;
-        let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_accounts WHERE id=$1 AND status='active' AND is_admin)")
-            .bind(actor).fetch_one(&mut *tx).await?;
+        let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_accounts WHERE id=$1 AND status='active' AND (NOT $2 OR is_admin))")
+            .bind(actor).bind(require_admin).fetch_one(&mut *tx).await?;
         ensure!(permitted, DomainError::Forbidden);
         Ok(tx)
     }
@@ -481,11 +489,31 @@ impl Management {
         delete: bool,
         request: Option<&AdminRequest>,
     ) -> Result<Account> {
-        let mut tx = self.admin_tx(actor).await?;
+        self.change_account_access(actor, id, delete, false, request)
+            .await
+    }
+    /// Called only after an explicitly confirmed self-service deletion request.
+    pub async fn delete_self_request(
+        &self,
+        actor: Uuid,
+        request: &AdminRequest,
+    ) -> Result<Account> {
+        self.change_account_access(actor, actor, true, true, Some(request))
+            .await
+    }
+    async fn change_account_access(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        delete: bool,
+        self_delete: bool,
+        request: Option<&AdminRequest>,
+    ) -> Result<Account> {
+        let mut tx = self.actor_tx(actor, !self_delete).await?;
         if let Some(request) = request {
             request.reserve(&mut tx, actor).await?;
         }
-        ensure!(actor != id, DomainError::Forbidden);
+        ensure!(actor != id || self_delete && delete, DomainError::Forbidden);
         let row=sqlx::query("SELECT id,status,is_admin,display_name FROM management_accounts WHERE id=$1 FOR UPDATE")
             .bind(id).fetch_optional(&mut *tx).await?.ok_or(DomainError::NotFound)?;
         let mut account = Account::from_row(&row)?;
