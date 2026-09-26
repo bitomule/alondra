@@ -1,4 +1,10 @@
-# Integration handoff for C
+# APIClient migration and consolidation
+
+> Historical adapter notes below describe an intermediate migration seam, not the
+> final architecture. The active app roots use the service facade. Removal remains
+> gated on strict UI parity and replacement of every reachable legacy consumer.
+
+## Historical adapter handoff
 
 `//apple/APIClient:AlondraAPIClient` and its wire tests build independently. The old `AlondraShared.AlondraClient` is still the public app adapter. C owns `apple/BUILD.bazel` and can add `//apple/APIClient:AlondraAPIClient` to Shared dependencies without changing this package.
 
@@ -33,3 +39,37 @@ service initializer cannot create a direct URLRequest or upload via the local da
 The current Data RelaySession still seals envelopes. Move that wire responsibility behind
 APIClient's internal RelayTransport when consolidating RelayClient; Data must retain durable
 operation ordering, outbox persistence, and reconciliation. APIClient must never import Data.
+
+
+## Remaining executable consolidation sequence
+
+Audit of the integrated service roots found three HTTP implementations: the product
+API client, RelayClient, and ServicePairing/PairingTransport. A module rename alone
+does not meet the single-client requirement.
+
+1. Move the relay wire DTOs and transport contracts (`RelayReceipt` and
+   `RelayRequestTransport`) into APIClient. Keep existing encoded representations.
+   Move relay HTTP behind an internal implementation in APIClient, using its common
+   HTTP transport with redirects rejected. Replace public `AlondraRelayClient`
+   construction with narrow infrastructure capabilities from the same module.
+2. Move request encoding, semantic binding, sealing, response opening and verification
+   out of Data/RelaySession into APIClient `Service/Wire` and `Service/Crypto`.
+   Data retains operation identity reservations, persistence before POST, locks,
+   status reconciliation, read/mutation retention and cancellation ownership.
+3. Route pairing HTTP/bootstrap/challenge through APIClient. Pairing keeps approval,
+   attempts, Keychain and polling ownership. Update notification decoding imports.
+   APIClient must not import Data, RelayOutbox, app stores or UI frameworks.
+4. Update Bazel dependencies and tests for RelaySession, RelayOutbox, ServicePairing
+   and Notifications; remove the separate RelayClient target. Preserve crypto
+   vectors, lost-POST/relaunch/status-only integration tests, journal compatibility,
+   identity validation and redirect/bearer protections. Build both apps and extension.
+5. After UI parity, remove Shared.AlondraClient, direct-daemon API initialization,
+   HTTP signing and identity-inference conveniences. First replace reachable
+   AttachedQuestion consumers and extract reused presentation components from mixed
+   legacy source files. Do not delete complete files merely because a legacy view
+   shares the file with a component still used by the service UI.
+
+Steps 1–4 form one reviewed transport consolidation branch. Step 5 is a dependent
+cleanup branch after the visual gate. No automatic mutation retries may be introduced.
+The final evidence must show no AlondraRelayClient module or direct-daemon constructor,
+real restart recovery with the original operation identity, and unchanged rendered UI.
