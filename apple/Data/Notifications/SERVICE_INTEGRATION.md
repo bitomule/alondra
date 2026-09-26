@@ -53,3 +53,11 @@ Cold notification responses coalesce approved-session restoration before decodin
 Active scenes claim each route once; each scene keeps its own TCA Store.
 Provisioning errors are visible; incomplete Keychain configuration is not silently
 accepted. Signing/provisioning and actual APNs delivery remain release gates.
+
+Versioned push preferences: PushPreferencesLedger fsyncs the full binding/quiet
+snapshot and a monotonic per-pairing revision before any registration request.
+Recreating the app or retrying unchanged settings retains that revision. Changing
+or reverting settings advances it; the executor rejects delayed older writes.
+An authenticated stale_push_preferences response permits one bounded retry above
+current_revision, with the corrected local snapshot persisted before dispatch.
+Corrupt/unwritable ledger state fails visibly and cannot silently reset counters.

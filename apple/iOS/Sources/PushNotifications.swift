@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraAPIClient
 import AlondraCommands
 import AlondraNotificationActions
 import AlondraNotificationPayload
@@ -84,6 +85,7 @@ final class PushCenter {
 
     private var client: ServiceNotificationClient?
     private let decryptionStore: NotificationDecryptionStore?
+    private let preferences: PushPreferencesLedger
     @ObservationIgnored private var lastRegistered: String?
     @ObservationIgnored private var syncTask: Task<Void, Never>?
 
@@ -97,6 +99,8 @@ final class PushCenter {
 
     init(decryptionStore: NotificationDecryptionStore? = nil) {
         self.decryptionStore = decryptionStore
+        preferences = PushPreferencesLedger(file: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
+            .appendingPathComponent("push-preferences.json"))
         let defaults = UserDefaults.standard
         quietHours = QuietHours(
             enabled: defaults.bool(forKey: Keys.quietEnabled),
@@ -163,7 +167,20 @@ final class PushCenter {
         guard fingerprint != lastRegistered else { return }
         registration = .sending
         do {
-            try await client.register(token, Self.environment.rawValue, quietStart, quietEnd)
+            let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                                                         quietStart: quietStart, quietEnd: quietEnd)
+            try Task.checkCancellation()
+            do {
+                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, revision)
+            } catch ServicePushPreferencesError.stale(let currentRevision) {
+                // A restored Keychain identity can outlive its app container. Advance only
+                // after the authenticated executor tells us its accepted revision.
+                try Task.checkCancellation()
+                let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                    quietStart: quietStart, quietEnd: quietEnd, newerThan: currentRevision)
+                try Task.checkCancellation()
+                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, newer)
+            }
             guard self.client?.identity == client.identity, self.client?.binding == client.binding,
                   self.token == token, !Task.isCancelled else { return }
             lastRegistered = fingerprint
