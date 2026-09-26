@@ -302,6 +302,7 @@ struct TriageFeatureTests {
             $0.hiddenIDs = []
             $0.pendingIDs = []
             $0.notice = "Server refused"
+            $0.noticeIsMutationFailure = true
         }
         #expect(store.state.queue.map(\.id) == ["r4", "q1", "q2"])
     }

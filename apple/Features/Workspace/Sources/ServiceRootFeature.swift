@@ -210,6 +210,13 @@ public struct ServiceRootFeature {
             return state.pullRequest.flatMap { diffUploadNotice($0.diff, action: action) }
         case .triage(.cards(.element(let id, .pullRequest(.diff(.attachmentPicker(let action)))))):
             return state.triage.cards[id: id]?.pullRequest.flatMap { diffUploadNotice($0.diff, action: action) }
+        case .triage(.triage(.mutationFinished(let id, let identity, let outcome))):
+            guard state.triage.triage.identity == identity, state.triage.triage.pendingIDs.contains(id),
+                  case .rejected(let reason) = outcome else { return nil }
+            return .failure(couldNotSendMessage(reason))
+        case .triage(.triage(.commandResolved(let id, let rejection))):
+            guard state.triage.triage.uncertainByItem.values.contains(id) else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
         case .triage(.document(.presented(let action))):
             return state.triage.document.flatMap { documentNotice($0, action: action) }
         case .pullRequest(.presented(.diff(.reviewFinished(let outcome, let epoch)))):

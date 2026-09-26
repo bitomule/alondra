@@ -32,7 +32,7 @@ struct ServiceTriageView: View {
                     .accessibilityLabel("Mac Status")
             }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil }, set: { if !$0 { _ = store.send(.triage(.dismissNotice)) } })) {
+        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil && !store.triage.noticeIsMutationFailure }, set: { if !$0 { _ = store.send(.triage(.dismissNotice)) } })) {
             Button("OK") { _ = store.send(.triage(.dismissNotice)) }
         } message: { Text(store.triage.notice ?? "") }
         .navigationDestination(item: $store.scope(state: \.question, action: \.question)) { child in

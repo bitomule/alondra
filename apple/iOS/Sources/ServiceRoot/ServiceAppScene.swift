@@ -129,7 +129,7 @@ private struct ServiceRootView<AccountContent: View>: View {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
                 }
-            }.badge(store.triage.triage.queue.count)
+            }.badge(store.triage.triage.connection == .unpaired ? 0 : store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
                 ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) }, showSettings: { store.send(.settingsPresented(true)) })
             }

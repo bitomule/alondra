@@ -34,6 +34,7 @@ public struct TriageFeature {
         public var uncertainByItem: [String: UUID] = [:]
         public var cursor: InboxPlace?
         public var presentedID: String?
+        public var noticeIsMutationFailure = false
         public var notice: String?
         public var connection: TriageConnection = .connecting
         public var hasSnapshot = false
@@ -87,7 +88,7 @@ public struct TriageFeature {
                 && lhs.uncertainByItem == rhs.uncertainByItem
                 && lhs.deferredReadIDs == rhs.deferredReadIDs
                 && lhs.pendingIDs == rhs.pendingIDs && lhs.cursor == rhs.cursor
-                && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice
+                && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice && lhs.noticeIsMutationFailure == rhs.noticeIsMutationFailure
                 && lhs.connection == rhs.connection && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
                 && lhs.workingNodes == rhs.workingNodes
                 && lhs.waitingNodes == rhs.waitingNodes && lhs.totalNodes == rhs.totalNodes
@@ -235,14 +236,17 @@ public struct TriageFeature {
                     state.resolvedCount += 1
                 case .rejected(let reason):
                     state.hiddenIDs.remove(id)
+                    state.noticeIsMutationFailure = true
                     state.notice = reason
                     if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
                 case .unknownCommand(let commandID):
                     state.uncertainByItem[id] = commandID
                     state.hiddenIDs.remove(id)
+                    state.noticeIsMutationFailure = false
                     state.notice = "The result is uncertain. Checking its status…"
                 case .unknown:
                     state.hiddenIDs.remove(id)
+                    state.noticeIsMutationFailure = false
                     state.notice = String(localized: "The result is uncertain. Check the server before trying again.")
                 case .obsolete:
                     state.hiddenIDs.remove(id)
@@ -259,13 +263,14 @@ public struct TriageFeature {
                         effects.append(.send(.readAcknowledged(id, confirmed: rejection == nil)))
                     } else if rejection == nil { state.hiddenIDs.insert(id) }
                 }
-                if !matches.isEmpty { state.notice = rejection }
+                if !matches.isEmpty { state.notice = rejection; state.noticeIsMutationFailure = rejection != nil }
                 return .merge(effects)
             case .dismissReview:
                 state.presentedID = nil
                 return .none
             case .dismissNotice:
                 state.notice = nil
+                state.noticeIsMutationFailure = false
                 return .none
             }
         }
@@ -292,6 +297,7 @@ public struct TriageFeature {
         state.cursor = nil
         state.presentedID = nil
         state.notice = nil
+        state.noticeIsMutationFailure = false
         state.hasSnapshot = false
         state.connection = .connecting
         state.workingNodes = 0
