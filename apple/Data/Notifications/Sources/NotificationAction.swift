@@ -1,6 +1,6 @@
 import AlondraNotificationPayload
 import AlondraCommands
-import AlondraShared
+import AlondraAPIClient
 import Foundation
 
 /// Headless notification action boundary. The app owns the background task and
@@ -26,11 +26,11 @@ public enum NotificationAction: Equatable, Sendable {
         case (.question, NotificationPayload.Action.moreContext):
             self = .moreContext(question: item.id)
         case (.question, NotificationPayload.Action.allow):
-            self = .answer(question: item.id, text: AnswerOption.allow, option: AnswerOption.allow)
+            self = .answer(question: item.id, text: "Allow", option: "Allow")
         case (.question, NotificationPayload.Action.deny):
-            self = .answer(question: item.id, text: AnswerOption.deny, option: AnswerOption.deny)
+            self = .answer(question: item.id, text: "Deny", option: "Deny")
         case (.question, NotificationPayload.Action.approve):
-            self = .answer(question: item.id, text: AnswerOption.approve, option: AnswerOption.approve)
+            self = .answer(question: item.id, text: "Approve", option: "Approve")
         case (.report, NotificationPayload.Action.markRead):
             self = .markRead(report: item.id)
         case (.question, let action) where action.hasPrefix(NotificationPayload.Action.optionPrefix):
@@ -42,11 +42,11 @@ public enum NotificationAction: Equatable, Sendable {
         }
     }
 
-    public func execute(using client: AlondraClient) async throws {
+    public func execute(using client: AlondraAPIClient, operationID: UUID) async throws {
         switch self {
-        case let .answer(question, text, option): try await client.answer(question, text: text, option: option)
-        case let .moreContext(question): try await client.moreContext(question, note: "")
-        case let .markRead(report): try await client.markRead(report)
+        case let .answer(question, text, option): try await client.answer(question, text: text, option: option, attachments: [], operationID: operationID.uuidString)
+        case let .moreContext(question): _ = try await client.send(AlondraEndpoints.moreContext(question, note: "", attachments: []), operationID: operationID.uuidString)
+        case let .markRead(report): try await client.markRead(report, operationID: operationID.uuidString)
         }
     }
 }

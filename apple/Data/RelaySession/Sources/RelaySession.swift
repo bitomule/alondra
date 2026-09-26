@@ -20,7 +20,7 @@ public enum RelayRecoveryStatus: Sendable, Equatable {
 public enum RelaySessionError: Error { case invalidRequest, invalidResponse, operationIdentityConflict, outcomeUnknown, localStatus(Int) }
 
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
-public actor RelaySession: SyncTransport, ServiceOperationTransport {
+public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePushTransport {
     private let client: AlondraRelayClient
     private let outbox: RelayOutbox
     private let scope: RelayOutboxScope
@@ -48,6 +48,15 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport {
         self.signing = signing; self.agreement = agreement
         self.macSigning = macSigning; self.macAgreement = macAgreement
         self.now = now; self.sleep = sleep; self.wait = wait
+    }
+
+    public func registerServicePush(token: String, environment: String, binding: String) async throws {
+        guard active else { throw CancellationError() }
+        let registration = try RelayPushRegistration(token: token, environment: environment, pushBinding: binding)
+        _ = try await client.bootstrap()
+        guard active, !Task.isCancelled else { throw CancellationError() }
+        try await client.registerPush(registration)
+        guard active, !Task.isCancelled else { throw CancellationError() }
     }
 
     public func deactivate() { active = false }

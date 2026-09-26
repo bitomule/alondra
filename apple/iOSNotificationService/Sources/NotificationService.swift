@@ -1,4 +1,5 @@
 import AlondraNotificationPayload
+import AlondraNotificationActions
 import Foundation
 import Darwin
 import os
@@ -14,13 +15,43 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         let delivery = Delivery(content: content, handler: contentHandler)
         self.delivery = delivery
-        guard let binding = NotificationPayload.Binding(userInfo: content.userInfo) else {
-            content.categoryIdentifier = ""
+        // A service push is opaque until the Mac signature, recipient, expiry and
+        // current binding have all been verified. No plaintext push may create actions.
+        guard let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String,
+              let context = try? NotificationDecryptionStore(accessGroup: group).load(),
+              let raw = try? JSONSerialization.data(withJSONObject: content.userInfo),
+              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context,
+                  nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)),
+              var payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [String: Any],
+              let binding = NotificationPayload.Binding(userInfo: payload),
+              let aps = payload["aps"] as? [String: Any] else {
+            delivery.update { content in
+                content.categoryIdentifier = ""
+                content.title = "Alondra"
+                content.body = String(localized: "Open Alondra to view activity")
+                content.userInfo = [:]
+            }
             delivery.finish(category: nil)
             return
         }
+        // Keep the authenticated envelope so the app re-verifies on taps and actions,
+        // including when its approved pairing changed since the extension ran.
+        if var item = payload["alondra"] as? [String: Any],
+           let outer = content.userInfo["alondra"] as? [String: Any] {
+            item["envelope"] = outer["envelope"]
+            payload["alondra"] = item
+        }
+        delivery.update { content in
+            let alert = aps["alert"] as? [String: Any]
+            content.title = alert?["title"] as? String ?? "Alondra"
+            content.body = alert?["body"] as? String ?? ""
+            content.categoryIdentifier = aps["category"] as? String ?? ""
+            content.badge = aps["badge"] as? NSNumber
+            content.sound = aps["sound"] as? String == "default" ? .default : nil
+            content.userInfo = payload
+        }
+        let question = NotificationPayload.Question(userInfo: payload)
         Task {
-            let question = NotificationPayload.Question(userInfo: content.userInfo)
             let category = await QuestionCategories.register(question, binding: binding)
             delivery.finish(category: category)
         }
@@ -43,6 +74,13 @@ private final class Delivery: Sendable {
 
     init(content: UNMutableNotificationContent, handler: @escaping (UNNotificationContent) -> Void) {
         state = OSAllocatedUnfairLock(uncheckedState: State(content: content, handler: handler))
+    }
+
+    func update(_ work: (UNMutableNotificationContent) -> Void) {
+        state.withLockUnchecked { state in
+            guard state.handler != nil else { return }
+            work(state.content)
+        }
     }
 
     func finish(category: String?) {
