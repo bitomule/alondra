@@ -314,7 +314,10 @@ struct PullRequestFeatureTests {
             $0.pullRequestOperations = .init(
                 diff: { _ in PRDiffSnapshot(diff: diff, headSHA: String(repeating: "a", count: 40)) }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete },
                 setAside: { _ in .obsolete },
-                review: { _, text, _, _, _ in await gate.submit(text) }
+                review: { _, text, _, _, headSHA in
+                    #expect(headSHA == String(repeating: "a", count: 40))
+                    return await gate.submit(text)
+                }
             )
         }
         await store.send(.requestChangesTapped) {
