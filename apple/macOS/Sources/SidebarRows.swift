@@ -155,56 +155,6 @@ struct ProjectHeader: View {
     }
 }
 
-/// A task in the sidebar: its title and, under it, its project and what happens now.
-struct TaskRow: View {
-    let task: WorkTask
-    let store: FleetStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(store.board.rowTitle(of: task))
-                .fontWeight(.medium)
-                .strikethrough(task.state == .cancelled)
-                .lineLimit(2)
-            Text(verbatim: subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(task.state.label)
-    }
-
-    private var subtitle: String {
-        [store.project(of: task), store.now(for: task) ?? store.board.stateLabel(of: task)].compactMap(\.self).joined(separator: " · ")
-    }
-}
-
-struct DefiningRow: View {
-    let request: WorkRequest
-    let store: FleetStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(store.title(of: request))
-                .fontWeight(.medium)
-                .lineLimit(2)
-            Text(verbatim: [store.project(of: request), whatHappens].compactMap(\.self).joined(separator: " · "))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var whatHappens: String {
-        if request.state == .done { return String(localized: "finished without tasks") }
-        return request.isLeftDefining() ? String(localized: "the orchestrator left it without tasks") : String(localized: "the orchestrator is splitting it")
-    }
-}
-
 struct TaskGroupLabel: View {
     let group: TaskStateGroup
 

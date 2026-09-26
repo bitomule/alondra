@@ -35,11 +35,4 @@ extension PullRequest {
     public var mainAction: MainAction {
         hasConflicts ? .resolveConflicts : .merge(methods: methods, blockedBy: mergeBlockedReason)
     }
-    public func perform(_ outcome: PullRequestOutcome, using client: AlondraClient) async throws {
-        switch outcome {
-        case .merged(let method): try await client.mergePullRequest(id, method: method)
-        case .conflictsSent: try await client.resolveConflicts(onPullRequest: id)
-        case .setAside: try await client.dismissPullRequest(id)
-        }
-    }
 }
