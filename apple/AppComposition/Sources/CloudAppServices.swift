@@ -83,8 +83,8 @@ public actor CloudAppServices {
         try checkActive()
         let body = try await api.send(AlondraEndpoints.fileText(path))
         try checkActive()
-        struct DocumentResponse: Decodable { let content: String }
-        return try JSONDecoder().decode(DocumentResponse.self, from: body).content
+        struct DocumentResponse: Decodable { let text: String }
+        return try JSONDecoder().decode(DocumentResponse.self, from: body).text
     }
 
     public func checkActive() throws {
