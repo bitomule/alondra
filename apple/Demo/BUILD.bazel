@@ -22,5 +22,5 @@ swift_library(
 swift_test(
     name = "AlondraDemoWorkspaceTests",
     srcs = glob(["Tests/*.swift"]),
-    deps = ["//apple/Domain:AlondraDomain", "//apple/Features/Attachments:AlondraAttachmentsFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", ":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+    deps = ["//apple/Domain:AlondraDomain", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/Attachments:AlondraAttachmentsFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", ":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )

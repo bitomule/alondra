@@ -226,12 +226,24 @@ public struct ServiceRootFeature {
             guard state.newRequest.isSubmitting, epoch == state.newRequest.presentationEpoch else { return nil }
             switch result {
             case .confirmed: return .sentToOrchestrator
-            case .failed(let message): return .failure(message)
+            case .failed(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .newRequest(.commandResolved(let id, let rejection)):
             guard state.newRequest.submissionUncertain, state.newRequest.uncertainCommandID == id else { return nil }
-            return rejection.map(WorkspaceNotice.Event.failure) ?? .sentToOrchestrator
+            return rejection.map { .failure(couldNotSendMessage($0)) } ?? .sentToOrchestrator
+        case .fleet(.fleet(.closeFinished(let id, let outcome, let epoch))):
+            let fleet = state.fleet.fleet
+            guard fleet.presentationEpoch == epoch, fleet.closingIDs.contains(id) else { return nil }
+            switch outcome {
+            case .confirmed: return .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
+            case .rejected(let message): return .closeRefused(message)
+            default: return nil
+            }
+        case .fleet(.fleet(.commandResolved(let commandID, let rejection))):
+            let fleet = state.fleet.fleet
+            guard let id = fleet.closeOutcomeByID.first(where: { $0.value.uncertainID == commandID })?.key else { return nil }
+            return rejection.map(WorkspaceNotice.Event.closeRefused) ?? .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
         case .fleet(.detail(.presented(let action))):
             return state.fleet.detail.flatMap { nodeNotice($0, action: action) }
         case .fleet(.path(.element(let id, .node(let action)))):
@@ -280,11 +292,15 @@ public struct ServiceRootFeature {
 
     private func nodeNotice(_ node: NodeDetailFeature.State, action: NodeDetailFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard node.pendingSubmission != nil,
+                  node.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .sendFinished(_, let outcome, let epoch):
             guard node.isSending, epoch == node.presentationEpoch else { return nil }
             switch outcome {
             case .confirmed: return .messageSent(node.node?.displayName ?? node.sessionID)
-            case .rejected(let message): return .failure(message)
+            case .rejected(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .closeFinished(let outcome, let epoch):

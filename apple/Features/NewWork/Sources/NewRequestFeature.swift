@@ -30,6 +30,9 @@ public struct NewRequestFeature {
         public var optionsError: String?
         public var issuesError: String?
         public var submissionError: String?
+        /// Completed send failures use the workspace notice, not a persistent editor error.
+        public var submissionErrorIsTerminal = false
+        public var inlineSubmissionError: String? { submissionErrorIsTerminal ? nil : submissionError }
         public var uncertainCommandID: UUID?
         public var submissionUncertain = false
         public var successfulSubmissionCount = 0
@@ -93,6 +96,7 @@ public struct NewRequestFeature {
                    let failure = state.attachmentPicker.failedUploadMessage {
                     state.pendingSubmission = nil
                     state.submissionError = failure
+                    state.submissionErrorIsTerminal = false
                 }
                 if event.invalidatesPendingSubmission { state.pendingSubmission = nil }
                 guard state.pendingSubmission != nil, state.attachmentPicker.allReady else { return .none }
@@ -243,8 +247,9 @@ public struct NewRequestFeature {
                 }
                 return submit(&state)
             case .submitFinished(let result, let epoch):
-                guard epoch == state.presentationEpoch else { return .none }
+                guard epoch == state.presentationEpoch, state.isSubmitting else { return .none }
                 state.isSubmitting = false
+                state.submissionErrorIsTerminal = false
                 switch result {
                 case .confirmed:
                     state.text = ""
@@ -253,6 +258,7 @@ public struct NewRequestFeature {
                     state.successfulSubmissionCount += 1
                 case .failed(let message):
                     state.submissionError = message
+                    state.submissionErrorIsTerminal = true
                 case .uncertainCommand(let id, let message):
                     state.uncertainCommandID = id
                     state.submissionError = message
@@ -269,6 +275,7 @@ public struct NewRequestFeature {
                 state.uncertainCommandID = nil
                 state.submissionUncertain = false
                 state.submissionError = rejection
+                state.submissionErrorIsTerminal = rejection != nil
                 if rejection == nil {
                     state.text = ""
                     state.attachments = []
@@ -282,6 +289,7 @@ public struct NewRequestFeature {
                 state.attachments = []
                 state.attachmentPicker = AttachmentFeature.State()
                 state.submissionError = nil
+                state.submissionErrorIsTerminal = false
                 state.uncertainCommandID = nil
                 state.submissionUncertain = false
                 return .none
@@ -296,6 +304,7 @@ public struct NewRequestFeature {
     private func submit(_ state: inout State) -> Effect<Action> {
         state.isSubmitting = true
         state.submissionError = nil
+        state.submissionErrorIsTerminal = false
         let body = state.selection.body(text: state.text.trimmingCharacters(in: .whitespacesAndNewlines))
         let attachments = state.attachments
         let epoch = state.presentationEpoch

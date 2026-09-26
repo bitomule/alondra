@@ -295,8 +295,7 @@ struct ServiceNodeOutcome: View {
     let outcome: NodeMutationOutcome?
     var body: some View {
         switch outcome {
-        case .confirmed, nil: EmptyView()
-        case .rejected(let message): Text(message).foregroundStyle(Palette.rose)
+        case .confirmed, .rejected, nil: EmptyView()
         case .unknown: Text("The result is unknown. Your draft has been kept while the service reconciles it.").foregroundStyle(Palette.ember)
         case .obsolete: Text("The connection changed. Reopen the node.")
         }

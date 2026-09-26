@@ -18,7 +18,7 @@ struct ServiceNewRequestView: View {
                 }
                 editor.disabled(store.isSubmissionInFlight || store.submissionUncertain)
                 optionsRow
-                if let error = store.submissionError {
+                if let error = store.inlineSubmissionError {
                     Text(error).font(.footnote).foregroundStyle(Palette.rose)
                 }
                 if !store.sentMessages.isEmpty { history }
