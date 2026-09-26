@@ -85,15 +85,30 @@ swift_test(
     ],
 )
 
+config_setting(
+    name = "distribution",
+    define_values = {"alondra_distribution": "1"},
+)
+
+apple_bundle_version(
+    name = "DistributionVersion",
+    build_label_pattern = "alondra_{version}_{build}",
+    capture_groups = {"version": "[0-9]+[.][0-9]+[.][0-9]+", "build": "[1-9][0-9]*"},
+    build_version = "{build}",
+    short_version_string = "{version}",
+)
+
 macos_application(
     name = "AlondraMac",
     app_icons = glob(["IconConcepts/Alondra.icon/**"]),
     bundle_id = MAC_BUNDLE_ID,
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"],
+    entitlements = select({":distribution": "macOS/AppStore.entitlements", "//conditions:default": None}),
+    provisioning_profile = select({":distribution": "//signing:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
     resources = glob(["macOS/Resources/*.xcstrings"]),
-    version = ":Version",
+    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
     visibility = ["//visibility:public"],
     deps = [":AlondraMacEntry"],
 )
@@ -143,14 +158,14 @@ ios_application(
     name = "AlondraiOS",
     app_icons = glob(["IconConcepts/Alondra.icon/**"]),
     bundle_id = IOS_BUNDLE_ID,
-    provisioning_profile = "//signing:" + IOS_PROFILE,
+    provisioning_profile = select({":distribution": "//signing:Alondra_AppStore.mobileprovision", "//conditions:default": "//signing:" + IOS_PROFILE}),
     bundle_name = "Alondra",
-    entitlements = "iOS/Alondra.entitlements",
+    entitlements = select({":distribution": "iOS/AppStore.entitlements", "//conditions:default": "iOS/Alondra.entitlements"}),
     families = ["iphone"],
     infoplists = ["iOS/Info.plist"],
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]),
-    version = ":Version",
+    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
     extensions = [":AlondraNotificationService"],
     visibility = ["//visibility:public"],
     deps = [":AlondraiOSEntry"],
@@ -172,7 +187,7 @@ ios_extension(
     infoplists = ["iOSNotificationService/Info.plist"],
     minimum_os_version = "26.0",
     resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
-    provisioning_profile = "//signing:" + NOTIFICATION_SERVICE_PROFILE,
-    version = ":Version",
+    provisioning_profile = select({":distribution": "//signing:Alondra_NotificationService_AppStore.mobileprovision", "//conditions:default": "//signing:" + NOTIFICATION_SERVICE_PROFILE}),
+    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
     deps = [":AlondraNotificationServiceLib"],
 )
