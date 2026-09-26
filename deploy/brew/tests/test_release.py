@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import io
+import json
 import pathlib
 import tarfile
 import tempfile
@@ -98,12 +99,11 @@ class PublicationTests(unittest.TestCase):
         return {**self.remote, 'assets': [{'name': name} for name in self.assets]}
 
     def gh(self, *args, **kwargs):
+        if args[:2] == ('api', 'graphql'):
+            release = {'databaseId': 42} if self.remote is not None else None
+            return json.dumps({'data': {'repository': {'release': release}}})
         operation = args[1]
-        if operation == 'view':
-            if self.remote is None:
-                raise RuntimeError('release not found')
-            return '{"databaseId": 42}'
-        elif operation == 'create':
+        if operation == 'create':
             self.remote = {'draft': True}
         elif operation == 'upload':
             self.assertTrue(self.remote['draft'])
@@ -131,10 +131,27 @@ class PublicationTests(unittest.TestCase):
         for message in ('HTTP 401: Bad credentials', 'network timeout', 'HTTP 403: forbidden'):
             with patch.object(r, 'gh', side_effect=RuntimeError(message)):
                 with self.assertRaisesRegex(RuntimeError, message):
-                    r.lookup_release('alondra-v0.1.0')
-        with patch.object(r, 'api', side_effect=RuntimeError('HTTP 404: repository inaccessible')):
-            with self.assertRaisesRegex(RuntimeError, 'repository inaccessible'):
-                r.lookup_release('alondra-v0.1.0')
+                    r.publish(self.ver, self.path)
+        self.assertIsNone(self.remote)
+        self.assertEqual(self.uploads, 0)
+
+    def test_graphql_errors_and_inaccessible_repo_never_create_release(self):
+        responses = [
+            # Even release:null alongside an error does not prove absence.
+            {'data': {'repository': {'release': None}}, 'errors': [{'message': 'upstream timeout'}]},
+            {'data': {'repository': None}},
+            {'data': {'repository': {}}},
+            {'errors': [{'message': 'Bad credentials'}]},
+            {'data': {'repository': {'release': {'databaseId': None}}}},
+        ]
+        for response in responses:
+            with patch.object(r, 'gh', return_value=json.dumps(response)) as remote:
+                with self.assertRaises(RuntimeError):
+                    r.publish(self.ver, self.path)
+                self.assertEqual(remote.call_count, 1)
+                self.assertEqual(remote.call_args.args[:2], ('api', 'graphql'))
+        self.assertIsNone(self.remote)
+        self.assertEqual(self.uploads, 0)
 
     def test_retry_after_formula_failure_reuses_immutable_assets(self):
         self.fail_formula_once = True

@@ -87,17 +87,25 @@ def optional_api(endpoint):
 
 
 def lookup_release(tag):
-    # A draft can reference a tag that does not exist yet. REST /releases/tags
-    # cannot find it; gh resolves drafts through GraphQL and returns their ID.
-    # Check repository access so an inaccessible repo is not treated as absence.
-    api(f'repos/{REPO}')
-    try:
-        result = json.loads(gh('release', 'view', tag, '--repo', REPO, '--json', 'databaseId'))
-    except RuntimeError as error:
-        if str(error).strip() == 'release not found':
-            return None
-        raise
-    return api(f"repos/{REPO}/releases/{result['databaseId']}")
+    # Query GraphQL directly: gh release view combines REST and GraphQL lookups
+    # and can mask a GraphQL failure behind the REST 404 of an unpublished draft.
+    owner, name = REPO.split('/')
+    result = json.loads(gh('api', 'graphql', '--method', 'POST', '--input', '-', payload={
+        'query': 'query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}',
+        'variables': {'owner': owner, 'name': name, 'tag': tag},
+    }))
+    if result.get('errors'):
+        raise RuntimeError('GraphQL release lookup failed: ' + json.dumps(result['errors']))
+    repository = (result.get('data') or {}).get('repository')
+    if repository is None or 'release' not in repository:
+        raise RuntimeError('Release repository inaccessible or incomplete GraphQL response')
+    release = repository['release']
+    if release is None:
+        return None  # Only an error-free, explicit null proves absence.
+    release_id = release.get('databaseId')
+    if type(release_id) is not int or release_id <= 0:
+        raise RuntimeError('GraphQL release has no valid database ID')
+    return api(f'repos/{REPO}/releases/{release_id}')
 
 
 def publish(ver, directory):
