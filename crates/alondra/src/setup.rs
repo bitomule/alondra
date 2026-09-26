@@ -16,6 +16,8 @@ pub const MARKETPLACE: &str = "alondra";
 pub struct Args {
     #[arg(long, help = tr!("Name of the person the nodes talk to", "Nombre de la persona con la que hablan los nodos"))]
     pub name: Option<String>,
+    #[arg(long, value_name = "DIRECTORY", help = tr!("Projects folder (created if missing; default ~/Projects)", "Carpeta de proyectos (se crea si falta; por defecto ~/Projects)"))]
+    pub projects_root: Option<PathBuf>,
     #[arg(long, help = tr!("URL the iPhone uses to reach this Mac", "URL por la que el iPhone llega a este Mac"))]
     pub public_url: Option<String>,
     #[arg(long, help = tr!("Address alondrad listens on (0.0.0.0 to accept the LAN)", "Dirección en la que escucha alondrad (0.0.0.0 para aceptar la red local)"))]
@@ -533,6 +535,12 @@ pub fn run(args: Args) -> Result<()> {
     if !args.dry_run && !args.skip_service && !seen.binaries {
         bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
     }
+    let projects = crate::setup_projects::select(
+        paths.alondra_home.join(alondra_core::options::FILE_NAME), &paths.home,
+        &std::env::current_dir()?, args.projects_root.as_deref(), args.no_input,
+        args.dry_run, &mut std::io::stdin().lock(), &mut std::io::stdout().lock(),
+    )?;
+    projects.apply(args.dry_run)?;
     if args.dry_run {
         println!("would verify Claude Code authentication in the daemon environment (no login during dry run)");
     } else {
