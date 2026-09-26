@@ -62,7 +62,7 @@ public struct ServiceRootFeature {
                 return feedbackResolutionEffects(events, state: state)
             case .triage(.document(.presented(.reportFeedbackFinished))):
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
-                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
+                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tabSelected(let tab): state.tab = tab; return .none
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
@@ -72,7 +72,7 @@ public struct ServiceRootFeature {
             case .triage(.triage(.inboxUpdated(let update))):
                 let routing: Effect<Action> = .merge(routePending(&state),
                     update.identity == state.triage.triage.identity ? .send(.newRequest(.workspaceUpdated(update.overview))) : .none,
-                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
+                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
                 guard let detail = state.pullRequest else { return routing }
                 guard state.triage.triage.hasSnapshot else {
                     return .merge(routing, .send(.pullRequest(.presented(.snapshotUnavailable))))
@@ -94,7 +94,7 @@ public struct ServiceRootFeature {
                 return .none
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
-                return .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs)))
+                return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tasks, .pullRequest, .fleet, .newRequest: return .none
             }
         }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
