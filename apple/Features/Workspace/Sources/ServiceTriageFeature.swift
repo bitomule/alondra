@@ -147,8 +147,9 @@ public struct ServiceTriageFeature {
                             }
                         }
                     }
-                    for id in state.cards.ids { state.cards[id: id]?.document?.feedbackAuthor = state.feedbackAuthor }
-                    for id in state.documents.ids { state.documents[id: id]?.feedbackAuthor = state.feedbackAuthor }
+                    let feedbackAuthor = state.feedbackAuthor
+                    for id in state.cards.ids { state.cards[id: id]?.document?.feedbackAuthor = feedbackAuthor }
+                    for id in state.documents.ids { state.documents[id: id]?.feedbackAuthor = feedbackAuthor }
                     if let question = state.question {
                         if let item = state.triage.items.first(where: { $0.id == "q\(question.question.id)" }),
                            case .question(let fresh) = item {
