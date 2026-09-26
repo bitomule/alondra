@@ -349,6 +349,12 @@ pub fn login() -> Result<()> {
     let previous = stored_optional()?;
     let http = agent();
     let d = discovery(&http)?;
+    // Keycloak may reuse an offline session across authorizations. Revoking the
+    // previous grant after code exchange could revoke the newly issued grant too.
+    replace_previous_login(previous.as_ref(),
+        |old| revoke_token(&http, &d, &old.refresh_token),
+        || delete_generic_password(KEYCHAIN_SERVICE, ISSUER).map_err(Into::into),
+    )?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let redirect = format!(
         "http://127.0.0.1:{}{CALLBACK_PATH}",
@@ -401,18 +407,23 @@ pub fn login() -> Result<()> {
         sub: user.sub,
         refresh_token: refresh,
     };
-    if let Some(previous) = previous
-        && previous.refresh_token != session.refresh_token
-        && let Err(error) = revoke_token(&http, &d, &previous.refresh_token)
-    {
-        let _ = revoke_token(&http, &d, &session.refresh_token);
-        return Err(error.context("previous session could not be revoked; old Keychain login kept"));
-    }
     set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&session)?)?;
     println!(
         "Signed in as {}.",
         user.preferred_username.as_deref().unwrap_or(&session.sub)
     );
+    Ok(())
+}
+
+fn replace_previous_login(
+    previous: Option<&Session>,
+    revoke: impl FnOnce(&Session) -> Result<()>,
+    clear: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if let Some(previous) = previous {
+        revoke(previous).context("previous session could not be revoked; old Keychain login kept")?;
+        clear().context("previous session revoked but its Keychain item could not be removed")?;
+    }
     Ok(())
 }
 
@@ -546,6 +557,18 @@ mod persistent_session_tests {
     }
     fn owner() -> Userinfo {
         Userinfo { sub: "owner".into(), preferred_username: None }
+    }
+
+    #[test]
+    fn previous_session_is_revoked_then_removed_before_new_authorization() {
+        let events = RefCell::new(Vec::new());
+        replace_previous_login(Some(&session()),
+            |_| { events.borrow_mut().push("revoke"); Ok(()) },
+            || { events.borrow_mut().push("clear"); Ok(()) }).unwrap();
+        assert_eq!(*events.borrow(), ["revoke", "clear"]);
+        assert!(replace_previous_login(Some(&session()),
+            |_| bail!("revocation unavailable"), || panic!("must keep prior login")).is_err());
+        replace_previous_login(None, |_| panic!("no prior session"), || panic!("no item")).unwrap();
     }
 
     #[test]
