@@ -180,7 +180,15 @@ impl RelayTransport {
         let status = response.status().as_u16();
         // Fully drain the bounded body so the connection can return to the pool.
         let bytes = response.body_mut().with_config().limit(512 * 1024).read_to_vec()?;
-        let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes)? };
+        let value = if bytes.is_empty() { Value::Null } else {
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                // Proxy errors need not be JSON. Preserve status (including 401
+                // epoch invalidation), without exposing an untrusted response body.
+                Err(_) if !(200..300).contains(&status) => Value::Null,
+                Err(_) => bail!("invalid relay JSON response (HTTP {status})"),
+            }
+        };
         remaining(deadline)?;
         Ok((status, value))
     }
@@ -418,9 +426,10 @@ impl Profile {
         )?;
         remaining(deadline)?;
         if !matches!(status, 200 | 202) {
-            bail!(
-                "relay refused request ({status}); for a revoked terminal use alondra connect <mac-id> --repair"
-            );
+            if status == 401 {
+                bail!("relay authentication failed (HTTP 401); request was not retried. Check account and device access.");
+            }
+            bail!("relay refused request (HTTP {status}); request was not retried");
         }
         let receipt_status = receipt["status"].as_str();
         if receipt["request_id"].as_str() != Some(&request_id)
@@ -708,6 +717,10 @@ mod tests {
     }
     impl HttpFixture {
         fn start(replies: Vec<(u16, Value, Duration)>) -> Self {
+            Self::start_raw(replies.into_iter().map(|(status, body, delay)|
+                (status, serde_json::to_vec(&body).unwrap(), delay)).collect())
+        }
+        fn start_raw(replies: Vec<(u16, Vec<u8>, Duration)>) -> Self {
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -735,7 +748,6 @@ mod tests {
                         seen.lock().unwrap().push(headers);
                         let Some((status, body, delay)) = replies.next() else { panic!("unexpected replay"); };
                         std::thread::sleep(delay);
-                        let body = serde_json::to_vec(&body).unwrap();
                         let header = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
                         if stream.write_all(header.as_bytes()).and_then(|_| stream.write_all(&body)).is_err() { break; }
                     }
@@ -819,6 +831,44 @@ mod tests {
     }
     fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
         t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/requests", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+    }
+
+    #[test]
+    fn proxy_non_json_status_is_preserved_without_post_replay_or_body_exposure() {
+        for status in [401, 502] {
+            let bootstrap = serde_json::to_vec(&boot(1).1).unwrap();
+            let server = HttpFixture::start_raw(vec![(200, bootstrap, Duration::ZERO),
+                (status, b"<html>private proxy diagnostic</html>".to_vec(), Duration::ZERO)]);
+            let transport = RelayTransport::new(&server.origin);
+            let response = transport_call(&transport, "POST").unwrap();
+            assert_eq!(response, (status, Value::Null));
+            assert_eq!(server.requests.lock().unwrap().len(), 2);
+            if status == 401 { assert!(transport.epoch.lock().unwrap().value.is_none()); }
+        }
+    }
+
+    #[test]
+    fn successful_non_json_response_remains_an_error_without_body_exposure() {
+        let bootstrap = serde_json::to_vec(&boot(1).1).unwrap();
+        let server = HttpFixture::start_raw(vec![(200, bootstrap, Duration::ZERO),
+            (200, b"private invalid response".to_vec(), Duration::ZERO)]);
+        let error = transport_call(&RelayTransport::new(&server.origin), "POST").unwrap_err();
+        assert_eq!(error.to_string(), "invalid relay JSON response (HTTP 200)");
+        assert_eq!(server.requests.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn submission_401_does_not_diagnose_revocation_or_repeat_action() {
+        let mut calls = 0;
+        let error = fixture().0.request_via("POST", "/v1/action", None,
+            Instant::now()+Duration::from_secs(1), |method, path, _, _| {
+                calls += 1;
+                assert_eq!((method, path), ("POST", "/v1/requests"));
+                Ok((401, Value::Null))
+            }).unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.to_string().contains("HTTP 401"));
+        assert!(!error.to_string().contains("--repair"));
     }
 
     #[test]
