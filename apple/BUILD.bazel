@@ -35,6 +35,9 @@ swift_library(
     module_name = "AlondraMac",
     deps = [
         ":AlondraShared",
+        "//apple/Auth:AlondraAuth",
+        "//apple/AppComposition:AlondraAppComposition",
+        "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Sync:AlondraSync",
@@ -53,6 +56,9 @@ swift_test(
     ),
     deps = [
         ":AlondraShared",
+        "//apple/Auth:AlondraAuth",
+        "//apple/AppComposition:AlondraAppComposition",
+        "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Sync:AlondraSync",
@@ -88,6 +94,8 @@ swift_library(
     module_name = "AlondraiOS",
     deps = [
         ":AlondraShared",
+        "//apple/Features/Questions:AlondraQuestionsFeature",
+        "//apple/Features/Tasks:AlondraTasksFeature",
         "//apple/Auth:AlondraAuth",
         "//apple/AppComposition:AlondraAppComposition",
         "//apple/Features/CloudPairing:AlondraCloudPairingFeature",

@@ -1,5 +1,6 @@
 import AlondraAppComposition
 import AlondraAuth
+import AlondraCommands
 import AppKit
 import SwiftUI
 
@@ -11,7 +12,8 @@ struct AlondraMacApp: App {
         let auth = AuthSession(browser: SystemAuthBrowser(anchor: {
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow ?? NSWindow()
         }))
-        _account = State(initialValue: CloudPairingOwner(auth: auth, displayName: "Mac"))
+        _account = State(initialValue: CloudPairingOwner(auth: auth, displayName: "Mac",
+            storageDirectory: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")))
     }
 
     var body: some Scene {

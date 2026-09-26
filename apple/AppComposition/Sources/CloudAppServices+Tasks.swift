@@ -49,9 +49,10 @@ extension CloudAppServices {
     public func taskSnapshots() -> AsyncStream<Overview?> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
+                guard (try? checkActive()) != nil else { continuation.finish(); return }
                 let updates = await sync.subscribe()
                 for await update in updates {
-                    guard !Task.isCancelled else { break }
+                    guard !Task.isCancelled, (try? checkActive()) != nil else { break }
                     let decoder = JSONDecoder()
                     decoder.keyDecodingStrategy = .convertFromSnakeCase
                     continuation.yield(update.snapshot.flatMap { try? decoder.decode(Overview.self, from: $0.body) })
@@ -70,7 +71,9 @@ extension CloudAppServices {
     }
 
     private func taskDecode<Value: Decodable & Sendable>(_ type: Value.Type, endpoint: Endpoint<Data>) async throws -> Value {
+        try checkActive()
         let data = try await api.send(endpoint)
+        try checkActive()
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(type, from: data)

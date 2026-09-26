@@ -3,6 +3,7 @@ import AlondraServicePairing
 import AlondraCloudPairingFeature
 import ComposableArchitecture
 import Observation
+import Foundation
 
 /// Process-owned credential and pairing use cases. Secrets never enter presentation state.
 @MainActor
@@ -10,6 +11,7 @@ import Observation
 public final class CloudPairingOwner {
     public let auth: AuthSession
     private let displayName: String
+    private let storageDirectory: URL
     private let prepareCamera: @Sendable () async -> Bool
     private let pairing = ServicePairingClient()
     private var attempt: UUID?
@@ -22,10 +24,11 @@ public final class CloudPairingOwner {
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = prepareCamera
     }
-    public init(auth: AuthSession, displayName: String,
+    public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false }) {
         self.auth = auth
         self.displayName = displayName
+        self.storageDirectory = storageDirectory
         self.prepareCamera = prepareCamera
     }
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
@@ -83,7 +86,7 @@ public final class CloudPairingOwner {
     }
     private func activate(_ approved: ApprovedServicePairing, _ auth: AuthSession) async throws {
         let current = generation
-        let next = try CloudAppServices(approved: approved, auth: auth)
+        let next = try CloudAppServices(approved: approved, auth: auth, storageDirectory: storageDirectory)
         let previous = services
         services = nil
         await previous?.deactivate()

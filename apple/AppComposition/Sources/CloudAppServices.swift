@@ -19,13 +19,13 @@ public actor CloudAppServices {
     private let scope: CommandScope
     private var active = true
 
-    public init(approved: ApprovedServicePairing, auth: AuthSession) throws {
+    public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL) throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
         let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
             + Data(approved.ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
             .map { String(format: "%02x", $0) }.joined()
-        let directory = CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
+        let directory = storageDirectory
             .appendingPathComponent("service-" + revision, isDirectory: true)
         let scope = CommandScope(server: approved.relayURL, deviceID: approved.deviceID,
                                  credentialRevision: revision, generation: 0)
@@ -77,6 +77,14 @@ public actor CloudAppServices {
     private var triageIdentity: TriageIdentity {
         TriageIdentity(server: scope.server, deviceID: scope.deviceID,
                        credentialRevision: scope.credentialRevision, generation: scope.generation)
+    }
+
+    public func documentText(_ path: String) async throws -> String {
+        try checkActive()
+        let body = try await api.send(AlondraEndpoints.fileText(path))
+        try checkActive()
+        struct DocumentResponse: Decodable { let content: String }
+        return try JSONDecoder().decode(DocumentResponse.self, from: body).content
     }
 
     public func checkActive() throws {
