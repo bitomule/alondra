@@ -187,6 +187,7 @@ public struct QuestionFeature {
                 return .none
             case .dismissNotice:
                 state.notice = nil
+                state.conflict = nil
                 return .none
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in

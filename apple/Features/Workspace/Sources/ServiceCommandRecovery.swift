@@ -79,6 +79,13 @@ extension ServiceRootFeature {
         if state.fleet.detail?.sendOutcome?.uncertainID == id || state.fleet.detail?.closeOutcome?.uncertainID == id {
             effects.append(.send(.fleet(.detail(.presented(.commandResolved(id, rejection: rejection))))))
         }
+        for card in state.triage.cards {
+            for child in card.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
+                let action = ServicePullRequestFeature.Action.attachedQuestion(.element(
+                    id: child.id, action: .question(.commandResolved(id, rejection: rejection))))
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(action))))))
+            }
+        }
         for child in state.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
             effects.append(.send(.pullRequest(.presented(.attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
         }

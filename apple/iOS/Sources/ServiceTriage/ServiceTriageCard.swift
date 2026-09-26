@@ -274,8 +274,10 @@ struct ServiceTriageCard: View {
             ForEach(reports) { report in
                 AttachedReport(report: report)
             }
-            ForEach(questions) { question in
-                AttachedQuestion(question: question)
+            if let prStore = store.scope(state: \.pullRequest, action: \.pullRequest) {
+                ForEach(prStore.scope(state: \.questionFeatures, action: \.attachedQuestion)) { child in
+                    ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question))
+                }
             }
             Text(pr.summary)
                 .font(.footnote.monospaced())

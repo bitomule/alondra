@@ -44,7 +44,9 @@ struct ServicePullRequestView: View {
                     Text(pr.summary).font(.footnote.monospaced()).foregroundStyle(.secondary)
                     PRStatus(pr: pr)
                     ForEach(store.reports) { AttachedReport(report: $0, showsBody: true) }
-                    ForEach(store.questions) { AttachedQuestion(question: $0, showsDetail: true) }
+                    ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion)) { child in
+                        ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), showsDetail: true)
+                    }
                     if let body = pr.body, !body.isEmpty { ServicePRDescription(markdown: body, expanded: store.descriptionExpanded ?? (body.count <= 600)) { store.send(.toggleDescription) } }
                 }
                 if let files = store.diff.files {

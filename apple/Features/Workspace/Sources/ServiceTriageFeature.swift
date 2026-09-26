@@ -96,6 +96,11 @@ public struct ServiceTriageFeature {
                         } else {
                             effects.append(.send(.cards(.element(id: item.id, action: .refreshed(item)))))
                         }
+                        if case .pullRequest(let pr) = item {
+                            effects.append(.send(.cards(.element(id: item.id, action: .pullRequest(.contextUpdated(
+                                reports: state.triage.reports(forPullRequest: pr.id),
+                                questions: state.triage.questions(forPullRequest: pr.id)))))))
+                        }
                     }
                 }
                 if let question = state.question {
