@@ -377,16 +377,31 @@ impl Service {
                     Err(error) => log!("service changes task: {error}"),
                 }
             }
-            let result = async {
-                let epoch = self.bootstrap().await?;
-                if enrolled_epoch != Some(epoch) {
+            let result = self.poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut changes).await;
+            if let Err(e) = result {
+                log!("service connector: {e:#}");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+
+    /// One bounded iteration; any failure forces a fresh epoch next time. POSTs
+    /// are never replayed here; work redelivery keeps its durable journal rules.
+    async fn poll_work(self: &Arc<Self>, enrolled_epoch: &mut Option<[u8;16]>,
+        revoked_this_epoch: &mut HashSet<String>, changes: &mut tokio::task::JoinSet<Result<()>>) -> Result<()> {
+        let result = async {
+                let epoch = match *enrolled_epoch {
+                    Some(epoch) => epoch,
+                    None => self.bootstrap().await?,
+                };
+                if *enrolled_epoch != Some(epoch) {
                     revoked_this_epoch.clear();
                 }
-                self.sync_revocations(&epoch, &mut revoked_this_epoch)
+                self.sync_revocations(&epoch, revoked_this_epoch)
                     .await?;
-                if enrolled_epoch != Some(epoch) {
+                if *enrolled_epoch != Some(epoch) {
                     self.enroll(&epoch).await?;
-                    enrolled_epoch = Some(epoch);
+                    *enrolled_epoch = Some(epoch);
                 }
                 let path = "/v1/work?wait_s=25";
                 let response = self
@@ -397,15 +412,20 @@ impl Service {
                     return Ok::<_, anyhow::Error>(());
                 }
                 let work: Work = response.json().await?;
-                self.schedule_work(work, epoch, &mut changes).await
-            }
-            .await;
-            if let Err(e) = result {
-                log!("service connector: {e:#}");
-                enrolled_epoch = None;
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
+                self.schedule_work(work, epoch, changes).await
+        }.await;
+        if result.is_err() { *enrolled_epoch = None; }
+        result
+    }
+
+    async fn drain_ack(response: reqwest::Response) -> Result<()> {
+        let mut response = response.error_for_status()?;
+        let mut bytes = 0usize;
+        while let Some(chunk) = response.chunk().await? {
+            bytes += chunk.len();
+            if bytes > 4096 { bail!("relay acknowledgement too large"); }
         }
+        Ok(())
     }
 
     /// Only validated changes reads leave the serial work loop. The guard is
@@ -483,9 +503,7 @@ impl Service {
         let device = self.devices.get(&e.sender).context("work from unapproved device")?;
         let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
         let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
-        self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
-            .await?
-            .error_for_status()?;
+        Self::drain_ack(self.signed(Method::POST, &receipt_path, Vec::new(), epoch).await?).await?;
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::Executing => {
@@ -520,9 +538,7 @@ impl Service {
             }
         };
         let response_path = format!("/v1/work/{}/response", e.request_id);
-        self.signed(Method::POST, &response_path, response, epoch)
-            .await?
-            .error_for_status()?;
+        Self::drain_ack(self.signed(Method::POST, &response_path, response, epoch).await?).await?;
         Ok(())
     }
 
@@ -1306,6 +1322,119 @@ agreement_key = "{}"
         service.journal.reserve_enrollment("phone-1", &key).unwrap();
         service.journal.activate_enrollment("phone-1").unwrap();
         service.journal.set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([4u8;32]), None).unwrap();
+    }
+
+    #[tokio::test]
+    async fn work_epoch_is_reused_until_failure_and_revocations_resync_after_restart() {
+        use axum::{routing::delete, http::HeaderMap, Json};
+        let (mut service, _) = push_fixture();
+        activate_push(&service);
+        let boots=Arc::new(AtomicUsize::new(0));
+        let polls=Arc::new(AtomicUsize::new(0));
+        let revokes=Arc::new(AtomicUsize::new(0));
+        let router=Router::new().route("/v1/bootstrap",get({ let boots=boots.clone(); move || {
+            let epoch=boots.fetch_add(1,Ordering::SeqCst)+1;
+            async move { Json(json!({"epoch":URL_SAFE_NO_PAD.encode([epoch as u8;16])})) }
+        }})).route("/v1/work",get({ let polls=polls.clone(); move |headers:HeaderMap| {
+            let count=polls.fetch_add(1,Ordering::SeqCst)+1;
+            async move {
+                assert_eq!(headers["x-relay-epoch"],URL_SAFE_NO_PAD.encode([if count<=3 {1u8} else {2u8};16]));
+                if count==3 { StatusCode::UNAUTHORIZED } else { StatusCode::NO_CONTENT }
+            }
+        }})).route("/v1/devices/phone-1",delete({ let revokes=revokes.clone(); move || {
+            revokes.fetch_add(1,Ordering::SeqCst);
+            async { StatusCode::NO_CONTENT }
+        }}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+        let server=tokio::spawn(async move { axum::serve(listener,router).await.unwrap() });
+        let service=Arc::new(service);
+        let mut epoch=None; let mut revoked=HashSet::new(); let mut tasks=tokio::task::JoinSet::new();
+        service.poll_work(&mut epoch,&mut revoked,&mut tasks).await.unwrap();
+        service.journal.revoke_enrollment("phone-1").unwrap();
+        service.poll_work(&mut epoch,&mut revoked,&mut tasks).await.unwrap();
+        assert_eq!(boots.load(Ordering::SeqCst),1);
+        assert_eq!(revokes.load(Ordering::SeqCst),1,"local revocation must sync while epoch is cached");
+        assert!(service.poll_work(&mut epoch,&mut revoked,&mut tasks).await.is_err());
+        assert!(epoch.is_none());
+        assert_eq!(polls.load(Ordering::SeqCst),3,"a failed poll must not replay internally");
+        service.poll_work(&mut epoch,&mut revoked,&mut tasks).await.unwrap();
+        assert_eq!(boots.load(Ordering::SeqCst),2);
+        assert_eq!(revokes.load(Ordering::SeqCst),2,"restart resends durable revocation");
+        assert_eq!(epoch,Some([2u8;16]));
+        server.abort(); std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    async fn ack_server(replies: Vec<(u16, Vec<u8>)>) -> (Url,Arc<AtomicUsize>,Arc<std::sync::Mutex<Vec<String>>>,tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+        let connections=Arc::new(AtomicUsize::new(0));
+        let paths=Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (accepted,seen)=(connections.clone(),paths.clone());
+        let server=tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(5),async move {
+                let mut replies=replies.into_iter().peekable();
+                while replies.peek().is_some() {
+                    let (stream,_)=listener.accept().await.unwrap(); accepted.fetch_add(1,Ordering::SeqCst);
+                    let (read,mut write)=stream.into_split(); let mut reader=BufReader::new(read);
+                    while replies.peek().is_some() {
+                        let mut line=String::new();
+                        match reader.read_line(&mut line).await { Ok(0)|Err(_)=>break, Ok(_)=>() }
+                        seen.lock().unwrap().push(line.trim().to_owned());
+                        let mut size=0usize;
+                        loop {
+                            let mut header=String::new(); reader.read_line(&mut header).await.unwrap();
+                            if header=="\r\n" { break; }
+                            if let Some(value)=header.to_ascii_lowercase().strip_prefix("content-length:") { size=value.trim().parse().unwrap(); }
+                        }
+                        let mut body=vec![0;size]; reader.read_exact(&mut body).await.unwrap();
+                        let (status,body)=replies.next().unwrap();
+                        let header=format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",body.len());
+                        if write.write_all(header.as_bytes()).await.is_err() { break; }
+                        // Headers arrive before the ACK body. Dropping Response without
+                        // draining cannot accidentally pass through a fully buffered body.
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        if write.write_all(&body).await.is_err() { break; }
+                    }
+                }
+            }).await.expect("ACK fixture timed out");
+        });
+        (url,connections,paths,server)
+    }
+
+    #[tokio::test]
+    async fn receipt_and_response_ack_bodies_are_drained_for_connection_reuse() {
+        let (mut service,_)=push_fixture(); activate_push(&service);
+        let (url,connections,paths,server)=ack_server(vec![(200,br#"{"ok":true}"#.to_vec());4]).await;
+        service.relay=url;
+        for id in ["ack-one","ack-two"] {
+            // Invalid local route returns a bounded encrypted error without any
+            // loopback request, leaving only the two real relay POSTs per work.
+            let work=changes_work(&service,id,json!({"method":"GET","path":"/not-allowed"}));
+            tokio::time::timeout(Duration::from_secs(3),service.handle(work,&[1u8;16])).await.unwrap().unwrap();
+        }
+        server.await.unwrap();
+        assert_eq!(connections.load(Ordering::SeqCst),1);
+        assert_eq!(*paths.lock().unwrap(),[
+            "POST /v1/work/ack-one/receipt HTTP/1.1","POST /v1/work/ack-one/response HTTP/1.1",
+            "POST /v1/work/ack-two/receipt HTTP/1.1","POST /v1/work/ack-two/response HTTP/1.1"]);
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_receipt_ack_is_bounded_and_never_reposted() {
+        for (status,body) in [(200,vec![b'a';4097]),(500,b"{}".to_vec())] {
+            let (mut service,_)=push_fixture(); activate_push(&service);
+            let (url,_,paths,server)=ack_server(vec![(status,body)]).await; service.relay=url;
+            let work=changes_work(&service,"bad-ack",json!({"method":"GET","path":"/not-allowed"}));
+            assert!(tokio::time::timeout(Duration::from_secs(3),service.handle(work,&[1u8;16])).await.unwrap().is_err());
+            server.await.unwrap();
+            assert_eq!(*paths.lock().unwrap(),["POST /v1/work/bad-ack/receipt HTTP/1.1"]);
+            let count:i64=service.journal.db().unwrap().query_row("SELECT count(*) FROM service_receipts WHERE state='accepted'",[],|row|row.get(0)).unwrap();
+            assert_eq!(count,1,"invalid ACK must not advance execution");
+            std::fs::remove_dir_all(&service.home).unwrap();
+        }
     }
 
     #[tokio::test]
