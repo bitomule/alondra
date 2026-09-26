@@ -302,11 +302,11 @@ struct ServiceTaskDetailView: View {
 
     private func actions(_ task: WorkTask) -> some View {
         VStack(spacing: 10) {
-            ActionButton(title: String(localized: "Cancel Task"), symbol: "xmark.circle", tint: Palette.rose,
+            ServiceActionButton(title: String(localized: "Cancel Task"), symbol: "xmark.circle", tint: Palette.rose,
                          enabled: !task.state.isFinished && !store.isActing && store.mutationOutcome?.uncertainID == nil) {
                 store.send(.cancelTapped)
             }
-            ActionButton(title: String(localized: "Reopen"), symbol: "arrow.clockwise", tint: Palette.sky,
+            ServiceActionButton(title: String(localized: "Reopen"), symbol: "arrow.clockwise", tint: Palette.sky,
                          enabled: task.state.isFinished && !store.isActing && store.mutationOutcome?.uncertainID == nil) {
                 store.send(.reopenTapped)
             }
@@ -429,26 +429,6 @@ private struct HistoryLine: View {
     }
 }
 
-private struct ActionButton: View {
-    let title: String
-    let symbol: String
-    let tint: Color
-    let enabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 50)
-                .foregroundStyle(enabled ? AnyShapeStyle(tint) : AnyShapeStyle(.tertiary))
-                .background(enabled ? AnyShapeStyle(tint.opacity(0.12)) : AnyShapeStyle(Palette.hairline), in: .rect(cornerRadius: 18, style: .continuous))
-                .contentShape(.rect)
-        }
-        .buttonStyle(PressStyle())
-        .disabled(!enabled)
-    }
-}
 
 struct ServiceTaskOutcome: View {
     let outcome: TaskMutationOutcome?
