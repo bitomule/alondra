@@ -185,14 +185,15 @@ final class RelaySessionTests: XCTestCase {
         let fixture = try Fixture(mode: .pendingChange)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let timer = TimerGate()
-        let session = fixture.session(sleep: { try await timer.wait(.seconds(1)) })
+        await fixture.http.holdChanges(on: timer)
+        let session = fixture.session()
         _ = try await session.fetchOverview()
         let nextRefresh = Task {
-            try await session.waitForChange(afterSnapshotTick: 999, seconds: 10)
+            try await session.waitForChange(afterSnapshotTick: 999, seconds: 50)
             return try await session.fetchOverview()
         }
         let duration = await timer.started()
-        XCTAssertEqual(duration, .seconds(1))
+        XCTAssertEqual(duration, .seconds(25))
         let beforeRelease = await fixture.http.mutations
         XCTAssertEqual(beforeRelease.count, 2, "One overview and one content poll; no next overview before its response")
         await session.deactivate()
@@ -201,6 +202,56 @@ final class RelaySessionTests: XCTestCase {
         catch is CancellationError { }
         let afterRelease = await fixture.http.mutations
         XCTAssertEqual(afterRelease.count, 2)
+    }
+
+    func testFiftySecondContentReadUsesRelayWakeupsWithoutPollingEachSecond() async throws {
+        let fixture = try Fixture(mode: .longChange)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try await fixture.session().waitForChange(afterSnapshotTick: 42, seconds: 50)
+        let posts = await fixture.http.mutations
+        let statusReads = await fixture.http.requestStatusCount
+        let changes = await fixture.http.changeQueries
+        let elapsed = await fixture.http.simulatedSeconds
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(statusReads, 2, "Lost submission receipt and final authenticated response only")
+        XCTAssertEqual(changes.map(\.since), [1, 2, 2], "Other jobs and received events advance only the relay cursor")
+        XCTAssertEqual(changes.map(\.wait), [25, 25, 25])
+        XCTAssertEqual(changes.map(\.epoch), Array(repeating: "AAAAAAAAAAAAAAAAAAAAAA", count: 3))
+        XCTAssertEqual(elapsed, 50, "Two server-held intervals; the first response contains immediate unrelated/received events")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
+    }
+
+    func testReadWakeupRejectsEpochErrorsAndForgedCompletionWithoutReposting() async throws {
+        for mode in [FakeHTTP.Mode.changeUnauthorized, .changeConflict, .changeEpoch, .changeForged] {
+            let fixture = try Fixture(mode: mode)
+            defer { try? FileManager.default.removeItem(at: fixture.directory) }
+            do {
+                try await fixture.session().waitForChange(afterSnapshotTick: 42, seconds: 50)
+                XCTFail("An invalid relay wakeup/completion became content success")
+            } catch RelaySessionError.outcomeUnknown { }
+            let posts = await fixture.http.mutations
+            XCTAssertEqual(posts.count, 1, "No new encrypted request after authentication/epoch/verification failure")
+        }
+    }
+
+    func testCancellationDuringRelayWaitDoesNotReadStatusOrPostAgain() async throws {
+        let fixture = try Fixture(mode: .pendingChange)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let gate = TimerGate()
+        await fixture.http.holdChanges(on: gate)
+        let session = fixture.session()
+        _ = try await session.fetchOverview()
+        let task = Task { try await session.waitForChange(afterSnapshotTick: 42, seconds: 50) }
+        _ = await gate.started()
+        let readsBefore = await fixture.http.requestStatusCount
+        task.cancel()
+        await gate.release()
+        do { try await task.value; XCTFail("Cancelled read succeeded") }
+        catch is CancellationError { }
+        let posts = await fixture.http.mutations
+        let readsAfter = await fixture.http.requestStatusCount
+        XCTAssertEqual(posts.count, 2, "Overview plus one content read")
+        XCTAssertEqual(readsAfter, readsBefore)
     }
 
     func testUncertainMacExecutionAndForgedIdentityCannotBecomeSuccess() async throws {
@@ -238,13 +289,23 @@ private struct Fixture {
 }
 
 private actor FakeHTTP: ServiceHTTPTransport {
-    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange }
+    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange, longChange, changeUnauthorized, changeConflict, changeEpoch, changeForged }
     let macSigning: P256.Signing.PrivateKey
     let phoneAgreement: P256.KeyAgreement.PublicKey
     let mode: Mode
     var mutations: [Data] = []
     var statusEpochs: [String] = []
     var restarted = false
+    struct ChangeQuery { let since: UInt64; let epoch: String; let wait: UInt64 }
+    var changeQueries: [ChangeQuery] = []
+    var simulatedSeconds: UInt64 = 0
+    var requestStatusCount = 0
+    var completedChange = false
+    var changeGate: TimerGate?
+    func holdChanges(on gate: TimerGate) { changeGate = gate }
+    private var waitsForChange: Bool {
+        [.longChange, .changeUnauthorized, .changeConflict, .changeEpoch, .changeForged].contains(mode)
+    }
     init(macSigning: P256.Signing.PrivateKey, phoneAgreement: P256.KeyAgreement.PublicKey, mode: Mode) {
         self.macSigning = macSigning; self.phoneAgreement = phoneAgreement; self.mode = mode
     }
@@ -257,17 +318,44 @@ private actor FakeHTTP: ServiceHTTPTransport {
             mutations.append(try XCTUnwrap(request.httpBody))
             throw URLError(.timedOut)
         }
+        if request.url?.path == "/v1/changes" {
+            let items = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let since = try XCTUnwrap(items.first { $0.name == "since" }?.value.flatMap(UInt64.init))
+            let wait = try XCTUnwrap(items.first { $0.name == "wait_s" }?.value.flatMap(UInt64.init))
+            let epoch = try XCTUnwrap(items.first { $0.name == "epoch" }?.value)
+            changeQueries.append(ChangeQuery(since: since, epoch: epoch, wait: wait))
+            let requestID = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(mutations.last)).requestID
+            if let changeGate { try await changeGate.wait(.seconds(wait)) }
+            if mode == .changeUnauthorized { return ServiceHTTPResponse(status: 401, body: Data()) }
+            if mode == .changeConflict { return ServiceHTTPResponse(status: 409, body: Data()) }
+            let responseEpoch = mode == .changeEpoch ? "AQEBAQEBAQEBAQEBAQEBAQ" : epoch
+            let jobs: [[String: Any]]
+            if changeQueries.count == 1 {
+                jobs = [["request_id": requestID, "status": "received", "revision": 2],
+                        ["request_id": "other-job", "status": "completed", "revision": 2]]
+            } else if changeQueries.count == 2 {
+                simulatedSeconds += wait
+                jobs = []
+            } else {
+                simulatedSeconds += wait
+                completedChange = true
+                jobs = [["request_id": requestID, "status": "completed", "revision": 3]]
+            }
+            return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject:
+                ["epoch": responseEpoch, "revision": completedChange ? 3 : 2, "changes": jobs]))
+        }
+        requestStatusCount += 1
         statusEpochs.append(request.value(forHTTPHeaderField: "x-relay-epoch") ?? "")
         if mode == .restart && !restarted {
             restarted = true
             return ServiceHTTPResponse(status: 401, body: Data())
         }
         let requestID = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(mutations.last)).requestID
-        if mode == .pendingChange && mutations.count > 1 {
+        if mode == .pendingChange && mutations.count > 1 || waitsForChange && !completedChange {
             return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["request_id": requestID, "status": "pending", "revision": 1]))
         }
         let payload = mode == .overview || mode == .pendingChange ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
-        let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender ? "mac-other" : "mac-test",
+        let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender || mode == .changeForged ? "mac-other" : "mac-test",
             recipient: "phone-test", requestID: mode == .wrongRequest ? "operation-other" : requestID, kind: "response",
             expiresAtMilliseconds: mode == .expired ? 999 : 5000, plaintext: Data(payload.utf8),
             senderKey: macSigning, recipientKey: phoneAgreement)

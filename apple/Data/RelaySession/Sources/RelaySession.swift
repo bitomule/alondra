@@ -210,14 +210,63 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         return body
     }
 
+    /// Relay changes wake this read's status query; they never invalidate daemon content
+    /// themselves. The completed response still crosses the same authenticated envelope gate.
+    private func waitForReadCompletion(requestID: String, path: String, seconds: Int) async throws -> RelayOperationResult {
+        let clock = ContinuousClock()
+        let bootstrap = try await client.bootstrap()
+        try Task.checkCancellation()
+        guard active else { throw CancellationError() }
+        let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: nil)
+        try Task.checkCancellation()
+        do {
+            let receipt: RelayReceipt
+            do {
+                receipt = try await client.submitRequest(envelope)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                // A lost submission response authorizes only GET reconciliation, never POST.
+                try Task.checkCancellation()
+                guard active else { throw CancellationError() }
+                receipt = try await client.requestStatus(requestID: requestID)
+            }
+            try Task.checkCancellation()
+            guard active else { throw CancellationError() }
+            if let result = try verified(receipt, requestID: requestID) { return result }
+            if receipt.status == "expired" { return .unknown }
+            let deadline = clock.now.advanced(by: .seconds(seconds + 5))
+            var revision = receipt.revision
+            while clock.now < deadline {
+                try Task.checkCancellation()
+                guard active else { throw CancellationError() }
+                let remaining = clock.now.duration(to: deadline).components
+                let wait = UInt64(max(1, min(25, remaining.seconds + (remaining.attoseconds > 0 ? 1 : 0))))
+                let update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
+                try Task.checkCancellation()
+                guard active else { throw CancellationError() }
+                // A new relay epoch or a backwards cursor cannot describe this job's lifecycle.
+                guard update.epoch == bootstrap.epoch, update.revision >= revision else { return .unknown }
+                revision = update.revision
+                guard let job = update.changes.first(where: { $0.requestID == requestID }) else { continue }
+                if job.status == "expired" { return .unknown }
+                guard job.status == "completed" else { continue }
+                let completed = try await client.requestStatus(requestID: requestID)
+                try Task.checkCancellation()
+                guard active else { throw CancellationError() }
+                if let result = try verified(completed, requestID: requestID) { return result }
+            }
+            return .unknown
+        } catch is CancellationError { throw CancellationError() }
+        catch { return .unknown }
+    }
+
     public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
         guard active else { throw CancellationError() }
         let duration = max(0, min(seconds, 50))
         // Wait on daemon content changes inside the encrypted service request. Relay job
         // lifecycle events include our own reads and cannot be used as content invalidation.
-        let result = try await read(requestID: "read-" + UUID().uuidString,
-            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", body: nil,
-            statusPolls: duration + 5)
+        let result = try await waitForReadCompletion(requestID: "read-" + UUID().uuidString,
+            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", seconds: duration)
         try Task.checkCancellation()
         guard active else { throw CancellationError() }
         switch result {

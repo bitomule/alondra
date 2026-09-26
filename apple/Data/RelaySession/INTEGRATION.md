@@ -21,11 +21,17 @@ returned to the use case for domain interpretation. Only verified Mac envelopes 
 local results. Relay acknowledgement/status alone never proves business success.
 
 `fetchOverview()` obtains a pinned, verified snapshot through APIClient's codec. Refresh
-uses the encrypted daemon `/v1/changes?after=…&wait=…` endpoint, whose response must validate
-as a `ChangeResponse`. The relay changes feed describes job lifecycle and is not used as
-daemon invalidation. Wait is bounded to 25 seconds.
-Challenge bootstrap happens before new submission and refreshes once after an unauthorized
-status GET; only the GET may be retried. A restart racing POST remains uncertain. On account/pairing replacement, deactivate the old
+uses the encrypted daemon `/v1/changes?after=…&wait=…` endpoint with a wait capped at
+50 seconds. Its successful completion requires a verified Mac envelope with a 2xx status.
+While that read is pending, relay `/v1/changes` waits up to 25 seconds per GET using the
+submission receipt's revision and bootstrap epoch. A completed event for this request
+wakes a status GET, which retrieves the envelope. Received events and other jobs only
+advance the relay cursor; they never invalidate daemon content. Authentication errors,
+epoch changes and cancellation stop the invocation without reposting it.
+
+Challenge bootstrap happens before new submission. Ordinary reads and mutation status
+reconciliation refresh once after an unauthorized status GET; only GET may be retried.
+A restart racing POST remains uncertain. On account/pairing replacement, deactivate the old
 session and replace the SyncSession transport with a fresh session and identity; the
 parent SyncSession generation drops old publications. Deactivation prevents new work
 and ignores late results; an already dispatched mutation still requires reconciliation.
