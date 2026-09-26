@@ -7,15 +7,18 @@ import Testing
 
 @MainActor
 struct AttachedQuestionIntegrationTests {
-    @Test(arguments: [false, true], [false, true])
-    func attachedFailuresUseGlobalToast(inCard: Bool, recovery: Bool) async throws {
+    enum FailureRoute { case submission, recovery, attachmentImport }
+
+    @Test(arguments: [false, true], [FailureRoute.submission, .recovery, .attachmentImport])
+    func attachedFailuresUseGlobalToast(inCard: Bool, route: FailureRoute) async throws {
+        let recovery = route == .recovery
         let decoder = JSONDecoder()
         let question = try decoder.decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
         let pr = try decoder.decode(PullRequest.self, from: Data(#"{"id":5,"sessionId":"s","url":"https://example.com/p/5","repo":"a/b","number":5,"title":"PR","state":"open","openedAt":1}"#.utf8))
         let command = UUID()
         var child = ServicePullRequestFeature.State(pr: pr, questions: [question])
         child.questionFeatures[id: 1]?.question.draft.text = "Keep the answer"
-        child.questionFeatures[id: 1]?.question.isSubmitting = !recovery
+        child.questionFeatures[id: 1]?.question.isSubmitting = route == .submission
         child.questionFeatures[id: 1]?.question.needsReconciliation = recovery
         child.questionFeatures[id: 1]?.question.uncertainCommandID = recovery ? command : nil
         var initial = ServiceRootFeature.State()
@@ -26,10 +29,15 @@ struct AttachedQuestionIntegrationTests {
         } else { initial.pullRequest = child }
         let clock = TestClock()
         let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: { $0.continuousClock = clock }
-        let action = ServicePullRequestFeature.Action.attachedQuestion(.element(id: 1, action: .question(
-            recovery ? .commandResolved(command, rejection: "Rejected") : .submissionFinished(0, .failed("Rejected")))))
+        let failure: QuestionFeature.Action
+        switch route {
+        case .submission: failure = .submissionFinished(0, .failed("Rejected"))
+        case .recovery: failure = .commandResolved(command, rejection: "Rejected")
+        case .attachmentImport: failure = .attachedSubmissionFailed("Rejected")
+        }
+        let action = ServicePullRequestFeature.Action.attachedQuestion(.element(id: 1, action: .question(failure)))
         let task = store.send(inCard ? .triage(.cards(.element(id: "p5", action: .pullRequest(action)))) : .pullRequest(.presented(action)))
-        #expect(store.notice?.event == .failure("Rejected"))
+        #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
         let draft = inCard ? store.triage.cards[id: "p5"]?.pullRequest?.questionFeatures[id: 1]?.question.draft : store.pullRequest?.questionFeatures[id: 1]?.question.draft
         #expect(draft?.text == "Keep the answer")
         await clock.advance(by: .seconds(6))

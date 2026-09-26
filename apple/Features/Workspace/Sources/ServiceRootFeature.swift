@@ -212,13 +212,13 @@ public struct ServiceRootFeature {
         case .submissionFinished(let revision, let outcome):
             guard question.isSubmitting, question.revision == revision else { return nil }
             switch outcome {
-            case .failed(let message), .forbidden(let message), .conflict(let message): return .failure(message)
+            case .failed(let message), .forbidden(let message), .conflict(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .commandResolved(let id, let rejection):
             guard question.needsReconciliation, question.uncertainCommandID == id else { return nil }
-            return rejection.map(WorkspaceNotice.Event.failure)
-        case .attachedSubmissionFailed(let message): return .failure(message)
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .attachedSubmissionFailed(let message): return .failure(couldNotSendMessage(message))
         default: return nil
         }
     }
