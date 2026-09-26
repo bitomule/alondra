@@ -115,6 +115,8 @@ public struct ServicePullRequestFeature {
         public var downloads = AttachmentDownloadFeature.State()
         public var pr: PullRequestFeature.State
         public var diff: DiffReviewFeature.State
+        public var reports: [Report] = []
+        public var questions: [Question] = []
         public init(pr: PullRequest) {
             self.pr = PullRequestFeature.State(pr: pr)
             diff = DiffReviewFeature.State(prID: pr.id)

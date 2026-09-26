@@ -66,6 +66,8 @@ public struct DocumentReviewFeature {
         public var isLoading = false
         public var loadError: String?
         public var draft = DocumentDraft()
+        public var composingAnchor: String?
+        public var composingText = ""
         public var isSubmitting = false
         public var completed = false
         public var uncertainCommandID: UUID?
@@ -91,6 +93,8 @@ public struct DocumentReviewFeature {
         case refreshed(DocumentSubject)
         case identityChanged(QuestionWorkIdentity?)
         case loaded(UInt64, Result<String, DocumentLoadFailure>)
+        case composeComment(String?)
+        case composingTextChanged(String)
         case generalChanged(String)
         case commentChanged(anchor: String, quote: String, text: String)
         case optionSelected(String?)
@@ -181,6 +185,13 @@ public struct DocumentReviewFeature {
                 case .failure(let error):
                     state.loadError = error.message
                 }
+                return .none
+            case .composeComment(let anchor):
+                state.composingAnchor = anchor
+                state.composingText = state.draft.comments.first { $0.anchor == anchor }?.text ?? ""
+                return .none
+            case .composingTextChanged(let value):
+                state.composingText = value
                 return .none
             case .generalChanged(let value):
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
