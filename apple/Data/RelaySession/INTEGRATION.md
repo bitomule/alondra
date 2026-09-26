@@ -28,6 +28,10 @@ submission receipt's revision and bootstrap epoch. A completed event for this re
 wakes a status GET, which retrieves the envelope. Received events and other jobs only
 advance the relay cursor; they never invalidate daemon content. Authentication errors,
 epoch changes and cancellation stop the invocation without reposting it.
+A cancellable monotonic budget of daemon wait plus five seconds starts before bootstrap
+and covers submission, status GETs and long polls. Expiry cancels in-flight HTTP and
+late responses cannot become success; transports must cooperate with cancellation to
+release their resources promptly.
 
 Challenge bootstrap happens before new submission. Ordinary reads and mutation status
 reconciliation refresh once after an unauthorized status GET; only GET may be retried.

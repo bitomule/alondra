@@ -254,6 +254,36 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(readsAfter, readsBefore)
     }
 
+    func testReadBudgetCancelsInFlightHTTPAndRejectsLateResponsesAtEveryPhase() async throws {
+        for phase in ["bootstrap", "status", "changes"] {
+            for returnsLate in [false, true] {
+                let fixture = try Fixture(mode: phase == "changes" ? .longChange : .overview)
+                defer { try? FileManager.default.removeItem(at: fixture.directory) }
+                let timer = TimerGate()
+                let http = DeadlineHTTPGate(returnsLate: returnsLate)
+                await fixture.http.stall(phase, on: http)
+                let session = fixture.session(readDeadline: { deadline in
+                    let remaining = ContinuousClock().now.duration(to: deadline)
+                    XCTAssertGreaterThan(remaining, .zero)
+                    XCTAssertLessThanOrEqual(remaining, .seconds(55))
+                    try await timer.wait(remaining)
+                })
+                let read = Task { try await session.waitForChange(afterSnapshotTick: 42, seconds: 50) }
+                await http.started()
+                _ = await timer.started()
+                await timer.release() // Controlled expiry while HTTP is still suspended.
+                await http.cancelled()
+                if returnsLate { await http.releaseLateResponse() }
+                do { try await read.value; XCTFail("Expired \(phase) accepted a late result") }
+                catch RelaySessionError.outcomeUnknown { }
+                let posts = await fixture.http.mutations
+                let statusReads = await fixture.http.requestStatusCount
+                XCTAssertEqual(posts.count, phase == "bootstrap" ? 0 : 1)
+                XCTAssertLessThanOrEqual(statusReads, 1, "Deadline must not authorize another status query")
+            }
+        }
+    }
+
     func testUncertainMacExecutionAndForgedIdentityCannotBecomeSuccess() async throws {
         for mode in [FakeHTTP.Mode.oversized, .wrongSender, .wrongRequest, .expired] {
             let fixture = try Fixture(mode: mode)
@@ -280,11 +310,12 @@ private struct Fixture {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         http = FakeHTTP(macSigning: macSigning, phoneAgreement: phoneAgreement.publicKey, mode: mode)
     }
-    func session(now: @escaping @Sendable () -> UInt64 = { 1000 }, sleep: @escaping @Sendable () async throws -> Void = {}) -> RelaySession {
+    func session(now: @escaping @Sendable () -> UInt64 = { 1000 }, sleep: @escaping @Sendable () async throws -> Void = {},
+                 readDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { try await ContinuousClock().sleep(until: $0) }) -> RelaySession {
         return try! RelaySession(journalFile: directory.appendingPathComponent("outbox.json"), scope: scope,
             bearer: { "token" }, transport: http,
             signing: phoneSigning, agreement: phoneAgreement, macSigning: macSigning.publicKey,
-            macAgreement: macAgreement.publicKey, now: now, sleep: sleep)
+            macAgreement: macAgreement.publicKey, now: now, sleep: sleep, waitForReadDeadline: readDeadline)
     }
 }
 
@@ -301,6 +332,9 @@ private actor FakeHTTP: ServiceHTTPTransport {
     var simulatedSeconds: UInt64 = 0
     var requestStatusCount = 0
     var completedChange = false
+    var stallPhase: String?
+    var stallGate: DeadlineHTTPGate?
+    func stall(_ phase: String, on gate: DeadlineHTTPGate) { stallPhase = phase; stallGate = gate }
     var changeGate: TimerGate?
     func holdChanges(on gate: TimerGate) { changeGate = gate }
     private var waitsForChange: Bool {
@@ -310,6 +344,13 @@ private actor FakeHTTP: ServiceHTTPTransport {
         self.macSigning = macSigning; self.phoneAgreement = phoneAgreement; self.mode = mode
     }
     func send(_ request: URLRequest) async throws -> ServiceHTTPResponse {
+        let path = request.url?.path ?? ""
+        if let stallGate,
+           (stallPhase == "bootstrap" && path == "/v1/bootstrap") ||
+           (stallPhase == "status" && request.httpMethod == "GET" && path.hasPrefix("/v1/requests/")) ||
+           (stallPhase == "changes" && path == "/v1/changes") {
+            try await stallGate.wait()
+        }
         if request.url?.path == "/v1/bootstrap" {
             let epoch = restarted ? "AQEBAQEBAQEBAQEBAQEBAQ" : "AAAAAAAAAAAAAAAAAAAAAA"
             return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["protocol": 1, "epoch": epoch]))
@@ -383,4 +424,38 @@ private actor TimerGate {
         return await withCheckedContinuation { observer = $0 }
     }
     func release() { waiting?.resume(); waiting = nil }
+}
+
+/// Models both URLSession cancellation and an uncooperative transport returning after cancellation.
+private actor DeadlineHTTPGate {
+    private let returnsLate: Bool
+    private var response: CheckedContinuation<Void, Error>?
+    private var startObserver: CheckedContinuation<Void, Never>?
+    private var cancelObserver: CheckedContinuation<Void, Never>?
+    private var didStart = false
+    private var didCancel = false
+    init(returnsLate: Bool) { self.returnsLate = returnsLate }
+    func wait() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                response = continuation
+                didStart = true
+                startObserver?.resume(); startObserver = nil
+            }
+        } onCancel: { Task { await self.cancel() } }
+    }
+    func started() async {
+        if didStart { return }
+        await withCheckedContinuation { startObserver = $0 }
+    }
+    func cancelled() async {
+        if didCancel { return }
+        await withCheckedContinuation { cancelObserver = $0 }
+    }
+    private func cancel() {
+        didCancel = true
+        if !returnsLate { response?.resume(throwing: CancellationError()); response = nil }
+        cancelObserver?.resume(); cancelObserver = nil
+    }
+    func releaseLateResponse() { response?.resume(); response = nil }
 }
