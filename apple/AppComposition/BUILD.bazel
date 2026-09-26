@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 swift_library(
     name = "AlondraAppComposition",
     module_name = "AlondraAppComposition",
@@ -9,19 +9,10 @@ swift_library(
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple:AlondraShared", "//apple/Data/Notifications:AlondraNotificationActions", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", "//apple/Contracts:AlondraContracts",
         "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/APIClient:AlondraAPIClient", "//apple/Auth:AlondraAuth",
+        "//apple/Data/Recovery:AlondraRecovery",
         "//apple/Data/Commands:AlondraCommands", "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/Data/RelaySession:AlondraRelaySession", "//apple/Data/Sync:AlondraSync",
         "//apple/ServicePairing:AlondraServicePairing", "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
-)
-
-
-swift_test(
-    name = "AlondraCommandRecoveryIntegrationTests",
-    srcs = ["Tests/CommandRecoveryIntegrationTests.swift", "Tests/DeliveryStatusIntegrationTests.swift"],
-    deps = [
-        ":AlondraAppComposition",
-        "//apple/Data/Commands:AlondraCommands",
     ],
 )

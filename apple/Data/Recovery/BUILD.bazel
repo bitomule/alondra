@@ -1,0 +1,18 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraRecovery",
+    module_name = "AlondraRecovery",
+    srcs = glob(["Sources/*.swift"]),
+    visibility = ["//visibility:public"],
+    deps = ["//apple/Data/Commands:AlondraCommands"],
+)
+
+swift_test(
+    name = "AlondraRecoveryIntegrationTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraRecovery",
+        "//apple/Data/Commands:AlondraCommands",
+    ],
+)

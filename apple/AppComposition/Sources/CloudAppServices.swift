@@ -3,6 +3,7 @@ import AlondraAttachmentsData
 import AlondraAuth
 import AlondraQuestionsFeature
 import AlondraCommands
+import AlondraRecovery
 import AlondraRelayOutbox
 import AlondraRelaySession
 import AlondraServicePairing

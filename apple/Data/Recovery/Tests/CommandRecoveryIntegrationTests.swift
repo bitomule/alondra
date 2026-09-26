@@ -1,4 +1,4 @@
-import AlondraAppComposition
+import AlondraRecovery
 import AlondraCommands
 import Foundation
 import Testing
