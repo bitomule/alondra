@@ -89,7 +89,7 @@ private struct ServiceCommentableDiffLine: View {
                         }
                     }
                 }
-            if let anchor, editing {
+            if anchor != nil, editing {
                 ServiceDiffCommentEditor(store: store, focus: focus)
                     .padding(.vertical, 4)
             } else if let comment {

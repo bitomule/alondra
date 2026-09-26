@@ -29,6 +29,8 @@ public struct AttachmentDownloadFeature {
         public var name = ""
         public var file: DownloadedAttachment?
         public var isLoading = false
+        public var opensWhenReady = false
+        public var isOpening = false
         public var error: String?
         public var previewURL: URL?
         public var exporting = false
@@ -39,6 +41,8 @@ public struct AttachmentDownloadFeature {
     }
     public enum Action: Sendable {
         case download(path: String, name: String)
+        case open(path: String, name: String)
+        case opened(Bool)
         case finished(Result<DownloadedAttachment, AttachmentFailure>, UInt64)
         case cancel
         case preview
@@ -48,9 +52,18 @@ public struct AttachmentDownloadFeature {
         case appeared, disappeared
     }
     @Dependency(\.attachmentDownload) var client
+    @Dependency(\.openURL) var openURL
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .open(let path, let name):
+                guard !state.isLoading, !state.isOpening, !state.exporting, state.previewURL == nil else { return .none }
+                state.opensWhenReady = true
+                return .send(.download(path: path, name: name))
+            case .opened(let succeeded):
+                state.isOpening = false
+                if !succeeded { state.error = "Couldn’t open the downloaded file." }
+                return releaseIfHidden(&state)
             case .download(let path, let name):
                 guard !state.exporting, state.previewURL == nil else { return .none }
                 let previous = state.file
@@ -74,11 +87,18 @@ public struct AttachmentDownloadFeature {
                 }
                 state.isLoading = false
                 switch result {
-                case .success(let file): state.file = file
-                case .failure(let error): state.error = error.message
+                case .success(let file):
+                    state.file = file
+                    if state.opensWhenReady {
+                        state.opensWhenReady = false
+                        state.isOpening = true
+                        return .run { send in await send(.opened(await openURL(file.url))) }
+                    }
+                case .failure(let error): state.opensWhenReady = false; state.error = error.message
                 }
                 return .none
             case .cancel:
+                state.opensWhenReady = false
                 state.generation &+= 1; state.isLoading = false
                 return .cancel(id: state.cancellationID)
             case .preview:
@@ -93,13 +113,14 @@ public struct AttachmentDownloadFeature {
                 return releaseIfHidden(&state)
             case .appeared: state.isVisible = true; return .none
             case .disappeared:
+                state.opensWhenReady = false
                 state.isVisible = false; state.generation &+= 1; state.isLoading = false
                 return .merge(.cancel(id: state.cancellationID), releaseIfHidden(&state))
             }
         }
     }
     private func releaseIfHidden(_ state: inout State) -> Effect<Action> {
-        guard !state.isVisible, state.previewURL == nil, !state.exporting, let file = state.file else { return .none }
+        guard !state.isVisible, !state.isOpening, state.previewURL == nil, !state.exporting, let file = state.file else { return .none }
         state.file = nil
         return .run { _ in await client.release(file) }
     }

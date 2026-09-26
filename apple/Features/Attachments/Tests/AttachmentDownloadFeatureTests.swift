@@ -24,6 +24,34 @@ struct AttachmentDownloadFeatureTests {
     }
 
     @Test
+    func openingDownloadedFileKeepsLeaseUntilSystemAcceptsIt() async {
+        let released = ReleasedFiles()
+        let gate = AsyncStream<Void>.makeStream()
+        let file = DownloadedAttachment(url: URL(fileURLWithPath: "/tmp/open"), name: "open")
+        var state = AttachmentDownloadFeature.State()
+        state.isLoading = true
+        state.opensWhenReady = true
+        let store = TestStore(initialState: state) { AttachmentDownloadFeature() } withDependencies: {
+            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _, _ in file }, release: { await released.append($0) })
+            $0.openURL = .init { url in
+                #expect(url == file.url)
+                for await _ in gate.stream { break }
+                return true
+            }
+        }
+        await store.send(.finished(.success(file), 0)) {
+            $0.isLoading = false; $0.file = file; $0.opensWhenReady = false; $0.isOpening = true
+        }
+        await store.send(.disappeared) { $0.isVisible = false; $0.generation = 1 }
+        #expect(await released.files.isEmpty)
+        gate.continuation.yield(())
+        gate.continuation.finish()
+        await store.receive(\.opened) { $0.isOpening = false; $0.file = nil }
+        await store.finish()
+        #expect(await released.files == [file])
+    }
+
+    @Test
     func disappearingDuringExportRetainsFileUntilSystemCompletion() async {
         let released = ReleasedFiles()
         let file = DownloadedAttachment(url: URL(fileURLWithPath: "/tmp/export"), name: "export")

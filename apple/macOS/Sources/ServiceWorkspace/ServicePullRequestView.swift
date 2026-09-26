@@ -8,6 +8,7 @@ import SwiftUI
 
 struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
+    var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
     private var pr: PullRequest? { store.pr.pr }
     private var comments: [ReviewComment] {
@@ -22,7 +23,7 @@ struct ServicePullRequestView: View {
     private func content(_ pr: PullRequest) -> some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title, task: nil)
+                DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title, task: taskTitle)
                 nodeSays(pr)
                 nodeAsks(pr)
                 Text(pr.summary)
@@ -85,6 +86,7 @@ struct ServicePullRequestView: View {
         }
         .task { await store.send(.diff(.appeared)).finish() }
         .onDisappear { store.send(.diff(.disappeared)) }
+        .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
     }
 
     private var hasChanges: Bool { store.diff.hasDraft || !store.diff.attachmentPicker.entries.isEmpty }
@@ -142,7 +144,7 @@ struct ServicePullRequestView: View {
                 Text("The node says")
                     .font(.title3.weight(.semibold))
                 ForEach(reports) { report in
-                    AttachedReport(report: report, pullRequestURL: pr.url)
+                    ServiceAttachedReport(report: report, pullRequestURL: pr.url, downloads: store.scope(state: \.downloads, action: \.downloads))
                 }
             }
         }

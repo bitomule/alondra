@@ -28,7 +28,7 @@ struct ServiceAttachedQuestion: View {
             if let detail = question.readableDetail, !detail.isEmpty {
                 MarkdownText(text: question.origin == "permission" ? "```\n\(detail)\n```" : detail)
             }
-            LinksRow(links: question.links.filter { $0.url != pullRequestURL }, attachments: question.attachments)
+            ServiceLinksRow(links: question.links.filter { $0.url != pullRequestURL }, attachments: question.attachments, store: store.scope(state: \.downloads, action: \.downloads))
             if !question.options.isEmpty {
                 QuestionOptions(options: question.options, selected: pendingOption, showsKeys: false, choose: { store.send(.optionTapped($0.label)) })
             }
@@ -50,6 +50,7 @@ struct ServiceAttachedQuestion: View {
             .buttonStyle(.link)
             .font(.callout)
         }
+        .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
         .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
         .padding(16)

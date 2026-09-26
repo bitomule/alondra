@@ -31,7 +31,7 @@ public enum DocumentSubject: Equatable, Sendable {
             let detail = question.readableDetail ?? ""
             return detail.isEmpty && !attachments.isEmpty ? attachments : [.inline(detail)] + attachments
         case .report(let report):
-            let attachments = report.attachments.filter(\.isText).compactMap { attachment in
+            let attachments = report.attachments.filter { report.kind == "document" && $0.isText }.compactMap { attachment in
                 attachment.storedPath.map { DocumentSource.stored(name: attachment.name, path: $0) }
             }
             let body = report.body ?? ""
@@ -43,6 +43,15 @@ public enum DocumentSubject: Equatable, Sendable {
 public enum DocumentSource: Equatable, Sendable {
     case inline(String)
     case stored(name: String, path: String)
+}
+
+public struct DocumentSection: Equatable, Sendable, Identifiable {
+    public let source: DocumentSource
+    public let text: String
+    public var id: String {
+        switch source { case .inline: "body"; case .stored(_, let path): path }
+    }
+    public init(source: DocumentSource, text: String) { self.source = source; self.text = text }
 }
 
 public struct DocumentDraft: Equatable, Sendable {
@@ -62,6 +71,7 @@ public struct DocumentReviewFeature {
         public var subject: DocumentSubject
         public var identity: QuestionWorkIdentity?
         public var sourceText: String?
+        public var sections: [DocumentSection] = []
         public var previousTextForComparison: String?
         public var isLoading = false
         public var loadError: String?
@@ -81,6 +91,7 @@ public struct DocumentReviewFeature {
             return DocumentReviewChoices().changeOption(question)
         }
         public var isSubmitting = false
+        public var keyboardReady = false
         public var completed = false
         public var uncertainCommandID: UUID?
         public var feedbackReadRetryAvailable = false
@@ -98,13 +109,14 @@ public struct DocumentReviewFeature {
     }
 
     public enum Action {
+        case keyboardAppeared, keyboardDisappeared, keyboardReady
         case downloads(AttachmentDownloadFeature.Action)
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case disappeared
         case refreshed(DocumentSubject)
         case identityChanged(QuestionWorkIdentity?)
-        case loaded(UInt64, Result<String, DocumentLoadFailure>)
+        case loaded(UInt64, Result<String, DocumentLoadFailure>, sections: [DocumentSection] = [])
         case chooseReviewOption(QuestionOption, author: String)
         case submitFeedback(author: String)
         case approveQuestion
@@ -128,10 +140,11 @@ public struct DocumentReviewFeature {
         case dismissNotice
     }
 
+    @Dependency(\.continuousClock) var clock
     @Dependency(\.questionWorkService) var service
     private let answerUseCase = AnswerQuestionUseCase()
     private let reviewUseCase = ReviewDocumentUseCase()
-    private enum CancelID { case load, submit, retryRead }
+    private enum CancelID { case keyboard, load, submit, retryRead }
 
     public init() {}
 
@@ -140,6 +153,18 @@ public struct DocumentReviewFeature {
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .keyboardAppeared:
+                state.keyboardReady = false
+                return .run { send in
+                    try await clock.sleep(for: .milliseconds(450))
+                    await send(.keyboardReady)
+                }.cancellable(id: CancelID.keyboard, cancelInFlight: true)
+            case .keyboardDisappeared:
+                state.keyboardReady = false
+                return .cancel(id: CancelID.keyboard)
+            case .keyboardReady:
+                state.keyboardReady = true
+                return .none
             case .downloads: return .none
             case .attachmentPicker:
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
@@ -172,6 +197,7 @@ public struct DocumentReviewFeature {
                 state.identity = identity
                 state.draft = DocumentDraft()
                 state.sourceText = nil
+                state.sections = []
                 state.previousTextForComparison = nil
                 state.isLoading = false
                 state.loadError = nil
@@ -186,7 +212,7 @@ public struct DocumentReviewFeature {
                 state.revision &+= 1
                 state.loadRevision &+= 1
                 return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit), .cancel(id: CancelID.retryRead))
-            case .loaded(let revision, let result):
+            case .loaded(let revision, let result, let sections):
                 guard state.loadRevision == revision else { return .none }
                 state.isLoading = false
                 switch result {
@@ -196,6 +222,7 @@ public struct DocumentReviewFeature {
                         state.notice = "The document changed. Review it again before sending comments."
                     }
                     state.sourceText = text
+                    state.sections = sections
                     state.previousTextForComparison = nil
                     state.loadError = nil
                 case .failure(let error):
@@ -204,6 +231,7 @@ public struct DocumentReviewFeature {
                 return .none
             case .chooseReviewOption(let option, let author):
                 guard canReview(state) else { return .none }
+                state.draft.selectedOption = option.label
                 if DocumentReviewChoices().requiresText(option), !state.hasFeedback {
                     state.generalFocusRequest &+= 1
                     return .none
@@ -212,7 +240,7 @@ public struct DocumentReviewFeature {
                 return .send(.sendFeedbackTapped(author: author))
             case .submitFeedback(let author):
                 guard canReview(state), state.hasFeedback else { return .none }
-                state.draft.selectedOption = state.changeOption
+                state.draft.selectedOption = state.draft.selectedOption ?? state.changeOption
                 return .send(.sendFeedbackTapped(author: author))
             case .moreContextTapped(let author):
                 guard canReview(state), state.attachmentPicker.allReady, case .question(let question) = state.subject else { return .none }
@@ -374,6 +402,7 @@ public struct DocumentReviewFeature {
         // comparison baseline for the next retry. Otherwise V2 could retain V1 anchors.
         state.previousTextForComparison = state.sourceText ?? state.previousTextForComparison
         state.sourceText = nil
+        state.sections = []
         state.loadError = nil
         state.loadRevision &+= 1
         let revision = state.loadRevision
@@ -381,15 +410,20 @@ public struct DocumentReviewFeature {
         return .run { send in
             do {
                 var documents: [String] = []
+                var sections: [DocumentSection] = []
                 for source in sources {
                     try Task.checkCancellation()
                     switch source {
-                    case .inline(let inline): documents.append(inline)
+                    case .inline(let inline):
+                        documents.append(inline)
+                        sections.append(DocumentSection(source: source, text: inline))
                     case .stored(let name, let path):
-                        documents.append("# \(name)\n\n" + (try await service.document(path)))
+                        let text = try await service.document(path)
+                        documents.append("# \(name)\n\n" + text)
+                        sections.append(DocumentSection(source: source, text: text))
                     }
                 }
-                await send(.loaded(revision, .success(documents.joined(separator: "\n\n---\n\n"))))
+                await send(.loaded(revision, .success(documents.joined(separator: "\n\n---\n\n")), sections: sections))
             } catch is CancellationError {
             } catch {
                 await send(.loaded(revision, .failure(DocumentLoadFailure(message: error.localizedDescription))))

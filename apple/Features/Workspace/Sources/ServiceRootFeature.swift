@@ -26,6 +26,10 @@ public struct ServiceRootFeature {
         @Presents public var pullRequest: ServicePullRequestFeature.State?
         public var pendingInboxID: String?
         public var feedbackResolutions: [ReportFeedbackRecoveryEvent] = []
+        public func taskTitle(forInboxID id: String) -> String? {
+            guard let item = triage.triage.items.first(where: { $0.id == id }) else { return nil }
+            return tasks.taskBoard.task(for: item)?.title
+        }
     }
     public enum Action {
         case appeared, disappeared

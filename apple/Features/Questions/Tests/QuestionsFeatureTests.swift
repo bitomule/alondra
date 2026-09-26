@@ -159,6 +159,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Updated content"
+            $0.sections = [DocumentSection(source: .inline("Updated content"), text: "Updated content")]
         }
     }
 
@@ -183,6 +184,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# first.md\n\nFirst content\n\n---\n\n# second.md\n\nSecond content"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "first.md", path: "a"), text: "First content"), DocumentSection(source: .stored(name: "second.md", path: "b"), text: "Second content")]
         }
     }
 
@@ -197,6 +199,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nOld"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "Old")]
         }
         await store.send(.commentChanged(anchor: "p1", quote: "Old", text: "Fix this")) {
             $0.draft.comments = [ReviewComment(anchor: "p1", quote: "Old", text: "Fix this")]
@@ -204,6 +207,7 @@ struct QuestionsFeatureTests {
         await store.send(.appeared) {
             $0.isLoading = true
             $0.sourceText = nil
+            $0.sections = []
             $0.previousTextForComparison = "Text\n\n---\n\n# draft.md\n\nOld"
             $0.loadRevision = 2
         }
@@ -219,6 +223,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nNew"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "New")]
             $0.previousTextForComparison = nil
             $0.draft.comments = []
             $0.notice = "The document changed. Review it again before sending comments."

@@ -12,6 +12,7 @@ public struct QuestionFeature {
         public var question: Question
         public var draft = QuestionDraft()
         public var isSubmitting = false
+        public var keyboardReady = false
         public var notice: String?
         public var conflict: String?
         public var completed = false
@@ -24,6 +25,7 @@ public struct QuestionFeature {
     }
 
     public enum Action {
+        case keyboardAppeared, keyboardDisappeared, keyboardReady
         case downloads(AttachmentDownloadFeature.Action)
         case attachmentPicker(AttachmentFeature.Action)
         case refreshed(Question)
@@ -41,6 +43,7 @@ public struct QuestionFeature {
         case dismissNotice
     }
 
+    @Dependency(\.continuousClock) var clock
     @Dependency(\.questionWorkService) var service
     private let useCase = AnswerQuestionUseCase()
 
@@ -51,6 +54,18 @@ public struct QuestionFeature {
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .keyboardAppeared:
+                state.keyboardReady = false
+                return .run { send in
+                    try await clock.sleep(for: .milliseconds(450))
+                    await send(.keyboardReady)
+                }.cancellable(id: CancelID.keyboard, cancelInFlight: true)
+            case .keyboardDisappeared:
+                state.keyboardReady = false
+                return .cancel(id: CancelID.keyboard)
+            case .keyboardReady:
+                state.keyboardReady = true
+                return .none
             case .downloads: return .none
             case .attachmentPicker:
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
@@ -181,7 +196,7 @@ public struct QuestionFeature {
         }
     }
 
-    private enum CancelID { case submit }
+    private enum CancelID { case keyboard, submit }
 }
 
 /// Action cards share the answer contract but have a distinct entry point for presentation.

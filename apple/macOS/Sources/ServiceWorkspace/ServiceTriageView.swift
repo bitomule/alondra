@@ -80,22 +80,20 @@ private struct ServiceInboxRow: View {
 
 struct ServiceQuestionView: View {
     let store: StoreOf<QuestionFeature>
+    var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
     @Environment(\.searchActive) private var searchActive
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
                 DetailHeader(style: InboxItem.question(store.question).style, node: store.question.nodeName,
-                    date: store.question.askedAt, title: store.question.title)
+                    date: store.question.askedAt, title: store.question.title, task: taskTitle)
                 MissionLine(item: .question(store.question))
                 if let detail = store.question.readableDetail, !detail.isEmpty {
                     MarkdownText(text: store.question.origin == "permission" ? "```\n\(detail)\n```" : detail)
                 }
-                ForEach(store.question.links, id: \.self) { link in
-                    if let url = URL(string: link.url) {
-                        Link(destination: url) { Label(link.title ?? link.url, systemImage: "arrow.up.right.square").lineLimit(1) }.font(.callout)
-                    }
-                }
+                ServiceLinksRow(links: store.question.links, attachments: store.question.attachments,
+                    store: store.scope(state: \.downloads, action: \.downloads))
                 ForEach(store.question.aboutReports) { report in
                     GroupBox {
                         VStack(alignment: .leading, spacing: 8) {
@@ -140,13 +138,24 @@ struct ServiceQuestionView: View {
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
             }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
         }
+        .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .onAppear { if !searchActive { focus = store.question.options.isEmpty ? .reply : .pane } }
         .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
+        .onAppear { store.send(.keyboardAppeared) }
+        .onDisappear { store.send(.keyboardDisappeared) }
+        .triageKeys(focus: $focus) { character in
+            guard store.keyboardReady else { return false }
+            if character == "r" { focus = .reply; return true }
+            guard let number = character.wholeNumberValue, number >= 1, number <= store.question.options.count else { return false }
+            store.send(.optionTapped(store.question.options[number - 1].label))
+            return true
+        }
     }
 }
 
 struct ServiceDocumentView: View {
     let store: StoreOf<DocumentReviewFeature>
+    var taskTitle: String? = nil
     var markRead: (() -> Void)?
     @FocusState private var focus: DetailField?
     @Environment(\.searchActive) private var searchActive
@@ -173,10 +182,17 @@ struct ServiceDocumentView: View {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
                     Button("Retry") { store.send(.appeared) }
                 }
-                if let text = store.sourceText {
-                    if isReviewable {
-                        ServiceReviewableDocument(text: text, anchorPrefix: "document", store: store, focus: $focus)
-                    } else { MarkdownText(text: text) }
+                ForEach(store.sections) { section in
+                    switch section.source {
+                    case .inline:
+                        if !section.text.isEmpty {
+                            if isReviewable {
+                                ServiceReviewableDocument(text: section.text, anchorPrefix: bodyPrefix, store: store, focus: $focus)
+                            } else { MarkdownText(text: section.text) }
+                        }
+                    case .stored(let name, let path):
+                        ServiceAttachmentDocument(name: name, path: path, text: section.text, store: store, focus: $focus)
+                    }
                 }
                 context
             }
@@ -208,6 +224,7 @@ struct ServiceDocumentView: View {
                     Text("Your feedback has already been delivered. This only marks the report read.").font(.caption)
                 }
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
+                if let error = store.downloads.error { Text(error).foregroundStyle(.red) }
             }
             .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             .animation(.snappy(duration: 0.2), value: store.draft.comments.count)
@@ -215,13 +232,37 @@ struct ServiceDocumentView: View {
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onAppear { if !searchActive { focus = .pane } }
+        .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .onChange(of: store.generalFocusRequest) { _, _ in focus = .reply }
+        .onAppear { store.send(.keyboardAppeared) }
+        .onDisappear { store.send(.keyboardDisappeared) }
+        .triageKeys(focus: $focus) { character in
+            guard store.keyboardReady, store.composingAnchor == nil else { return false }
+            if character == "r" { focus = .reply; return true }
+            switch store.subject {
+            case .question(let question):
+                guard let number = character.wholeNumberValue, number >= 1, number <= question.options.count else { return false }
+                store.send(.chooseReviewOption(question.options[number - 1], author: "David"))
+                return true
+            case .report(let report):
+                switch character {
+                case "l": markRead?()
+                case "c" where !report.artifacts.isEmpty: store.send(.reviewTapped(.comments))
+                case "v" where !report.artifacts.isEmpty: store.send(.reviewTapped(.approved))
+                default: return false
+                }
+                return true
+            }
+        }
     }
     @ViewBuilder private var header: some View {
         switch store.subject {
-        case .question(let q): DetailHeader(style: item.style, node: q.nodeName, date: q.askedAt, title: q.title)
-        case .report(let r): DetailHeader(style: item.style, node: r.nodeName, date: r.createdAt, title: r.title)
+        case .question(let q): DetailHeader(style: item.style, node: q.nodeName, date: q.askedAt, title: q.title, task: taskTitle)
+        case .report(let r): DetailHeader(style: item.style, node: r.nodeName, date: r.createdAt, title: r.title, task: taskTitle)
         }
+    }
+    private var bodyPrefix: String {
+        switch store.subject { case .question: "plan"; case .report: "cuerpo" }
     }
     private var isReviewable: Bool {
         switch store.subject { case .question(let q): q.isPlan; case .report(let r): r.kind == "document" }
@@ -236,7 +277,7 @@ struct ServiceDocumentView: View {
     @ViewBuilder private var context: some View {
         switch store.subject {
         case .question(let q):
-            LinksRow(links: q.links, attachments: q.attachments.filter { !$0.isText })
+            ServiceLinksRow(links: q.links, attachments: q.attachments.filter { !$0.isText }, store: store.scope(state: \.downloads, action: \.downloads))
             ForEach(q.aboutReports) { report in
                 GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
@@ -249,7 +290,7 @@ struct ServiceDocumentView: View {
                 DisclosureGroup("What the node said last") { MarkdownText(text: text).font(.callout).foregroundStyle(.secondary).padding(.top, 6) }.foregroundStyle(.secondary)
             }
         case .report(let r):
-            LinksRow(links: r.links, attachments: r.attachments.filter { r.kind != "document" || !$0.isText })
+            ServiceLinksRow(links: r.links, attachments: r.attachments.filter { r.kind != "document" || !$0.isText }, store: store.scope(state: \.downloads, action: \.downloads))
             if let earlier = r.earlier, !earlier.isEmpty {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
