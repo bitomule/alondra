@@ -1,3 +1,4 @@
+import AlondraContracts
 import Foundation
 
 /// The open questions and unread reports split between the inbox and the PR cards they belong
