@@ -584,11 +584,7 @@ async fn changes(
         ));
     }
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .change_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
@@ -615,6 +611,12 @@ async fn changes(
                 Json(json!({"epoch":server.epoch,"revision":revision,"changes":events})),
             )
                 .into_response());
+        }
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.change_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
         drop(gate);
         // On notification or timeout, reacquire the gate and recheck both the
@@ -643,11 +645,7 @@ async fn work(
         .map_err(authentication_error)?;
     drop(gate);
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .work_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
@@ -667,6 +665,12 @@ async fn work(
         if wait_s == 0 || tokio::time::Instant::now() >= deadline {
             drop(permit);
             return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.work_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
         drop(gate);
         let _ = tokio::time::timeout_at(deadline, notified).await;
