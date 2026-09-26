@@ -1,7 +1,7 @@
 //! Create-only provisioning. A lost response is reconciled by an immutable internal
 //! username plus correlation attribute; a retry NEVER updates existing credentials.
 use super::{Acceptance, DomainError};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -121,6 +121,64 @@ impl Keycloak {
             realm.get("registrationAllowed").and_then(Value::as_bool) != Some(true),
             "public Keycloak registration must be disabled"
         );
+        let response = self
+            .http
+            .get(self.admin_realm.join("users/profile")?)
+            .bearer_auth(&token.0)
+            .send()
+            .await
+            .map_err(|_| DomainError::ProviderUnavailable)?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "Keycloak user profile must be readable during preflight"
+        );
+        let profile = bounded_json(response).await?;
+        let attributes = profile
+            .get("attributes")
+            .and_then(Value::as_array)
+            .context("Keycloak user profile attributes are unavailable")?;
+        let correlations = attributes
+            .iter()
+            .filter(|attribute| attribute["name"] == "alondra_account_id")
+            .collect::<Vec<_>>();
+        ensure!(
+            correlations.len() == 1,
+            "Keycloak alondra_account_id profile attribute must exist exactly once"
+        );
+        let correlation = correlations[0];
+        ensure!(
+            correlation["permissions"]["edit"] == json!(["admin"])
+                && correlation["permissions"]["view"] == json!(["admin"])
+                && correlation["multivalued"] == json!(false),
+            "Keycloak alondra_account_id must be single-valued and admin-only for view and edit"
+        );
+        for attribute in attributes {
+            let name = attribute
+                .get("name")
+                .and_then(Value::as_str)
+                .context("Keycloak user profile attribute has no name")?;
+            ensure!(
+                name.len() <= 128
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+                "Keycloak user profile contains an unsupported attribute name"
+            );
+            // The invitation form deliberately collects one display name, not a
+            // fabricated family name. Reject profiles that force a follow-up form
+            // for fields the product cannot supply (including conditional scopes).
+            let required = attribute
+                .get("required")
+                .is_some_and(|value| !value.is_null() && value != &Value::Bool(false));
+            ensure!(
+                !required
+                    || matches!(
+                        name,
+                        "username" | "email" | "firstName" | "alondra_account_id"
+                    ),
+                "Keycloak user profile must not require unsupported invitation attribute: {name}"
+            );
+        }
         Ok(())
     }
     async fn lookup(&self, token: &AdminToken, id: Uuid) -> Result<Option<String>> {
@@ -302,6 +360,15 @@ mod integration_tests {
     use crate::management::tests::{cleanup, fixture_for_issuer};
     use anyhow::Context;
 
+    fn compatible_profile() -> Value {
+        json!({"attributes":[
+            {"name":"username","required":{"roles":["user"]}},
+            {"name":"email","required":{"roles":["user"]}},
+            {"name":"firstName","required":{"roles":["user"]}},
+            {"name":"lastName"},
+            {"name":"alondra_account_id","permissions":{"view":["admin"],"edit":["admin"]},"multivalued":false}
+        ]})
+    }
     #[tokio::test]
     async fn management_realm_preflight_rejects_unusable_email_login_and_password_audit()
     -> Result<()> {
@@ -325,6 +392,19 @@ mod integration_tests {
                     Json(state.lock().unwrap().clone())
                 }),
             )
+            .route(
+                "/realm/users/profile",
+                get(|State(state): State<Arc<Mutex<Value>>>| async move {
+                    Json(
+                        state
+                            .lock()
+                            .unwrap()
+                            .get("profile")
+                            .cloned()
+                            .unwrap_or_else(compatible_profile),
+                    )
+                }),
+            )
             .with_state(realm.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
@@ -340,6 +420,50 @@ mod integration_tests {
             "internal username cannot be the only login route for an invited user"
         );
         realm.lock().unwrap()["loginWithEmailAllowed"] = json!(true);
+        kc.verify_realm().await?;
+        for unsupported in ["lastName", "department"] {
+            let mut profile = compatible_profile();
+            profile["attributes"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":unsupported,"required":{"roles":["user"]}}));
+            realm.lock().unwrap()["profile"] = profile;
+            let error = kc.verify_realm().await.unwrap_err();
+            assert!(
+                error.to_string().contains(unsupported),
+                "preflight must identify the incompatible profile attribute"
+            );
+        }
+        for mutation in ["missing", "user_edit", "user_view", "multivalued"] {
+            let mut profile = compatible_profile();
+            let attributes = profile["attributes"].as_array_mut().unwrap();
+            match mutation {
+                "missing" => {
+                    attributes.pop();
+                }
+                "user_edit" => {
+                    attributes.last_mut().unwrap()["permissions"]["edit"] = json!(["admin", "user"])
+                }
+                "user_view" => {
+                    attributes.last_mut().unwrap()["permissions"]["view"] = json!(["user"])
+                }
+                _ => attributes.last_mut().unwrap()["multivalued"] = json!(true),
+            }
+            realm.lock().unwrap()["profile"] = profile;
+            assert!(
+                kc.verify_realm()
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("alondra_account_id")
+            );
+        }
+        realm
+            .lock()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("profile");
         kc.verify_realm().await?;
         realm.lock().unwrap()["adminEventsDetailsEnabled"] = json!(true);
         assert!(

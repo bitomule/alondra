@@ -6,6 +6,18 @@ async fn fixture() -> Result<(Management, Account, String)> {
     fixture_for_issuer("https://identity.example/realms/test").await
 }
 pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Account, String)> {
+    let (management, schema) = empty_fixture(issuer).await?;
+    let pool = &management.pool;
+    sqlx::raw_sql(include_str!("../../migrations/0001_management.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0003_device_revocations.sql"))
+        .execute(pool)
+        .await?;
+    let actor = management.bootstrap("stable-admin-sub", "Admin").await?;
+    Ok((management, actor, schema))
+}
+async fn empty_fixture(issuer: &str) -> Result<(Management, String)> {
     let url = std::env::var("ALONDRA_MANAGEMENT_TEST_DATABASE_URL")
         .context("set disposable local PostgreSQL URL")?;
     let parsed = reqwest::Url::parse(&url)?;
@@ -28,19 +40,12 @@ pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Acco
                 .bind(schema).execute(conn).await?;Ok(())
         })
     }).connect(&url).await?;
-    sqlx::raw_sql(include_str!("../../migrations/0001_management.sql"))
-        .execute(&pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../../migrations/0003_device_revocations.sql"))
-        .execute(&pool)
-        .await?;
     admin.close().await;
     let management = Management {
         pool,
         issuer: issuer.into(),
     };
-    let actor = management.bootstrap("stable-admin-sub", "Admin").await?;
-    Ok((management, actor, schema))
+    Ok((management, schema))
 }
 pub(crate) async fn cleanup(db: Management, schema: String) -> Result<()> {
     db.pool.close().await;
@@ -527,5 +532,114 @@ async fn management_self_deletion_is_explicit_nonadmin_and_last_admin_safe() -> 
             .await
             .is_ok()
     );
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn migrations_empty_and_concurrent_start_create_complete_schema_once() -> Result<()> {
+    let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
+    let (first, second) =
+        tokio::join!(migrate(&db.pool, MIGRATIONS), migrate(&db.pool, MIGRATIONS));
+    first?;
+    second?;
+    let versions: Vec<i32> =
+        sqlx::query_scalar("SELECT version FROM management_schema ORDER BY version")
+            .fetch_all(&db.pool)
+            .await?;
+    assert_eq!(versions, vec![1, 2, 3]);
+    for table in [
+        "management_accounts",
+        "web_sessions",
+        "management_device_revocations",
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(table)
+            .fetch_one(&db.pool)
+            .await?;
+        assert!(exists, "migration did not create {table}");
+    }
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> {
+    for prefix in [1, 2] {
+        let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
+        migrate(&db.pool, &MIGRATIONS[..prefix]).await?;
+        let account = db.bootstrap("migration-admin", "Existing admin").await?;
+        if prefix == 2 {
+            sqlx::query("INSERT INTO web_login_flows(cookie_hash,state_hash,sealed,expires_ms) VALUES($1,$2,$3,9000)")
+                .bind(vec![1u8;32]).bind(vec![2u8;32]).bind(b"opaque-existing-ciphertext".to_vec()).execute(&db.pool).await?;
+        }
+        migrate(&db.pool, MIGRATIONS).await?;
+        migrate(&db.pool, MIGRATIONS).await?;
+        assert_eq!(
+            db.active_identity("https://identity.example/realms/test", "migration-admin")
+                .await?
+                .id,
+            account.id
+        );
+        if prefix == 2 {
+            let sealed: Vec<u8> = sqlx::query_scalar("SELECT sealed FROM web_login_flows")
+                .fetch_one(&db.pool)
+                .await?;
+            assert_eq!(sealed, b"opaque-existing-ciphertext");
+        }
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM management_schema")
+            .fetch_one(&db.pool)
+            .await?;
+        assert_eq!(count, 3);
+        cleanup(db, schema).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn migrations_reject_downgrade_and_checksum_change_without_mutating_state() -> Result<()> {
+    let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
+    migrate(&db.pool, MIGRATIONS).await?;
+    let account = db.bootstrap("migration-admin", "Existing admin").await?;
+    let before: Vec<(i32, Vec<u8>)> =
+        sqlx_core::query_as::query_as("SELECT version,checksum FROM management_schema ORDER BY version")
+            .fetch_all(&db.pool)
+            .await?;
+    let error = migrate(&db.pool, &MIGRATIONS[..2]).await.unwrap_err();
+    assert!(error.to_string().contains("newer than this binary"));
+    let after: Vec<(i32, Vec<u8>)> =
+        sqlx_core::query_as::query_as("SELECT version,checksum FROM management_schema ORDER BY version")
+            .fetch_all(&db.pool)
+            .await?;
+    assert_eq!(before, after);
+    assert_eq!(
+        db.active_identity("https://identity.example/realms/test", "migration-admin")
+            .await?
+            .id,
+        account.id
+    );
+    cleanup(db, schema).await?;
+
+    let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
+    migrate(&db.pool, &MIGRATIONS[..2]).await?;
+    sqlx::query("UPDATE management_schema SET checksum=$1 WHERE version=1")
+        .bind(vec![0u8; 32])
+        .execute(&db.pool)
+        .await?;
+    let error = migrate(&db.pool, MIGRATIONS).await.unwrap_err();
+    assert!(error.to_string().contains("checksum mismatch"));
+    let third_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('management_device_revocations') IS NOT NULL")
+            .fetch_one(&db.pool)
+            .await?;
+    assert!(
+        !third_exists,
+        "checksum rejection must happen before new DDL"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM management_schema")
+        .fetch_one(&db.pool)
+        .await?;
+    assert_eq!(count, 2);
     cleanup(db, schema).await
 }
