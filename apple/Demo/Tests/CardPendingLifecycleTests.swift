@@ -11,7 +11,7 @@ import Testing
 @MainActor
 struct CardPendingLifecycleTests {
     enum Surface: CaseIterable { case question, report, diff, attachedQuestion }
-    enum Departure: CaseIterable { case none, tab, scene, rootScene, skip, focus }
+    enum Departure: CaseIterable { case none, tab, scene, rootScene, skip, focus, skipGesture, acceptedSwipe, rejectedSwipe }
 
     @Test(arguments: Surface.allCases, Departure.allCases)
     func lateReceiptCannotSubmitAfterLeavingCard(surface: Surface, departure: Departure) async throws {
@@ -85,9 +85,19 @@ struct CardPendingLifecycleTests {
         case .rootScene: await store.send(.disappeared).finish()
         case .skip: await store.send(.triage(.triage(.skip(item.id)))).finish()
         case .focus: await store.send(.triage(.triage(.focus("r99")))).finish()
+        case .skipGesture: await store.send(.triage(.cardStack(.skipTapped(item.id)))).finish()
+        case .acceptedSwipe, .rejectedSwipe:
+            await store.send(.triage(.cardStack(.dragged(width: departure == .acceptedSwipe ? 110 : 20, height: 0)))).finish()
+            await store.send(.triage(.cardStack(.dragEnded(projectedWidth: 0)))).finish()
         }
         if departure == .skip || departure == .focus {
             #expect(store.triage.triage.queue.first?.id == "r99")
+        }
+        if departure == .skipGesture || departure == .acceptedSwipe {
+            #expect(store.triage.cardStack.departure?.itemID == item.id)
+            #expect(store.triage.triage.queue.first?.id == item.id, "Receipt arrives before animationCompleted")
+        } else if departure == .rejectedSwipe {
+            #expect(store.triage.cardStack.departure == nil)
         }
         let receipt = AttachmentFeature.Action.uploaded(attachment.id, .success("stored-proof"))
         let action: TriageCardFeature.Action = switch surface {
@@ -98,7 +108,7 @@ struct CardPendingLifecycleTests {
         }
         await store.send(.triage(.cards(.element(id: item.id, action: action)))).finish()
         await store.send(.triage(.cards(.element(id: item.id, action: action)))).finish()
-        #expect(await sent.count == (departure == .none ? 1 : 0))
+        #expect(await sent.count == ((departure == .none || departure == .rejectedSwipe) ? 1 : 0))
         let retained = try #require(store.triage.cards[id: item.id])
         let retainedPicker: AttachmentFeature.State?
         let retainedDraft: String?
@@ -113,6 +123,53 @@ struct CardPendingLifecycleTests {
         #expect(retainedDraft == "Keep this draft")
         #expect(retainedPicker?.storedIDs == ["stored-proof"])
         #expect(retainedPicker?.entries.first?.draft == attachment)
+    }
+
+    @Test(arguments: [false, true])
+    func focusingAnotherInboxItemCancelsPresentedPRBeforeNavigationEffects(openReport: Bool) async throws {
+        let decoder = JSONDecoder()
+        let question = try decoder.decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
+        let report = try decoder.decode(Report.self, from: Data(#"{"id":99,"sessionId":"s","title":"Report","body":"Body","links":[],"attachments":[],"kind":"document","createdAt":100}"#.utf8))
+        let pr = try decoder.decode(PullRequest.self, from: Data(#"{"id":5,"sessionId":"s","url":"https://example.com/p/5","repo":"a/b","number":5,"title":"PR","state":"open","openedAt":1}"#.utf8))
+        let attachment = AttachmentDraft(id: UUID(uuidString: "00000000-0000-0000-0000-000000000093")!, name: "proof.txt", data: Data("proof".utf8))
+        var picker = AttachmentFeature.State()
+        picker.entries = [.init(draft: attachment, status: .uploading)]
+        var detail = ServicePullRequestFeature.State(pr: pr, questions: [question])
+        detail.diff.note = "Keep review"
+        detail.diff.files = []
+        detail.diff.loadedDiffText = ""
+        detail.diff.loadedHeadSHA = "head"
+        detail.diff.attachmentPicker = picker
+        detail.diff.pendingSubmission = .awaitingReceipts
+        detail.diff.pendingReviewKind = .ask
+        detail.questionFeatures[id: 1]?.question.draft.text = "Keep answer"
+        detail.questionFeatures[id: 1]?.question.attachmentPicker = picker
+        detail.questionFeatures[id: 1]?.question.pendingSubmission = .awaitingReceipts
+        detail.questionFeatures[id: 1]?.question.pendingAttachedAnswer = detail.questionFeatures[id: 1]?.question.draft
+        var initial = ServiceRootFeature.State()
+        initial.pullRequest = detail
+        initial.triage.triage.items = [.question(question), .report(report)]
+        let sent = SubmissionEvidence()
+        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { _ in await sent.record(); return .obsolete }, document: { _ in "" })
+            $0.pullRequestOperations = PullRequestOperations(diff: { _ in PRDiffSnapshot(diff: "", headSHA: "head") },
+                merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
+                review: { _, _, _, _, _ in await sent.record(); return .obsolete })
+        }
+        let navigation = store.send(.focusInbox(openReport ? "r99" : "q1"))
+        // Inspect before awaiting the queued focus/open effects or a SwiftUI callback.
+        #expect(store.pullRequest?.diff.pendingSubmission == nil)
+        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.pendingAttachedAnswer == nil)
+        let receipt = AttachmentFeature.Action.uploaded(attachment.id, .success("stored-proof"))
+        await store.send(.pullRequest(.presented(.diff(.attachmentPicker(receipt))))).finish()
+        await store.send(.pullRequest(.presented(.attachedQuestion(.element(id: 1, action: .question(.attachmentPicker(receipt))))))).finish()
+        await navigation.finish()
+        #expect(await sent.count == 0)
+        #expect(store.pullRequest?.diff.note == "Keep review")
+        #expect(store.pullRequest?.diff.attachmentPicker.storedIDs == ["stored-proof"])
+        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep answer")
+        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.attachmentPicker.storedIDs == ["stored-proof"])
+        #expect(store.triage.document?.subject.id == (openReport ? "r99" : "q1"))
     }
 
     @Test func closingRootDoesNotCancelAlreadyDispatchedCommandOrLoseReconciliation() async throws {

@@ -75,6 +75,13 @@ public struct ServiceTriageFeature {
                 case .keyboardVisibilityChanged(let visible):
                     state.keyboardVisible = visible
                     return .none
+                case .cardStack(.skipTapped), .cardStack(.dragEnded):
+                    // CardStack has already accepted or rejected the gesture. Invalidate
+                    // before the view animates; a rejected drag has no departure.
+                    if let departure = state.cardStack.departure {
+                        state.cards[id: departure.itemID]?.cancelPendingSubmission()
+                    }
+                    return .none
                 case .cardStack(.delegate(let departure)):
                     return .send(.triage(.skipIfCurrent(departure.itemID, departure.identity)), animation: .spring(duration: 0.5, bounce: 0.25))
                 case .cardStack: return .none

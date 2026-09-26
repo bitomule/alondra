@@ -139,6 +139,8 @@ public struct ServiceRootFeature {
                 return .none
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
+                state.triage.cancelPendingSubmissions()
+                state.pullRequest?.cancelPendingSubmission()
                 state.tab = .inbox
                 state.pendingInboxID = id
                 return routePending(&state)
@@ -255,6 +257,8 @@ public struct ServiceRootFeature {
     private func routePending(_ state: inout State) -> Effect<Action> {
         guard let id = state.pendingInboxID, state.triage.triage.routeTarget(for: id) != nil else { return .none }
         state.pendingInboxID = nil
+        state.triage.cancelPendingSubmissions()
+        state.pullRequest?.cancelPendingSubmission()
         return .merge(.send(.triage(.triage(.focus(id)))), .send(.triage(.open(id))))
     }
 }
