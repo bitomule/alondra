@@ -59,6 +59,19 @@ public struct ServiceTaskPresentation {
         task.assignee.flatMap { node($0.sessionId) }
     }
 
+    public func sidebarSubtitle(for task: WorkTask) -> String {
+        [project(of: task), now(for: task) ?? board.stateLabel(of: task)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    public func sidebarSubtitle(for request: WorkRequest) -> String {
+        let status = request.state == .done
+            ? String(localized: "finished without tasks")
+            : request.isLeftDefining()
+                ? String(localized: "the orchestrator left it without tasks")
+                : String(localized: "the orchestrator is splitting it")
+        return [project(of: request), status].compactMap { $0 }.joined(separator: " · ")
+    }
+
     public func project(of task: WorkTask) -> String? {
         task.options?.project.flatMap(Self.named) ?? node(of: task)?.projectName ?? board.request(task.request)?.options?.project.flatMap(Self.named)
     }

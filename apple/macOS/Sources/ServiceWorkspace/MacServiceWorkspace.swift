@@ -119,13 +119,13 @@ private struct MacServiceSidebar: View {
                 ForEach(presentation.withState { $0.groups(in: store.tasks.taskBoard) }) { group in
                     DisclosureGroup(isExpanded: Binding(get: { presentation.withState { $0.groupExpanded(group) } }, set: { presentation.send(.groupExpanded(String(describing: group.kind), defaultExpanded: !group.isFinished, expanded: $0)) })) {
                         ForEach(group.tasks) { task in
-                            MacServiceTaskRow(task: task, board: store.tasks.taskBoard).tag(MacPresentationFeature.Selection.task(task.id))
+                            MacServiceTaskRow(task: task, board: store.tasks.taskBoard, subtitle: store.tasks.presentation.sidebarSubtitle(for: task)).tag(MacPresentationFeature.Selection.task(task.id))
                         }
                         ForEach(group.requests) { request in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(request.title ?? request.headline ?? "Request").fontWeight(.medium).lineLimit(2)
-                                Text(request.state == .done ? "finished without tasks" : "the orchestrator is splitting it").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }.padding(.vertical, 2).tag(MacPresentationFeature.Selection.request(request.id))
+                                Text(store.tasks.presentation.title(of: request)).fontWeight(.medium).lineLimit(2)
+                                Text(verbatim: store.tasks.presentation.sidebarSubtitle(for: request)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }.padding(.vertical, 2).accessibilityElement(children: .combine).tag(MacPresentationFeature.Selection.request(request.id))
                         }
                     } label: { TaskGroupLabel(group: group) }
                 }
@@ -164,7 +164,7 @@ private struct MacServiceInboxSection: View {
                     InboxRow(item: item, asks: store.withState { $0.asksOnPullRequest(item) }).tag(MacPresentationFeature.Selection.item(item.id))
                 }
             } header: {
-                SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: items.count, tint: pullRequests ? .purple : .orange)
+                SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: store.withState { $0.inboxCount(pullRequests: pullRequests) }, tint: pullRequests ? .purple : .orange)
             }
         }
     }
@@ -173,10 +173,11 @@ private struct MacServiceInboxSection: View {
 private struct MacServiceTaskRow: View {
     let task: WorkTask
     let board: TaskBoard
+    let subtitle: String
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(board.rowTitle(of: task)).fontWeight(.medium).strikethrough(task.state == .cancelled).lineLimit(2)
-            Text(board.stateLabel(of: task)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }.padding(.vertical, 2).accessibilityElement(children: .combine).accessibilityValue(task.state.label)
     }
 }

@@ -34,6 +34,9 @@ public struct ServiceRootFeature {
             let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
             return [pending, String(localized: "\(overview.nodes.count) nodes")].joined(separator: " · ")
         }
+        public func inboxCount(pullRequests: Bool) -> Int {
+            triage.triage.queue.count { $0.isPullRequest == pullRequests }
+        }
         public func asksOnPullRequest(_ item: InboxItem) -> Bool {
             guard case .pullRequest(let pr) = item else { return false }
             return !triage.triage.questions(forPullRequest: pr.id).isEmpty
