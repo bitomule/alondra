@@ -45,6 +45,18 @@ import Testing
         #expect(store.task(for: .question(overview.openQuestions[0]))?.id == "t-1")
         #expect(store.now(for: decoded) == "question: Which one?")
         #expect(store.project(of: decoded) == "alondra")
+        let context = ServiceTaskContext(board: store.board, overview: overview, taskID: "t-1")
+        #expect(context.requestTitle == "Build it")
+        #expect(context.project == "alondra")
+        #expect(context.now == "question: Which one?")
+        #expect(context.requestTaskCount == 1)
+        #expect(context.pending.map(\.id) == ["q7"])
+        #expect(context.inboxIDs == ["q7"])
+        let resolved = ServiceTaskContext(board: store.board, overview: overview, taskID: "t-1", hiddenIDs: ["q7"])
+        #expect(resolved.pending.isEmpty)
+        #expect(resolved.inboxIDs.isEmpty)
+        #expect(resolved.requestTitle == "Build it")
+        #expect(resolved.requestTaskCount == 1)
     }
 
     @MainActor @Test func aRunningTaskShowsItsStateAndTheNodeRouteCarriesItsThreads() throws {
