@@ -206,3 +206,21 @@ func malformedCollectionFailsClosedWithoutOverwriting(kind: String) throws {
     try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
     #expect(item.bytes == nil)
 }
+
+
+@Test func compensationUsesPublishedMacWhenItsApprovalWasPersistedBeforeFailedSelection() throws {
+    let item = MemoryPairingItem(legacyBytes), store = KeychainApprovedPairingStore(item: item)
+    let original = try #require(try store.load())
+    let attempted = binding(), published = binding(mac: "mac-d", device: "phone-d", signing: "pin-d")
+    try store.save(attempted)
+    try store.select(ApprovedPairingID(original))
+    try store.save(published) // D approval persists before the suspended C selection.
+    try store.select(ApprovedPairingID(attempted))
+    // D has now been published by the registry. The owner supplies this live ID,
+    // not A captured before its await. Compensation retains all three credentials.
+    try store.restoreSelection(ApprovedPairingID(published), ifSelected: ApprovedPairingID(attempted))
+    let restarted = KeychainApprovedPairingStore(item: item)
+    #expect(try restarted.load()?.macID == published.macID)
+    #expect(try restarted.loadCollection().pairings.count == 3)
+    #expect(try restarted.loadCollection().pairings.first { $0.macID == original.macID }?.signingPrivateKey == original.signingPrivateKey)
+}

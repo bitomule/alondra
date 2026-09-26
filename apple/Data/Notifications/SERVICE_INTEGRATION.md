@@ -140,6 +140,6 @@ for the isolated two-daemon/client end-to-end gate before the next beta.
 Adding a Mac already linked to this account and relay is rejected before candidate
 creation. Removing/rotating an existing pairing remains an explicit future operation;
 this path never silently overwrites its keys. Failed selection publication restores
-the previous persisted preference only if the attempted selection is still current.
+the live registry selection only if the attempted selection is still persisted.
 That compensation is synchronous under the store mutex and the owner's generation
 guard, so it cannot recreate logout state or overwrite a newer approval.

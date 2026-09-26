@@ -205,7 +205,6 @@ public final class CloudPairingOwner {
         try await entry.session.checkSettingsConnection()
         guard current == generation, !Task.isCancelled,
               expectedSession == nil || services === expectedSession else { throw CancellationError() }
-        let previous = registry.snapshot.selectedID
         do {
             try await pairing.selectApprovedPairing(id)
             guard current == generation, !Task.isCancelled,
@@ -218,8 +217,10 @@ public final class CloudPairingOwner {
         } catch {
             // No suspension between the owner-generation check and the store CAS:
             // logout cannot interleave and resurrect a preference from this action.
-            if current == generation, let previous {
-                do { try pairing.restoreApprovedSelection(previous, ifSelected: id) }
+            if current == generation, let active = registry.snapshot.selectedID {
+                // Another approval may have published while persistence suspended.
+                // Restore the live registry selection, never a captured older one.
+                do { try pairing.restoreApprovedSelection(active, ifSelected: id) }
                 catch { throw CleanupFailure(details: "Could not restore the previous Mac selection: " + error.localizedDescription) }
             }
             throw error
