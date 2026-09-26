@@ -1,0 +1,38 @@
+{
+  "source": "apple/iOS/Sources/Theme.swift",
+  "existingWeb": false,
+  "palette": "Alondra warm paper / orange accent / dark ink",
+  "font": "system serif display, system sans body, monospace commands",
+  "motion": "minimal; reduced motion supported",
+  "audience": "invited Claude users",
+  "purpose": "understand, install and manage access",
+  "frameworkProposal": "React Router framework + Vite + Query + Radix",
+  "status": "Public and private alpha flows implemented; visual review performed, not deployed",
+  "visualReview": {
+    "screenshots": [
+      "home-desktop",
+      "home-mobile",
+      "admin-mobile"
+    ],
+    "responsiveWidths": [
+      320,
+      375,
+      414,
+      768,
+      1440
+    ],
+    "subjectiveScores": {
+      "philosophy": 4,
+      "hierarchy": 4,
+      "execution": 4,
+      "specificity": 4,
+      "restraint": 4,
+      "variety": 3
+    },
+    "limits": [
+      "Synthetic UI screenshots",
+      "Not a user usability study",
+      "No production deployment"
+    ]
+  }
+}
