@@ -42,9 +42,11 @@ public actor DeliveryStatusService {
     private let gate: CommandGate
     private let scope: CommandScope
     private let storage: DeliveryWarningStorage
+    private let retryDelay: @Sendable () async throws -> Void
     private let now: @Sendable () -> Date
     private let feedback: @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]>
     private var records: [UUID: DeliveryWarningRecord] = [:]
+    private var observedAt: [UUID: Date] = [:]
     private var phases: [UUID: DeliveryStatus.Phase] = [:]
     private var commands: [UncertainCommand] = []
     private var feedbackEvents: [ReportFeedbackRecoveryEvent] = []
@@ -56,7 +58,9 @@ public actor DeliveryStatusService {
 
     public init(gate: CommandGate, scope: CommandScope, storage: DeliveryWarningStorage,
                 now: @escaping @Sendable () -> Date = { Date() },
+                retryDelay: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(5)) },
                 feedback: @escaping @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]> = { AsyncStream { $0.finish() } }) {
+        self.retryDelay = retryDelay
         self.gate = gate; self.scope = scope; self.storage = storage; self.now = now; self.feedback = feedback
     }
 
@@ -67,14 +71,7 @@ public actor DeliveryStatusService {
         if observation == nil {
             observation = Task {
                 await withTaskGroup(of: Void.self) { group in
-                    group.addTask {
-                        do {
-                            for await commands in try await self.gate.observeUncertainty() {
-                                guard !Task.isCancelled else { return }
-                                await self.receive(commands)
-                            }
-                        } catch { await self.storageFailed(error) }
-                    }
+                    group.addTask { await self.observeCommands() }
                     group.addTask {
                         for await events in await self.feedback() {
                             guard !Task.isCancelled else { return }
@@ -90,6 +87,22 @@ public actor DeliveryStatusService {
             listeners[id] = continuation
             continuation.yield(snapshot)
             continuation.onTermination = { _ in Task { await self.remove(id) } }
+        }
+    }
+
+    private func observeCommands() async {
+        while active, !Task.isCancelled {
+            guard await gate.scope == scope else { stop(); return }
+            do {
+                for await commands in try await gate.observeUncertainty() {
+                    guard active, !Task.isCancelled else { return }
+                    await receive(commands)
+                }
+            } catch is CancellationError { return }
+            catch { storageFailed(error) }
+            guard active, !Task.isCancelled else { return }
+            // A temporarily unreadable journal must not permanently detach this scene's warnings.
+            do { try await retryDelay() } catch { return }
         }
     }
 
@@ -165,6 +178,7 @@ public actor DeliveryStatusService {
             case .awaitingDraft: phases[event.operationID] = .feedbackNeedsDraft
             }
         }
+        for id in phases.keys where observedAt[id] == nil { observedAt[id] = now() }
         do {
             if !loaded {
                 let saved = try storage.load()
@@ -175,7 +189,7 @@ public actor DeliveryStatusService {
             }
             var next = records
             for id in phases.keys where next[id] == nil {
-                next[id] = DeliveryWarningRecord(id: id, scope: scope, firstObservedUncertainAt: now())
+                next[id] = DeliveryWarningRecord(id: id, scope: scope, firstObservedUncertainAt: observedAt[id] ?? now())
             }
             if next.count != records.count { try storage.save(Array(next.values)) }
             records = next; error = nil
@@ -185,7 +199,7 @@ public actor DeliveryStatusService {
     private var snapshot: DeliveryStatus {
         DeliveryStatus(scope: scope, operations: phases.map { id, phase in
             DeliveryStatus.Operation(id: id, phase: phase,
-                firstObservedUncertainAt: records[id]?.firstObservedUncertainAt ?? now(),
+                firstObservedUncertainAt: records[id]?.firstObservedUncertainAt ?? observedAt[id] ?? now(),
                 acknowledged: records[id]?.acknowledgedPhase == phase)
         }.sorted { $0.id.uuidString < $1.id.uuidString }, persistenceError: error)
     }

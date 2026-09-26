@@ -2,11 +2,45 @@ import AlondraAppComposition
 import AlondraCommands
 import Foundation
 import Testing
+import Synchronization
 
 @Suite struct DeliveryStatusIntegrationTests {
     private var scope: CommandScope {
         CommandScope(server: URL(string: "https://example.test")!, deviceID: "phone", credentialRevision: "key", generation: 1)
     }
+    @Test(.timeLimit(.minutes(1)))
+    func journalReadFailureRecoversWithoutReopeningTheSceneOrResending() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = FileCommandJournal(directory: directory.appendingPathComponent("commands"))
+        let original = CommandGate(scope: scope, journal: journal)
+        let result = await original.submitIdentified(.newRequest, in: scope, isUnknown: { _ in true }) { _ in
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let command) = result else { Issue.record("Expected uncertainty"); return }
+        let interrupted = InterruptedJournal(base: journal, readFailures: 2)
+        let relaunched = CommandGate(scope: scope, journal: interrupted)
+        let service = DeliveryStatusService(gate: relaunched, scope: scope,
+            storage: .file(directory.appendingPathComponent("warnings.json")), retryDelay: { await Task.yield() })
+        var updates = await service.observe().makeAsyncIterator()
+        var recovered = false
+        while let update = await updates.next() {
+            if update.operations.contains(where: { $0.id == command.id }) {
+                #expect(update.persistenceError == nil)
+                recovered = true
+                break
+            }
+        }
+        #expect(recovered)
+        #expect(await interrupted.failedReads == 2)
+        let duplicate = await relaunched.submitIdentified(.newRequest, in: scope, isUnknown: { _ in true }) { _ in
+            Issue.record("Journal read recovery must not resend the request")
+        }
+        guard case .unknown(let retained) = duplicate else { Issue.record("Expected retained reservation"); await service.stop(); return }
+        #expect(retained.id == command.id)
+        await service.stop()
+    }
+
     @Test func warningAcknowledgementSurvivesRelaunchWithoutUnlockingOrResending() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -81,8 +115,14 @@ import Testing
         let gate = CommandGate(scope: scope)
         let result = await gate.submitIdentified(.send("node"), in: scope, isUnknown: { _ in true }) { _ in throw URLError(.timedOut) }
         guard case .unknown(let command) = result else { Issue.record("Expected uncertainty"); return }
-        let service = DeliveryStatusService(gate: gate, scope: scope, storage: .init(load: { [] }, save: { _ in throw CocoaError(.fileWriteNoPermission) }))
+        let clock = Mutex(Date(timeIntervalSince1970: 123))
+        let service = DeliveryStatusService(gate: gate, scope: scope,
+            storage: .init(load: { [] }, save: { _ in throw CocoaError(.fileWriteNoPermission) }),
+            now: { clock.withLock { $0 } })
         #expect(await service.refresh().persistenceError != nil)
+        clock.withLock { $0 = Date(timeIntervalSince1970: 999) }
+        #expect(await service.refresh().operations.first?.firstObservedUncertainAt == Date(timeIntervalSince1970: 123),
+                "A metadata write failure must not keep resetting the warning's age")
         do { try await service.acknowledge([command.id: .unconfirmed], in: scope); Issue.record("Expected write failure") } catch {}
         #expect(await service.refresh().operations.first?.acknowledged == false)
         let next = CommandScope(server: scope.server, deviceID: scope.deviceID, credentialRevision: "new-key", generation: 2)
@@ -90,4 +130,22 @@ import Testing
         do { try await service.acknowledge([command.id: .unconfirmed], in: scope); Issue.record("Expected stale-scope rejection") } catch {}
         await service.stop()
     }
+}
+
+private actor InterruptedJournal: CommandJournaling {
+    let base: FileCommandJournal
+    private var readFailures: Int
+    private(set) var failedReads = 0
+    init(base: FileCommandJournal, readFailures: Int) { self.base = base; self.readFailures = readFailures }
+    func records() async throws -> [CommandJournalRecord] {
+        if readFailures > 0 {
+            readFailures -= 1
+            failedReads += 1
+            throw CocoaError(.fileReadNoPermission)
+        }
+        return try await base.records()
+    }
+    func reserve(_ command: UncertainCommand) async throws -> CommandJournalReservation { try await base.reserve(command) }
+    func save(_ record: CommandJournalRecord) async throws { try await base.save(record) }
+    func remove(_ id: UUID) async throws { try await base.remove(id) }
 }
