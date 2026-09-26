@@ -1249,6 +1249,38 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
     #[test]
+    fn legacy_receipt_schema_migrates_without_reexecuting_ambiguous_work() {
+        let home = std::env::temp_dir().join(format!("alondra-legacy-receipts-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("receipts.sqlite");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE service_receipts(sender TEXT NOT NULL, request_id TEXT NOT NULL,
+            digest BLOB NOT NULL, state TEXT NOT NULL, response BLOB, PRIMARY KEY(sender,request_id));").unwrap();
+        for (id, state, response) in [("accepted", "accepted", None), ("executing", "executing", None),
+            ("completed", "completed", Some(b"original ciphertext".as_slice()))] {
+            old.execute("INSERT INTO service_receipts(sender,request_id,digest,state,response) VALUES('client',?1,?2,?3,?4)",
+                params![id, [1u8;32].as_slice(), state, response]).unwrap();
+        }
+        drop(old);
+        let journal = Journal::open(path.clone()).unwrap();
+        assert!(matches!(journal.accept("client", "accepted", &[1u8;32]).unwrap(), Disposition::Accepted));
+        assert!(matches!(journal.accept("client", "executing", &[1u8;32]).unwrap(), Disposition::Executing),
+            "old executing state must take the uncertain branch, never atomic recovery");
+        assert!(matches!(journal.accept("client", "completed", &[1u8;32]).unwrap(),
+            Disposition::Completed(bytes) if bytes == b"original ciphertext"));
+        assert!(journal.accept("client", "completed", &[2u8;32]).is_err());
+        journal.accept("client", "new-local", &[3u8;32]).unwrap();
+        journal.executing_local("client", "new-local", &[3u8;32]).unwrap();
+        let reopened = Journal::open(path).unwrap();
+        assert!(matches!(reopened.accept("client", "new-local", &[3u8;32]).unwrap(), Disposition::ExecutingLocal));
+        assert!(matches!(reopened.accept("client", "executing", &[1u8;32]).unwrap(), Disposition::Executing));
+        let state: String = reopened.db().unwrap().query_row(
+            "SELECT state FROM service_receipts WHERE request_id='new-local'", [], |r|r.get(0)).unwrap();
+        assert_eq!(state, "executing", "a downgraded binary must still refuse redispatch");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn atomic_push_preferences_roll_back_with_receipt_and_recover_once() {
         let home = std::env::temp_dir().join(format!("alondra-atomic-preferences-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&home).unwrap();
