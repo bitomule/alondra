@@ -30,8 +30,13 @@ fn check(name: &'static str, status: Status, detail: impl Into<String>, fix: imp
 }
 
 fn output(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
-    let child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    command_output(command, timeout)
+}
+
+fn command_output(mut command: Command, timeout: Duration) -> Option<(bool, String)> {
+    let child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -310,8 +315,8 @@ pub fn run(json_out: bool) -> Result<()> {
         crate::claude_auth::ContextEnv::from_environment(&user_home, &vars)
     });
     let claude = context.as_ref().ok().and_then(|c| c.command().ok())
-        .and_then(|mut cmd| cmd.arg("--version").output().ok())
-        .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        .and_then(|mut cmd| { cmd.arg("--version"); command_output(cmd, Duration::from_secs(10)) })
+        .filter(|(ok, _)| *ok).map(|(_, text)| text);
     checks.push(claude_version_check(claude.as_deref()));
     checks.push(claude_auth_check(context.as_ref().map_err(|e| anyhow::anyhow!("{e}")).and_then(|c| c.status())));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
@@ -369,6 +374,18 @@ pub fn run(json_out: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_command_preserves_environment_and_times_out() {
+        let mut command = Command::new("/bin/sh");
+        command.env_clear().env("ALONDRA_DOCTOR_TEST", "configured").args(["-c", "printf '%s' \"$ALONDRA_DOCTOR_TEST\""]);
+        assert_eq!(command_output(command, Duration::from_secs(2)), Some((true, "configured".into())));
+        let mut blocked = Command::new("/bin/sleep");
+        blocked.arg("10");
+        let started = std::time::Instant::now();
+        assert!(command_output(blocked, Duration::from_millis(100)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn tuicr_is_checked_for_presence_and_version() {
