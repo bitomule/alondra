@@ -39,4 +39,3 @@ actor URLSessionServiceTransport: ServiceHTTPTransport {
         return ServiceHTTPResponse(status: http.statusCode, body: body)
     }
 }
-

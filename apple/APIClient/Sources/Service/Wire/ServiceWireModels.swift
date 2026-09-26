@@ -33,4 +33,3 @@ public struct RelayPushRegistration: Encodable, Sendable {
         self.token = token; self.environment = environment; self.pushBinding = pushBinding
     }
 }
-
