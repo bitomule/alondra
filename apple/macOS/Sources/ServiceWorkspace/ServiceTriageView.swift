@@ -80,47 +80,66 @@ private struct ServiceInboxRow: View {
 
 struct ServiceQuestionView: View {
     let store: StoreOf<QuestionFeature>
-    @Environment(\.dismiss) private var dismiss
-
+    @FocusState private var focus: DetailField?
+    @Environment(\.searchActive) private var searchActive
     var body: some View {
-        Form {
-            Section {
-                Text(store.question.title).font(.headline)
-                if let detail = store.question.readableDetail { Text(detail).textSelection(.enabled) }
-            }
-            ForEach(store.question.aboutReports) { report in
-                Section(report.title) { ServiceReportContext(report: report) }
-            }
-            Section("Answer") {
-                ForEach(store.question.options, id: \.label) { option in
-                    Button {
-                        store.send(.optionSelected(option.label))
+        DetailScaffold {
+            VStack(alignment: .leading, spacing: 22) {
+                DetailHeader(style: InboxItem.question(store.question).style, node: store.question.nodeName,
+                    date: store.question.askedAt, title: store.question.title)
+                MissionLine(item: .question(store.question))
+                if let detail = store.question.readableDetail, !detail.isEmpty {
+                    MarkdownText(text: store.question.origin == "permission" ? "```\n\(detail)\n```" : detail)
+                }
+                ForEach(store.question.links, id: \.self) { link in
+                    if let url = URL(string: link.url) {
+                        Link(destination: url) { Label(link.title ?? link.url, systemImage: "arrow.up.right.square").lineLimit(1) }.font(.callout)
+                    }
+                }
+                ForEach(store.question.aboutReports) { report in
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(report.title).font(.headline)
+                            if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
                     } label: {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(option.label)
-                                if let detail = option.description { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                            }
-                            Spacer()
-                            if store.draft.selectedOption == option.label { Image(systemName: "checkmark") }
-                        }
+                        Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary)
+                    }
+                }
+                if let context = store.question.nodeContext, !context.isEmpty {
+                    DisclosureGroup("What the node said last") {
+                        MarkdownText(text: context).font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+                    }.foregroundStyle(.secondary)
+                }
+            }
+        } bar: {
+            VStack(alignment: .leading, spacing: 12) {
+                if !store.question.options.isEmpty {
+                    QuestionOptions(options: store.question.options, selected: store.draft.selectedOption) { option in
+                        store.send(.optionTapped(option.label))
                     }
                 }
                 if !store.question.isTerminalMenu {
-                    TextField("Write your answer", text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
-                        .lineLimit(4...12)
+                    ServiceComposer(placeholder: store.question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…"),
+                        text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), focus: $focus,
+                        submit: { store.send(.answerTapped) })
                 }
-                Button(store.isSubmitting ? "Sending…" : "Send answer") { store.send(.answerTapped) }
-                if !store.question.isTerminalMenu {
-                    Button("Ask for more context") { store.send(.moreContextTapped) }
+                AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                CardActions {
+                    if !store.question.isTerminalMenu {
+                        Button { store.send(.moreContextTapped) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                            .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
+                    }
+                } trailing: {
+                    if store.draft.selectedOption != nil || !store.draft.text.isEmpty || !store.draft.attachmentIDs.isEmpty {
+                        SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { store.send(.answerTapped) }
+                    }
                 }
+                ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
             }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
-            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
-            ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
-        .navigationTitle(store.question.isAction ? "Action" : "Question")
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+        .onAppear { if !searchActive { focus = store.question.options.isEmpty ? .reply : .pane } }
+        .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
     }
 }
 
