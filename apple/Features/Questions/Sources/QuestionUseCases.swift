@@ -164,6 +164,7 @@ public struct AnswerQuestionUseCase: Sendable {
     public static func needsExplanation(_ option: QuestionOption) -> Bool {
         let description = option.description?.lowercased() ?? ""
         return description.hasPrefix("write") || description.hasPrefix("escribe")
+            || [AnswerOption.deny, AnswerOption.requestChanges].contains(option.label)
     }
 }
 

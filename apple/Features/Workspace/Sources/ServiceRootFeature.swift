@@ -178,6 +178,10 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .pullRequest(.presented(.attachedQuestion(.element(let id, .question(let action))))):
+            return state.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
+        case .triage(.cards(.element(let cardID, .pullRequest(.attachedQuestion(.element(let id, .question(let action))))))):
+            return state.triage.cards[id: cardID]?.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
         case .delivery(.acknowledgementFinished(let scope, let error)):
             guard state.delivery.status?.scope == scope, let error else { return nil }
             return .failure(error)
@@ -199,6 +203,22 @@ public struct ServiceRootFeature {
         case .fleet(.path(.element(let id, .node(let action)))):
             guard case .node(let node) = state.fleet.path[id: id] else { return nil }
             return nodeNotice(node, action: action)
+        default: return nil
+        }
+    }
+
+    private func attachedQuestionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .submissionFinished(let revision, let outcome):
+            guard question.isSubmitting, question.revision == revision else { return nil }
+            switch outcome {
+            case .failed(let message), .forbidden(let message), .conflict(let message): return .failure(message)
+            default: return nil
+            }
+        case .commandResolved(let id, let rejection):
+            guard question.needsReconciliation, question.uncertainCommandID == id else { return nil }
+            return rejection.map(WorkspaceNotice.Event.failure)
+        case .attachedSubmissionFailed(let message): return .failure(message)
         default: return nil
         }
     }

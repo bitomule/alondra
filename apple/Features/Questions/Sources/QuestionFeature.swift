@@ -12,6 +12,7 @@ public struct QuestionFeature {
         public var question: Question
         public var draft = QuestionDraft()
         public var isSubmitting = false
+        public var pendingAttachedAnswer: QuestionDraft?
         public var keyboardReady = false
         public var notice: String?
         public var conflict: String?
@@ -33,6 +34,9 @@ public struct QuestionFeature {
         case textChanged(String)
         case optionSelected(String?)
         case optionTapped(String)
+        case attachedOptionTapped(String)
+        case attachedAnswerTapped
+        case attachedSubmissionFailed(String)
         case attachmentsChanged([String])
         case answerTapped
         case moreContextTapped
@@ -67,9 +71,25 @@ public struct QuestionFeature {
                 state.keyboardReady = true
                 return .none
             case .downloads: return .none
-            case .attachmentPicker:
+            case .attachmentPicker(let action):
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
-                return .none
+                guard var pending = state.pendingAttachedAnswer else { return .none }
+                if case .reset = action { state.pendingAttachedAnswer = nil; return .none }
+                if case .remove = action { state.pendingAttachedAnswer = nil; return .none }
+                if let error = state.attachmentPicker.importError {
+                    state.pendingAttachedAnswer = nil
+                    return .send(.attachedSubmissionFailed(error))
+                }
+                for entry in state.attachmentPicker.entries {
+                    if case .failed(let error) = entry.status {
+                        state.pendingAttachedAnswer = nil
+                        return .send(.attachedSubmissionFailed(error))
+                    }
+                }
+                guard state.attachmentPicker.allReady else { return .none }
+                state.pendingAttachedAnswer = nil
+                pending.attachmentIDs = state.attachmentPicker.storedIDs
+                return submitAttached(pending, state: &state)
             case .refreshed(let question):
                 guard state.question.id == question.id else {
                     let revision = state.revision &+ 1
@@ -88,6 +108,7 @@ public struct QuestionFeature {
             case .identityChanged:
                 state.attachmentPicker = AttachmentFeature.State()
                 state.draft = QuestionDraft()
+                state.pendingAttachedAnswer = nil
                 state.isSubmitting = false
                 state.notice = nil
                 state.conflict = nil
@@ -97,11 +118,30 @@ public struct QuestionFeature {
                 state.revision &+= 1
                 return .cancel(id: CancelID.submit)
             case .textChanged(let text):
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting, state.pendingAttachedAnswer == nil, !state.needsReconciliation else { return .none }
                 state.draft.text = text
                 return .none
+            case .attachedSubmissionFailed(let message):
+                state.notice = message
+                return .none
+            case .attachedOptionTapped(let label):
+                guard !state.isSubmitting, state.pendingAttachedAnswer == nil,
+                      !state.completed, !state.needsReconciliation,
+                      let option = state.question.options.first(where: { $0.label == label }) else { return .none }
+                if AnswerQuestionUseCase.needsExplanation(option), state.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    state.draft.selectedOption = label
+                    state.replyFocusRequest &+= 1
+                    return .none
+                }
+                var draft = state.draft
+                draft.selectedOption = label
+                return prepareAttached(draft, state: &state)
+            case .attachedAnswerTapped:
+                guard !state.isSubmitting, state.pendingAttachedAnswer == nil,
+                      !state.completed, !state.needsReconciliation else { return .none }
+                return prepareAttached(state.draft, state: &state)
             case .optionTapped(let option):
-                guard state.attachmentPicker.allReady, !state.isSubmitting,
+                guard state.pendingAttachedAnswer == nil, state.attachmentPicker.allReady, !state.isSubmitting,
                       !state.completed, !state.needsReconciliation else { return .none }
                 guard state.question.options.contains(where: { $0.label == option }) else { return .none }
                 state.draft.selectedOption = option
@@ -116,15 +156,15 @@ public struct QuestionFeature {
                     return .none
                 }
             case .optionSelected(let option):
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting, state.pendingAttachedAnswer == nil, !state.needsReconciliation else { return .none }
                 state.draft.selectedOption = option
                 return .none
             case .attachmentsChanged(let ids):
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting, state.pendingAttachedAnswer == nil, !state.needsReconciliation else { return .none }
                 state.draft.attachmentIDs = ids
                 return .none
             case .answerTapped, .moreContextTapped:
-                guard state.attachmentPicker.allReady, !state.isSubmitting, !state.completed, !state.needsReconciliation else { return .none }
+                guard state.pendingAttachedAnswer == nil, state.attachmentPicker.allReady, !state.isSubmitting, !state.completed, !state.needsReconciliation else { return .none }
                 let operation: QuestionOperation
                 do {
                     if case .answerTapped = action {
@@ -194,6 +234,38 @@ public struct QuestionFeature {
             Reduce { _, _ in
                 AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
+        }
+    }
+
+    private func prepareAttached(_ draft: QuestionDraft, state: inout State) -> Effect<Action> {
+        if let error = state.attachmentPicker.importError { return .send(.attachedSubmissionFailed(error)) }
+        if !state.attachmentPicker.allReady {
+            state.pendingAttachedAnswer = draft
+            // Failed uploads require an explicit attachment retry; do not queue an
+            // intention that could silently survive that later retry.
+            for entry in state.attachmentPicker.entries {
+                if case .failed(let message) = entry.status {
+                    state.pendingAttachedAnswer = nil
+                    return .send(.attachedSubmissionFailed(message))
+                }
+            }
+            return .none
+        }
+        return submitAttached(draft, state: &state)
+    }
+
+    private func submitAttached(_ draft: QuestionDraft, state: inout State) -> Effect<Action> {
+        do {
+            let operation = try useCase.answer(state.question, draft: draft)
+            state.isSubmitting = true
+            state.notice = nil
+            state.conflict = nil
+            let revision = state.revision
+            return .run { send in
+                await send(.submissionFinished(revision, await service.submit(operation)))
+            }.cancellable(id: CancelID.submit)
+        } catch {
+            return .send(.attachedSubmissionFailed((error as? QuestionWorkError)?.message ?? error.localizedDescription))
         }
     }
 

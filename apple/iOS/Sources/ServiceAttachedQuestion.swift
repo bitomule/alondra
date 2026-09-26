@@ -11,7 +11,7 @@ struct ServiceAttachedQuestion: View {
 
     @FocusState private var replyFocused: Bool
     private var picked: QuestionOption? { question.options.first { $0.label == store.draft.selectedOption } }
-    private var sending: Bool { store.isSubmitting || store.needsReconciliation || store.completed }
+    private var sending: Bool { store.isSubmitting || store.pendingAttachedAnswer != nil || store.needsReconciliation || store.completed }
     private var text: String { store.draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var attachmentsEmpty: Bool { store.attachmentPicker.entries.isEmpty }
 
@@ -35,7 +35,7 @@ struct ServiceAttachedQuestion: View {
                 .foregroundStyle(Palette.ink.opacity(0.9))
             }
             if !question.options.isEmpty {
-                ServiceOptionGrid(options: question.options, picked: picked) { store.send(.optionTapped($0.label)) }
+                ServiceOptionGrid(options: question.options, picked: picked) { store.send(.attachedOptionTapped($0.label)) }
             }
             if showsDetail || question.options.isEmpty || picked != nil {
                 replyField
@@ -49,10 +49,8 @@ struct ServiceAttachedQuestion: View {
         .opacity(sending ? 0.5 : 1)
         .animation(.spring(duration: 0.3), value: picked)
         .onChange(of: store.replyFocusRequest) { _, _ in replyFocused = true }
-        .onChange(of: store.isSubmitting) { _, sending in if sending { replyFocused = false } }
-        .alert("Couldn’t Send", isPresented: Binding(get: { store.notice != nil || store.conflict != nil }, set: { if !$0 { store.send(.dismissNotice) } })) {
-            Button("OK", role: .cancel) { store.send(.dismissNotice) }
-        } message: { Text(store.conflict ?? store.notice ?? "") }
+        .onChange(of: sending) { _, sending in if sending { replyFocused = false } }
+
     }
 
     private var replyField: some View {
@@ -72,7 +70,7 @@ struct ServiceAttachedQuestion: View {
                 .focused($replyFocused)
                 .padding(.trailing, 14)
                 .padding(.vertical, 10)
-            Button { store.send(.answerTapped) } label: {
+            Button { store.send(.attachedAnswerTapped) } label: {
                 Image(systemName: "arrow.up")
                     .font(.body.weight(.bold))
                     .foregroundStyle(Palette.onAccent)

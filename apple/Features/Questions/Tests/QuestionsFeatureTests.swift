@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraQuestionsFeature
 import AlondraShared
 import ComposableArchitecture
@@ -19,6 +20,76 @@ struct QuestionsFeatureTests {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Report.self, from: Data(json.utf8))
+    }
+
+    @Test
+    func attachedDenyRequiresTextEvenWithUploadedAttachment() async throws {
+        let q = try question(options: #"[{"label":"Deny"}]"#)
+        var state = QuestionFeature.State(question: q)
+        state.draft.attachmentIDs = ["stored"]
+        state.attachmentPicker.entries = [.init(draft: .init(name: "a.txt", data: Data([1])), status: .uploaded("stored"))]
+        let store = TestStore(initialState: state) { QuestionFeature() }
+        await store.send(.attachedOptionTapped("Deny")) {
+            $0.draft.selectedOption = "Deny"
+            $0.replyFocusRequest = 1
+        }
+        await store.finish()
+    }
+
+    @Test
+    func attachedOptionWaitsForUploadOnceWithoutChangingPickedAndFailureKeepsDraft() async throws {
+        let q = try question(options: #"[{"label":"Allow"}]"#)
+        let attachment = AttachmentDraft(name: "a.txt", data: Data([1]))
+        var state = QuestionFeature.State(question: q)
+        state.draft.text = "My explanation"
+        state.attachmentPicker.entries = [.init(draft: attachment, status: .uploading)]
+        let clock = TestClock()
+        let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { operation in
+                #expect(operation == .answer(id: 1, text: "My explanation", option: "Allow", attachments: ["stored"]))
+                try? await clock.sleep(for: .seconds(1))
+                return .failed("Offline")
+            }, document: { _ in "" })
+        }
+        await store.send(.attachedOptionTapped("Allow")) {
+            var pending = $0.draft
+            pending.selectedOption = "Allow"
+            $0.pendingAttachedAnswer = pending
+        }
+        await store.send(.attachedOptionTapped("Allow"))
+        #expect(store.state.draft.selectedOption == nil)
+        await store.send(.attachmentPicker(.uploaded(attachment.id, .success("stored")))) {
+            $0.attachmentPicker.entries[0].status = .uploaded("stored")
+            $0.draft.attachmentIDs = ["stored"]
+            $0.pendingAttachedAnswer = nil
+            $0.isSubmitting = true
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(.attachedOptionTapped("Allow"))
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.submissionFinished) {
+            $0.isSubmitting = false
+            $0.notice = "Offline"
+        }
+        #expect(store.state.draft.text == "My explanation")
+        #expect(store.state.draft.selectedOption == nil)
+        await store.finish()
+    }
+
+    @Test
+    func pendingAttachedAnswerIsDiscardedOnIdentityChange() async throws {
+        var state = QuestionFeature.State(question: try question())
+        state.draft.text = "Draft"
+        state.attachmentPicker.entries = [.init(draft: .init(name: "a.txt", data: Data([1])), status: .uploading)]
+        let store = TestStore(initialState: state) { QuestionFeature() }
+        await store.send(.attachedAnswerTapped) { $0.pendingAttachedAnswer = $0.draft }
+        await store.send(.identityChanged) {
+            $0.draft = QuestionDraft()
+            $0.pendingAttachedAnswer = nil
+            $0.attachmentPicker = AttachmentFeature.State()
+            $0.revision = 1
+        }
+        await store.finish()
     }
 
     @Test
