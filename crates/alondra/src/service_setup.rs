@@ -1,3 +1,4 @@
+mod recovery;
 //! Source-free Mac enrollment. User OIDC authorizes only a new route; phone pairing still
 //! requires the Mac-local key and cannot be granted by an account administrator.
 use std::{
@@ -20,20 +21,22 @@ const SERVICE_FILE: &str = "service.toml";
 const SIGNING_FILE: &str = "signing.key";
 const AGREEMENT_FILE: &str = "agreement.key";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PublicMac {
     mac_id: String,
     signing_key: String,
     agreement_key: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ServiceConfig {
     relay_url: String,
     mac_id: String,
     owner_sub: String,
     signing_key_path: String,
     agreement_key_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal_path: Option<String>,
     devices: Vec<toml::Value>,
 }
 
@@ -188,8 +191,14 @@ fn http() -> ureq::Agent {
 }
 
 fn register(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<()> {
+    register_at(identity, signing, token, RELAY)
+}
+
+// Explicit function argument enables isolated test transport; production callers
+// always pass the fixed service origin above. No runtime URL/token override.
+fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &str) -> Result<()> {
     let http = http();
-    let mut bootstrap = http.get(format!("{RELAY}/v1/bootstrap")).call()?;
+    let mut bootstrap = http.get(format!("{relay}/v1/bootstrap")).call()?;
     if bootstrap.status().as_u16() != 200 {
         bail!("relay bootstrap failed ({})", bootstrap.status());
     }
@@ -213,7 +222,7 @@ fn register(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<(
     )
     .map_err(|e| anyhow!("sign Mac enrollment: {e}"))?;
     let response = http
-        .post(format!("{RELAY}/v1/macs"))
+        .post(format!("{relay}/v1/macs"))
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .header("x-device-id", &identity.mac_id)
@@ -236,12 +245,16 @@ fn register(identity: &PublicMac, signing: &SigningKey, token: &str) -> Result<(
 
 fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool) -> Result<bool> {
     let path = home.join(SERVICE_FILE);
+    let base = identity_base(home)?;
+    let prefix = base.strip_prefix(home)?.to_string_lossy();
+    let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
     let expected = ServiceConfig {
         relay_url: RELAY.into(),
         mac_id: identity.mac_id.clone(),
         owner_sub: owner_sub.into(),
-        signing_key_path: format!("service-keys/{SIGNING_FILE}"),
-        agreement_key_path: format!("service-keys/{AGREEMENT_FILE}"),
+        signing_key_path: format!("{prefix}service-keys/{SIGNING_FILE}"),
+        agreement_key_path: format!("{prefix}service-keys/{AGREEMENT_FILE}"),
+        journal_path: if prefix.is_empty() { None } else { Some(format!("{prefix}service-receipts.sqlite")) },
         devices: vec![],
     };
     let existing_path = match fs::symlink_metadata(&path) {
@@ -257,6 +270,7 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool)
             || existing.relay_url.trim_end_matches('/') != RELAY
             || existing.signing_key_path != expected.signing_key_path
             || existing.agreement_key_path != expected.agreement_key_path
+            || existing.journal_path != expected.journal_path
         {
             bail!("existing service.toml belongs to another Mac, account or key path");
         }
@@ -277,8 +291,10 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool)
 
 /// Returns whether service.toml was newly created and an existing daemon must restart.
 pub fn enroll(home: &Path) -> Result<bool> {
+    let _lock = alondra_core::home_lock::HomeLock::shared(home)?;
+    alondra_core::home_lock::ensure_ready(home)?;
     let account = crate::account::ensure_token_for_enrollment()?;
-    let (identity, signing) = load_or_create_keys(home)?;
+    let (identity, signing) = load_or_create_keys(&identity_base(home)?)?;
     // Validate every field of any existing configuration before changing relay state.
     service_file(home, &identity, &account.sub, false)?;
     println!(
@@ -354,4 +370,26 @@ mod tests {
         assert!(service_file(&home, &identity, "owner", false).is_err());
         fs::remove_dir_all(home).unwrap();
     }
+}
+
+fn identity_base(home: &Path) -> Result<std::path::PathBuf> {
+    let path = home.join(SERVICE_FILE);
+    if !path.try_exists()? { return Ok(home.to_owned()); }
+    let config: ServiceConfig = toml::from_str(&fs::read_to_string(path)?)?;
+    if config.signing_key_path == "service-keys/signing.key" && config.agreement_key_path == "service-keys/agreement.key" && config.journal_path.is_none() {
+        return Ok(home.to_owned());
+    }
+    let pieces: Vec<_> = config.signing_key_path.split('/').collect();
+    anyhow::ensure!(pieces.len() == 4 && pieces[0] == "service-generations" && recovery::valid_id(pieces[1])
+        && pieces[2] == "service-keys" && pieces[3] == SIGNING_FILE, "unrecognized service key generation");
+    let prefix = format!("service-generations/{}", pieces[1]);
+    anyhow::ensure!(config.agreement_key_path == format!("{prefix}/service-keys/{AGREEMENT_FILE}")
+        && config.journal_path.as_deref() == Some(format!("{prefix}/service-receipts.sqlite").as_str()), "mixed service generation");
+    let base = home.join(prefix);
+    anyhow::ensure!(base.canonicalize()?.starts_with(home.canonicalize()?), "service generation escapes HOME");
+    Ok(base)
+}
+
+pub fn recover(home: &Path, stop: impl FnOnce() -> Result<()>, input: &mut impl std::io::BufRead, output: &mut impl Write) -> Result<()> {
+    recovery::interactive(home, stop, input, output)
 }

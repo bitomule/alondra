@@ -1,3 +1,4 @@
+pub mod home_lock;
 pub mod delivery;
 pub mod activity;
 pub mod artifact;
