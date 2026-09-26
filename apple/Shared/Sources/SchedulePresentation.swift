@@ -29,6 +29,21 @@ public enum SchedulePresentation {
         return "\(description) · \(project)"
     }
 
+    public static func stateLabel(_ state: String) -> String {
+        switch state {
+        case "never_run": String(localized: "Never run", table: "AlondraShared", bundle: #bundle)
+        case "launching": String(localized: "Sending", table: "AlondraShared", bundle: #bundle)
+        case "sent": String(localized: "Sent", table: "AlondraShared", bundle: #bundle)
+        case "failed": String(localized: "Failed", table: "AlondraShared", bundle: #bundle)
+        case "interrupted": String(localized: "Interrupted", table: "AlondraShared", bundle: #bundle)
+        case "waiting": String(localized: "Waiting for orchestrator", table: "AlondraShared", bundle: #bundle)
+        case "defining": String(localized: "Preparing", table: "AlondraShared", bundle: #bundle)
+        case "in_progress": String(localized: "In progress", table: "AlondraShared", bundle: #bundle)
+        case "done": String(localized: "Done", table: "AlondraShared", bundle: #bundle)
+        default: state
+        }
+    }
+
 public static func error(_ message: String) -> String {
     let key: String
     switch message {

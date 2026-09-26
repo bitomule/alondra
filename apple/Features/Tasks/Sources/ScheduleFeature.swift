@@ -14,6 +14,7 @@ public struct ScheduleFeature {
     public struct State: Equatable {
         public var tasks: [ScheduledTask] = []
         public var selectedID: String?
+        public var inspectorVisible = false
         public var editingID: String?
         public var draft: ScheduledTaskDraft?
         public var optionSpecs: [OptionSpec] = []
@@ -41,6 +42,12 @@ public struct ScheduleFeature {
         public let optionsID = UUID()
         public let mutationID = UUID()
 
+        public var canSaveDraft: Bool {
+            guard let draft, ScheduleDraftRules.canSave(draft), optionsReady, !optionsLoading, !isSaving else { return false }
+            let target = editingID.map(ScheduleCommandTarget.schedule) ?? .new
+            return uncertainByTarget[target] == nil && !inFlightTargets.contains(target)
+        }
+
         public init() {}
     }
 
@@ -66,6 +73,7 @@ public struct ScheduleFeature {
         case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
         case selected(String?)
+        case inspectorPresented(Bool)
         case identityChanged
     }
 
@@ -92,6 +100,7 @@ public struct ScheduleFeature {
                     state.loadError = nil
                     if let selectedID = state.selectedID, !tasks.contains(where: { $0.id == selectedID }) {
                         state.selectedID = nil
+                        state.inspectorVisible = false
                     }
                 case .failure(let error): state.loadError = error.message
                 }
@@ -149,7 +158,7 @@ public struct ScheduleFeature {
                 state.optionsRequest &+= 1
                 return .cancel(id: state.optionsID)
             case .saveTapped:
-                guard let draft = state.draft, ScheduleDraftRules.canSave(draft), state.optionsReady, !state.optionsLoading, !state.isSaving else { return .none }
+                guard state.canSaveDraft, let draft = state.draft else { return .none }
                 let target: ScheduleCommandTarget = state.editingID.map { .schedule($0) } ?? .new
                 guard state.uncertainByTarget[target] == nil,
                     state.inFlightTargets.insert(target).inserted else { return .none }
@@ -261,7 +270,13 @@ public struct ScheduleFeature {
                 if state.lastMutationOutcome?.uncertainID == id { state.lastMutationOutcome = nil }
                 return .send(.reconcile)
             case .selected(let id):
+                guard id == nil || state.tasks.contains(where: { $0.id == id }) else { return .none }
+                guard state.selectedID != id else { return .none }
                 state.selectedID = id
+                state.inspectorVisible = id != nil
+                return .none
+            case .inspectorPresented(let presented):
+                state.inspectorVisible = presented && state.selectedID != nil
                 return .none
             case .identityChanged:
                 state.presentationEpoch &+= 1
@@ -269,6 +284,7 @@ public struct ScheduleFeature {
                 state.optionsRequest &+= 1
                 state.tasks = []
                 state.selectedID = nil
+                state.inspectorVisible = false
                 state.editingID = nil
                 state.draft = nil
                 state.optionSpecs = []

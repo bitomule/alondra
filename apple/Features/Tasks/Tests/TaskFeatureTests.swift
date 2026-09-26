@@ -7,6 +7,44 @@ import Testing
 @MainActor
 struct TaskFeatureTests {
     @Test
+    func scheduleInspectorTracksSelectionAndConfirmedDeletionThroughReload() async throws {
+        let schedule = try makeSchedule()
+        let server = ScheduleListFixture([schedule])
+        let store = TestStore(initialState: ScheduleFeature.State()) { ScheduleFeature() } withDependencies: {
+            $0.scheduleOperations = ScheduleOperations(
+                list: { await server.list() }, save: { _, _ in .confirmed },
+                run: { _ in .confirmed }, delete: { await server.delete($0) },
+                projects: { [] }, options: { _ in [] }
+            )
+        }
+        await store.send(.appeared) { $0.isLoading = true }
+        await store.receive(\.loaded) { $0.isLoading = false; $0.tasks = [schedule] }
+        await store.send(.selected(schedule.id)) { $0.selectedID = schedule.id; $0.inspectorVisible = true }
+        await store.send(.inspectorPresented(false)) { $0.inspectorVisible = false }
+        // Re-selecting the same row or refreshing must respect the user's closed inspector.
+        await store.send(.selected(schedule.id))
+        await store.send(.refresh) { $0.isLoading = true }
+        await store.receive(\.loaded) { $0.isLoading = false }
+        await store.send(.inspectorPresented(true)) { $0.inspectorVisible = true }
+        await store.send(.deleteConfirmed(schedule.id)) {
+            $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id))
+        }
+        await store.receive(\.deleted) {
+            $0.busyIDs.remove(schedule.id); $0.inFlightTargets.remove(.schedule(schedule.id))
+            $0.lastMutationOutcome = .confirmed
+        }
+        await store.receive(\.reconcile) { $0.isLoading = true }
+        await store.receive(\.loaded) {
+            $0.isLoading = false; $0.tasks = []; $0.selectedID = nil; $0.inspectorVisible = false
+        }
+        #expect(await server.deletedIDs() == [schedule.id])
+        // A delayed List binding cannot reopen a deleted selection.
+        await store.send(.selected(schedule.id))
+        await store.send(.inspectorPresented(true))
+        await store.finish()
+    }
+
+    @Test
     func detailDoesNotAssumeServerTransitionAfterSuccessfulReopen() async throws {
         let task = try makeTask(state: "done")
         let store = TestStore(initialState: TaskDetailFeature.State(taskID: task.id)) { TaskDetailFeature() } withDependencies: {
@@ -438,4 +476,17 @@ private actor MutationGate {
 private enum TestFailure: Error, LocalizedError {
     case launchRefused
     var errorDescription: String? { "launchRefused" }
+}
+
+private actor ScheduleListFixture {
+    private var tasks: [ScheduledTask]
+    private var deleted: [String] = []
+    init(_ tasks: [ScheduledTask]) { self.tasks = tasks }
+    func list() -> [ScheduledTask] { tasks }
+    func deletedIDs() -> [String] { deleted }
+    func delete(_ id: String) -> TaskMutationOutcome {
+        deleted.append(id)
+        tasks.removeAll { $0.id == id }
+        return .confirmed
+    }
 }
