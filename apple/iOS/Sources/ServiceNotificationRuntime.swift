@@ -14,6 +14,7 @@ final class ServiceNotificationRuntime {
     let push: PushCenter
     private let bindings = PushBindingStore()
     private let vault: NotificationDecryptionStore?
+    @ObservationIgnored var selectSession: (@MainActor (ApprovedPairingID) async throws -> Void)?
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
@@ -33,7 +34,7 @@ final class ServiceNotificationRuntime {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String
         let store = group.flatMap { $0.isEmpty || $0.contains("$(") ? nil : NotificationDecryptionStore(accessGroup: $0) }
         vault = store
-        push = PushCenter(decryptionStore: store)
+        push = PushCenter()
     }
 
     func owns(_ services: CloudAppServices) -> Bool { identity == ObjectIdentifier(services) }
@@ -46,6 +47,7 @@ final class ServiceNotificationRuntime {
         var contexts: [NotificationDecryptionContext] = []
         var clients: [ServiceNotificationClient] = []
         var selected: NotificationPayload.Binding?
+        var destinations: [NotificationPayload.Binding: ApprovedPairingID] = [:]
         for entry in snapshot.entries {
             let approved = entry.approved
             let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
@@ -61,6 +63,7 @@ final class ServiceNotificationRuntime {
             let client = await entry.session.notificationClient(identity: revision, binding: binding)
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             clients.append(client)
+            destinations[binding] = entry.id
             if entry.id == snapshot.selectedID { selected = binding }
         }
         guard Set(clients.map(\.identity)).count == clients.count,
@@ -71,13 +74,20 @@ final class ServiceNotificationRuntime {
             if push.authorization == .notDetermined { await push.activate() }
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             guard let vault else { throw ProvisioningError.missingKeychainGroup }
-            return { [self, clients, selected, contexts] in
+            let routes = zip(clients, contexts).map { NotificationRoutingCoordinator.Entry(client: $0.0, context: $0.1) }
+            // Validate the routing snapshot before the atomic vault/publication commit.
+            try NotificationRoutingCoordinator().install(routes, selected: selected)
+            return { [self, routes, selected, contexts, destinations] in
                 guard current == generation, !Task.isCancelled else { throw CancellationError() }
                 // Keychain mutation and platform/session publication are one synchronous
                 // MainActor commit. A stale preparation cannot repopulate keys after logout.
                 try vault.replaceAuthorizedContexts(contexts)
                 identity = snapshot.selected.map { ObjectIdentifier($0.session) }
-                push.install(clients, selected: selected)
+                try push.install(routes, selected: selected)
+                push.selectBinding = { [weak self, destinations] binding in
+                    guard let self, let id = destinations[binding], let select = self.selectSession else { throw CancellationError() }
+                    try await select(id)
+                }
                 error = nil
                 if push.authorization == .authorized { push.registerWithAPNs() }
             }
@@ -106,8 +116,8 @@ final class ServiceNotificationRuntime {
     }
 
     /// Main-actor claim delivers a tap once, to whichever active scene is ready first.
-    func consumeRoute() -> NotificationRoute? {
-        guard let route = push.route, push.isCurrent(route) else { return nil }
+    func consumeRoute(for services: CloudAppServices) -> NotificationRoute? {
+        guard owns(services), let route = push.route, push.isCurrent(route) else { return nil }
         push.route = nil
         return route
     }

@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
 subtle = "2.6.1"
+openidconnect = { version = "=4.0.1", default-features = false }
 tokio.workspace = true
 
 sqlx-core = { version = "=0.8.6", default-features = false, features = ["_rt-tokio", "_tls-native-tls", "migrate"] }

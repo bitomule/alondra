@@ -1,5 +1,6 @@
 //! Private product access. Identity and administration never grant content keys.
 //! External side effects are reconciled separately from PostgreSQL transactions.
+pub mod devices;
 pub mod http;
 pub mod keycloak;
 pub mod worker;
@@ -239,6 +240,55 @@ impl AdminRequest {
     }
 }
 
+const MIGRATIONS: &[(i32, &str)] = &[
+    (1, include_str!("../../migrations/0001_management.sql")),
+    (2, include_str!("../../migrations/0002_web_sessions.sql")),
+    (
+        3,
+        include_str!("../../migrations/0003_device_revocations.sql"),
+    ),
+];
+
+// One transaction and advisory lock cover version checks and every new DDL.
+// Tests pass the previous migration prefix to exercise an actual downgrade fence.
+async fn migrate(pool: &PgPool, migrations: &[(i32, &str)]) -> Result<()> {
+    let mut migration = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(ADMIN_LOCK)
+        .execute(&mut *migration)
+        .await?;
+    sqlx::raw_sql("CREATE TABLE IF NOT EXISTS management_schema(version INTEGER PRIMARY KEY, checksum BYTEA NOT NULL)").execute(&mut *migration).await?;
+    let future: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_schema WHERE version>$1)")
+            .bind(migrations.last().context("empty migration set")?.0)
+            .fetch_one(&mut *migration)
+            .await?;
+    ensure!(!future, "management schema is newer than this binary");
+    for &(version, source) in migrations {
+        let checksum = Sha256::digest(source.as_bytes()).to_vec();
+        let previous: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT checksum FROM management_schema WHERE version=$1")
+                .bind(version)
+                .fetch_optional(&mut *migration)
+                .await?;
+        if let Some(previous) = previous {
+            ensure!(
+                previous == checksum,
+                "management migration checksum mismatch"
+            );
+        } else {
+            sqlx::raw_sql(source).execute(&mut *migration).await?;
+            sqlx::query("INSERT INTO management_schema VALUES($1,$2)")
+                .bind(version)
+                .bind(checksum)
+                .execute(&mut *migration)
+                .await?;
+        }
+    }
+    migration.commit().await?;
+    Ok(())
+}
+
 impl Management {
     pub async fn open(database_url: &str, issuer: String) -> Result<Self> {
         ensure!(!issuer.is_empty(), "management requires an issuer");
@@ -256,36 +306,7 @@ impl Management {
             .connect(database_url)
             .await
             .context("management database unavailable")?;
-        let mut migration = pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(ADMIN_LOCK)
-            .execute(&mut *migration)
-            .await?;
-        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS management_schema(version INTEGER PRIMARY KEY, checksum BYTEA NOT NULL)").execute(&mut *migration).await?;
-        let future: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_schema WHERE version>1)")
-                .fetch_one(&mut *migration)
-                .await?;
-        ensure!(!future, "management schema is newer than this binary");
-        let source = include_str!("../../migrations/0001_management.sql");
-        let checksum = Sha256::digest(source.as_bytes()).to_vec();
-        let previous: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT checksum FROM management_schema WHERE version=1")
-                .fetch_optional(&mut *migration)
-                .await?;
-        if let Some(previous) = previous {
-            ensure!(
-                previous == checksum,
-                "management migration checksum mismatch"
-            );
-        } else {
-            sqlx::raw_sql(source).execute(&mut *migration).await?;
-            sqlx::query("INSERT INTO management_schema VALUES(1,$1)")
-                .bind(checksum)
-                .execute(&mut *migration)
-                .await?;
-        }
-        migration.commit().await?;
+        migrate(&pool, MIGRATIONS).await?;
         Ok(Self { pool, issuer })
     }
     /// Bootstrap only an empty installation from an operator-supplied immutable OIDC subject.
@@ -337,14 +358,21 @@ impl Management {
         Account::from_row(&row)
     }
     async fn admin_tx(&self, actor: Uuid) -> Result<Transaction<'_, Postgres>> {
+        self.actor_tx(actor, true).await
+    }
+    async fn actor_tx(
+        &self,
+        actor: Uuid,
+        require_admin: bool,
+    ) -> Result<Transaction<'_, Postgres>> {
         let mut tx = self.pool.begin().await?;
         // Serializes administrator lifecycle checks, including the last-admin invariant.
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(ADMIN_LOCK)
             .execute(&mut *tx)
             .await?;
-        let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_accounts WHERE id=$1 AND status='active' AND is_admin)")
-            .bind(actor).fetch_one(&mut *tx).await?;
+        let permitted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_accounts WHERE id=$1 AND status='active' AND (NOT $2 OR is_admin))")
+            .bind(actor).bind(require_admin).fetch_one(&mut *tx).await?;
         ensure!(permitted, DomainError::Forbidden);
         Ok(tx)
     }
@@ -484,11 +512,31 @@ impl Management {
         delete: bool,
         request: Option<&AdminRequest>,
     ) -> Result<Account> {
-        let mut tx = self.admin_tx(actor).await?;
+        self.change_account_access(actor, id, delete, false, request)
+            .await
+    }
+    /// Called only after an explicitly confirmed self-service deletion request.
+    pub async fn delete_self_request(
+        &self,
+        actor: Uuid,
+        request: &AdminRequest,
+    ) -> Result<Account> {
+        self.change_account_access(actor, actor, true, true, Some(request))
+            .await
+    }
+    async fn change_account_access(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        delete: bool,
+        self_delete: bool,
+        request: Option<&AdminRequest>,
+    ) -> Result<Account> {
+        let mut tx = self.actor_tx(actor, !self_delete).await?;
         if let Some(request) = request {
             request.reserve(&mut tx, actor).await?;
         }
-        ensure!(actor != id, DomainError::Forbidden);
+        ensure!(actor != id || self_delete && delete, DomainError::Forbidden);
         let row=sqlx::query("SELECT id,status,is_admin,display_name FROM management_accounts WHERE id=$1 FOR UPDATE")
             .bind(id).fetch_optional(&mut *tx).await?.ok_or(DomainError::NotFound)?;
         let mut account = Account::from_row(&row)?;

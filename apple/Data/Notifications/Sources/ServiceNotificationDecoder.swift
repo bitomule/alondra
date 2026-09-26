@@ -5,7 +5,7 @@ import Foundation
 import Security
 
 /// The extension needs only decryption material, never the client's signing key or bearer.
-public struct NotificationDecryptionContext: Codable, Sendable {
+public struct NotificationDecryptionContext: Codable, Equatable, Sendable {
     public let macID: String
     public let deviceID: String
     public let binding: String

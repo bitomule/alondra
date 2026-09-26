@@ -1,3 +1,4 @@
+import AlondraCloudPairingFeature
 import ComposableArchitecture
 import Foundation
 
@@ -22,6 +23,12 @@ public struct ServiceNotificationSettings: Equatable, Sendable {
     }
 }
 
+public struct ServiceMacChoice: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let macID: String
+    public init(id: UUID, macID: String) { self.id = id; self.macID = macID }
+}
+
 public struct ServiceSettingsClient: Sendable {
     public var observe: @Sendable () async -> AsyncStream<ServiceNotificationSettings>
     public var save: @Sendable (ServiceQuietHours, ServiceQuietHours) async throws -> Void
@@ -29,6 +36,7 @@ public struct ServiceSettingsClient: Sendable {
     public var requestPermission: @Sendable () async -> Void
     public var openSystemSettings: @Sendable () async -> Void
     public var checkConnection: @Sendable () async throws -> Void
+    public var selectMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
     public var logout: @Sendable () async -> Void
     public init(observe: @escaping @Sendable () async -> AsyncStream<ServiceNotificationSettings>,
                 save: @escaping @Sendable (ServiceQuietHours, ServiceQuietHours) async throws -> Void,
@@ -72,6 +80,12 @@ public extension DependencyValues {
         public var connected = false
         public var connectionError: String?
         public var error: String?
+        public var pairingCleanup = false
+        @Presents public var pairing: CloudPairingFeature.State?
+        public var macs: [ServiceMacChoice] = []
+        public var selectedMacID: UUID?
+        public var selectingMacID: UUID?
+        public var macError: String?
         public var confirmLogout = false
         public var generation: UInt64 = 0
         public let cancellation = UUID()
@@ -89,9 +103,12 @@ public extension DependencyValues {
         case autosaveFinished(ServiceQuietHours, UInt64, String?)
         case refreshPermission, requestPermission, openSystemSettings
         case checkConnection, checked(UInt64), checkFailed(String, UInt64)
+        case linkMac, pairingCleanupFinished, pairing(PresentationAction<CloudPairingFeature.Action>)
+        case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(String, UInt64)
         case logoutTapped, cancelLogout, confirmLogout
     }
     @Dependency(\.serviceSettings) var client
+    @Dependency(\.cloudPairing) var pairingService
     public init() {}
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
@@ -105,6 +122,7 @@ public extension DependencyValues {
                 state.generation &+= 1
                 if !state.automaticallySavesQuietHours { state.saving = false }
                 state.checking = false
+                state.selectingMacID = nil
                 return .cancel(id: state.cancellation)
             case .updated(let snapshot):
                 state.notifications = snapshot
@@ -186,6 +204,37 @@ public extension DependencyValues {
                 guard generation == state.generation else { return .none }
                 state.checking = false; state.connectionError = message
                 return .none
+            case .linkMac:
+                guard state.selectingMacID == nil, !state.pairingCleanup else { return .none }
+                state.pairing = CloudPairingFeature.State(additionalMac: true)
+                return .none
+            case .pairing(.dismiss):
+                state.pairingCleanup = true
+                return .run { send in
+                    await pairingService.cancel()
+                    await send(.pairingCleanupFinished)
+                }
+            case .pairingCleanupFinished:
+                state.pairingCleanup = false
+                return .none
+            case .pairing: return .none
+            case .selectMac(let id):
+                guard state.selectingMacID == nil, id != state.selectedMacID,
+                      state.macs.contains(where: { $0.id == id }) else { return .none }
+                state.selectingMacID = id; state.macError = nil
+                let generation = state.generation
+                return .run { send in
+                    do { try await client.selectMac(id); await send(.macSelected(id, generation)) }
+                    catch { await send(.macSelectionFailed(error.localizedDescription, generation)) }
+                }.cancellable(id: state.cancellation)
+            case .macSelected(let id, let generation):
+                guard generation == state.generation, state.selectingMacID == id else { return .none }
+                state.selectedMacID = id; state.selectingMacID = nil
+                return .none
+            case .macSelectionFailed(let message, let generation):
+                guard generation == state.generation, state.selectingMacID != nil else { return .none }
+                state.selectingMacID = nil; state.macError = message
+                return .none
             case .logoutTapped: state.confirmLogout = true; return .none
             case .cancelLogout: state.confirmLogout = false; return .none
             case .confirmLogout:
@@ -193,5 +242,6 @@ public extension DependencyValues {
                 return .run { _ in await client.logout() }
             }
         }
+        .ifLet(\.$pairing, action: \.pairing) { CloudPairingFeature() }
     }
 }

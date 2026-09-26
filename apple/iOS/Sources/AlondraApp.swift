@@ -25,6 +25,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let owner = cloudPairing
         notifications.prepareSession = { [weak owner] in try await owner?.prepareNotificationSession() }
+        notifications.selectSession = { [weak owner] id in
+            guard let owner else { throw CancellationError() }
+            try await owner.selectMac(id)
+        }
         notifications.installDelegate()
         return true
     }
