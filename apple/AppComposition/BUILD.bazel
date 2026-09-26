@@ -19,7 +19,7 @@ swift_library(
 
 swift_test(
     name = "AlondraCommandRecoveryIntegrationTests",
-    srcs = ["Tests/CommandRecoveryIntegrationTests.swift"],
+    srcs = ["Tests/CommandRecoveryIntegrationTests.swift", "Tests/DeliveryStatusIntegrationTests.swift"],
     deps = [
         ":AlondraAppComposition",
         "//apple/Data/Commands:AlondraCommands",

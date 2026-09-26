@@ -1,15 +1,23 @@
 import AlondraCommands
 import ComposableArchitecture
+import Foundation
 
 public struct ServiceCommandRecoveryClient: Sendable {
     public var observe: @Sendable () async -> AsyncStream<CommandResolution>
     public var observeFeedback: @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]>
+    public var observeDelivery: @Sendable () async -> AsyncStream<DeliveryStatus>
+    public var acknowledgeDelivery: @Sendable (Set<UUID>, CommandScope) async throws -> Void
     public init(observe: @escaping @Sendable () async -> AsyncStream<CommandResolution>,
-                observeFeedback: @escaping @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]> = { AsyncStream { $0.finish() } }) {
+                observeFeedback: @escaping @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]> = { AsyncStream { $0.finish() } },
+                observeDelivery: @escaping @Sendable () async -> AsyncStream<DeliveryStatus> = { AsyncStream { $0.finish() } },
+                acknowledgeDelivery: @escaping @Sendable (Set<UUID>, CommandScope) async throws -> Void = { _, _ in throw DeliveryAcknowledgementUnavailable() }) {
         self.observe = observe
         self.observeFeedback = observeFeedback
+        self.observeDelivery = observeDelivery
+        self.acknowledgeDelivery = acknowledgeDelivery
     }
 }
+public struct DeliveryAcknowledgementUnavailable: Error { public init() {} }
 private enum ServiceCommandRecoveryKey: DependencyKey {
     static let liveValue = ServiceCommandRecoveryClient(observe: { AsyncStream { $0.finish() } })
 }

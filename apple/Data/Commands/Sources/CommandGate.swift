@@ -76,7 +76,22 @@ public enum CommandResult: Sendable {
 /// snapshot, never as an executable operation. Switching scope invalidates in-flight results.
 public actor CommandGate {
     public private(set) var scope: CommandScope
-    public private(set) var uncertain: [UncertainCommand] = []
+    public private(set) var uncertain: [UncertainCommand] = [] {
+        didSet { for observer in uncertaintyObservers.values { observer.yield(uncertain) } }
+    }
+    private var uncertaintyObservers: [UUID: AsyncStream<[UncertainCommand]>.Continuation] = [:]
+
+    /// Logical operations only. Active submissions are not warnings; restored pending records are.
+    public func observeUncertainty() async throws -> AsyncStream<[UncertainCommand]> {
+        try await restore()
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            uncertaintyObservers[id] = continuation
+            continuation.yield(uncertain)
+            continuation.onTermination = { _ in Task { await self.removeUncertaintyObserver(id) } }
+        }
+    }
+    private func removeUncertaintyObserver(_ id: UUID) { uncertaintyObservers[id] = nil }
     private var generation: UInt64 = 0
     private let journal: (any CommandJournaling)?
     private var loaded = false
@@ -101,7 +116,7 @@ public actor CommandGate {
         guard restoringScope == scope, restoringGeneration == generation,
               restoringVersion == mutationVersion else { return uncertain }
         let relevant = records.filter { $0.command.scope.sameIdentity(as: restoringScope) }
-        uncertain = relevant.filter { $0.state == .pending || $0.state == .unknown }.map(\.command)
+        uncertain = relevant.filter { ($0.state == .pending || $0.state == .unknown) && !pending.contains($0.command) }.map(\.command)
         loaded = true
         return uncertain
     }

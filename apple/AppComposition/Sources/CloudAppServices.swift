@@ -18,6 +18,7 @@ public actor CloudAppServices {
     public let sync: SyncSession
     private let operations: RelaySession
     private let gate: CommandGate
+    private let deliveryStatus: DeliveryStatusService
     private let commandRecovery: CommandRecovery
     private let reportFeedback: ReportFeedbackCoordinator
     private let scope: CommandScope
@@ -47,6 +48,10 @@ public actor CloudAppServices {
             identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
         reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate, scope: scope, api: api, operations: operations, bindingSecret: approved.signingPrivateKey)
+        let feedbackCoordinator = reportFeedback
+        deliveryStatus = DeliveryStatusService(gate: gate, scope: scope,
+            storage: .file(directory.appendingPathComponent("delivery-warnings.json")),
+            feedback: { await feedbackCoordinator.recoveryEvents() })
         let serviceOperations = operations
         commandRecovery = CommandRecovery(gate: gate, scope: scope,
             file: directory.appendingPathComponent("command-resolutions.json"), status: { id in
@@ -63,6 +68,7 @@ public actor CloudAppServices {
         feedbackRecoveryTask?.cancel()
         feedbackRecoveryTask = nil
         await commandRecovery.stop()
+        await deliveryStatus.stop()
         await operations.deactivate()
         await sync.stop()
         await gate.use(CommandScope(server: scope.server, deviceID: scope.deviceID,
@@ -88,6 +94,15 @@ public actor CloudAppServices {
     public func retryReportFeedbackRead(_ id: UUID) async {
         guard active else { return }
         _ = try? await reportFeedback.recover(retryingReadFor: id)
+    }
+
+    public func deliveryStatuses() async -> AsyncStream<DeliveryStatus> {
+        await deliveryStatus.observe()
+    }
+
+    public func acknowledgeDeliveryWarnings(_ ids: Set<UUID>, in expectedScope: CommandScope) async throws {
+        guard active else { throw DeliveryStatusService.Failure.obsolete }
+        try await deliveryStatus.acknowledge(ids, in: expectedScope)
     }
 
     public func commandResolutions() async -> AsyncStream<CommandResolution> {
