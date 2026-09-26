@@ -1,5 +1,6 @@
 import AlondraAPIClient
 import AlondraAuth
+import AlondraQuestionsFeature
 import AlondraCommands
 import AlondraRelayOutbox
 import AlondraRelaySession
@@ -16,6 +17,7 @@ public actor CloudAppServices {
     public let sync: SyncSession
     private let operations: RelaySession
     private let gate: CommandGate
+    private let reportFeedback: ReportFeedbackCoordinator
     private let scope: CommandScope
     private var active = true
 
@@ -40,6 +42,7 @@ public actor CloudAppServices {
         sync = SyncSession(transport: api,
             identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
+        reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate, scope: scope, api: api, operations: operations)
     }
 
     public func deactivate() async {
@@ -77,6 +80,12 @@ public actor CloudAppServices {
     private var triageIdentity: TriageIdentity {
         TriageIdentity(server: scope.server, deviceID: scope.deviceID,
                        credentialRevision: scope.credentialRevision, generation: scope.generation)
+    }
+
+    public func submitReportFeedback(_ request: ReportFeedbackRequest, identity: QuestionWorkIdentity) async -> QuestionWorkOutcome {
+        guard active else { return .obsolete }
+        let result = await reportFeedback.submit(request, identity: identity)
+        return active ? result : .obsolete
     }
 
     public func documentText(_ path: String) async throws -> String {

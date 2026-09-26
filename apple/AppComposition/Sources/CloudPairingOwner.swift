@@ -22,7 +22,7 @@ public final class CloudPairingOwner {
             restore: { [self] in try await restore() }, login: { [self] in try await login() },
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
-        $0.cloudPairing.prepareCamera = prepareCamera
+        $0.cloudPairing.prepareCamera = self.prepareCamera
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false }) {
