@@ -6,10 +6,7 @@ load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUND
 
 swift_library(
     name = "AlondraShared",
-    srcs = glob(
-        ["Shared/Sources/**/*.swift"],
-        exclude = ["Shared/Sources/DeviceKeyStore.swift", "Shared/Sources/RequestSigning.swift"],
-    ),
+    srcs = glob(["Shared/Sources/**/*.swift"]),
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
