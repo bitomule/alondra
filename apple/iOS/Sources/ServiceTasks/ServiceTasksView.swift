@@ -32,7 +32,7 @@ struct ServiceTasksView: View {
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
-        .onChange(of: store.focusedInboxID) { _, id in if let id { focusInbox(id) } }
+        .onChange(of: store.focusedInboxID) { _, id in if let id { focusInbox(id); store.send(.inboxFocusHandled) } }
     }
 }
 

@@ -45,6 +45,7 @@ struct ServiceTasksFeature {
         case deleteSchedule(String?)
         case confirmDeleteSchedule
         case focusInbox(String)
+        case inboxFocusHandled
     }
     @Dependency(\.serviceTasksClient) var client
     private enum CancelID { case observation }
@@ -81,6 +82,7 @@ struct ServiceTasksFeature {
                 state.deletingScheduleID = nil
                 return .send(.schedules(.deleteConfirmed(id)))
             case .focusInbox(let id): state.focusedInboxID = id; return .none
+            case .inboxFocusHandled: state.focusedInboxID = nil; return .none
             case .board, .schedules, .detail: return .none
             }
         }.ifLet(\.$detail, action: \.detail) { TaskDetailFeature() }
