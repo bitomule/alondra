@@ -1668,6 +1668,9 @@ enum LocalMutation {
     ReadReport(u64),
     Archive(Option<Vec<String>>),
     MoveTask(String, alondra_core::tasks::TaskEvent),
+    ReviewArtifact(u64, ReviewBody),
+    CloseRequest(String, CloseRequestBody),
+    SendMessage(String, MessageBody),
 }
 
 fn local_mutation(
@@ -1677,6 +1680,60 @@ fn local_mutation(
 ) -> anyhow::Result<Value> {
     hub.local_command(identity, |v| {
         Ok(match &command {
+            LocalMutation::ReviewArtifact(id, body) => {
+                let report = v.reports.get(id).ok_or_else(|| local_error(404, format!("report #{id} does not exist")))?;
+                if report.read { return Err(local_refusal("report_closed", format!("report #{id} was already reviewed or read"))); }
+                let artifacts = alondra_core::artifact::in_report(report);
+                if artifacts.is_empty() { return Err(local_error(422, format!("report #{id} links no artifact to review"))); }
+                if !v.nodes.get(&report.session_id).is_some_and(|n| n.alive || n.in_daemon) {
+                    return Err(local_refusal("node_gone", format!("the node that sent report #{id} is gone: nobody would read the verdict")));
+                }
+                vec![Event::MessageQueued(Message {
+                    id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+                    session_id: report.session_id.clone(), from: MessageFrom::User,
+                    text: review_text(body.verdict, &artifacts, &hub.config.name), answers_question: None,
+                    created_at: now_millis(), handed_at: None, delivered_at: None,
+                    about: Some(MessageAbout::ArtifactReview { report_id: *id }), attachments: vec![],
+                }), Event::ArtifactReviewed { report: *id, verdict: body.verdict }]
+            }
+            LocalMutation::CloseRequest(id, body) => {
+                let (answer, title) = (trimmed(&body.answer), trimmed(&body.title));
+                if answer.is_none() && !body.withdrawn {
+                    return Err(local_error(422, format!("say in answer what you told {} (one line), or pass withdrawn: true if they withdrew it", hub.config.name)));
+                }
+                let request = v.board.requests.get(id).ok_or_else(|| local_error(404, format!("request {id} does not exist")))?;
+                if request.closed.is_some() { return Err(local_refusal("request_closed", format!("{id} is already closed"))); }
+                let tasks: Vec<&str> = v.board.tasks.values().filter(|t| t.request == *id).map(|t| t.id.as_str()).collect();
+                if !tasks.is_empty() { return Err(local_refusal("request_has_tasks", format!("{id} has tasks ({}): it is done when they are done or cancelled; cancel the ones that should not go on", tasks.join(", ")))); }
+                let mut events: Vec<Event> = title.into_iter().map(|title| Event::RequestTitled { request_id:id.clone(), title }).collect();
+                events.push(Event::RequestClosed { request_id:id.clone(), answer, withdrawn:body.withdrawn });
+                if body.withdrawn && body.from.unwrap_or(MessageFrom::User) == MessageFrom::User {
+                    events.extend(crate::orchestrate::orchestrator_message(v, withdrawn_notice(&hub.config.name, request)));
+                }
+                events
+            }
+            LocalMutation::SendMessage(key, body) => {
+                if body.from == Some(MessageFrom::Alondra) && v.resolve_node(key).is_some_and(|n| !v.may_alondra_write(n)) {
+                    return Err(local_error(409, format!("{key} is done: only {} or the orchestrator can reopen it", hub.config.name)));
+                }
+                // Filesystem preparation is read-only and deliberately follows receipt lookup.
+                let attachments = uploads::resolve(&hub.home, &body.attachments).map_err(|e| local_error(422, e))?;
+                let text = format!("{}{}", body.text, uploads::delivery_note(&hub.config.name, &attachments));
+                let node = v.resolve_node(key).ok_or_else(|| local_error(404, format!("unknown node {key}")))?;
+                if let Some(task) = body.task.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    if node.is_orchestrator { return Err(local_error(404, format!("unknown node {key}"))); }
+                    let title = v.board.tasks.get(task).map(|t| t.title.as_str()).unwrap_or_default();
+                    crate::orchestrate::hand_events(hub, v, task, &node.session_id,
+                        &format!("[Task {task} “{title}”] {text}"), body.from.unwrap_or(MessageFrom::User), &attachments)
+                        .map_err(|(status, e)| local_error(status.as_u16(), e))?
+                } else {
+                    vec![Event::MessageQueued(Message {
+                        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+                        session_id: node.session_id.clone(), from: body.from.unwrap_or(MessageFrom::User), text,
+                        answers_question:None, created_at:now_millis(), handed_at:None, delivered_at:None, about:None, attachments,
+                    })]
+                }
+            }
             LocalMutation::DismissPr(id) => vec![Event::PrDismissed { id: *id }],
             LocalMutation::ReadReport(id) => vec![Event::ReportRead { id: *id }],
             LocalMutation::Archive(ids) => {
@@ -1695,6 +1752,17 @@ fn local_mutation(
         })
     }, |v, recorded| {
         let body = match &command {
+            LocalMutation::ReviewArtifact(id, body) => json!({"id":id,"verdict":body.verdict}),
+            LocalMutation::CloseRequest(id, _) => json!({"request":id,"state":v.board.request_state(id)}),
+            LocalMutation::SendMessage(_, body) => {
+                let message = recorded.iter().find_map(|(_,e)| if let Event::MessageQueued(m)=e { Some(m) } else { None }).expect("message mutation records a message");
+                let mut result = json!({"id":message.id,"session_id":message.session_id});
+                if let Some(task) = body.task.as_deref().map(str::trim).filter(|t|!t.is_empty()) { result["task"]=json!(task); }
+                if let Some(node) = v.nodes.get(&message.session_id).filter(|n|!n.in_daemon) {
+                    result["interactive"]=json!(true); result["note"]=json!(held_for_turn_end_note(node.display_name()));
+                }
+                result
+            }
             LocalMutation::DismissPr(id) | LocalMutation::ReadReport(id) => json!({"id":id}),
             LocalMutation::Archive(_) => match recorded.first() {
                 Some((_, Event::TasksArchived(what))) => json!({"tasks":what.tasks,"requests":what.requests}),
@@ -1704,6 +1772,21 @@ fn local_mutation(
         };
         json!({"status":200,"body":body})
     })
+}
+
+fn local_error(status: u16, message: impl Into<String>) -> Value {
+    json!({"status":status,"body":{"error":message.into()}})
+}
+fn local_refusal(kind: &str, message: impl Into<String>) -> Value {
+    json!({"status":409,"body":{"error":message.into(),"kind":kind}})
+}
+
+/// Task assignment serializes with starts and closes before taking the Hub writer lock.
+async fn serialized_local_mutation(hub: &Hub, identity: Option<(&str, &str, &[u8;32])>, command: LocalMutation) -> anyhow::Result<Value> {
+    let requires_start_lock = matches!(&command, LocalMutation::SendMessage(_, body)
+        if body.task.as_deref().is_some_and(|task| !task.trim().is_empty()));
+    let _start = if requires_start_lock { Some(hub.starts.lock().await) } else { None };
+    local_mutation(hub, identity, command)
 }
 
 fn local_mutation_response(result: anyhow::Result<Value>) -> Response {
@@ -1729,6 +1812,9 @@ fn atomic_local_target(path: &str) -> Option<(&str, &str)> {
     for (prefix, suffix) in [
         ("/v1/prs/", "/dismiss"),
         ("/v1/reports/", "/read"),
+        ("/v1/reports/", "/review"),
+        ("/v1/requests/", "/close"),
+        ("/v1/nodes/", "/messages"),
         ("/v1/tasks/", "/cancel"),
         ("/v1/tasks/", "/reopen"),
     ] {
@@ -1744,7 +1830,7 @@ fn atomic_local_target(path: &str) -> Option<(&str, &str)> {
     None
 }
 
-pub(crate) fn atomic_local_request(
+pub(crate) async fn atomic_local_request(
     hub: &Hub,
     sender: &str,
     request_id: &str,
@@ -1762,6 +1848,9 @@ pub(crate) fn atomic_local_request(
             match action {
                 "/dismiss" => LocalMutation::DismissPr(id.parse()?),
                 "/read" => LocalMutation::ReadReport(id.parse()?),
+                "/review" => LocalMutation::ReviewArtifact(id.parse()?, serde_json::from_value(body.cloned().unwrap_or(json!({})))?),
+                "/close" => LocalMutation::CloseRequest(id.into(), serde_json::from_value(body.cloned().unwrap_or(json!({})))?),
+                "/messages" => LocalMutation::SendMessage(id.into(), serde_json::from_value(body.cloned().unwrap_or(json!({})))?),
                 "/reopen" => {
                     LocalMutation::MoveTask(id.into(), alondra_core::tasks::TaskEvent::Reopen)
                 }
@@ -1781,7 +1870,7 @@ pub(crate) fn atomic_local_request(
         })
     })();
     match parsed {
-        Ok(command) => local_mutation(hub, Some((sender, request_id, digest)), command),
+        Ok(command) => serialized_local_mutation(hub, Some((sender, request_id, digest)), command).await,
         Err(_) => hub.local_command(
             Some((sender, request_id, digest)),
             |_| Err(json!({"status":422,"body":{"error":"invalid local command body"}})),
@@ -2971,42 +3060,7 @@ fn review_text(verdict: ReviewVerdict, artifacts: &[String], user: &str) -> Stri
 /// David's verdict on the artifact a report sent for review. The report leaves the inbox and the
 /// verdict is typed into the node as David's own words; an approved artifact asks nothing of him again.
 async fn review_artifact(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ReviewBody>) -> Response {
-    let Some(report) = hub.read(|v| v.reports.get(&id).cloned()) else {
-        return err(StatusCode::NOT_FOUND, format!("report #{id} does not exist"));
-    };
-    let reachable = hub.read(|v| v.nodes.get(&report.session_id).is_some_and(|n| n.alive || n.in_daemon));
-    if report.read {
-        return refused(StatusCode::CONFLICT, "report_closed", format!("report #{id} was already reviewed or read"));
-    }
-    let artifacts = alondra_core::artifact::in_report(&report);
-    if artifacts.is_empty() {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("report #{id} links no artifact to review"));
-    }
-    if !reachable {
-        return refused(StatusCode::CONFLICT, "node_gone", format!("the node that sent report #{id} is gone: nobody would read the verdict"));
-    }
-    let text = review_text(b.verdict, &artifacts, &hub.config.name);
-    let queued = hub.append_with(|v| {
-        Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-            session_id: report.session_id.clone(),
-            from: MessageFrom::User,
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            about: Some(MessageAbout::ArtifactReview { report_id: id }),
-            attachments: vec![],
-        }))
-    });
-    if let Err(e) = queued {
-        return internal(e);
-    }
-    match hub.append(Event::ArtifactReviewed { report: id, verdict: b.verdict }) {
-        Ok(_) => Json(json!({"id": id, "verdict": b.verdict})).into_response(),
-        Err(e) => internal(e),
-    }
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::ReviewArtifact(id, b)))
 }
 
 #[derive(Deserialize)]
@@ -3046,53 +3100,7 @@ fn held_for_turn_end_note(name: &str) -> String {
 }
 
 pub(crate) async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
-    if b.from == Some(MessageFrom::Alondra) && hub.read(|v| v.resolve_node(&key).is_some_and(|n| !v.may_alondra_write(n))) {
-        return err(StatusCode::CONFLICT, format!("{key} is done: only {} or the orchestrator can reopen it", hub.config.name));
-    }
-    let attachments = match attached(&hub, &b.attachments) {
-        Ok(a) => a,
-        Err(r) => return r,
-    };
-    let text = format!("{}{}", b.text, uploads::delivery_note(&hub.config.name, &attachments));
-    let interactive = hub.read(|v| v.resolve_node(&key).filter(|n| !n.in_daemon).map(|n| n.display_name().to_string()));
-    if let Some(task) = b.task.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        let Some(sid) = hub.read(|v| v.resolve_node(&key).filter(|n| !n.is_orchestrator).map(|n| n.session_id.clone())) else {
-            return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
-        };
-        let _one_at_a_time = hub.starts.lock().await;
-        let title = hub.read(|v| v.board.tasks.get(task).map(|t| t.title.clone())).unwrap_or_default();
-        let text = format!("[Task {task} “{title}”] {text}");
-        return match crate::orchestrate::hand(&hub, task, &sid, text, b.from.unwrap_or(MessageFrom::User), attachments) {
-            Ok(m) => match interactive {
-                Some(name) => Json(json!({"id": m.id, "session_id": m.session_id, "task": task, "interactive": true, "note": held_for_turn_end_note(&name)})).into_response(),
-                None => Json(json!({"id": m.id, "session_id": m.session_id, "task": task})).into_response(),
-            },
-            Err((status, e)) => err(status, e),
-        };
-    }
-    let res = hub.append_with(|v| {
-        let node = v.resolve_node(&key)?;
-        Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-            session_id: node.session_id.clone(),
-            from: b.from.unwrap_or(MessageFrom::User),
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            about: None,
-            attachments: attachments.clone(),
-        }))
-    });
-    match res {
-        Ok(Some((_, Event::MessageQueued(m)))) => match interactive {
-            Some(name) => Json(json!({"id": m.id, "session_id": m.session_id, "interactive": true, "note": held_for_turn_end_note(&name)})).into_response(),
-            None => Json(json!({"id": m.id, "session_id": m.session_id})).into_response(),
-        },
-        Ok(_) => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
-        Err(e) => internal(e),
-    }
+    local_mutation_response(serialized_local_mutation(&hub, None, LocalMutation::SendMessage(key, b)).await)
 }
 
 /// Real risks a close must not paper over: the node still doing something (busy or a live
@@ -3516,33 +3524,7 @@ fn withdrawn_notice(user: &str, r: &alondra_core::tasks::Request) -> String {
 /// defined, and the orchestrator is told. A request with tasks is closed by finishing or
 /// cancelling them.
 pub(crate) async fn close_request(State(hub): State<AppState>, Path(id): Path<String>, body: Option<Json<CloseRequestBody>>) -> Response {
-    let b = body.map(|Json(b)| b).unwrap_or_default();
-    let (answer, title) = (trimmed(&b.answer), trimmed(&b.title));
-    if answer.is_none() && !b.withdrawn {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, format!("say in answer what you told {} (one line), or pass withdrawn: true if they withdrew it", hub.config.name));
-    }
-    let by_user = b.from.unwrap_or(MessageFrom::User) == MessageFrom::User;
-    let recorded = hub.append_all(|v| {
-        let Some(request) = v.board.requests.get(&id) else { return Err(err(StatusCode::NOT_FOUND, format!("request {id} does not exist"))) };
-        if request.closed.is_some() {
-            return Err(refused(StatusCode::CONFLICT, "request_closed", format!("{id} is already closed")));
-        }
-        let tasks: Vec<&str> = v.board.tasks.values().filter(|t| t.request == id).map(|t| t.id.as_str()).collect();
-        if !tasks.is_empty() {
-            return Err(refused(StatusCode::CONFLICT, "request_has_tasks", format!("{id} has tasks ({}): it is done when they are done or cancelled; cancel the ones that should not go on", tasks.join(", "))));
-        }
-        let mut events: Vec<Event> = title.iter().map(|t| Event::RequestTitled { request_id: id.clone(), title: t.clone() }).collect();
-        events.push(Event::RequestClosed { request_id: id.clone(), answer: answer.clone(), withdrawn: b.withdrawn });
-        if b.withdrawn && by_user {
-            events.extend(crate::orchestrate::orchestrator_message(v, withdrawn_notice(&hub.config.name, request)));
-        }
-        Ok(events)
-    });
-    match recorded {
-        Ok(Ok(_)) => Json(json!({"request": id, "state": hub.read(|v| v.board.request_state(&id))})).into_response(),
-        Ok(Err(refusal)) => refusal,
-        Err(e) => internal(e),
-    }
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::CloseRequest(id, body.map(|Json(b)| b).unwrap_or_default())))
 }
 
 #[derive(Deserialize)]
@@ -6124,6 +6106,78 @@ mod tests {
         let (_, job) = status_and_body(stop("job").await).await;
         assert!(job.get("hookSpecificOutput").is_none(), "wake types into background jobs: {job}");
         assert_eq!(hub.read(|v| v.pending_messages("job").count()), 1);
+    }
+
+    fn composed_fixture(tag: &str) -> Arc<Hub> {
+        let hub = started(tag, &["s", "o"]);
+        hub.append(Event::MarkedOrchestrator { session_id:"o".into() }).unwrap();
+        hub.append(Event::ReportPosted(Report {
+            id:1, session_id:"s".into(), node_name:None, title:"Plan".into(), body:None,
+            links:vec![Link { url:"https://claude.ai/artifact/plan".into(), title:None }], attachments:vec![],
+            kind:ReportKind::Document, created_at:1, read:false, to_orchestrator:false, mission:None, looks_like_question:false, task:None,
+        })).unwrap();
+        request_sent(&hub, "r-close", "Withdraw me");
+        request_sent(&hub, "r-task", "Assign me");
+        hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
+            id:"t-assign".into(), request:"r-task".into(), title:"Assigned task".into(), brief:None,
+            depends_on:vec![], options:Default::default(), session_id:None, launched:false, launched_as:None, start:None,
+        })).unwrap();
+        hub
+    }
+
+    fn composed_cases() -> Vec<(&'static str, Value)> {
+        vec![("/v1/reports/1/review", json!({"verdict":"comments"})),
+            ("/v1/requests/r-close/close", json!({"withdrawn":true,"title":"Withdrawn title"})),
+            ("/v1/nodes/s/messages", json!({"text":"Continue","task":"t-assign"}))]
+    }
+
+    #[tokio::test]
+    async fn composed_receipt_failure_rolls_back_all_events_and_outbox() {
+        for (index, (path, body)) in composed_cases().into_iter().enumerate() {
+            let hub = composed_fixture(&format!("composed-rollback-{index}"));
+            let before = hub.read(|v|v.seq);
+            let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+            db.execute_batch("CREATE TRIGGER fail_result BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'receipt failure'); END;").unwrap();
+            assert!(atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body)).await.is_err());
+            assert_eq!(hub.read(|v|v.seq), before, "{path}: no partially published events");
+            let restarted = hub_at_home_of(&hub);
+            assert_eq!(restarted.read(|v|v.seq), before, "{path}: no durable partial events");
+            assert!(restarted.read(|v|v.messages.is_empty()));
+            assert!(!restarted.read(|v|v.reports[&1].read));
+            assert!(restarted.read(|v|v.board.requests["r-close"].closed.is_none()));
+            assert!(restarted.read(|v|v.board.tasks["t-assign"].assignee.is_none()));
+            db.execute_batch("DROP TRIGGER fail_result;").unwrap();
+            let result = atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body)).await.unwrap();
+            assert_eq!(result["status"],200,"{path}: {result}");
+            assert_eq!(restarted.read(|v|v.messages.len()),1,"one durable delivery intent");
+            let home=hub.home.clone(); drop(db); drop(hub); drop(restarted); std::fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn composed_receipts_recover_original_response_without_repeating_outbox() {
+        for (index, (path, mut body)) in composed_cases().into_iter().enumerate() {
+            let hub = composed_fixture(&format!("composed-replay-{index}"));
+            if index==2 {
+                let (id, _) = uploads::store(&hub.home,"note.txt",b"an attachment").unwrap();
+                body["attachments"]=json!([id]);
+            }
+            let result = atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body)).await.unwrap();
+            assert_eq!(result["status"],200,"{path}: {result}");
+            let seq=hub.read(|v|v.seq);
+            assert_eq!(hub.read(|v|v.messages.len()),1);
+            if index==2 { std::fs::remove_dir_all(uploads::uploads_dir(&hub.home)).unwrap(); }
+            let restarted=hub_at_home_of(&hub);
+            assert_eq!(atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body)).await.unwrap(),result);
+            assert_eq!(restarted.read(|v|v.seq),seq,"{path}: replay does not generate events");
+            assert_eq!(restarted.read(|v|v.messages.len()),1);
+            assert!(atomic_local_request(&restarted,"phone","command",&[2;32],path,Some(&body)).await.is_err());
+            assert_eq!(restarted.read(|v|v.seq),seq);
+            if index==0 { assert!(restarted.read(|v|v.reports[&1].read)); }
+            if index==1 { assert_eq!(restarted.read(|v|v.board.requests["r-close"].title.clone()),Some("Withdrawn title".into())); }
+            if index==2 { assert!(restarted.read(|v|v.board.tasks["t-assign"].is_assigned_to("s"))); }
+            let home=hub.home.clone(); drop(hub); drop(restarted); std::fs::remove_dir_all(home).unwrap();
+        }
     }
 
     /// 24 Sep, alondra/maquina-de-estados: David commented on the state-machine artifact in the

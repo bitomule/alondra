@@ -176,39 +176,43 @@ pub fn task_launch(hub: &Hub, id: &str, prompt: &str, effort: Option<&str>) -> R
 /// Gives the task to the node, when it is not its yet, and types it the text about it: after a
 /// `/compact` when the node is idle with its context full past `compact_idle_nodes_at`.
 pub fn hand(hub: &Hub, id: &str, session_id: &str, text: String, from: MessageFrom, attachments: Vec<Attachment>) -> Result<Message, Refusal> {
-    let recorded = hub.append_all(|v| {
-        if hub.is_closing(session_id) {
-            return Err((StatusCode::CONFLICT, format!("node {} is being closed: give {id} to another node, or launch one for it", node_name(v, session_id))));
-        }
-        if let Some(r) = not_handable(v, id, Some(session_id), now_millis()) {
-            return Err(r);
-        }
-        let mut events = vec![];
-        if !v.board.tasks[id].is_assigned_to(session_id) {
-            events.push(Event::TaskAssigned { task: id.to_string(), session_id: session_id.to_string(), agent_id: None });
-        }
-        if v.nodes.get(session_id).is_some_and(|n| alondra_core::upkeep::compaction_due(v, n, now_millis(), hub.config.compact_idle_nodes_at)) {
-            events.push(Event::Compaction { session_id: session_id.to_string(), step: CompactionStep::Requested });
-        }
-        events.push(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
-            session_id: session_id.to_string(),
-            from,
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            attachments: attachments.clone(),
-            about: Some(MessageAbout::Task { task: id.to_string() }),
-        }));
-        Ok(events)
-    });
+    let recorded = hub.append_all(|v| hand_events(hub, v, id, session_id, &text, from, &attachments));
     match recorded {
         Ok(Ok(events)) => events.into_iter().find_map(|(_, e)| if let Event::MessageQueued(m) = e { Some(m) } else { None }).ok_or((StatusCode::INTERNAL_SERVER_ERROR, "the message was not recorded".into())),
         Ok(Err(r)) => Err(r),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
+}
+
+/// Builds the durable assignment/compaction/message intent; delivery happens later in wake.
+pub(crate) fn hand_events(hub: &Hub, v: &View, id: &str, session_id: &str,
+    text: &str, from: MessageFrom, attachments: &[Attachment]) -> Result<Vec<Event>, Refusal> {
+    if hub.is_closing(session_id) {
+        return Err((StatusCode::CONFLICT, format!("node {} is being closed: give {id} to another node, or launch one for it", node_name(v, session_id))));
+    }
+    if let Some(r) = not_handable(v, id, Some(session_id), now_millis()) {
+        return Err(r);
+    }
+    let mut events = vec![];
+    if !v.board.tasks[id].is_assigned_to(session_id) {
+        events.push(Event::TaskAssigned { task: id.to_string(), session_id: session_id.to_string(), agent_id: None });
+    }
+    if v.nodes.get(session_id).is_some_and(|n| alondra_core::upkeep::compaction_due(v, n, now_millis(), hub.config.compact_idle_nodes_at)) {
+        events.push(Event::Compaction { session_id: session_id.to_string(), step: CompactionStep::Requested });
+    }
+    events.push(Event::MessageQueued(Message {
+        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        session_id: session_id.to_string(),
+        from,
+        text: text.to_string(),
+        answers_question: None,
+        created_at: now_millis(),
+        handed_at: None,
+        delivered_at: None,
+        attachments: attachments.to_vec(),
+        about: Some(MessageAbout::Task { task: id.to_string() }),
+    }));
+    Ok(events)
 }
 
 /// What the orchestrator passes to `define`.

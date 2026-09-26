@@ -224,7 +224,7 @@ impl Service {
                 || crate::schedules::atomic_local_path(&request.method, &request.path))
     }
 
-    fn execute_atomic_local(&self, envelope: &EnvelopeV1, device: &Device, request: &LocalRequest, digest: &[u8; 32]) -> Result<Vec<u8>> {
+    async fn execute_atomic_local(&self, envelope: &EnvelopeV1, device: &Device, request: &LocalRequest, digest: &[u8; 32]) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device)?;
         if request.path == "/v1/service/push-binding" {
             let (binding, quiet, revision) = match parse_push_preferences(request) {
@@ -245,7 +245,7 @@ impl Service {
                 &request.method, &request.path, request.body.as_ref())?
         } else {
             crate::http::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
-                &request.path, request.body.as_ref())?
+                &request.path, request.body.as_ref()).await?
         };
         let bytes = self.encode_response(envelope, device, &result, request)?;
         self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
@@ -598,7 +598,7 @@ impl Service {
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
-                self.execute_atomic_local(e, device, &request, &digest)?
+                self.execute_atomic_local(e, device, &request, &digest).await?
             }
             Disposition::Executing => {
                 let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
@@ -612,7 +612,7 @@ impl Service {
                 if self.atomic_local(&request) {
                     self.journal
                         .executing_local(&e.sender, &e.request_id, &digest)?;
-                    self.execute_atomic_local(e, device, &request, &digest)?
+                    self.execute_atomic_local(e, device, &request, &digest).await?
                 } else {
                     self.journal.executing(&e.sender, &e.request_id, &digest)?;
                     let result = if guard.saturated {
@@ -1496,6 +1496,55 @@ agreement_key = "{}"
         assert_eq!(hub.read(|v|v.seq), committed_seq, "recovery must not append another ReportRead");
         let results = opened_results(&service, &phone, &responses);
         assert_eq!(results, vec![json!({"status":200,"body":{"id":7}});2]);
+        let bytes = responses.lock().unwrap();
+        assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
+        drop(bytes); relay_task.abort(); drop(service); drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_composed_review_recovers_commit_before_transport_receipt() {
+        let (mut service, phone) = push_fixture();
+        activate_push(&service);
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("David".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent { session_id:"atomic-session".into(), event:"UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(alondra_core::Event::ReportPosted(alondra_core::Report {
+            id: 7, session_id:"atomic-session".into(), node_name:None, title:"An unread report".into(), body:None,
+            links:vec![alondra_core::Link { url:"https://claude.ai/artifact/plan".into(), title:None }], attachments:vec![], kind:alondra_core::ReportKind::Document, created_at:1, read:false,
+            to_orchestrator:false, mission:None, looks_like_question:false, task:None,
+        })).unwrap();
+        service = service.with_hub(hub.clone());
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sent = responses.clone();
+        let relay = Router::new().route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post(move |bytes: axum::body::Bytes| {
+                let sent = sent.clone();
+                async move { sent.lock().unwrap().push(bytes.to_vec()); StatusCode::ACCEPTED }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+        service.relay = url.clone();
+        let work = changes_work(&service, "atomic-artifact-review", json!({"method":"POST","path":"/v1/reports/7/review","body":{"verdict":"comments"}}));
+        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
+        assert!(service.handle(repeat_work(&work), &[1u8;16]).await.is_err());
+        assert!(hub.read(|v| v.reports[&7].read), "the local mutation committed before transport failed");
+        let committed_seq = hub.read(|v| v.seq);
+        assert_eq!(hub.read(|v|v.messages.len()),1, "intent committed together with review");
+        assert!(responses.lock().unwrap().is_empty());
+        service.journal.db().unwrap().execute_batch("DROP TRIGGER fail_transport_receipt;").unwrap();
+        drop(service); drop(hub);
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap().with_hub(hub.clone());
+        service.relay = url;
+        service.handle(repeat_work(&work), &[1u8;16]).await.unwrap();
+        service.handle(work, &[1u8;16]).await.unwrap();
+        assert_eq!(hub.read(|v|v.seq), committed_seq, "recovery must not append another review or message");
+        assert_eq!(hub.read(|v|v.messages.len()),1);
+        let results = opened_results(&service, &phone, &responses);
+        assert_eq!(results, vec![json!({"status":200,"body":{"id":7,"verdict":"comments"}});2]);
         let bytes = responses.lock().unwrap();
         assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
         drop(bytes); relay_task.abort(); drop(service); drop(hub);
