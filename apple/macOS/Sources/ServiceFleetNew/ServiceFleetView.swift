@@ -39,7 +39,7 @@ struct ServiceFleetView: View {
     }
 }
 
-private struct ServiceNodeView: View {
+struct ServiceNodeView: View {
     let store: StoreOf<NodeDetailFeature>
     var body: some View {
         Form {

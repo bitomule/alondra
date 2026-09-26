@@ -1,3 +1,4 @@
+import AlondraShared
 import AlondraAttachmentsFeature
 import AlondraDemoWorkspace
 import AlondraWorkspaceFeature
@@ -81,43 +82,3 @@ private struct MacServiceWindow: View {
     }
 }
 
-private struct MacServiceWorkspace<AccountContent: View>: View {
-    @Bindable var store: StoreOf<ServiceRootFeature>
-    let accountContent: AccountContent
-    var body: some View {
-        NavigationSplitView {
-            List(selection: Binding<ServiceRootFeature.State.Tab?>(get: { store.tab }, set: {
-                if let tab = $0 { store.send(.tabSelected(tab)) }
-            })) {
-                Label("Waiting for You", systemImage: "tray.full")
-                    .badge(store.triage.triage.queue.count)
-                    .tag(ServiceRootFeature.State.Tab.inbox)
-                Label("Tasks", systemImage: "checklist").tag(ServiceRootFeature.State.Tab.tasks)
-                Label("Fleet", systemImage: "circle.hexagongrid").tag(ServiceRootFeature.State.Tab.fleet)
-                Label("New Request", systemImage: "plus.bubble").tag(ServiceRootFeature.State.Tab.newRequest)
-                Label("Account", systemImage: "person.crop.circle").tag(ServiceRootFeature.State.Tab.account)
-            }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        } detail: {
-            switch store.tab {
-            case .inbox:
-                NavigationStack { ServiceTriageView(store: store.scope(state: \.triage, action: \.triage)) }
-            case .tasks:
-                ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) })
-            case .fleet:
-                ServiceFleetView(store: store.scope(state: \.fleet, action: \.fleet))
-            case .newRequest:
-                ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
-            case .account:
-                accountContent
-            }
-        }
-        .navigationTitle("Alondra")
-        .frame(minWidth: 740, minHeight: 520)
-        .task { await store.send(.appeared).finish() }
-        .onDisappear { store.send(.disappeared) }
-        .sheet(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
-            NavigationStack { ServicePullRequestView(store: child) }.frame(minWidth: 720, minHeight: 560)
-        }
-    }
-}

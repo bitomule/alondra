@@ -73,7 +73,7 @@ struct ServiceTaskOutcome: View {
     }
 }
 
-private struct ServiceTaskDetailView: View {
+struct ServiceTaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
     let context: ServiceTaskContext
     let openTask: (String) -> Void
