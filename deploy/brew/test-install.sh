@@ -32,4 +32,6 @@ for binary in alondra alondrad; do
 done
 test -f "$prefix/libexec/alondra/.claude-plugin/marketplace.json"
 test -f "$prefix/libexec/alondra/plugin-orchestrator/skills/alondra-orchestrator/SKILL.md"
-# Does not run setup or start a daemon on the build machine.
+# Run the installed executable outside any checkout, without --repo/--bin.
+# Its dependencies expose only read-only observations; setup must stay dry.
+python3 deploy/brew/smoke-setup.py "$prefix"
