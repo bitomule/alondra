@@ -1,4 +1,5 @@
 import AlondraAttachmentsFeature
+import AlondraDemoWorkspace
 import AlondraWorkspaceFeature
 import AlondraFleetFeature
 import AlondraNewWorkFeature
@@ -15,12 +16,20 @@ import SwiftUI
 struct ServiceAppScene: View {
     let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
+    @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
     var body: some View {
-        if let services = owner.services {
+        if demo.sessionID != nil {
+            DemoWorkspaceScreen(mode: demo) { store in
+                ServiceRootView(store: store, accountContent: DemoAccountView())
+            }
+        } else if let services = owner.services {
             ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
                 .id(ObjectIdentifier(services))
         } else {
             NavigationStack { CloudPairingScreen(store: owner.store) }
+                .safeAreaInset(edge: .bottom) {
+                    if owner.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+                }
         }
     }
 }
@@ -72,7 +81,7 @@ private struct ApprovedServiceScene: View {
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceRootView(store: store, services: services, notifications: notifications, owner: owner) }
+            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications)) }
             else { ProgressView("Opening workspace…") }
         }
         .safeAreaInset(edge: .bottom) {
@@ -91,11 +100,9 @@ private struct ApprovedServiceScene: View {
     }
 }
 
-private struct ServiceRootView: View {
+private struct ServiceRootView<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
-    let services: CloudAppServices
-    let notifications: ServiceNotificationRuntime
-    let owner: CloudPairingOwner
+    let accountContent: AccountContent
     var body: some View {
         TabView(selection: Binding(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
@@ -111,7 +118,7 @@ private struct ServiceRootView: View {
                 NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }
             }
             Tab("Account", systemImage: "person.crop.circle", value: ServiceRootFeature.State.Tab.account) {
-                NavigationStack { ServiceSettingsScene(services: services, owner: owner, notifications: notifications) }
+                NavigationStack { accountContent }
             }
         }
         .task { await store.send(.appeared).finish() }

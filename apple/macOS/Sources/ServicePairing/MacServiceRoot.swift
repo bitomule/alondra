@@ -1,4 +1,5 @@
 import AlondraAttachmentsFeature
+import AlondraDemoWorkspace
 import AlondraWorkspaceFeature
 import AlondraFleetFeature
 import AlondraNewWorkFeature
@@ -14,12 +15,20 @@ import SwiftUI
 
 struct MacServiceRoot: View {
     let account: CloudPairingOwner
+    @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
     var body: some View {
-        if let services = account.services {
+        if demo.sessionID != nil {
+            DemoWorkspaceScreen(mode: demo) { store in
+                MacServiceWorkspace(store: store, accountContent: DemoAccountView())
+            }
+        } else if let services = account.services {
             MacServiceWindow(services: services, account: account)
                 .id(ObjectIdentifier(services))
         } else {
             MacServicePairingScreen(store: account.store)
+                .safeAreaInset(edge: .bottom) {
+                    if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+                }
         }
     }
 }
@@ -64,7 +73,7 @@ private struct MacServiceWindow: View {
     var body: some View {
         Group {
             if let store = context.store {
-                MacServiceWorkspace(store: store, account: account, services: services)
+                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
             } else {
                 ProgressView("Opening workspace…")
             }
@@ -72,10 +81,9 @@ private struct MacServiceWindow: View {
     }
 }
 
-private struct MacServiceWorkspace: View {
+private struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
-    let account: CloudPairingOwner
-    let services: CloudAppServices
+    let accountContent: AccountContent
     var body: some View {
         NavigationSplitView {
             List(selection: Binding<ServiceRootFeature.State.Tab?>(get: { store.tab }, set: {
@@ -101,7 +109,7 @@ private struct MacServiceWorkspace: View {
             case .newRequest:
                 ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
             case .account:
-                MacServiceSettingsScene(services: services, owner: account)
+                accountContent
             }
         }
         .navigationTitle("Alondra")

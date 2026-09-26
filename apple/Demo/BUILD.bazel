@@ -7,6 +7,7 @@ swift_library(
     deps = [
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Data/Attachments:AlondraAttachmentsData",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Features/Triage:AlondraTriageFeature",
         "//apple/Features/Questions:AlondraQuestionsFeature",
