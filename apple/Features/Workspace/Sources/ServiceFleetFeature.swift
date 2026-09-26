@@ -21,7 +21,25 @@ public struct ServiceFleetFeature {
         public var presentation = ServiceTaskPresentation(overview: nil)
         @Presents public var taskDetail: TaskDetailFeature.State?
         public var focusedInboxID: String?
-        @Presents public var detail: NodeDetailFeature.State?
+        public var nodes: IdentifiedArrayOf<NodeDetailFeature.State> = []
+        public var identity: TriageIdentity?
+        public mutating func resetIdentity(_ identity: TriageIdentity?) {
+            guard self.identity != identity else { return }
+            self.identity = identity
+            nodes = []
+            detailID = nil
+        }
+        public var detailID: String?
+        public var detail: NodeDetailFeature.State? {
+            get { detailID.flatMap { nodes[id: $0] } }
+            set {
+                if let newValue { nodes[id: newValue.id] = newValue; detailID = newValue.id }
+                else { detailID = nil }
+            }
+        }
+        public mutating func cancelPendingSubmissions() {
+            for id in nodes.ids { nodes[id: id]?.pendingSubmission = nil }
+        }
         public var sequence: UInt64 = 0
         public var overview: Overview?
         public var hiddenInboxIDs: Set<String> = []
@@ -33,7 +51,8 @@ public struct ServiceFleetFeature {
         case snapshot(Overview?)
         case hiddenInboxChanged(Set<String>)
         case fleet(FleetFeature.Action)
-        case detail(PresentationAction<NodeDetailFeature.Action>)
+        case detailDismissed
+        case nodes(IdentifiedActionOf<NodeDetailFeature>)
         case openNode(String)
         case nodePathChanged([String])
         case path(StackActionOf<Path>)
@@ -69,7 +88,9 @@ public struct ServiceFleetFeature {
                 return .run { send in
                     for await snapshot in await snapshots.observe() { await send(.snapshot(snapshot)) }
                 }.cancellable(id: CancelID.observation, cancelInFlight: true)
-            case .disappeared: return .cancel(id: CancelID.observation)
+            case .disappeared:
+                state.cancelPendingSubmissions()
+                return .cancel(id: CancelID.observation)
             case .snapshot(let overview):
                 state.overview = overview
                 return project(&state)
@@ -83,14 +104,23 @@ public struct ServiceFleetFeature {
                 return .send(.openNode(id))
             case .openNode(let id):
                 guard let snapshot = state.fleet.snapshot, snapshot.node(id) != nil else { return .none }
-                state.detail = NodeDetailFeature.State(sessionID: id)
-                return .send(.detail(.presented(.snapshotChanged(snapshot))))
-            case .detail(.presented(.closeFinished)):
-                if state.detail?.shouldDismiss == true { state.detail = nil; state.nodePath = [] }
+                state.cancelPendingSubmissions()
+                if state.nodes[id: id] == nil { state.nodes.append(NodeDetailFeature.State(sessionID: id)) }
+                state.detailID = id
+                return .send(.nodes(.element(id: id, action: .snapshotChanged(snapshot))))
+            case .detailDismissed:
+                if let id = state.detailID { state.nodes[id: id]?.pendingSubmission = nil }
+                state.detailID = nil
                 return .none
-            case .fleet, .detail, .taskDetail, .path: return .none
+            case .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .commandResolved)):
+                if state.nodes[id: id]?.shouldDismiss == true {
+                    state.nodes.remove(id: id)
+                    if state.detailID == id { state.detailID = nil; state.nodePath = [] }
+                }
+                return .none
+            case .fleet, .nodes, .taskDetail, .path: return .none
             }
-        }.ifLet(\.$detail, action: \.detail) { NodeDetailFeature() }
+        }.forEach(\.nodes, action: \.nodes) { NodeDetailFeature() }
             .ifLet(\.$taskDetail, action: \.taskDetail) { TaskDetailFeature() }
             .forEach(\.path, action: \.path)
     }
@@ -107,7 +137,7 @@ public struct ServiceFleetFeature {
                 case .task: return .send(.path(.element(id: id, action: .task(.taskChanged(nil)))))
                 }
             })
-            return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotUnavailable)), state.detail == nil ? .none : .send(.detail(.presented(.snapshotUnavailable))))
+            return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotUnavailable)), .merge(state.nodes.ids.map { .send(.nodes(.element(id: $0, action: .snapshotUnavailable))) }))
         }
         state.sequence &+= 1
         let ids = Set(ObserveInboxUseCase().execute(overview).items.map(\.id)).subtracting(state.hiddenInboxIDs)
@@ -118,6 +148,6 @@ public struct ServiceFleetFeature {
             case .task(let task): return .send(.path(.element(id: id, action: .task(.taskChanged(state.presentation.board.task(task.taskID))))))
             }
         })
-        return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), state.detail == nil ? .none : .send(.detail(.presented(.snapshotChanged(snapshot)))))
+        return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), .merge(state.nodes.ids.map { .send(.nodes(.element(id: $0, action: .snapshotChanged(snapshot)))) }))
     }
 }

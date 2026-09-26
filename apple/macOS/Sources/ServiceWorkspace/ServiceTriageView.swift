@@ -38,13 +38,15 @@ struct ServiceTriageView: View {
         .sheet(item: $store.scope(state: \.question, action: \.question)) { child in
             NavigationStack { ServiceQuestionView(store: child) }.frame(minWidth: 560, minHeight: 480)
         }
-        .sheet(item: $store.scope(state: \.document, action: \.document)) { child in
+        .sheet(isPresented: Binding(get: { store.documentID != nil }, set: { if !$0 { store.send(.documentDismissed) } })) {
+            if let child = store.scope(state: \.documents, action: \.documents).first(where: { $0.subject.id == store.documentID }) {
             NavigationStack {
                 ServiceDocumentView(store: child, markRead: {
                     store.send(.triage(.hide(child.subject.id)))
-                    store.send(.document(.dismiss))
+                    store.send(.documentDismissed)
                 })
             }.frame(minWidth: 640, minHeight: 520)
+            }
         }
     }
 }

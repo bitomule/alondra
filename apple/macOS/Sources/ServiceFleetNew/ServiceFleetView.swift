@@ -21,8 +21,10 @@ struct ServiceFleetView: View {
             }
             .searchable(text: Binding(get: { store.fleet.query }, set: { store.send(.fleet(.searchChanged($0))) }), prompt: "Find a node or task")
             .navigationTitle("Fleet")
-            .navigationDestination(item: $store.scope(state: \.detail, action: \.detail)) { child in
-                ServiceNodeView(store: child, presentation: store.presentation)
+            .navigationDestination(isPresented: Binding(get: { store.detailID != nil }, set: { if !$0 { store.send(.detailDismissed) } })) {
+                if let child = store.scope(state: \.nodes, action: \.nodes).first(where: { $0.sessionID == store.detailID }) {
+                    ServiceNodeView(store: child, presentation: store.presentation)
+                }
             }
         }
         .task { await store.send(.appeared).finish() }

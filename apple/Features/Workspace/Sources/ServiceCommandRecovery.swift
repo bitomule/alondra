@@ -41,8 +41,8 @@ extension ServiceRootFeature {
         if state.triage.question?.uncertainCommandID == id {
             effects.append(.send(.triage(.question(.presented(.commandResolved(id, rejection: rejection))))))
         }
-        if state.triage.document?.uncertainCommandID == id {
-            effects.append(.send(.triage(.document(.presented(.commandResolved(id, rejection: rejection))))))
+        for document in state.triage.documents where document.uncertainCommandID == id {
+            effects.append(.send(.triage(.documents(.element(id: document.id, action: .commandResolved(id, rejection: rejection))))))
         }
         if state.newRequest.uncertainCommandID == id {
             effects.append(.send(.newRequest(.commandResolved(id, rejection: rejection))))
@@ -77,8 +77,8 @@ extension ServiceRootFeature {
         if state.fleet.fleet.closeOutcomeByID.values.contains(where: { $0.uncertainID == id }) {
             effects.append(.send(.fleet(.fleet(.commandResolved(id, rejection: rejection)))))
         }
-        if state.fleet.detail?.sendOutcome?.uncertainID == id || state.fleet.detail?.closeOutcome?.uncertainID == id {
-            effects.append(.send(.fleet(.detail(.presented(.commandResolved(id, rejection: rejection))))))
+        for node in state.fleet.nodes where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id {
+            effects.append(.send(.fleet(.nodes(.element(id: node.id, action: .commandResolved(id, rejection: rejection))))))
         }
         for card in state.triage.cards {
             if card.question?.uncertainCommandID == id {
@@ -116,8 +116,10 @@ extension ServiceRootFeature {
 extension ServiceRootFeature {
     func feedbackResolutionEffects(_ events: [ReportFeedbackRecoveryEvent], state: State) -> Effect<Action> {
         var effects: [Effect<Action>] = []
-        if let action = feedbackAction(events, document: state.triage.document) {
-            effects.append(.send(.triage(.document(.presented(action)))))
+        for document in state.triage.documents {
+            if let action = feedbackAction(events, document: document) {
+                effects.append(.send(.triage(.documents(.element(id: document.id, action: action)))))
+            }
         }
         for card in state.triage.cards {
             if let action = feedbackAction(events, document: card.document) {

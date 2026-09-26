@@ -34,7 +34,7 @@ struct FeedbackAuthorIntegrationTests {
         // An old/foreign stream must not replace the accepted author's projection.
         await store.send(.triage(.inboxUpdated(.init(identity: other, overview: try snapshot("Wrong"), connection: .online)))).finish()
         func documentAction(_ action: DocumentReviewFeature.Action) -> ServiceTriageFeature.Action {
-            detail ? .document(.presented(action)) : .cards(.element(id: id, action: .document(action)))
+            detail ? .documents(.element(id: id, action: action)) : .cards(.element(id: id, action: .document(action)))
         }
         await store.send(documentAction(.generalChanged("Retain this"))).finish()
         await store.send(documentAction(.commentChanged(anchor: "block-1", quote: "Body", text: "Change spacing"))).finish()

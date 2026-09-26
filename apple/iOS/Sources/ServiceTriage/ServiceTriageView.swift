@@ -38,9 +38,11 @@ struct ServiceTriageView: View {
         .navigationDestination(item: $store.scope(state: \.question, action: \.question)) { child in
             ServiceQuestionView(store: child).navigationTransition(.zoom(sourceID: "q\(child.question.id)", in: zoom))
         }
-        .navigationDestination(item: $store.scope(state: \.document, action: \.document)) { child in
-            ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
-                .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
+        .navigationDestination(isPresented: Binding(get: { store.documentID != nil }, set: { if !$0 { store.send(.documentDismissed) } })) {
+            if let child = store.scope(state: \.documents, action: \.documents).first(where: { $0.subject.id == store.documentID }) {
+                ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.documentDismissed) })
+                    .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(true)) } }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(false)) } }

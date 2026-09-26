@@ -95,7 +95,8 @@ public struct DocumentDraft: Equatable, Sendable {
 public struct DocumentReviewFeature {
     public enum PendingReview: Equatable, Sendable { case feedback(String), moreContext(String) }
     @ObservableState
-    public struct State: Equatable {
+    public struct State: Equatable, Identifiable {
+        public var id: String { subject.id }
         public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject

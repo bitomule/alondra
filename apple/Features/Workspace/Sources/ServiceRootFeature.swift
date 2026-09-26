@@ -109,6 +109,7 @@ public struct ServiceRootFeature {
             .onChange(of: \.macPresentation.selection) { _, _ in
                 Reduce { state, _ in
                     state.triage.cancelPendingSubmissions()
+                    state.fleet.cancelPendingSubmissions()
                     state.pullRequest?.cancelPendingSubmission()
                     return .none
                 }
@@ -135,19 +136,21 @@ public struct ServiceRootFeature {
                 }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true))
             case .disappeared:
                 state.triage.cancelPendingSubmissions()
+                state.fleet.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
                 return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)), .send(.triage(.triage(.disappeared))))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
                 return feedbackResolutionEffects(events, state: state)
-            case .triage(.document(.presented(.reportFeedbackFinished))),
+            case .triage(.documents(.element(_, .reportFeedbackFinished))),
                  .triage(.cards(.element(_, .document(.reportFeedbackFinished)))):
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tabSelected(let tab):
                 if state.tab != tab {
                     state.triage.cancelPendingSubmissions()
+                    state.fleet.cancelPendingSubmissions()
                     state.pullRequest?.cancelPendingSubmission()
                 }
                 state.tab = tab
@@ -155,10 +158,14 @@ public struct ServiceRootFeature {
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
                 state.triage.cancelPendingSubmissions()
+                state.fleet.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
                 state.tab = .inbox
                 state.pendingInboxID = id
                 return routePending(&state)
+            case .triage(.triage(.identityChanged(let identity))):
+                state.fleet.resetIdentity(identity)
+                return .none
             case .triage(.triage(.inboxUpdated(let update))):
                 let routing: Effect<Action> = .merge(routePending(&state),
                     update.identity == state.triage.triage.identity ? .send(.newRequest(.workspaceUpdated(update.overview))) : .none,
@@ -217,8 +224,8 @@ public struct ServiceRootFeature {
         case .triage(.triage(.commandResolved(let id, let rejection))):
             guard state.triage.triage.uncertainByItem.values.contains(id) else { return nil }
             return rejection.map { .failure(couldNotSendMessage($0)) }
-        case .triage(.document(.presented(let action))):
-            return state.triage.document.flatMap { documentNotice($0, action: action) }
+        case .triage(.documents(.element(let id, let action))):
+            return state.triage.documents[id: id].flatMap { documentNotice($0, action: action) }
         case .pullRequest(.presented(.diff(.reviewFinished(let outcome, let epoch)))):
             guard let diff = state.pullRequest?.diff, diff.isSending, diff.presentationEpoch == epoch else { return nil }
             return rejectedPRNotice(outcome)
@@ -289,8 +296,8 @@ public struct ServiceRootFeature {
             let fleet = state.fleet.fleet
             guard let id = fleet.closeOutcomeByID.first(where: { $0.value.uncertainID == commandID })?.key else { return nil }
             return rejection.map(WorkspaceNotice.Event.closeRefused) ?? .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
-        case .fleet(.detail(.presented(let action))):
-            return state.fleet.detail.flatMap { nodeNotice($0, action: action) }
+        case .fleet(.nodes(.element(let id, let action))):
+            return state.fleet.nodes[id: id].flatMap { nodeNotice($0, action: action) }
         case .fleet(.path(.element(let id, .node(let action)))):
             guard case .node(let node) = state.fleet.path[id: id] else { return nil }
             return nodeNotice(node, action: action)

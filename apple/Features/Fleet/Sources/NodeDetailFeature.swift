@@ -7,8 +7,9 @@ import Foundation
 @Reducer
 public struct NodeDetailFeature {
     @ObservableState
-    public struct State: Equatable {
+    public struct State: Equatable, Identifiable {
         public var attachmentPicker = AttachmentFeature.State()
+        public var id: String { sessionID }
         public let sessionID: String
         public var entry: FleetNode?
         public var acceptedTick: UInt64?

@@ -177,11 +177,11 @@ private struct MacServiceDetail: View {
                 ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
                 ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
-            } else if let child = store.scope(state: \.triage.document, action: \.triage.document.presented), child.subject.id == id {
+            } else if let child = store.scope(state: \.triage.documents, action: \.triage.documents).first(where: { $0.subject.id == id }) {
                 ServiceDocumentView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) }, markRead: { store.send(.triage(.triage(.hide(id)))) })
             } else { MacServiceHome(store: store, presentation: presentation) }
-        case .node:
-            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) {
+        case .node(let id):
+            if let child = store.scope(state: \.fleet.nodes, action: \.fleet.nodes).first(where: { $0.sessionID == id }) {
                 ServiceNodeView(store: child, presentation: store.fleet.presentation,
                     pending: store.triage.triage.queue.filter { $0.sessionId == child.sessionID },
                     openInbox: { presentation.send(.select(.item($0))) },

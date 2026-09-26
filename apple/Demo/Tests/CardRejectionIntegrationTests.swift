@@ -168,14 +168,14 @@ struct CardRejectionIntegrationTests {
         initial.pullRequest = source.pullRequest
         func detailAction(_ action: TriageCardFeature.Action) -> ServiceRootFeature.Action {
             switch action {
-            case .document(let action): return .triage(.document(.presented(action)))
+            case .document(let action): return .triage(.documents(.element(id: id, action: action)))
             case .pullRequest(let action): return .pullRequest(.presented(action))
             default: preconditionFailure("Detail test must use its real leaf action")
             }
         }
         let submit: ServiceRootFeature.Action
         switch route {
-        case .feedback: submit = .triage(.document(.presented(.sendFeedbackTapped(author: "Reviewer"))))
+        case .feedback: submit = .triage(.documents(.element(id: id, action: .sendFeedbackTapped(author: "Reviewer"))))
         case .changes: submit = .pullRequest(.presented(.diff(.requestChangesTapped)))
         case .ask: submit = .pullRequest(.presented(.diff(.askTapped)))
         default: submit = detailAction(action(route))
@@ -190,8 +190,8 @@ struct CardRejectionIntegrationTests {
                 ServiceRootFeature()
                 Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { state, action in
                     switch action {
-                    case .triage(.document(.presented(.submissionFinished))),
-                         .triage(.document(.presented(.reportFeedbackFinished))),
+                    case .triage(.documents(.element(_, .submissionFinished))),
+                         .triage(.documents(.element(_, .reportFeedbackFinished))),
                          .pullRequest(.presented(.diff(.reviewFinished))),
                          .pullRequest(.presented(.pr(.mutationFinished))):
                         if state.notice != nil { notices.withValue { $0 += 1 } }

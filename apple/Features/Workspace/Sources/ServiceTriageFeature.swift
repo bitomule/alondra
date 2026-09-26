@@ -14,7 +14,7 @@ public struct ServiceTriageFeature {
         public mutating func cancelPendingSubmissions() {
             for id in cards.ids { cards[id: id]?.cancelPendingSubmission() }
             question?.cancelPendingSubmission()
-            document?.cancelPendingSubmission()
+            for id in documents.ids { documents[id: id]?.cancelPendingSubmission() }
         }
         public var feedbackAuthor = ""
         public var triage = TriageFeature.State()
@@ -30,7 +30,15 @@ public struct ServiceTriageFeature {
         public var tasks: [WorkTask] = []
         public func task(for item: InboxItem) -> WorkTask? { TaskBoard(requests: [], tasks: tasks).task(for: item) }
         @Presents public var question: QuestionFeature.State?
-        @Presents public var document: DocumentReviewFeature.State?
+        public var documents: IdentifiedArrayOf<DocumentReviewFeature.State> = []
+        public var documentID: String?
+        public var document: DocumentReviewFeature.State? {
+            get { documentID.flatMap { documents[id: $0] } }
+            set {
+                if let newValue { documents[id: newValue.id] = newValue; documentID = newValue.id }
+                else { documentID = nil }
+            }
+        }
     }
 
     public enum Action {
@@ -40,7 +48,8 @@ public struct ServiceTriageFeature {
         case presentationDisappeared
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case question(PresentationAction<QuestionFeature.Action>)
-        case document(PresentationAction<DocumentReviewFeature.Action>)
+        case documentDismissed
+        case documents(IdentifiedActionOf<DocumentReviewFeature>)
         case open(String)
         case machinePresented(Bool)
         case delegate(Delegate)
@@ -93,6 +102,10 @@ public struct ServiceTriageFeature {
                     return .none
                 case .open(let id):
                     guard let item = state.triage.routeTarget(for: id) else { return .none }
+                    if let existing = state.documents[id: id] {
+                        state.documentID = existing.id
+                        return .none
+                    }
                     switch item {
                     case .question(let question):
                         state.document = DocumentReviewFeature.State(subject: .question(question), identity: workIdentity(state), feedbackAuthor: state.feedbackAuthor)
@@ -108,7 +121,8 @@ public struct ServiceTriageFeature {
                     state.feedbackAuthor = ""
                     state.machine = nil; state.usage = nil; state.nodes = []; state.tasks = []
                     state.question = nil
-                    state.document = nil
+                    state.documentID = nil
+                    state.documents = []
                     return .none
                 case .triage(.inboxUpdated(let update)):
                     guard update.identity == state.triage.identity else { return .none }
@@ -134,21 +148,24 @@ public struct ServiceTriageFeature {
                         }
                     }
                     for id in state.cards.ids { state.cards[id: id]?.document?.feedbackAuthor = state.feedbackAuthor }
-                    state.document?.feedbackAuthor = state.feedbackAuthor
+                    for id in state.documents.ids { state.documents[id: id]?.feedbackAuthor = state.feedbackAuthor }
                     if let question = state.question {
                         if let item = state.triage.items.first(where: { $0.id == "q\(question.question.id)" }),
                            case .question(let fresh) = item {
                             effects.append(.send(.question(.presented(.refreshed(fresh)))))
                         } else { state.question = nil }
                     }
-                    if let document = state.document {
-                        if let item = state.triage.items.first(where: { $0.id == document.subject.id }) {
+                    for document in state.documents {
+                        if let item = state.triage.items.first(where: { $0.id == document.id }) {
                             switch item {
-                            case .question(let question): effects.append(.send(.document(.presented(.refreshed(.question(question))))))
-                            case .report(let report): effects.append(.send(.document(.presented(.refreshed(.report(report))))))
+                            case .question(let question): effects.append(.send(.documents(.element(id: document.id, action: .refreshed(.question(question))))))
+                            case .report(let report): effects.append(.send(.documents(.element(id: document.id, action: .refreshed(.report(report))))))
                             case .pullRequest: break
                             }
-                        } else { state.document = nil }
+                        } else if update.overview != nil && !document.isSubmitting && !document.needsReconciliation && !document.feedbackReadRetryAvailable {
+                            state.documents.remove(id: document.id)
+                            if state.documentID == document.id { state.documentID = nil }
+                        }
                     }
                     return .merge(effects)
                 case .question(.presented(.submissionFinished)), .question(.presented(.commandResolved)):
@@ -157,10 +174,17 @@ public struct ServiceTriageFeature {
                         state.question = nil
                     }
                     return .none
-                case .document(.presented(.submissionFinished)), .document(.presented(.reportFeedbackFinished)), .document(.presented(.commandResolved)):
-                    if let document = state.document, document.completed {
-                        state.triage.hiddenIDs.insert(document.subject.id)
-                        state.document = nil
+                case .documentDismissed:
+                    if let id = state.documentID { state.documents[id: id]?.cancelPendingSubmission() }
+                    state.documentID = nil
+                    return .none
+                case .documents(.element(let id, .submissionFinished)),
+                     .documents(.element(let id, .reportFeedbackFinished)),
+                     .documents(.element(let id, .commandResolved)):
+                    if state.documents[id: id]?.completed == true {
+                        state.triage.hiddenIDs.insert(id)
+                        state.documents.remove(id: id)
+                        if state.documentID == id { state.documentID = nil }
                     }
                     return .none
                 case .triage(.readAcknowledged(let id, let confirmed)):
@@ -176,12 +200,12 @@ public struct ServiceTriageFeature {
                     return .none
                 case .cards(.element(_, .delegate(.hide(let id)))):
                     return .send(.triage(.hide(id)))
-                case .triage, .question, .document, .delegate, .cards: return .none
+                case .triage, .question, .documents, .delegate, .cards: return .none
                 }
             }
             .forEach(\.cards, action: \.cards) { TriageCardFeature() }
             .ifLet(\.$question, action: \.question) { QuestionFeature() }
-            .ifLet(\.$document, action: \.document) { DocumentReviewFeature() }
+            .forEach(\.documents, action: \.documents) { DocumentReviewFeature() }
         }
         .onChange(of: \.triage.queue.first?.id) { previous, _ in
             Reduce { state, _ in
