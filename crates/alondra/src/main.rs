@@ -8,6 +8,8 @@ mod doctor;
 mod mcp;
 mod service_setup;
 mod service_pair;
+mod service_client;
+mod client_pair;
 mod setup;
 mod statusline;
 mod state;
@@ -25,12 +27,20 @@ use crate::client::Client;
 #[derive(Parser)]
 #[command(name = "alondra", about = tr!("The hive from the terminal. With no arguments it opens the TUI.", "La colmena desde la terminal. Sin argumentos abre la TUI."))]
 struct Cli {
+    #[arg(long, conflicts_with = "remote", help = "Open the TUI on this explicitly approved service Mac")]
+    mac: Option<String>,
+    #[arg(long, help = "Open the TUI on the last explicitly selected service Mac")]
+    remote: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = "List Macs enrolled in your service account")]
+    Machines,
+    #[command(about = "Pair/select a remote Mac; normal alondra still opens Local")]
+    Connect { mac: String, #[arg(long, help = "Request new approval on the destination; keep current trust until approval succeeds")] repair: bool },
     #[command(about = tr!("Sign in to the Alondra service in your browser", "Inicia sesión en el servicio Alondra desde el navegador"))]
     Login,
     #[command(about = tr!("Show the signed-in Alondra service account", "Muestra la cuenta conectada al servicio Alondra"))]
@@ -117,7 +127,13 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    if cli.mac.is_some() || cli.remote {
+        if cli.command.is_some() { anyhow::bail!("--mac and --remote apply only to the TUI, without a subcommand"); }
+        service_client::initialize(cli.mac.as_deref())?;
+    }
     match cli.command {
+        Some(Cmd::Machines) => service_client::list(),
+        Some(Cmd::Connect { mac, repair }) => service_client::connect(&mac, repair),
         None => tui::run(),
         Some(Cmd::Login) => account::login(),
         Some(Cmd::Account) => account::status(),
@@ -387,4 +403,20 @@ fn keys_probe() -> anyhow::Result<()> {
     };
     crossterm::terminal::disable_raw_mode()?;
     result
+}
+
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    #[test]
+    fn local_is_the_default_and_remote_modes_are_explicit_and_exclusive() {
+        let local = Cli::try_parse_from(["alondra"]).unwrap();
+        assert!(local.mac.is_none() && !local.remote);
+        assert_eq!(Cli::try_parse_from(["alondra", "--mac", "mac-a"]).unwrap().mac.as_deref(), Some("mac-a"));
+        assert!(Cli::try_parse_from(["alondra", "--remote"]).unwrap().remote);
+        assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a", "--remote"]).is_err());
+        let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
+        assert!(connect.mac.is_none() && !connect.remote);
+    }
 }

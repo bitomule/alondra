@@ -48,6 +48,8 @@ struct Discovery {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -64,9 +66,11 @@ struct Session {
     refresh_token: String,
 }
 
+#[derive(Clone)]
 pub struct AccountToken {
     pub sub: String,
     pub access_token: String,
+    valid_for: Duration,
 }
 
 fn agent() -> ureq::Agent {
@@ -326,6 +330,7 @@ fn stored() -> Result<Session> {
 }
 
 pub fn login() -> Result<()> {
+    let _lock = AccountLock::acquire()?;
     let previous = stored().ok();
     let http = agent();
     let d = discovery(&http)?;
@@ -397,6 +402,11 @@ pub fn login() -> Result<()> {
 }
 
 fn refreshed() -> Result<(AccountToken, Option<String>)> {
+    let _lock = AccountLock::acquire()?;
+    refreshed_locked()
+}
+
+fn refreshed_locked() -> Result<(AccountToken, Option<String>)> {
     let session = stored()?;
     let http = agent();
     let d = discovery(&http)?;
@@ -431,6 +441,7 @@ fn refreshed() -> Result<(AccountToken, Option<String>)> {
         AccountToken {
             sub: user.sub,
             access_token: token.access_token,
+            valid_for: Duration::from_secs(token.expires_in.unwrap_or(0).saturating_sub(5).min(20)),
         },
         user.preferred_username,
     ))
@@ -464,6 +475,7 @@ pub fn status() -> Result<()> {
 }
 
 pub fn logout() -> Result<()> {
+    let _lock = AccountLock::acquire()?;
     let session = stored()?;
     let http = agent();
     let remote_revoked = discovery(&http)
@@ -556,5 +568,183 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+/// Refresh tokens rotate. Serialize Keychain read/refresh/write across every CLI process.
+struct AccountLock(std::fs::File);
+impl AccountLock {
+    fn acquire() -> Result<Self> {
+        let path = Self::path()?;
+        std::fs::create_dir_all(path.parent().context("account lock directory")?)?;
+        Self::at(&path)
+    }
+    fn path() -> Result<std::path::PathBuf> {
+        // Keychain credentials have user-wide scope. Neither HOME nor ALONDRA_HOME
+        // may split the lock for the same global Keychain item.
+        let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        let mut buffer = vec![0u8; 16384];
+        let code = unsafe {
+            libc::getpwuid_r(
+                libc::getuid(),
+                record.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if code != 0 || result.is_null() {
+            bail!("cannot resolve OS account home for login lock");
+        }
+        let record = unsafe { record.assume_init() };
+        if record.pw_dir.is_null() {
+            bail!("OS account has no home directory");
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let home = std::path::Path::new(std::ffi::OsStr::from_bytes(
+            unsafe { std::ffi::CStr::from_ptr(record.pw_dir) }.to_bytes(),
+        ));
+        Ok(home.join("Library/Caches/dev.davidcollado.alondra/service-login.lock"))
+    }
+    fn for_service() -> Result<Self> {
+        let path = Self::path()?;
+        std::fs::create_dir_all(path.parent().context("account lock directory")?)?;
+        Self::open(&path, true)
+    }
+    fn at(path: &std::path::Path) -> Result<Self> {
+        Self::open(path, false)
+    }
+    fn open(path: &std::path::Path, nonblocking: bool) -> Result<Self> {
+        use std::os::{
+            fd::AsRawFd,
+            unix::fs::{MetadataExt, OpenOptionsExt},
+        };
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
+            bail!("unsafe global account lock file");
+        }
+        let flags = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
+        if unsafe { libc::flock(file.as_raw_fd(), flags) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if nonblocking && error.kind() == std::io::ErrorKind::WouldBlock {
+                bail!("account login or refresh is busy; retry when it finishes");
+            }
+            return Err(error.into());
+        }
+        Ok(Self(file))
+    }
+}
+impl Drop for AccountLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+/// A short-lived access-token cache avoids a refresh for every encrypted file chunk.
+/// Inspect persisted session under the process lock, so logout/account changes invalidate it.
+pub fn token_for_service() -> Result<AccountToken> {
+    type Cached = (Vec<u8>, AccountToken, Instant);
+    static CACHE: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE
+        .try_lock()
+        .map_err(|_| anyhow!("account login or refresh is busy; retry when it finishes"))?;
+    let _lock = AccountLock::for_service()?;
+    let session = serde_json::to_vec(
+        &stored().context("sign in with alondra login before connecting to a remote Mac")?,
+    )?;
+    if let Some((generation, token, created)) = &*cache {
+        if generation == &session && created.elapsed() < token.valid_for {
+            return Ok(token.clone());
+        }
+    }
+    let (token, _) = refreshed_locked()?;
+    *cache = Some((
+        serde_json::to_vec(&stored()?)?,
+        token.clone(),
+        Instant::now(),
+    ));
+    Ok(token)
+}
+
+#[cfg(test)]
+mod account_lock_tests {
+    use super::*;
+    #[test]
+    fn lock_probe_child() {
+        use std::os::fd::AsRawFd;
+        let Ok(path) = std::env::var("ALONDRA_TEST_ACCOUNT_LOCK") else {
+            return;
+        };
+        println!("lock-path={}", AccountLock::path().unwrap().display());
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let acquired = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        assert_eq!(
+            acquired,
+            std::env::var("ALONDRA_TEST_EXPECT_LOCK").unwrap() == "free"
+        );
+    }
+    #[test]
+    fn account_lock_is_shared_across_processes_and_profile_homes() {
+        let dir = std::env::temp_dir().join(format!(
+            "alondra-account-lock-test-{}-{}",
+            std::process::id(),
+            crate::service_client::now_ms().unwrap()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("lock");
+        let lock = AccountLock::at(&path).unwrap();
+        let began = Instant::now();
+        let error = match AccountLock::open(&path, true) {
+            Ok(_) => panic!("service must not take a held refresh lock"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("busy"));
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "service login never waits behind browser login"
+        );
+        let probe = |expected: &str, profile: &str| {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "account::account_lock_tests::lock_probe_child",
+                    "--nocapture",
+                ])
+                .env("ALONDRA_TEST_ACCOUNT_LOCK", &path)
+                .env("ALONDRA_TEST_EXPECT_LOCK", expected)
+                .env("ALONDRA_HOME", profile)
+                .env("HOME", profile)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains(&format!(
+                "lock-path={}",
+                AccountLock::path().unwrap().display()
+            )));
+        };
+        probe("blocked", "/tmp/other-alondra-profile-a");
+        probe("blocked", "/tmp/other-alondra-profile-b");
+        drop(lock);
+        probe("free", "/tmp/other-alondra-profile-b");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

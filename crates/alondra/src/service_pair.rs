@@ -428,7 +428,7 @@ fn complete_pending(
     restart_daemon()?;
     fs::remove_file(home.join("service-pairing-pending.json"))?;
     fs::File::open(home)?.sync_all()?;
-    println!("iPhone approved and Alondra restarted on this Mac.");
+    println!("Client approved and Alondra restarted on this Mac.");
     Ok(())
 }
 
@@ -585,6 +585,7 @@ pub fn run(home: &Path) -> Result<()> {
         .quiet_zone(true)
         .build();
     println!("{art}\nScan this QR in Alondra on your iPhone. It expires in 10 minutes.");
+    println!("Terminal invitation (paste into alondra connect on the client):\n{qr}");
     let candidate = loop {
         if now_ms()? >= expires {
             bail!("pairing session expired");
@@ -639,12 +640,12 @@ pub fn run(home: &Path) -> Result<()> {
     let fingerprint =
         URL_SAFE_NO_PAD.encode(&Sha256::digest(URL_SAFE_NO_PAD.decode(&phone.signing_key)?)[..6]);
     println!("Pairing request from {}.", phone.display_name);
-    print!("Enter the 8-character code shown on that iPhone: ");
+    print!("Enter the 8-character code shown on that client: ");
     io::stdout().flush()?;
     let mut comparison = String::new();
     io::stdin().read_line(&mut comparison)?;
     if !bool::from(comparison.trim().as_bytes().ct_eq(fingerprint.as_bytes())) {
-        bail!("iPhone comparison code does not match; pairing declined");
+        bail!("Client comparison code does not match; pairing declined");
     }
     print!("Approve this device on this Mac? [y/N] ");
     io::stdout().flush()?;
