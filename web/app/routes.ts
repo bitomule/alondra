@@ -1,0 +1,2 @@
+import { type RouteConfig, index, route } from '@react-router/dev/routes';
+export default [index('routes/home.tsx'), route('privacy','routes/privacy.tsx'), route('install','routes/install.tsx'), route('invite','routes/invite.tsx'), route('login-error','routes/login-error.tsx'), route('account-closed','routes/account-closed.tsx'), route('account','routes/account.tsx'), route('admin','routes/admin.tsx')] satisfies RouteConfig;
