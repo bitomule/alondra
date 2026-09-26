@@ -16,4 +16,3 @@ extension FocusedValues {
         set { self[WorkspaceSettingsStoreKey.self] = newValue }
     }
 }
-
