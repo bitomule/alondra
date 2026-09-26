@@ -35,7 +35,9 @@ still verifies the bearer token and its subject independently.
 
 ## H integration steps (single owner of app roots and APIClient)
 
-1. Add `//apple/Auth:AlondraAuth` to `AlondraiOSEntry` in `apple/BUILD.bazel`.
+1. Add `//apple/Auth:AlondraAuth` and `//apple/AuthPresentation:AlondraAuthPresentation`
+   to app entry targets in `apple/BUILD.bazel`. AuthPresentation owns the system
+   web-auth browser; Auth keeps the session and headless browser protocol.
    Add `CFBundleURLTypes` for scheme `com.bitomule.alondra` to `apple/iOS/Info.plist`.
    Ensure the registered Keycloak redirect URI is the exact URI above.
 2. Construct one `AuthSession` in the iOS app composition root. Inject

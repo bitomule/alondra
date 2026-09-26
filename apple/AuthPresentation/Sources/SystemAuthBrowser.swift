@@ -1,4 +1,5 @@
 #if os(iOS) || os(macOS)
+import AlondraAuth
 import AuthenticationServices
 import Foundation
 
