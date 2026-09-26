@@ -148,7 +148,8 @@ struct CardPendingLifecycleTests {
         detail.questionFeatures[id: 1]?.question.draft.text = "Keep answer"
         detail.questionFeatures[id: 1]?.question.attachmentPicker = picker
         detail.questionFeatures[id: 1]?.question.pendingSubmission = .awaitingReceipts
-        detail.questionFeatures[id: 1]?.question.pendingAttachedAnswer = detail.questionFeatures[id: 1]?.question.draft
+        let attachedDraft = detail.questionFeatures[id: 1]?.question.draft
+        detail.questionFeatures[id: 1]?.question.pendingAttachedAnswer = attachedDraft
         var initial = ServiceRootFeature.State()
         initial.pullRequest = detail
         initial.macPresentation.selection = .item("p5")
