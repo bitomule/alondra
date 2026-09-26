@@ -37,6 +37,7 @@ public struct ServiceTriageFeature {
         case triage(TriageFeature.Action)
         case cardStack(CardStackFeature.Action)
         case keyboardVisibilityChanged(Bool)
+        case presentationDisappeared
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case question(PresentationAction<QuestionFeature.Action>)
         case document(PresentationAction<DocumentReviewFeature.Action>)
@@ -50,7 +51,7 @@ public struct ServiceTriageFeature {
         CombineReducers {
             Reduce { state, action in
                 switch action {
-                case .triage(.disappeared), .open:
+                case .triage(.disappeared), .presentationDisappeared, .open:
                     state.cancelPendingSubmissions()
                 case .cardStack(.delegate(let departure)):
                     if departure.identity == state.triage.identity, departure.itemID == state.triage.queue.first?.id {
@@ -73,6 +74,7 @@ public struct ServiceTriageFeature {
             Scope(state: \.cardStack, action: \.cardStack) { CardStackFeature() }
             Reduce { state, action in
                 switch action {
+                case .presentationDisappeared: return .none
                 case .keyboardVisibilityChanged(let visible):
                     state.keyboardVisible = visible
                     return .none

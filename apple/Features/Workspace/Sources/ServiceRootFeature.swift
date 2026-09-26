@@ -123,7 +123,7 @@ public struct ServiceRootFeature {
             state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
-                return .merge(.send(.delivery(.appeared)), .run { send in
+                return .merge(.send(.delivery(.appeared)), .send(.triage(.triage(.appeared))), .run { send in
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask {
                             for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
@@ -136,7 +136,7 @@ public struct ServiceRootFeature {
             case .disappeared:
                 state.triage.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
-                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)))
+                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)), .send(.triage(.triage(.disappeared))))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events

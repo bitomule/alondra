@@ -46,8 +46,7 @@ struct ServiceTriageView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(false)) } }
         .sensoryFeedback(.success, trigger: store.triage.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: store.triage.skippedCount)
-        .task { await store.send(.triage(.appeared)).finish() }
-        .onDisappear { _ = store.send(.triage(.disappeared)) }
+        .onDisappear { store.send(.presentationDisappeared) }
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
