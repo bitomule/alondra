@@ -29,6 +29,9 @@ No generated Xcode project or fabricated xcarchive is involved.
 Use a clean, committed, reviewed checkout in an isolated worktree, with Xcode,
 Bazelisk and Python 3.11+ available. Coordinate the local build slot first. The
 script uses one Bazel job. Never run it alongside the backend or MAV build.
+Pass `--bazel-output-user-root` and `--bazel-output-base` to reuse the agreed local
+cache instead of allocating another worktree cache. Both build and cquery receive
+the same startup paths. Sharing a path does not authorize concurrent builds.
 
 Obtain the appropriate profiles through the separately authorized ASC signing
 workflow. Place the existing CMS profile files in ignored `signing/` paths:

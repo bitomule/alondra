@@ -196,6 +196,8 @@ def main():
     parser.add_argument("--identity", required=True, help="Existing Apple Distribution SHA-1")
     parser.add_argument("--installer-identity", help="Existing Mac Installer SHA-1 (macos only)")
     parser.add_argument("--output", required=True, type=Path, help="New private directory outside checkout")
+    parser.add_argument("--bazel-output-user-root", type=Path, help="Reuse the coordinated local Bazel storage root")
+    parser.add_argument("--bazel-output-base", type=Path, help="Reuse the coordinated local Bazel output base")
     parser.add_argument("--preflight-only", action="store_true", help="Validate existing local signing inputs without building")
     args = parser.parse_args()
     os.chdir(ROOT)
@@ -230,8 +232,13 @@ def main():
              "--ios_multi_cpus=arm64" if args.destination == "ios" else "--macos_cpus=arm64",
              "--jobs=1", "-c", "opt"]
     print("Building local " + args.destination + " distribution artifact…", flush=True)
-    run("bazelisk", "build", target, *flags)
-    artifacts = run("bazelisk", "cquery", target, *flags, "--output=files").decode().splitlines()
+    bazel = ["bazelisk"]
+    if args.bazel_output_user_root:
+        bazel.append("--output_user_root=" + str(args.bazel_output_user_root.resolve()))
+    if args.bazel_output_base:
+        bazel.append("--output_base=" + str(args.bazel_output_base.resolve()))
+    run(*bazel, "build", target, *flags)
+    artifacts = run(*bazel, "cquery", target, *flags, "--output=files").decode().splitlines()
     suffix = ".ipa" if args.destination == "ios" else ".zip"
     archives = [ROOT / p for p in artifacts if p.endswith(suffix)]
     require(len(archives) == 1, "Expected one Bazel archive")
