@@ -564,6 +564,9 @@ impl Drop for ProfileLock {
 }
 
 #[cfg(test)]
+mod live_transfer_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> (Profile, SigningKey, SecretKey) {
