@@ -86,6 +86,20 @@ def optional_api(endpoint):
         return None
 
 
+def lookup_release(tag):
+    # A draft can reference a tag that does not exist yet. REST /releases/tags
+    # cannot find it; gh resolves drafts through GraphQL and returns their ID.
+    # Check repository access so an inaccessible repo is not treated as absence.
+    api(f'repos/{REPO}')
+    try:
+        result = json.loads(gh('release', 'view', tag, '--repo', REPO, '--json', 'databaseId'))
+    except RuntimeError as error:
+        if str(error).strip() == 'release not found':
+            return None
+        raise
+    return api(f"repos/{REPO}/releases/{result['databaseId']}")
+
+
 def publish(ver, directory):
     formula = render(ver, directory)  # fail closed before any external mutation
     tag = f'alondra-v{ver}'
@@ -100,11 +114,11 @@ def publish(ver, directory):
             raise ValueError('Refusing to downgrade the public formula')
         if match[1] == ver and old != formula:
             raise ValueError('Same version already has different formula; issue a new version')
-    release = optional_api(f'repos/{REPO}/releases/tags/{tag}')
+    release = lookup_release(tag)
     if release is None:
         gh('release', 'create', tag, '--repo', REPO, '--draft', '--title', f'Alondra {ver}',
            '--notes', 'Signed and notarized macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
-        release = api(f'repos/{REPO}/releases/tags/{tag}')
+        release = lookup_release(tag)
     names = {asset['name'] for asset in release['assets']}
     archives = [directory / f'alondra-{ver}-{target}.tar.gz' for target in TARGETS]
     expected = {p.name for p in archives}

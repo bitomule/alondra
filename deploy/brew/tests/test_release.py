@@ -80,6 +80,10 @@ class PublicationTests(unittest.TestCase):
         return self.api(endpoint)
 
     def api(self, endpoint, payload=None):
+        if '/releases/tags/' in endpoint:
+            raise RuntimeError('gh: Not Found (HTTP 404): draft has no published tag')
+        if endpoint == f'repos/{r.REPO}':
+            return {'default_branch': 'master'}
         if '/contents/' in endpoint:
             if payload:
                 self.assertFalse(self.remote['draft'])
@@ -95,7 +99,11 @@ class PublicationTests(unittest.TestCase):
 
     def gh(self, *args, **kwargs):
         operation = args[1]
-        if operation == 'create':
+        if operation == 'view':
+            if self.remote is None:
+                raise RuntimeError('release not found')
+            return '{"databaseId": 42}'
+        elif operation == 'create':
             self.remote = {'draft': True}
         elif operation == 'upload':
             self.assertTrue(self.remote['draft'])
@@ -112,6 +120,21 @@ class PublicationTests(unittest.TestCase):
         else:
             self.fail(f'Unexpected gh operation: {args}')
         return ''
+
+    def test_release_lookup_uses_database_id_for_unpublished_draft(self):
+        self.remote = {'draft': True}
+        self.assertTrue(r.lookup_release('alondra-v0.1.0')['draft'])
+        with self.assertRaisesRegex(RuntimeError, 'HTTP 404'):
+            self.api(f'repos/{r.REPO}/releases/tags/alondra-v0.1.0')
+
+    def test_release_lookup_does_not_treat_auth_or_network_errors_as_absence(self):
+        for message in ('HTTP 401: Bad credentials', 'network timeout', 'HTTP 403: forbidden'):
+            with patch.object(r, 'gh', side_effect=RuntimeError(message)):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    r.lookup_release('alondra-v0.1.0')
+        with patch.object(r, 'api', side_effect=RuntimeError('HTTP 404: repository inaccessible')):
+            with self.assertRaisesRegex(RuntimeError, 'repository inaccessible'):
+                r.lookup_release('alondra-v0.1.0')
 
     def test_retry_after_formula_failure_reuses_immutable_assets(self):
         self.fail_formula_once = True
