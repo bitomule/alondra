@@ -57,6 +57,8 @@ swift_library(
 
 swift_test(
     name = "AlondraMacTriageIntegrationTests",
+    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
+    linkopts = ["-Wl,-export_dynamic"],
     srcs = glob(
         ["macOS/Sources/**/*.swift", "macOS/Tests/*.swift"],
         exclude = ["macOS/Sources/AlondraMacApp.swift"],

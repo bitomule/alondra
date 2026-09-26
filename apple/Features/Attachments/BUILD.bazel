@@ -8,6 +8,8 @@ swift_library(
 )
 
 swift_test(
+    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
+    linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraAttachmentsFeatureTests",
     srcs = glob(["Tests/*.swift"]),
     deps = [

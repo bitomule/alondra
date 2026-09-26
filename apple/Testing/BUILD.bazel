@@ -1,0 +1,11 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
+
+swift_test(
+    name = "IssueReportingIntegrationTests",
+    srcs = ["IssueReportingIntegrationTests.swift"],
+    deps = [
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+    ],
+    linkopts = ["-Wl,-export_dynamic"],
+)
