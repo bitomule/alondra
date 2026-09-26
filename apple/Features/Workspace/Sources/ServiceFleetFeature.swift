@@ -92,7 +92,7 @@ public struct ServiceFleetFeature {
             }
         }.ifLet(\.$detail, action: \.detail) { NodeDetailFeature() }
             .ifLet(\.$taskDetail, action: \.taskDetail) { TaskDetailFeature() }
-            .forEach(\.path, action: \.path) { Path() }
+            .forEach(\.path, action: \.path)
     }
 
     private func project(_ state: inout State) -> Effect<Action> {
