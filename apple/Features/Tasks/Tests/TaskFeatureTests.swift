@@ -172,6 +172,7 @@ struct TaskFeatureTests {
             )
         }
         await store.send(.saveTapped) {
+            $0.submittedDrafts[0] = ScheduledTaskDraft(schedule)
             $0.isSaving = true
             $0.inFlightTargets.insert(.schedule(schedule.id))
         }
@@ -179,6 +180,7 @@ struct TaskFeatureTests {
             $0.isSaving = false
             $0.inFlightTargets.remove(.schedule(schedule.id))
             $0.uncertainByTarget[.schedule(schedule.id)] = commandID
+            $0.uncertainDraftRevisions[commandID] = 0
             $0.lastMutationOutcome = .unknown(commandID)
         }
         await store.receive(\.reconcile) { $0.isLoading = true }
@@ -201,6 +203,18 @@ struct TaskFeatureTests {
         await store.receive(\.optionsLoaded) { $0.optionsLoading = false; $0.optionsReady = true }
         await store.send(.saveTapped)
         #expect(store.state.uncertainByTarget[.schedule(schedule.id)] == commandID)
+        var nextDraft = ScheduledTaskDraft(schedule)
+        nextDraft.title = "A new edit after reopening"
+        await store.send(.draftChanged(nextDraft)) { $0.draft = nextDraft }
+        await store.send(.commandResolved(commandID, rejection: nil)) {
+            $0.uncertainByTarget = [:]
+            $0.uncertainDraftRevisions = [:]
+            $0.submittedDrafts = [:]
+            $0.lastMutationOutcome = .confirmed
+        }
+        await store.receive(\.reconcile) { $0.isLoading = true }
+        await store.receive(\.loaded) { $0.isLoading = false }
+        #expect(store.state.draft == nextDraft)
         await store.send(.editorDismissed) {
             $0.editorRevision = 3
             $0.editingID = nil
@@ -229,6 +243,7 @@ struct TaskFeatureTests {
             )
         }
         await store.send(.saveTapped) {
+            $0.submittedDrafts[0] = ScheduledTaskDraft(schedule)
             $0.isSaving = true
             $0.inFlightTargets.insert(.schedule(schedule.id))
         }
@@ -240,16 +255,21 @@ struct TaskFeatureTests {
             $0.isSaving = false
             $0.inFlightTargets.remove(.schedule(schedule.id))
             $0.uncertainByTarget[.schedule(schedule.id)] = commandID
+            $0.uncertainDraftRevisions[commandID] = 0
             $0.lastMutationOutcome = .unknown(commandID)
         }
         await store.receive(\.reconcile) { $0.isLoading = true }
         await store.receive(\.loaded) { $0.isLoading = false }
         await store.send(.runTapped(schedule.id))
-        await store.send(.commandReconciled(UUID()))
+        await store.send(.commandResolved(UUID(), rejection: nil))
         #expect(store.state.uncertainByTarget[.schedule(schedule.id)] == commandID)
-        await store.send(.commandReconciled(commandID)) {
+        await store.send(.commandResolved(commandID, rejection: nil)) {
             $0.uncertainByTarget = [:]
-            $0.lastMutationOutcome = nil
+            $0.uncertainDraftRevisions = [:]
+            $0.submittedDrafts = [:]
+            $0.draft = nil
+            $0.editingID = nil
+            $0.lastMutationOutcome = .confirmed
         }
         await store.receive(\.reconcile) { $0.isLoading = true }
         await store.receive(\.loaded) { $0.isLoading = false }
