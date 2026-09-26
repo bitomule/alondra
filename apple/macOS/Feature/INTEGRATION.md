@@ -15,7 +15,8 @@ This branch is the E-Mac root step. It depends on D1b (#133) and must land after
 @swiftpkg_swift_composable_architecture//:ComposableArchitecture
 ```
 
-The existing `AlondraShared` and `AlondraDeviceIdentity` dependencies remain.
+The existing `AlondraShared` dependency remains. Device identity for the service is
+owned by ServicePairing; the unused direct-daemon DeviceIdentity target is removed.
 
 ## Ownership and transition
 
