@@ -95,6 +95,7 @@ pub struct DaemonObservation {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    Orchestrator(crate::orchestrator::Transition),
     Hook(HookEvent),
     DaemonSeen(DaemonObservation),
     ProcessExited { session_id: String, pid: i32 },
@@ -272,6 +273,7 @@ impl Event {
 
     pub fn kind(&self) -> &'static str {
         match self {
+            Event::Orchestrator(_) => "orchestrator",
             Event::Hook(_) => "hook",
             Event::DaemonSeen(_) => "daemon_seen",
             Event::ProcessExited { .. } => "process_exited",

@@ -13,6 +13,12 @@ use crate::states::{self, Trigger};
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct View {
     pub seq: u64,
+    #[serde(default)]
+    pub orchestrator: Option<crate::orchestrator::Runtime>,
+    #[serde(default)]
+    pub orchestrator_migration: Option<crate::orchestrator::Migration>,
+    #[serde(default)]
+    pub orchestrator_migration_error: Option<String>,
     pub nodes: BTreeMap<String, Node>,
     pub questions: BTreeMap<u64, Question>,
     pub reports: BTreeMap<u64, Report>,
@@ -21,6 +27,8 @@ pub struct View {
     pub message_id_high_water: u64,
     #[serde(default)]
     pub question_id_high_water: u64,
+    #[serde(default)]
+    pub report_id_high_water: u64,
     #[serde(default)]
     pub delivery_protocol: bool,
     #[serde(default)]
@@ -104,10 +112,19 @@ fn is_review(r: &Report) -> bool {
 }
 
 impl View {
+    pub fn orchestrator_node(&self) -> Option<&Node> {
+        if self.orchestrator.is_some() { self.nodes.get(crate::orchestrator::NODE_ID) }
+        else { self.nodes.values().find(|n| n.is_orchestrator && (n.alive || n.in_daemon)) }
+    }
+
+    pub fn orchestrator_destination(&self) -> Option<&str> {
+        self.orchestrator_node().map(|n| n.session_id.as_str())
+    }
+
     /// Structural invariants that must survive every committed batch and every snapshot.
     /// Historical refused task facts are recorded as anomalies; they never change these fields.
     pub fn integrity_issues(&self) -> Vec<String> {
-        let mut issues = Vec::new();
+        let mut issues = crate::orchestrator::integrity_issues(self);
         for (id, node) in &self.nodes {
             if node.session_id != *id {
                 issues.push(format!("node {id}: stored session is {}", node.session_id));
@@ -190,9 +207,15 @@ impl View {
             .max(self.messages.values().filter_map(|m| m.answers_question).max().unwrap_or(0)) + 1
     }
 
+    pub fn next_report_id(&self) -> u64 {
+        self.report_id_high_water.max(self.reports.keys().next_back().copied().unwrap_or(0))
+            .max(self.orchestrator.as_ref().map_or(0, |runtime| runtime.last_report)) + 1
+    }
+
     pub fn backfill_delivery_ids(&mut self) {
         self.message_id_high_water = self.next_message_id() - 1;
         self.question_id_high_water = self.next_question_id() - 1;
+        self.report_id_high_water = self.next_report_id() - 1;
     }
 
     fn delivery_needs_resolution(&self, a: &crate::delivery::Attempt) -> bool {
@@ -212,6 +235,8 @@ impl View {
     /// window never will be: only nodes in the daemon can be woken to receive one.
     pub fn prune(&mut self, before: Millis) {
         self.backfill_delivery_ids();
+        let orchestration_sessions: std::collections::HashSet<&str> = self.orchestrator.as_ref().map(|_| crate::orchestrator::NODE_ID)
+            .into_iter().chain(self.orchestrator_migration.as_ref().map(|m| m.session_id.as_str())).collect();
         let delivery_sessions:std::collections::HashSet<String>=self.delivery_attempts.values()
             .filter(|a| self.delivery_needs_resolution(a)).map(|a|a.session_id.clone()).collect();
         let delivery_messages:std::collections::HashSet<u64>=self.delivery_attempts.values()
@@ -241,10 +266,11 @@ impl View {
         for sid in &gone {
             self.nodes.remove(sid);
         }
-        self.questions.retain(|id, q| q.status.is_open() || q.asked_at >= before || delivery_questions.contains(id));
+        let orchestrator_questions: std::collections::HashSet<u64> = self.messages.values().filter(|m| orchestration_sessions.contains(m.session_id.as_str()) && m.handed_at.is_none()).filter_map(|m| m.answers_question).collect();
+        self.questions.retain(|id, q| q.status.is_open() || q.asked_at >= before || delivery_questions.contains(id) || orchestrator_questions.contains(id));
         self.reports.retain(|_, r| !(r.read && r.created_at < before));
-        self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before || delivery_sessions.contains(&n.session_id));
-        self.messages.retain(|id, m| m.created_at >= before || delivery_messages.contains(id));
+        self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before || delivery_sessions.contains(&n.session_id) || orchestration_sessions.contains(n.session_id.as_str()));
+        self.messages.retain(|id, m| m.created_at >= before || delivery_messages.contains(id) || (orchestration_sessions.contains(m.session_id.as_str()) && m.handed_at.is_none()));
         // Keep pending resolution indefinitely; completed metadata follows the ordinary
         // retention window, and remains while a retained payload still refers to it.
         let keep_attempts: std::collections::HashSet<u64> = self.delivery_attempts.values()
@@ -269,9 +295,12 @@ impl View {
                 self.question_id_high_water = self.question_id_high_water.max(m.answers_question.unwrap_or(0));
             }
             Event::QuestionAsked(q) => self.question_id_high_water = self.question_id_high_water.max(q.id),
+            Event::ReportPosted(r) => self.report_id_high_water = self.report_id_high_water.max(r.id),
             Event::DeliveryAttemptRecorded(a) => self.message_id_high_water = self.message_id_high_water.max(a.message_ids.iter().copied().max().unwrap_or(0)),
             _ => {}
         }
+        if event.session_id().is_some_and(|sid| self.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == sid))
+            && !matches!(event, Event::MessageQueued(_)) { return; }
         if let Some(sid) = event.session_id()
             && self.removed.contains_key(sid)
             && !matches!(event, Event::DeliveryAttemptRecorded(_))
@@ -293,6 +322,10 @@ impl View {
         }
         let before = self.before_tasks(event);
         let touched = match event {
+            Event::Orchestrator(transition) => {
+                crate::orchestrator::apply(self, transition, at);
+                Some((crate::orchestrator::NODE_ID.into(), Trigger::Other))
+            }
             Event::Hook(h) => {
                 self.apply_hook(at, h);
                 self.note_activity(at, h);
@@ -417,6 +450,8 @@ impl View {
                 self.delivery_attempts.insert(attempt.id, attempt.clone()); None
             }
             Event::MessageHanded { id } => {
+                // Only the fenced print-mode completion can acknowledge this inbox.
+                if self.orchestrator.is_some() && self.messages.get(id).is_some_and(|m| m.session_id == crate::orchestrator::NODE_ID) { return; }
                 let reopens = self.messages.get(id).is_some_and(|m| m.from != MessageFrom::Alondra || self.is_merge_notice(m));
                 let Some(m) = self.messages.get_mut(id) else { return };
                 m.handed_at = Some(at);
@@ -605,6 +640,7 @@ impl View {
         if let Some((sid, trigger)) = touched {
             self.recompute(&sid, at, trigger);
         }
+        crate::orchestrator::project_node(self, at);
         let assignee = match event {
             Event::TaskCreated(t) => t.session_id.clone(),
             Event::TaskAssigned { session_id, .. } => Some(session_id.clone()),
@@ -1166,7 +1202,7 @@ impl View {
 
     pub fn deliverable_messages(&self, session_id: &str) -> impl Iterator<Item = &Message> {
         let node = self.nodes.get(session_id);
-        let compacting = node.is_some_and(|n| n.compaction.is_some()) || self.delivery_blocked(session_id);
+        let compacting = (self.orchestrator.is_some() && session_id == crate::orchestrator::NODE_ID) || node.is_some_and(|n| n.compaction.is_some()) || self.delivery_blocked(session_id);
         self.pending_messages(session_id).filter(move |_| !compacting)
             .filter(|m| self.message_attempt(m.id).is_none_or(|a| a.state == crate::delivery::State::Retryable))
             .filter(move |m| {
@@ -1193,6 +1229,7 @@ impl View {
     /// Messages waiting for an interactive session: Alondra cannot type into a terminal it did not
     /// start, so they wait for the session's next Stop hook (see `turn_end_delivery`).
     pub fn held_for_turn_end(&self, session_id: &str) -> usize {
+        if self.orchestrator.is_some() && session_id == crate::orchestrator::NODE_ID { return 0; }
         match self.nodes.get(session_id) {
             Some(n) if !n.in_daemon => self.deliverable_messages(session_id).count(),
             _ => 0,

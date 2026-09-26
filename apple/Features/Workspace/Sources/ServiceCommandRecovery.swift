@@ -75,7 +75,7 @@ extension ServiceRootFeature {
         if state.fleet.fleet.closeOutcomeByID.values.contains(where: { $0.uncertainID == id }) {
             effects.append(.send(.fleet(.fleet(.commandResolved(id, rejection: rejection)))))
         }
-        for node in state.fleet.nodes where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id {
+        for node in state.fleet.nodes where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id || node.retryOutcome?.uncertainID == id || node.cancelOutcome?.uncertainID == id || node.acknowledgeOutcome?.uncertainID == id {
             effects.append(.send(.fleet(.nodes(.element(id: node.id, action: .commandResolved(id, rejection: rejection))))))
         }
         for card in state.triage.cards {

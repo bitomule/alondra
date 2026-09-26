@@ -40,25 +40,47 @@ claude --bg --name "app/fix" --plugin-dir ~/Projects/alondra/plugin \
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
-`close_free_nodes_after`, `compact_idle_nodes_at`, `archived_tasks_days`). An `ALONDRA_*` environment
+`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `archived_tasks_days`). An `ALONDRA_*` environment
 variable overrides the file; `alondra config` shows the values in effect. What Alondra does with
 idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
 [docs/idle-nodes.md](docs/idle-nodes.md).
 
-**The orchestrator** is started with `--plugin-dir ~/Projects/alondra/plugin --plugin-dir
-~/Projects/alondra/plugin-orchestrator` and the same mark: the node's hooks plus the `fleet`,
-`node`, `machine`, `send`, `interrupt` and `launch` tools, and
-`define`, `candidates`, `cancel` and `reopen` to turn the user's requests into tasks. Alondra
-notifies it on its own, every 90 s and in a single message, of:
-- new reports from the nodes;
-- questions addressed to it;
-- nodes that finish without saying what they want;
-- the machine, when it runs out of memory or gets saturated.
+**The orchestrator** is a durable conversation with an inbox owned by Alondra. When work
+arrives, alondrad starts `claude -p --permission-mode auto` with the node and orchestrator
+plugins, resumes the saved conversation, and lets the process exit after the batch. The
+conversation runs in Alondra's internal runtime directory. An idle orchestrator is available;
+it does not need a background process or an attachable terminal. Worker nodes still use
+Claude background sessions.
 
-(`claude --bg` does not inherit environment variables, so the role goes in its own plugin.)
+The plugins provide `fleet`, `node`, `machine`, `send`, `interrupt`, `launch`, `define`,
+`candidates`, `cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
+and question prompts are disabled. Auto mode can deny an operation, which becomes a visible
+failure instead of an invisible prompt.
 
-If no orchestrator is running, alondrad launches one this way on its own and posts a notice
-saying so (only when `wake` is on).
+Every 90 seconds Alondra queues a durable digest of new reports, questions addressed to the
+orchestrator, finished nodes with unfinished worktrees, and machine capacity warnings. Inbox
+claims and completion are persisted. A failed execution with unknown effects blocks its batch
+until the user chooses to retry it or continue without repeating it; later messages stay queued.
+These actions, plus cancellation, are available in the node detail in the apps and TUI.
+`alondra status` shows the execution ID for CLI recovery:
+
+```sh
+alondra orchestrator-cancel RUN_ID
+alondra orchestrator-retry RUN_ID --confirm
+alondra orchestrator-acknowledge RUN_ID --confirm
+```
+
+After a successful batch, Alondra measures the latest main-model input, including cache tokens.
+At `compact_orchestrator_at` percent of the reported context window (default 50; 0 disables
+manual compaction), it runs `/compact` on the same conversation before more work. A compact
+boundary confirms reduction; absent measurements stay unknown. Claude's automatic compaction
+remains enabled. The executor runs when `wake` is on.
+
+Existing background orchestrators migrate after becoming idle and releasing their tasks,
+permissions and pending deliveries. Alondra stops the old background process, retains its
+conversation, and adopts its inbox. A blocked migration is shown in the fleet. See
+[the transition plan](docs/orchestrator-on-demand-plan.md) and
+[operational details](docs/orchestrator-on-demand.md).
 
 ### Scheduled tasks
 

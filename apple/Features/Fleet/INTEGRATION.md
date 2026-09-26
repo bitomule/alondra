@@ -10,3 +10,19 @@ H owns `apple/BUILD.bazel`, `FleetTab`, `NodeDetail`, `FleetView` and `Mac NodeD
 6. The selected node route owns thread polling. `NodeOperations.threads` maps the node route's optional activity; nil means an older daemon and falls back to overview activity/tool. A transport failure retains the last displayed ledger. The app root must not create another timer for this route.
 7. Keep existing iOS/Mac visual presentation, accessibility and task/card navigation. Replace search/filter and close/send/threads logic currently in views with feature state/actions. Machine/usage presentation remains in the scene root; do not duplicate their polling. A preview or detail network request must start only after selection.
 8. Build iOS, Mac and extension after wiring; run MAV for search, multi-task node, rejected close, send success/error, stale reconnect and thread detail on both platforms. The module's tests prove behavior, but do not prove app wiring.
+
+## Managed orchestrator
+
+The optional `orchestrator_runtime` on a node supplies lifecycle, queue depth,
+errors and run-scoped recovery capabilities. Idle means available, regardless of
+whether Claude has a process. The overview's optional `orchestrator` admits new
+requests before a first Claude session exists; a missing overview still disables
+submission. Older snapshots keep the previous node-state behavior.
+
+The logical orchestrator has activity and message views, but no worker close or
+terminal attachment action. Retry, stop and continue-without-repeating are distinct commands routed through
+`NodeOperations` and the identity-scoped command journal. Their confirmations
+capture `active_run_id`; a newer run or lost connection invalidates confirmation.
+Keep detail owners with pending or uncertain recovery commands, including when
+hidden. Journal resolution must reach `retryOutcome`, `cancelOutcome` and `acknowledgeOutcome` just as
+it reaches send/close outcomes. Never replay an uncertain command automatically.

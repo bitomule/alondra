@@ -57,7 +57,7 @@ extension NodeOccupancy {
 }
 
 extension Node {
-    public var fleetLabel: String { orchestratorState?.label ?? occupancy.label }
+    public var fleetLabel: String { orchestratorRuntime?.label ?? orchestratorState?.label ?? occupancy.label }
 }
 
 extension TaskStateGroup {

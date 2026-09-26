@@ -57,6 +57,15 @@ public enum AlondraEndpoints {
     public static func review(_ report: UInt64, verdict: String) throws -> Endpoint<Data> {
         try json(.post, ["v1", "reports", String(report), "review"], ["verdict": verdict])
     }
+    public static func acknowledgeOrchestrator(_ runID: String) throws -> Endpoint<Data> {
+        try json(.post, ["v1", "orchestrator", "acknowledge"], ["run_id": runID])
+    }
+    public static func cancelOrchestrator(_ runID: String) throws -> Endpoint<Data> {
+        try json(.post, ["v1", "orchestrator", "cancel"], ["run_id": runID])
+    }
+    public static func retryOrchestrator(_ runID: String) throws -> Endpoint<Data> {
+        try json(.post, ["v1", "orchestrator", "retry"], ["run_id": runID])
+    }
     public static func closeNode(_ key: String, force: Bool) -> Endpoint<Data> {
         .data(.post, path: ["v1", "nodes", key, "close"], body: Data((force ? #"{"force":true}"# : "{}").utf8), contentType: "application/json")
     }
