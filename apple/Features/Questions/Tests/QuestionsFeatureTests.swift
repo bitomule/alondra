@@ -323,28 +323,32 @@ struct QuestionsFeatureTests {
     func refreshRetainsDraftButSwitchingCardOrIdentityDoesNot() async throws {
         let first = try question()
         let second = try question(2)
-        let store = TestStore(initialState: QuestionFeature.State(question: first)) { QuestionFeature() }
-        await store.send(.textChanged("my reasoning")) { $0.draft.text = "my reasoning" }
-        await store.send(.refreshed(first))
-        await store.send(.refreshed(second)) {
-            $0 = QuestionFeature.State(question: second)
-            $0.revision = 1
-        }
-        await store.send(.textChanged("another device")) { $0.draft.text = "another device" }
-        await store.send(.identityChanged) {
-            $0.draft = QuestionDraft()
-            $0.revision = 2
-        }
-        await store.send(.submissionFinished(0, .confirmed))
-        #expect(!store.state.completed)
+        let store = Store(initialState: QuestionFeature.State(question: first)) { QuestionFeature() }
+        let firstDownloadID = store.downloads.cancellationID
+        await store.send(.textChanged("my reasoning")).finish()
+        await store.send(.refreshed(first)).finish()
+        #expect(store.draft.text == "my reasoning" && store.revision == 0)
+        #expect(store.downloads.cancellationID == firstDownloadID)
+        await store.send(.refreshed(second)).finish()
+        #expect(store.question == second && store.draft == QuestionDraft())
+        #expect(store.revision == 1 && store.downloads.cancellationID != firstDownloadID)
+        await store.send(.textChanged("another device")).finish()
+        #expect(store.draft.text == "another device")
+        await store.send(.identityChanged).finish()
+        #expect(store.draft == QuestionDraft() && store.revision == 2)
+        await store.send(.submissionFinished(0, .confirmed)).finish()
+        #expect(!store.completed && !store.isSubmitting && store.notice == nil)
     }
 
     @Test
     func documentRefreshKeepsCommentsAndReloadsOnlyChangedSource() async throws {
         let report = try report()
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() }
+        let comment = ReviewComment(anchor: "p1", quote: "quote", text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(report))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() }
         await store.send(.commentChanged(anchor: "p1", quote: "quote", text: "Change this")) {
-            $0.draft.comments = [ReviewComment(anchor: "p1", quote: "quote", text: "Change this")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: "p1", quote: "quote", text: "Change this")]
         }
         await store.send(.refreshed(.report(report)))
         #expect(store.state.draft.comments.first?.text == "Change this")
@@ -398,7 +402,11 @@ struct QuestionsFeatureTests {
         let original = try report(attachments: attachments, body: "Report summary")
         let text = "## Original heading\n\nThe paragraph to review."
         let source = DocumentSource.stored(name: "first.md", path: "a")
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(original))) { DocumentReviewFeature() } withDependencies: {
+        let anchor = try #require(MarkdownParser.blocks(from: text).last)
+        let comment = ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(original))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { path in
                 #expect(path == "a")
                 return text
@@ -418,9 +426,8 @@ struct QuestionsFeatureTests {
             $0.isLoading = false
             $0.sourceText = text
         }
-        let anchor = try #require(MarkdownParser.blocks(from: text).last)
         await store.send(.commentChanged(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")) {
-            $0.draft.comments = [ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
         }
         let refreshed = try report(attachments: attachments, body: "Updated summary")
         await store.send(.refreshed(.report(refreshed))) { $0.subject = .report(refreshed) }
@@ -456,7 +463,10 @@ struct QuestionsFeatureTests {
     func failedReloadThenChangedContentClearsOldAnchoredComments() async throws {
         let report = try report(attachments: #"[{"name":"draft.md","sourcePath":"/a","storedPath":"a"}]"#)
         let reader = ChangingDocument()
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() } withDependencies: {
+        let comment = ReviewComment(anchor: "p1", quote: "Old", text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(report))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in try await reader.read() })
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1; $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)] }
@@ -467,7 +477,7 @@ struct QuestionsFeatureTests {
             $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "Old")]
         }
         await store.send(.commentChanged(anchor: "p1", quote: "Old", text: "Fix this")) {
-            $0.draft.comments = [ReviewComment(anchor: "p1", quote: "Old", text: "Fix this")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: "p1", quote: "Old", text: "Fix this")]
         }
         await store.send(.appeared) {
             $0.isLoading = true
