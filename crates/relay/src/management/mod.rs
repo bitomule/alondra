@@ -263,27 +263,24 @@ impl Management {
             .await?;
         sqlx::raw_sql("CREATE TABLE IF NOT EXISTS management_schema(version INTEGER PRIMARY KEY, checksum BYTEA NOT NULL)").execute(&mut *migration).await?;
         let future: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_schema WHERE version>1)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_schema WHERE version>2)")
                 .fetch_one(&mut *migration)
                 .await?;
         ensure!(!future, "management schema is newer than this binary");
-        let source = include_str!("../../migrations/0001_management.sql");
-        let checksum = Sha256::digest(source.as_bytes()).to_vec();
-        let previous: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT checksum FROM management_schema WHERE version=1")
-                .fetch_optional(&mut *migration)
-                .await?;
-        if let Some(previous) = previous {
-            ensure!(
-                previous == checksum,
-                "management migration checksum mismatch"
-            );
-        } else {
-            sqlx::raw_sql(source).execute(&mut *migration).await?;
-            sqlx::query("INSERT INTO management_schema VALUES(1,$1)")
-                .bind(checksum)
-                .execute(&mut *migration)
-                .await?;
+        for (version, source) in [
+            (1i32, include_str!("../../migrations/0001_management.sql")),
+            (2i32, include_str!("../../migrations/0002_web_sessions.sql")),
+        ] {
+            let checksum = Sha256::digest(source.as_bytes()).to_vec();
+            let previous: Option<Vec<u8>> = sqlx::query_scalar("SELECT checksum FROM management_schema WHERE version=$1")
+                .bind(version).fetch_optional(&mut *migration).await?;
+            if let Some(previous) = previous {
+                ensure!(previous == checksum, "management migration checksum mismatch");
+            } else {
+                sqlx::raw_sql(source).execute(&mut *migration).await?;
+                sqlx::query("INSERT INTO management_schema VALUES($1,$2)")
+                    .bind(version).bind(checksum).execute(&mut *migration).await?;
+            }
         }
         migration.commit().await?;
         Ok(Self { pool, issuer })

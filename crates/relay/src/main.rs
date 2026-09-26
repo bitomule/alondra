@@ -3,6 +3,7 @@ mod management;
 mod pairing;
 mod push;
 mod state;
+mod web_session;
 
 use alondra_e2e::EnvelopeV1;
 use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
