@@ -97,6 +97,8 @@ pub struct Service {
     auth: Arc<Auth>,
     journal: Journal,
     local_port: u16,
+    home: PathBuf,
+    transfers: Arc<crate::service_files::Transfers>,
 }
 
 #[derive(Deserialize)]
@@ -213,6 +215,8 @@ impl Service {
             auth,
             journal,
             local_port,
+            home: home.to_path_buf(),
+            transfers: Arc::default(),
         }))
     }
 
@@ -500,6 +504,19 @@ impl Service {
                 Some(current) => return Ok(json!({"status":409,"error":"stale_push_preferences","current_revision":current})),
                 None => return Ok(json!({"status":204})),
             }
+        }
+        if matches!(request.path.as_str(), "/v1/service/uploads/start" | "/v1/service/uploads/chunk" | "/v1/service/uploads/finish" | "/v1/service/uploads/cancel" | "/v1/service/files/chunk") {
+            anyhow::ensure!(request.method == "POST", "file transfers require POST");
+            let body = request.body.clone().context("file transfer body required")?;
+            let transfers = self.transfers.clone();
+            let home = self.home.clone();
+            let sender = sender.to_owned();
+            let path = request.path.clone();
+            let result = tokio::task::spawn_blocking(move || transfers.dispatch(&home, &sender, &path, body)).await?;
+            return Ok(match result {
+                Ok(body) => json!({"status":200,"body":body}),
+                Err(error) => json!({"status":422,"body":{"error":crate::service_files::error_code(&error)}}),
+            });
         }
         let method = approved_method(request)?;
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
@@ -1224,6 +1241,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
+            home: home.clone(), transfers: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -1361,6 +1379,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
             )]),
+            home: home.clone(), transfers: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -1515,6 +1534,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
+            home: home.clone(), transfers: Arc::default(),
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -1543,6 +1563,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
+            home: home.clone(), transfers: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -1698,6 +1719,7 @@ agreement_key = "{}"
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new(),
+            home: home.clone(), transfers: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,
