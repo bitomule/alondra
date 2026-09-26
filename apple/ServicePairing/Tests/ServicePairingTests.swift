@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 import Testing
-import AlondraRelayClient
+import AlondraAPIClient
 @testable import AlondraServicePairing
 
 private let macSigning = try! P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
@@ -27,18 +27,21 @@ private final class MemoryStore: ApprovedPairingStore, @unchecked Sendable {
     func delete() throws { lock.withLock { value = nil } }
 }
 
-private actor FakeRelay: PairingTransport {
-    enum ApprovalMode { case valid, wrongMacKey, wrongOwner }
+private actor FakeRelay: ServiceHTTPTransport {
+    enum ApprovalMode { case valid, wrongMacKey, wrongOwner, unsupportedProtocol }
     let mode: ApprovalMode
     var candidate: PairingCandidate?
     var requests: [URLRequest] = []
 
     init(mode: ApprovalMode = .valid) { self.mode = mode }
 
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    func send(_ request: URLRequest) async throws -> ServiceHTTPResponse {
         requests.append(request)
         let path = request.url!.path
-        if path == "/v1/bootstrap" { return answer(200, Data(#"{"epoch":"BwcHBwcHBwcHBwcHBwcHBw"}"#.utf8), request) }
+        if path == "/v1/bootstrap", mode == .unsupportedProtocol {
+            return answer(200, Data(#"{"protocol":2,"epoch":"BwcHBwcHBwcHBwcHBwcHBw"}"#.utf8), request)
+        }
+        if path == "/v1/bootstrap" { return answer(200, Data(#"{"protocol":1,"epoch":"BwcHBwcHBwcHBwcHBwcHBw"}"#.utf8), request) }
         if path.hasSuffix("/candidates") {
             candidate = try JSONDecoder().decode(PairingCandidate.self, from: request.httpBody!)
             try verifySignedHTTP(request, signingKey: candidate!.signingKey)
@@ -116,8 +119,8 @@ private actor FakeRelay: PairingTransport {
         #expect(key.isValidSignature(signature, for: challenge))
     }
 
-    private func answer(_ status: Int, _ body: Data, _ request: URLRequest) -> (Data, HTTPURLResponse) {
-        (body, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    private func answer(_ status: Int, _ body: Data, _ request: URLRequest) -> ServiceHTTPResponse {
+        ServiceHTTPResponse(status: status, body: body)
     }
 }
 
@@ -175,4 +178,18 @@ private func rejectsForgedOrOtherAccountApproval(mode: FakeRelay.ApprovalMode) a
             authorization: auth, displayName: "iPhone")
     }
     #expect(await relay.requests.isEmpty)
+}
+
+@Test func rejectsUnsupportedProtocolBeforeSendingCandidate() async throws {
+    let relay = FakeRelay(mode: .unsupportedProtocol)
+    let store = MemoryStore()
+    let client = ServicePairingClient(transport: relay, store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    await #expect(throws: RelayWireError.invalidResponse) {
+        try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "iPhone")
+    }
+    #expect(await relay.requests.map { $0.url?.path } == ["/v1/bootstrap"])
+    #expect(await relay.candidate == nil)
+    #expect(try store.load() == nil)
 }

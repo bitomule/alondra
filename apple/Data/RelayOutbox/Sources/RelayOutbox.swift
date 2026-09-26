@@ -1,39 +1,6 @@
-import AlondraRelayClient
+import AlondraAPIClient
 import Darwin
 import Foundation
-
-public struct RelayReceipt: Sendable {
-    public let requestID: String
-    public let status: String
-    public let revision: UInt64
-    public let response: EnvelopeV1?
-
-    public init(requestID: String, status: String, revision: UInt64, response: EnvelopeV1?) {
-        self.requestID = requestID
-        self.status = status
-        self.revision = revision
-        self.response = response
-    }
-}
-
-public protocol RelayRequestTransport: Sendable {
-    func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt
-    func requestStatus(requestID: String) async throws -> RelayReceipt
-}
-
-extension AlondraRelayClient: RelayRequestTransport {
-    public func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
-        let job: RelayJob = try await submit(envelope)
-        return RelayReceipt(requestID: job.requestID, status: job.status,
-                            revision: job.revision, response: job.response)
-    }
-
-    public func requestStatus(requestID: String) async throws -> RelayReceipt {
-        let job: RelayJob = try await status(requestID: requestID)
-        return RelayReceipt(requestID: job.requestID, status: job.status,
-                            revision: job.revision, response: job.response)
-    }
-}
 
 public enum RelayOutboxError: Error, Equatable, Sendable {
     case duplicateRequestID

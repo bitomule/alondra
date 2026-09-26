@@ -1,15 +1,15 @@
-import AlondraRelayClient
+import AlondraAPIClient
 import CryptoKit
 import Foundation
 import XCTest
 
-private actor RecordingTransport: RelayHTTPTransport {
+private actor RecordingTransport: ServiceHTTPTransport {
     private var requests: [URLRequest] = []
-    private var responses: [RelayHTTPResponse]
+    private var responses: [ServiceHTTPResponse]
 
-    init(_ responses: [RelayHTTPResponse]) { self.responses = responses }
+    init(_ responses: [ServiceHTTPResponse]) { self.responses = responses }
 
-    func send(_ request: URLRequest) async throws -> RelayHTTPResponse {
+    func send(_ request: URLRequest) async throws -> ServiceHTTPResponse {
         requests.append(request)
         guard !responses.isEmpty else { throw RelayWireError.invalidResponse }
         return responses.removeFirst()
@@ -28,7 +28,7 @@ private func decodedBase64URL(_ value: String) throws -> Data {
     return try XCTUnwrap(Data(base64Encoded: standard + String(repeating: "=", count: (4 - standard.count % 4) % 4)))
 }
 
-final class RelayClientTests: XCTestCase {
+final class ServiceWireTransportTests: XCTestCase {
     private let fixture = #"{"v":1,"route":"mac-1","sender":"phone-1","recipient":"mac-1","request_id":"op-123","kind":"request","expires_at_ms":1800000000000,"ephemeral_key":"BFkat3HrvP1tnLkJTRBlKK3Rpp1EwsH2J_CJ7Fi5xhrfn05qvw0EXAxpOjxorXyXynK-ZN70om_s0mPdmKkngPA","nonce":"BAQEBAQEBAQEBAQE","ciphertext":"DZOlUahLUjAlbbrvDcKNoy6JiIX89Yt-e3zvpAOlHGXV04zSBt-P9bszLP6uIsCXziRbUgaxIZ55V70DU4jmd-zOju3sTR8QEaapNa0ZBaescA-k-Fc8XaQZtQ","signature":"G0xSJBObtOnOYf_59G2YvwbtRsIHZ8O8qbE2nXP7wRQbknF-95BMJW6bk7UXah7QXWNjc7Faaqt013anjExzoQ"}"#
 
     func testHTTPChallengeMatchesRustFramingVector() throws {
@@ -67,7 +67,7 @@ final class RelayClientTests: XCTestCase {
             .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
             .init(status: 202, body: Data(#"{"request_id":"op-123","status":"queued","revision":1}"#.utf8)),
         ])
-        let client = try AlondraRelayClient(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+        let client = try AlondraAPIClient.makeServiceTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
                                             signer: { try signer.signature(for: $0).rawRepresentation },
                                             bearer: { "jwt-token" }, transport: transport)
         let job = try await client.submit(JSONDecoder().decode(EnvelopeV1.self, from: Data(fixture.utf8)))
@@ -99,7 +99,7 @@ final class RelayClientTests: XCTestCase {
             .init(status: 200, body: wrong),
         ])
         let signer = P256.Signing.PrivateKey()
-        let client = try AlondraRelayClient(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+        let client = try AlondraAPIClient.makeServiceTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
                                             signer: { try signer.signature(for: $0).rawRepresentation },
                                             bearer: { "jwt-token" }, transport: transport)
         let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: Data(fixture.utf8))
@@ -116,10 +116,10 @@ final class RelayClientTests: XCTestCase {
     func testRejectsPlainHTTPAndUntrustedLoopback() throws {
         let transport = RecordingTransport([])
         for url in ["http://relay.example", "http://192.168.1.3", "https://relay.example/base", "https://user:pass@relay.example"] {
-            XCTAssertThrowsError(try AlondraRelayClient(base: URL(string: url)!, deviceID: "phone-1",
+            XCTAssertThrowsError(try AlondraAPIClient.makeServiceTransport(base: URL(string: url)!, deviceID: "phone-1",
                                                          signer: { $0 }, bearer: { "token" }, transport: transport))
         }
-        XCTAssertThrowsError(try AlondraRelayClient(base: URL(string: "http://127.0.0.1")!, deviceID: "phone-1",
+        XCTAssertThrowsError(try AlondraAPIClient.makeServiceTransport(base: URL(string: "http://127.0.0.1")!, deviceID: "phone-1",
                                                      signer: { $0 }, bearer: { "token" }, transport: transport))
     }
 }

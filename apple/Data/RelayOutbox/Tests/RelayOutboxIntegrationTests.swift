@@ -1,4 +1,4 @@
-import AlondraRelayClient
+import AlondraAPIClient
 import AlondraRelayOutbox
 import CryptoKit
 import Foundation

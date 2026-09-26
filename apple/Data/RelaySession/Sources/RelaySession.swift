@@ -1,5 +1,4 @@
 import AlondraAPIClient
-import AlondraRelayClient
 import AlondraRelayOutbox
 import AlondraSync
 import CryptoKit
@@ -21,31 +20,27 @@ public enum RelaySessionError: Error { case invalidRequest, invalidResponse, ope
 
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
 public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePushTransport {
-    private let client: AlondraRelayClient
+    private let client: any ServiceTransport
     private let outbox: RelayOutbox
     private let scope: RelayOutboxScope
-    private let signing: P256.Signing.PrivateKey
-    private let agreement: P256.KeyAgreement.PrivateKey
-    private let macSigning: P256.Signing.PublicKey
-    private let macAgreement: P256.KeyAgreement.PublicKey
-    private let now: @Sendable () -> UInt64
+    private let codec: ServiceEnvelopeCodec
     private let sleep: @Sendable () async throws -> Void
     private var active = true
 
     public init(journalFile: URL, scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
-                transport: any RelayHTTPTransport = URLSessionRelayTransport(),
+                transport: (any ServiceHTTPTransport)? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        let client = try AlondraRelayClient(base: scope.relay, deviceID: scope.deviceID,
-            signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, transport: transport)
+        let client = try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
+            signing: signing, bearer: bearer, transport: transport)
         self.client = client; self.scope = scope
         outbox = RelayOutbox(file: journalFile, scope: scope, transport: client)
-        self.signing = signing; self.agreement = agreement
-        self.macSigning = macSigning; self.macAgreement = macAgreement
-        self.now = now; self.sleep = sleep
+        codec = ServiceEnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
+            agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
+        self.sleep = sleep
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {
@@ -84,7 +79,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
             return try await read(requestID: "read-" + UUID().uuidString, path: path, body: body, statusPolls: statusPolls)
         }
         guard !requestID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
-        let tag = try semanticTag(method: method, path: path, body: body)
+        let tag = try codec.semanticTag(method: method, path: path, body: body)
         if let existing = try await outbox.entry(requestID: requestID) {
             guard existing.semanticTag == tag else { throw RelaySessionError.operationIdentityConflict }
             return try await resume(requestID: requestID, statusPolls: statusPolls)
@@ -106,26 +101,9 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         return try await resume(requestID: requestID, statusPolls: statusPolls)
     }
 
-    private func requestBytes(method: String, path: String, body: Data?) throws -> Data {
-        var payload: [String: Any] = ["method": method, "path": path]
-        if let body { payload["body"] = try JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed]) }
-        return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-    }
-
-    private func semanticTag(method: String, path: String, body: Data?) throws -> Data {
-        let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: agreement.rawRepresentation),
-            salt: Data(), info: Data("alondra-operation-binding-v1".utf8), outputByteCount: 32)
-        return Data(HMAC<SHA256>.authenticationCode(for: try requestBytes(method: method, path: path, body: body), using: key))
-    }
-
     private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
-        let plaintext = try requestBytes(method: method, path: path, body: body)
-        let timestamp = now()
-        guard timestamp <= UInt64.max - 120_000 else { throw RelaySessionError.invalidRequest }
-        return try EnvelopeV1.seal(route: scope.macID, sender: scope.deviceID,
-            recipient: scope.macID, requestID: requestID, kind: "request",
-            expiresAtMilliseconds: timestamp + 120_000, plaintext: plaintext,
-            senderKey: signing, recipientKey: macAgreement)
+        do { return try codec.sealRequest(requestID: requestID, method: method, path: path, body: body) }
+        catch ServiceEnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
     }
 
     /// Reads have no durable side effect to deduplicate. Keep their request lifecycle in this
@@ -205,18 +183,11 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
 
     private func verified(_ receipt: RelayReceipt, requestID: String) throws -> RelayOperationResult? {
         guard active else { return .unknown }
-        guard receipt.requestID == requestID else { throw RelaySessionError.invalidResponse }
-        guard receipt.status == "completed" else { return nil }
-        guard let envelope = receipt.response, envelope.kind == "response", envelope.requestID == requestID else {
-            throw RelaySessionError.invalidResponse
+        guard let result = try codec.verified(receipt, requestID: requestID) else { return nil }
+        switch result {
+        case .unknown: return .unknown
+        case let .completed(status, body): return .completed(status: status, body: body)
         }
-        let bytes = try envelope.open(senderKey: macSigning, recipientKey: agreement,
-            sender: scope.macID, recipient: scope.deviceID, route: scope.macID, nowMilliseconds: now())
-        guard let json = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              let status = json["status"] as? Int, (100...599).contains(status) else { throw RelaySessionError.invalidResponse }
-        if json["error"] as? String == "uncertain" || status >= 500 { return .unknown }
-        let body = try JSONSerialization.data(withJSONObject: json["body"] ?? json, options: [.fragmentsAllowed, .sortedKeys])
-        return .completed(status: status, body: body)
     }
 
     /// Only after the use case durably records a verified result. Retains the outbox tombstone.
