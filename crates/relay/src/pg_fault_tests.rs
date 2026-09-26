@@ -4,7 +4,10 @@
 mod pg_fault_tests {
     use super::*;
     use anyhow::{Context as _, Result, ensure};
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx_postgres::PgPoolOptions;
+    mod sqlx {
+        pub use sqlx_core::{error::Error, query::query, query_scalar::query_scalar};
+    }
     use std::time::Duration;
 
     // Run deliberately, never as a default gate:
