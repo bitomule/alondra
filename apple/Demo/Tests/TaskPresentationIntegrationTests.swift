@@ -124,16 +124,15 @@ import Testing
         let answered = try Self.request("r-3", tasks: [], state: "done")
         var initial = ServiceTasksFeature.State()
         initial.taskBoard = TaskBoard(requests: [answered], tasks: [])
-        let store = TestStore(initialState: initial) { ServiceTasksFeature() } withDependencies: {
+        let store = Store(initialState: initial) { ServiceTasksFeature() } withDependencies: {
             $0.taskOperations = TaskOperations(
                 withdraw: { _ in Issue.record("A finished request cannot be withdrawn"); return .confirmed },
                 cancel: { _ in .obsolete }, reopen: { _ in .obsolete }, archiveCompleted: { .obsolete }, details: { _ in nil })
         }
-        await store.send(.withdrawRequested(answered.id))
-        await store.send(.withdrawConfirmed)
+        await store.send(.withdrawRequested(answered.id)).finish()
+        await store.send(.withdrawConfirmed).finish()
         #expect(store.state.withdrawingRequestID == nil)
         #expect(store.state.withdrawOutcome == nil, "nothing was sent for it")
-        await store.finish()
     }
 
 }
