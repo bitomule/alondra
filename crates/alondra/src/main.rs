@@ -11,6 +11,7 @@ mod service_pair;
 mod service_client;
 mod client_pair;
 mod setup;
+mod setup_projects;
 mod statusline;
 mod state;
 mod tui;
