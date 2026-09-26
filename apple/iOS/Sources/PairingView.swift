@@ -48,7 +48,7 @@ struct CloudPairingScreen: View {
         }
         .background(DawnBackground())
         .accessibilityIdentifier("pairing.screen")
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(store.additionalMac ? .visible : .hidden, for: .navigationBar)
         .task { store.send(.appeared) }
     }
 
@@ -92,6 +92,8 @@ struct CloudPairingScreen: View {
             Label("Start with your account", systemImage: "person.crop.circle").font(.headline)
             Text("Use the same account on your iPhone and Mac.").foregroundStyle(.secondary)
             primary("Sign in", symbol: "arrow.right", id: "pairing.signIn") { store.send(.login) }
+        case .cancelling:
+            ProgressView("Cancelling connection…").frame(maxWidth: .infinity).padding(.vertical, 24)
         case .restoring, .loggingIn, .submitting, .signingOut:
             ProgressView(store.phase == .loggingIn ? "Finish signing in in your browser…" : "Connecting securely…")
                 .frame(maxWidth: .infinity).padding(.vertical, 24)
@@ -120,7 +122,7 @@ struct CloudPairingScreen: View {
                         .accessibilityIdentifier("pairing.submit")
                 }.padding(.top, 12)
             }.font(.callout)
-            Button("Use another account") { store.send(.logout) }.font(.footnote)
+            if !store.additionalMac { Button("Use another account") { store.send(.logout) }.font(.footnote) }
         case .pending(let code):
             Label("Confirm on your Mac", systemImage: "checkmark.shield").font(.headline)
             Text("Enter this code in Alondra setup, then approve your iPhone.").foregroundStyle(.secondary)
@@ -133,7 +135,7 @@ struct CloudPairingScreen: View {
         case .approved:
             Label("Mac connected", systemImage: "checkmark.circle.fill").font(.headline).foregroundStyle(Palette.sage)
             Text("This device has secure access to your workspace.").foregroundStyle(.secondary)
-            Button("Sign out", role: .destructive) { store.send(.logout) }
+            if !store.additionalMac { Button("Sign out", role: .destructive) { store.send(.logout) } }
         }
     }
     private func primary(_ label: LocalizedStringKey, symbol: String, id: String, action: @escaping () -> Void) -> some View {

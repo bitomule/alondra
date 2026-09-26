@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import AlondraAPIClient
 
-public enum ServicePairingError: Error, Equatable, Sendable {
+public enum ServicePairingError: LocalizedError, Equatable, Sendable {
     case invalidInvitation
     case invalidIdentity
     case expired
@@ -10,6 +10,11 @@ public enum ServicePairingError: Error, Equatable, Sendable {
     case unexpectedStatus(Int)
     case invalidResponse
     case missingAttempt
+    case alreadyLinked
+    public var errorDescription: String? {
+        if case .alreadyLinked = self { return String(localized: "This Mac is already linked. Select it in Settings.") }
+        return nil
+    }
 }
 
 /// Issued by the OIDC login owner. The service never parses an unverified JWT to infer `ownerSub`.
