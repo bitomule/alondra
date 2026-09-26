@@ -35,7 +35,7 @@ struct ServiceNewRequestView: View {
             ServiceWorkOptionsSheet(store: store).presentationDetents([.medium, .large])
         }
     }
-    private var optionsRow -> some View {
+    private var optionsRow: some View {
         Button {
             store.send(.optionsPresented(true))
         } label: {

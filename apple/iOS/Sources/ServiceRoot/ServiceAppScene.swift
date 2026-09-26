@@ -104,7 +104,7 @@ private struct ServiceRootView<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
     var body: some View {
-        TabView(selection: Binding(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
+        TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
                     ServiceTriageView(store: store.scope(state: \.triage, action: \.triage))
