@@ -20,7 +20,7 @@ public struct ServiceTaskContext {
         }
         reports = (overview?.reports ?? overview?.news ?? []).filter { task.reports.contains($0.id) }
         let grouping = InboxGrouping(questions: overview?.openQuestions ?? [], reports: overview?.news ?? [], pullRequests: overview?.prs ?? [])
-        let inbox = grouping.loose.map(InboxItem.question) + grouping.looseReports.map(InboxItem.report) + (overview?.prs ?? []).map(InboxItem.pullRequest)
+        let inbox = ServiceTaskPresentation.orderedInbox(grouping: grouping, pullRequests: overview?.prs ?? [])
         pending = inbox.filter { board.task(for: $0)?.id == task.id }
         nodeName = overview?.nodes.first { $0.sessionId == task.assignee?.sessionId }?.displayName
     }

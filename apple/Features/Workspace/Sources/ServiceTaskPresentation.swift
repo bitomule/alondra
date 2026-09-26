@@ -10,8 +10,16 @@ public struct ServiceTaskPresentation {
         self.overview = overview
         board = TaskBoard(requests: overview?.requests ?? [], tasks: overview?.tasks ?? [])
         let grouping = InboxGrouping(questions: (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true }, reports: (overview?.news ?? []).filter { $0.toOrchestrator != true }, pullRequests: overview?.prs ?? [])
-        inbox = (grouping.loose.map(InboxItem.question) + grouping.looseReports.map(InboxItem.report) + (overview?.prs ?? []).map(InboxItem.pullRequest)).filter { !hiddenIDs.contains($0.id) }
+        inbox = Self.orderedInbox(grouping: grouping, pullRequests: overview?.prs ?? []).filter { !hiddenIDs.contains($0.id) }
     }
+    /// Detail lists use the original FleetStore inbox order, not the triage ring's arrival order.
+    static func orderedInbox(grouping: InboxGrouping, pullRequests: [PullRequest]) -> [InboxItem] {
+        let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
+        let prs = pullRequests.sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
+        let reports = grouping.looseReports.map(InboxItem.report).sorted { $0.date > $1.date }
+        return questions + prs + reports
+    }
+
     public var news: [Report] { overview?.news ?? [] }
     public var questions: [Question] { overview?.openQuestions ?? [] }
     public func node(_ id: String) -> Node? { overview?.nodes.first { $0.sessionId == id } }
