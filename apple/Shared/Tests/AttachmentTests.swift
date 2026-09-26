@@ -49,20 +49,4 @@ import UniformTypeIdentifiers
         #expect(prepared.data == pdf && prepared.name == "plan.pdf" && !prepared.isImage)
     }
 
-    @MainActor
-    @Test func aFileOver20MBIsRefusedAndAFailedCopyIsRetriedBySend() async {
-        let attachments = Attachments()
-        let unreachable = AlondraClient(base: URL(string: "http://127.0.0.1:9")!)
-        #expect(attachments.add(Data(count: Attachments.maxBytes + 1), name: "big.bin", using: unreachable) != nil)
-        #expect(attachments.isEmpty)
-
-        #expect(attachments.add(Data("notes".utf8), name: "notes.txt", using: unreachable) == nil)
-        await #expect(throws: (any Error).self) { try await attachments.storedIDs(using: unreachable) }
-        guard case .failed = attachments.items.first?.state else {
-            Issue.record("a copy that could not reach alondrad shows as failed, got \(String(describing: attachments.items.first?.state))")
-            return
-        }
-        await #expect(throws: (any Error).self) { try await attachments.storedIDs(using: unreachable) }
-        #expect(attachments.items.count == 1, "retrying keeps the attachment")
-    }
 }

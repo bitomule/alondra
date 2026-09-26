@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 swift_library(
     name = "AlondraAttachmentsData",
     module_name = "AlondraAttachmentsData",
@@ -11,4 +11,14 @@ swift_library(
 alias(
     name = "AlondraAttachmentsDataTests",
     actual = "//apple/Data/AttachmentStorage:AlondraAttachmentStorageTests",
+)
+
+swift_test(
+    name = "AlondraAttachmentImportTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraAttachmentsData",
+        "//apple/Data/AttachmentStorage:AlondraAttachmentStorage",
+        "//apple/Domain:AlondraDomain",
+    ],
 )

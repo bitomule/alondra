@@ -72,6 +72,34 @@ struct AttachmentLifecycleTests {
     }
 
     @Test
+    func failedUploadKeepsOriginalBytesAndOnlyExplicitRetryStartsAnotherTransfer() async {
+        let draft = AttachmentDraft(name: "notes.txt", data: Data("notes".utf8))
+        let uploads = RetriedAttachmentUpload()
+        var initial = AttachmentFeature.State()
+        initial.entries = [.init(draft: draft)]
+        let store = TestStore(initialState: initial) { AttachmentFeature() } withDependencies: {
+            $0.attachmentUpload = AttachmentUploadClient(upload: { try await uploads.send($0) })
+        }
+        await store.send(.uploadNext) { $0.entries[0].status = .uploading }
+        await store.receive(\.uploaded) { $0.entries[0].status = .failed("Lost upload receipt") }
+        await store.receive(\.uploadNext)
+        #expect(store.state.entries.map(\.draft) == [draft])
+        #expect(!store.state.allReady)
+        #expect(store.state.storedIDs.isEmpty)
+        #expect(await uploads.drafts == [draft], "A failed transfer must not automatically retry")
+        await store.send(.retry(draft.id)) { $0.entries[0].status = .queued }
+        await store.receive(\.uploadNext) { $0.entries[0].status = .uploading }
+        await store.receive(\.uploaded) { $0.entries[0].status = .uploaded("stored-notes") }
+        await store.receive(\.uploadNext)
+        await store.send(.retry(draft.id))
+        #expect(store.state.entries.map(\.draft) == [draft])
+        #expect(store.state.allReady)
+        #expect(store.state.storedIDs == ["stored-notes"])
+        #expect(await uploads.drafts == [draft, draft], "Retry keeps both bytes and transfer identity")
+        await store.finish()
+    }
+
+    @Test
     func replacingIdentityCancelsSuspendedImportBeforeNextFile() async {
         let gate = SuspendedAttachmentImport()
         let batch = UUID()
@@ -126,5 +154,17 @@ private actor SuspendedAttachmentImport {
     func release() {
         releaseContinuation?.resume()
         releaseContinuation = nil
+    }
+}
+
+private actor RetriedAttachmentUpload {
+    private(set) var drafts: [AttachmentDraft] = []
+    private struct LostReceipt: LocalizedError {
+        var errorDescription: String? { "Lost upload receipt" }
+    }
+    func send(_ draft: AttachmentDraft) throws -> String {
+        drafts.append(draft)
+        if drafts.count == 1 { throw LostReceipt() }
+        return "stored-notes"
     }
 }
