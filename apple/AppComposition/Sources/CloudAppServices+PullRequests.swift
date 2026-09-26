@@ -8,17 +8,17 @@ public extension CloudAppServices {
         PullRequestOperations(
             diff: { try await self.pullRequestSnapshot($0) },
             merge: { id, method in
-                await self.performPRCommand(.mergePullRequest(id)) { api, operationID in
+                await self.performPRCommand(.mergePullRequest(id), prID: id) { api, operationID in
                     _ = try await api.send(AlondraEndpoints.mergePullRequest(id, method: method), operationID: operationID.uuidString)
                 }
             },
             resolveConflicts: { id in
-                await self.performPRCommand(.resolveConflicts(id)) { api, operationID in
+                await self.performPRCommand(.resolveConflicts(id), prID: id) { api, operationID in
                     _ = try await api.send(AlondraEndpoints.resolveConflicts(id), operationID: operationID.uuidString)
                 }
             },
             setAside: { id in
-                await self.performPRCommand(.dismissPullRequest(id)) { api, operationID in
+                await self.performPRCommand(.dismissPullRequest(id), prID: id) { api, operationID in
                     _ = try await api.send(AlondraEndpoints.dismissPullRequest(id), operationID: operationID.uuidString)
                 }
             },
@@ -32,7 +32,7 @@ public extension CloudAppServices {
                     return .rejected("Load the PR diff before sending a review")
                 }
                 let command: CommandKind = kind == .ask ? .askOnPullRequest(id) : .requestChanges(id)
-                return await self.performPRCommand(command) { api, operationID in
+                return await self.performPRCommand(command, prID: id) { api, operationID in
                     let body = try JSONSerialization.data(withJSONObject: [
                         "text": text, "attachments": [], "expected_head_sha": headSHA
                     ])
@@ -58,9 +58,9 @@ public extension CloudAppServices {
         return PRDiffSnapshot(diff: snapshot.diff, headSHA: snapshot.headSHA)
     }
 
-    private func performPRCommand(_ kind: CommandKind,
+    private func performPRCommand(_ kind: CommandKind, prID: UInt64,
         operation: @escaping @Sendable (AlondraAPIClient, UUID) async throws -> Void) async -> PRMutationOutcome {
-        switch await submitCommand(kind, operation: operation) {
+        switch await submitCommand(kind, itemID: "p\(prID)", operation: operation) {
         case .confirmed: return .confirmed
         case .obsolete: return .obsolete
         case .unknown(let command): return .unknown(command.id)

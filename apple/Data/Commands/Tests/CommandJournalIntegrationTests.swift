@@ -39,6 +39,29 @@ import AlondraCommands
         #expect(restored.id == original.id)
     }
 
+    @Test func uncertainPRQuestionBlocksOtherActionsAcrossGateRecreation() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = CommandGate(scope: scope, journal: journal)
+        let result = await first.submitIdentified(.askOnPullRequest(42), itemID: "p42", in: scope,
+                                                  isUnknown: { _ in true }) { _ in
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let original) = result else { Issue.record("Lost uncertain PR question"); return }
+        let secondWindow = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory))
+        for kind: CommandKind in [.requestChanges(42), .mergePullRequest(42), .resolveConflicts(42), .dismissPullRequest(42)] {
+            let blocked = await secondWindow.submitIdentified(kind, itemID: "p42", in: scope,
+                                                               isUnknown: { _ in true }) { _ in
+                Issue.record("Another action bypassed the unresolved PR question")
+            }
+            guard case .unknown(let command) = blocked else { Issue.record("Lost cross-action PR exclusion"); return }
+            #expect(command.id == original.id)
+        }
+        let independent = await secondWindow.submitIdentified(.mergePullRequest(43), itemID: "p43", in: scope,
+                                                               isUnknown: { _ in true }) { _ in }
+        guard case .confirmed = independent else { Issue.record("Unrelated PR was blocked"); return }
+    }
+
     @Test func delayedDismissalCannotEraseWarningAfterScopeSwitch() async throws {
         let (directory, journal) = try temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }
