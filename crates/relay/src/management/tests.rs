@@ -3,6 +3,9 @@ use super::*;
 // Run only against a disposable local PostgreSQL database. Each test gets its own
 // schema; concurrency assertions exercise PostgreSQL locks, not SQLite substitutes.
 async fn fixture() -> Result<(Management, Account, String)> {
+    fixture_for_issuer("https://identity.example/realms/test").await
+}
+pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Account, String)> {
     let url = std::env::var("ALONDRA_MANAGEMENT_TEST_DATABASE_URL")
         .context("set disposable local PostgreSQL URL")?;
     let parsed = reqwest::Url::parse(&url)?;
@@ -31,12 +34,12 @@ async fn fixture() -> Result<(Management, Account, String)> {
     admin.close().await;
     let management = Management {
         pool,
-        issuer: "https://identity.example/realms/test".into(),
+        issuer: issuer.into(),
     };
     let actor = management.bootstrap("stable-admin-sub", "Admin").await?;
     Ok((management, actor, schema))
 }
-async fn cleanup(db: Management, schema: String) -> Result<()> {
+pub(crate) async fn cleanup(db: Management, schema: String) -> Result<()> {
     db.pool.close().await;
     let pool = PgPoolOptions::new()
         .max_connections(1)
@@ -131,7 +134,10 @@ async fn management_expiration_during_provisioning_blocks_activation_and_queues_
     .bind(id)
     .fetch_all(&db.pool)
     .await?;
-    assert_eq!(actions, vec!["keycloak_disable", "relay_revoke"]);
+    assert_eq!(
+        actions,
+        vec!["keycloak_delete", "keycloak_disable", "relay_revoke"]
+    );
     cleanup(db, schema).await
 }
 #[tokio::test]
@@ -213,14 +219,14 @@ async fn management_concurrent_invitations_and_cancel_after_reservation() -> Res
         .bind(original_id)
         .fetch_one(&db.pool)
         .await?;
-    assert_eq!(state, "disabled");
+    assert_eq!(state, "deleting");
     let pending: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM management_outbox WHERE account_id=$1 AND state='pending'",
     )
     .bind(original_id)
     .fetch_one(&db.pool)
     .await?;
-    assert_eq!(pending, 2);
+    assert_eq!(pending, 3);
     cleanup(db, schema).await
 }
 
@@ -318,7 +324,7 @@ async fn management_expired_abandoned_provisioning_and_late_provider_commit_rema
         .bind(account)
         .fetch_one(&db.pool)
         .await?;
-    assert_eq!(status, "disabled");
+    assert_eq!(status, "deleting");
     assert!(db.reserve_acceptance(&invite.token, "Late").await.is_err());
     cleanup(db, schema).await
 }
@@ -413,5 +419,52 @@ async fn management_provider_lost_create_response_never_resets_retry_password() 
             .is_err()
     );
     server.abort();
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn management_existing_account_email_requires_deletion_before_new_invitation() -> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    let invitation = db
+        .create_invitation(admin.id, "existing@example.com", 300)
+        .await?;
+    let account = db
+        .reserve_acceptance(&invitation.token, "Existing")
+        .await?
+        .complete("existing-sub")
+        .await?;
+    for disabled in [false, true] {
+        if disabled {
+            db.disable_account(admin.id, account.id, false).await?;
+        }
+        let error = db
+            .create_invitation(admin.id, "existing@example.com", 300)
+            .await
+            .err()
+            .expect("existing email cannot issue an unusable invitation");
+        assert_eq!(
+            error.downcast_ref::<DomainError>(),
+            Some(&DomainError::Conflict)
+        );
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM management_invitations")
+        .fetch_one(&db.pool)
+        .await?;
+    assert_eq!(count, 1);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM management_audit WHERE action='invite_create'")
+            .fetch_one(&db.pool)
+            .await?;
+    assert_eq!(count, 1);
+    db.disable_account(admin.id, account.id, true).await?;
+    while let Some(job) = db.next_reconciliation().await? {
+        db.reconciliation_complete(&job).await?;
+    }
+    assert!(
+        db.create_invitation(admin.id, "existing@example.com", 300)
+            .await
+            .is_ok()
+    );
     cleanup(db, schema).await
 }
