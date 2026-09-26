@@ -3,7 +3,10 @@ class Alondra < Formula
   homepage "https://davidcollado.dev"
   version "@VERSION@"
 
-  depends_on :macos
+  depends_on macos: :sonoma
+
+  # Signed bytes must survive Homebrew cleaning unchanged.
+  skip_clean "bin/alondra", "bin/alondrad"
 
   on_arm do
     url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"

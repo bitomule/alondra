@@ -42,6 +42,6 @@ ditto "$cli" "$stage/alondra"
 ditto "$daemon" "$stage/alondrad"
 ditto "$repo_root/.claude-plugin" "$stage/.claude-plugin"
 cp -RP "$repo_root/plugin" "$repo_root/plugin-orchestrator" "$stage/"
-tar -C "$stage" -czf "$archive" alondra alondrad .claude-plugin plugin plugin-orchestrator
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad .claude-plugin plugin plugin-orchestrator
 shasum -a 256 "$archive"
-echo 'Verify notarization, upload both architecture archives to the tap release, then fill both formula checksums.'
+python3 "$repo_root/deploy/brew/release.py" validate "$version" "$archive"
