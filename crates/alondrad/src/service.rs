@@ -1035,7 +1035,7 @@ agreement_key = "{}"
                 }
             }))
             .route("/v1/prs/7/diff-snapshot", get(|| async {
-                axum::Json(json!({"head":"abc","files":[]}))
+                axum::Json(json!({"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}))
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_port = listener.local_addr().unwrap().port();
@@ -1058,7 +1058,7 @@ agreement_key = "{}"
         }
         for (path, expected) in [
             ("/v1/file?path=missing.md", json!({"status":404,"body":{"error":"file_not_found"}})),
-            ("/v1/prs/7/diff-snapshot", json!({"status":200,"body":{"head":"abc","files":[]}})),
+            ("/v1/prs/7/diff-snapshot", json!({"status":200,"body":{"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}})),
         ] {
             assert_eq!(service.dispatch("client-test", &LocalRequest {
                 method: "GET".into(), path: path.into(), body: None,
