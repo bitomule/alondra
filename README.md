@@ -90,3 +90,15 @@ not support that cadence. The hook does not affect Claude sessions outside Alond
 
 `make build` / `make test` with Bazel. `cargo build` / `cargo test` also work, for fast
 iteration and for rust-analyzer.
+
+### Install on an iPhone
+
+`make device` builds the arm64 iOS app, installs it on **David iPhone**, and opens it.
+Use `make device DEVICE="name or UDID"` to select another paired device. The device
+must have Developer Mode enabled and be reachable from this Mac. Existing app data
+is retained; the running app is restarted.
+
+Keep the development profiles for the app and notification extension in `signing/`
+as configured by `signing.example.bzl` (or an ignored `signing.bzl` override).
+Both profiles must include the selected device and have a matching local signing
+identity. Profiles and private keys are never committed.

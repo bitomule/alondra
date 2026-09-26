@@ -1,11 +1,18 @@
 BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
+DEVICE ?= David iPhone
+export DEVICE
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac e2e-sandbox soak tasks-screen
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
+
+# Same build/install/launch flow as Quill, Lumo and Memoir.
+# Override with make device DEVICE="device name or UDID".
+device:
+	python3 tools/device.py
 
 test:
 	bazelisk test //crates/...
