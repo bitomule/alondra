@@ -122,9 +122,11 @@ struct ServiceQuestionView: View {
                 if !store.question.isTerminalMenu {
                     ServiceComposer(placeholder: store.question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…"),
                         text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), focus: $focus,
-                        submit: { store.send(.answerTapped) })
+                        sendTitle: nil, canSend: !store.draft.text.isEmpty || !store.attachmentPicker.entries.isEmpty,
+                        submit: { store.send(.answerTapped) },
+                        escape: { store.send(.optionSelected(nil)) },
+                        attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 }
-                AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 CardActions {
                     if !store.question.isTerminalMenu {
                         Button { store.send(.moreContextTapped) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
@@ -146,59 +148,151 @@ struct ServiceQuestionView: View {
 struct ServiceDocumentView: View {
     let store: StoreOf<DocumentReviewFeature>
     var markRead: (() -> Void)?
-    @Environment(\.dismiss) private var dismiss
-
+    @FocusState private var focus: DetailField?
+    @Environment(\.searchActive) private var searchActive
+    private var item: InboxItem {
+        switch store.subject { case .question(let q): .question(q); case .report(let r): .report(r) }
+    }
     var body: some View {
-        Form {
-            Section {
-                if store.isLoading { ProgressView("Loading document…") }
+        DetailScaffold {
+            VStack(alignment: .leading, spacing: 22) {
+                header
+                MissionLine(item: item)
+                if case .report(let report) = store.subject {
+                    if report.seemsToAsk {
+                        Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")
+                            .font(.callout.weight(.medium)).foregroundStyle(.orange)
+                    }
+                    ForEach(report.artifacts, id: \.self) { url in
+                        Link(destination: url) { Label(Report.openInBrowserLabel, systemImage: "safari") }
+                            .buttonStyle(.borderedProminent).controlSize(.large).help(url.absoluteString)
+                    }
+                }
+                if store.isLoading { ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 60) }
                 if let error = store.loadError {
-                    Text(error).foregroundStyle(.red)
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
                     Button("Retry") { store.send(.appeared) }
                 }
-                if let text = store.sourceText { ServiceDocumentBody(store: store, blocks: MarkdownParser.blocks(from: text)) }
+                if let text = store.sourceText {
+                    if isReviewable {
+                        ServiceReviewableDocument(text: text, anchorPrefix: "document", store: store, focus: $focus)
+                    } else { MarkdownText(text: text) }
+                }
+                context
             }
-            if case .report(let report) = store.subject {
-                ForEach(report.earlier ?? []) { earlier in
-                    Section(earlier.title) { ServiceReportContext(report: earlier) }
+        } bar: {
+            VStack(alignment: .leading, spacing: 12) {
+                ServiceCommentsSummary(comments: store.draft.comments) { comment in
+                    store.send(.commentChanged(anchor: comment.anchor, quote: comment.quote, text: ""))
                 }
-            }
-            Section("Feedback") {
-                if case .question(let question) = store.subject {
-                    ForEach(question.options, id: \.label) { option in
-                        Button(option.label) { store.send(.optionSelected(option.label)) }
-                    }
-                    if question.isPlan {
-                        Button("Approve") { store.send(.optionSelected(AnswerOption.approve)) }
-                        Button("Request changes") { store.send(.optionSelected(AnswerOption.requestChanges)) }
-                    }
-                    if let option = store.draft.selectedOption { Label(option, systemImage: "checkmark.circle") }
+                if case .question(let question) = store.subject, !question.options.isEmpty {
+                    QuestionOptions(options: question.options, selected: store.draft.selectedOption,
+                        detail: { option in
+                            guard !store.draft.comments.isEmpty else { return option.displayDescription }
+                            return option.needsText || !question.isPlan
+                                ? String(localized: "Sends your \(store.draft.comments.count) comments")
+                                : String(localized: "Without your comments")
+                        }, prominent: { option, index in question.isPlan && (store.hasFeedback ? option.needsText : index == 0) },
+                        choose: { store.send(.chooseReviewOption($0, author: "David")) })
                 }
-                TextField("General feedback", text: Binding(get: { store.draft.general }, set: { store.send(.generalChanged($0)) }), axis: .vertical)
-                    .lineLimit(4...12)
-                Button(store.isSubmitting ? "Sending…" : "Send feedback") { store.send(.sendFeedbackTapped(author: "David")) }
-                if case .report(let report) = store.subject {
-                    if !report.artifacts.isEmpty {
-                        Button("Approve artifact") { store.send(.reviewTapped(.approved)) }
-                    }
-                    if let markRead { Button("Mark read", action: markRead) }
-                }
-            }.disabled(!store.attachmentPicker.allReady || store.isLoading || store.loadError != nil || store.isSubmitting || store.needsReconciliation || store.completed)
-            if store.feedbackReadRetryAvailable {
-                Section {
+                ServiceComposer(placeholder: placeholder,
+                    text: Binding(get: { store.draft.general }, set: { store.send(.generalChanged($0)) }), focus: $focus,
+                    sendTitle: nil, canSend: store.hasFeedback,
+                    submit: { store.send(.submitFeedback(author: "David")) },
+                    escape: { store.send(.optionSelected(nil)) },
+                    attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                actions
+                if store.feedbackReadRetryAvailable {
                     Button(store.isRetryingFeedbackRead ? "Checking…" : "Retry marking report read") { store.send(.retryFeedbackRead) }
                         .disabled(store.isRetryingFeedbackRead)
                     Text("Your feedback has already been delivered. This only marks the report read.").font(.caption)
                 }
+                ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
             }
-            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
-            ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
+            .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
+            .animation(.snappy(duration: 0.2), value: store.draft.comments.count)
         }
-        .navigationTitle("Document")
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
+        .onAppear { if !searchActive { focus = .pane } }
+        .onChange(of: store.generalFocusRequest) { _, _ in focus = .reply }
+    }
+    @ViewBuilder private var header: some View {
+        switch store.subject {
+        case .question(let q): DetailHeader(style: item.style, node: q.nodeName, date: q.askedAt, title: q.title)
+        case .report(let r): DetailHeader(style: item.style, node: r.nodeName, date: r.createdAt, title: r.title)
+        }
+    }
+    private var isReviewable: Bool {
+        switch store.subject { case .question(let q): q.isPlan; case .report(let r): r.kind == "document" }
+    }
+    private var placeholder: String {
+        if let option = store.draft.selectedOption { return String(localized: "\(AnswerOption.displayLabel(option)): write why…") }
+        switch store.subject {
+        case .question(let q): return q.isPlan ? String(localized: "General comment on the plan (optional)…") : q.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…")
+        case .report(let r): return r.kind == "document" ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…")
+        }
+    }
+    @ViewBuilder private var context: some View {
+        switch store.subject {
+        case .question(let q):
+            LinksRow(links: q.links, attachments: q.attachments.filter { !$0.isText })
+            ForEach(q.aboutReports) { report in
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(report.title).font(.headline)
+                        if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } label: { Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary) }
+            }
+            if let text = q.nodeContext, !text.isEmpty {
+                DisclosureGroup("What the node said last") { MarkdownText(text: text).font(.callout).foregroundStyle(.secondary).padding(.top, 6) }.foregroundStyle(.secondary)
+            }
+        case .report(let r):
+            LinksRow(links: r.links, attachments: r.attachments.filter { r.kind != "document" || !$0.isText })
+            if let earlier = r.earlier, !earlier.isEmpty {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(earlier) { report in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(report.title).font(.headline)
+                                if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } label: { Label(String(localized: "Earlier in this delivery (\(earlier.count))"), systemImage: "tray.full").foregroundStyle(.secondary) }
+            }
+        }
+    }
+    @ViewBuilder private var actions: some View {
+        if case .report(let report) = store.subject {
+            CardActions {} trailing: {
+                if report.primaryAction() == .review {
+                    Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
+                    Button("Approve") { store.send(.reviewTapped(.approved)) }.help("Tell the node the artifact is approved (V)")
+                    if store.hasFeedback {
+                        SendButton(title: String(localized: "Send Comments")) { store.send(.submitFeedback(author: "David")) }
+                    } else {
+                        Button("Rescue Comments") { store.send(.reviewTapped(.comments)) }.buttonStyle(.borderedProminent)
+                            .help("The node reads your comments on the artifact and applies them (C)")
+                    }
+                } else if store.hasFeedback {
+                    Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
+                    SendButton(title: report.kind == "document" ? String(localized: "Send Comments") : String(localized: "Reply")) { store.send(.submitFeedback(author: "David")) }
+                } else {
+                    Button("Mark as Read") { markRead?() }.buttonStyle(.borderedProminent).help("Mark as read (L)")
+                }
+            }.animation(.snappy(duration: 0.18), value: store.hasFeedback)
+        } else if case .question(let q) = store.subject {
+            CardActions {
+                Button { store.send(.moreContextTapped(author: "David")) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                    .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
+            } trailing: {
+                if store.hasFeedback, store.draft.selectedOption != nil || !q.isPlan {
+                    SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { store.send(.submitFeedback(author: "David")) }
+                }
+            }
+        }
     }
 }
 
@@ -210,35 +304,5 @@ private struct ServiceWorkNotice: View {
             if let conflict { Text(conflict).foregroundStyle(.orange) }
             if let notice { Text(notice).foregroundStyle(.red) }
         }
-    }
-}
-
-private struct ServiceDocumentBody: View {
-    let store: StoreOf<DocumentReviewFeature>
-    let blocks: [MarkdownBlock]
-
-    var body: some View {
-        ForEach(blocks) { block in
-            VStack(alignment: .leading, spacing: 8) {
-                BlockView(block: block).textSelection(.enabled)
-                TextField("Comment on this passage", text: Binding(
-                    get: { store.draft.comments.first(where: { $0.anchor == block.draftKey })?.text ?? "" },
-                    set: { store.send(.commentChanged(anchor: block.draftKey, quote: block.plainText, text: $0)) }
-                ), axis: .vertical)
-                .font(.callout)
-                .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
-            }
-        }
-    }
-}
-
-private struct ServiceReportContext: View {
-    let report: Report
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let body = report.body {
-                MarkdownText(text: body)
-            }
-        }.textSelection(.enabled)
     }
 }

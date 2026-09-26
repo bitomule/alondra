@@ -20,6 +20,10 @@ public struct DiffReviewFeature {
         public var loadedDiffText: String?
         public var commentsDiffText: String?
         public var collapsed: Set<String> = []
+        public var highlightedLines: [String: AttributedString] = [:]
+        public var highlightingDark: Bool?
+        public var highlightGeneration: UInt64 = 0
+        public let highlightID = UUID()
         public var isLoading = false
         public var loadError: String?
         public var isOpen = true
@@ -67,6 +71,8 @@ public struct DiffReviewFeature {
         case snapshotUnavailable
         case diffLoaded([DiffFile], PRDiffSnapshot, UInt64)
         case diffFailed(String, UInt64)
+        case colorSchemeChanged(dark: Bool)
+        case highlighted([String: AttributedString], UInt64)
         case toggleFile(String)
         case toggleAllFiles
         case editLine(String)
@@ -88,6 +94,7 @@ public struct DiffReviewFeature {
     }
 
     @Dependency(\.pullRequestOperations) var operations
+    @Dependency(\.diffHighlighting) var highlighting
     private let prepareReview = PreparePRReviewUseCase()
 
     public init() {}
@@ -116,15 +123,25 @@ public struct DiffReviewFeature {
                         await send(.diffFailed(error.localizedDescription, generation))
                     }
                 }.cancellable(id: state.loadID, cancelInFlight: true)
+            case .colorSchemeChanged(let dark):
+                state.highlightingDark = dark
+                return highlight(&state)
+            case .highlighted(let lines, let generation):
+                guard generation == state.highlightGeneration else { return .none }
+                state.highlightedLines = lines
+                return .none
             case .disappeared:
+                state.highlightGeneration &+= 1
                 state.loadGeneration &+= 1
                 state.isLoading = false
-                return .cancel(id: state.loadID)
+                return .merge(.cancel(id: state.loadID), .cancel(id: state.highlightID))
             case .identityChanged:
                 state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.loadGeneration &+= 1
                 state.files = nil
+                state.highlightedLines = [:]
+                state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
                 state.loadedHeadSHA = nil
                 state.commentsDiffText = nil
@@ -164,12 +181,14 @@ public struct DiffReviewFeature {
                 state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.loadError = nil
-                return .none
+                return highlight(&state)
             case .diffFailed(let error, let generation):
                 guard generation == state.loadGeneration, state.isLoading else { return .none }
                 state.isLoading = false
                 state.loadError = error
                 state.files = nil
+                state.highlightedLines = [:]
+                state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
                 state.loadedHeadSHA = nil
                 state.collapsed = []
@@ -247,7 +266,7 @@ public struct DiffReviewFeature {
                 state.submittedComments = nil
                 state.submittedNote = nil
                 state.submittedAttachments = nil
-                return .cancel(id: state.loadID)
+                return .merge(.cancel(id: state.loadID), highlight(&state))
             case .reviewPreflightFailed(let message, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
@@ -303,6 +322,19 @@ public struct DiffReviewFeature {
                 AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
+    }
+
+    private func highlight(_ state: inout State) -> Effect<Action> {
+        state.highlightGeneration &+= 1
+        state.highlightedLines = [:]
+        let generation = state.highlightGeneration
+        let files = state.files ?? []
+        guard let dark = state.highlightingDark, !files.isEmpty else { return .cancel(id: state.highlightID) }
+        return .run { send in
+            let lines = await highlighting.render(files, dark)
+            try Task.checkCancellation()
+            await send(.highlighted(lines, generation))
+        }.cancellable(id: state.highlightID, cancelInFlight: true)
     }
 
     private func sendReview(_ state: inout State, kind: PRReviewKind) -> Effect<Action> {

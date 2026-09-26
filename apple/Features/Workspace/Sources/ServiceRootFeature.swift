@@ -3,6 +3,7 @@ import AlondraFleetFeature
 import Foundation
 import AlondraCommands
 import AlondraNewWorkFeature
+import AlondraQuestionsFeature
 import AlondraPullRequestsFeature
 import AlondraShared
 import ComposableArchitecture
@@ -106,7 +107,7 @@ public struct ServiceRootFeature {
                     if case .pullRequest(let pr) = item, pr.id == detail.pr.id { return pr }
                     return nil
                 }.first
-                return .merge(routing, .send(.pullRequest(.presented(.updated(pr)))))
+                return .merge(routing, .send(.pullRequest(.presented(.updated(pr)))), .send(.pullRequest(.presented(.contextUpdated(reports: state.triage.triage.reports(forPullRequest: detail.pr.id), questions: state.triage.triage.questions(forPullRequest: detail.pr.id))))))
             case .triage(.delegate(.pullRequest(let pr))):
                 state.pullRequest = ServicePullRequestFeature.State(pr: pr, reports: state.triage.triage.reports(forPullRequest: pr.id), questions: state.triage.triage.questions(forPullRequest: pr.id))
                 return .none
@@ -183,10 +184,12 @@ public struct ServicePullRequestFeature {
         public var diff: DiffReviewFeature.State
         public var reports: [Report] = []
         public var questions: [Question] = []
+        public var questionFeatures: IdentifiedArrayOf<AttachedPRQuestionFeature.State> = []
         public var descriptionExpanded: Bool?
         public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
             self.reports = reports
             self.questions = questions
+            questionFeatures = IdentifiedArray(uniqueElements: questions.map(AttachedPRQuestionFeature.State.init))
             self.pr = PullRequestFeature.State(pr: pr)
             diff = DiffReviewFeature.State(prID: pr.id)
         }
@@ -197,7 +200,9 @@ public struct ServicePullRequestFeature {
         case diff(DiffReviewFeature.Action)
         case updated(PullRequest?)
         case snapshotUnavailable
+        case contextUpdated(reports: [Report], questions: [Question])
         case toggleDescription
+        case attachedQuestion(IdentifiedActionOf<AttachedPRQuestionFeature>)
     }
     public var body: some ReducerOf<Self> {
         Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
@@ -205,14 +210,44 @@ public struct ServicePullRequestFeature {
         Scope(state: \.diff, action: \.diff) { DiffReviewFeature() }
         Reduce { state, action in
             switch action {
+            case .contextUpdated(let reports, let questions):
+                state.reports = reports
+                state.questions = questions
+                let ids = Set(questions.map(\.id))
+                state.questionFeatures.removeAll { !ids.contains($0.id) }
+                var effects: [Effect<Action>] = []
+                for question in questions {
+                    if state.questionFeatures[id: question.id] == nil {
+                        state.questionFeatures.append(AttachedPRQuestionFeature.State(question))
+                    } else {
+                        effects.append(.send(.attachedQuestion(.element(id: question.id, action: .question(.refreshed(question))))))
+                    }
+                }
+                return .merge(effects)
             case .toggleDescription:
                 state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
                 return .none
             case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
             case .snapshotUnavailable: return .merge(.send(.pr(.snapshotUnavailable)), .send(.diff(.snapshotUnavailable)))
-            case .pr, .diff, .downloads: return .none
+            case .pr, .diff, .downloads, .attachedQuestion: return .none
             }
         }
+        .forEach(\.questionFeatures, action: \.attachedQuestion) { AttachedPRQuestionFeature() }
+    }
+}
+
+@Reducer
+public struct AttachedPRQuestionFeature {
+    @ObservableState
+    public struct State: Equatable, Identifiable {
+        public var id: UInt64 { question.question.id }
+        public var question: QuestionFeature.State
+        public init(_ value: Question) { question = QuestionFeature.State(question: value) }
+    }
+    public enum Action { case question(QuestionFeature.Action) }
+    public init() {}
+    public var body: some ReducerOf<Self> {
+        Scope(state: \.question, action: \.question) { QuestionFeature() }
     }
 }
 

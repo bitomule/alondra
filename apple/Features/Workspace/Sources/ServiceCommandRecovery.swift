@@ -71,6 +71,9 @@ extension ServiceRootFeature {
         if state.fleet.detail?.sendOutcome?.uncertainID == id || state.fleet.detail?.closeOutcome?.uncertainID == id {
             effects.append(.send(.fleet(.detail(.presented(.commandResolved(id, rejection: rejection))))))
         }
+        for child in state.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
+            effects.append(.send(.pullRequest(.presented(.attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
+        }
         if state.pullRequest?.pr.mutationOutcome?.uncertainID == id {
             effects.append(.send(.pullRequest(.presented(.pr(.commandResolved(id, rejection: rejection))))))
         }

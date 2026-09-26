@@ -108,6 +108,7 @@ public struct DocumentReviewFeature {
         case chooseReviewOption(QuestionOption, author: String)
         case submitFeedback(author: String)
         case approveQuestion
+        case moreContextTapped(author: String)
         case composeComment(String?)
         case composingTextChanged(String)
         case generalChanged(String)
@@ -213,6 +214,13 @@ public struct DocumentReviewFeature {
                 guard canReview(state), state.hasFeedback else { return .none }
                 state.draft.selectedOption = state.changeOption
                 return .send(.sendFeedbackTapped(author: author))
+            case .moreContextTapped(let author):
+                guard canReview(state), state.attachmentPicker.allReady, case .question(let question) = state.subject else { return .none }
+                var draft = QuestionDraft()
+                draft.text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
+                draft.attachmentIDs = state.attachmentPicker.storedIDs
+                do { return submit(try answerUseCase.checkedMoreContext(question, draft: draft), state: &state) }
+                catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .approveQuestion:
                 guard canReview(state), case .question(let question) = state.subject, let option = state.approveOption else { return .none }
                 var draft = QuestionDraft()
