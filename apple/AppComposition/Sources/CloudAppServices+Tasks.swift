@@ -7,7 +7,11 @@ import Foundation
 
 extension CloudAppServices {
     public func taskOperations() -> TaskOperations {
-        TaskOperations(cancel: { task in
+        TaskOperations(withdraw: { request in
+            await self.taskCommand(.withdrawRequest(request.id), itemID: request.id) { api, id in
+                _ = try await api.send(AlondraEndpoints.withdrawRequest(request.id), operationID: id.uuidString)
+            }
+        }, cancel: { task in
             await self.taskCommand(.cancelTask(task.id), itemID: task.id) { api, id in
                 _ = try await api.send(AlondraEndpoints.cancelTask(task.id), operationID: id.uuidString)
             }

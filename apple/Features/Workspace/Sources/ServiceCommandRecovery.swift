@@ -38,6 +38,12 @@ extension ServiceRootFeature {
         if state.newRequest.uncertainCommandID == id {
             effects.append(.send(.newRequest(.commandResolved(id, rejection: rejection))))
         }
+        if state.tasks.withdrawOutcome?.uncertainID == id {
+            effects.append(.send(.tasks(.withdrawalResolved(id, rejection: rejection))))
+        }
+        if state.fleet.taskDetail?.mutationOutcome?.uncertainID == id {
+            effects.append(.send(.fleet(.taskDetail(.presented(.commandResolved(id, rejection: rejection))))))
+        }
         if state.tasks.board.archiveOutcome?.uncertainID == id {
             effects.append(.send(.tasks(.board(.commandResolved(id, rejection: rejection)))))
         }
