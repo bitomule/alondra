@@ -125,6 +125,7 @@ pub struct Service {
     home: PathBuf,
     transfers: Arc<crate::service_files::Transfers>,
     inflight: InFlight,
+    hub: Option<Arc<crate::hub::Hub>>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +144,44 @@ struct LocalRequest {
     path: String,
     #[serde(default)]
     body: Option<Value>,
+}
+
+fn parse_push_preferences(
+    request: &LocalRequest,
+) -> Result<(String, Option<QuietHours>, Option<i64>)> {
+    let body = request
+        .body
+        .as_ref()
+        .context("push binding body required")?;
+    let map = body.as_object().context("invalid push binding body")?;
+    if map.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "push_binding" | "quiet_start" | "quiet_end" | "preferences_revision"
+        )
+    }) {
+        bail!("unknown push binding field");
+    }
+    let binding = map
+        .get("push_binding")
+        .and_then(Value::as_str)
+        .filter(|value| valid_push_binding(value))
+        .context("invalid push binding")?;
+    let quiet = QuietHours::parse_update(map.get("quiet_start"), map.get("quiet_end"))?;
+    let revision = match map.get("preferences_revision") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .filter(|v| (1..=9_007_199_254_740_991).contains(v))
+                .context("preferences_revision must be an integer from 1 to 9007199254740991")?
+                as i64,
+        ),
+    };
+    if revision.is_some() && quiet.is_none() {
+        bail!("versioned preferences require quiet_start and quiet_end");
+    }
+    Ok((binding.to_owned(), quiet, revision))
 }
 
 fn now_ms() -> u64 {
@@ -177,6 +216,36 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
 }
 
 impl Service {
+    pub fn with_hub(mut self, hub: Arc<crate::hub::Hub>) -> Self { self.hub = Some(hub); self }
+
+    fn atomic_local(&self, request: &LocalRequest) -> bool {
+        request.method == "POST" && request.path == "/v1/service/push-binding"
+            || self.hub.is_some() && crate::http::atomic_local_path(&request.method, &request.path)
+    }
+
+    fn execute_atomic_local(&self, envelope: &EnvelopeV1, device: &Device, request: &LocalRequest, digest: &[u8; 32]) -> Result<Vec<u8>> {
+        self.require_device_approval(&envelope.sender, device)?;
+        if request.path == "/v1/service/push-binding" {
+            let (binding, quiet, revision) = match parse_push_preferences(request) {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    let bytes = self.encode_response(envelope, device, &json!({"status":422,"body":{"error":"invalid push preferences"}}), request)?;
+                    self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
+                    return Ok(bytes);
+                }
+            };
+            return self.journal.complete_push_preferences(&envelope.sender, &envelope.request_id, digest,
+                &binding, quiet, revision, |result| self.encode_response(envelope, device, &result, request));
+        }
+        approved_method(request)?;
+        let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
+        let result = crate::http::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
+            &request.path, request.body.as_ref())?;
+        let bytes = self.encode_response(envelope, device, &result, request)?;
+        self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
+        Ok(bytes)
+    }
+
     pub fn open(home: &Path, local_port: u16, auth: Arc<Auth>) -> Result<Option<Self>> {
         let file = home.join("service.toml");
         if !file.exists() {
@@ -243,7 +312,7 @@ impl Service {
             local_port,
             home: home.to_path_buf(),
             transfers: Arc::default(),
-            inflight: Arc::default(),
+            inflight: Arc::default(), hub: None,
         }))
     }
 
@@ -497,15 +566,34 @@ impl Service {
             guard: WorkGuard { inflight: self.inflight.clone(), key, changes, saturated } }))
     }
 
-    async fn handle_prepared(&self, work: Work, epoch: &[u8; 16], prepared: PreparedWork) -> Result<()> {
-        let PreparedWork { request, digest, guard } = prepared;
+    async fn handle_prepared(
+        &self,
+        work: Work,
+        epoch: &[u8; 16],
+        prepared: PreparedWork,
+    ) -> Result<()> {
+        let PreparedWork {
+            request,
+            digest,
+            guard,
+        } = prepared;
         let e = &work.envelope;
-        let device = self.devices.get(&e.sender).context("work from unapproved device")?;
+        let device = self
+            .devices
+            .get(&e.sender)
+            .context("work from unapproved device")?;
         let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
         let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
-        Self::drain_ack(self.signed(Method::POST, &receipt_path, Vec::new(), epoch).await?).await?;
+        Self::drain_ack(
+            self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
+                .await?,
+        )
+        .await?;
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
+            Disposition::ExecutingLocal => {
+                self.execute_atomic_local(e, device, &request, &digest)?
+            }
             Disposition::Executing => {
                 let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
@@ -515,30 +603,40 @@ impl Service {
                 // Receipt upload can wait on the relay; re-read durable local
                 // approval and enrollment immediately before loopback dispatch.
                 self.require_device_approval(&e.sender, device)?;
-                self.journal.executing(&e.sender, &e.request_id, &digest)?;
-                let result = if guard.saturated {
-                    json!({"status":429,"error":"changes_busy"})
+                if self.atomic_local(&request) {
+                    self.journal
+                        .executing_local(&e.sender, &e.request_id, &digest)?;
+                    self.execute_atomic_local(e, device, &request, &digest)?
                 } else {
-                    match self.dispatch(&e.sender, &request).await {
-                        Ok(value) => value,
-                        Err(error) if error.is::<ResponseTooLarge>() => {
-                            json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
+                    self.journal.executing(&e.sender, &e.request_id, &digest)?;
+                    let result = if guard.saturated {
+                        json!({"status":429,"error":"changes_busy"})
+                    } else {
+                        match self.dispatch(&e.sender, &request).await {
+                            Ok(value) => value,
+                            Err(error) if error.is::<ResponseTooLarge>() => {
+                                json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
+                            }
+                            Err(error) if request.method == "GET" => {
+                                json!({"status":502,"error":"read_failed","detail":error.to_string()})
+                            }
+                            Err(error) => {
+                                json!({"status":503,"error":"uncertain","detail":error.to_string()})
+                            }
                         }
-                        Err(error) if request.method == "GET" => {
-                            json!({"status":502,"error":"read_failed","detail":error.to_string()})
-                        }
-                        Err(error) => {
-                            json!({"status":503,"error":"uncertain","detail":error.to_string()})
-                        }
-                    }
-                };
-                let bytes = self.encode_response(e, device, &result, &request)?;
-                self.journal.complete(&e.sender, &e.request_id, &bytes)?;
-                bytes
+                    };
+                    let bytes = self.encode_response(e, device, &result, &request)?;
+                    self.journal.complete(&e.sender, &e.request_id, &bytes)?;
+                    bytes
+                }
             }
         };
         let response_path = format!("/v1/work/{}/response", e.request_id);
-        Self::drain_ack(self.signed(Method::POST, &response_path, response, epoch).await?).await?;
+        Self::drain_ack(
+            self.signed(Method::POST, &response_path, response, epoch)
+                .await?,
+        )
+        .await?;
         Ok(())
     }
 
@@ -585,21 +683,8 @@ impl Service {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
         }
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
-            let body = request.body.as_ref().context("push binding body required")?;
-            let map = body.as_object().context("invalid push binding body")?;
-            if map.keys().any(|key| !matches!(key.as_str(), "push_binding" | "quiet_start" | "quiet_end" | "preferences_revision")) {
-                bail!("unknown push binding field");
-            }
-            let binding = map.get("push_binding").and_then(Value::as_str)
-                .filter(|value| valid_push_binding(value)).context("invalid push binding")?;
-            let quiet = QuietHours::parse_update(map.get("quiet_start"), map.get("quiet_end"))?;
-            let revision = match map.get("preferences_revision") {
-                None => None,
-                Some(value) => Some(value.as_u64().filter(|v| (1..=9_007_199_254_740_991).contains(v))
-                    .context("preferences_revision must be an integer from 1 to 9007199254740991")? as i64),
-            };
-            if revision.is_some() && quiet.is_none() { bail!("versioned preferences require quiet_start and quiet_end"); }
-            match self.journal.set_versioned_push_preferences(sender, binding, quiet, revision)? {
+            let (binding, quiet, revision) = parse_push_preferences(request)?;
+            match self.journal.set_versioned_push_preferences(sender, &binding, quiet, revision)? {
                 Some(current) => return Ok(json!({"status":409,"error":"stale_push_preferences","current_revision":current})),
                 None => return Ok(json!({"status":204})),
             }
@@ -876,6 +961,7 @@ fn single_query_value(query: &str, key: &str, values: &[&str]) -> bool {
 enum Disposition {
     Accepted,
     Executing,
+    ExecutingLocal,
     Completed(Vec<u8>),
 }
 enum EnrollmentDecision {
@@ -896,12 +982,12 @@ impl Journal {
             std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
-        let c = Connection::open(&path)?;
+        let mut c = Connection::open(&path)?;
         c.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS service_receipts (
               sender TEXT NOT NULL, request_id TEXT NOT NULL, digest BLOB NOT NULL,
-              state TEXT NOT NULL, response BLOB, PRIMARY KEY(sender, request_id));
+              state TEXT NOT NULL, response BLOB, execution_mode TEXT NOT NULL DEFAULT 'legacy', PRIMARY KEY(sender, request_id));
             CREATE TABLE IF NOT EXISTS service_enrollments (
               device_id TEXT PRIMARY KEY, signing_key BLOB NOT NULL, attempted_at_ms INTEGER NOT NULL,
               state TEXT NOT NULL);
@@ -912,6 +998,16 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS service_push_preference_revisions (
               device_id TEXT PRIMARY KEY, revision INTEGER NOT NULL);",
         )?;
+        let migration = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let has_mode = {
+            let mut statement = migration.prepare("PRAGMA table_info(service_receipts)")?;
+            let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+            columns.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|name| name == "execution_mode")
+        };
+        if !has_mode {
+            migration.execute_batch("ALTER TABLE service_receipts ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'legacy'")?;
+        }
+        migration.commit()?;
         Ok(Self { path })
     }
     fn db(&self) -> Result<Connection> {
@@ -988,12 +1084,18 @@ impl Journal {
     /// Returns the current revision on conflict. Checks and writes share one
     /// immediate transaction so delivery order and process restarts cannot roll back state.
     fn set_versioned_push_preferences(&self, id: &str, binding: &str, quiet: Option<QuietHours>, revision: Option<i64>) -> Result<Option<i64>> {
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let result = Self::write_push_preferences(&tx, id, binding, quiet, revision)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    fn write_push_preferences(tx: &rusqlite::Transaction<'_>, id: &str, binding: &str, quiet: Option<QuietHours>, revision: Option<i64>) -> Result<Option<i64>> {
         if revision.is_some_and(|v| !(1..=9_007_199_254_740_991).contains(&v)) || (revision.is_some() && quiet.is_none()) {
             bail!("invalid versioned push preferences");
         }
         if !valid_push_binding(binding) { bail!("invalid push binding"); }
-        let mut c = self.db()?;
-        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current: Option<i64> = tx.query_row("SELECT revision FROM service_push_preference_revisions WHERE device_id=?1", params![id], |row| row.get(0)).optional()?;
         if let Some(current) = current {
             if revision.is_none_or(|revision| revision < current) { return Ok(Some(current)); }
@@ -1015,8 +1117,28 @@ impl Journal {
         if let Some(revision) = revision {
             tx.execute("INSERT INTO service_push_preference_revisions(device_id,revision) VALUES(?1,?2) ON CONFLICT(device_id) DO UPDATE SET revision=excluded.revision", params![id, revision])?;
         }
-        tx.commit()?;
         Ok(None)
+    }
+
+    fn complete_push_preferences(&self, sender: &str, id: &str, digest: &[u8; 32], binding: &str,
+        quiet: Option<QuietHours>, revision: Option<i64>, encode: impl FnOnce(Value) -> Result<Vec<u8>>) -> Result<Vec<u8>> {
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (stored_digest, state, response, mode): (Vec<u8>, String, Option<Vec<u8>>, String) = tx.query_row(
+            "SELECT digest,state,response,execution_mode FROM service_receipts WHERE sender=?1 AND request_id=?2",
+            params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        anyhow::ensure!(stored_digest == digest, "request ID reused with different encrypted bytes");
+        if state == "completed" { return response.context("completed receipt missing response"); }
+        anyhow::ensure!(state == "executing" && mode == "local", "operation is not an atomic local execution");
+        let result = match Self::write_push_preferences(&tx, sender, binding, quiet, revision)? {
+            Some(current) => json!({"status":409,"error":"stale_push_preferences","current_revision":current}),
+            None => json!({"status":204}),
+        };
+        let bytes = encode(result)?;
+        tx.execute("UPDATE service_receipts SET state='completed',response=?3 WHERE sender=?1 AND request_id=?2",
+            params![sender,id,&bytes])?;
+        tx.commit()?;
+        Ok(bytes)
     }
     fn quiet_hours(&self, id: &str) -> Result<QuietHours> {
         Ok(self.db()?.query_row(
@@ -1066,17 +1188,18 @@ impl Journal {
     fn accept(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<Disposition> {
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let previous: Option<(Vec<u8>, String, Option<Vec<u8>>)> = tx.query_row(
-            "SELECT digest,state,response FROM service_receipts WHERE sender=?1 AND request_id=?2",
-            params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let previous: Option<(Vec<u8>, String, Option<Vec<u8>>, String)> = tx.query_row(
+            "SELECT digest,state,response,execution_mode FROM service_receipts WHERE sender=?1 AND request_id=?2",
+            params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         let state = match previous {
-            Some((prior, _, _)) if prior != digest => {
+            Some((prior, _, _, _)) if prior != digest => {
                 bail!("request ID reused with different encrypted bytes")
             }
-            Some((_, state, response)) if state == "completed" => {
+            Some((_, state, response, _)) if state == "completed" => {
                 Disposition::Completed(response.context("completed receipt missing response")?)
             }
-            Some((_, state, _)) if state == "executing" => Disposition::Executing,
+            Some((_, state, _, mode)) if state == "executing" && mode == "local" => Disposition::ExecutingLocal,
+            Some((_, state, _, _)) if state == "executing" => Disposition::Executing,
             Some(_) => Disposition::Accepted,
             None => {
                 tx.execute("INSERT INTO service_receipts(sender,request_id,digest,state) VALUES (?1,?2,?3,'accepted')", params![sender,id,digest.as_slice()])?;
@@ -1094,6 +1217,12 @@ impl Journal {
         }
         Ok(())
     }
+    fn executing_local(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<()> {
+        let n = self.db()?.execute("UPDATE service_receipts SET state='executing',execution_mode='local' WHERE sender=?1 AND request_id=?2 AND digest=?3 AND state='accepted'", params![sender,id,digest.as_slice()])?;
+        anyhow::ensure!(n == 1, "operation receipt no longer accepted");
+        Ok(())
+    }
+
     fn complete(&self, sender: &str, id: &str, response: &[u8]) -> Result<()> {
         let c = self.db()?;
         let n = c.execute("UPDATE service_receipts SET state='completed', response=?3 WHERE sender=?1 AND request_id=?2 AND state='executing'", params![sender,id,response])?;
@@ -1119,6 +1248,40 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    #[test]
+    fn atomic_push_preferences_roll_back_with_receipt_and_recover_once() {
+        let home = std::env::temp_dir().join(format!("alondra-atomic-preferences-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("receipts.sqlite");
+        let journal = Journal::open(path.clone()).unwrap();
+        journal.reserve_enrollment("client-a", &[1u8;33]).unwrap();
+        journal.activate_enrollment("client-a").unwrap();
+        let binding = URL_SAFE_NO_PAD.encode([7u8;32]);
+        journal.accept("client-a", "operation-1", &[1u8;32]).unwrap();
+        journal.executing_local("client-a", "operation-1", &[1u8;32]).unwrap();
+        let apply = |journal: &Journal| journal.complete_push_preferences("client-a", "operation-1", &[1u8;32],
+            &binding, Some(QuietHours::default()), Some(1), |v| Ok(serde_json::to_vec(&v)?));
+        journal.db().unwrap().execute_batch("CREATE TRIGGER fail_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'injected commit failure'); END;").unwrap();
+        assert!(apply(&journal).is_err());
+        assert!(journal.push_binding("client-a").unwrap().is_none());
+        assert!(matches!(journal.accept("client-a", "operation-1", &[1u8;32]).unwrap(), Disposition::ExecutingLocal));
+        journal.db().unwrap().execute_batch("DROP TRIGGER fail_receipt;").unwrap();
+        let journal = Journal::open(path.clone()).unwrap();
+        let bytes = apply(&journal).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap()["status"], 204);
+        assert_eq!(journal.push_binding("client-a").unwrap(), Some(binding.clone()));
+        let replay = journal.complete_push_preferences("client-a", "operation-1", &[1u8;32],
+            &binding, None, None, |_| panic!("completed preferences must not execute again")).unwrap();
+        assert_eq!(bytes, replay);
+        assert!(journal.complete_push_preferences("client-a", "operation-1", &[2u8;32],
+            &binding, None, None, |_| panic!()).is_err());
+        journal.accept("client-a", "external", &[3u8;32]).unwrap();
+        journal.executing("client-a", "external", &[3u8;32]).unwrap();
+        assert!(matches!(Journal::open(path).unwrap().accept("client-a", "external", &[3u8;32]).unwrap(), Disposition::Executing),
+            "legacy/external executing operations remain uncertain");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn push_binding_rotates_persists_and_is_removed_on_revocation() {
         let path = std::env::temp_dir().join(format!(
@@ -1252,6 +1415,53 @@ agreement_key = "{}"
         std::fs::write(home.join("service.toml"), config).unwrap();
         let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
         (service, phone_agreement)
+    }
+
+    #[tokio::test]
+    async fn atomic_local_service_recovers_commit_before_transport_receipt() {
+        let (mut service, phone) = push_fixture();
+        activate_push(&service);
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("David".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent { session_id:"atomic-session".into(), event:"UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        hub.append(alondra_core::Event::ReportPosted(alondra_core::Report {
+            id: 7, session_id:"atomic-session".into(), node_name:None, title:"An unread report".into(), body:None,
+            links:vec![], attachments:vec![], kind:alondra_core::ReportKind::Notice, created_at:1, read:false,
+            to_orchestrator:false, mission:None, looks_like_question:false, task:None,
+        })).unwrap();
+        service = service.with_hub(hub.clone());
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sent = responses.clone();
+        let relay = Router::new().route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post(move |bytes: axum::body::Bytes| {
+                let sent = sent.clone();
+                async move { sent.lock().unwrap().push(bytes.to_vec()); StatusCode::ACCEPTED }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+        service.relay = url.clone();
+        let work = changes_work(&service, "atomic-report-read", json!({"method":"POST","path":"/v1/reports/7/read","body":{}}));
+        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
+        assert!(service.handle(repeat_work(&work), &[1u8;16]).await.is_err());
+        assert!(hub.read(|v| v.reports[&7].read), "the local mutation committed before transport failed");
+        let committed_seq = hub.read(|v| v.seq);
+        assert!(responses.lock().unwrap().is_empty());
+        service.journal.db().unwrap().execute_batch("DROP TRIGGER fail_transport_receipt;").unwrap();
+        drop(service); drop(hub);
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap().with_hub(hub.clone());
+        service.relay = url;
+        service.handle(repeat_work(&work), &[1u8;16]).await.unwrap();
+        service.handle(work, &[1u8;16]).await.unwrap();
+        assert_eq!(hub.read(|v|v.seq), committed_seq, "recovery must not append another ReportRead");
+        let results = opened_results(&service, &phone, &responses);
+        assert_eq!(results, vec![json!({"status":200,"body":{"id":7}});2]);
+        let bytes = responses.lock().unwrap();
+        assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
+        drop(bytes); relay_task.abort(); drop(service); drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
@@ -1792,7 +2002,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -1930,7 +2140,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -2085,7 +2295,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None,
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -2114,7 +2324,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -2270,7 +2480,7 @@ agreement_key = "{}"
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use alondra_core::{Event, Millis, View};
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub struct Store {
     conn: Connection,
@@ -12,7 +12,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("abriendo {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS events (
                 seq INTEGER PRIMARY KEY,
@@ -22,6 +22,10 @@ impl Store {
                 body TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS events_session ON events(session);
+            CREATE TABLE IF NOT EXISTS local_command_results (
+                sender TEXT NOT NULL, request_id TEXT NOT NULL, digest BLOB NOT NULL,
+                result TEXT NOT NULL, PRIMARY KEY(sender, request_id)
+            );
             CREATE TABLE IF NOT EXISTS snapshots (
                 seq INTEGER PRIMARY KEY,
                 at INTEGER NOT NULL,
@@ -29,6 +33,22 @@ impl Store {
             );",
         )?;
         Ok(Store { conn })
+    }
+
+    pub(crate) fn command_result(tx: &Transaction<'_>, sender: &str, id: &str, digest: &[u8; 32]) -> Result<Option<serde_json::Value>> {
+        let stored: Option<(Vec<u8>, String)> = tx.query_row(
+            "SELECT digest,result FROM local_command_results WHERE sender=?1 AND request_id=?2",
+            params![sender, id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        stored.map(|(previous, result)| {
+            anyhow::ensure!(previous == digest, "request ID reused with different encrypted bytes");
+            Ok(serde_json::from_str(&result)?)
+        }).transpose()
+    }
+
+    pub(crate) fn save_command_result(tx: &Transaction<'_>, sender: &str, id: &str, digest: &[u8; 32], result: &serde_json::Value) -> Result<()> {
+        tx.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
+            params![sender, id, digest.as_slice(), serde_json::to_string(result)?])?;
+        Ok(())
     }
 
     pub fn append(&mut self, at: Millis, event: &Event) -> Result<u64> {

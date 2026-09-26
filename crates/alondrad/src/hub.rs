@@ -180,30 +180,7 @@ impl Hub {
         // leaves the live view intact if an insert or the final commit fails.
         let mut next = view.clone();
         let recorded = store.transaction(|tx| {
-            let mut recorded = vec![];
-            for mut event in events {
-                if let Event::Hook(h) = &mut event {
-                    h.task_ids = next.hook_task_ids(&h.session_id, h.agent_id.as_deref(), h.task.as_deref());
-                    h.task_id = (h.task_ids.len() == 1).then(|| h.task_ids[0].clone());
-                }
-                for e in next.tasks_before(&event) {
-                    let s = Store::append_in(tx, at, &e)?;
-                    next.apply(s, at, &e);
-                }
-                let before = next.before_tasks(&event);
-                let seq = Store::append_in(tx, at, &event)?;
-                next.apply(seq, at, &event);
-                for e in next.task_moves(at, &event, before) {
-                    let s = Store::append_in(tx, at, &e)?;
-                    next.apply(s, at, &e);
-                }
-                recorded.push((seq, event));
-            }
-            let issues = next.integrity_issues();
-            if !issues.is_empty() {
-                bail!("state failed integrity audit; batch rolled back: {}", issues.join("; "));
-            }
-            Ok(recorded)
+            Self::record_events(tx, &mut next, events, at)
         })?;
         *view = next;
         let digest = crate::http::overview_digest(&view, at);
@@ -211,6 +188,78 @@ impl Hub {
         self.changed(Some(digest), None);
         drop(store);
         Ok(Ok(recorded))
+    }
+
+    fn record_events(
+        tx: &rusqlite::Transaction<'_>,
+        next: &mut View,
+        events: Vec<Event>,
+        at: i64,
+    ) -> Result<Vec<(u64, Event)>> {
+        let mut recorded = vec![];
+        for mut event in events {
+            if let Event::Hook(h) = &mut event {
+                h.task_ids =
+                    next.hook_task_ids(&h.session_id, h.agent_id.as_deref(), h.task.as_deref());
+                h.task_id = (h.task_ids.len() == 1).then(|| h.task_ids[0].clone());
+            }
+            for e in next.tasks_before(&event) {
+                let s = Store::append_in(tx, at, &e)?;
+                next.apply(s, at, &e);
+            }
+            let before = next.before_tasks(&event);
+            let seq = Store::append_in(tx, at, &event)?;
+            next.apply(seq, at, &event);
+            for e in next.task_moves(at, &event, before) {
+                let s = Store::append_in(tx, at, &e)?;
+                next.apply(s, at, &e);
+            }
+            recorded.push((seq, event));
+        }
+        let issues = next.integrity_issues();
+        if !issues.is_empty() {
+            bail!(
+                "state failed integrity audit; batch rolled back: {}",
+                issues.join("; ")
+            );
+        }
+        Ok(recorded)
+    }
+
+    /// The event batch and its stable service result are one SQLite commit.
+    /// A replay reads the result without rebuilding or publishing any events.
+    pub(crate) fn local_command(
+        &self, identity: Option<(&str, &str, &[u8; 32])>,
+        build: impl FnOnce(&View) -> std::result::Result<Vec<Event>, serde_json::Value>,
+        finish: impl FnOnce(&View, &[(u64, Event)]) -> serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let mut store = self.writer.lock().expect("writer lock poisoned");
+        let mut view = self.view.write().expect("view lock poisoned");
+        let mut next = view.clone();
+        let at = now_millis();
+        let mut publish = false;
+        let result = store.transaction(|tx| {
+            if let Some((sender, id, digest)) = identity {
+                if let Some(result) = Store::command_result(tx, sender, id, digest)? { return Ok(result); }
+            }
+            let result = match build(&next) {
+                Ok(events) => {
+                    let recorded = Self::record_events(tx, &mut next, events, at)?;
+                    publish = !recorded.is_empty();
+                    finish(&next, &recorded)
+                }
+                Err(result) => result,
+            };
+            if let Some((sender, id, digest)) = identity {
+                Store::save_command_result(tx, sender, id, digest, &result)?;
+            }
+            Ok(result)
+        })?;
+        if publish { *view = next; }
+        let digest = publish.then(|| crate::http::overview_digest(&view, at));
+        drop(view);
+        if publish { self.changed(digest, None); }
+        Ok(result)
     }
 
     /// Whether Alondra follows the session: it does already, or it launched it and the session
@@ -472,6 +521,45 @@ mod tests {
 
     fn prompt(session: &str) -> Event {
         Event::Hook(alondra_core::HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })
+    }
+
+    #[test]
+    fn local_command_result_survives_restart_without_rebuilding_events() {
+        let hub = hub("local-command-restart");
+        let result = hub.local_command(Some(("client-a", "operation-1", &[1u8;32])),
+            |_| Ok(vec![prompt("local-command")]),
+            |v, _| serde_json::json!({"status":200,"body":{"seq":v.seq}})).unwrap();
+        let committed = hub.read(Clone::clone);
+        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        let recovered = restarted.local_command(Some(("client-a", "operation-1", &[1u8;32])),
+            |_| panic!("recovery must not rebuild the command"), |_,_| panic!("recovery must not recalculate result")).unwrap();
+        assert_eq!(recovered, result);
+        assert_eq!(restarted.read(Clone::clone), committed);
+        assert!(restarted.local_command(Some(("client-a", "operation-1", &[2u8;32])),
+            |_| panic!("digest mismatch must be rejected first"), |_,_| panic!()).is_err());
+        assert_eq!(restarted.read(Clone::clone), committed);
+        let other = restarted.local_command(Some(("client-b", "operation-1", &[1u8;32])),
+            |_| Ok(vec![prompt("other-client")]), |_,_| serde_json::json!({"status":201})).unwrap();
+        assert_eq!(other["status"], 201, "request identity is scoped to the approved client");
+    }
+
+    #[test]
+    fn local_command_receipt_failure_rolls_back_events_and_can_retry() {
+        let hub = hub("local-command-rollback");
+        let before = hub.read(Clone::clone);
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_result BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;").unwrap();
+        assert!(hub.local_command(Some(("client-a", "operation-1", &[1u8;32])),
+            |_| Ok(vec![prompt("rolled-back")]), |_,_| serde_json::json!({"status":200})).is_err());
+        assert_eq!(hub.read(Clone::clone), before);
+        assert_eq!(Hub::open(hub.config.clone(), false).unwrap().read(Clone::clone), before);
+        db.execute_batch("DROP TRIGGER fail_result;").unwrap();
+        hub.local_command(Some(("client-a", "operation-1", &[1u8;32])),
+            |_| Ok(vec![prompt("committed")]), |_,_| serde_json::json!({"status":200})).unwrap();
+        let count: i64 = db.query_row("SELECT COUNT(*) FROM local_command_results", [], |r|r.get(0)).unwrap();
+        assert_eq!(count, 1);
+        assert!(hub.read(|v| v.nodes.contains_key("committed")));
+        assert!(!hub.read(|v| v.nodes.contains_key("rolled-back")));
     }
 
     #[test]

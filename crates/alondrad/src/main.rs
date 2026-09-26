@@ -93,7 +93,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
     let service = match service::Service::open(&config.home, config.port, auth.clone()) {
-        Ok(Some(service)) => Some(Arc::new(service)),
+        Ok(Some(service)) => Some(Arc::new(service.with_hub(hub.clone()))),
         Ok(None) => None,
         Err(error) => {
             log!("service connector disabled: {error:#}");
