@@ -91,18 +91,12 @@ struct ServiceTasksView: View {
             Text("Tasks")
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
-            Group {
-                if case .offline(let reason) = store.connection {
-                    Label(reason, systemImage: "wifi.slash")
-                        .foregroundStyle(Palette.rose)
-                } else {
-                    Text(fleet.summary)
-                        .contentTransition(.numericText())
-                }
+            if case .offline(let reason) = store.connection {
+                Label(reason, systemImage: "wifi.slash")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Palette.rose)
+                    .lineLimit(1)
             }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
         }
         .padding(.horizontal, 20)
     }
