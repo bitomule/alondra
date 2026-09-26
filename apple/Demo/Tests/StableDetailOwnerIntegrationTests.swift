@@ -199,6 +199,7 @@ struct StableDetailOwnerIntegrationTests {
         var initial = ServiceFleetFeature.State()
         initial.nodes = [editable, uncertain, sending]
         initial.detailID = "editable"
+        initial.path.append(.node(.init(sessionID: "editable")))
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":2,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
@@ -208,6 +209,9 @@ struct StableDetailOwnerIntegrationTests {
         await store.send(.snapshot(overview)).finish()
         #expect(store.nodes[id: "editable"] == nil)
         #expect(store.detailID == nil)
+        #expect(store.path.count == 1, "The original gone-node screen retains Back navigation")
+        guard case .node(let route) = store.path.first else { Issue.record("Node route must retain its identity"); return }
+        #expect(route.sessionID == "editable")
         #expect(store.nodes[id: "uncertain"]?.message == "Keep recovery")
         #expect(store.nodes[id: "sending"]?.isSending == true)
     }

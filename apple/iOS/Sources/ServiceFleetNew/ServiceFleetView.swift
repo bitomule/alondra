@@ -76,6 +76,8 @@ struct ServiceFleetView: View {
             case .node(let route):
                 if let node = store.scope(state: \.nodes, action: \.nodes).first(where: { $0.sessionID == route.sessionID }) {
                     ServiceNodeView(store: node, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
+                } else {
+                    ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
                 }
             case .task(let task):
                 ServiceTaskDetailView(store: task, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
