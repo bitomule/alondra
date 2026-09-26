@@ -17,22 +17,7 @@ struct ServiceNodeView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     ServiceNodeHeader(node: node)
                     if let runtime = node.orchestratorRuntime {
-                        Text(runtime.availabilityDescription).foregroundStyle(.secondary)
-                        if runtime.queueDepth != nil { Text(runtime.queueLabel).font(.callout) }
-                        if let error = runtime.lastError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                        if runtime.canRetry == true {
-                            Button("Retry Orchestrator…") { store.send(.retryRequested) }
-                                .disabled(!store.canRetryOrchestrator)
-                            Button("Continue without repeating…") { store.send(.acknowledgeRequested) }
-                                .disabled(!store.canAcknowledgeOrchestrator)
-                        }
-                        ServiceNodeOutcome(outcome: store.retryOutcome)
-                        ServiceNodeOutcome(outcome: store.acknowledgeOutcome)
-                        if runtime.canCancel == true {
-                            Button("Stop Orchestrator…", role: .destructive) { store.send(.cancelRequested) }
-                                .disabled(!store.canCancelOrchestrator)
-                        }
-                        ServiceNodeOutcome(outcome: store.cancelOutcome)
+                        orchestratorControls(runtime)
                     }
                     if !pending.isEmpty {
                         ServiceTaskSection(String(localized: "Waiting for You")) {
@@ -108,13 +93,13 @@ struct ServiceNodeView: View {
                 Button("Continue") { store.send(.acknowledgeConfirmed) }
                 Button("Cancel", role: .cancel) { store.send(.acknowledgeCancelled) }
             } message: {
-                Text("The interrupted batch will not run again. Inspect any partial effects first. Later messages remain queued and can continue.")
+                Text("The interrupted work will not be repeated. Check what was completed first; pending messages will continue.")
             }
             .alert("Stop the current intervention?", isPresented: Binding(get: { store.cancelConfirmationRunID != nil }, set: { if !$0 { store.send(.cancelCancelled) } })) {
                 Button("Stop", role: .destructive) { store.send(.cancelConfirmed) }
                 Button("Cancel", role: .cancel) { store.send(.cancelCancelled) }
             } message: {
-                Text("Completed actions cannot be undone. Alondra keeps the conversation and pending messages; interrupted work may need review before retrying.")
+                Text("Actions already completed will not be undone. You can review the result before continuing.")
             }
             .alert("Retry the interrupted work?", isPresented: Binding(get: { store.retryConfirmationRunID != nil }, set: { if !$0 { store.send(.retryCancelled) } })) {
                 Button("Retry") { store.send(.retryConfirmed) }
@@ -143,15 +128,81 @@ struct ServiceNodeView: View {
             ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
         }
     }
+    @ViewBuilder
+    private func orchestratorControls(_ runtime: OrchestratorRuntime) -> some View {
+        if let count = runtime.queueDepth, count > 0 {
+            Label(runtime.queueLabel, systemImage: "text.bubble")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        if runtime.canRetry == true || runtime.lastError != nil {
+            VStack(alignment: .leading, spacing: 14) {
+                if runtime.canRetry == true {
+                    Label("Review the activity before continuing.", systemImage: "exclamationmark.circle")
+                        .font(.subheadline.weight(.medium))
+                }
+                if let error = runtime.lastError {
+                    DisclosureGroup("View details") {
+                        Text(error).font(.callout).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    }
+                    .font(.subheadline)
+                }
+                if runtime.canRetry == true {
+                    HStack(spacing: 10) {
+                        Button { store.send(.retryRequested) } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(!store.canRetryOrchestrator)
+                        Button { store.send(.acknowledgeRequested) } label: {
+                            Label("Continue without repeating", systemImage: "arrow.right")
+                        }
+                        .disabled(!store.canAcknowledgeOrchestrator)
+                        if store.isRetrying || store.isAcknowledging { ProgressView().controlSize(.small) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(16)
+            .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
+        }
+        if runtime.canCancel == true {
+            HStack(spacing: 10) {
+                Button(role: .destructive) { store.send(.cancelRequested) } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!store.canCancelOrchestrator)
+                if store.isCancelling { ProgressView().controlSize(.small) }
+            }
+        }
+        orchestratorOutcome(store.retryOutcome)
+        orchestratorOutcome(store.acknowledgeOutcome)
+        orchestratorOutcome(store.cancelOutcome)
+    }
+
+    @ViewBuilder
+    private func orchestratorOutcome(_ outcome: NodeMutationOutcome?) -> some View {
+        switch outcome {
+        case .confirmed, nil: EmptyView()
+        case .rejected(let message): Text(message).font(.callout).foregroundStyle(.red)
+        case .unknown:
+            Text("The action could not be confirmed. Check the status before trying again.")
+                .font(.callout).foregroundStyle(.secondary)
+        case .obsolete: Text("The connection changed. Reopen the node.").font(.callout)
+        }
+    }
+
 }
 
 private struct ServiceNodeHeader: View {
     let node: Node
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label(node.projectName ?? String(localized: "no project"), systemImage: "folder").font(.callout).foregroundStyle(.secondary)
-                if node.isOrchestrator { Label("Orchestrator", systemImage: "sparkle").font(.callout).foregroundStyle(.secondary) }
+            if !node.isOrchestrator {
+                Label(node.projectName ?? String(localized: "no project"), systemImage: "folder")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             Text(node.displayName).font(.title.weight(.semibold)).textSelection(.enabled)
             HStack(spacing: 8) {
