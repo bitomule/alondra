@@ -18,6 +18,7 @@ mod plugins;
 mod prs;
 mod schedules;
 mod service;
+mod service_files;
 mod push;
 mod sentinel;
 mod store;

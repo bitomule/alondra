@@ -62,12 +62,20 @@ fn valid_id(id: &str) -> bool {
 
 /// The id is the name of the upload's directory; the attachment carries the stored copy's path.
 pub fn store(home: &Path, raw_name: &str, bytes: &[u8]) -> anyhow::Result<(String, Attachment)> {
+    store_identified(home, raw_name, bytes, &new_id(bytes))
+}
+
+/// Stable service transfer IDs prevent a retried upload after daemon restart from
+/// creating a second attachment. Existing directories are never overwritten.
+pub(crate) fn store_identified(home: &Path, raw_name: &str, bytes: &[u8], id: &str) -> anyhow::Result<(String, Attachment)> {
+    anyhow::ensure!(valid_id(id), "invalid upload ID");
     anyhow::ensure!(!bytes.is_empty(), "the file is empty");
     anyhow::ensure!(bytes.len() <= MAX_UPLOAD_BYTES, "the file is over {} MB", MAX_UPLOAD_BYTES / (1024 * 1024));
     let name = clean_name(raw_name);
-    let id = new_id(bytes);
+    let id = id.to_owned();
+    std::fs::create_dir_all(uploads_dir(home))?;
     let dir = uploads_dir(home).join(&id);
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir(&dir)?;
     let dest = dir.join(&name);
     std::fs::write(&dest, bytes)?;
     let dest = if CONVERTIBLE_EXTENSIONS.contains(&extension(&name).as_str()) { to_jpeg(&dest).unwrap_or(dest) } else { dest };
