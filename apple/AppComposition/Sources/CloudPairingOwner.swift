@@ -14,10 +14,17 @@ public final class CloudPairingOwner {
     private let displayName: String
     private let storageDirectory: URL
     private let prepareCamera: @Sendable () async -> Bool
-    private let didActivate: @MainActor (ApprovedServicePairing, CloudAppServices) async throws -> Void
-    private let willDeactivate: @MainActor (CloudAppServices?) async throws -> Void
+    private let didReconcile: @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () -> Void)
+    private let willDeactivate: @MainActor () async throws -> Void
+    @ObservationIgnored private lazy var registry = ApprovedSessionRegistry<CloudAppServices>(
+        make: { [auth, storageDirectory] in try CloudAppServices(approved: $0, auth: auth, storageDirectory: storageDirectory) },
+        stop: { await $0.deactivate() }, publish: { [weak self] snapshot in
+            guard let self else { throw CancellationError() }
+            return try await self.didReconcile(snapshot)
+        }, clearPlatform: { [weak self] in try await self?.willDeactivate() })
     private let pairing = ServicePairingClient()
     private var restoreTask: Task<Bool, Error>?
+    private var restoreTaskID: UUID?
     private var attempt: UUID?
     private var generation = 0
     public private(set) var services: CloudAppServices?
@@ -34,13 +41,13 @@ public final class CloudPairingOwner {
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false },
-                didActivate: @escaping @MainActor (ApprovedServicePairing, CloudAppServices) async throws -> Void = { _, _ in },
-                willDeactivate: @escaping @MainActor (CloudAppServices?) async throws -> Void = { _ in }) {
+                didReconcile: @escaping @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () -> Void) = { _ in {} },
+                willDeactivate: @escaping @MainActor () async throws -> Void = {}) {
         self.auth = auth
         self.displayName = displayName
         self.storageDirectory = storageDirectory
         self.prepareCamera = prepareCamera
-        self.didActivate = didActivate
+        self.didReconcile = didReconcile
         self.willDeactivate = willDeactivate
     }
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
@@ -57,9 +64,11 @@ public final class CloudPairingOwner {
     private func restore() async throws -> Bool {
         if services != nil { return true }
         if let restoreTask { return try await restoreTask.value }
+        let id = UUID()
         let task = Task { try await self.restoreApprovedPairing() }
         restoreTask = task
-        defer { restoreTask = nil }
+        restoreTaskID = id
+        defer { if restoreTaskID == id { restoreTask = nil; restoreTaskID = nil } }
         return try await task.value
     }
     private func restoreApprovedPairing() async throws -> Bool {
@@ -70,17 +79,19 @@ public final class CloudPairingOwner {
         } catch AuthError.rotationUncertain {
             throw CloudRestoreError.revocationRequired(AuthError.rotationUncertain.localizedDescription)
         }
-        guard let approved = try await pairing.approvedPairing() else { return false }
-        try Self.validateRelay(approved.relayURL)
+        let collection = try await pairing.approvedPairings()
+        guard !collection.pairings.isEmpty else { return false }
         let subject: String
         do { subject = try await auth.verifiedSubject() }
         catch AuthError.noSession { throw CloudRestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
-        guard subject == approved.ownerSub else {
+        let authorized = collection.pairings.filter { $0.ownerSub == subject }
+        guard !authorized.isEmpty else {
             throw CloudRestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
         }
+        for approved in authorized { try Self.validateRelay(approved.relayURL) }
         try Task.checkCancellation()
         guard current == generation else { throw CancellationError() }
-        try await activate(approved, auth)
+        try await reconcile(collection, subject: subject, preferred: collection.selectedID, generation: current)
         return true
     }
     private func login() async throws {
@@ -115,40 +126,50 @@ public final class CloudPairingOwner {
         }
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
         self.attempt = nil
-        try await activate(approved, auth)
+        let subject = try await auth.verifiedSubject()
+        guard current == generation, subject == approved.ownerSub else { throw CancellationError() }
+        let collection = try await pairing.approvedPairings()
+        try await reconcile(collection, subject: subject, preferred: ApprovedPairingID(approved), generation: current)
     }
     private func cancel() async {
         generation += 1
         if let attempt { self.attempt = nil; await pairing.discard(attempt) }
     }
-    private func activate(_ approved: ApprovedServicePairing, _ auth: AuthSession) async throws {
+    public func selectMac(_ id: ApprovedPairingID) async throws {
         let current = generation
-        let next = try CloudAppServices(approved: approved, auth: auth, storageDirectory: storageDirectory)
-        let previous = services
-        services = nil
-        await previous?.deactivate()
-        do {
-            if previous != nil { try await willDeactivate(previous) }
-            guard current == generation, !Task.isCancelled else { throw CancellationError() }
-            try await didActivate(approved, next)
-        } catch {
-            await next.deactivate()
-            throw error
-        }
-        guard current == generation, !Task.isCancelled else {
-            await next.deactivate()
-            throw CancellationError()
-        }
-        await next.startRecovery()
-        services = next
+        let subject = try await auth.verifiedSubject()
+        guard current == generation, id.ownerSub == subject else { throw CancellationError() }
+        try Self.validateRelay(id.relayURL)
+        try await pairing.selectApprovedPairing(id)
+        guard current == generation else { throw CancellationError() }
+        try await registry.select(id, verifiedSubject: subject)
+        guard current == generation else { throw CancellationError() }
+        services = registry.snapshot.selected?.session
     }
+
+    private func reconcile(_ collection: ApprovedPairingCollection, subject: String,
+                           preferred: ApprovedPairingID?, generation current: Int) async throws {
+        let authorized = collection.pairings.filter { $0.ownerSub == subject }
+        for approved in authorized { try Self.validateRelay(approved.relayURL) }
+        guard current == generation, !Task.isCancelled else { throw CancellationError() }
+        try await registry.reconcile(authorized, verifiedSubject: subject, preferred: preferred)
+        guard current == generation, !Task.isCancelled else { throw CancellationError() }
+        for entry in registry.snapshot.entries {
+            await entry.session.startRecovery()
+            guard current == generation, !Task.isCancelled else { throw CancellationError() }
+        }
+        services = registry.snapshot.selected?.session
+    }
+
     private func deactivate() async throws {
         generation += 1
         restoreTask?.cancel()
-        let previous = services
+        restoreTask = nil
+        restoreTaskID = nil
+        attempt = nil
         services = nil
-        await previous?.deactivate()
-        try await willDeactivate(previous)
+        await pairing.discardAllAttempts()
+        try await registry.clear()
     }
     private func logout() async throws {
         // Attempt every revocation even when notification/keychain cleanup fails.

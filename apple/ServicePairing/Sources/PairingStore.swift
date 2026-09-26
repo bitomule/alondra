@@ -3,6 +3,8 @@ import Security
 import Synchronization
 
 public protocol ApprovedPairingStore: Sendable {
+    func loadCollection() throws -> ApprovedPairingCollection
+    func select(_ id: ApprovedPairingID) throws
     func load() throws -> ApprovedServicePairing?
     func save(_ pairing: ApprovedServicePairing) throws
     /// Explicit logout removes every locally retained pairing, not only selection.
@@ -36,6 +38,14 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
         try Self.transaction.withLock { _ in
             var collection = try readCollection()
             try collection.upsert(pairing)
+            try item.write(JSONEncoder().encode(collection))
+        }
+    }
+
+    public func select(_ id: ApprovedPairingID) throws {
+        try Self.transaction.withLock { _ in
+            var collection = try readCollection()
+            try collection.select(id)
             try item.write(JSONEncoder().encode(collection))
         }
     }

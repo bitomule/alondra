@@ -30,6 +30,10 @@ public actor ServicePairingClient {
         self.now = now
     }
 
+    public func approvedPairings() throws -> ApprovedPairingCollection { try store.loadCollection() }
+    public func selectApprovedPairing(_ id: ApprovedPairingID) throws { try store.select(id) }
+    public func discardAllAttempts() { attempts.removeAll() }
+
     public func approvedPairing() throws -> ApprovedServicePairing? { try store.load() }
 
     public func removeApprovedPairing() throws {

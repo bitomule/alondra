@@ -171,3 +171,21 @@ func failedContextMigrationDoesNotDeletePreviousKeys(failure: String) throws {
     #expect(throws: (any Error).self) { try store.save(PushFixture(2).context) }
     #expect(item.bytes == original)
 }
+
+@Test func authorizedContextSnapshotRetainsTwoMacsAndPrunesPreviousAccountAtomically() throws {
+    let a = try PushFixture(1), b = try PushFixture(2), other = try PushFixture(3, owner: "owner-b")
+    let item = MemoryDecryptionItem()
+    let store = NotificationDecryptionStore(item: item)
+    try store.replaceAuthorizedContexts([a.context, b.context])
+    #expect(try store.load(binding: a.binding)?.agreementPrivateKey == a.context.agreementPrivateKey)
+    #expect(try store.load(binding: b.binding)?.agreementPrivateKey == b.context.agreementPrivateKey)
+    let before = item.bytes
+    item.state.withLock { $0.writeError = .keychain(errSecNotAvailable) }
+    #expect(throws: (any Error).self) { try store.replaceAuthorizedContexts([other.context]) }
+    #expect(item.bytes == before)
+    item.state.withLock { $0.writeError = nil }
+    try store.replaceAuthorizedContexts([other.context])
+    #expect(try store.load(binding: a.binding) == nil)
+    #expect(try store.load(binding: b.binding) == nil)
+    #expect(try store.load(binding: other.binding)?.scope?.ownerSub == "owner-b")
+}

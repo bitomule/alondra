@@ -166,3 +166,21 @@ func malformedCollectionFailsClosedWithoutOverwriting(kind: String) throws {
     #expect(try store.load() == nil)
     #expect(try store.loadCollection().pairings.isEmpty)
 }
+
+@Test func selectingStoredMacPersistsWithoutLosingAnotherAccountsKeys() throws {
+    let item = MemoryPairingItem(legacyBytes)
+    let store = KeychainApprovedPairingStore(item: item)
+    let a = try #require(try store.load())
+    let b = binding()
+    let other = binding(mac: "other", owner: "owner-b")
+    try store.save(b)
+    try store.save(other)
+    try store.select(ApprovedPairingID(a))
+    let restarted = KeychainApprovedPairingStore(item: item)
+    #expect(try restarted.load()?.macID == a.macID)
+    #expect(try restarted.loadCollection().pairings.count == 3)
+    #expect(try restarted.loadCollection().pairings.first { $0.ownerSub == "owner-b" }?.signingPrivateKey == other.signingPrivateKey)
+    let before = item.bytes
+    #expect(throws: PairingStoreError.invalidCollection) { try store.select(ApprovedPairingID(binding(mac: "unknown"))) }
+    #expect(item.bytes == before)
+}
