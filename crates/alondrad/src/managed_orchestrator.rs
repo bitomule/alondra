@@ -38,8 +38,9 @@ async fn prepare_with(hub: &Hub, executable: &Path) -> Result<bool> {
     // Never call rm: stop retains Claude's conversation for --resume. Suppress legacy wakeup
     // paths while the CLI and watcher observe its process exit.
     let _closing = hub.closing(&migration.session_id);
+    let short = hub.read(|v| v.nodes.get(&migration.session_id).map(|n| n.short_id.clone())).ok_or_else(|| anyhow!("legacy job identity disappeared during migration"))?;
     let mut command = tokio::process::Command::new(executable);
-    command.args(["stop", &migration.session_id]).kill_on_drop(true)
+    command.args(["stop", &short]).kill_on_drop(true)
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     let status = tokio::time::timeout(Duration::from_secs(30), command.status()).await
         .map_err(|_| anyhow!("Claude stop timed out; migration remains reserved"))??;
@@ -104,7 +105,7 @@ mod tests {
     fn fake(hub: &Hub, success: bool) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let file = hub.home.join("fake-claude");
-        std::fs::write(&file, format!("#!/bin/sh\n[ \"$1\" = stop ] && [ \"$2\" = old-session ] || exit 9\nexit {}\n", if success { 0 } else { 1 })).unwrap();
+        std::fs::write(&file, format!("#!/bin/sh\n[ \"$1\" = stop ] && [ \"$2\" = old-sess ] || exit 9\nexit {}\n", if success { 0 } else { 1 })).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).unwrap();
         file
     }
@@ -158,4 +159,19 @@ mod tests {
         assert!(prepare_with(&h, Path::new("/does/not/exist")).await.unwrap_err().to_string().contains("busy"));
         assert!(h.read(|v| v.orchestrator.is_none() && v.orchestrator_migration.is_none()));
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn migration_stops_the_observed_job_id_and_resumes_the_full_conversation_id() {
+        use std::os::unix::fs::PermissionsExt;
+        let h = hub();
+        let full = "e3d50be5-6080-4a61-97c7-fe5c5cf87c57";
+        append(&h, Event::DaemonSeen(alondra_core::DaemonObservation {session_id:full.into(),short_id:"e3d50be5".into(),state:Some("done".into()),..Default::default()}));
+        append(&h, Event::MarkedOrchestrator {session_id:full.into()});
+        let executable = h.home.join("short-only-claude");
+        std::fs::write(&executable, "#!/bin/sh\n[ \"$1\" = stop ] && [ \"$2\" = e3d50be5 ]\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(prepare_with(&h, &executable).await.unwrap());
+        assert_eq!(h.read(|v|v.orchestrator.as_ref().unwrap().session_id.clone()),Some(full.into()));
+    }
+
 }
