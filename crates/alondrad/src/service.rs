@@ -484,14 +484,22 @@ impl Service {
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
             let body = request.body.as_ref().context("push binding body required")?;
             let map = body.as_object().context("invalid push binding body")?;
-            if map.keys().any(|key| !matches!(key.as_str(), "push_binding" | "quiet_start" | "quiet_end")) {
+            if map.keys().any(|key| !matches!(key.as_str(), "push_binding" | "quiet_start" | "quiet_end" | "preferences_revision")) {
                 bail!("unknown push binding field");
             }
             let binding = map.get("push_binding").and_then(Value::as_str)
                 .filter(|value| valid_push_binding(value)).context("invalid push binding")?;
             let quiet = QuietHours::parse_update(map.get("quiet_start"), map.get("quiet_end"))?;
-            self.journal.set_push_preferences(sender, binding, quiet)?;
-            return Ok(json!({"status":204}));
+            let revision = match map.get("preferences_revision") {
+                None => None,
+                Some(value) => Some(value.as_u64().filter(|v| (1..=9_007_199_254_740_991).contains(v))
+                    .context("preferences_revision must be an integer from 1 to 9007199254740991")? as i64),
+            };
+            if revision.is_some() && quiet.is_none() { bail!("versioned preferences require quiet_start and quiet_end"); }
+            match self.journal.set_versioned_push_preferences(sender, binding, quiet, revision)? {
+                Some(current) => return Ok(json!({"status":409,"error":"stale_push_preferences","current_revision":current})),
+                None => return Ok(json!({"status":204})),
+            }
         }
         let method = approved_method(request)?;
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
@@ -743,7 +751,9 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS service_push_bindings (
               device_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS service_push_preferences (
-              device_id TEXT PRIMARY KEY, quiet_start TEXT, quiet_end TEXT);",
+              device_id TEXT PRIMARY KEY, quiet_start TEXT, quiet_end TEXT);
+            CREATE TABLE IF NOT EXISTS service_push_preference_revisions (
+              device_id TEXT PRIMARY KEY, revision INTEGER NOT NULL);",
         )?;
         Ok(Self { path })
     }
@@ -805,6 +815,7 @@ impl Journal {
         )?;
         tx.execute("DELETE FROM service_push_bindings WHERE device_id=?1", params![id])?;
         tx.execute("DELETE FROM service_push_preferences WHERE device_id=?1", params![id])?;
+        tx.execute("DELETE FROM service_push_preference_revisions WHERE device_id=?1", params![id])?;
         tx.commit()?;
         Ok(())
     }
@@ -812,10 +823,30 @@ impl Journal {
     fn set_push_binding(&self, id: &str, binding: &str) -> Result<()> {
         self.set_push_preferences(id, binding, None)
     }
+    #[cfg(test)]
     fn set_push_preferences(&self, id: &str, binding: &str, quiet: Option<QuietHours>) -> Result<()> {
+        if self.set_versioned_push_preferences(id, binding, quiet, None)?.is_some() { bail!("stale push preferences"); }
+        Ok(())
+    }
+    /// Returns the current revision on conflict. Checks and writes share one
+    /// immediate transaction so delivery order and process restarts cannot roll back state.
+    fn set_versioned_push_preferences(&self, id: &str, binding: &str, quiet: Option<QuietHours>, revision: Option<i64>) -> Result<Option<i64>> {
+        if revision.is_some_and(|v| !(1..=9_007_199_254_740_991).contains(&v)) || (revision.is_some() && quiet.is_none()) {
+            bail!("invalid versioned push preferences");
+        }
         if !valid_push_binding(binding) { bail!("invalid push binding"); }
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current: Option<i64> = tx.query_row("SELECT revision FROM service_push_preference_revisions WHERE device_id=?1", params![id], |row| row.get(0)).optional()?;
+        if let Some(current) = current {
+            if revision.is_none_or(|revision| revision < current) { return Ok(Some(current)); }
+            if revision == Some(current) {
+                let saved: (String, Option<String>, Option<String>) = tx.query_row(
+                    "SELECT b.binding,p.quiet_start,p.quiet_end FROM service_push_bindings b JOIN service_push_preferences p USING(device_id) JOIN service_enrollments e USING(device_id) WHERE b.device_id=?1 AND e.state='active'",
+                    params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+                return Ok(if quiet.as_ref().is_some_and(|quiet| saved.0 == binding && saved.1 == quiet.start && saved.2 == quiet.end) { None } else { Some(current) });
+            }
+        }
         let updated = tx.execute(
             "INSERT INTO service_push_bindings(device_id,binding) SELECT device_id,?2 FROM service_enrollments WHERE device_id=?1 AND state='active' ON CONFLICT(device_id) DO UPDATE SET binding=excluded.binding",
             params![id, binding],
@@ -824,8 +855,11 @@ impl Journal {
         if let Some(quiet) = quiet {
             tx.execute("INSERT INTO service_push_preferences(device_id,quiet_start,quiet_end) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end", params![id, quiet.start, quiet.end])?;
         }
+        if let Some(revision) = revision {
+            tx.execute("INSERT INTO service_push_preference_revisions(device_id,revision) VALUES(?1,?2) ON CONFLICT(device_id) DO UPDATE SET revision=excluded.revision", params![id, revision])?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(None)
     }
     fn quiet_hours(&self, id: &str) -> Result<QuietHours> {
         Ok(self.db()?.query_row(
@@ -995,6 +1029,34 @@ mod tests {
         journal.revoke_enrollment("a").unwrap();
         assert_eq!(journal.quiet_hours("a").unwrap(), QuietHours::default());
         let count: i64 = journal.db().unwrap().query_row("SELECT count(*) FROM service_push_preferences", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn quiet_hours_reordered_retries_cannot_restore_stale_preferences() {
+        let path = std::env::temp_dir().join(format!("alondra-quiet-revision-{}-{}.sqlite", std::process::id(), now_ms()));
+        let journal = Journal::open(path.clone()).unwrap();
+        journal.reserve_enrollment("phone", &[1u8;33]).unwrap();
+        journal.activate_enrollment("phone").unwrap();
+        let binding = URL_SAFE_NO_PAD.encode([7u8;32]);
+        let second_binding = URL_SAFE_NO_PAD.encode([8u8;32]);
+        let quiet = || Some(QuietHours { start: Some("23:00".into()), end: Some("08:00".into()) });
+        let disabled = || Some(QuietHours::default());
+        assert_eq!(journal.set_versioned_push_preferences("phone", &binding, quiet(), Some(1)).unwrap(), None);
+        assert_eq!(journal.set_versioned_push_preferences("phone", &second_binding, disabled(), Some(2)).unwrap(), None);
+        // Process restart + an uncertain old operation retried with a fresh UUID.
+        let journal = Journal::open(path).unwrap();
+        assert_eq!(journal.set_versioned_push_preferences("phone", &binding, quiet(), Some(1)).unwrap(), Some(2));
+        assert_eq!(journal.set_versioned_push_preferences("phone", &binding, quiet(), None).unwrap(), Some(2));
+        assert_eq!(journal.set_versioned_push_preferences("phone", &binding, quiet(), Some(2)).unwrap(), Some(2));
+        assert_eq!(journal.set_versioned_push_preferences("phone", &second_binding, disabled(), Some(2)).unwrap(), None);
+        assert_eq!(journal.push_binding("phone").unwrap(), Some(second_binding));
+        assert_eq!(journal.quiet_hours("phone").unwrap(), QuietHours::default());
+        // A -> B -> A is a new logical update, never a cached old operation.
+        assert_eq!(journal.set_versioned_push_preferences("phone", &binding, quiet(), Some(3)).unwrap(), None);
+        assert_eq!(journal.quiet_hours("phone").unwrap(), quiet().unwrap());
+        journal.revoke_enrollment("phone").unwrap();
+        let count: i64 = journal.db().unwrap().query_row("SELECT count(*) FROM service_push_preference_revisions", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);
     }
 
