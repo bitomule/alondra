@@ -13,6 +13,6 @@ integration tests separately verify two subscribers share one poll and lifecycle
 cancellation. TriageFeatureTests.identitySwitchClearsQueueAndIgnoresLateMutationAndSnapshot
 and Commands/Recovery integration suites own stale-command rejection.
 
-The previous MacWindowFeature is disconnected from the active app; its removal and
-coverage inventory remain a separate unit. Builds and executed tests for this unit
+The disconnected MacWindowFeature has been removed. Its coverage inventory is in
+`docs/testing/retired-root-feature-coverage.md`. Builds and executed tests for this unit
 are pending the shared Mac compilation slot.

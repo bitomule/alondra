@@ -1,3 +1,7 @@
+> Historical F4 migration-stage contract. References to legacy root guards, clients
+> and views below describe that stage, not the current service architecture.
+> See `docs/testing/retired-root-feature-coverage.md` for retired root ownership.
+
 # F4 integration contract
 
 This branch owns `AlondraNewWorkFeature` only. H connects the iOS and Mac screens and owns `apple/BUILD.bazel`, roots, and `FleetView.swift`.
