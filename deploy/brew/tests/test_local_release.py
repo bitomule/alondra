@@ -98,10 +98,11 @@ class LocalReleaseTests(unittest.TestCase):
         patch.object(l.platform, 'system', return_value='Darwin').start()
         patch.object(l.platform, 'machine', return_value='arm64').start()
         patch.object(l, 'disk_guard').start()
+        patch.object(l, 'rust_toolchain', return_value=('stable', {'cargo': '/pinned/cargo', 'rustc': '/pinned/rustc', 'rustdoc': '/pinned/rustdoc'})).start()
         calls = []
         def fake(*args, **kwargs):
             calls.append(args)
-            if args[:2] == ('cargo', 'test'):
+            if args[:2] == ('/pinned/cargo', 'test'):
                 self.assertEqual(kwargs['env']['CARGO_BUILD_JOBS'], '1')
                 self.assertEqual(kwargs['env']['CARGO_INCREMENTAL'], '0')
                 raise subprocess.CalledProcessError(1, args)
@@ -161,3 +162,74 @@ class LocalReleaseTests(unittest.TestCase):
             return self.git(*args, **kwargs)
         with patch.object(l, 'run', side_effect=not_merged), self.assertRaises(subprocess.CalledProcessError):
             l.preflight('0.1.2', retry_source='source')
+
+
+    def toolchain_fixture(self):
+        tools = {}
+        for name in ('cargo', 'rustc', 'rustdoc'):
+            path = self.root / 'pinned/bin' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('#!/bin/sh\nexit 0\n')
+            path.chmod(0o755)
+            tools[name] = str(path)
+        for target in l.release.TARGETS:
+            library = self.root / 'pinned/lib/rustlib' / target / 'lib'
+            library.mkdir(parents=True)
+            for crate in ('std', 'core'): (library / f'lib{crate}-fixture.rlib').touch()
+        def resolve(*args, **kwargs):
+            if args == ('rustup', 'show', 'active-toolchain'): return 'stable-aarch64-apple-darwin (default)'
+            if args[:3] == ('rustup', 'which', '--toolchain'):
+                self.assertEqual(args[3], 'stable-aarch64-apple-darwin')
+                return tools[args[4]]
+            if args[:2] == (tools['rustc'], '--print'):
+                return str(self.root / 'pinned/lib/rustlib' / args[-1] / 'lib')
+            if args == (tools['rustc'], '--version'): return 'rustc fixture'
+            raise AssertionError(f'Unexpected command: {args}')
+        return tools, resolve
+
+    def test_rustup_selection_ignores_conflicting_path_and_checks_actual_compiler_targets(self):
+        tools, resolve = self.toolchain_fixture()
+        with patch.dict(os.environ, {'PATH': '/opt/homebrew/bin', 'RUSTC': '/opt/homebrew/bin/rustc'}), patch.object(l, 'run', side_effect=resolve):
+            name, selected = l.rust_toolchain()
+        self.assertEqual(selected, tools)
+        self.assertEqual(name, 'stable-aarch64-apple-darwin')
+        (self.root / 'pinned/lib/rustlib/x86_64-apple-darwin/lib/libcore-fixture.rlib').unlink()
+        with patch.object(l, 'run', side_effect=resolve), self.assertRaisesRegex(RuntimeError, 'Missing target libraries for x86_64'):
+            l.rust_toolchain()
+
+    def test_both_arch_build_and_isolated_home_tests_use_same_pinned_tools(self):
+        tools, _ = self.toolchain_fixture()
+        output, target_dir = self.root / 'artifacts', self.root / 'target'
+        rust_calls = []
+        def fake(*args, **kwargs):
+            if args[0] == tools['cargo']:
+                rust_calls.append((args, kwargs['env']))
+                if args[1] == 'build':
+                    target = args[args.index('--target') + 1]
+                    directory = target_dir / target / 'release'
+                    directory.mkdir(parents=True)
+                    for name in ('alondra', 'alondrad'): (directory / name).touch()
+            elif args[0] == 'security': return f'1) {l.IDENTITY} "local identity"'
+            elif args[0] == 'bash': archives(output)
+            elif args[0] == '/usr/bin/arch': return 'x86_64'
+            return ''
+        with patch.dict(os.environ, {'PATH': '/opt/homebrew/bin:/usr/bin', 'RUSTC': '/opt/homebrew/bin/rustc', 'RUSTDOC': '/opt/homebrew/bin/rustdoc', 'RUSTC_WRAPPER': 'unwanted-wrapper'}), \
+             patch.object(l.platform, 'system', return_value='Darwin'), patch.object(l.platform, 'machine', return_value='arm64'), \
+             patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_guard'), \
+             patch.object(l, 'sign'), patch.object(l, 'smoke'), patch.object(l, 'run', side_effect=fake):
+            l.prepare('0.1.2', 'source', output, target_dir)
+        self.assertEqual(len(rust_calls), 4)
+        self.assertEqual({args[args.index('--target') + 1] for args, _ in rust_calls}, set(l.release.TARGETS))
+        for args, environment in rust_calls:
+            self.assertEqual(args[0], tools['cargo'])
+            self.assertEqual(environment['RUSTC'], tools['rustc'])
+            self.assertEqual(environment['RUSTDOC'], tools['rustdoc'])
+            self.assertEqual(environment['CARGO'], tools['cargo'])
+            self.assertEqual(environment['RUSTUP_TOOLCHAIN'], 'pinned')
+            self.assertEqual(environment['RUSTC_WRAPPER'], '')
+            self.assertEqual(environment['RUSTC_WORKSPACE_WRAPPER'], '')
+            self.assertEqual(environment['PATH'].split(os.pathsep)[0], str(self.root / 'pinned/bin'))
+            if args[1] == 'test':
+                self.assertNotEqual(environment['HOME'], str(pathlib.Path.home()))
+                self.assertNotEqual(environment['CARGO_HOME'], str(pathlib.Path(environment['HOME']) / '.cargo'))
+                self.assertNotEqual(environment['RUSTUP_HOME'], str(pathlib.Path(environment['HOME']) / '.rustup'))
