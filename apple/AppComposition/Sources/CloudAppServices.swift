@@ -100,9 +100,9 @@ public actor CloudAppServices {
         await deliveryStatus.observe()
     }
 
-    public func acknowledgeDeliveryWarnings(_ ids: Set<UUID>, in expectedScope: CommandScope) async throws {
+    public func acknowledgeDeliveryWarnings(_ observed: [UUID: DeliveryStatus.Phase], in expectedScope: CommandScope) async throws {
         guard active else { throw DeliveryStatusService.Failure.obsolete }
-        try await deliveryStatus.acknowledge(ids, in: expectedScope)
+        try await deliveryStatus.acknowledge(observed, in: expectedScope)
     }
 
     public func commandResolutions() async -> AsyncStream<CommandResolution> {

@@ -25,7 +25,7 @@ public struct DeliveryWarningStorage: Sendable {
         }, save: { records in
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
-            try JSONEncoder().encode(records).write(to: url, options: .atomic)
+            try JSONEncoder().encode(records).write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             let handle = try FileHandle(forWritingTo: url)
             defer { try? handle.close() }
@@ -99,22 +99,28 @@ public actor DeliveryStatusService {
         do {
             let commands = try await gate.restore()
             guard active, await gate.scope == scope else { return snapshot }
-            receive(commands)
+            await receive(commands)
         } catch { storageFailed(error) }
         return snapshot
     }
 
-    /// Hides only the warning the user saw. The gate and encrypted outbox are untouched.
-    public func acknowledge(_ ids: Set<UUID>, in expectedScope: CommandScope) async throws {
+    /// Hides only the phase the user saw. A newer outcome must remain visible even if
+    /// its operation UUID is unchanged. The gate and encrypted outbox are untouched.
+    public func acknowledge(_ observed: [UUID: DeliveryStatus.Phase], in expectedScope: CommandScope) async throws {
         guard active, expectedScope == scope, await gate.scope == scope else { throw Failure.obsolete }
         guard active else { throw Failure.obsolete }
         guard loaded else { throw Failure.storageUnavailable }
         var next = records
-        for id in ids {
-            guard let phase = phases[id], var record = next[id] else { continue }
+        var changed = false
+        for (id, observedPhase) in observed {
+            guard let phase = phases[id], phase == observedPhase else { continue }
+            guard var record = next[id] else { throw Failure.storageUnavailable }
+            guard record.acknowledgedPhase != phase else { continue }
             record.acknowledgedPhase = phase
             next[id] = record
+            changed = true
         }
+        guard changed else { publish(); return }
         do { try storage.save(Array(next.values)) }
         catch { storageFailed(error); throw error }
         records = next; error = nil; publish()
@@ -131,18 +137,20 @@ public actor DeliveryStatusService {
         listeners[id] = nil
         if listeners.isEmpty { observation?.cancel(); observation = nil }
     }
-    private func receive(_ commands: [UncertainCommand]) {
-        guard active else { return }
+    private func receive(_ commands: [UncertainCommand]) async {
+        guard await gate.scope == scope else { stop(); return }
+        guard active, !Task.isCancelled else { return }
         self.commands = commands.filter { $0.scope.sameIdentity(as: scope) }
         rebuild()
     }
-    private func receiveFeedback(_ events: [ReportFeedbackRecoveryEvent]) {
-        guard active else { return }
+    private func receiveFeedback(_ events: [ReportFeedbackRecoveryEvent]) async {
+        guard await gate.scope == scope else { stop(); return }
+        guard active, !Task.isCancelled else { return }
         feedbackEvents = events.filter { $0.scope.sameIdentity(as: scope) }
         rebuild()
     }
     private func storageFailed(_ failure: any Error) {
-        guard active else { return }
+        guard active, !Task.isCancelled else { return }
         error = failure.localizedDescription
         publish()
     }

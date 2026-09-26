@@ -18,7 +18,7 @@ import Testing
         let service = DeliveryStatusService(gate: first, scope: scope, storage: .file(file), now: { Date(timeIntervalSince1970: 123) })
         let initial = await service.refresh()
         #expect(initial.operations.map(\.id) == [command.id])
-        try await service.acknowledge([command.id], in: scope)
+        try await service.acknowledge([command.id: .unconfirmed], in: scope)
         await service.stop()
         let relaunchedGate = CommandGate(scope: scope, journal: journal)
         let relaunched = DeliveryStatusService(gate: relaunchedGate, scope: scope, storage: .file(file), now: { Date(timeIntervalSince1970: 999) })
@@ -51,17 +51,26 @@ import Testing
         }, markRead: { _ in
             Issue.record("Rejected read requires explicit retry")
         }, reconcile: { id in id.hasSuffix("-message") ? .confirmed : .rejected(403) })
-        _ = try await feedback.recover(markRead: { _, _ in
-            Issue.record("Passive recovery must not retry a rejected read")
-        }, reconcile: { id in id.hasSuffix("-message") ? .confirmed : .rejected(403) })
         let service = DeliveryStatusService(gate: gate, scope: scope,
             storage: .file(directory.appendingPathComponent("warnings.json")),
             feedback: { await feedback.recoveryEvents() })
         var updates = await service.observe().makeAsyncIterator()
+        let initial = try #require(await updates.next())
+        let operation = try #require(initial.operations.first)
+        #expect(operation.phase == .unconfirmed)
+        let observed = [operation.id: operation.phase]
+        _ = try await feedback.recover(markRead: { _, _ in
+            Issue.record("Passive recovery must not retry a rejected read")
+        }, reconcile: { id in id.hasSuffix("-message") ? .confirmed : .rejected(403) })
         while let update = await updates.next() {
             if update.operations.contains(where: { $0.phase == .feedbackReadRejected(403) }) {
                 #expect(update.operations.count == 1)
                 #expect(update.operations.first?.acknowledged == false)
+                // A delayed tap from the old warning must not hide the newly received failure.
+                try await service.acknowledge(observed, in: scope)
+                #expect(await service.refresh().operations.first?.acknowledged == false)
+                try await service.acknowledge([operation.id: .feedbackReadRejected(403)], in: scope)
+                #expect(await service.refresh().operations.first?.acknowledged == true)
                 break
             }
         }
@@ -74,11 +83,11 @@ import Testing
         guard case .unknown(let command) = result else { Issue.record("Expected uncertainty"); return }
         let service = DeliveryStatusService(gate: gate, scope: scope, storage: .init(load: { [] }, save: { _ in throw CocoaError(.fileWriteNoPermission) }))
         #expect(await service.refresh().persistenceError != nil)
-        do { try await service.acknowledge([command.id], in: scope); Issue.record("Expected write failure") } catch {}
+        do { try await service.acknowledge([command.id: .unconfirmed], in: scope); Issue.record("Expected write failure") } catch {}
         #expect(await service.refresh().operations.first?.acknowledged == false)
         let next = CommandScope(server: scope.server, deviceID: scope.deviceID, credentialRevision: "new-key", generation: 2)
         await gate.use(next)
-        do { try await service.acknowledge([command.id], in: scope); Issue.record("Expected stale-scope rejection") } catch {}
+        do { try await service.acknowledge([command.id: .unconfirmed], in: scope); Issue.record("Expected stale-scope rejection") } catch {}
         await service.stop()
     }
 }

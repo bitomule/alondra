@@ -6,11 +6,11 @@ public struct ServiceCommandRecoveryClient: Sendable {
     public var observe: @Sendable () async -> AsyncStream<CommandResolution>
     public var observeFeedback: @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]>
     public var observeDelivery: @Sendable () async -> AsyncStream<DeliveryStatus>
-    public var acknowledgeDelivery: @Sendable (Set<UUID>, CommandScope) async throws -> Void
+    public var acknowledgeDelivery: @Sendable ([UUID: DeliveryStatus.Phase], CommandScope) async throws -> Void
     public init(observe: @escaping @Sendable () async -> AsyncStream<CommandResolution>,
                 observeFeedback: @escaping @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]> = { AsyncStream { $0.finish() } },
                 observeDelivery: @escaping @Sendable () async -> AsyncStream<DeliveryStatus> = { AsyncStream { $0.finish() } },
-                acknowledgeDelivery: @escaping @Sendable (Set<UUID>, CommandScope) async throws -> Void = { _, _ in throw DeliveryAcknowledgementUnavailable() }) {
+                acknowledgeDelivery: @escaping @Sendable ([UUID: DeliveryStatus.Phase], CommandScope) async throws -> Void = { _, _ in throw DeliveryAcknowledgementUnavailable() }) {
         self.observe = observe
         self.observeFeedback = observeFeedback
         self.observeDelivery = observeDelivery
