@@ -1527,6 +1527,19 @@ mod http_tests {
         assert_eq!(server.queue.get("owner", links[0].0, "matrix-0", now_ms()).unwrap_err(), QueueError::NotFound);
         assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "GET", changes_path, vec![])
             .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        // A removed registration must not dispatch, even with the approving Mac's signature.
+        // Nor may another Mac use a surviving link's registration, even in the same account.
+        for (link, mac) in [(0, 0), (1, 0)] {
+            let id = links[link].0;
+            let push = EnvelopeV1::seal_random(Context { route: mac_ids[mac], sender: mac_ids[mac], recipient: id,
+                request_id: &format!("denied-push-{link}"), kind: "push", expires_at_ms: now_ms() + 120_000 },
+                br#"{"payload":{"aps":{"alert":"must not arrive"},"alondra":{}}}"#,
+                &mac_keys[mac], &client_agreements[link].public_key()).unwrap();
+            let body = serde_json::to_vec(&json!({"device_id":id,"envelope":push})).unwrap();
+            assert_eq!(request(&mac_keys[mac], mac_ids[mac], None, "POST", "/v1/mac/push", body)
+                .send().await.unwrap().status(), StatusCode::NOT_FOUND);
+            assert!(captured.lock().unwrap().is_empty(), "denied push reached APNs");
+        }
         for (i, (id, m)) in links.iter().enumerate().skip(1) {
             // Both the other link of client-one and all links of client-two remain usable.
             assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/requests",
