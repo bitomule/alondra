@@ -3,38 +3,41 @@ import AlondraTasksFeature
 import ComposableArchitecture
 import Foundation
 
-struct ServiceTasksClient: Sendable {
-    var observe: @Sendable () async -> AsyncStream<Overview?>
+public struct ServiceTasksClient: Sendable {
+    public init(observe: @escaping @Sendable () async -> AsyncStream<Overview?>) { self.observe = observe }
+    public var observe: @Sendable () async -> AsyncStream<Overview?>
 }
 private enum ServiceTasksClientKey: DependencyKey {
     static let liveValue = ServiceTasksClient(observe: { preconditionFailure("Install service tasks client") })
     static let testValue = liveValue
 }
 extension DependencyValues {
-    var serviceTasksClient: ServiceTasksClient {
+    public var serviceTasksClient: ServiceTasksClient {
         get { self[ServiceTasksClientKey.self] }
         set { self[ServiceTasksClientKey.self] = newValue }
     }
 }
 
 @Reducer
-struct ServiceTasksFeature {
+public struct ServiceTasksFeature {
+    public init() {}
     @ObservableState
-    struct State {
-        var board = TaskBoardFeature.State()
-        var schedules = ScheduleFeature.State()
-        var overview: Overview?
-        var taskBoard = TaskBoard.empty
-        var openTrees: [RequestTree] = []
-        var doneTrees: [RequestTree] = []
-        var archivedTrees: [RequestTree] = []
-        @Presents var detail: TaskDetailFeature.State?
-        var detailContext = ServiceTaskContext(board: .empty, overview: nil, taskID: "")
-        var showingSchedules = false
-        var deletingScheduleID: String?
-        var focusedInboxID: String?
+    public struct State {
+        public init() {}
+        public var board = TaskBoardFeature.State()
+        public var schedules = ScheduleFeature.State()
+        public var overview: Overview?
+        public var taskBoard = TaskBoard.empty
+        public var openTrees: [RequestTree] = []
+        public var doneTrees: [RequestTree] = []
+        public var archivedTrees: [RequestTree] = []
+        @Presents public var detail: TaskDetailFeature.State?
+        public var detailContext = ServiceTaskContext(board: .empty, overview: nil, taskID: "")
+        public var showingSchedules = false
+        public var deletingScheduleID: String?
+        public var focusedInboxID: String?
     }
-    enum Action {
+    public enum Action {
         case appeared, disappeared
         case snapshot(Overview?)
         case board(TaskBoardFeature.Action)
@@ -49,7 +52,7 @@ struct ServiceTasksFeature {
     }
     @Dependency(\.serviceTasksClient) var client
     private enum CancelID { case observation }
-    var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Scope(state: \.board, action: \.board) { TaskBoardFeature() }
         Scope(state: \.schedules, action: \.schedules) { ScheduleFeature() }
         Reduce { state, action in

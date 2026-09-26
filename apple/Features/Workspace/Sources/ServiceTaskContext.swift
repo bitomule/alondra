@@ -2,15 +2,15 @@ import AlondraShared
 import Foundation
 
 /// Domain lookups are prepared outside the view's body; presentation only renders values.
-struct ServiceTaskContext {
-    var request: WorkRequest?
-    var dependencies: [WorkTask] = []
-    var dependents: [WorkTask] = []
-    var pullRequests: [PullRequest] = []
-    var reports: [Report] = []
-    var pending: [InboxItem] = []
-    var nodeName: String?
-    init(board: TaskBoard, overview: Overview?, taskID: String) {
+public struct ServiceTaskContext {
+    public var request: WorkRequest?
+    public var dependencies: [WorkTask] = []
+    public var dependents: [WorkTask] = []
+    public var pullRequests: [PullRequest] = []
+    public var reports: [Report] = []
+    public var pending: [InboxItem] = []
+    public var nodeName: String?
+    public init(board: TaskBoard, overview: Overview?, taskID: String) {
         guard let task = board.task(taskID) else { return }
         request = board.request(task.request)
         dependencies = board.dependencies(of: task)

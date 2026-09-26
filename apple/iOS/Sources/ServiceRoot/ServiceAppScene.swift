@@ -1,3 +1,4 @@
+import AlondraWorkspaceFeature
 import AlondraAppComposition
 import AlondraCloudPairingFeature
 import AlondraPullRequestsFeature

@@ -5,24 +5,26 @@ import ComposableArchitecture
 
 /// Scene-owned navigation. Child drafts survive accepted snapshots of the same card.
 @Reducer
-struct ServiceTriageFeature {
+public struct ServiceTriageFeature {
+    public init() {}
     @ObservableState
-    struct State: Equatable {
-        var triage = TriageFeature.State()
-        @Presents var question: QuestionFeature.State?
-        @Presents var document: DocumentReviewFeature.State?
+    public struct State: Equatable {
+        public init() {}
+        public var triage = TriageFeature.State()
+        @Presents public var question: QuestionFeature.State?
+        @Presents public var document: DocumentReviewFeature.State?
     }
 
-    enum Action {
+    public enum Action {
         case triage(TriageFeature.Action)
         case question(PresentationAction<QuestionFeature.Action>)
         case document(PresentationAction<DocumentReviewFeature.Action>)
         case open(String)
         case delegate(Delegate)
-        enum Delegate { case pullRequest(PullRequest) }
+        public enum Delegate { case pullRequest(PullRequest) }
     }
 
-    var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Reduce { state, action in
             switch action {

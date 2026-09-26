@@ -3,24 +3,26 @@ import AlondraShared
 import ComposableArchitecture
 
 @Reducer
-struct ServiceRootFeature {
+public struct ServiceRootFeature {
+    public init() {}
     @ObservableState
-    struct State {
-        enum Tab: Hashable { case inbox, tasks, account }
-        var tab = Tab.inbox
-        var triage = ServiceTriageFeature.State()
-        var tasks = ServiceTasksFeature.State()
-        @Presents var pullRequest: ServicePullRequestFeature.State?
-        var pendingInboxID: String?
+    public struct State {
+        public init() {}
+        public enum Tab: Hashable { case inbox, tasks, account }
+        public var tab = Tab.inbox
+        public var triage = ServiceTriageFeature.State()
+        public var tasks = ServiceTasksFeature.State()
+        @Presents public var pullRequest: ServicePullRequestFeature.State?
+        public var pendingInboxID: String?
     }
-    enum Action {
+    public enum Action {
         case tabSelected(State.Tab)
         case focusInbox(String)
         case triage(ServiceTriageFeature.Action)
         case tasks(ServiceTasksFeature.Action)
         case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
     }
-    var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Reduce { state, action in
@@ -63,23 +65,24 @@ struct ServiceRootFeature {
 }
 
 @Reducer
-struct ServicePullRequestFeature {
+public struct ServicePullRequestFeature {
+    public init() {}
     @ObservableState
-    struct State: Equatable {
-        var pr: PullRequestFeature.State
-        var diff: DiffReviewFeature.State
-        init(pr: PullRequest) {
+    public struct State: Equatable {
+        public var pr: PullRequestFeature.State
+        public var diff: DiffReviewFeature.State
+        public init(pr: PullRequest) {
             self.pr = PullRequestFeature.State(pr: pr)
             diff = DiffReviewFeature.State(prID: pr.id)
         }
     }
-    enum Action {
+    public enum Action {
         case pr(PullRequestFeature.Action)
         case diff(DiffReviewFeature.Action)
         case updated(PullRequest?)
         case snapshotUnavailable
     }
-    var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Scope(state: \.pr, action: \.pr) { PullRequestFeature() }
         Scope(state: \.diff, action: \.diff) { DiffReviewFeature() }
         Reduce { _, action in

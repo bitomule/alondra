@@ -1,0 +1,16 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+
+swift_library(
+    name = "AlondraWorkspaceFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraWorkspaceFeature",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple:AlondraShared",
+        "//apple/Features/Triage:AlondraTriageFeature",
+        "//apple/Features/Tasks:AlondraTasksFeature",
+        "//apple/Features/Questions:AlondraQuestionsFeature",
+        "//apple/Features/PullRequests:AlondraPullRequestsFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
