@@ -125,7 +125,7 @@ def publish(ver, directory):
     release = lookup_release(tag)
     if release is None:
         gh('release', 'create', tag, '--repo', REPO, '--draft', '--title', f'Alondra {ver}',
-           '--notes', 'Signed and notarized macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
+           '--notes', 'Signed macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
         release = lookup_release(tag)
     names = {asset['name'] for asset in release['assets']}
     archives = [directory / f'alondra-{ver}-{target}.tar.gz' for target in TARGETS]
