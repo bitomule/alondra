@@ -665,7 +665,7 @@ impl Service {
         let payload = json!({"aps":{"alert":{
             "title":"Prueba cifrada de Alondra",
             "body":"Diagnóstico enviado desde tu Mac. Si lees este texto, tu dispositivo ha descifrado la notificación."
-        }}});
+        }}, "alondra": {}});
         self.send_device_push(id, device, &binding, &payload, true, &mut None).await
     }
 
@@ -1494,7 +1494,9 @@ agreement_key = "{}"
                 "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
             let content: Value = serde_json::from_slice(&plaintext).unwrap();
             assert_eq!(content["payload"]["aps"]["alert"]["title"], "Prueba cifrada de Alondra");
-            assert!(content["payload"].get("alondra").is_none(), "no invented report target");
+            // ServiceNotificationDecoder requires a metadata dictionary before
+            // adding the verified binding. An empty dictionary has no fake target/actions.
+            assert_eq!(content["payload"]["alondra"], json!({}));
             assert_eq!(content["payload"]["aps"]["interruption-level"], "passive");
             assert_eq!(content["with_sound"], false);
             assert_eq!(content["push_binding"], URL_SAFE_NO_PAD.encode([4u8;32]));
