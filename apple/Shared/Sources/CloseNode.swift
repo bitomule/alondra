@@ -30,10 +30,6 @@ extension View {
         }
     }
 
-    public func closeRefusalAlert(_ store: FleetStore) -> some View {
-        closeRefusalAlert(Binding(get: { store.refusal }, set: { store.refusal = $0 }))
-    }
-
     public func closeRefusalAlert(_ refusal: Binding<String?>) -> some View {
         alert(
             String(localized: "Couldn’t close the node", table: "AlondraShared", bundle: #bundle),

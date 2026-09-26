@@ -3,6 +3,7 @@ import Foundation
 
 public enum CloudRestoreError: Error, Sendable {
     case reauthenticationRequired(String)
+    case revocationRequired(String)
 }
 
 public struct CloudPairingService: Sendable {
@@ -37,6 +38,7 @@ public struct CloudPairingFeature {
         public var configuration: Configuration = .unknown
         public var restorationInFlight = false
         public var reauthenticationRequired = false
+        public var logoutIncomplete = false
         public var showsWorkspace: Bool { configuration != .missing }
         public var phase: Phase = .restoring
         public var cameraReady = false
@@ -50,6 +52,7 @@ public struct CloudPairingFeature {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
         case configurationLoaded(Int, Bool), retryRestore, reauthenticate
         case restorationFailed(Int, String, reauthenticationRequired: Bool)
+        case revocationRequired(Int, String)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String)
     }
     @Dependency(\.cloudPairing) var service
@@ -78,6 +81,8 @@ public struct CloudPairingFeature {
                         await send(.configurationLoaded(generation, configured))
                         if configured { await send(.restored(generation, try await service.restore())) }
                         else { await send(.restored(generation, false)) }
+                    } catch CloudRestoreError.revocationRequired(let message) {
+                        await send(.revocationRequired(generation, message))
                     } catch CloudRestoreError.reauthenticationRequired(let message) {
                         await send(.restorationFailed(generation, message, reauthenticationRequired: true))
                     } catch {
@@ -88,18 +93,30 @@ public struct CloudPairingFeature {
                 guard generation == state.generation else { return .none }
                 state.configuration = saved ? .saved : .missing
                 return .none
+            case .revocationRequired(let generation, let message):
+                guard generation == state.generation else { return .none }
+                state.logoutIncomplete = true
+                state.configuration = .saved
+                state.phase = .restoring
+                state.restorationInFlight = false
+                state.reauthenticationRequired = false
+                state.error = message
+                return .none
             case .retryRestore:
+                if state.logoutIncomplete { return .send(.logout) }
                 guard !state.restorationInFlight else { return .none }
                 state.phase = .restoring; state.error = nil; state.reauthenticationRequired = false
                 return .send(.appeared)
             case .reauthenticate:
-                guard state.configuration == .saved, !state.restorationInFlight else { return .none }
+                guard state.configuration == .saved, !state.restorationInFlight, !state.logoutIncomplete else { return .none }
                 state.restorationInFlight = true; state.error = nil
                 let generation = state.generation
                 return .run { send in
                     do {
                         try await service.login()
                         await send(.restored(generation, try await service.restore()))
+                    } catch CloudRestoreError.revocationRequired(let message) {
+                        await send(.revocationRequired(generation, message))
                     } catch CloudRestoreError.reauthenticationRequired(let message) {
                         await send(.restorationFailed(generation, message, reauthenticationRequired: true))
                     } catch {
@@ -122,9 +139,10 @@ public struct CloudPairingFeature {
                 guard generation == state.generation else { return .none }
                 state.configuration = .missing; state.restorationInFlight = false; state.reauthenticationRequired = false
                 state.phase = .signedOut
+                state.logoutIncomplete = false
                 return .none
             case .login:
-                guard state.phase == .signedOut else { return .none }
+                guard state.phase == .signedOut, !state.logoutIncomplete else { return .none }
                 state.error = nil; state.phase = .loggingIn
                 let generation = state.generation
                 return .run { send in
@@ -165,6 +183,11 @@ public struct CloudPairingFeature {
                 guard generation == state.generation else { return .none }
                 state.error = message
                 switch state.phase {
+                case .signingOut:
+                    state.phase = .restoring
+                    state.configuration = .saved
+                    state.logoutIncomplete = true
+                    state.reauthenticationRequired = false
                 case .submitting, .pending: state.phase = .scanning
                 default: state.phase = .signedOut
                 }

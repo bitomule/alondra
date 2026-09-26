@@ -14,7 +14,7 @@ public enum ServiceResponse: Sendable, Equatable {
 
 public enum ServiceAPIError: Error, Sendable, Equatable {
     case operationIdentityRequired, invalidConfiguration, invalidEndpoint
-    case outcomeUnknown, directRequestUnavailable, uploadUnsupported
+    case outcomeUnknown
 }
 
 public struct ServiceRequest: Sendable, Equatable {

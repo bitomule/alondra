@@ -12,7 +12,7 @@ public struct ServiceTaskPresentation {
         let grouping = InboxGrouping(questions: (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true }, reports: (overview?.news ?? []).filter { $0.toOrchestrator != true }, pullRequests: overview?.prs ?? [])
         inbox = Self.orderedInbox(grouping: grouping, pullRequests: overview?.prs ?? []).filter { !hiddenIDs.contains($0.id) }
     }
-    /// Detail lists use the original FleetStore inbox order, not the triage ring's arrival order.
+    /// Detail lists use the original inbox order, not the triage ring's arrival order.
     static func orderedInbox(grouping: InboxGrouping, pullRequests: [PullRequest]) -> [InboxItem] {
         let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
         let prs = pullRequests.sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
@@ -91,6 +91,10 @@ public struct ServiceTaskPresentation {
     /// The title the orchestrator gave it, else its only task's, else the first line of what the
     /// user asked (all a request being defined has), else its first task's.
     public func title(of request: WorkRequest) -> String {
+        Self.title(of: request, in: board)
+    }
+
+    public static func title(of request: WorkRequest, in board: TaskBoard) -> String {
         let tasks = board.tree(for: request.id)?.tasks ?? []
         if let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         if tasks.count == 1 { return tasks[0].title }
@@ -101,6 +105,11 @@ public struct ServiceTaskPresentation {
     /// reports.
     public func documents(of task: WorkTask, in details: TaskInFull?) -> [Report] {
         task.documents.compactMap { id in details?.documents?.first { $0.id == id } ?? report(id) }
+    }
+
+    public func taskLine(_ task: WorkTask) -> String {
+        guard let request = request(of: task) else { return task.state.label }
+        return "\(task.state.label) · \(String(localized: "from “\(title(of: request))”"))"
     }
 
     public func request(of task: WorkTask) -> WorkRequest? {

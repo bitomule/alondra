@@ -1,4 +1,5 @@
 import AlondraCommands
+import AlondraQuestionsFeature
 import ComposableArchitecture
 import Foundation
 
@@ -40,8 +41,8 @@ extension ServiceRootFeature {
         if state.triage.question?.uncertainCommandID == id {
             effects.append(.send(.triage(.question(.presented(.commandResolved(id, rejection: rejection))))))
         }
-        if state.triage.document?.uncertainCommandID == id {
-            effects.append(.send(.triage(.document(.presented(.commandResolved(id, rejection: rejection))))))
+        for document in state.triage.documents where document.uncertainCommandID == id {
+            effects.append(.send(.triage(.documents(.element(id: document.id, action: .commandResolved(id, rejection: rejection))))))
         }
         if state.newRequest.uncertainCommandID == id {
             effects.append(.send(.newRequest(.commandResolved(id, rejection: rejection))))
@@ -50,8 +51,6 @@ extension ServiceRootFeature {
             switch state.fleet.path[id: pathID]! {
             case .task(let task) where task.mutationOutcome?.uncertainID == id:
                 effects.append(.send(.fleet(.path(.element(id: pathID, action: .task(.commandResolved(id, rejection: rejection)))))))
-            case .node(let node) where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id:
-                effects.append(.send(.fleet(.path(.element(id: pathID, action: .node(.commandResolved(id, rejection: rejection)))))))
             default: break
             }
         }
@@ -76,24 +75,38 @@ extension ServiceRootFeature {
         if state.fleet.fleet.closeOutcomeByID.values.contains(where: { $0.uncertainID == id }) {
             effects.append(.send(.fleet(.fleet(.commandResolved(id, rejection: rejection)))))
         }
-        if state.fleet.detail?.sendOutcome?.uncertainID == id || state.fleet.detail?.closeOutcome?.uncertainID == id {
-            effects.append(.send(.fleet(.detail(.presented(.commandResolved(id, rejection: rejection))))))
+        for node in state.fleet.nodes where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id {
+            effects.append(.send(.fleet(.nodes(.element(id: node.id, action: .commandResolved(id, rejection: rejection))))))
         }
         for card in state.triage.cards {
+            if card.question?.uncertainCommandID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .question(.commandResolved(id, rejection: rejection)))))))
+            }
+            if card.document?.uncertainCommandID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(.commandResolved(id, rejection: rejection)))))))
+            }
+            if card.pullRequest?.diff.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(.diff(.commandResolved(id, rejection: rejection))))))))
+            }
+            if card.pullRequest?.pr.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(.pr(.commandResolved(id, rejection: rejection))))))))
+            }
             for child in card.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
                 let action = ServicePullRequestFeature.Action.attachedQuestion(.element(
                     id: child.id, action: .question(.commandResolved(id, rejection: rejection))))
                 effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(action))))))
             }
         }
-        for child in state.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
-            effects.append(.send(.pullRequest(.presented(.attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
-        }
-        if state.pullRequest?.pr.mutationOutcome?.uncertainID == id {
-            effects.append(.send(.pullRequest(.presented(.pr(.commandResolved(id, rejection: rejection))))))
-        }
-        if state.pullRequest?.diff.mutationOutcome?.uncertainID == id {
-            effects.append(.send(.pullRequest(.presented(.diff(.commandResolved(id, rejection: rejection))))))
+        for detail in state.pullRequests {
+            for child in detail.questionFeatures where child.question.uncertainCommandID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
+            }
+            if detail.pr.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .pr(.commandResolved(id, rejection: rejection))))))
+            }
+            if detail.diff.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .diff(.commandResolved(id, rejection: rejection))))))
+            }
         }
         return .merge(effects)
     }
@@ -102,18 +115,33 @@ extension ServiceRootFeature {
 
 extension ServiceRootFeature {
     func feedbackResolutionEffects(_ events: [ReportFeedbackRecoveryEvent], state: State) -> Effect<Action> {
-        guard let id = state.triage.document?.uncertainCommandID,
-              let event = events.first(where: { $0.operationID == id }) else { return .none }
+        var effects: [Effect<Action>] = []
+        for document in state.triage.documents {
+            if let action = feedbackAction(events, document: document) {
+                effects.append(.send(.triage(.documents(.element(id: document.id, action: action)))))
+            }
+        }
+        for card in state.triage.cards {
+            if let action = feedbackAction(events, document: card.document) {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(action))))))
+            }
+        }
+        return .merge(effects)
+    }
+
+    private func feedbackAction(_ events: [ReportFeedbackRecoveryEvent], document: DocumentReviewFeature.State?) -> DocumentReviewFeature.Action? {
+        guard let document, document.needsReconciliation, let id = document.uncertainCommandID,
+              let event = events.first(where: { $0.operationID == id }) else { return nil }
         switch event.outcome {
         case .confirmed:
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: nil)))))
+            return .commandResolved(id, rejection: nil)
         case .messageRejected(let status):
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was rejected (HTTP \(status)). Your draft has been kept.")))))
+            return .commandResolved(id, rejection: "The feedback was rejected (HTTP \(status)). Your draft has been kept.")
         case .awaitingDraft:
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was not sent. Your draft has been kept; you can submit it again.")))))
+            return .commandResolved(id, rejection: "The feedback was not sent. Your draft has been kept; you can submit it again.")
         case .readRejected(let status):
-            return .send(.triage(.document(.presented(.feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")))))
-        case .unknown: return .none
+            return .feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")
+        case .unknown: return nil
         }
     }
 }

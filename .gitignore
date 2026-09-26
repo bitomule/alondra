@@ -10,3 +10,5 @@ signing/signing.bzl
 
 # Python release tooling
 __pycache__/
+
+signing/*.provisionprofile

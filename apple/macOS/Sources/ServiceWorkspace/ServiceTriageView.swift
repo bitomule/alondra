@@ -34,18 +34,19 @@ struct ServiceTriageView: View {
             }
         }
         .navigationTitle("Triage")
-        .task { await store.send(.triage(.appeared)).finish() }
-        .onDisappear { store.send(.triage(.disappeared)) }
+        .onDisappear { store.send(.presentationDisappeared) }
         .sheet(item: $store.scope(state: \.question, action: \.question)) { child in
             NavigationStack { ServiceQuestionView(store: child) }.frame(minWidth: 560, minHeight: 480)
         }
-        .sheet(item: $store.scope(state: \.document, action: \.document)) { child in
+        .sheet(isPresented: Binding(get: { store.documentID != nil }, set: { if !$0 { store.send(.documentDismissed) } })) {
+            if let child = store.scope(state: \.documents, action: \.documents).first(where: { $0.subject.id == store.documentID }) {
             NavigationStack {
                 ServiceDocumentView(store: child, markRead: {
                     store.send(.triage(.hide(child.subject.id)))
-                    store.send(.document(.dismiss))
+                    store.send(.documentDismissed)
                 })
             }.frame(minWidth: 640, minHeight: 520)
+            }
         }
     }
 }
@@ -136,13 +137,13 @@ struct ServiceQuestionView: View {
                     }
                 }
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
-            }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.canPrepareSubmission || store.pendingSubmission != nil || store.isSubmitting || store.needsReconciliation || store.completed)
         }
         .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .onAppear { if !searchActive { focus = store.question.options.isEmpty ? .reply : .pane } }
         .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
         .onAppear { store.send(.keyboardAppeared) }
-        .onDisappear { store.send(.keyboardDisappeared) }
+        .onDisappear { store.send(.disappeared); store.send(.keyboardDisappeared) }
         .triageKeys(focus: $focus) { character in
             guard store.keyboardReady else { return false }
             if character == "r" { focus = .reply; return true }
@@ -187,6 +188,8 @@ struct ServiceDocumentView: View {
                         if !section.text.isEmpty {
                             if isReviewable {
                                 ServiceReviewableDocument(text: section.text, anchorPrefix: bodyPrefix, store: store, focus: $focus)
+                            } else if case .question(let question) = store.subject, question.origin == "permission" {
+                                MarkdownText(text: "```\n\(section.text)\n```")
                             } else { MarkdownText(text: section.text) }
                         }
                     case .stored(let name, let path):
@@ -208,12 +211,12 @@ struct ServiceDocumentView: View {
                                 ? String(localized: "Sends your \(store.draft.comments.count) comments")
                                 : String(localized: "Without your comments")
                         }, prominent: { option, index in question.isPlan && (store.hasFeedback ? option.needsText : index == 0) },
-                        choose: { store.send(.chooseReviewOption($0, author: "David")) })
+                        choose: choose)
                 }
                 ServiceComposer(placeholder: placeholder,
                     text: Binding(get: { store.draft.general }, set: { store.send(.generalChanged($0)) }), focus: $focus,
                     sendTitle: nil, canSend: store.hasFeedback,
-                    submit: { store.send(.submitFeedback(author: "David")) },
+                    submit: { submit() },
                     escape: { store.send(.optionSelected(nil)) },
                     attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 actions
@@ -225,12 +228,18 @@ struct ServiceDocumentView: View {
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
                 if let error = store.downloads.error { Text(error).foregroundStyle(.red) }
             }
-            .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
+            .disabled(store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed)
             .animation(.snappy(duration: 0.2), value: store.draft.comments.count)
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
-        .onAppear { if !searchActive { focus = .pane } }
+        .onAppear {
+            if !searchActive {
+                if case .question(let question) = store.subject {
+                    focus = question.options.isEmpty && !question.isPlan ? .reply : .pane
+                } else { focus = .pane }
+            }
+        }
         .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .onChange(of: store.generalFocusRequest) { _, _ in focus = .reply }
         .onAppear { store.send(.keyboardAppeared) }
@@ -241,7 +250,7 @@ struct ServiceDocumentView: View {
             switch store.subject {
             case .question(let question):
                 guard let number = character.wholeNumberValue, number >= 1, number <= question.options.count else { return false }
-                store.send(.chooseReviewOption(question.options[number - 1], author: "David"))
+                choose(question.options[number - 1])
                 return true
             case .report(let report):
                 switch character {
@@ -254,6 +263,17 @@ struct ServiceDocumentView: View {
             }
         }
     }
+    private func choose(_ option: QuestionOption) {
+        let focusRequest = store.generalFocusRequest
+        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
+        focus = store.generalFocusRequest == focusRequest ? .pane : .reply
+    }
+
+    private func submit() {
+        focus = .pane
+        store.send(.submitFeedback(author: store.feedbackAuthor))
+    }
+
     @ViewBuilder private var header: some View {
         switch store.subject {
         case .question(let q): DetailHeader(style: item.style, node: q.nodeName, date: q.askedAt, title: q.title, task: taskTitle)
@@ -285,7 +305,7 @@ struct ServiceDocumentView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 } label: { Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary) }
             }
-            if let text = q.nodeContext, !text.isEmpty {
+            if let text = q.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                 DisclosureGroup("What the node said last") { MarkdownText(text: text).font(.callout).foregroundStyle(.secondary).padding(.top, 6) }.foregroundStyle(.secondary)
             }
         case .report(let r):
@@ -311,25 +331,25 @@ struct ServiceDocumentView: View {
                     Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
                     Button("Approve") { store.send(.reviewTapped(.approved)) }.help("Tell the node the artifact is approved (V)")
                     if store.hasFeedback {
-                        SendButton(title: String(localized: "Send Comments")) { store.send(.submitFeedback(author: "David")) }
+                        SendButton(title: String(localized: "Send Comments")) { submit() }
                     } else {
                         Button("Rescue Comments") { store.send(.reviewTapped(.comments)) }.buttonStyle(.borderedProminent)
                             .help("The node reads your comments on the artifact and applies them (C)")
                     }
                 } else if store.hasFeedback {
                     Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
-                    SendButton(title: report.kind == "document" ? String(localized: "Send Comments") : String(localized: "Reply")) { store.send(.submitFeedback(author: "David")) }
+                    SendButton(title: report.kind == "document" ? String(localized: "Send Comments") : String(localized: "Reply")) { submit() }
                 } else {
                     Button("Mark as Read") { markRead?() }.buttonStyle(.borderedProminent).help("Mark as read (L)")
                 }
             }.animation(.snappy(duration: 0.18), value: store.hasFeedback)
         } else if case .question(let q) = store.subject {
             CardActions {
-                Button { store.send(.moreContextTapped(author: "David")) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                Button { focus = .pane; store.send(.moreContextTapped(author: store.feedbackAuthor)) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
                     .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
             } trailing: {
                 if store.hasFeedback, store.draft.selectedOption != nil || !q.isPlan {
-                    SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { store.send(.submitFeedback(author: "David")) }
+                    SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { submit() }
                 }
             }
         }

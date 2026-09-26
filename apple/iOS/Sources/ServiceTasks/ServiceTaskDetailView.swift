@@ -455,7 +455,7 @@ struct ServiceTaskOutcome: View {
     var body: some View {
         switch outcome {
         case .unknown: Text("The response was lost. This action is blocked until its outcome is reconciled.").foregroundStyle(Palette.ember)
-        case .rejected(let message): Text(message).foregroundStyle(Palette.rose)
+        case .rejected: EmptyView() // Root presents the original failure toast.
         case .obsolete: Text("The connection changed. Open this task again.").foregroundStyle(.secondary)
         case .confirmed, nil: EmptyView()
         }

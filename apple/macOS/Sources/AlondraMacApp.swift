@@ -1,5 +1,6 @@
 import AlondraAppComposition
 import AlondraAuth
+import AlondraAuthPresentation
 import AlondraCommands
 import AlondraWorkspaceFeature
 import ComposableArchitecture
@@ -28,17 +29,6 @@ struct AlondraMacApp: App {
             CommandGroup(replacing: .newItem) {}
             WorkspaceSettingsCommands()
         }
-    }
-}
-
-private struct WorkspaceSettingsStoreKey: FocusedValueKey {
-    typealias Value = StoreOf<ServiceRootFeature>
-}
-
-extension FocusedValues {
-    var workspaceSettingsStore: StoreOf<ServiceRootFeature>? {
-        get { self[WorkspaceSettingsStoreKey.self] }
-        set { self[WorkspaceSettingsStoreKey.self] = newValue }
     }
 }
 

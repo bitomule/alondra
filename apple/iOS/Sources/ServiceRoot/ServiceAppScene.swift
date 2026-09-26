@@ -45,6 +45,7 @@ struct ServiceAppScene: View {
 /// Dependency assembly belongs to scene composition, outside rendering and reducers.
 @MainActor @Observable
 private final class ServiceSceneContext {
+    let settings = ServiceSettingsContext()
     private(set) var store: StoreOf<ServiceRootFeature>?
 
     func consumeNotification(_ notifications: ServiceNotificationRuntime, active: Bool) {
@@ -93,7 +94,7 @@ private struct ApprovedServiceScene: View {
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications)) }
+            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications, context: context.settings)) }
             else { ProgressView("Opening workspace…") }
         }
         .safeAreaInset(edge: .bottom) {
@@ -117,19 +118,23 @@ private struct ServiceRootView<AccountContent: View>: View {
     let accountContent: AccountContent
     @Namespace private var triageZoom
     var body: some View {
+        let presentedPRID = store.pullRequestID
         TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
                     ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) }, zoom: triageZoom)
-                        .navigationDestination(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
-                            ServicePullRequestView(store: child)
-                                .navigationTransition(.zoom(sourceID: "p\(child.pr.id)", in: triageZoom))
+                        .navigationDestination(isPresented: Binding(get: { store.pullRequestID != nil }, set: { if !$0, let presentedPRID { store.send(.pullRequestDismissed(presentedPRID)) } })) {
+                            if let id = store.pullRequestID,
+                               let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == id }) {
+                                ServicePullRequestView(store: child)
+                                    .navigationTransition(.zoom(sourceID: "p\(child.pr.id)", in: triageZoom))
+                            }
                         }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
                 }
-            }.badge(store.triage.triage.queue.count)
+            }.badge(store.triage.triage.connection == .unpaired ? 0 : store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
                 ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) }, showSettings: { store.send(.settingsPresented(true)) })
             }

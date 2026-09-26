@@ -25,9 +25,9 @@ struct DocumentReviewChoiceTests {
             }, document: { _ in "" })
         }
         let option = try #require(question.options.first)
-        await store.send(.chooseReviewOption(option, author: "David")) { $0.generalFocusRequest = 1 }
+        await store.send(.chooseReviewOption(option, author: "David")) { $0.generalFocusRequest = 1; $0.draft.selectedOption = "Deny" }
         await store.send(.generalChanged("Keep the existing layout")) { $0.draft.general = "Keep the existing layout" }
-        await store.send(.chooseReviewOption(option, author: "David")) { $0.draft.selectedOption = "Deny" }
+        await store.send(.chooseReviewOption(option, author: "David"))
         await store.receive(\.sendFeedbackTapped) { $0.isSubmitting = true }
         await store.receive(\.submissionFinished) { $0.isSubmitting = false; $0.completed = true; $0.draft = DocumentDraft() }
     }

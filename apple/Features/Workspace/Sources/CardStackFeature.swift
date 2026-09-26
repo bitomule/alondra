@@ -1,4 +1,4 @@
-import AlondraTriageFeature
+import AlondraDomain
 import ComposableArchitecture
 
 /// Interaction state; geometry measurements and animation completion remain platform adapters.

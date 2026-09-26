@@ -1,45 +1,6 @@
+import AlondraDomain
 import AlondraShared
 import Foundation
-
-public struct FleetNode: Equatable, Sendable, Identifiable {
-    public var id: String { node.sessionId }
-    public let node: Node
-    public let tasks: [WorkTask]
-    public let pendingCount: Int
-
-    public init(node: Node, tasks: [WorkTask], pendingCount: Int) {
-        self.node = node
-        self.tasks = tasks
-        self.pendingCount = pendingCount
-    }
-}
-
-public struct FleetSection: Equatable, Sendable, Identifiable {
-    public var id: String { name }
-    public let name: String
-    public let nodes: [FleetNode]
-}
-
-/// An accepted sync snapshot. A failed refresh is represented separately as `snapshotUnavailable`.
-public struct FleetSnapshot: Equatable, Sendable {
-    /// Monotonic delivery sequence assigned by the process-owned sync projection, not daemon tick.
-    public let sequence: UInt64
-    public let tick: UInt64
-    public let orchestrator: FleetNode?
-    public let sections: [FleetSection]
-
-    public init(sequence: UInt64, tick: UInt64, orchestrator: FleetNode?, sections: [FleetSection]) {
-        self.sequence = sequence
-        self.tick = tick
-        self.orchestrator = orchestrator
-        self.sections = sections
-    }
-
-    public func node(_ id: String) -> FleetNode? {
-        if orchestrator?.id == id { return orchestrator }
-        return sections.lazy.flatMap(\.nodes).first { $0.id == id }
-    }
-}
 
 /// Keeps ordering and search rules out of both platform views and reducers.
 public struct ProjectFleetUseCase: Sendable {

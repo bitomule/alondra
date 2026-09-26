@@ -11,13 +11,17 @@ struct ServicePRMainAction: View {
 
     let store: StoreOf<PullRequestFeature>
     let placement: Placement
-    init(store: StoreOf<PullRequestFeature>, placement: Placement = .card) { self.store = store; self.placement = placement }
+    let willSubmit: () -> Void
+    init(store: StoreOf<PullRequestFeature>, placement: Placement = .card, willSubmit: @escaping () -> Void = {}) {
+        self.store = store; self.placement = placement; self.willSubmit = willSubmit
+    }
 
     var body: some View {
         if let pr = store.pr {
         switch pr.mainAction {
         case .resolveConflicts:
             Button {
+                willSubmit()
                 store.send(.resolveConflictsTapped)
             } label: {
                 title(Label("Resolve Conflicts", systemImage: "arrow.triangle.branch"))
@@ -36,6 +40,7 @@ struct ServicePRMainAction: View {
             .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { store.selectedMergeMethod != nil }, set: { if !$0 { store.send(.cancelMerge) } }), titleVisibility: .visible) {
                 if let method = store.selectedMergeMethod {
                     Button("Merge (\(PullRequest.methodLabel(method)))") {
+                        willSubmit()
                         store.send(.confirmMerge)
                     }
                 }

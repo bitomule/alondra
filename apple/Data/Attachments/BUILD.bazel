@@ -4,11 +4,21 @@ swift_library(
     module_name = "AlondraAttachmentsData",
     srcs = glob(["Sources/*.swift"]),
     visibility = ["//visibility:public"],
-    deps = ["//apple:AlondraShared", "//apple/Domain:AlondraDomain"],
+    deps = ["//apple:AlondraShared", "//apple/Data/AttachmentStorage:AlondraAttachmentStorage", "//apple/Domain:AlondraDomain"],
+)
+
+# Keep the existing validation entry point while the suite belongs to headless storage.
+alias(
+    name = "AlondraAttachmentsDataTests",
+    actual = "//apple/Data/AttachmentStorage:AlondraAttachmentStorageTests",
 )
 
 swift_test(
-    name = "AlondraAttachmentsDataTests",
+    name = "AlondraAttachmentImportTests",
     srcs = glob(["Tests/*.swift"]),
-    deps = [":AlondraAttachmentsData"],
+    deps = [
+        ":AlondraAttachmentsData",
+        "//apple/Data/AttachmentStorage:AlondraAttachmentStorage",
+        "//apple/Domain:AlondraDomain",
+    ],
 )

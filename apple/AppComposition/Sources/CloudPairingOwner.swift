@@ -1,3 +1,4 @@
+import AlondraWorkspace
 import AlondraAuth
 import AlondraServicePairing
 import AlondraCloudPairingFeature
@@ -26,7 +27,10 @@ public final class CloudPairingOwner {
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = self.prepareCamera
-        $0.cloudPairing.hasSavedConfiguration = { [self] in try await pairing.approvedPairing() != nil }
+        $0.cloudPairing.hasSavedConfiguration = { [self] in
+            if try await auth.requiresRevocation() { return true }
+            return try await pairing.approvedPairing() != nil
+        }
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false },
@@ -60,14 +64,17 @@ public final class CloudPairingOwner {
     }
     private func restoreApprovedPairing() async throws -> Bool {
         let current = generation
+        do { _ = try await auth.hasSession() }
+        catch AuthError.pendingRevocation {
+            throw CloudRestoreError.revocationRequired(AuthError.pendingRevocation.localizedDescription)
+        } catch AuthError.rotationUncertain {
+            throw CloudRestoreError.revocationRequired(AuthError.rotationUncertain.localizedDescription)
+        }
         guard let approved = try await pairing.approvedPairing() else { return false }
         try Self.validateRelay(approved.relayURL)
         let subject: String
         do { subject = try await auth.verifiedSubject() }
         catch AuthError.noSession { throw CloudRestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
-        catch AuthError.httpStatus(let status) where [400, 401, 403].contains(status) {
-            throw CloudRestoreError.reauthenticationRequired("Your session has expired. Sign in again to reconnect your saved workspace.")
-        }
         guard subject == approved.ownerSub else {
             throw CloudRestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
         }
@@ -76,7 +83,11 @@ public final class CloudPairingOwner {
         try await activate(approved, auth)
         return true
     }
-    private func login() async throws { try await auth.login(); _ = try await auth.verifiedSubject() }
+    private func login() async throws {
+        try await deactivate()
+        try await auth.login()
+        _ = try await auth.verifiedSubject()
+    }
     private func begin(_ payload: String) async throws -> String {
         let invitation = try ServicePairingInvitation(qrPayload: payload)
         try Self.validateRelay(invitation.url)
@@ -143,8 +154,10 @@ public final class CloudPairingOwner {
         // Attempt every revocation even when notification/keychain cleanup fails.
         var failures: [String] = []
         do { try await deactivate() } catch { failures.append(error.localizedDescription) }
-        do { try await pairing.removeApprovedPairing() } catch { failures.append(error.localizedDescription) }
-        do { try await auth.logout() } catch { failures.append(error.localizedDescription) }
+        do {
+            try await auth.logout()
+            try await pairing.removeApprovedPairing()
+        } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw CleanupFailure(details: failures.joined(separator: "\n")) }
     }
     private struct CleanupFailure: LocalizedError {

@@ -34,14 +34,11 @@ final class ServiceAPIClientTests: XCTestCase {
         XCTAssertEqual(requests.first?.path, "/v1/reports/42/read")
     }
 
-    func testLogicalPathCannotBecomeAnotherOriginAndDirectHTTPIsUnavailable() async throws {
+    func testLogicalPathCannotBecomeAnotherOrigin() async throws {
         let transport = ServiceRecorder(.completed(status: 200, body: Data("{}".utf8)))
         let api = AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "client-test", operations: transport)
         _ = try await api.task("https://attacker.test/a?b#c")
         let requests = await transport.recorded()
         XCTAssertEqual(requests.first?.path, "/v1/tasks/https%3A%2F%2Fattacker.test%2Fa%3Fb%23c")
-        XCTAssertThrowsError(try api.makeRequest(AlondraEndpoints.overview())) {
-            XCTAssertEqual($0 as? ServiceAPIError, .directRequestUnavailable)
-        }
     }
 }

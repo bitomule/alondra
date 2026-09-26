@@ -302,6 +302,7 @@ struct TriageFeatureTests {
             $0.hiddenIDs = []
             $0.pendingIDs = []
             $0.notice = "Server refused"
+            $0.noticeIsMutationFailure = true
         }
         #expect(store.state.queue.map(\.id) == ["r4", "q1", "q2"])
     }
@@ -410,6 +411,7 @@ struct TriageFeatureTests {
             $0.hasSnapshot = true
         }
         await store.send(.hide("r4")) {
+            $0.cursor = $0.items[0].place
             $0.hiddenIDs = ["r4"]
             $0.pendingIDs = ["r4"]
         }
@@ -454,6 +456,7 @@ struct TriageFeatureTests {
             $0.hasSnapshot = true
         }
         await store.send(.hide("r4")) {
+            $0.cursor = $0.items[0].place
             $0.hiddenIDs = ["r4"]
             $0.pendingIDs = ["r4"]
         }

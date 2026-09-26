@@ -67,7 +67,7 @@ public struct TriageDeck<Card: View>: View {
 #endif
 
 /// macOS supplies its existing InboxRow as `row`; this keeps row text and accessibility while
-/// replacing FleetStore selection/queue state with the TCA feature.
+/// keeping selection and queue state in the TCA feature.
 #if os(macOS)
 public struct TriageSidebarRows<Row: View>: View {
     let store: StoreOf<TriageFeature>

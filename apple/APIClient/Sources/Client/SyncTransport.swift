@@ -13,16 +13,6 @@ extension AlondraAPIClient: SyncTransport {
     }
 
     public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        if let operations {
-            try await operations.waitForChange(afterSnapshotTick: afterSnapshotTick, seconds: seconds)
-            return
-        }
-        let poll = Endpoint<Data>.data(
-            .get,
-            path: ["v1", "changes"],
-            query: [("after", String(afterSnapshotTick)), ("wait", String(seconds))],
-            policy: .longPoll
-        )
-        _ = try await send(poll)
+        try await operations.waitForChange(afterSnapshotTick: afterSnapshotTick, seconds: seconds)
     }
 }

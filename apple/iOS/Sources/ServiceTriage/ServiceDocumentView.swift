@@ -19,7 +19,7 @@ struct ServiceDocumentView: View {
     private var commentedBlocks: [MarkdownBlock] { blocks.filter { comments[$0.draftKey] != nil } }
     private var composing: MarkdownBlock? { blocks.first { $0.draftKey == store.composingAnchor } }
     private var hasFeedback: Bool { store.hasFeedback }
-    private var sending: Bool { store.isSubmitting || store.needsReconciliation || store.completed || !store.attachmentPicker.allReady }
+    private var sending: Bool { store.isSubmitting || store.needsReconciliation || store.completed || store.pendingSubmission != nil || !store.attachmentPicker.canPrepareSubmission }
     private func number(of block: MarkdownBlock) -> Int {
         (commentedBlocks.firstIndex(of: block) ?? 0) + 1
     }
@@ -38,7 +38,7 @@ struct ServiceDocumentView: View {
                 }
             }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.notice != nil || store.conflict != nil }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
+        .alert("Check Alondra", isPresented: Binding(get: { !store.noticeIsSubmissionFailure && (store.notice != nil || store.conflict != nil) }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
             if store.feedbackReadRetryAvailable { Button("Retry marking report read") { _ = store.send(.retryFeedbackRead) } }
             Button("OK") { _ = store.send(.dismissNotice) }
         } message: { Text(store.conflict ?? store.notice ?? "") }
@@ -58,7 +58,7 @@ struct ServiceDocumentView: View {
                 content
                 if case .question(let question) = item, question.origin != "plan", !question.options.isEmpty {
                     ServiceOptionGrid(options: question.options, picked: nil) { option in
-                        store.send(.chooseReviewOption(option, author: "David"))
+                        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
                     }
                     .padding(.top, 28)
                 }
@@ -194,7 +194,7 @@ struct ServiceDocumentView: View {
                     switch item {
                     case .question(let question):
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label(store.changeOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
                                 .frame(maxWidth: .infinity)
@@ -215,7 +215,7 @@ struct ServiceDocumentView: View {
                         }
                     case .pullRequest:
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label("Request Changes", systemImage: "arrow.uturn.backward")
                                 .frame(maxWidth: .infinity)
@@ -225,7 +225,7 @@ struct ServiceDocumentView: View {
                         .disabled(!hasFeedback || sending)
                     case .report:
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label("Send", systemImage: "paperplane")
                                 .frame(maxWidth: .infinity)

@@ -29,10 +29,14 @@ protocols. Notification decoding depends directly on this module's envelope form
 Run the APIClient, RelaySession, RelayOutbox, ServicePairing and Notifications Bazel tests,
 then compile both apps and the notification extension before merging.
 
-## Remaining legacy removal gate
+## Service-only product boundary
 
-The separate AlondraRelayClient module/type and PairingTransport are removed. The deprecated
-direct-daemon initializer and Shared.AlondraClient remain temporarily until strict original
-UI parity is accepted. Remove their HTTP signing, endpoint adapters and SyncSession identity
-inference in that dependent cleanup. Replace reachable AttachedQuestion consumers and retain
-presentation components reused by service views. This transport change does not modify UI.
+The direct-daemon initializer, URLRequest construction, direct upload and endpoint
+fallbacks are removed. `operations` is mandatory. Change waits use the service
+capability rather than `/v1/changes`. HTTP Auth and service infrastructure remain;
+there is no APIClient dependency on Data. Removal is integrated with the dependent
+Shared client/FleetStore and SyncSession adapter cleanup, not a standalone app build.
+
+See `docs/testing/service-only-api-migration.md` for retired and retained test
+contracts. The DeviceIdentity cleanup is a separate commit; no stored credentials
+are erased by removing its unused implementation.

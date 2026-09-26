@@ -8,7 +8,7 @@ struct ServiceSettingsScene: View {
     let services: CloudAppServices
     let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
-    @State private var context = ServiceSettingsContext()
+    let context: ServiceSettingsContext
     var body: some View {
         Group {
             if let store = context.store { ServiceSettingsView(store: store, ink: Palette.ink, success: Palette.sage, failure: Palette.rose) }
@@ -17,7 +17,7 @@ struct ServiceSettingsScene: View {
     }
 }
 
-@MainActor @Observable private final class ServiceSettingsContext {
+@MainActor @Observable final class ServiceSettingsContext {
     private(set) var store: StoreOf<ServiceSettingsFeature>?
     func connect(services: CloudAppServices, owner: CloudPairingOwner, notifications: ServiceNotificationRuntime) async {
         guard store == nil else { return }
@@ -25,7 +25,7 @@ struct ServiceSettingsScene: View {
         let client = notifications.settingsClient(services: services, owner: owner)
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceSettingsFeature.State(service: api.base.host() ?? api.base.absoluteString,
-            device: api.device, supportsNotifications: true)) { ServiceSettingsFeature() } withDependencies: {
+            device: api.device, supportsNotifications: true, automaticallySavesQuietHours: true)) { ServiceSettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
             }
     }

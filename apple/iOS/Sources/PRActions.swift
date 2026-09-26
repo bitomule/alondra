@@ -28,79 +28,6 @@ struct PRStatus: View {
     }
 }
 
-/// The PR's main button: send the conflicts to its node, or pick a merge method and confirm it.
-struct PRMainAction: View {
-    enum Placement: Equatable {
-        case card
-        case bar(prominent: Bool)
-    }
-
-    let pr: PullRequest
-    let placement: Placement
-    let onOutcome: (PullRequestOutcome) -> Void
-    @State private var merging: String?
-
-    var body: some View {
-        switch pr.mainAction {
-        case .resolveConflicts:
-            Button {
-                onOutcome(.conflictsSent)
-            } label: {
-                title(Label("Resolve Conflicts", systemImage: "arrow.triangle.branch"))
-            }
-            .modifier(Chrome(placement: placement, tint: Palette.dawn))
-        case .merge(let methods, let blockedBy):
-            Menu {
-                ForEach(methods, id: \.self) { method in
-                    Button(PullRequest.methodLabel(method)) { merging = method }
-                }
-            } label: {
-                title(Label(blockedBy ?? String(localized: "Merge…"), systemImage: blockedBy == nil ? "arrow.triangle.merge" : "square.stack.3d.up"))
-            }
-            .modifier(Chrome(placement: placement, tint: blockedBy == nil ? Palette.sage : Palette.slate))
-            .disabled(blockedBy != nil)
-            .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { merging != nil }, set: { if !$0 { merging = nil } }), titleVisibility: .visible) {
-                if let method = merging {
-                    Button("Merge (\(PullRequest.methodLabel(method)))") {
-                        onOutcome(.merged(method: method))
-                    }
-                }
-            } message: {
-                Text(pr.summary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func title(_ label: some View) -> some View {
-        switch placement {
-        case .card:
-            label
-                .font(.headline)
-                .frame(maxWidth: .infinity, minHeight: 50)
-        case .bar:
-            label
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    private struct Chrome: ViewModifier {
-        let placement: Placement
-        let tint: Color
-
-        func body(content: Content) -> some View {
-            switch placement {
-            case .card:
-                content.buttonStyle(FilledStyle(tint: tint))
-            case .bar(prominent: true):
-                content.menuStyle(.button).buttonStyle(.glassProminent).tint(tint)
-            case .bar(prominent: false):
-                content.menuStyle(.button).buttonStyle(.glass).tint(tint)
-            }
-        }
-    }
-}
-
 /// Open the PR on GitHub, or set it aside: the quiet line under its main button.
 struct PRFooter: View {
     let pr: PullRequest
@@ -118,15 +45,5 @@ struct PRFooter: View {
         }
         .font(.subheadline.weight(.medium))
         .foregroundStyle(.secondary)
-    }
-}
-
-extension PullRequestOutcome {
-    var handoffLabel: String {
-        switch self {
-        case .merged: HandoffLabel.merged
-        case .conflictsSent: HandoffLabel.conflictsSent
-        case .setAside: HandoffLabel.setAside
-        }
     }
 }

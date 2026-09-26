@@ -16,9 +16,9 @@ struct ServiceNewRequestView: View {
                     Text("New").font(.display(.largeTitle, weight: .bold))
                     orchestratorStatus
                 }
-                editor.disabled(store.isSubmitting || store.submissionUncertain)
+                editor.disabled(store.isSubmissionInFlight || store.submissionUncertain)
                 optionsRow
-                if let error = store.submissionError {
+                if let error = store.inlineSubmissionError {
                     Text(error).font(.footnote).foregroundStyle(Palette.rose)
                 }
                 if !store.sentMessages.isEmpty { history }
@@ -31,6 +31,7 @@ struct ServiceNewRequestView: View {
         .sensoryFeedback(.success, trigger: store.successfulSubmissionCount)
         .onChange(of: store.successfulSubmissionCount) { focused = false }
         .task { await store.send(.appeared).finish() }
+        .onDisappear { store.send(.disappeared) }
         .sheet(isPresented: Binding(get: { store.optionsPresented }, set: { store.send(.optionsPresented($0)) })) {
             ServiceWorkOptionsSheet(store: store).presentationDetents([.medium, .large])
         }
@@ -144,7 +145,7 @@ struct ServiceNewRequestView: View {
         Button {
             store.send(.submitTapped)
         } label: {
-            Label(store.isSubmitting ? String(localized: "Sending…") : String(localized: "Ask the Orchestrator"), systemImage: "paperplane.fill")
+            Label(store.isSubmissionInFlight ? String(localized: "Sending…") : String(localized: "Ask the Orchestrator"), systemImage: "paperplane.fill")
                 .font(.headline)
                 .frame(maxWidth: .infinity)
         }
@@ -203,7 +204,7 @@ private struct ServiceWorkOptionsSheet: View {
                     if let error = store.optionsError { Label(error, systemImage: "exclamationmark.triangle") }
                 }
             }
-            .disabled(store.isSubmitting || store.submissionUncertain)
+            .disabled(store.isSubmissionInFlight || store.submissionUncertain)
             .navigationTitle("Options")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {

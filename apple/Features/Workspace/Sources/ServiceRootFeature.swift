@@ -1,5 +1,7 @@
 import AlondraAttachmentsFeature
 import AlondraFleetFeature
+import AlondraDomain
+import AlondraTasksFeature
 import Foundation
 import AlondraCommands
 import AlondraNewWorkFeature
@@ -15,6 +17,7 @@ public struct ServiceRootFeature {
     public struct State {
         public init() {}
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
+        public var macPresentation = MacPresentationFeature.State()
         public var tab = Tab.inbox
         public var settingsPresented = false
         public var delivery = DeliveryNoticeFeature.State()
@@ -22,7 +25,7 @@ public struct ServiceRootFeature {
         var lastMacErrorMessage: String?
         var macErrorMessage: String? {
             if let error = delivery.acknowledgementError ?? delivery.status?.persistenceError { return error }
-            if let error = triage.triage.notice { return error }
+            if let error = triage.triage.notice, !triage.triage.noticeIsMutationFailure { return error }
             if case .failure(let error) = notice?.event { return error }
             return nil
         }
@@ -32,7 +35,17 @@ public struct ServiceRootFeature {
         public var tasks = ServiceTasksFeature.State()
         public var fleet = ServiceFleetFeature.State()
         public var newRequest = NewRequestFeature.State()
-        @Presents public var pullRequest: ServicePullRequestFeature.State?
+        public var pullRequests: IdentifiedArrayOf<ServicePullRequestFeature.State> = []
+        public var pullRequestID: UInt64?
+        public var pullRequestIdentity: TriageIdentity?
+        public var pullRequest: ServicePullRequestFeature.State? {
+            get { pullRequestID.flatMap { pullRequests[id: $0] } }
+            set {
+                guard let value = newValue else { pullRequestID = nil; return }
+                pullRequests[id: value.id] = value
+                pullRequestID = value.id
+            }
+        }
         public var pendingInboxID: String?
         public var feedbackResolutions: [ReportFeedbackRecoveryEvent] = []
         public var macSubtitle: String {
@@ -57,6 +70,7 @@ public struct ServiceRootFeature {
     }
     public enum Action {
         case appeared, disappeared
+        case macPresentation(MacPresentationFeature.Action)
         case delivery(DeliveryNoticeFeature.Action)
         case dismissMacError(UUID)
         case dismissNotice(UUID)
@@ -70,7 +84,8 @@ public struct ServiceRootFeature {
         case tasks(ServiceTasksFeature.Action)
         case fleet(ServiceFleetFeature.Action)
         case newRequest(NewRequestFeature.Action)
-        case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
+        case pullRequests(IdentifiedActionOf<ServicePullRequestFeature>)
+        case pullRequestDismissed(UInt64)
     }
     @Dependency(\.continuousClock) var noticeClock
     private enum NoticeCancelID { case timeout, macTimeout }
@@ -79,6 +94,7 @@ public struct ServiceRootFeature {
     public var body: some ReducerOf<Self> {
         // Observe the accepted operation before child navigation removes its state.
         Reduce { state, action in
+
             if case .dismissNotice(let id) = action {
                 guard state.notice?.id == id else { return .none }
                 state.notice = nil
@@ -101,15 +117,32 @@ public struct ServiceRootFeature {
                 await send(.dismissNotice(notice.id))
             }.cancellable(id: NoticeCancelID.timeout, cancelInFlight: true)
         }
+        Scope(state: \.macPresentation, action: \.macPresentation) { MacPresentationFeature() }
+            .onChange(of: \.macPresentation.selection) { _, _ in
+                Reduce { state, _ in
+                    state.triage.cancelPendingSubmissions()
+                    state.fleet.cancelPendingSubmissions()
+                    state.pullRequest?.cancelPendingSubmission()
+                    if let id = state.pullRequestID, state.macPresentation.selection != .item("p\(id)") {
+                        state.pullRequestID = nil
+                    }
+                    return .none
+                }
+            }
         Scope(state: \.delivery, action: \.delivery) { DeliveryNoticeFeature() }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
+            // Remove unavailable background owners only inside the forEach lifetime boundary.
+            let selectedPRID = state.pullRequestID
+            state.pullRequests.removeAll { $0.id != selectedPRID && $0.pr.pr == nil && !$0.hasOutstandingCommand }
+            // Triage owns the scoped sync connection; snapshots alone cannot express offline.
+            state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
-                return .merge(.send(.delivery(.appeared)), .run { send in
+                return .merge(.send(.delivery(.appeared)), .send(.triage(.triage(.appeared))), .run { send in
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask {
                             for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
@@ -119,49 +152,120 @@ public struct ServiceRootFeature {
                         }
                     }
                 }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true))
-            case .disappeared: return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)))
+            case .disappeared:
+                state.triage.cancelPendingSubmissions()
+                state.fleet.cancelPendingSubmissions()
+                state.pullRequest?.cancelPendingSubmission()
+                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)), .send(.triage(.triage(.disappeared))))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
                 return feedbackResolutionEffects(events, state: state)
-            case .triage(.document(.presented(.reportFeedbackFinished))):
+            case .triage(.documents(.element(_, .reportFeedbackFinished))),
+                 .triage(.cards(.element(_, .document(.reportFeedbackFinished)))):
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .tabSelected(let tab): state.tab = tab; return .none
+            case .tabSelected(let tab):
+                if state.tab != tab {
+                    state.triage.cancelPendingSubmissions()
+                    state.fleet.cancelPendingSubmissions()
+                    state.pullRequest?.cancelPendingSubmission()
+                }
+                state.tab = tab
+                return .none
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
+                state.triage.cancelPendingSubmissions()
+                state.fleet.cancelPendingSubmissions()
+                state.pullRequest?.cancelPendingSubmission()
                 state.tab = .inbox
+                if let current = state.pullRequestID, id != "p\(current)" {
+                    state.pullRequestID = nil
+                    if let detail = state.pullRequests[id: current], detail.pr.pr == nil, !detail.hasOutstandingCommand {
+                        state.pullRequests.remove(id: current)
+                    }
+                }
                 state.pendingInboxID = id
                 return routePending(&state)
+            case .triage(.triage(.identityChanged(let identity))):
+                if state.pullRequestIdentity != identity {
+                    state.pullRequestIdentity = identity
+                    state.pullRequestID = nil
+                    state.pullRequests = []
+                }
+                // Run removal through the owning reducer so forEach observes the removed
+                // IDs and cancels their scoped effects in this same identity transition.
+                // A key-path Scope uses this same navigation cancellation namespace.
+                return ServiceFleetFeature().reduce(into: &state.fleet, action: .identityChanged(identity))
+                    .map(Action.fleet)
             case .triage(.triage(.inboxUpdated(let update))):
                 let routing: Effect<Action> = .merge(routePending(&state),
                     update.identity == state.triage.triage.identity ? .send(.newRequest(.workspaceUpdated(update.overview))) : .none,
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-                guard let detail = state.pullRequest else { return routing }
-                guard state.triage.triage.hasSnapshot else {
-                    return .merge(routing, .send(.pullRequest(.presented(.snapshotUnavailable))))
+                guard update.identity == state.triage.triage.identity else { return routing }
+                var updates: [Effect<Action>] = [routing]
+                for detail in state.pullRequests {
+                    let id = detail.id
+                    guard state.triage.triage.hasSnapshot else {
+                        updates.append(.send(.pullRequests(.element(id: id, action: .snapshotUnavailable))))
+                        continue
+                    }
+                    let pr = state.triage.triage.items.compactMap { item -> PullRequest? in
+                        if case .pullRequest(let pr) = item, pr.id == id { return pr }
+                        return nil
+                    }.first
+                    if pr == nil, state.pullRequestID != id, !detail.hasOutstandingCommand {
+                        state.pullRequests.remove(id: id)
+                        if state.pullRequestID == id { state.pullRequestID = nil }
+                        continue
+                    }
+                    if pr == nil { state.pullRequests[id: id]?.cancelPendingSubmission() }
+                    let questions = state.triage.triage.questions(forPullRequest: id)
+                    let visibleQuestionIDs = Set(questions.map(\.id))
+                    for questionID in detail.questionFeatures.ids where !visibleQuestionIDs.contains(questionID) {
+                        state.pullRequests[id: id]?.questionFeatures[id: questionID]?.question.cancelPendingSubmission()
+                    }
+                    updates.append(.send(.pullRequests(.element(id: id, action: .updated(pr)))))
+                    // A disappeared PR cannot supply authoritative attached context while
+                    // its dispatched commands are still awaiting a terminal result.
+                    guard pr != nil else { continue }
+                    updates.append(.send(.pullRequests(.element(id: id, action: .contextUpdated(
+                        reports: state.triage.triage.reports(forPullRequest: id),
+                        questions: state.triage.triage.questions(forPullRequest: id))))))
                 }
-                let pr = state.triage.triage.items.compactMap { item -> PullRequest? in
-                    if case .pullRequest(let pr) = item, pr.id == detail.pr.id { return pr }
-                    return nil
-                }.first
-                return .merge(routing, .send(.pullRequest(.presented(.updated(pr)))), .send(.pullRequest(.presented(.contextUpdated(reports: state.triage.triage.reports(forPullRequest: detail.pr.id), questions: state.triage.triage.questions(forPullRequest: detail.pr.id))))))
+                return .merge(updates)
             case .triage(.delegate(.pullRequest(let pr))):
-                state.pullRequest = ServicePullRequestFeature.State(pr: pr, reports: state.triage.triage.reports(forPullRequest: pr.id), questions: state.triage.triage.questions(forPullRequest: pr.id))
+                state.pullRequestIdentity = state.triage.triage.identity
+                state.pullRequest?.cancelPendingSubmission()
+                if state.pullRequests[id: pr.id] == nil {
+                    state.pullRequest = ServicePullRequestFeature.State(pr: pr, reports: state.triage.triage.reports(forPullRequest: pr.id), questions: state.triage.triage.questions(forPullRequest: pr.id))
+                } else {
+                    state.pullRequestID = pr.id
+                    if state.pullRequests[id: pr.id]?.diff.shouldDismiss == true {
+                        state.pullRequests[id: pr.id]?.diff = DiffReviewFeature.State(prID: pr.id)
+                    }
+                }
+                return .send(.pullRequests(.element(id: pr.id, action: .updated(pr))))
+            case .pullRequestDismissed(let id):
+                guard state.pullRequestID == id else { return .none }
+                state.pullRequest?.cancelPendingSubmission()
+                state.pullRequestID = nil
+                if let detail = state.pullRequests[id: id], detail.pr.pr == nil, !detail.hasOutstandingCommand {
+                    state.pullRequests.remove(id: id)
+                }
                 return .none
-            case .pullRequest(.presented(.pr(.mutationFinished))), .pullRequest(.presented(.diff(.reviewFinished))):
-                if let detail = state.pullRequest, detail.pr.shouldDismiss || detail.diff.shouldDismiss {
-                    // Closing a successful review does not imply the PR left the inbox.
-                    // In particular, asking a question keeps its card until a new snapshot.
-                    state.pullRequest = nil
+            case .pullRequests(.element(let id, .pr(.mutationFinished))), .pullRequests(.element(let id, .diff(.reviewFinished))):
+                if let detail = state.pullRequests[id: id], detail.pr.shouldDismiss || detail.diff.shouldDismiss,
+                   state.pullRequestID == id {
+                    state.pullRequestID = nil
                 }
                 return .none
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
                 return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .dismissMacError, .delivery, .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
+            case .macPresentation, .dismissMacError, .delivery, .tasks, .pullRequests, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
             }
-        }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
+        }.forEach(\.pullRequests, action: \.pullRequests) { ServicePullRequestFeature() }
         Reduce { state, _ in
             let message = state.macErrorMessage
             guard state.lastMacErrorMessage != message else { return .none }
@@ -178,58 +282,177 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
-        case .pullRequest(.presented(.attachedQuestion(.element(let id, .question(let action))))):
-            return state.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
+        case .triage(.question(.presented(let action))):
+            return state.triage.question.flatMap { questionNotice($0, action: action) }
+        case .pullRequests(.element(let id, .diff(.attachmentPicker(let action)))):
+            return state.pullRequests[id: id].flatMap { diffUploadNotice($0.diff, action: action) }
+        case .triage(.cards(.element(let id, .pullRequest(.diff(.attachmentPicker(let action)))))):
+            return state.triage.cards[id: id]?.pullRequest.flatMap { diffUploadNotice($0.diff, action: action) }
+        case .triage(.triage(.mutationFinished(let id, let identity, let outcome))):
+            guard state.triage.triage.identity == identity, state.triage.triage.pendingIDs.contains(id),
+                  case .rejected(let reason) = outcome else { return nil }
+            return .failure(couldNotSendMessage(reason))
+        case .triage(.triage(.commandResolved(let id, let rejection))):
+            guard state.triage.triage.uncertainByItem.values.contains(id) else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .triage(.documents(.element(let id, let action))):
+            return state.triage.documents[id: id].flatMap { documentNotice($0, action: action) }
+        case .pullRequests(.element(let id, .diff(.reviewFinished(let outcome, let epoch)))):
+            guard let diff = state.pullRequests[id: id]?.diff, diff.isSending, diff.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .pullRequests(.element(let id, .pr(.mutationFinished(let outcome, let epoch)))):
+            guard let pr = state.pullRequests[id: id]?.pr, pr.isSending, pr.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .tasks(.board(.archiveFinished(let outcome, let epoch))):
+            guard state.tasks.board.isArchiving, state.tasks.board.presentationEpoch == epoch else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .tasks(.board(.commandResolved(let id, let rejection))):
+            guard state.tasks.board.archiveOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .tasks(.withdrawFinished(let id, let outcome)):
+            guard state.tasks.isWithdrawing, state.tasks.withdrawOperationRequestID == id else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .tasks(.withdrawalResolved(let id, let rejection)):
+            guard state.tasks.withdrawOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .tasks(.detail(.presented(let action))):
+            return state.tasks.detail.flatMap { taskNotice($0, action: action) }
+        case .tasks(.taskPath(.element(let id, let action))):
+            return state.tasks.taskPath[id: id].flatMap { taskNotice($0, action: action) }
+        case .triage(.cards(.element(let cardID, .document(let action)))):
+            return state.triage.cards[id: cardID]?.document.flatMap { documentNotice($0, action: action) }
+        case .triage(.cards(.element(let cardID, .pullRequest(.diff(.reviewFinished(let outcome, let epoch)))))):
+            guard let diff = state.triage.cards[id: cardID]?.pullRequest?.diff,
+                  diff.isSending, diff.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .triage(.cards(.element(let cardID, .pullRequest(.pr(.mutationFinished(let outcome, let epoch)))))):
+            guard let pr = state.triage.cards[id: cardID]?.pullRequest?.pr,
+                  pr.isSending, pr.presentationEpoch == epoch else { return nil }
+            return rejectedPRNotice(outcome)
+        case .triage(.cards(.element(let cardID, .question(let action)))):
+            return state.triage.cards[id: cardID]?.question.flatMap { questionNotice($0, action: action) }
+        case .pullRequests(.element(let prID, .attachedQuestion(.element(let id, .question(let action))))):
+            return state.pullRequests[id: prID]?.questionFeatures[id: id].flatMap { questionNotice($0.question, action: action) }
         case .triage(.cards(.element(let cardID, .pullRequest(.attachedQuestion(.element(let id, .question(let action))))))):
-            return state.triage.cards[id: cardID]?.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
+            return state.triage.cards[id: cardID]?.pullRequest?.questionFeatures[id: id].flatMap { questionNotice($0.question, action: action) }
         case .delivery(.acknowledgementFinished(let scope, let error)):
             guard state.delivery.status?.scope == scope, let error else { return nil }
             return .failure(error)
         case .delivery(.updated(let status)):
             guard let error = status.persistenceError, error != state.delivery.status?.persistenceError else { return nil }
             return .failure(error)
+        case .newRequest(.attachmentPicker(.uploaded(let id, .failure(let error)))):
+            guard state.newRequest.pendingSubmission != nil,
+                  state.newRequest.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .newRequest(.submitFinished(let result, let epoch)):
             guard state.newRequest.isSubmitting, epoch == state.newRequest.presentationEpoch else { return nil }
             switch result {
             case .confirmed: return .sentToOrchestrator
-            case .failed(let message): return .failure(message)
+            case .failed(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .newRequest(.commandResolved(let id, let rejection)):
             guard state.newRequest.submissionUncertain, state.newRequest.uncertainCommandID == id else { return nil }
-            return rejection.map(WorkspaceNotice.Event.failure) ?? .sentToOrchestrator
-        case .fleet(.detail(.presented(let action))):
-            return state.fleet.detail.flatMap { nodeNotice($0, action: action) }
-        case .fleet(.path(.element(let id, .node(let action)))):
-            guard case .node(let node) = state.fleet.path[id: id] else { return nil }
-            return nodeNotice(node, action: action)
+            return rejection.map { .failure(couldNotSendMessage($0)) } ?? .sentToOrchestrator
+        case .fleet(.fleet(.closeFinished(let id, let outcome, let epoch))):
+            let fleet = state.fleet.fleet
+            guard fleet.presentationEpoch == epoch, fleet.closingIDs.contains(id) else { return nil }
+            switch outcome {
+            case .confirmed: return .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
+            case .rejected(let message): return .closeRefused(message)
+            default: return nil
+            }
+        case .fleet(.fleet(.commandResolved(let commandID, let rejection))):
+            let fleet = state.fleet.fleet
+            guard let id = fleet.closeOutcomeByID.first(where: { $0.value.uncertainID == commandID })?.key else { return nil }
+            return rejection.map(WorkspaceNotice.Event.closeRefused) ?? .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
+        case .fleet(.nodes(.element(let id, let action))):
+            return state.fleet.nodes[id: id].flatMap { nodeNotice($0, action: action) }
         default: return nil
         }
     }
 
-    private func attachedQuestionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
+    private func rejectedTaskNotice(_ outcome: TaskMutationOutcome) -> WorkspaceNotice.Event? {
+        guard case .rejected(let message) = outcome else { return nil }
+        return .failure(couldNotSendMessage(message))
+    }
+
+    private func taskNotice(_ task: TaskDetailFeature.State, action: TaskDetailFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .mutationFinished(let outcome, _, let epoch):
+            guard task.isActing, task.presentationEpoch == epoch else { return nil }
+            return rejectedTaskNotice(outcome)
+        case .commandResolved(let id, let rejection):
+            guard task.mutationOutcome?.uncertainID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        default: return nil
+        }
+    }
+
+    private func documentNotice(_ document: DocumentReviewFeature.State, action: DocumentReviewFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard document.pendingSubmission != nil,
+                  document.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
+        case .submissionFinished(let revision, _, let outcome), .reportFeedbackFinished(let revision, let outcome):
+            guard document.isSubmitting, document.revision == revision else { return nil }
+            switch outcome {
+            case .failed(let message), .forbidden(let message), .conflict(let message):
+                return .failure(couldNotSendMessage(message))
+            default: return nil
+            }
+        case .commandResolved(let id, let rejection):
+            guard document.needsReconciliation, document.uncertainCommandID == id else { return nil }
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        default: return nil
+        }
+    }
+
+    private func diffUploadNotice(_ diff: DiffReviewFeature.State, action: AttachmentFeature.Action) -> WorkspaceNotice.Event? {
+        guard case .uploaded(let id, .failure(let error)) = action,
+              diff.pendingSubmission != nil,
+              diff.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+        return .failure(couldNotSendMessage(error.message))
+    }
+
+    private func rejectedPRNotice(_ outcome: PRMutationOutcome) -> WorkspaceNotice.Event? {
+        guard case .rejected(let message) = outcome else { return nil }
+        return .failure(couldNotSendMessage(message))
+    }
+
+    private func questionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard question.pendingSubmission != nil && question.pendingAttachedAnswer == nil,
+                  question.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .submissionFinished(let revision, let outcome):
             guard question.isSubmitting, question.revision == revision else { return nil }
             switch outcome {
-            case .failed(let message), .forbidden(let message), .conflict(let message): return .failure(message)
+            case .failed(let message), .forbidden(let message), .conflict(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .commandResolved(let id, let rejection):
             guard question.needsReconciliation, question.uncertainCommandID == id else { return nil }
-            return rejection.map(WorkspaceNotice.Event.failure)
-        case .attachedSubmissionFailed(let message): return .failure(message)
+            return rejection.map { .failure(couldNotSendMessage($0)) }
+        case .attachedSubmissionFailed(let message): return .failure(couldNotSendMessage(message))
         default: return nil
         }
     }
 
     private func nodeNotice(_ node: NodeDetailFeature.State, action: NodeDetailFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard node.pendingSubmission != nil,
+                  node.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .sendFinished(_, let outcome, let epoch):
             guard node.isSending, epoch == node.presentationEpoch else { return nil }
             switch outcome {
             case .confirmed: return .messageSent(node.node?.displayName ?? node.sessionID)
-            case .rejected(let message): return .failure(message)
+            case .rejected(let message): return .failure(couldNotSendMessage(message))
             default: return nil
             }
         case .closeFinished(let outcome, let epoch):
@@ -246,6 +469,8 @@ public struct ServiceRootFeature {
     private func routePending(_ state: inout State) -> Effect<Action> {
         guard let id = state.pendingInboxID, state.triage.triage.routeTarget(for: id) != nil else { return .none }
         state.pendingInboxID = nil
+        state.triage.cancelPendingSubmissions()
+        state.pullRequest?.cancelPendingSubmission()
         return .merge(.send(.triage(.triage(.focus(id)))), .send(.triage(.open(id))))
     }
 }
@@ -254,15 +479,30 @@ public struct ServiceRootFeature {
 public struct ServicePullRequestFeature {
     public init() {}
     @ObservableState
-    public struct State: Equatable {
+    public struct State: Equatable, Identifiable {
+        public var id: UInt64 { pr.id }
+        public var lastKnownPR: PullRequest
+        public var displayedPR: PullRequest? { pr.pr ?? lastKnownPR }
+        public var hasOutstandingCommand: Bool {
+            pr.isSending || pr.mutationOutcome?.uncertainID != nil || diff.isSending || diff.mutationOutcome?.uncertainID != nil
+                || questionFeatures.contains { $0.question.isSubmitting || $0.question.needsReconciliation }
+        }
         public var downloads = AttachmentDownloadFeature.State()
         public var pr: PullRequestFeature.State
         public var diff: DiffReviewFeature.State
         public var reports: [Report] = []
         public var questions: [Question] = []
         public var questionFeatures: IdentifiedArrayOf<AttachedPRQuestionFeature.State> = []
+        public var visibleQuestionIDs: Set<UInt64> { Set(questions.map(\.id)) }
         public var descriptionExpanded: Bool?
+        public mutating func cancelPendingSubmission() {
+            diff.cancelPendingSubmission()
+            for id in questionFeatures.ids {
+                questionFeatures[id: id]?.question.cancelPendingSubmission()
+            }
+        }
         public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
+            self.lastKnownPR = pr
             self.reports = reports
             self.questions = questions
             questionFeatures = IdentifiedArray(uniqueElements: questions.map(AttachedPRQuestionFeature.State.init))
@@ -290,7 +530,12 @@ public struct ServicePullRequestFeature {
                 state.reports = reports
                 state.questions = questions
                 let ids = Set(questions.map(\.id))
-                state.questionFeatures.removeAll { !ids.contains($0.id) }
+                for id in state.questionFeatures.ids where !ids.contains(id) {
+                    state.questionFeatures[id: id]?.question.cancelPendingSubmission()
+                }
+                state.questionFeatures.removeAll {
+                    !ids.contains($0.id) && !$0.question.isSubmitting && !$0.question.needsReconciliation
+                }
                 var effects: [Effect<Action>] = []
                 for question in questions {
                     if state.questionFeatures[id: question.id] == nil {
@@ -300,10 +545,22 @@ public struct ServicePullRequestFeature {
                     }
                 }
                 return .merge(effects)
+            case .attachedQuestion(.element(let id, .question(.submissionFinished))),
+                 .attachedQuestion(.element(let id, .question(.commandResolved))):
+                if !state.visibleQuestionIDs.contains(id), let child = state.questionFeatures[id: id],
+                   !child.question.isSubmitting, !child.question.needsReconciliation {
+                    state.questionFeatures.remove(id: id)
+                }
+                return .none
             case .toggleDescription:
                 state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
                 return .none
-            case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
+            case .updated(let pr):
+                if let pr { state.lastKnownPR = pr }
+                return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
+            case .diff(.disappeared):
+                state.cancelPendingSubmission()
+                return .none
             case .snapshotUnavailable: return .merge(.send(.pr(.snapshotUnavailable)), .send(.diff(.snapshotUnavailable)))
             case .pr, .diff, .downloads, .attachedQuestion: return .none
             }

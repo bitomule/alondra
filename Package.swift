@@ -17,5 +17,9 @@ let package = Package(
             url: "https://github.com/pointfreeco/swift-composable-architecture",
             exact: "1.26.2"
         ),
+        .package(
+            url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
+            exact: "1.13.1"
+        ),
     ]
 )

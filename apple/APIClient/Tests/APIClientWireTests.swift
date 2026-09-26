@@ -2,206 +2,129 @@ import AlondraAPIClient
 import Foundation
 import XCTest
 
-private struct EchoSigner: RequestSigner {
-    let deviceID = "test-device"
-    func signature(for message: Data) throws -> Data { message }
-}
-
-private actor RecordingTransport: HTTPTransport {
-    var requests: [(URLRequest, RequestPolicy)] = []
-    var uploadBodies: [Data] = []
-    let response: HTTPResponse
-
-    init(_ response: HTTPResponse) { self.response = response }
-
-    func send(_ request: URLRequest, policy: RequestPolicy) async throws -> HTTPResponse {
-        requests.append((request, policy))
+private actor WireOperations: ServiceOperationTransport {
+    private var requests: [ServiceRequest] = []
+    let response: ServiceResponse
+    init(status: Int = 200, body: Data = Data()) { response = .completed(status: status, body: body) }
+    func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
+        requests.append(request)
         return response
     }
-
-    func upload(_ request: URLRequest, body: Data, progress: @escaping @Sendable (Double) -> Void) async throws -> HTTPResponse {
-        requests.append((request, .upload))
-        uploadBodies.append(body)
-        progress(1)
-        return response
+    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
+        XCTFail("An endpoint request must not enter the long-poll capability")
     }
-
-    func recorded() -> [(URLRequest, RequestPolicy)] { requests }
-    func bodies() -> [Data] { uploadBodies }
+    func recorded() -> [ServiceRequest] { requests }
 }
 
-private actor WaitingTransport: HTTPTransport {
-    private var started = false
-    private var waiter: CheckedContinuation<Void, Never>?
+private actor ControlledChangeWait: ServiceOperationTransport {
+    private var started: (UInt64, Int)?
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var response: CheckedContinuation<Void, any Error>?
+    private(set) var cancellations = 0
 
-    func waitUntilStarted() async {
-        if started { return }
-        await withCheckedContinuation { continuation in waiter = continuation }
+    func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
+        XCTFail("A service change wait must not be encoded as a daemon operation")
+        return .unknown
     }
-
-    func send(_ request: URLRequest, policy: RequestPolicy) async throws -> HTTPResponse {
-        started = true
-        waiter?.resume()
-        waiter = nil
-        try await Task.sleep(for: .seconds(30))
-        return .init(status: 200, body: Data())
+    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                response = continuation
+                started = (afterSnapshotTick, seconds)
+                startWaiter?.resume()
+                startWaiter = nil
+            }
+        } onCancel: { Task { await self.cancel() } }
     }
-
-    func upload(_ request: URLRequest, body: Data, progress: @escaping @Sendable (Double) -> Void) async throws -> HTTPResponse {
-        try await Task.sleep(for: .seconds(30))
-        return .init(status: 200, body: Data())
+    func waitUntilStarted() async -> (UInt64, Int) {
+        if started == nil { await withCheckedContinuation { startWaiter = $0 } }
+        return started!
+    }
+    private func cancel() {
+        guard let response else { return }
+        self.response = nil
+        cancellations += 1
+        response.resume(throwing: CancellationError())
     }
 }
 
 final class APIClientWireTests: XCTestCase {
-    private let base = URL(string: "https://example.invalid/api")!
-
-    func testSignedLongPollPreservesQueryAndLane() async throws {
-        let transport = RecordingTransport(.init(status: 200, body: Data()))
-        let instant = Date(timeIntervalSince1970: 1_700_000_000)
-        let client = AlondraAPIClient(base: base, signer: EchoSigner(), transport: transport, now: { instant })
-        _ = try await client.send(AlondraEndpoints.waitForChange(after: 42))
-        let calls = await transport.recorded()
-        XCTAssertEqual(calls.count, 1)
-        XCTAssertEqual(calls[0].1.timeout, 70)
-        let request = calls[0].0
-        XCTAssertEqual(request.url?.absoluteString, "https://example.invalid/api/v1/changes?after=42&wait=50")
-        XCTAssertEqual(request.value(forHTTPHeaderField: RequestSignature.deviceHeader), "test-device")
-        XCTAssertEqual(request.value(forHTTPHeaderField: RequestSignature.timestampHeader), "1700000000000")
-        let signed = Data(base64Encoded: try XCTUnwrap(request.value(forHTTPHeaderField: RequestSignature.signatureHeader)))!
-        XCTAssertEqual(signed, RequestSignature.message(method: "GET", target: "/api/v1/changes?after=42&wait=50", timestamp: 1_700_000_000_000, body: Data()))
+    private func client(_ operations: any ServiceOperationTransport) -> AlondraAPIClient {
+        AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "mac", operations: operations)
     }
 
-    func testUploadSignsExactBytesAndEncodedName() async throws {
-        let transport = RecordingTransport(.init(status: 200, body: Data(#"{"id":"stored"}"#.utf8)))
-        let instant = Date(timeIntervalSince1970: 1_700_000_000)
-        let client = AlondraAPIClient(base: base, signer: EchoSigner(), transport: transport, now: { instant })
-        let bytes = Data([0, 1, 255, 42])
-        let id = try await client.upload(bytes, name: "a b&c.txt")
-        XCTAssertEqual(id, "stored")
-        let bodies = await transport.bodies()
-        XCTAssertEqual(bodies, [bytes])
-        let recorded = await transport.recorded()
-        let request = try XCTUnwrap(recorded.first?.0)
-        XCTAssertEqual(request.url?.absoluteString, "https://example.invalid/api/v1/uploads?name=a%20b%26c.txt")
-        XCTAssertNil(request.httpBody)
-        let signed = Data(base64Encoded: try XCTUnwrap(request.value(forHTTPHeaderField: RequestSignature.signatureHeader)))!
-        XCTAssertEqual(signed, RequestSignature.message(method: "POST", target: "/api/v1/uploads?name=a%20b%26c.txt", timestamp: 1_700_000_000_000, body: bytes))
-    }
-
-    func testEmpty404AndJSON404RemainDistinct() async throws {
-        let empty = AlondraAPIClient(base: base, transport: RecordingTransport(.init(status: 404, body: Data())))
-        do {
-            _ = try await empty.send(AlondraEndpoints.nodeActivity("node"))
-            XCTFail("Expected the empty 404 used by the activity fallback")
-        } catch let error as APIError {
-            XCTAssertEqual(error, .unexpected(status: 404))
-        }
-        let json = AlondraAPIClient(base: base, transport: RecordingTransport(.init(status: 404, body: Data(#"{"error":"gone"}"#.utf8))))
-        do {
-            _ = try await json.send(AlondraEndpoints.nodeActivity("node"))
-            XCTFail("Expected server JSON error")
-        } catch let error as APIError {
-            XCTAssertEqual(error, .server(status: 404, kind: nil, detail: "gone", reasons: []))
-        }
-        let emptyMessage = AlondraAPIClient(base: base, transport: RecordingTransport(.init(status: 404, body: Data(#"{"error":""}"#.utf8))))
-        do {
-            _ = try await emptyMessage.send(AlondraEndpoints.nodeActivity("node"))
-            XCTFail("Expected JSON 404 to bypass the legacy activity fallback")
-        } catch let error as APIError {
-            XCTAssertEqual(error, .server(status: 404, kind: nil, detail: "", reasons: []))
-        }
-    }
-
-    func testMutationIsSentOnceOnTransportFailure() async throws {
-        let transport = RecordingTransport(.init(status: 503, body: Data()))
-        let client = AlondraAPIClient(base: base, transport: transport)
-        do {
-            _ = try await client.send(AlondraEndpoints.activity(client: "ios"))
-            XCTFail("Expected unavailable")
-        } catch let error as APIError {
-            XCTAssertEqual(error, .unavailable)
-        }
-        let recorded = await transport.recorded()
-        XCTAssertEqual(recorded.count, 1)
-    }
-
-    func testAnswerKeepsCallingDeviceAndEscapesPathSegment() async throws {
-        let transport = RecordingTransport(.init(status: 200, body: Data()))
-        let client = AlondraAPIClient(base: base, device: "mac", transport: transport)
-        _ = try await client.send(AlondraEndpoints.answer(7, text: "yes", option: nil, attachments: ["file-1"], device: client.device))
-        _ = try await client.send(AlondraEndpoints.task("a/b"))
-        let recorded = await transport.recorded()
-        let body = try XCTUnwrap(recorded[0].0.httpBody)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        XCTAssertEqual(object["device"] as? String, "mac")
-        XCTAssertEqual(object["text"] as? String, "yes")
-        XCTAssertNil(object["option"])
-        XCTAssertEqual(recorded[1].0.url?.absoluteString, "https://example.invalid/api/v1/tasks/a%2Fb")
-    }
-
-    func testAuthorizationConflictAndGatewayResponses() async throws {
-        let cases: [(Int, Data, APIError)] = [
-            (401, Data(), .unauthorized),
-            (403, Data(#"{"kind":"permission","error":"device revoked"}"#.utf8), .forbidden(kind: "permission", detail: "device revoked", reasons: [])),
-            (409, Data(#"{"kind":"task_refused","error":"closed"}"#.utf8), .conflict(kind: "task_refused", detail: "closed", reasons: [])),
-            (502, Data(), .unavailable),
-            (503, Data(#"{"error":"daemon reply"}"#.utf8), .server(status: 503, kind: nil, detail: "daemon reply", reasons: [])),
+    func testServiceReplyErrorsPreserveAuthoritativeBodiesAndRejectNonSuccess() async throws {
+        let cases: [(Int, String, APIError)] = [
+            (404, "", .unexpected(status: 404)),
+            (404, #"{"error":"gone"}"#, .server(status: 404, kind: nil, detail: "gone", reasons: [])),
+            (404, #"{"error":""}"#, .server(status: 404, kind: nil, detail: "", reasons: [])),
+            (401, "", .unauthorized),
+            (403, #"{"kind":"permission","error":"device revoked"}"#, .forbidden(kind: "permission", detail: "device revoked", reasons: [])),
+            (409, #"{"kind":"task_refused","error":"closed"}"#, .conflict(kind: "task_refused", detail: "closed", reasons: [])),
+            (502, "", .unavailable),
+            (503, #"{"error":"daemon reply"}"#, .server(status: 503, kind: nil, detail: "daemon reply", reasons: [])),
+            (302, "", .unexpected(status: 302)),
+            (304, "", .unexpected(status: 304)),
         ]
         for (status, body, expected) in cases {
-            let client = AlondraAPIClient(base: base, transport: RecordingTransport(.init(status: status, body: body)))
+            let operations = WireOperations(status: status, body: Data(body.utf8))
             do {
-                _ = try await client.send(AlondraEndpoints.health())
-                XCTFail("Expected HTTP \(status) failure")
-            } catch let error as APIError {
-                XCTAssertEqual(error, expected)
-            }
+                _ = try await client(operations).send(AlondraEndpoints.nodeActivity("node"))
+                XCTFail("Expected service response \(status) to fail")
+            } catch { XCTAssertEqual(error as? APIError, expected) }
+            let requests = await operations.recorded()
+            XCTAssertEqual(requests.count, 1, "Error handling must not replay the operation")
         }
     }
 
-    func testCloseNodeConflictCarriesStructuredReasonsForPresentation() async throws {
+    func testAnswerKeepsDeviceIdentityAndLogicalPathAndQueryAreEscaped() async throws {
+        let operations = WireOperations()
+        let api = client(operations)
+        try await api.answer(7, text: "yes", option: nil, attachments: ["file-1"], operationID: "answer-7")
+        _ = try await api.task("a/b")
+        _ = try await api.search("a b&c?#é")
+        let requests = await operations.recorded()
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests[0].operationID, "answer-7")
+        XCTAssertEqual(requests[0].path, "/v1/questions/7/answer")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requests[0].body)) as? [String: Any])
+        XCTAssertEqual(object["device"] as? String, "mac")
+        XCTAssertEqual(object["text"] as? String, "yes")
+        XCTAssertEqual(object["attachments"] as? [String], ["file-1"])
+        XCTAssertNil(object["option"])
+        XCTAssertEqual(requests[1].path, "/v1/tasks/a%2Fb")
+        XCTAssertEqual(requests[2].path, "/v1/search?q=a%20b%26c%3F%23%C3%A9")
+    }
+
+    func testCloseRefusalKeepsStructuredReasonsAndNeverRepeatsMutation() async throws {
         let body = Data(#"{"reasons":[{"kind":"worktree","detail":"uncommitted files"},{"kind":"busy"}]}"#.utf8)
-        let transport = RecordingTransport(.init(status: 409, body: body))
-        let client = AlondraAPIClient(base: base, transport: transport)
+        let operations = WireOperations(status: 409, body: body)
         do {
-            _ = try await client.send(AlondraEndpoints.closeNode("node-1", force: false))
+            _ = try await client(operations).send(AlondraEndpoints.closeNode("node-1", force: false), operationID: "close-1")
             XCTFail("Expected close refusal")
-        } catch let error as APIError {
-            XCTAssertEqual(error, .conflict(kind: nil, detail: nil, reasons: [
-                .init(kind: "worktree", detail: "uncommitted files"),
-                .init(kind: "busy", detail: nil),
+        } catch {
+            XCTAssertEqual(error as? APIError, .conflict(kind: nil, detail: nil, reasons: [
+                .init(kind: "worktree", detail: "uncommitted files"), .init(kind: "busy", detail: nil),
             ]))
         }
-        let recorded = await transport.recorded()
-        XCTAssertEqual(recorded.count, 1)
-        XCTAssertEqual(recorded[0].1.timeout, 70)
-        XCTAssertEqual(recorded[0].0.httpBody, Data("{}".utf8))
+        let requests = await operations.recorded()
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].operationID, "close-1")
+        XCTAssertEqual(requests[0].body, Data("{}".utf8))
     }
 
-    func testNonSuccessRedirectAndNotModifiedCannotPassAsDaemonResponse() async throws {
-        for status in [302, 304] {
-            let transport = RecordingTransport(.init(status: status, body: Data()))
-            let client = AlondraAPIClient(base: base, transport: transport)
-            do {
-                _ = try await client.send(AlondraEndpoints.health())
-                XCTFail("Expected HTTP \(status) to fail")
-            } catch let error as APIError {
-                XCTAssertEqual(error, .unexpected(status: status))
-            }
-        }
-    }
-
-    func testCancellingLongPollStopsTransportWait() async throws {
-        let transport = WaitingTransport()
-        let client = AlondraAPIClient(base: base, transport: transport)
-        let task = Task { try await client.send(AlondraEndpoints.waitForChange(after: 1)) }
-        await transport.waitUntilStarted()
+    func testChangeWaitForwardsCursorAndDurationAndCancelsUnderlyingOperation() async throws {
+        let operations = ControlledChangeWait()
+        let api = client(operations)
+        let task = Task { try await api.waitForChange(afterSnapshotTick: 42, seconds: 10) }
+        let parameters = await operations.waitUntilStarted()
+        XCTAssertEqual(parameters.0, 42)
+        XCTAssertEqual(parameters.1, 10)
         task.cancel()
-        do {
-            _ = try await task.value
-            XCTFail("Expected cancellation")
-        } catch is CancellationError {
-            // The transport sleep was cancelled by the caller's task.
-        }
+        do { try await task.value; XCTFail("Expected cancellation") }
+        catch is CancellationError {}
+        let cancellations = await operations.cancellations
+        XCTAssertEqual(cancellations, 1)
     }
 }

@@ -8,17 +8,13 @@ struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
     var isActive = true
-    @State private var presentation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+    private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
-    init(store: StoreOf<ServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true,
-         search: MacConversationSearch = .unavailable) {
+    init(store: StoreOf<ServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
         self.isActive = isActive
-        _presentation = State(initialValue: Store(initialState: MacPresentationFeature.State()) {
-            MacPresentationFeature()
-        } withDependencies: { $0.macConversationSearch = search })
     }
 
     var body: some View {
@@ -63,14 +59,12 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             accountContent.frame(minWidth: 600, minHeight: 520)
         }
         .task { guard isActive else { return }; await store.send(.appeared).finish() }
-        .task { guard isActive else { return }; await store.send(.triage(.triage(.appeared))).finish() }
         .task { guard isActive else { return }; await store.send(.tasks(.appeared)).finish() }
         .task { guard isActive else { return }; await store.send(.fleet(.appeared)).finish() }
         .onDisappear {
             presentation.send(.disappeared)
             guard isActive else { return }
             store.send(.disappeared)
-            store.send(.triage(.triage(.disappeared)))
             store.send(.tasks(.disappeared))
             store.send(.fleet(.disappeared))
         }
@@ -179,30 +173,31 @@ private struct MacServiceDetail: View {
     var body: some View {
         switch presentation.selection {
         case .item(let id):
-            if let child = store.scope(state: \.pullRequest, action: \.pullRequest.presented), id == "p\(child.pr.id)" {
+            if let selected = store.pullRequestID, id == "p\(selected)",
+               let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == selected }) {
                 ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
                 ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
-            } else if let child = store.scope(state: \.triage.document, action: \.triage.document.presented), child.subject.id == id {
+            } else if let child = store.scope(state: \.triage.documents, action: \.triage.documents).first(where: { $0.subject.id == id }) {
                 ServiceDocumentView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) }, markRead: { store.send(.triage(.triage(.hide(id)))) })
             } else { MacServiceHome(store: store, presentation: presentation) }
-        case .node:
-            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) {
-                ServiceNodeView(store: child,
+        case .node(let id):
+            if let child = store.scope(state: \.fleet.nodes, action: \.fleet.nodes).first(where: { $0.sessionID == id }) {
+                ServiceNodeView(store: child, presentation: store.fleet.presentation,
                     pending: store.triage.triage.queue.filter { $0.sessionId == child.sessionID },
                     openInbox: { presentation.send(.select(.item($0))) },
                     openTask: { presentation.send(.select(.task($0))) })
-            }
+            } else { ContentUnavailableView("This node is gone", systemImage: "questionmark.circle") }
         case .task:
             if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail.presented) {
                 ServiceTaskDetailView(store: child, context: store.tasks.detailContext,
                     openTask: { presentation.send(.select(.task($0))) }, focusInbox: { presentation.send(.select(.item($0))) })
-            }
+            } else { ContentUnavailableView("This task is gone", systemImage: "questionmark.circle") }
         case .request(let id):
             if let request = store.tasks.taskBoard.request(id) {
                 ServiceRequestDetail(request: request, store: store.scope(state: \.tasks, action: \.tasks),
                     selectTask: { presentation.send(.select(.task($0))) })
-            }
+            } else { ContentUnavailableView("This request is gone", systemImage: "questionmark.circle") }
         case .schedules: ServiceSchedulesView(store: store.scope(state: \.tasks, action: \.tasks))
         case nil: MacServiceHome(store: store, presentation: presentation)
         }

@@ -19,7 +19,7 @@ struct ServiceFleetView: View {
                 }
                 if store.fleet.query.trimmingCharacters(in: .whitespaces).isEmpty, let orchestrator = store.fleet.snapshot?.orchestrator {
                     Section {
-                        NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailFeature.State(sessionID: orchestrator.id))) {
+                        NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailRouteFeature.State(sessionID: orchestrator.id))) {
                             ServiceNodeRow(entry: orchestrator)
                         }
                         .listRowBackground(Palette.ember.opacity(0.12))
@@ -29,7 +29,7 @@ struct ServiceFleetView: View {
                 ForEach(sections, id: \.name) { section in
                     Section {
                         ForEach(section.nodes) { node in
-                            NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailFeature.State(sessionID: node.id))) {
+                            NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailRouteFeature.State(sessionID: node.id))) {
                                 ServiceNodeRow(entry: node)
                             }
                             .listRowBackground(Palette.card.opacity(0.85))
@@ -73,8 +73,15 @@ struct ServiceFleetView: View {
             }
         } destination: { child in
             switch child.case {
-            case .node(let node):
-                ServiceNodeView(store: node, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
+            case .node(let route):
+                if let node = store.scope(state: \.nodes, action: \.nodes).first(where: { $0.sessionID == route.sessionID }) {
+                    ServiceNodeView(store: node, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
+                } else {
+                    ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
+                        .background(DawnBackground(glow: Palette.dawn))
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar(.hidden, for: .tabBar)
+                }
             case .task(let task):
                 ServiceTaskDetailView(store: task, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
             }

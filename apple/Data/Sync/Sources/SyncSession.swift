@@ -71,17 +71,6 @@ public actor SyncSession {
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<SyncState>.Continuation] = [:]
 
-    public init(client: AlondraAPIClient, credentialRevision: String, retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil) {
-        let identity = SyncIdentity(
-            server: client.base,
-            deviceID: client.signer?.deviceID ?? client.device,
-            credentialRevision: credentialRevision
-        )
-        self.init(transport: client, identity: identity, retryDelay: retryDelay,
-                  initialInvalidConfiguration: initialInvalidConfiguration,
-                  isUnauthorized: { if case APIError.unauthorized = $0 { true } else { false } })
-    }
-
     public init(transport: any SyncTransport, identity: SyncIdentity,
                 retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil,
                 isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
@@ -108,19 +97,7 @@ public actor SyncSession {
         return stream
     }
 
-    /// Replaces transport and invalidates every in-flight response before cancelling the old poll.
-    /// The new identity may be the same when the caller explicitly requests a fresh connection.
-    public func use(_ client: AlondraAPIClient, credentialRevision: String) {
-        let identity = SyncIdentity(
-            server: client.base,
-            deviceID: client.signer?.deviceID ?? client.device,
-            credentialRevision: credentialRevision
-        )
-        use(transport: client, identity: identity,
-            isUnauthorized: { if case APIError.unauthorized = $0 { true } else { false } })
-    }
-
-    /// Switches a local or relay transport and invalidates in-flight reads under a new identity.
+    /// Replaces the service transport and invalidates in-flight reads under an explicit identity.
     public func use(transport next: any SyncTransport, identity: SyncIdentity,
                     isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
         generation &+= 1

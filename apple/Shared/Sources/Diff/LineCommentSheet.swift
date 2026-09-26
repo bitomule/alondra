@@ -7,26 +7,15 @@ public struct LineCommentSheet: View {
     let onSave: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var localText = ""
-    private let externalText: Binding<String>?
-    private var text: Binding<String> { externalText ?? $localText }
+    private let text: Binding<String>
     @FocusState private var focused: Bool
-
-    /// `initial` seeds the text once; later changes to it are not followed.
-    public init(line: DiffLine, initial: String, onSave: @escaping (String) -> Void) {
-        self.line = line
-        self.initial = initial
-        self.onSave = onSave
-        _localText = State(initialValue: initial)
-        externalText = nil
-    }
 
     /// The feature owns the editable buffer; the view only renders and forwards editing.
     public init(line: DiffLine, initial: String, text: Binding<String>, onSave: @escaping (String) -> Void) {
         self.line = line
         self.initial = initial
         self.onSave = onSave
-        self.externalText = text
+        self.text = text
     }
 
     private var trimmed: String { text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) }

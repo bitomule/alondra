@@ -7,18 +7,23 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple:AlondraShared",
+        "//apple/Domain:AlondraDomain",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
 
 swift_test(
+    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
+    linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraQuestionsFeatureTests",
     srcs = glob(["Tests/*.swift"]),
     deps = [
         ":AlondraQuestionsFeature",
         "//apple:AlondraShared",
+        "//apple/Domain:AlondraDomain",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
 )

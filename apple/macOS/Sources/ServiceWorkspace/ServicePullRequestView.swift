@@ -10,7 +10,7 @@ struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
     var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
-    private var pr: PullRequest? { store.pr.pr }
+    private var pr: PullRequest? { store.displayedPR }
     private var comments: [ReviewComment] {
         (store.diff.files ?? []).flatMap(\.lines).compactMap { line in
             guard let anchor = line.anchor, let text = store.diff.comments[anchor] else { return nil }
@@ -157,7 +157,7 @@ struct ServicePullRequestView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("The node asks")
                     .font(.title3.weight(.semibold))
-                ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion)) { child in
+                ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { store.visibleQuestionIDs.contains($0.id) }) { child in
                     ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), pullRequestURL: pr.url)
                 }
             }

@@ -33,6 +33,11 @@ public struct TriageCardFeature {
             case .pullRequest(let value): pullRequest = ServicePullRequestFeature.State(pr: value)
             }
         }
+        public mutating func cancelPendingSubmission() {
+            question?.cancelPendingSubmission()
+            document?.cancelPendingSubmission()
+            pullRequest?.cancelPendingSubmission()
+        }
         public var reply: String { question?.draft.text ?? document?.draft.general ?? pullRequest?.diff.note ?? "" }
         public var selectedOption: QuestionOption? {
             guard let question else { return nil }
@@ -47,7 +52,12 @@ public struct TriageCardFeature {
                 || document?.isSubmitting == true || document?.needsReconciliation == true
                 || pullRequest?.diff.isSending == true || pullRequest?.pr.isSending == true
         }
-        public var notice: String? { question?.notice ?? question?.conflict ?? document?.notice ?? document?.conflict ?? pullRequest?.diff.validationError }
+        public var notice: String? {
+            let questionNotice = question?.noticeIsSubmissionFailure == true ? nil : (question?.notice ?? question?.conflict)
+            let documentNotice = document?.noticeIsSubmissionFailure == true ? nil : (document?.notice ?? document?.conflict)
+            let diffNotice = pullRequest?.diff.validationErrorIsSubmissionFailure == true ? nil : pullRequest?.diff.validationError
+            return questionNotice ?? documentNotice ?? diffNotice
+        }
     }
     public enum Action {
         case question(QuestionFeature.Action)
@@ -97,7 +107,7 @@ public struct TriageCardFeature {
             case .send:
                 guard !state.busy else { return .none }
                 if let question = state.question { state.pendingStamp = .answer(question.draft.selectedOption); return .send(.question(.answerTapped)) }
-                if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: "David"))) }
+                if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: state.document?.feedbackAuthor ?? ""))) }
                 state.pendingStamp = .changesRequested
                 state.requestingChanges = true
                 return .send(.pullRequest(.diff(.requestChangesTapped)))

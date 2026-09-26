@@ -25,6 +25,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
     private let scope: RelayOutboxScope
     private let codec: ServiceEnvelopeCodec
     private let sleep: @Sendable () async throws -> Void
+    private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
 
     public init(journalFile: URL, scope: RelayOutboxScope,
@@ -34,6 +35,19 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
+        try self.init(journalFile: journalFile, scope: scope, bearer: bearer, transport: transport,
+            signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
+            now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
+    }
+
+    init(journalFile: URL, scope: RelayOutboxScope,
+                bearer: @escaping @Sendable () async throws -> String,
+                transport: (any ServiceHTTPTransport)? = nil,
+                signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
+                macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
+                now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
+                sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
+                waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) throws {
         let client = try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, transport: transport)
         self.client = client; self.scope = scope
@@ -41,6 +55,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         codec = ServiceEnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.sleep = sleep
+        self.waitForReadDeadline = waitForReadDeadline
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {
@@ -210,14 +225,81 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         return body
     }
 
+    /// Relay changes wake this read's status query; they never invalidate daemon content
+    /// themselves. The completed response still crosses the same authenticated envelope gate.
+    private func waitForReadCompletion(requestID: String, path: String, seconds: Int) async throws -> RelayOperationResult {
+        // Includes bootstrap, the one submission, status reconciliation and every HTTP wait.
+        let deadline = ContinuousClock().now.advanced(by: .seconds(seconds + 5))
+        let waitForDeadline = waitForReadDeadline
+        return try await withThrowingTaskGroup(of: RelayOperationResult.self) { group in
+            group.addTask {
+                try await waitForDeadline(deadline)
+                try Task.checkCancellation()
+                return .unknown
+            }
+            group.addTask { try await self.readUntilChange(requestID: requestID, path: path, deadline: deadline) }
+            defer { group.cancelAll() }
+            let result = try await group.next() ?? .unknown
+            try Task.checkCancellation()
+            guard ContinuousClock().now < deadline else { return .unknown }
+            return result
+        }
+    }
+
+    private func checkReadDeadline(_ deadline: ContinuousClock.Instant) throws {
+        try Task.checkCancellation()
+        guard active else { throw CancellationError() }
+        guard ContinuousClock().now < deadline else { throw RelaySessionError.outcomeUnknown }
+    }
+
+    private func readUntilChange(requestID: String, path: String, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
+        let clock = ContinuousClock()
+        let bootstrap = try await client.bootstrap()
+        try checkReadDeadline(deadline)
+        let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: nil)
+        try checkReadDeadline(deadline)
+        do {
+            let receipt: RelayReceipt
+            do {
+                receipt = try await client.submitRequest(envelope)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                // A lost submission response authorizes only GET reconciliation, never POST.
+                try checkReadDeadline(deadline)
+                receipt = try await client.requestStatus(requestID: requestID)
+            }
+            try checkReadDeadline(deadline)
+            if let result = try verified(receipt, requestID: requestID) { return result }
+            if receipt.status == "expired" { return .unknown }
+            var revision = receipt.revision
+            while clock.now < deadline {
+                try checkReadDeadline(deadline)
+                let remaining = clock.now.duration(to: deadline).components
+                let wait = UInt64(max(1, min(25, remaining.seconds + (remaining.attoseconds > 0 ? 1 : 0))))
+                let update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
+                try checkReadDeadline(deadline)
+                // A new relay epoch or a backwards cursor cannot describe this job's lifecycle.
+                guard update.epoch == bootstrap.epoch, update.revision >= revision else { return .unknown }
+                revision = update.revision
+                guard let job = update.changes.first(where: { $0.requestID == requestID }) else { continue }
+                if job.status == "expired" { return .unknown }
+                guard job.status == "completed" else { continue }
+                let completed = try await client.requestStatus(requestID: requestID)
+                try checkReadDeadline(deadline)
+                if let result = try verified(completed, requestID: requestID) { return result }
+            }
+            return .unknown
+        } catch is CancellationError { throw CancellationError() }
+        catch { return .unknown }
+    }
+
     public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
         guard active else { throw CancellationError() }
         let duration = max(0, min(seconds, 50))
         // Wait on daemon content changes inside the encrypted service request. Relay job
         // lifecycle events include our own reads and cannot be used as content invalidation.
-        let result = try await read(requestID: "read-" + UUID().uuidString,
-            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", body: nil,
-            statusPolls: duration + 5)
+        let result = try await waitForReadCompletion(requestID: "read-" + UUID().uuidString,
+            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", seconds: duration)
         try Task.checkCancellation()
         guard active else { throw CancellationError() }
         switch result {

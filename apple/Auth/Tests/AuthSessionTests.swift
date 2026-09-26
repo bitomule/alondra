@@ -5,18 +5,25 @@ import AlondraAuth
 
 private actor FixtureTransport: AuthHTTPTransport {
     var requests: [URLRequest] = []
-    var tokenResponse: @Sendable (URLRequest) -> AuthHTTPResponse
-    init(tokenResponse: @escaping @Sendable (URLRequest) -> AuthHTTPResponse) { self.tokenResponse = tokenResponse }
+    var tokenResponse: @Sendable (URLRequest) throws -> AuthHTTPResponse
+    let revocationResponse: @Sendable (URLRequest) -> AuthHTTPResponse
+    init(revocationResponse: @escaping @Sendable (URLRequest) -> AuthHTTPResponse = { _ in AuthHTTPResponse(status: 200, body: Data()) },
+         tokenResponse: @escaping @Sendable (URLRequest) throws -> AuthHTTPResponse) {
+        self.tokenResponse = tokenResponse
+        self.revocationResponse = revocationResponse
+    }
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         requests.append(request)
         if request.url!.path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token"}
+            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
-        return tokenResponse(request)
+        if request.url!.path.hasSuffix("/revoke") { return revocationResponse(request) }
+        return try tokenResponse(request)
     }
-    func tokenRequests() -> [URLRequest] { requests.filter { $0.httpMethod == "POST" } }
+    func tokenRequests() -> [URLRequest] { requests.filter { $0.url!.path.hasSuffix("/token") } }
+    func revocations() -> [URLRequest] { requests.filter { $0.url!.path.hasSuffix("/revoke") } }
 }
 
 private actor BlockingRefreshTransport: AuthHTTPTransport {
@@ -24,11 +31,16 @@ private actor BlockingRefreshTransport: AuthHTTPTransport {
     private var responseWaiter: CheckedContinuation<AuthHTTPResponse, Never>?
     private var started = false
     private var postCount = 0
+    private var revoked: [URLRequest] = []
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         if request.httpMethod != "POST" {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token"}
+            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke"}
             """.utf8))
+        }
+        if request.url!.path.hasSuffix("/revoke") {
+            revoked.append(request)
+            return AuthHTTPResponse(status: 200, body: Data())
         }
         postCount += 1
         started = true
@@ -45,6 +57,7 @@ private actor BlockingRefreshTransport: AuthHTTPTransport {
         responseWaiter = nil
     }
     func count() -> Int { postCount }
+    func revocations() -> [URLRequest] { revoked }
 }
 
 private struct InvalidDiscoveryTransport: AuthHTTPTransport {
@@ -67,9 +80,10 @@ private actor UserInfoTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         if request.url!.path.hasSuffix("openid-configuration") {
             return AuthHTTPResponse(status: 200, body: Data("""
-            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
+            {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/userinfo"}
             """.utf8))
         }
+        if request.url!.path.hasSuffix("/revoke") { return AuthHTTPResponse(status: 200, body: Data()) }
         if request.httpMethod == "POST" {
             return AuthSessionTests.tokens(access: "access-for-userinfo", refresh: "rotated", idToken: nil)
         }
@@ -97,7 +111,7 @@ private actor UserInfoTransport: AuthHTTPTransport {
 private struct OffIssuerUserInfoTransport: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
         AuthHTTPResponse(status: 200, body: Data("""
-        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","userinfo_endpoint":"https://attacker.example/userinfo"}
+        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/revoke","userinfo_endpoint":"https://attacker.example/userinfo"}
         """.utf8))
     }
 }
@@ -188,10 +202,15 @@ private actor DelayedCancelBrowser: AuthBrowser {
 
 private final class MemoryStorage: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
-    private var token: String?
-    init(_ token: String? = nil) { self.token = token }
-    func read() throws -> String? { lock.lock(); defer { lock.unlock() }; return token }
-    func write(_ token: String) throws { lock.lock(); defer { lock.unlock() }; self.token = token }
+    private var token: RefreshCredential?
+    private var refusesWrites: Bool
+    init(_ token: String? = nil, refusesWrites: Bool = false) {
+        self.token = token.map { RefreshCredential(token: $0) }
+        self.refusesWrites = refusesWrites
+    }
+    func setRefusesWrites(_ value: Bool) { lock.lock(); defer { lock.unlock() }; refusesWrites = value }
+    func read() throws -> RefreshCredential? { lock.lock(); defer { lock.unlock() }; return token }
+    func write(_ token: RefreshCredential) throws { lock.lock(); defer { lock.unlock() }; if refusesWrites { throw AuthError.keychain(-25293) }; self.token = token }
     func delete() throws { lock.lock(); defer { lock.unlock() }; token = nil }
 }
 
@@ -251,7 +270,7 @@ final class AuthSessionTests: XCTestCase {
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
             let values = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) })
             XCTAssertEqual(values["code_challenge_method"], "S256")
-            XCTAssertEqual(values["scope"], "openid profile")
+            XCTAssertEqual(values["scope"], "openid profile offline_access")
             evidence.record(nonce: values["nonce"]!, challenge: values["code_challenge"]!)
             return URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=auth-code&state=\(values["state"]!)")!
         }
@@ -262,7 +281,7 @@ final class AuthSessionTests: XCTestCase {
         XCTAssertTrue(signedIn)
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "access-1")
-        XCTAssertEqual(try storage.read(), "refresh-1")
+        XCTAssertEqual(try storage.read()?.token, "refresh-1")
         let posts = await transport.tokenRequests()
         XCTAssertEqual(posts.count, 1)
         let form = Self.form(posts[0])
@@ -311,7 +330,7 @@ final class AuthSessionTests: XCTestCase {
         let session = AuthSession(transport: transport, browser: browser, storage: storage)
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "new-access")
-        XCTAssertEqual(try storage.read(), "new-refresh")
+        XCTAssertEqual(try storage.read()?.token, "new-refresh")
         try await session.logout()
         let signedIn = try await session.hasSession()
         XCTAssertFalse(signedIn)
@@ -322,20 +341,26 @@ final class AuthSessionTests: XCTestCase {
     func testLogoutDuringRefreshCannotRestoreOldAccount() async throws {
         let storage = MemoryStorage("old-refresh")
         let transport = BlockingRefreshTransport()
-        let browser = FixtureBrowser { _ in XCTFail("Browser should not open"); return URL(string: "https://invalid.example")! }
+        let browser = DelayedCancelBrowser(evidence: FlowEvidence())
         let session = AuthSession(transport: transport, browser: browser, storage: storage)
         let pending = Task { try await session.bearerToken() }
         await transport.waitForPost()
-        try await session.logout()
+        let logout = Task { try await session.logout() }
+        await browser.waitForFirstCancel()
+        await browser.releaseFirstCancel()
         await transport.release()
+        try await logout.value
         do { _ = try await pending.value; XCTFail("Old refresh must fail") }
         catch is CancellationError { }
         XCTAssertNil(try storage.read())
         let count = await transport.count()
         XCTAssertEqual(count, 1)
+        let revocations = await transport.revocations()
+        XCTAssertEqual(revocations.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revocations.first))["token"], "rotated")
     }
 
-    func testSecondLoginCancelsFirstAndLateFirstCallbackCannotEraseSecond() async throws {
+    func testSecondLoginWaitsForFirstAndRevokesBeforeNewAuthorization() async throws {
         let storage = MemoryStorage()
         let evidence = FlowEvidence()
         let transport = FixtureTransport { _ in Self.tokens(access: "account-b", refresh: "refresh-b", idToken: Self.idToken(nonce: evidence.values().0)) }
@@ -346,25 +371,27 @@ final class AuthSessionTests: XCTestCase {
         let first = Task { try await session.login() }
         let firstURL = await browser.waitForStart(1)
         let second = Task { try await session.login() }
-        let secondURL = await browser.waitForStart(2)
         let firstQuery = URLComponents(url: firstURL, resolvingAgainstBaseURL: false)!.queryItems!
         let firstState = firstQuery.first { $0.name == "state" }!.value!
+        evidence.record(nonce: firstQuery.first { $0.name == "nonce" }!.value!, challenge: "")
         await browser.finish(id: 1, callback: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=a&state=\(firstState)")!)
-
+        try await first.value
+        let secondURL = await browser.waitForStart(2)
+        let revocations = await transport.revocations()
+        XCTAssertEqual(revocations.count, 1, "Old session must be revoked before second browser starts")
+        await browser.finish(id: 1, callback: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=late&state=\(firstState)")!)
         let secondQuery = URLComponents(url: secondURL, resolvingAgainstBaseURL: false)!.queryItems!
         let secondState = secondQuery.first { $0.name == "state" }!.value!
         evidence.record(nonce: secondQuery.first { $0.name == "nonce" }!.value!, challenge: "")
         await browser.finish(id: 2, callback: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=b&state=\(secondState)")!)
 
-        do { try await first.value; XCTFail("First login should be cancelled") }
-        catch is CancellationError { }
         try await second.value
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "account-b")
-        XCTAssertEqual(try storage.read(), "refresh-b")
+        XCTAssertEqual(try storage.read()?.token, "refresh-b")
         let posts = await transport.tokenRequests()
-        XCTAssertEqual(posts.count, 1)
-        XCTAssertEqual(Self.form(posts[0])["code"], "b")
+        XCTAssertEqual(posts.count, 2)
+        XCTAssertEqual(Self.form(posts[1])["code"], "b")
     }
 
     func testDelayedLogoutCannotDeleteCredentialsFromNewerLogin() async throws {
@@ -379,14 +406,261 @@ final class AuthSessionTests: XCTestCase {
 
         let oldLogout = Task { try await session.logout() }
         await browser.waitForFirstCancel()
-        try await session.login()
-        XCTAssertEqual(try storage.read(), "account-b-refresh")
+        let login = Task { try await session.login() }
         await browser.releaseFirstCancel()
-        do { try await oldLogout.value; XCTFail("Superseded logout should be cancelled") }
-        catch is CancellationError { }
-        XCTAssertEqual(try storage.read(), "account-b-refresh")
+        try await oldLogout.value
+        try await login.value
+        let revocations = await transport.revocations()
+        XCTAssertEqual(revocations.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revocations.first))["token"], "account-a-refresh")
+        XCTAssertEqual(try storage.read()?.token, "account-b-refresh")
         let token = try await session.bearerToken()
         XCTAssertEqual(token, "account-b-access")
+    }
+
+    func testFailedLogoutSurvivesRestartAndRetryDeletesOnlyAfterRevocation() async throws {
+        let storage = MemoryStorage("refresh-to-revoke")
+        let browser = FixtureBrowser { _ in XCTFail("Revocation must not open a browser"); return URL(string: "https://invalid.example")! }
+        let failed = FixtureTransport(revocationResponse: { _ in AuthHTTPResponse(status: 503, body: Data()) }) { _ in
+            XCTFail("Pending logout must not refresh"); throw AuthError.invalidToken
+        }
+        let session = AuthSession(transport: failed, browser: browser, storage: storage)
+        do { try await session.logout(); XCTFail("Cannot report successful logout") }
+        catch AuthError.httpStatus(503) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "refresh-to-revoke", status: .pendingRevocation))
+        let recovered = FixtureTransport(revocationResponse: { request in
+            XCTAssertEqual(Self.form(request)["token"], "refresh-to-revoke")
+            XCTAssertEqual(Self.form(request)["token_type_hint"], "refresh_token")
+            XCTAssertEqual(Self.form(request)["client_id"], "alondra-ios")
+            XCTAssertNil(Self.form(request)["client_secret"])
+            return AuthHTTPResponse(status: 200, body: Data())
+        }) { _ in XCTFail("No token request during pending logout"); throw AuthError.invalidToken }
+        let restarted = AuthSession(transport: recovered, browser: browser, storage: storage)
+        do { _ = try await restarted.bearerToken(); XCTFail("Pending token must remain blocked") }
+        catch AuthError.pendingRevocation { }
+        try await restarted.logout()
+        XCTAssertNil(try storage.read())
+    }
+
+    func testReplacementStopsBeforeBrowserWhenOldRevocationFails() async throws {
+        let storage = MemoryStorage("old-session")
+        let browser = FixtureBrowser { _ in XCTFail("Never authorize before old revocation succeeds"); return URL(string: "https://invalid.example")! }
+        let transport = FixtureTransport(revocationResponse: { _ in AuthHTTPResponse(status: 503, body: Data()) }) { _ in
+            XCTFail("No exchange before revocation"); throw AuthError.invalidToken
+        }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage)
+        do { try await session.login(); XCTFail("Replacement must abort") }
+        catch AuthError.httpStatus(503) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "old-session", status: .pendingRevocation))
+    }
+
+    func testRotationPersistsBeforeUserInfoFailureWithoutTreatingHTTP400AsMissingLogin() async throws {
+        let storage = MemoryStorage("old")
+        let transport = FixtureTransport { request in
+            if request.url!.path.hasSuffix("/userinfo") {
+                XCTAssertEqual(try storage.read()?.token, "rotated")
+                return AuthHTTPResponse(status: 400, body: Data())
+            }
+            return Self.tokens(access: "access", refresh: "rotated", idToken: nil)
+        }
+        let browser = FixtureBrowser { _ in XCTFail("Should not log in"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage)
+        do { _ = try await session.verifiedSubject(); XCTFail("UserInfo fails") }
+        catch AuthError.httpStatus(400) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "rotated"))
+    }
+
+    func testInvalidClientPreservesCredentialButInvalidGrantMakesItUnusable() async throws {
+        let browser = FixtureBrowser { _ in XCTFail("Should not open"); return URL(string: "https://invalid.example")! }
+        for code in ["invalid_client", "invalid_grant"] {
+            let storage = MemoryStorage("saved")
+            let transport = FixtureTransport { _ in
+                AuthHTTPResponse(status: 400, body: Data("{\"error\":\"\(code)\"}".utf8))
+            }
+            let session = AuthSession(transport: transport, browser: browser, storage: storage)
+            do { _ = try await session.bearerToken(); XCTFail("Expected OAuth rejection") }
+            catch {
+                XCTAssertEqual(error as? AuthError, code == "invalid_grant" ? .noSession : .oauth(status: 400, code: code))
+            }
+            XCTAssertEqual(try storage.read(), code == "invalid_grant" ? nil : RefreshCredential(token: "saved"))
+        }
+    }
+
+    func testLostRefreshResponseNeverBecomesSuccessfulLogoutOrAutomaticReplay() async throws {
+        // Generic issuers retain the conservative default. Only the verified Alondra
+        // offline-session contract may revoke an unknown successor via its predecessor.
+        let known = OIDCConfiguration.alondra
+        let configuration = OIDCConfiguration(issuer: known.issuer, clientID: known.clientID,
+            redirectURI: known.redirectURI, scopes: known.scopes)
+        let storage = MemoryStorage("possibly-consumed")
+        let browser = FixtureBrowser { _ in XCTFail("Must not open"); return URL(string: "https://invalid.example")! }
+        let transport = FixtureTransport { _ in throw URLError(.networkConnectionLost) }
+        let session = AuthSession(configuration: configuration, transport: transport, browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Lost response") }
+        catch let error as URLError { XCTAssertEqual(error.code, .networkConnectionLost) }
+        XCTAssertEqual(try storage.read()?.status, .rotationUncertain)
+        let restarted = AuthSession(configuration: configuration, transport: transport, browser: browser, storage: storage)
+        do { _ = try await restarted.bearerToken(); XCTFail("Cannot replay uncertain rotation") }
+        catch AuthError.rotationUncertain { }
+        do { try await restarted.logout(); XCTFail("Revoking stale token cannot prove logout") }
+        catch AuthError.rotationUncertain { }
+        let posts = await transport.tokenRequests()
+        let revocations = await transport.revocations()
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertTrue(revocations.isEmpty)
+    }
+
+    func testAlondraLostRefreshCanRevokeSessionAfterRestartWithoutReplayingRefresh() async throws {
+        let storage = MemoryStorage("predecessor")
+        let browser = FixtureBrowser { _ in XCTFail("Revocation cannot authorize a new session"); return URL(string: "https://invalid.example")! }
+        let lost = FixtureTransport { _ in throw URLError(.networkConnectionLost) }
+        let first = AuthSession(transport: lost, browser: browser, storage: storage)
+        do { _ = try await first.bearerToken(); XCTFail("Expected lost response") }
+        catch let error as URLError { XCTAssertEqual(error.code, .networkConnectionLost) }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "predecessor", status: .rotationUncertain))
+
+        let unavailable = FixtureTransport(revocationResponse: { _ in AuthHTTPResponse(status: 503, body: Data()) }) { _ in
+            XCTFail("Never retry a possibly consumed refresh"); throw AuthError.invalidToken
+        }
+        let restarted = AuthSession(transport: unavailable, browser: browser, storage: storage)
+        do { try await restarted.logout(); XCTFail("Failed revocation cannot complete cleanup") }
+        catch AuthError.httpStatus(503) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "predecessor", status: .rotationUncertain))
+
+        let recovered = FixtureTransport { _ in XCTFail("Cleanup must not refresh"); throw AuthError.invalidToken }
+        let retried = AuthSession(transport: recovered, browser: browser, storage: storage)
+        do { _ = try await retried.bearerToken(); XCTFail("Uncertainty still blocks normal use") }
+        catch AuthError.rotationUncertain { }
+        try await retried.logout()
+        let revocations = await recovered.revocations()
+        XCTAssertEqual(revocations.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revocations.first))["token"], "predecessor")
+        XCTAssertNil(try storage.read())
+        let sessionRemains = try await retried.hasSession()
+        XCTAssertFalse(sessionRemains)
+        let originalExchanges = await lost.tokenRequests()
+        let failedCleanupExchanges = await unavailable.tokenRequests()
+        let cleanupExchanges = await recovered.tokenRequests()
+        XCTAssertEqual(originalExchanges.count, 1)
+        XCTAssertTrue(failedCleanupExchanges.isEmpty)
+        XCTAssertTrue(cleanupExchanges.isEmpty)
+    }
+
+    func testDeniedPendingMarkerNeverReportsLogoutAndSuspendsInMemory() async throws {
+        let storage = MemoryStorage("saved", refusesWrites: true)
+        let transport = FixtureTransport { _ in XCTFail("No request after persistence failure"); throw AuthError.invalidToken }
+        let browser = FixtureBrowser { _ in XCTFail("Must not authorize"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage)
+        do { try await session.logout(); XCTFail("Keychain denial cannot be success") }
+        catch AuthError.keychain(-25293) { }
+        do { _ = try await session.bearerToken(); XCTFail("Must remain suspended in this process") }
+        catch AuthError.pendingRevocation { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "saved"))
+        let revocations = await transport.revocations()
+        XCTAssertTrue(revocations.isEmpty)
+        // A failed durable write cannot guarantee suspension across a process restart.
+    }
+
+    func testFailedLoginPersistenceRetainsIssuedTokenForLogoutRetry() async throws {
+        let storage = MemoryStorage(refusesWrites: true)
+        let evidence = FlowEvidence()
+        let transport = FixtureTransport { _ in
+            Self.tokens(access: "issued-access", refresh: "issued-refresh", idToken: Self.idToken(nonce: evidence.values().0))
+        }
+        let browser = Self.loginBrowser(evidence)
+        let session = AuthSession(transport: transport, browser: browser, storage: storage,
+                                  now: { Date(timeIntervalSince1970: 2_000_000_000) })
+        do { try await session.login(); XCTFail("Denied persistence cannot complete login") }
+        catch AuthError.keychain(-25293) { }
+        XCTAssertNil(try storage.read())
+        do { try await session.logout(); XCTFail("An empty Keychain does not mean the issued session was revoked") }
+        catch AuthError.keychain(-25293) { }
+        do { _ = try await session.bearerToken(); XCTFail("Unpersisted session must remain suspended") }
+        catch AuthError.pendingRevocation { }
+        let beforeRetry = await transport.revocations()
+        XCTAssertTrue(beforeRetry.isEmpty)
+
+        storage.setRefusesWrites(false)
+        try await session.logout()
+        let revoked = await transport.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "issued-refresh")
+        XCTAssertNil(try storage.read())
+        let signedIn = try await session.hasSession()
+        XCTAssertFalse(signedIn)
+        let exchanges = await transport.tokenRequests()
+        XCTAssertEqual(exchanges.count, 1, "Cleanup must not issue another session")
+    }
+
+    func testFailedRotationPersistenceRevokesKnownSuccessorNotStoredPredecessor() async throws {
+        let storage = MemoryStorage("old-refresh")
+        let transport = FixtureTransport { request in
+            XCTAssertEqual(Self.form(request)["refresh_token"], "old-refresh")
+            storage.setRefusesWrites(true) // Dispatch marker succeeded; successor persistence fails.
+            return Self.tokens(access: "new-access", refresh: "known-successor", idToken: nil)
+        }
+        let browser = FixtureBrowser { _ in XCTFail("No browser during cleanup"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Denied successor write cannot expose bearer") }
+        catch AuthError.keychain(-25293) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "old-refresh", status: .rotationUncertain))
+        do { try await session.logout(); XCTFail("Cleanup cannot succeed while its marker is denied") }
+        catch AuthError.keychain(-25293) { }
+
+        storage.setRefusesWrites(false)
+        try await session.logout()
+        let revoked = await transport.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "known-successor")
+        XCTAssertNil(try storage.read())
+        let exchanges = await transport.tokenRequests()
+        XCTAssertEqual(exchanges.count, 1, "Never retry refresh with the consumed predecessor")
+    }
+
+    func testCancelledLoginResponsePersistsCleanupOnlyAndCannotRestoreActiveSession() async throws {
+        let storage = MemoryStorage()
+        let evidence = FlowEvidence()
+        let issuer = FixtureTransport { _ in
+            Self.tokens(access: "issued-access", refresh: "cancelled-refresh", idToken: Self.idToken(nonce: evidence.values().0))
+        }
+        let transport = TokenResponseGate(upstream: issuer)
+        let browser = Self.loginBrowser(evidence)
+        let session = AuthSession(transport: transport, browser: browser, storage: storage,
+                                  now: { Date(timeIntervalSince1970: 2_000_000_000) })
+        let login = Task { try await session.login() }
+        await transport.waitForResponse()
+        login.cancel()
+        await transport.release()
+        do { try await login.value; XCTFail("Cancelled login must not activate the returned session") }
+        catch is CancellationError { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "cancelled-refresh", status: .pendingRevocation))
+
+        let restarted = AuthSession(transport: issuer, browser: browser, storage: storage)
+        do { _ = try await restarted.bearerToken(); XCTFail("Cancelled authorization must not restore active credentials") }
+        catch AuthError.pendingRevocation { }
+        try await restarted.logout()
+        let revoked = await issuer.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "cancelled-refresh")
+        XCTAssertNil(try storage.read())
+    }
+
+    private static func loginBrowser(_ evidence: FlowEvidence) -> FixtureBrowser {
+        FixtureBrowser { url in
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            let values = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) })
+            evidence.record(nonce: values["nonce"]!, challenge: values["code_challenge"]!)
+            return URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=auth-code&state=\(values["state"]!)")!
+        }
+    }
+
+    func testOffIssuerRevocationEndpointIsRejectedBeforeAnyCredentialLeavesDevice() async throws {
+        let storage = MemoryStorage("saved")
+        let browser = FixtureBrowser { _ in XCTFail("Must not authorize"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: OffIssuerRevocationTransport(), browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Must reject off-issuer revocation") }
+        catch AuthError.invalidDiscovery { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "saved"))
     }
 
     private static func form(_ request: URLRequest) -> [String: String] {
@@ -405,4 +679,36 @@ final class AuthSessionTests: XCTestCase {
             "aud": "alondra-ios", "nonce": nonce, "exp": 2_000_003_600])
         return "eyJhbGciOiJSUzI1NiJ9." + payload.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") + ".signature"
     }
+}
+
+private struct OffIssuerRevocationTransport: AuthHTTPTransport {
+    func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
+        XCTAssertTrue(request.url!.path.hasSuffix("openid-configuration"))
+        return AuthHTTPResponse(status: 200, body: Data("""
+        {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://attacker.example/revoke"}
+        """.utf8))
+    }
+}
+
+/// Delivers a valid issuer response even after cancellation, as a network completion can.
+private actor TokenResponseGate: AuthHTTPTransport {
+    let upstream: FixtureTransport
+    private var responseReady = false
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    init(upstream: FixtureTransport) { self.upstream = upstream }
+    func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
+        let response = try await upstream.send(request)
+        if request.url!.path.hasSuffix("/token") {
+            responseReady = true
+            responseWaiter?.resume(); responseWaiter = nil
+            await withCheckedContinuation { releaseWaiter = $0 }
+        }
+        return response
+    }
+    func waitForResponse() async {
+        if responseReady { return }
+        await withCheckedContinuation { responseWaiter = $0 }
+    }
+    func release() { releaseWaiter?.resume(); releaseWaiter = nil }
 }

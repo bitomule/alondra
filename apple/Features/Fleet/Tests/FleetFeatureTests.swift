@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraFleetFeature
 import AlondraShared
 import ComposableArchitecture
@@ -109,6 +110,57 @@ struct FleetFeatureTests {
         await store.finish()
     }
 
+    @Test(arguments: [false, true])
+    func attachmentReceiptSendsOnceUnlessCloseCancelledTheIntent(closeBeforeReceipt: Bool) async throws {
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let draft = AttachmentDraft(id: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!, name: "proof.txt", data: Data("proof".utf8))
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = snapshot.node("s1")
+        initial.message = "Use the proof"
+        initial.files = [.init(id: draft.id, name: draft.name, data: draft.data)]
+        initial.attachmentPicker.entries = [.init(draft: draft, status: .failed("Offline"))]
+        let receipt = AsyncStream<String>.makeStream()
+        let messages = SentNodeMessages()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.attachmentUpload = AttachmentUploadClient(upload: { retry in
+                #expect(retry == draft)
+                for await value in receipt.stream { return value }
+                throw CancellationError()
+            })
+            $0.nodeOperations = operations(send: { _, message in
+                await messages.record(message)
+                return .confirmed
+            })
+        }
+        // Cross-feature integration; final outgoing content and duplicate prevention
+        // are asserted independently of child effect ordering.
+        store.exhaustivity = .off(showSkippedAssertions: true)
+        await store.send(.sendTapped)
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(.sendTapped)
+        #expect(await messages.values.isEmpty)
+        if closeBeforeReceipt { await store.send(.closeRequested) }
+        receipt.continuation.yield("stored-proof")
+        receipt.continuation.finish()
+        await store.receive(\.attachmentPicker.uploaded)
+        if !closeBeforeReceipt { await store.receive(\.sendFinished) }
+        await store.finish()
+        #expect(store.state.pendingSubmission == nil)
+        #expect(!store.state.isSending)
+        let outgoing = await messages.values
+        if closeBeforeReceipt {
+            #expect(outgoing.isEmpty)
+            #expect(store.state.message == "Use the proof")
+            #expect(store.state.showCloseConfirmation)
+        } else {
+            #expect(outgoing.count == 1)
+            #expect(outgoing.first?.text == "Use the proof")
+            #expect(outgoing.first?.files.map(\.storedID) == ["stored-proof"])
+            #expect(store.state.sentCount == 1)
+            #expect(store.state.message.isEmpty)
+        }
+    }
+
     @Test func staleDetailRejectsSendAndConfirmedSendKeepsNewDraft() async throws {
         let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
         var initial = NodeDetailFeature.State(sessionID: "s1")
@@ -160,6 +212,106 @@ struct FleetFeatureTests {
         await store.send(.disappeared) { $0.isVisible = false }
         await store.finish()
     }
+    @Test func openThreadsFollowSnapshotTicksAndPeriodicToolChanges() async throws {
+        func snapshot(_ tick: UInt64, _ sequence: UInt64, _ summary: String) throws -> FleetSnapshot {
+            ProjectFleetUseCase().execute(try overview(tick: tick, nodes: "[\(node().replacingOccurrences(of: "bazel test", with: summary))]"), visibleInboxIDs: [], sequence: sequence)
+        }
+        let first = try snapshot(1, 1, "make test")
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = first.node("s1"); initial.acceptedTick = first.tick; initial.acceptedSequence = first.sequence
+        let clock = TestClock()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = operations(threads: { _ in nil })
+            $0.continuousClock = clock
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = first.node("s1")!.node.toolThread }
+        let opened = store.state.acceptedTick
+        let toolChange = try snapshot(1, 2, "make lint")
+        await store.send(.snapshotChanged(toolChange)) { $0.acceptedSequence = 2; $0.entry = toolChange.node("s1") }
+        #expect(store.state.acceptedTick == opened, "a tool call alone does not move the content tick")
+        let tickChange = try snapshot(2, 3, "make lint")
+        await store.send(.snapshotChanged(tickChange)) { $0.acceptedSequence = 3; $0.acceptedTick = 2; $0.entry = tickChange.node("s1") }
+        #expect(store.state.acceptedTick != opened)
+        // A content tick restarts the read immediately, before the periodic deadline.
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = tickChange.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash make lint")
+        let later = try snapshot(2, 4, "cargo test")
+        await store.send(.snapshotChanged(later)) { $0.acceptedSequence = 4; $0.entry = later.node("s1") }
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = later.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash cargo test", "tool changes reach the visible detail without a content tick")
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+    }
+
+    @Test func aContentTickCancelsTheOldReadAndStartsTheLatestImmediately() async throws {
+        let first = ProjectFleetUseCase().execute(try overview(tick: 10, nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let next = ProjectFleetUseCase().execute(try overview(tick: 1, nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 2)
+        let latest = NodeActivity(agentId: "a1", agentType: "tester", task: nil, tool: "mav", summary: "latest", since: 6)
+        let counts = ThreadReadCounts()
+        let clock = TestClock()
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = first.node("s1"); initial.acceptedTick = first.tick; initial.acceptedSequence = first.sequence
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.nodeOperations = operations(threads: { _ in
+                let attempt = await counts.started()
+                if attempt == 1 {
+                    do { try await clock.sleep(for: .seconds(100)) }
+                    catch { await counts.cancelled() }
+                    // A transport may finish despite cancellation. Its old response must be discarded.
+                    return []
+                }
+                return [latest]
+            })
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await clock.advance(by: .seconds(1))
+        #expect(await counts.reads == 1)
+        await store.send(.snapshotChanged(next)) {
+            $0.acceptedTick = 1; $0.acceptedSequence = 2; $0.entry = next.node("s1"); $0.isLoadingThreads = false
+        }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = [latest] }
+        #expect(await counts.reads == 2)
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+        #expect(await counts.cancellations == 1)
+        #expect(store.state.threads == [latest])
+    }
+
+    @Test func aFailedThreadReadKeepsTheLastLedgerAndOnlyFallsBackBeforeItsFirstSuccess() async throws {
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let tester = NodeActivity(agentId: "a1", agentType: "tester", task: nil, tool: "mav", summary: "tap Save", since: 6)
+        let replies = ThreadReplies(tester: tester)
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = snapshot.node("s1")
+        let clock = TestClock()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = operations(threads: { _ in try await replies.read() })
+            $0.continuousClock = clock
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsFailed) { $0.isLoadingThreads = false; $0.threadsError = "Offline"; $0.threads = snapshot.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash bazel test", "the overview is the fallback before the route answers")
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threadsError = nil; $0.threads = [tester] }
+        #expect(store.state.threads.map(\.thread) == ["tester"])
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsFailed) { $0.isLoadingThreads = false; $0.threadsError = "Offline" }
+        #expect(store.state.threads.map(\.thread) == ["tester"], "a failed ask keeps what the route last said")
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+    }
+
 }
 
 private actor SendGate {
@@ -175,4 +327,28 @@ private actor SendGate {
         if let continuation { self.continuation = nil; continuation.resume(returning: result) }
         else { queued = result }
     }
+}
+
+private actor ThreadReplies {
+    let tester: NodeActivity
+    var calls = 0
+    init(tester: NodeActivity) { self.tester = tester }
+    func read() throws -> [NodeActivity]? {
+        calls += 1
+        guard calls == 2 else { throw Offline() }
+        return [tester]
+    }
+    private struct Offline: LocalizedError { var errorDescription: String? { "Offline" } }
+}
+
+private actor ThreadReadCounts {
+    private(set) var reads = 0
+    private(set) var cancellations = 0
+    func started() -> Int { reads += 1; return reads }
+    func cancelled() { cancellations += 1 }
+}
+
+private actor SentNodeMessages {
+    private(set) var values: [NodeMessage] = []
+    func record(_ value: NodeMessage) { values.append(value) }
 }

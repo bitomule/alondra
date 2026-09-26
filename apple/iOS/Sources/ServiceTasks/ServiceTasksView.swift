@@ -74,7 +74,7 @@ struct ServiceTasksView: View {
                     Button("Settings", systemImage: "gearshape") { showSettings() }
                 }
             }
-            .navigationDestination(isPresented: Binding(get: { store.showingSchedules }, set: { store.send(.showSchedules($0)) })) { ServiceSchedulesView(store: store) }
+            .navigationDestination(isPresented: Binding(get: { store.showingSchedules }, set: { store.send(.showSchedules($0)) })) { ServiceSchedulesView(store: store).background(DawnBackground()) }
             .refreshable { await store.send(.refresh).finish() }
         } destination: { child in
             ServiceTaskDetailView(store: child, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
@@ -92,8 +92,8 @@ struct ServiceTasksView: View {
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             Group {
-                if store.overview == nil, store.board.hasSnapshot {
-                    Label("Connection interrupted", systemImage: "wifi.slash")
+                if case .offline(let reason) = store.connection {
+                    Label(reason, systemImage: "wifi.slash")
                         .foregroundStyle(Palette.rose)
                 } else {
                     Text(fleet.summary)

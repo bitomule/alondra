@@ -32,22 +32,23 @@ struct ServiceTriageView: View {
                     .accessibilityLabel("Mac Status")
             }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil }, set: { if !$0 { _ = store.send(.triage(.dismissNotice)) } })) {
+        .alert("Check Alondra", isPresented: Binding(get: { store.triage.notice != nil && !store.triage.noticeIsMutationFailure }, set: { if !$0 { _ = store.send(.triage(.dismissNotice)) } })) {
             Button("OK") { _ = store.send(.triage(.dismissNotice)) }
         } message: { Text(store.triage.notice ?? "") }
         .navigationDestination(item: $store.scope(state: \.question, action: \.question)) { child in
             ServiceQuestionView(store: child).navigationTransition(.zoom(sourceID: "q\(child.question.id)", in: zoom))
         }
-        .navigationDestination(item: $store.scope(state: \.document, action: \.document)) { child in
-            ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
-                .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
+        .navigationDestination(isPresented: Binding(get: { store.documentID != nil }, set: { if !$0 { store.send(.documentDismissed) } })) {
+            if let child = store.scope(state: \.documents, action: \.documents).first(where: { $0.subject.id == store.documentID }) {
+                ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.documentDismissed) })
+                    .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(true)) } }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(false)) } }
         .sensoryFeedback(.success, trigger: store.triage.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: store.triage.skippedCount)
-        .task { await store.send(.triage(.appeared)).finish() }
-        .onDisappear { _ = store.send(.triage(.disappeared)) }
+        .onDisappear { store.send(.presentationDisappeared) }
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -435,11 +436,12 @@ struct ServiceQuestionView: View {
                 if !store.question.isTerminalMenu {
                     Button("Ask for more context") { _ = store.send(.moreContextTapped) }
                 }
-            }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.canPrepareSubmission || store.pendingSubmission != nil || store.isSubmitting || store.needsReconciliation || store.completed)
             AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
+        .onDisappear { store.send(.disappeared) }
         .navigationTitle(store.question.isAction ? "Action" : "Question")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }

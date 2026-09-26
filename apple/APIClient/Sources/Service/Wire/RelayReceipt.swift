@@ -18,4 +18,3 @@ public protocol RelayRequestTransport: Sendable {
     func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt
     func requestStatus(requestID: String) async throws -> RelayReceipt
 }
-

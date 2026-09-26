@@ -5,6 +5,13 @@ import CoreGraphics
 import PhotosUI
 import SwiftUI
 
+/// A user requested a final command after attachment receipts arrive. Owners clear this
+/// on edits, removal, identity changes, disappearance, or failure, and consume it before
+/// starting the final command. This is never an automatic retry of a final command.
+public enum AttachmentSubmissionIntent: Equatable, Sendable {
+    case awaitingReceipts
+}
+
 public typealias AttachmentDraft = AlondraDomain.AttachmentDraft
 public typealias AttachmentBudget = AlondraDomain.AttachmentBudget
 
@@ -61,6 +68,12 @@ public struct AttachmentFeature {
         public var photosPresented = false
         public var cameraPresented = false
         public var photos: [PhotosPickerItem] = []
+        /// Import errors must be resolved before a user can request upload-and-send.
+        public var canPrepareSubmission: Bool { !isImporting && importError == nil }
+        public var failedUploadMessage: String? {
+            for entry in entries { if case .failed(let message) = entry.status { return message } }
+            return nil
+        }
         public var allReady: Bool {
             !isImporting && importError == nil && entries.allSatisfy { if case .uploaded = $0.status { true } else { false } }
         }
@@ -86,6 +99,7 @@ public struct AttachmentFeature {
         case batchFailed(String, UUID)
         case dismissError
         case reset
+        case prepareForSubmission
         case uploadNext
         case uploadProgress(UUID, Double)
         case uploaded(UUID, Result<String, AttachmentFailure>)
@@ -182,6 +196,15 @@ public struct AttachmentFeature {
                 state = State()
                 return Self.cancelEffects(instanceID: ownerID)
             case .dismissError: state.importError = nil; return .none
+            case .prepareForSubmission:
+                guard state.canPrepareSubmission else { return .none }
+                for index in state.entries.indices {
+                    if case .failed = state.entries[index].status {
+                        state.entries[index].status = .queued
+                        state.entries[index].progress = 0
+                    }
+                }
+                return .send(.uploadNext)
             case .uploadNext:
                 guard !state.entries.contains(where: { $0.status == .uploading }),
                       let index = state.entries.firstIndex(where: { $0.status == .queued }) else { return .none }
@@ -212,7 +235,8 @@ public struct AttachmentFeature {
                 state.entries[index].progress = min(1, max(0, fraction))
                 return .none
             case .uploaded(let id, let result):
-                guard let index = state.entries.firstIndex(where: { $0.id == id }) else { return .none }
+                guard let index = state.entries.firstIndex(where: { $0.id == id }),
+                      state.entries[index].status == .uploading else { return .none }
                 switch result {
                 case .success(let stored): state.entries[index].status = .uploaded(stored)
                 case .failure(let error): state.entries[index].status = .failed(error.message)
@@ -231,9 +255,10 @@ public struct AttachmentFeature {
         }
     }
 }
-public struct AttachmentFailure: Error, Equatable, Sendable {
+public struct AttachmentFailure: LocalizedError, Equatable, Sendable {
     public let message: String
     public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
 }
 
 public struct AttachmentImportClient: Sendable {
@@ -266,5 +291,17 @@ public extension DependencyValues {
     var attachmentBudget: AttachmentBudget {
         get { self[AttachmentBudgetKey.self] }
         set { self[AttachmentBudgetKey.self] = newValue }
+    }
+}
+
+public extension AttachmentFeature.Action {
+    /// Owners drop a pending send on draft changes or a fresh failure. Retrying an upload
+    /// later must never revive an earlier send intention.
+    var invalidatesPendingSubmission: Bool {
+        switch self {
+        case .reset, .remove, .filesSelected, .photosSelected, .cameraCaptured,
+             .imported, .batchFailed, .importFailed: true
+        default: false
+        }
     }
 }

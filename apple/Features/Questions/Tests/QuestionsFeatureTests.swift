@@ -1,9 +1,28 @@
+import AlondraDomain
 import AlondraAttachmentsFeature
 import AlondraQuestionsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
 import Testing
+
+/// Separates the upload receipt event from the final command's response. Release
+/// is remembered even if the effect has not reached wait() yet.
+private actor ReviewSubmissionGate {
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
 
 @MainActor
 struct QuestionsFeatureTests {
@@ -56,13 +75,17 @@ struct QuestionsFeatureTests {
             pending.selectedOption = "Allow"
             pending.text = sentText
             $0.pendingAttachedAnswer = pending
+            $0.pendingSubmission = .awaitingReceipts
         }
+        await store.receive(\.attachmentPicker.prepareForSubmission)
+        await store.receive(\.attachmentPicker.uploadNext)
         await store.send(.attachedOptionTapped("Allow"))
         #expect(store.state.draft.selectedOption == nil)
         await store.send(.attachmentPicker(.uploaded(attachment.id, .success("stored")))) {
             $0.attachmentPicker.entries[0].status = .uploaded("stored")
             $0.draft.attachmentIDs = ["stored"]
             $0.pendingAttachedAnswer = nil
+            $0.pendingSubmission = nil
             $0.isSubmitting = true
         }
         await store.receive(\.attachmentPicker.uploadNext)
@@ -71,6 +94,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.notice = "Offline"
+            $0.noticeIsSubmissionFailure = true
         }
         #expect(store.state.draft.text == text)
         #expect(store.state.draft.selectedOption == nil)
@@ -83,14 +107,171 @@ struct QuestionsFeatureTests {
         state.draft.text = "Draft"
         state.attachmentPicker.entries = [.init(draft: .init(name: "a.txt", data: Data([1])), status: .uploading)]
         let store = TestStore(initialState: state) { QuestionFeature() }
-        await store.send(.attachedAnswerTapped) { $0.pendingAttachedAnswer = $0.draft }
+        await store.send(.attachedAnswerTapped) {
+            $0.pendingAttachedAnswer = $0.draft
+            $0.pendingSubmission = .awaitingReceipts
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission)
+        await store.receive(\.attachmentPicker.uploadNext)
         await store.send(.identityChanged) {
             $0.draft = QuestionDraft()
             $0.pendingAttachedAnswer = nil
+            $0.pendingSubmission = nil
             $0.attachmentPicker = AttachmentFeature.State()
             $0.revision = 1
         }
         await store.finish()
+    }
+
+    @Test(arguments: [false, true])
+    func sendAfterUploadFailureRetriesSameBytesAndSendsExactlyOnce(attached: Bool) async throws {
+        let file = AttachmentDraft(name: "evidence.txt", data: Data([0, 255, 1]))
+        var state = QuestionFeature.State(question: try question())
+        state.draft.text = "Keep the draft"
+        state.attachmentPicker.entries = [.init(draft: file, status: .uploading)]
+        let uploads = LockIsolated<[AttachmentDraft]>([])
+        let submissions = LockIsolated<[QuestionOperation]>([])
+        let finalResponse = ReviewSubmissionGate()
+        let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
+            $0.attachmentUpload = .init(upload: { draft in
+                uploads.withValue { $0.append(draft) }
+                return "receipt"
+            })
+            $0.questionWorkService = .init(submit: { operation in
+                submissions.withValue { $0.append(operation) }
+                await finalResponse.wait()
+                return .uncertain
+            }, document: { _ in "" })
+        }
+        await store.send(.attachmentPicker(.uploaded(file.id, .failure(.init(message: "Offline"))))) {
+            $0.attachmentPicker.entries[0].status = .failed("Offline")
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(attached ? .attachedAnswerTapped : .answerTapped) {
+            $0.pendingSubmission = .awaitingReceipts
+            if attached { $0.pendingAttachedAnswer = $0.draft }
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission) {
+            $0.attachmentPicker.entries[0].status = .queued
+        }
+        await store.receive(\.attachmentPicker.uploadNext) {
+            $0.attachmentPicker.entries[0].status = .uploading
+        }
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("receipt")
+            $0.draft.attachmentIDs = ["receipt"]
+            $0.pendingSubmission = nil
+            $0.pendingAttachedAnswer = nil
+            $0.isSubmitting = true
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await finalResponse.release()
+        await store.receive(\.submissionFinished) {
+            $0.isSubmitting = false
+            $0.needsReconciliation = true
+            $0.notice = "The result is uncertain. Check the server before trying again."
+        }
+        await store.send(attached ? .attachedAnswerTapped : .answerTapped)
+        await store.finish()
+        #expect(uploads.value == [file])
+        #expect(submissions.value == [.answer(id: 1, text: "Keep the draft", option: nil, attachments: ["receipt"])])
+    }
+
+    @Test(arguments: [false, true])
+    func editingQuestionWhileRetryWaitsCancelsOnlyTheSubmission(attached: Bool) async throws {
+        let file = AttachmentDraft(name: "evidence.txt", data: Data([4]))
+        var state = QuestionFeature.State(question: try question())
+        state.draft.text = "Old text"
+        state.attachmentPicker.entries = [.init(draft: file, status: .failed("Offline"))]
+        let clock = TestClock()
+        let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
+            $0.attachmentUpload = .init(upload: { draft in
+                #expect(draft == file)
+                try await clock.sleep(for: .seconds(1))
+                return "receipt"
+            })
+            $0.questionWorkService = .init(submit: { _ in
+                Issue.record("Editing must cancel the final send intention")
+                return .confirmed
+            }, document: { _ in "" })
+        }
+        await store.send(attached ? .attachedAnswerTapped : .answerTapped) {
+            $0.pendingSubmission = .awaitingReceipts
+            if attached { $0.pendingAttachedAnswer = $0.draft }
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission) { $0.attachmentPicker.entries[0].status = .queued }
+        await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        await store.send(.textChanged("New text")) {
+            $0.pendingSubmission = nil
+            $0.pendingAttachedAnswer = nil
+            $0.draft.text = "New text"
+        }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("receipt")
+            $0.draft.attachmentIDs = ["receipt"]
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.finish()
+        #expect(store.state.draft.text == "New text")
+        #expect(!store.state.isSubmitting)
+    }
+
+    @Test(arguments: [false, true])
+    func documentFeedbackWaitsForReceiptAndEditingCancelsTheIntent(cancelByEditing: Bool) async throws {
+        let file = AttachmentDraft(name: "review.txt", data: Data([7]))
+        var state = DocumentReviewFeature.State(subject: .question(try question()))
+        state.sourceText = "Read document"
+        state.draft.general = "Clarify this"
+        state.attachmentPicker.entries = [.init(draft: file, status: .failed("Offline"))]
+        let submissions = LockIsolated<[QuestionOperation]>([])
+        let finalResponse = ReviewSubmissionGate()
+        let clock = TestClock()
+        let store = TestStore(initialState: state) { DocumentReviewFeature() } withDependencies: {
+            $0.attachmentUpload = .init(upload: { draft in
+                #expect(draft == file)
+                try await clock.sleep(for: .seconds(1))
+                return "receipt"
+            })
+            $0.questionWorkService = .init(submit: { operation in
+                submissions.withValue { $0.append(operation) }
+                await finalResponse.wait()
+                return .failed("Rejected")
+            }, document: { _ in "" })
+        }
+        await store.send(.sendFeedbackTapped(author: "David")) {
+            $0.pendingSubmission = .awaitingReceipts
+            $0.pendingReview = .feedback("David")
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission) { $0.attachmentPicker.entries[0].status = .queued }
+        await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        if cancelByEditing {
+            await store.send(.generalChanged("Edited feedback")) {
+                $0.draft.general = "Edited feedback"
+                $0.pendingSubmission = nil
+                $0.pendingReview = nil
+            }
+        }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("receipt")
+            $0.draft.attachmentIDs = ["receipt"]
+            $0.pendingSubmission = nil
+            $0.pendingReview = nil
+            $0.isSubmitting = !cancelByEditing
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        if !cancelByEditing {
+            await finalResponse.release()
+            await store.receive(\.submissionFinished) { $0.isSubmitting = false; $0.notice = "Rejected"; $0.noticeIsSubmissionFailure = true }
+        }
+        await store.finish()
+        #expect(submissions.value.count == (cancelByEditing ? 0 : 1))
+        if !cancelByEditing {
+            if let operation = submissions.value.first, case .answer(_, _, _, let attachments) = operation { #expect(attachments == ["receipt"]) }
+            else { Issue.record("Expected document answer") }
+        }
+        #expect(store.state.draft.general == (cancelByEditing ? "Edited feedback" : "Clarify this"))
     }
 
     @Test
@@ -132,6 +313,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.conflict = "Already answered on Mac"
+            $0.noticeIsSubmissionFailure = true
         }
         #expect(store.state.draft.text == "A reason")
         #expect(!store.state.completed)
@@ -141,82 +323,32 @@ struct QuestionsFeatureTests {
     func refreshRetainsDraftButSwitchingCardOrIdentityDoesNot() async throws {
         let first = try question()
         let second = try question(2)
-        let store = TestStore(initialState: QuestionFeature.State(question: first)) { QuestionFeature() }
-        await store.send(.textChanged("my reasoning")) { $0.draft.text = "my reasoning" }
-        await store.send(.refreshed(first))
-        await store.send(.refreshed(second)) {
-            $0 = QuestionFeature.State(question: second)
-            $0.revision = 1
-        }
-        await store.send(.textChanged("another device")) { $0.draft.text = "another device" }
-        await store.send(.identityChanged) {
-            $0.draft = QuestionDraft()
-            $0.revision = 2
-        }
-        await store.send(.submissionFinished(0, .confirmed))
-        #expect(!store.state.completed)
-    }
-
-    @Test
-    func reportFeedbackRequiresContentAndFormatsAnchoredComments() throws {
-        let report = try report()
-        let useCase = ReviewDocumentUseCase()
-        #expect(throws: QuestionWorkError.noFeedback) {
-            try useCase.feedback(for: report, comments: [], general: "  ", author: "David", attachmentIDs: [])
-        }
-        let comment = ReviewComment(anchor: "p1", quote: "The design is unsafe", text: "Please revise")
-        let request = try useCase.feedback(for: report, comments: [comment], general: "", author: "David", attachmentIDs: ["stored-1"])
-        #expect(request.reportID == 7 && request.sessionID == "s")
-        #expect(request.text.contains("Please revise"))
-        #expect(request.attachmentIDs == ["stored-1"])
-    }
-
-    @Test
-    func planChangesNeedFeedbackButApprovalCanUseProtocolOption() throws {
-        let plan = try question(origin: "plan")
-        var draft = QuestionDraft()
-        draft.selectedOption = AnswerOption.requestChanges
-        #expect(throws: QuestionWorkError.explanationRequired) {
-            try AnswerQuestionUseCase().answer(plan, draft: draft)
-        }
-        draft.text = "Adjust the rollout order"
-        #expect(try AnswerQuestionUseCase().answer(plan, draft: draft) ==
-                .answer(id: 1, text: "Adjust the rollout order", option: AnswerOption.requestChanges, attachments: []))
-        draft.selectedOption = AnswerOption.approve
-        draft.text = ""
-        #expect(try AnswerQuestionUseCase().answer(plan, draft: draft) ==
-                .answer(id: 1, text: AnswerOption.approve, option: AnswerOption.approve, attachments: []))
-    }
-
-    @Test
-    func terminalMenuRequiresExactOptionAndRejectsAttachmentsAndContext() throws {
-        let menu = try question(options: #"[{"label":"Keep","description":null},{"label":"Close","description":null}]"#,
-                                toolUseID: "menu:node-a")
-        #expect(menu.isTerminalMenu)
-        var draft = QuestionDraft()
-        draft.text = "Close"
-        #expect(throws: QuestionWorkError.menuRequiresOption) {
-            try AnswerQuestionUseCase().answer(menu, draft: draft)
-        }
-        draft.selectedOption = "Close"
-        draft.attachmentIDs = ["file-id"]
-        #expect(throws: QuestionWorkError.menuDoesNotAcceptAttachments) {
-            try AnswerQuestionUseCase().answer(menu, draft: draft)
-        }
-        draft.attachmentIDs = []
-        #expect(try AnswerQuestionUseCase().answer(menu, draft: draft) ==
-                .answer(id: 1, text: "Close", option: "Close", attachments: []))
-        #expect(throws: QuestionWorkError.menuRequiresOption) {
-            try AnswerQuestionUseCase().checkedMoreContext(menu, draft: draft)
-        }
+        let store = Store(initialState: QuestionFeature.State(question: first)) { QuestionFeature() }
+        let firstDownloadID = store.downloads.cancellationID
+        await store.send(.textChanged("my reasoning")).finish()
+        await store.send(.refreshed(first)).finish()
+        #expect(store.draft.text == "my reasoning" && store.revision == 0)
+        #expect(store.downloads.cancellationID == firstDownloadID)
+        await store.send(.refreshed(second)).finish()
+        #expect(store.question == second && store.draft == QuestionDraft())
+        #expect(store.revision == 1 && store.downloads.cancellationID != firstDownloadID)
+        await store.send(.textChanged("another device")).finish()
+        #expect(store.draft.text == "another device")
+        await store.send(.identityChanged).finish()
+        #expect(store.draft == QuestionDraft() && store.revision == 2)
+        await store.send(.submissionFinished(0, .confirmed)).finish()
+        #expect(!store.completed && !store.isSubmitting && store.notice == nil)
     }
 
     @Test
     func documentRefreshKeepsCommentsAndReloadsOnlyChangedSource() async throws {
         let report = try report()
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() }
+        let comment = ReviewComment(anchor: "p1", quote: "quote", text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(report))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() }
         await store.send(.commentChanged(anchor: "p1", quote: "quote", text: "Change this")) {
-            $0.draft.comments = [ReviewComment(anchor: "p1", quote: "quote", text: "Change this")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: "p1", quote: "quote", text: "Change this")]
         }
         await store.send(.refreshed(.report(report)))
         #expect(store.state.draft.comments.first?.text == "Change this")
@@ -270,7 +402,11 @@ struct QuestionsFeatureTests {
         let original = try report(attachments: attachments, body: "Report summary")
         let text = "## Original heading\n\nThe paragraph to review."
         let source = DocumentSource.stored(name: "first.md", path: "a")
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(original))) { DocumentReviewFeature() } withDependencies: {
+        let anchor = try #require(MarkdownParser.blocks(from: text).last)
+        let comment = ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(original))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { path in
                 #expect(path == "a")
                 return text
@@ -290,9 +426,8 @@ struct QuestionsFeatureTests {
             $0.isLoading = false
             $0.sourceText = text
         }
-        let anchor = try #require(MarkdownParser.blocks(from: text).last)
         await store.send(.commentChanged(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")) {
-            $0.draft.comments = [ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
         }
         let refreshed = try report(attachments: attachments, body: "Updated summary")
         await store.send(.refreshed(.report(refreshed))) { $0.subject = .report(refreshed) }
@@ -328,7 +463,10 @@ struct QuestionsFeatureTests {
     func failedReloadThenChangedContentClearsOldAnchoredComments() async throws {
         let report = try report(attachments: #"[{"name":"draft.md","sourcePath":"/a","storedPath":"a"}]"#)
         let reader = ChangingDocument()
-        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() } withDependencies: {
+        let comment = ReviewComment(anchor: "p1", quote: "Old", text: "Previous comment")
+        var initial = DocumentReviewFeature.State(subject: .report(report))
+        initial.draft.comments = [comment]
+        let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in try await reader.read() })
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1; $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)] }
@@ -339,7 +477,7 @@ struct QuestionsFeatureTests {
             $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "Old")]
         }
         await store.send(.commentChanged(anchor: "p1", quote: "Old", text: "Fix this")) {
-            $0.draft.comments = [ReviewComment(anchor: "p1", quote: "Old", text: "Fix this")]
+            $0.draft.comments = [ReviewComment(id: comment.id, anchor: "p1", quote: "Old", text: "Fix this")]
         }
         await store.send(.appeared) {
             $0.isLoading = true
