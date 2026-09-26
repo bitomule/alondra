@@ -3,6 +3,7 @@ import AlondraTriageFeature
 import AlondraWorkspaceFeature
 import ComposableArchitecture
 import Foundation
+import Synchronization
 import Testing
 
 @MainActor
@@ -16,6 +17,13 @@ struct ServiceRootLifecycleTests {
         let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
         let a = AsyncStream<TriageInboxUpdate>.makeStream()
         let b = AsyncStream<TriageInboxUpdate>.makeStream()
+        let terminations = StreamTerminations()
+        a.continuation.onTermination = { reason in
+            terminations.record("a", reason: reason)
+        }
+        b.continuation.onTermination = { reason in
+            terminations.record("b", reason: reason)
+        }
         let first = TestStore(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
             $0.triageService = TriageService(observe: { a.stream }, mutate: { _, _, _ in .obsolete })
         }
@@ -52,6 +60,8 @@ struct ServiceRootLifecycleTests {
 
         await first.send(.triage(.triage(.disappeared)))
         await first.finish() // Finish before closing the producer: cancellation must own this.
+        #expect(terminations.wasCancelled("a") == true)
+        #expect(terminations.wasCancelled("b") == nil, "The second subscription must still be open")
         b.continuation.yield(TriageInboxUpdate(identity: identity, overview: overview, connection: .offline("second scene")))
         await second.receive(\.triage.triage.inboxUpdated)
         #expect(second.state.tab == .fleet)
@@ -59,7 +69,28 @@ struct ServiceRootLifecycleTests {
         #expect(second.state.triage.triage.hasSnapshot)
         await second.send(.triage(.triage(.disappeared)))
         await second.finish()
+        #expect(terminations.wasCancelled("b") == true)
         a.continuation.finish()
         b.continuation.finish()
+    }
+}
+
+// AsyncStream calls onTermination from the cancelling task. A synchronous mutex
+// records completion without spawning an unstructured task or waiting on a timer.
+private final class StreamTerminations: Sendable {
+    private let cancellations = Mutex<[String: Bool]>([:])
+
+    func record(_ scene: String, reason: AsyncStream<TriageInboxUpdate>.Continuation.Termination) {
+        let cancelled: Bool
+        switch reason {
+        case .cancelled: cancelled = true
+        case .finished: cancelled = false
+        @unknown default: cancelled = false
+        }
+        cancellations.withLock { $0[scene] = cancelled }
+    }
+
+    func wasCancelled(_ scene: String) -> Bool? {
+        cancellations.withLock { $0[scene] }
     }
 }
