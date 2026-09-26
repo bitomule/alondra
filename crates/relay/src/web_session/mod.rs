@@ -122,6 +122,16 @@ impl WebSession {
             permits: Semaphore::new(2),
         })))
     }
+    // Keep at most two authentication pipelines holding session advisory locks.
+    // Short bursts can wait; the outer request semaphore bounds queued work.
+    async fn acquire_auth(
+        &self,
+    ) -> std::result::Result<tokio::sync::SemaphorePermit<'_>, Response> {
+        match tokio::time::timeout(Duration::from_millis(500), self.permits.acquire()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            _ => Err(unavailable()),
+        }
+    }
     fn session_name(&self) -> &'static str {
         if self.secure {
             "__Host-alondra_session"
@@ -342,9 +352,9 @@ pub async fn middleware(
     {
         return forbidden();
     }
-    let _permit = match web.permits.try_acquire() {
+    let permit = match web.acquire_auth().await {
         Ok(value) => value,
-        Err(_) => return unavailable(),
+        Err(response) => return response,
     };
     let (identity, token) = match web.authenticate(&server.auth, &cookie).await {
         Ok(value) => value,
@@ -369,15 +379,18 @@ pub async fn middleware(
     };
     request.headers_mut().insert(header::AUTHORIZATION, bearer);
     request.extensions_mut().insert(identity);
+    // The session lock has already been released by authenticate. Product
+    // handlers must not occupy the small authentication admission budget.
+    drop(permit);
     next.run(request).await
 }
 async fn login(State(server): State<Arc<Server>>) -> Response {
     let Some(web) = &server.web_session else {
         return unavailable();
     };
-    let _permit = match web.permits.try_acquire() {
+    let _permit = match web.acquire_auth().await {
         Ok(value) => value,
-        Err(_) => return unavailable(),
+        Err(response) => return response,
     };
     let login = match tokio::time::timeout(Duration::from_secs(20), web.provider.login()).await {
         Ok(Ok(value)) => value,
@@ -419,9 +432,9 @@ async fn callback(
     let Some(web) = &server.web_session else {
         return unavailable();
     };
-    let _permit = match web.permits.try_acquire() {
+    let _permit = match web.acquire_auth().await {
         Ok(value) => value,
-        Err(_) => return unavailable(),
+        Err(response) => return response,
     };
     let mut consumed = false;
     let result = async {
@@ -525,9 +538,9 @@ async fn logout(State(server): State<Arc<Server>>, headers: HeaderMap) -> Respon
         Ok(value) => value,
         Err(_) => return unauthorized(),
     };
-    let _permit = match web.permits.try_acquire() {
+    let _permit = match web.acquire_auth().await {
         Ok(value) => value,
-        Err(_) => return unavailable(),
+        Err(response) => return response,
     };
     if let Some(cookie) = cookie {
         let _lock = match web.store.lock(&cookie).await {
@@ -913,6 +926,85 @@ mod tests {
             "denied session must never replay its refresh"
         );
         web.store.forget_session(&ready_cookie).await?;
+        // Admission queues a short burst without broadening concurrency. Hold
+        // both slots deterministically, then release one after HTTP is in flight.
+        let queued_cookie = random_token()?;
+        web.store
+            .create_session(
+                &queued_cookie,
+                account.id,
+                "stable-admin-sub",
+                &ready_secrets,
+                now - 1,
+                now,
+            )
+            .await?;
+        let held = web.permits.acquire_many(2).await?;
+        assert_eq!(
+            http.post(format!("{origin}/auth/logout"))
+                .header(header::ORIGIN, "https://adversary.example")
+                .header(
+                    header::COOKIE,
+                    format!("{}={queued_cookie}", web.session_name())
+                )
+                .send()
+                .await?
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        let pending = http
+            .post(format!("{origin}/auth/logout"))
+            .header(header::ORIGIN, &origin)
+            .header(
+                header::COOKIE,
+                format!("{}={queued_cookie}", web.session_name()),
+            )
+            .header("x-csrf-token", &ready_secrets.csrf_token)
+            .send();
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut pending)
+                .await
+                .is_err(),
+            "third request must wait, not return an immediate 503"
+        );
+        drop(held);
+        assert_eq!(pending.await?.status(), StatusCode::NO_CONTENT);
+        assert!(web.store.logout_csrf(&queued_cookie).await?.is_none());
+        let saturated = random_token()?;
+        web.store
+            .create_session(
+                &saturated,
+                account.id,
+                "stable-admin-sub",
+                &ready_secrets,
+                now - 1,
+                now,
+            )
+            .await?;
+        let held = web.permits.acquire_many(2).await?;
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                http.post(format!("{origin}/auth/logout"))
+                    .header(header::ORIGIN, &origin)
+                    .header(
+                        header::COOKIE,
+                        format!("{}={saturated}", web.session_name())
+                    )
+                    .header("x-csrf-token", &ready_secrets.csrf_token)
+                    .send()
+            )
+            .await??
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(
+            web.store.logout_csrf(&saturated).await?.is_some(),
+            "admission timeout must not alter the credential"
+        );
+        drop(held);
+        web.store.forget_session(&saturated).await?;
         let remaining: i64 = query("SELECT count(*) AS n FROM web_sessions")
             .fetch_one(&db.pool)
             .await?
