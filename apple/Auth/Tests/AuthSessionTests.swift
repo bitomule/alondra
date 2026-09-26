@@ -203,11 +203,12 @@ private actor DelayedCancelBrowser: AuthBrowser {
 private final class MemoryStorage: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var token: RefreshCredential?
-    private let refusesWrites: Bool
+    private var refusesWrites: Bool
     init(_ token: String? = nil, refusesWrites: Bool = false) {
         self.token = token.map { RefreshCredential(token: $0) }
         self.refusesWrites = refusesWrites
     }
+    func setRefusesWrites(_ value: Bool) { lock.lock(); defer { lock.unlock() }; refusesWrites = value }
     func read() throws -> RefreshCredential? { lock.lock(); defer { lock.unlock() }; return token }
     func write(_ token: RefreshCredential) throws { lock.lock(); defer { lock.unlock() }; if refusesWrites { throw AuthError.keychain(-25293) }; self.token = token }
     func delete() throws { lock.lock(); defer { lock.unlock() }; token = nil }
@@ -519,6 +520,99 @@ final class AuthSessionTests: XCTestCase {
         // A failed durable write cannot guarantee suspension across a process restart.
     }
 
+    func testFailedLoginPersistenceRetainsIssuedTokenForLogoutRetry() async throws {
+        let storage = MemoryStorage(refusesWrites: true)
+        let evidence = FlowEvidence()
+        let transport = FixtureTransport { _ in
+            Self.tokens(access: "issued-access", refresh: "issued-refresh", idToken: Self.idToken(nonce: evidence.values().0))
+        }
+        let browser = Self.loginBrowser(evidence)
+        let session = AuthSession(transport: transport, browser: browser, storage: storage,
+                                  now: { Date(timeIntervalSince1970: 2_000_000_000) })
+        do { try await session.login(); XCTFail("Denied persistence cannot complete login") }
+        catch AuthError.keychain(-25293) { }
+        XCTAssertNil(try storage.read())
+        do { try await session.logout(); XCTFail("An empty Keychain does not mean the issued session was revoked") }
+        catch AuthError.keychain(-25293) { }
+        do { _ = try await session.bearerToken(); XCTFail("Unpersisted session must remain suspended") }
+        catch AuthError.pendingRevocation { }
+        let beforeRetry = await transport.revocations()
+        XCTAssertTrue(beforeRetry.isEmpty)
+
+        storage.setRefusesWrites(false)
+        try await session.logout()
+        let revoked = await transport.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "issued-refresh")
+        XCTAssertNil(try storage.read())
+        let signedIn = try await session.hasSession()
+        XCTAssertFalse(signedIn)
+        let exchanges = await transport.tokenRequests()
+        XCTAssertEqual(exchanges.count, 1, "Cleanup must not issue another session")
+    }
+
+    func testFailedRotationPersistenceRevokesKnownSuccessorNotStoredPredecessor() async throws {
+        let storage = MemoryStorage("old-refresh")
+        let transport = FixtureTransport { request in
+            XCTAssertEqual(Self.form(request)["refresh_token"], "old-refresh")
+            storage.setRefusesWrites(true) // Dispatch marker succeeded; successor persistence fails.
+            return Self.tokens(access: "new-access", refresh: "known-successor", idToken: nil)
+        }
+        let browser = FixtureBrowser { _ in XCTFail("No browser during cleanup"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Denied successor write cannot expose bearer") }
+        catch AuthError.keychain(-25293) { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "old-refresh", status: .rotationUncertain))
+        do { try await session.logout(); XCTFail("Cleanup cannot succeed while its marker is denied") }
+        catch AuthError.keychain(-25293) { }
+
+        storage.setRefusesWrites(false)
+        try await session.logout()
+        let revoked = await transport.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "known-successor")
+        XCTAssertNil(try storage.read())
+        let exchanges = await transport.tokenRequests()
+        XCTAssertEqual(exchanges.count, 1, "Never retry refresh with the consumed predecessor")
+    }
+
+    func testCancelledLoginResponsePersistsCleanupOnlyAndCannotRestoreActiveSession() async throws {
+        let storage = MemoryStorage()
+        let evidence = FlowEvidence()
+        let issuer = FixtureTransport { _ in
+            Self.tokens(access: "issued-access", refresh: "cancelled-refresh", idToken: Self.idToken(nonce: evidence.values().0))
+        }
+        let transport = TokenResponseGate(upstream: issuer)
+        let browser = Self.loginBrowser(evidence)
+        let session = AuthSession(transport: transport, browser: browser, storage: storage,
+                                  now: { Date(timeIntervalSince1970: 2_000_000_000) })
+        let login = Task { try await session.login() }
+        await transport.waitForResponse()
+        login.cancel()
+        await transport.release()
+        do { try await login.value; XCTFail("Cancelled login must not activate the returned session") }
+        catch is CancellationError { }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "cancelled-refresh", status: .pendingRevocation))
+
+        let restarted = AuthSession(transport: issuer, browser: browser, storage: storage)
+        do { _ = try await restarted.bearerToken(); XCTFail("Cancelled authorization must not restore active credentials") }
+        catch AuthError.pendingRevocation { }
+        try await restarted.logout()
+        let revoked = await issuer.revocations()
+        XCTAssertEqual(revoked.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revoked.first))["token"], "cancelled-refresh")
+        XCTAssertNil(try storage.read())
+    }
+
+    private static func loginBrowser(_ evidence: FlowEvidence) -> FixtureBrowser {
+        FixtureBrowser { url in
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            let values = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) })
+            evidence.record(nonce: values["nonce"]!, challenge: values["code_challenge"]!)
+            return URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=auth-code&state=\(values["state"]!)")!
+        }
+    }
+
     func testOffIssuerRevocationEndpointIsRejectedBeforeAnyCredentialLeavesDevice() async throws {
         let storage = MemoryStorage("saved")
         let browser = FixtureBrowser { _ in XCTFail("Must not authorize"); return URL(string: "https://invalid.example")! }
@@ -553,4 +647,27 @@ private struct OffIssuerRevocationTransport: AuthHTTPTransport {
         {"issuer":"https://alondra-auth.davidcollado.dev/realms/alondra","authorization_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/auth","token_endpoint":"https://alondra-auth.davidcollado.dev/realms/alondra/protocol/openid-connect/token","revocation_endpoint":"https://attacker.example/revoke"}
         """.utf8))
     }
+}
+
+/// Delivers a valid issuer response even after cancellation, as a network completion can.
+private actor TokenResponseGate: AuthHTTPTransport {
+    let upstream: FixtureTransport
+    private var responseReady = false
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    init(upstream: FixtureTransport) { self.upstream = upstream }
+    func send(_ request: URLRequest) async throws -> AuthHTTPResponse {
+        let response = try await upstream.send(request)
+        if request.url!.path.hasSuffix("/token") {
+            responseReady = true
+            responseWaiter?.resume(); responseWaiter = nil
+            await withCheckedContinuation { releaseWaiter = $0 }
+        }
+        return response
+    }
+    func waitForResponse() async {
+        if responseReady { return }
+        await withCheckedContinuation { responseWaiter = $0 }
+    }
+    func release() { releaseWaiter?.resume(); releaseWaiter = nil }
 }

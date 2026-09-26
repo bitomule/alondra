@@ -55,6 +55,9 @@ public actor AuthSession {
     private var epoch = 0
     private var transitions = 0
     private var sessionSuspended = false
+    // A successful issuer response can outlive a failed Keychain write. Keep its
+    // successor until it is durable; logout must never fall back to the old token.
+    private var unpersistedCredential: RefreshCredential?
     private var mutationLocked = false
     private var mutationWaiters: [AsyncStream<Void>.Continuation] = []
 
@@ -158,11 +161,14 @@ public actor AuthSession {
             "redirect_uri": configuration.redirectURI.absoluteString,
             "code_verifier": verifier,
         ])
-        try validateIDToken(result.id_token, nonce: nonce)
         guard let refresh = result.refresh_token, !refresh.isEmpty else { throw AuthError.invalidToken }
-        try storage.write(RefreshCredential(token: refresh))
+        // Persist cleanup ownership before validating/accepting the issued session.
+        // Cancellation must not leave an active credential restorable after restart.
+        try persistIssuedCredential(RefreshCredential(token: refresh, status: .pendingRevocation))
+        try validateIDToken(result.id_token, nonce: nonce)
         try Task.checkCancellation()
         guard epoch == startedAt else { throw CancellationError() }
+        try persistIssuedCredential(RefreshCredential(token: refresh))
         accessToken = result.access_token
         expiresAt = now().addingTimeInterval(TimeInterval(result.expires_in))
         sessionSuspended = false
@@ -257,11 +263,25 @@ public actor AuthSession {
         if refreshTaskID == id { refreshTask = nil; refreshTaskID = nil }
     }
 
+    private func persistIssuedCredential(_ credential: RefreshCredential) throws {
+        unpersistedCredential = credential
+        do {
+            try storage.write(credential)
+            unpersistedCredential = nil
+        } catch {
+            sessionSuspended = true
+            accessToken = nil
+            expiresAt = .distantPast
+            throw error
+        }
+    }
+
     private func revokeStoredCredential() async throws {
-        guard var credential = try storage.read() else { return }
+        guard var credential = try unpersistedCredential ?? storage.read() else { return }
         guard credential.status != .rotationUncertain else { throw AuthError.rotationUncertain }
         credential.status = .pendingRevocation
         try storage.write(credential)
+        unpersistedCredential = nil // The exact candidate is now durable for retry.
         accessToken = nil
         expiresAt = .distantPast
         let document = try await discovery()
@@ -301,7 +321,7 @@ public actor AuthSession {
             throw error
         }
         let rotated = result.refresh_token.flatMap { $0.isEmpty ? nil : $0 } ?? saved
-        try storage.write(RefreshCredential(token: rotated))
+        try persistIssuedCredential(RefreshCredential(token: rotated))
         // Persistence precedes cancellation/generation checks: logout needs this token.
         guard epoch == startedAt, transitions == 0 else { throw CancellationError() }
         accessToken = result.access_token
