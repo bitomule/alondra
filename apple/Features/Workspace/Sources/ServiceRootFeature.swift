@@ -48,7 +48,8 @@ public struct ServiceRootFeature {
                 return .none
             case .pullRequest(.presented(.pr(.mutationFinished))), .pullRequest(.presented(.diff(.reviewFinished))):
                 if let detail = state.pullRequest, detail.pr.shouldDismiss || detail.diff.shouldDismiss {
-                    state.triage.triage.hiddenIDs.insert("p\(detail.pr.id)")
+                    // Closing a successful review does not imply the PR left the inbox.
+                    // In particular, asking a question keeps its card until a new snapshot.
                     state.pullRequest = nil
                 }
                 return .none
