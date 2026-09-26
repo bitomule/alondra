@@ -204,7 +204,7 @@ def main():
     require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.version), "Version must be x.y.z")
     require(re.fullmatch(r"[1-9][0-9]{0,3}", args.build_number), "Build number must be an integer from 1 through 9999")
     args.identity = args.identity.upper()
-    local_identity(args.identity)
+    signing_name = local_identity(args.identity)
     installer = None
     if args.destination == "macos":
         require(args.installer_identity, "Mac distribution needs an Installer identity")
@@ -228,7 +228,9 @@ def main():
     output.mkdir(parents=True, mode=0o700)
     target = "//apple:AlondraiOS" if args.destination == "ios" else "//apple:AlondraMac"
     flags = ["--define=alondra_distribution=1", "--embed_label=alondra_" + args.version + "_" + args.build_number,
-             "--@build_bazel_rules_apple//apple/build_settings:signing_certificate_name=" + args.identity,
+             # rules_apple resolves this flag by certificate common name, not SHA-1.
+             # Bundle verification below still requires the exact requested leaf.
+             "--@build_bazel_rules_apple//apple/build_settings:signing_certificate_name=" + signing_name,
              "--ios_multi_cpus=arm64" if args.destination == "ios" else "--macos_cpus=arm64",
              "--jobs=1", "-c", "opt"]
     print("Building local " + args.destination + " distribution artifact…", flush=True)
