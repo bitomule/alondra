@@ -31,6 +31,7 @@ public struct DiffReviewFeature {
         public var submittedNote: String?
         public var submittedAttachments: [PRReviewAttachment]?
         public var editingAnchor: String?
+        public var editingText = ""
         public var isSending = false
         public var mutationOutcome: PRMutationOutcome?
         public var validationError: String?
@@ -69,6 +70,8 @@ public struct DiffReviewFeature {
         case toggleFile(String)
         case toggleAllFiles
         case editLine(String)
+        case lineEditorChanged(String)
+        case saveEditedLine
         case saveLineComment(String, String)
         case removeLineComment(String)
         case confirmCommentsForCurrentDiff
@@ -138,6 +141,7 @@ public struct DiffReviewFeature {
                 state.submittedNote = nil
                 state.submittedAttachments = nil
                 state.editingAnchor = nil
+                state.editingText = ""
                 state.isSending = false
                 state.mutationOutcome = nil
                 state.validationError = nil
@@ -182,14 +186,24 @@ public struct DiffReviewFeature {
             case .editLine(let anchor):
                 guard state.files?.contains(where: { $0.lines.contains(where: { $0.anchor == anchor }) }) == true else { return .none }
                 state.editingAnchor = anchor
+                state.editingText = state.comments[anchor] ?? ""
                 return .none
+            case .lineEditorChanged(let text):
+                guard state.editingAnchor != nil, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                state.editingText = text
+                return .none
+            case .saveEditedLine:
+                guard let anchor = state.editingAnchor, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                return .send(.saveLineComment(anchor, state.editingText))
             case .saveLineComment(let anchor, let text):
-                guard state.editingAnchor == anchor else { return .none }
+                guard state.editingAnchor == anchor,
+                      state.files?.contains(where: { $0.lines.contains(where: { $0.anchor == anchor }) }) == true else { return .none }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if state.comments.isEmpty, !trimmed.isEmpty { state.commentsDiffText = state.loadedDiffText; state.commentsHeadSHA = state.loadedHeadSHA }
                 state.comments[anchor] = trimmed.isEmpty ? nil : trimmed
                 if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                 state.editingAnchor = nil
+                state.editingText = ""
                 return .none
             case .removeLineComment(let anchor):
                 state.comments[anchor] = nil
@@ -205,6 +219,7 @@ public struct DiffReviewFeature {
                 state.validationError = nil
                 return .none
             case .cancelLineComment:
+                state.editingText = ""
                 state.editingAnchor = nil
                 return .none
             case .noteChanged(let note):

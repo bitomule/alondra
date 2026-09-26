@@ -51,6 +51,36 @@ private actor DispatchCount {
 @MainActor
 struct PullRequestFeatureTests {
     @Test
+    func cancellingLineEditorPreservesSavedCommentAndSaveCommitsWholeBuffer() async {
+        let diff = "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -0,0 +1 @@\n+let a = 1\n"
+        var state = DiffReviewFeature.State(prID: 4)
+        state.files = UnifiedDiff.parse(diff)
+        state.loadedDiffText = diff
+        state.loadedHeadSHA = String(repeating: "a", count: 40)
+        state.commentsDiffText = diff
+        state.commentsHeadSHA = state.loadedHeadSHA
+        state.comments = ["a.swift:1": "Original comment"]
+        let store = TestStore(initialState: state) { DiffReviewFeature() }
+        await store.send(.editLine("a.swift:1")) {
+            $0.editingAnchor = "a.swift:1"
+            $0.editingText = "Original comment"
+        }
+        await store.send(.lineEditorChanged("Discarded edit")) { $0.editingText = "Discarded edit" }
+        await store.send(.cancelLineComment) { $0.editingAnchor = nil; $0.editingText = "" }
+        await store.send(.editLine("a.swift:1")) {
+            $0.editingAnchor = "a.swift:1"
+            $0.editingText = "Original comment"
+        }
+        await store.send(.lineEditorChanged("Replacement comment")) { $0.editingText = "Replacement comment" }
+        await store.send(.saveEditedLine)
+        await store.receive(\.saveLineComment) {
+            $0.comments["a.swift:1"] = "Replacement comment"
+            $0.editingAnchor = nil
+            $0.editingText = ""
+        }
+    }
+
+    @Test
     func mergeDialogCannotSendAfterPRCloses() async throws {
         let pr = try makePR(#","merge_methods":["merge","squash"]"#)
         let closed = try makePR(state: "closed")
