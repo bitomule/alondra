@@ -219,7 +219,7 @@ public struct DocumentReviewFeature {
                 guard state.pendingSubmission != nil else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     clearPending(&state)
-                    state.noticeIsSubmissionFailure = false
+                    state.noticeIsSubmissionFailure = true
                     state.notice = error.message
                     return .none
                 }

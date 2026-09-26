@@ -94,7 +94,7 @@ public struct QuestionFeature {
                     let attached = state.pendingAttachedAnswer != nil
                     clearPending(&state)
                     if attached { return .send(.attachedSubmissionFailed(error.message)) }
-                    state.noticeIsSubmissionFailure = false
+                    state.noticeIsSubmissionFailure = true
                     state.notice = error.message
                     return .none
                 }

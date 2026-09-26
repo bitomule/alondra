@@ -116,7 +116,7 @@ public struct DiffReviewFeature {
                 guard state.pendingSubmission != nil else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     clearPending(&state)
-                    state.validationErrorIsSubmissionFailure = false
+                    state.validationErrorIsSubmissionFailure = true
                     state.validationError = error.message
                     return .none
                 }

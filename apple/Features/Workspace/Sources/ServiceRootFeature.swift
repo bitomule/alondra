@@ -204,6 +204,12 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .triage(.question(.presented(let action))):
+            return state.triage.question.flatMap { questionNotice($0, action: action) }
+        case .pullRequest(.presented(.diff(.attachmentPicker(let action)))):
+            return state.pullRequest.flatMap { diffUploadNotice($0.diff, action: action) }
+        case .triage(.cards(.element(let id, .pullRequest(.diff(.attachmentPicker(let action)))))):
+            return state.triage.cards[id: id]?.pullRequest.flatMap { diffUploadNotice($0.diff, action: action) }
         case .triage(.document(.presented(let action))):
             return state.triage.document.flatMap { documentNotice($0, action: action) }
         case .pullRequest(.presented(.diff(.reviewFinished(let outcome, let epoch)))):
@@ -304,6 +310,10 @@ public struct ServiceRootFeature {
 
     private func documentNotice(_ document: DocumentReviewFeature.State, action: DocumentReviewFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard document.pendingSubmission != nil,
+                  document.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .submissionFinished(let revision, _, let outcome), .reportFeedbackFinished(let revision, let outcome):
             guard document.isSubmitting, document.revision == revision else { return nil }
             switch outcome {
@@ -318,6 +328,13 @@ public struct ServiceRootFeature {
         }
     }
 
+    private func diffUploadNotice(_ diff: DiffReviewFeature.State, action: AttachmentFeature.Action) -> WorkspaceNotice.Event? {
+        guard case .uploaded(let id, .failure(let error)) = action,
+              diff.pendingSubmission != nil,
+              diff.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+        return .failure(couldNotSendMessage(error.message))
+    }
+
     private func rejectedPRNotice(_ outcome: PRMutationOutcome) -> WorkspaceNotice.Event? {
         guard case .rejected(let message) = outcome else { return nil }
         return .failure(couldNotSendMessage(message))
@@ -325,6 +342,10 @@ public struct ServiceRootFeature {
 
     private func questionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .attachmentPicker(.uploaded(let id, .failure(let error))):
+            guard question.pendingSubmission != nil && question.pendingAttachedAnswer == nil,
+                  question.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .submissionFinished(let revision, let outcome):
             guard question.isSubmitting, question.revision == revision else { return nil }
             switch outcome {
