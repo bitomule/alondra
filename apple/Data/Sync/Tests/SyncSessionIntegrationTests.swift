@@ -1,66 +1,69 @@
-import AlondraAPIClient
-import AlondraShared
+import AlondraContracts
 import AlondraSync
 import Foundation
 import XCTest
 
-private struct TestSigner: RequestSigner {
-    let deviceID: String
-    let marker: String
-    func signature(for message: Data) throws -> Data { Data(marker.utf8) }
-}
-
-private actor ControlledTransport: HTTPTransport {
-    private var requests: [URLRequest] = []
-    private var pending: [Int: CheckedContinuation<HTTPResponse, Error>] = [:]
+private actor ControlledTransport: SyncTransport {
+    enum Request: Equatable { case overview, changes(after: UInt64, seconds: Int) }
+    private var requests: [Request] = []
+    private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
     private var requestWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var cancelled = 0
     private var cancellationWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private let lateResponses: Set<Int>
 
-    func send(_ request: URLRequest, policy: RequestPolicy) async throws -> HTTPResponse {
+    init(lateResponses: Set<Int> = []) { self.lateResponses = lateResponses }
+
+    func fetchOverview() async throws -> Data { try await perform(.overview) }
+    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
+        _ = try await perform(.changes(after: afterSnapshotTick, seconds: seconds))
+    }
+
+    private func perform(_ request: Request) async throws -> Data {
         let index = requests.count
         requests.append(request)
         resumeRequestWaiters()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                pending[index] = continuation
+                if Task.isCancelled && !lateResponses.contains(index) {
+                    recordCancellation()
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    pending[index] = continuation
+                }
             }
-        } onCancel: {
-            Task { await self.cancel(index) }
-        }
-    }
-
-    func upload(_ request: URLRequest, body: Data, progress: @escaping @Sendable (Double) -> Void) async throws -> HTTPResponse {
-        XCTFail("Sync must never upload")
-        throw URLError(.unsupportedURL)
+        } onCancel: { Task { await self.cancel(index) } }
     }
 
     func waitForRequests(_ count: Int) async {
         if requests.count >= count { return }
         await withCheckedContinuation { requestWaiters.append((count, $0)) }
     }
-
-    func request(_ index: Int) -> URLRequest { requests[index] }
+    func request(_ index: Int) -> Request { requests[index] }
     func requestCount() -> Int { requests.count }
-
-    func respond(_ index: Int, body: String, status: Int = 200) {
-        pending.removeValue(forKey: index)?.resume(returning: HTTPResponse(status: status, body: Data(body.utf8)))
+    func respond(_ index: Int, body: String) {
+        pending.removeValue(forKey: index)?.resume(returning: Data(body.utf8))
     }
-
+    func fail(_ index: Int) {
+        pending.removeValue(forKey: index)?.resume(throwing: URLError(.networkConnectionLost))
+    }
     func waitForCancellations(_ count: Int) async {
         if cancelled >= count { return }
         await withCheckedContinuation { cancellationWaiters.append((count, $0)) }
     }
-
     private func cancel(_ index: Int) {
-        guard let continuation = pending.removeValue(forKey: index) else { return }
-        cancelled += 1
+        guard let continuation = pending[index] else { return }
+        recordCancellation()
+        guard !lateResponses.contains(index) else { return }
+        pending[index] = nil
         continuation.resume(throwing: CancellationError())
+    }
+    private func recordCancellation() {
+        cancelled += 1
         let ready = cancellationWaiters.filter { cancelled >= $0.0 }
         cancellationWaiters.removeAll { cancelled >= $0.0 }
         for (_, waiter) in ready { waiter.resume() }
     }
-
     private func resumeRequestWaiters() {
         let ready = requestWaiters.filter { requests.count >= $0.0 }
         requestWaiters.removeAll { requests.count >= $0.0 }
@@ -105,6 +108,9 @@ private func nextSnapshot(from iterator: inout AsyncStream<SyncState>.Iterator) 
 
 final class SyncSessionIntegrationTests: XCTestCase {
     private let base = URL(string: "https://alondra.example")!
+    private func identity(_ revision: String, server: URL? = nil) -> SyncIdentity {
+        SyncIdentity(server: server ?? base, deviceID: "device", credentialRevision: revision)
+    }
 
     /// The fields match the current daemon's `/v1/overview` envelope, including the machine
     /// payload. Decode it through the same DTO the app uses before exercising the sync loop.
@@ -168,8 +174,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
     func testTwoWindowsShareOneLongPollAndStopCancelsIt() async throws {
         let transport = ControlledTransport()
-        let client = AlondraAPIClient(base: base, transport: transport)
-        let session = SyncSession(client: client, credentialRevision: "local")
+        let session = SyncSession(transport: transport, identity: identity("local"))
         var first = await session.subscribe().makeAsyncIterator()
         var second = await session.subscribe().makeAsyncIterator()
 
@@ -184,8 +189,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
         await transport.waitForRequests(2)
         let poll = await transport.request(1)
-        XCTAssertEqual(poll.url?.path(), "/v1/changes")
-        XCTAssertEqual(URLComponents(url: try XCTUnwrap(poll.url), resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "7")
+        XCTAssertEqual(poll, .changes(after: 7, seconds: 10))
         let pollCount = await transport.requestCount()
         XCTAssertEqual(pollCount, 2)
 
@@ -195,7 +199,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
     func testIdenticalOverviewRefetchPublishesOneFreshRevisionToBothWindows() async throws {
         let transport = ControlledTransport()
-        let session = SyncSession(client: AlondraAPIClient(base: base, transport: transport), credentialRevision: "local")
+        let session = SyncSession(transport: transport, identity: identity("local"))
         var first = await session.subscribe().makeAsyncIterator()
         var second = await session.subscribe().makeAsyncIterator()
         let body = try overview(7)
@@ -228,19 +232,21 @@ final class SyncSessionIntegrationTests: XCTestCase {
         await session.stop()
     }
 
-    func testSignerSwitchDiscardsOldOverviewAndStartsFreshPoll() async throws {
-        let transport = ControlledTransport()
-        let old = AlondraAPIClient(base: base, signer: TestSigner(deviceID: "device", marker: "old-key"), transport: transport)
-        let new = AlondraAPIClient(base: base, signer: TestSigner(deviceID: "device", marker: "new-key"), transport: transport)
-        let session = SyncSession(client: old, credentialRevision: "key-1")
+    func testCredentialSwitchDiscardsLateOldOverviewAndStartsFreshPoll() async throws {
+        let transport = ControlledTransport(lateResponses: [0])
+        let old = identity("key-1")
+        let new = identity("key-2")
+        let session = SyncSession(transport: transport, identity: old)
         var observer = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
 
-        await session.use(new, credentialRevision: "key-2")
+        await session.use(transport: transport, identity: new)
         await transport.waitForRequests(2)
         let newRequest = await transport.request(1)
-        XCTAssertEqual(newRequest.value(forHTTPHeaderField: RequestSignature.deviceHeader), "device")
-        XCTAssertEqual(newRequest.value(forHTTPHeaderField: RequestSignature.signatureHeader), Data("new-key".utf8).base64EncodedString())
+        XCTAssertEqual(newRequest, .overview)
+        let activeIdentity = await session.identity
+        XCTAssertEqual(activeIdentity, new)
+        await transport.waitForCancellations(1)
         await transport.respond(0, body: try overview(99))
         await transport.respond(1, body: try overview(1))
         let newSnapshot = await nextSnapshot(from: &observer)
@@ -249,13 +255,13 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
         await transport.waitForRequests(3)
         let poll = await transport.request(2)
-        XCTAssertEqual(URLComponents(url: try XCTUnwrap(poll.url), resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "1")
+        XCTAssertEqual(poll, .changes(after: 1, seconds: 10))
         await session.stop()
     }
 
     func testLowerTickAfterChangeIsAcceptedAsDaemonRestart() async throws {
         let transport = ControlledTransport()
-        let session = SyncSession(client: AlondraAPIClient(base: base, transport: transport), credentialRevision: "local")
+        let session = SyncSession(transport: transport, identity: identity("local"))
         var observer = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         await transport.respond(0, body: try overview(42))
@@ -264,9 +270,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
         await transport.waitForRequests(2)
         let heldPoll = await transport.request(1)
-        let query = URLComponents(url: try XCTUnwrap(heldPoll.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
-        XCTAssertEqual(query.first(where: { $0.name == "after" })?.value, "42")
-        XCTAssertEqual(query.first(where: { $0.name == "wait" })?.value, "10")
+        XCTAssertEqual(heldPoll, .changes(after: 42, seconds: 10))
         // The daemon may return the same tick when its bounded wait expires. Fetch a full
         // overview anyway: a restarted daemon could now be at a lower tick.
         await transport.respond(1, body: #"{"tick":42}"#)
@@ -276,14 +280,13 @@ final class SyncSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(restarted?.snapshot?.tick, 2)
         await transport.waitForRequests(4)
         let poll = await transport.request(3)
-        XCTAssertEqual(URLComponents(url: try XCTUnwrap(poll.url), resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "2")
+        XCTAssertEqual(poll, .changes(after: 2, seconds: 10))
         await session.stop()
     }
 
     func testOfflineSubscriberReplaysSnapshotThenStatusAndIdentitySwitchClearsIt() async throws {
         let transport = ControlledTransport()
-        let client = AlondraAPIClient(base: base, transport: transport)
-        let session = SyncSession(client: client, credentialRevision: "local", retryDelay: .seconds(60))
+        let session = SyncSession(transport: transport, identity: identity("local"), retryDelay: .seconds(60))
         var first = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         await transport.respond(0, body: try overview(8))
@@ -291,9 +294,9 @@ final class SyncSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(initial?.snapshot?.tick, 8)
 
         await transport.waitForRequests(2)
-        await transport.respond(1, body: "", status: 503)
+        await transport.fail(1)
         let offline = await first.next()
-        guard case .offline = offline?.connection else { return XCTFail("Expected offline after 503") }
+        guard case .offline = offline?.connection else { return XCTFail("Expected offline after transport failure") }
         XCTAssertEqual(offline?.snapshot?.tick, 8)
 
         var late = await session.subscribe().makeAsyncIterator()
@@ -301,13 +304,13 @@ final class SyncSessionIntegrationTests: XCTestCase {
         XCTAssertEqual(replayed?.snapshot?.tick, 8)
         guard case .offline = replayed?.connection else { return XCTFail("Expected current offline status") }
 
-        let replacement = AlondraAPIClient(base: URL(string: "https://new.example")!, transport: transport)
-        await session.use(replacement, credentialRevision: "other")
+        let replacement = identity("other", server: URL(string: "https://new.example")!)
+        await session.use(transport: transport, identity: replacement)
         var switched = await session.subscribe().makeAsyncIterator()
         let connecting = await switched.next()
         guard case .connecting = connecting?.connection else { return XCTFail("Expected connecting on new identity") }
         XCTAssertNil(connecting?.snapshot, "Old snapshot leaked across identity")
-        XCTAssertEqual(connecting?.identity.server, replacement.base)
+        XCTAssertEqual(connecting?.identity.server, replacement.server)
         await transport.waitForRequests(3)
         await transport.respond(2, body: try overview(1))
         let fresh = await nextSnapshot(from: &switched)
@@ -317,9 +320,9 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
     func testSlowWindowNeverReceivesPreviousIdentityAfterRepeatedNewServerFailures() async throws {
         let transport = ControlledTransport()
-        let old = AlondraAPIClient(base: base, transport: transport)
-        let new = AlondraAPIClient(base: URL(string: "https://new.example")!, transport: transport)
-        let session = SyncSession(client: old, credentialRevision: "old", retryDelay: .milliseconds(1))
+        let old = identity("old")
+        let new = identity("new", server: URL(string: "https://new.example")!)
+        let session = SyncSession(transport: transport, identity: old, retryDelay: .milliseconds(1))
         var slow = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         await transport.respond(0, body: try overview(80))
@@ -328,14 +331,14 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
         // The window stops reading while the session changes identity and the new server
         // repeatedly fails. The reset event itself may be evicted from the one-state buffer.
-        await session.use(new, credentialRevision: "new")
+        await session.use(transport: transport, identity: new)
         for index in 1...3 {
             await transport.waitForRequests(index + 1)
-            await transport.respond(index, body: "", status: 503)
+            await transport.fail(index)
         }
         await transport.waitForRequests(5)
         let resumed = await slow.next()
-        XCTAssertEqual(resumed?.identity.server, new.base)
+        XCTAssertEqual(resumed?.identity.server, new.server)
         XCTAssertEqual(resumed?.identity.credentialRevision, "new")
         XCTAssertNil(resumed?.snapshot, "A's snapshot must never be rendered as B's state")
         guard case .offline = resumed?.connection else { return XCTFail("Expected B offline") }
@@ -344,9 +347,9 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
     func testInvalidServerSuspendsOldRequestAndExistingWindowsResumeOnValidServer() async throws {
         let transport = ControlledTransport()
-        let old = AlondraAPIClient(base: base, transport: transport)
-        let replacement = AlondraAPIClient(base: URL(string: "https://new.example")!, transport: transport)
-        let session = SyncSession(client: old, credentialRevision: "old")
+        let old = identity("old")
+        let replacement = identity("other", server: URL(string: "https://new.example")!)
+        let session = SyncSession(transport: transport, identity: old)
         var window = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
 
@@ -358,26 +361,25 @@ final class SyncSessionIntegrationTests: XCTestCase {
         let pausedRequestCount = await transport.requestCount()
         XCTAssertEqual(pausedRequestCount, 1)
 
-        await session.use(replacement, credentialRevision: "new")
+        await session.use(transport: transport, identity: replacement)
         await transport.waitForRequests(2)
         await transport.respond(1, body: try overview(1))
         let fresh = await nextSnapshot(from: &window)
-        XCTAssertEqual(fresh?.identity.server, replacement.base)
+        XCTAssertEqual(fresh?.identity.server, replacement.server)
         XCTAssertEqual(fresh?.snapshot?.tick, 1)
         await session.stop()
     }
 
     func testInvalidSavedServerNeverStartsTransportUntilReconfigured() async throws {
         let transport = ControlledTransport()
-        let client = AlondraAPIClient(base: base, transport: transport)
-        let session = SyncSession(client: client, credentialRevision: "local", initialInvalidConfiguration: "Invalid server URL")
+        let session = SyncSession(transport: transport, identity: identity("local"), initialInvalidConfiguration: "Invalid server URL")
         var window = await session.subscribe().makeAsyncIterator()
         let initial = await window.next()
         guard case .invalidConfiguration = initial?.connection else { return XCTFail("Expected invalid configuration") }
         XCTAssertNil(initial?.snapshot)
         let initialRequestCount = await transport.requestCount()
         XCTAssertEqual(initialRequestCount, 0)
-        await session.use(client, credentialRevision: "local")
+        await session.use(transport: transport, identity: identity("local"))
         await transport.waitForRequests(1)
         await session.stop()
     }
@@ -385,8 +387,8 @@ final class SyncSessionIntegrationTests: XCTestCase {
     func testInvalidConfigurationSurvivesClosingAndReopeningLastWindow() async throws {
         let transport = ControlledTransport()
         let session = SyncSession(
-            client: AlondraAPIClient(base: base, transport: transport),
-            credentialRevision: "local",
+            transport: transport,
+            identity: identity("local"),
             initialInvalidConfiguration: "Invalid server URL"
         )
         let firstWindow = Task {

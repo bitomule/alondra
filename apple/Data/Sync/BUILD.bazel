@@ -13,7 +13,6 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]),
     deps = [
         ":AlondraSync",
-        "//apple/APIClient:AlondraAPIClient",
-        "//apple:AlondraShared",
+        "//apple/Contracts:AlondraContracts",
     ],
 )
