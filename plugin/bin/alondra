@@ -1,2 +1,12 @@
 #!/bin/sh
+package_bin="$(dirname "$0")/../../bin/alondra"
+if [ -x "$package_bin" ]; then
+    exec "$package_bin" "$@"
+fi
+if command -v brew >/dev/null 2>&1; then
+    brew_bin="$(brew --prefix)/bin/alondra"
+    if [ -x "$brew_bin" ]; then
+        exec "$brew_bin" "$@"
+    fi
+fi
 exec "$HOME/.local/bin/alondra" "$@"

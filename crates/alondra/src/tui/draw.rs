@@ -423,7 +423,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!(" {label} "), Style::new().fg(SOFT))
         }
     };
-    let mut left = vec![Span::styled(" Alondra ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
+    let mut left = vec![Span::styled(format!(" {} ", crate::service_client::target().unwrap_or("Local")), Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
     let (inbox, tasks, fleet) = (app.inbox_count(), app.open_task_count(), app.data.nodes.len());
     left.push(tab(trf!("Inbox {inbox}", "Bandeja {inbox}"), app.screen == Screen::Inbox));
     left.push(tab(trf!("Tasks {tasks}", "Tareas {tasks}"), app.screen == Screen::Tasks && !app.schedules_open));

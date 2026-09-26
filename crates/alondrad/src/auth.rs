@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alondra_core::now_millis;
+use alondra_e2e::HttpChallengeVerifier;
 use anyhow::{Context, Result};
 use axum::body::{Body, to_bytes};
 use axum::extract::{ConnectInfo, State};
@@ -13,6 +14,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,7 @@ pub struct Auth {
     devices: Mutex<Vec<Device>>,
     pairing: Mutex<HashMap<String, Instant>>,
     seen: Mutex<VecDeque<String>>,
+    service_verifier: Mutex<HttpChallengeVerifier>,
 }
 
 pub fn random_hex(bytes: usize) -> String {
@@ -69,6 +72,7 @@ impl Auth {
             devices: Mutex::new(devices),
             pairing: Mutex::new(HashMap::new()),
             seen: Mutex::new(VecDeque::new()),
+            service_verifier: Mutex::new(HttpChallengeVerifier::new(120_000, 4096)?),
         })
     }
 
@@ -105,24 +109,85 @@ impl Auth {
             last_seen: None,
         };
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        devices.push(device.clone());
-        self.save(&devices).map_err(|e| e.to_string())?;
+        let mut next = devices.clone();
+        next.push(device.clone());
+        self.save(&next).map_err(|e| e.to_string())?;
+        *devices = next;
         Ok(device)
+    }
+
+    /// The service CLI calls this only after a human accepts the encrypted candidate on
+    /// this Mac. Reuse the daemon's registry lock, avoiding concurrent file rewrites.
+    pub fn approve_service(&self, id: &str, name: &str, signing_key: &str) -> Result<(), String> {
+        if !(id.starts_with("phone-") || id.starts_with("client-")) || id.len() > 128
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || name.len() > 80 || name.chars().any(char::is_control)
+        { return Err("invalid service device".into()); }
+        let raw = URL_SAFE_NO_PAD.decode(signing_key).map_err(|_| "invalid service signing key")?;
+        let key = VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "invalid service signing key")?;
+        if raw.len() != 65 || raw[0] != 4 || URL_SAFE_NO_PAD.encode(&raw) != signing_key {
+            return Err("noncanonical service signing key".into());
+        }
+        let public_key = B64.encode(key.to_sec1_bytes());
+        let mut devices = self.devices.lock().expect("devices lock poisoned");
+        if let Some(existing) = devices.iter().find(|d| d.id == id) {
+            return if existing.public_key == public_key { Ok(()) } else { Err("device ID already has another key".into()) };
+        }
+        let mut next = devices.clone();
+        next.push(Device { id: id.into(), name: name.into(), public_key,
+            created_at: now_millis(), last_seen: None });
+        self.save(&next).map_err(|e| e.to_string())?;
+        *devices = next;
+        Ok(())
+    }
+
+    pub fn service_epoch(&self) -> [u8; 16] {
+        self.service_verifier.lock().expect("service verifier lock poisoned").server_epoch()
+    }
+
+    pub fn verify_service_approval(&self, headers: &HeaderMap, body: &[u8]) -> Result<(), String> {
+        #[derive(Deserialize)]
+        struct PublicMac { mac_id: String, signing_key: String }
+        let home = self.path.parent().ok_or("missing Alondra home")?;
+        let public: PublicMac = serde_json::from_slice(&std::fs::read(home.join("service-keys/public.json"))
+            .map_err(|_| "service public identity unavailable")?).map_err(|_| "service public identity invalid")?;
+        let wire = URL_SAFE_NO_PAD.decode(&public.signing_key).map_err(|_| "service public key invalid")?;
+        let key = VerifyingKey::from_sec1_bytes(&wire).map_err(|_| "service public key invalid")?;
+        let h = |name| headers.get(name).and_then(|v| v.to_str().ok()).ok_or("missing signed service header");
+        if h("x-device-id")? != public.mac_id { return Err("wrong Mac identity".into()); }
+        let epoch = h("x-relay-epoch")?;
+        if epoch != URL_SAFE_NO_PAD.encode(self.service_epoch()) { return Err("wrong service epoch".into()); }
+        let ts: u64 = h("x-device-timestamp-ms")?.parse().map_err(|_| "invalid service timestamp")?;
+        let nonce: [u8; 16] = URL_SAFE_NO_PAD.decode(h("x-device-nonce")?)
+            .map_err(|_| "invalid service nonce")?.try_into().map_err(|_| "invalid service nonce")?;
+        self.service_verifier.lock().expect("service verifier lock poisoned")
+            .verify(&key, h("x-device-signature")?, &public.mac_id, "POST",
+                "/v1/service/approve-device", body, ts, &nonce, now_millis() as u64)
+            .map_err(|_| "invalid or replayed service signature".into())
     }
 
     pub fn list(&self) -> Vec<Device> {
         self.devices.lock().expect("devices lock poisoned").clone()
     }
 
-    pub fn revoke(&self, id: &str) -> bool {
+    pub fn revoke(&self, id: &str) -> Result<bool> {
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        let before = devices.len();
-        devices.retain(|d| d.id != id);
-        let changed = devices.len() != before;
+        let mut next = devices.clone();
+        next.retain(|d| d.id != id);
+        let changed = next.len() != devices.len();
         if changed {
-            let _ = self.save(&devices);
+            self.save(&next)?;
+            *devices = next;
         }
-        changed
+        Ok(changed)
+    }
+
+    /// Service enrollment and work may use only a locally paired device with the same key.
+    pub fn approved_key_matches(&self, id: &str, public_key: &VerifyingKey) -> bool {
+        self.devices.lock().expect("devices lock poisoned").iter().any(|device| {
+            device.id == id && B64.decode(&device.public_key).ok()
+                .is_some_and(|raw| raw.as_slice() == public_key.to_sec1_bytes().as_ref())
+        })
     }
 
     fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
@@ -263,6 +328,59 @@ mod tests {
         let code = auth.new_pairing_code();
         assert!(auth.pair(&code, "a", &public).is_ok());
         assert!(auth.pair(&code, "b", &public).is_err());
+    }
+
+    #[test]
+    fn service_approval_is_idempotent_for_same_key_and_rejects_replacement() {
+        let dir = std::env::temp_dir().join(format!("alondra-service-approval-{}", random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = Auth::open(&dir).unwrap();
+        let first = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let second = SigningKey::from_slice(&[8u8; 32]).unwrap();
+        let first_key = URL_SAFE_NO_PAD.encode(first.verifying_key().to_sec1_bytes());
+        let second_key = URL_SAFE_NO_PAD.encode(second.verifying_key().to_sec1_bytes());
+        auth.approve_service("client-test", "Terminal", &first_key).unwrap();
+        assert!(auth.approve_service("client-test", "Other terminal", &second_key).is_err());
+        assert!(auth.approve_service("mac-test", "Executor", &first_key).is_err());
+        assert!(auth.approve_service("client-bad/id", "Terminal", &first_key).is_err());
+        auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
+        auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
+        assert!(auth.approve_service("phone-test", "other", &second_key).is_err());
+        assert_eq!(Auth::open(&dir).unwrap().list().len(), 2);
+    }
+
+    #[test]
+    fn local_service_approval_requires_mac_key_and_fresh_challenge() {
+        let dir = std::env::temp_dir().join(format!("alondra-service-proof-{}", random_hex(4)));
+        std::fs::create_dir_all(dir.join("service-keys")).unwrap();
+        let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let public = URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes());
+        std::fs::write(dir.join("service-keys/public.json"),
+            serde_json::json!({"mac_id":"mac-test","signing_key":public}).to_string()).unwrap();
+        let auth = Auth::open(&dir).unwrap();
+        let epoch = auth.service_epoch();
+        let now = now_millis() as u64;
+        let nonce = [3u8; 16];
+        let body = br#"{"device_id":"phone-a","name":"iPhone","signing_key":"key"}"#;
+        let signature = alondra_e2e::sign_http_challenge(&mac, "mac-test", "POST",
+            "/v1/service/approve-device", &epoch, body, now, &nonce).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-device-id", "mac-test".parse().unwrap());
+        headers.insert("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch).parse().unwrap());
+        headers.insert("x-device-timestamp-ms", now.to_string().parse().unwrap());
+        headers.insert("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce).parse().unwrap());
+        headers.insert("x-device-signature", signature.parse().unwrap());
+        assert!(auth.verify_service_approval(&headers, b"different").is_err());
+        auth.verify_service_approval(&headers, body).unwrap();
+        assert!(auth.verify_service_approval(&headers, body).is_err());
+    }
+
+    #[test]
+    fn failed_revocation_keeps_device_approved_and_reports_failure() {
+        let (auth, _, id) = auth_with_device();
+        std::fs::create_dir(auth.path.with_extension("json.tmp")).unwrap();
+        assert!(auth.revoke(&id).is_err());
+        assert!(auth.list().iter().any(|device| device.id == id));
     }
 
     #[test]

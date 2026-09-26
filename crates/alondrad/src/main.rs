@@ -17,6 +17,8 @@ mod orchestrate;
 mod plugins;
 mod prs;
 mod schedules;
+mod service;
+mod service_files;
 mod push;
 mod sentinel;
 mod store;
@@ -34,7 +36,16 @@ use anyhow::{Context, Result, anyhow};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
+    let diagnostic = diagnostic_device(std::env::args().skip(1).collect())?;
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    if let Some(device) = diagnostic {
+        let auth = Arc::new(auth::Auth::open(&config.home)?);
+        let service = service::Service::open(&config.home, config.port, auth)?
+            .context("service is not configured; run alondra setup first")?;
+        service.test_push(&device).await?;
+        println!("Encrypted diagnostic push accepted by APNs for {device}. Delivery and decryption must be confirmed on the device.");
+        return Ok(());
+    }
     let claude_home = watcher::claude_home();
     let hold = std::env::var("ALONDRA_HOLD").map(|v| v != "0").unwrap_or(true);
     let addr = SocketAddr::new(config.listen, config.port);
@@ -66,8 +77,19 @@ async fn main() -> Result<()> {
     }
 
     let auth = Arc::new(auth::Auth::open(&config.home)?);
+    let service = match service::Service::open(&config.home, config.port, auth.clone()) {
+        Ok(Some(service)) => Some(Arc::new(service)),
+        Ok(None) => None,
+        Err(error) => {
+            log!("service connector disabled: {error:#}");
+            None
+        }
+    };
+    if let Some(service) = service.clone() {
+        tokio::spawn(async move { service.run().await });
+    }
     let push = Arc::new(push::Push::open(&config.home)?);
-    tokio::spawn(push::run(hub.clone(), push.clone()));
+    tokio::spawn(push::run(hub.clone(), push.clone(), service));
     log!("listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
         config.home.display(),
         config.name,
@@ -77,6 +99,28 @@ async fn main() -> Result<()> {
     let app = http::router(hub, auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
+    match args.as_slice() {
+        [] => Ok(None),
+        [flag, device] if flag == "--test-service-push" && !device.is_empty() && !device.starts_with('-') => Ok(Some(device.clone())),
+        _ => anyhow::bail!("usage: alondrad [--test-service-push <device-id>]"),
+    }
+}
+
+#[cfg(test)]
+mod argument_tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_requires_exact_explicit_target() {
+        assert_eq!(diagnostic_device(vec![]).unwrap(), None);
+        assert_eq!(diagnostic_device(vec!["--test-service-push".into(), "phone-1".into()]).unwrap(), Some("phone-1".into()));
+        for args in [vec!["--test-service-push"], vec!["--test-service-push", ""], vec!["--test-service-push", "--all"], vec!["--test-service-push", "phone-1", "extra"], vec!["--unknown"]] {
+            assert!(diagnostic_device(args.into_iter().map(String::from).collect()).is_err());
+        }
+    }
 }
 
 async fn retention(hub: Arc<hub::Hub>, retention_hours: f64) {

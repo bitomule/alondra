@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::hub::Hub;
+use crate::service::Service;
 
 const JWT_LIFETIME_MS: i64 = 50 * 60 * 1000;
 const POLL: Duration = Duration::from_secs(3);
@@ -31,11 +32,21 @@ struct ApnsConfig {
 pub struct Registration {
     pub token: String,
     pub environment: String,
+    /// Random client-side context identifier. Old registrations omit it and
+    /// their notifications remain non-actionable in clients that enforce it.
+    #[serde(default)]
+    pub push_binding: Option<String>,
     #[serde(default)]
     pub quiet_start: Option<String>,
     #[serde(default)]
     pub quiet_end: Option<String>,
     pub updated_at: i64,
+}
+
+/// A canonical base64url encoding of 32 random bytes. It is an opaque context
+/// label, not an authentication credential.
+pub(crate) fn valid_push_binding(value: &str) -> bool {
+    B64URL.decode(value).is_ok_and(|bytes| bytes.len() == 32 && B64URL.encode(bytes) == value)
 }
 
 pub struct Push {
@@ -98,7 +109,7 @@ impl Push {
     pub async fn broadcast(&self, payload: &Value, with_sound: bool) {
         let Some(apns) = &self.apns else { return };
         for reg in self.registrations() {
-            let mut body = payload.clone();
+            let mut body = payload_for_registration(payload, &reg);
             let quiet = in_quiet_hours(reg.quiet_start.as_deref(), reg.quiet_end.as_deref(), local_minutes());
             let level = if quiet { "passive" } else { "active" };
             body["aps"]["interruption-level"] = json!(level);
@@ -119,6 +130,14 @@ impl Push {
             }
         }
     }
+}
+
+fn payload_for_registration(payload: &Value, reg: &Registration) -> Value {
+    let mut body = payload.clone();
+    if let Some(binding) = &reg.push_binding {
+        body["alondra"]["push_binding"] = json!(binding);
+    }
+    body
 }
 
 impl Apns {
@@ -162,7 +181,7 @@ impl Apns {
     }
 }
 
-fn local_minutes() -> u32 {
+pub(crate) fn local_minutes() -> u32 {
     let t: libc::time_t = unsafe { libc::time(std::ptr::null_mut()) };
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t, &mut tm) };
@@ -209,7 +228,7 @@ fn report_payload(r: &Report, badge: usize) -> Value {
     let who = r.node_name.clone().unwrap_or_else(|| "a node".into());
     json!({
         "aps": {"alert": {"title": r.title, "body": format!("{kind} · {who}")}, "category": "ALONDRA_READ",
-                "thread-id": r.session_id, "badge": badge},
+                "thread-id": r.session_id, "badge": badge, "mutable-content": 1},
         "alondra": {"kind": "report", "id": r.id, "report_kind": kind_key(r.kind)}
     })
 }
@@ -349,8 +368,14 @@ fn in_a_client(activity: &std::collections::HashMap<String, i64>, now: i64) -> b
     activity.values().any(|at| now - at <= ACTIVE_WINDOW_MS)
 }
 
-pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
-    if !push.enabled() {
+fn legacy_push_allowed(home: &Path, service_active: bool) -> bool {
+    // A broken service config must not silently restore plaintext delivery.
+    // Check on each round too: setup can create the file before restarting us.
+    !service_active && matches!(std::fs::symlink_metadata(home.join("service.toml")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
+pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) {
+    if !push.enabled() && service.is_none() {
         return;
     }
     let mut seen = hub.read(Seen::all_of);
@@ -366,7 +391,17 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
             continue;
         }
         for (payload, sound) in payloads {
-            push.broadcast(&payload, sound).await;
+            // A physical phone can retain an old APNs token under another
+            // local device ID after re-pairing. Service mode disables all
+            // plaintext direct pushes, including legacy registrations.
+            if legacy_push_allowed(&hub.home, service.is_some()) && push.enabled() {
+                push.broadcast(&payload, sound).await;
+            }
+            if let Some(service) = &service {
+                if let Err(error) = service.broadcast_push(&payload, sound).await {
+                    log!("encrypted service push failed: {error:#}");
+                }
+            }
         }
     }
 }
@@ -375,6 +410,40 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>) {
 mod tests {
     use super::*;
     use alondra_core::Event;
+
+    #[test]
+    fn configured_service_never_falls_back_to_plaintext_push() {
+        let home = std::env::temp_dir().join(format!("alondra-push-mode-{}-{}", std::process::id(), now_millis()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(legacy_push_allowed(&home, false));
+        assert!(!legacy_push_allowed(&home, true));
+        std::fs::write(home.join("service.toml"), "invalid TOML").unwrap();
+        assert!(!legacy_push_allowed(&home, false), "invalid service configuration must fail closed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn push_binding_is_canonical_and_scoped_to_each_registration() {
+        let first = B64URL.encode([1u8; 32]);
+        let second = B64URL.encode([2u8; 32]);
+        assert!(valid_push_binding(&first));
+        assert!(valid_push_binding(&second));
+        for bad in [String::new(), "short".into(), B64URL.encode([3u8; 31]), first.clone() + "="] {
+            assert!(!valid_push_binding(&bad));
+        }
+        let registration = |binding: Option<String>| Registration {
+            token: "ab".into(), environment: "sandbox".into(), push_binding: binding,
+            quiet_start: None, quiet_end: None, updated_at: 0,
+        };
+        let payload = question_payload(&question(7, "session", true), 1);
+        assert_eq!(payload_for_registration(&payload, &registration(Some(first.clone())))["alondra"]["push_binding"].as_str(), Some(first.as_str()));
+        assert_eq!(payload_for_registration(&payload, &registration(Some(second.clone())))["alondra"]["push_binding"].as_str(), Some(second.as_str()));
+        assert!(payload_for_registration(&payload, &registration(None))["alondra"].get("push_binding").is_none());
+        let old: Registration = serde_json::from_value(json!({
+            "token":"ab", "environment":"sandbox", "updated_at":0
+        })).unwrap();
+        assert!(old.push_binding.is_none(), "old push.json registrations remain readable");
+    }
 
     #[test]
     fn using_any_client_in_the_last_5_minutes_silences_pushes() {
@@ -399,6 +468,13 @@ mod tests {
             links: url.map(|u| vec![alondra_core::Link { url: u.into(), title: None }]).unwrap_or_default(),
             attachments: vec![], kind, created_at: 0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
         }
+    }
+
+    #[test]
+    fn report_push_invokes_extension_before_read_action_is_shown() {
+        let payload = report_payload(&report(1, "s", ReportKind::Notice, None), 1);
+        assert_eq!(payload["aps"]["category"], "ALONDRA_READ");
+        assert_eq!(payload["aps"]["mutable-content"], 1);
     }
 
     fn question(id: u64, sid: &str, blocking: bool) -> Question {

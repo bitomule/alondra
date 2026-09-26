@@ -556,7 +556,7 @@ impl App {
             return;
         }
         self.spawn(move |tx| {
-            let result = Client::for_user(Duration::from_secs(10)).get::<Value>(&format!("/v1/tasks/{}", urlencode(&id)));
+            let result = Client::for_tui(Duration::from_secs(10)).get::<Value>(&format!("/v1/tasks/{}", urlencode(&id)));
             let history = match result {
                 Ok(v) => {
                     let reports = serde_json::from_value::<Vec<alondra_core::Report>>(v["reports"].clone()).unwrap_or_default();
@@ -711,7 +711,7 @@ impl App {
         #[cfg(test)]
         self.posted.borrow_mut().push((vec![path.clone()], ok.clone()));
         self.spawn(move |tx| {
-            let result = match Client::for_user(Duration::from_secs(15)).post(&path, &json!({})) {
+            let result = match Client::for_tui(Duration::from_secs(15)).post(&path, &json!({})) {
                 Ok(_) => Ok(ok),
                 Err(e) => Err((e.to_string(), e.downcast_ref::<NotFound>().is_some())),
             };

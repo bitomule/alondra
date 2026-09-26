@@ -289,6 +289,8 @@ pub struct Client {
     base: String,
     agent: ureq::Agent,
     signer: Option<Signer>,
+    service: Option<std::sync::Arc<crate::service_client::Profile>>,
+    timeout: Duration,
 }
 
 struct Signer {
@@ -359,7 +361,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, signer: None }
+        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, timeout }
     }
 
     /// A client whose requests are signed as the user: for the TUI and the commands the user
@@ -371,6 +373,21 @@ impl Client {
             Err(e) => eprintln!("{}", trf!("alondra: answers will go unsigned ({e})", "alondra: las respuestas irán sin firmar ({e})")),
         }
         client
+    }
+
+    /// Only interactive TUI requests consult its explicitly selected remote destination.
+    pub fn for_tui(timeout: Duration) -> Self {
+        if let Some(profile) = crate::service_client::active() {
+            let mut client = Self::new(timeout.max(Duration::from_secs(15)));
+            client.service = Some(profile);
+            client
+        } else { Self::for_user(timeout) }
+    }
+
+    fn service_result(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
+        let (status, value) = self.service.as_ref().context("no service destination")?.request(method, path, body, self.timeout)?;
+        if status >= 400 { return Err(Self::failure(status, serde_json::to_string(&value)?)); }
+        Ok((status, value))
     }
 
     fn signed(&self, req: ureq::RequestBuilder<ureq::typestate::WithoutBody>, method: &str, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
@@ -423,12 +440,18 @@ impl Client {
     }
 
     pub fn get_text(&self, path: &str) -> Result<(u16, String)> {
+        if self.service.is_some() {
+            let (status, value) = self.service_result("GET", path, None)?;
+            let text = if path.starts_with("/v1/file?") { value["text"].as_str().context("file text missing")?.to_string() } else { serde_json::to_string(&value)? };
+            return Ok((status, text));
+        }
         let resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp)
     }
 
     /// The raw body, for files that may not be text (images, PDFs).
     pub fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        if let Some(service) = &self.service { return service.file(path, self.timeout); }
         let mut resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         if resp.status().as_u16() >= 400 {
             return Self::check(resp).map(|(_, body)| body.into_bytes());
@@ -442,6 +465,7 @@ impl Client {
     }
 
     pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        if self.service.is_some() { return self.service_result("POST", path, Some(body)).map(|(_, v)| v); }
         let bytes = serde_json::to_vec(body)?;
         let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/json");
         if let Some(s) = &self.signer {
@@ -455,6 +479,7 @@ impl Client {
     }
 
     pub fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        if self.service.is_some() { return self.service_result("PUT", path, Some(body)).map(|(_, v)| v); }
         let bytes = serde_json::to_vec(body)?;
         let mut req = self.agent.put(format!("{}{path}", self.base)).header("content-type", "application/json");
         if let Some(s) = &self.signer {
@@ -467,6 +492,7 @@ impl Client {
 
     /// Copies a file into Alondra's storage; the answer carries the upload's id.
     pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<Value> {
+        if let Some(service) = &self.service { return service.upload(name, bytes, self.timeout); }
         let path = format!("/v1/uploads?name={}", crate::mcp::urlencode(name));
         let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/octet-stream");
         if let Some(s) = &self.signer {
@@ -480,6 +506,7 @@ impl Client {
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
+        if self.service.is_some() { return self.service_result("DELETE", path, None).map(|_| ()); }
         let resp = self.signed(self.agent.delete(format!("{}{path}", self.base)), "DELETE", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
         Self::check(resp).map(|_| ())
     }
