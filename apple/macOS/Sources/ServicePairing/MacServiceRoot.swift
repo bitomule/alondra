@@ -17,7 +17,9 @@ import SwiftUI
 struct MacServiceRoot: View {
     let account: CloudPairingOwner
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
+    @State private var restoring = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
     var body: some View {
+        Group {
         if demo.sessionID != nil {
             DemoWorkspaceScreen(mode: demo) { store in
                 MacServiceWorkspace(store: store, accountContent: DemoAccountView())
@@ -25,12 +27,17 @@ struct MacServiceRoot: View {
         } else if let services = account.services {
             MacServiceWindow(services: services, account: account)
                 .id(ObjectIdentifier(services))
+        } else if account.store.showsWorkspace {
+            MacServiceWorkspace(store: restoring, accountContent: EmptyView(), isActive: false)
+                .disabled(true)
+                .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: account.store) }
         } else {
             MacServicePairingScreen(store: account.store)
                 .safeAreaInset(edge: .bottom) {
                     if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
                 }
         }
+        }.task { await account.store.send(.appeared).finish() }
     }
 }
 

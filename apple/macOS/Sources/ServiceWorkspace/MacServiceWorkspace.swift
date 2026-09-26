@@ -7,6 +7,7 @@ import SwiftUI
 struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
+    var isActive = true
     @State private var presentation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
     @FocusState private var searchFocused: Bool
 
@@ -58,11 +59,12 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             accountContent.frame(minWidth: 600, minHeight: 520)
         }
-        .task { await store.send(.appeared).finish() }
-        .task { await store.send(.triage(.triage(.appeared))).finish() }
-        .task { await store.send(.tasks(.appeared)).finish() }
-        .task { await store.send(.fleet(.appeared)).finish() }
+        .task { guard isActive else { return }; await store.send(.appeared).finish() }
+        .task { guard isActive else { return }; await store.send(.triage(.triage(.appeared))).finish() }
+        .task { guard isActive else { return }; await store.send(.tasks(.appeared)).finish() }
+        .task { guard isActive else { return }; await store.send(.fleet(.appeared)).finish() }
         .onDisappear {
+            guard isActive else { return }
             store.send(.disappeared)
             store.send(.triage(.triage(.disappeared)))
             store.send(.tasks(.disappeared))
@@ -174,17 +176,17 @@ private struct MacServiceDetail: View {
     var body: some View {
         switch presentation.selection {
         case .item(let id):
-            if let child = store.scope(state: \.pullRequest, action: \.pullRequest), id == "p\(child.pr.id)" {
+            if let child = store.scope(state: \.pullRequest, action: \.pullRequest.presented), id == "p\(child.pr.id)" {
                 ServicePullRequestView(store: child)
-            } else if let child = store.scope(state: \.triage.question, action: \.triage.question), id == "q\(child.question.id)" {
+            } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
                 ServiceQuestionView(store: child)
-            } else if let child = store.scope(state: \.triage.document, action: \.triage.document), child.subject.id == id {
+            } else if let child = store.scope(state: \.triage.document, action: \.triage.document.presented), child.subject.id == id {
                 ServiceDocumentView(store: child, markRead: { store.send(.triage(.triage(.hide(id)))) })
             } else { MacServiceHome(store: store, presentation: presentation) }
         case .node:
-            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail) { ServiceNodeView(store: child) }
+            if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) { ServiceNodeView(store: child) }
         case .task:
-            if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail) {
+            if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail.presented) {
                 ServiceTaskDetailView(store: child, context: store.tasks.detailContext,
                     openTask: { presentation.send(.select(.task($0))) }, focusInbox: { presentation.send(.select(.item($0))) })
             }
