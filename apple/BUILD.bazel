@@ -82,6 +82,7 @@ swift_test(
         "//apple/Data/Sync:AlondraSync",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
 )
 

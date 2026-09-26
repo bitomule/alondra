@@ -23,5 +23,6 @@ swift_test(
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Data/Commands:AlondraCommands",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
 )

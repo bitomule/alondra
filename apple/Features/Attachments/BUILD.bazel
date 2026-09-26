@@ -14,5 +14,6 @@ swift_test(
         ":AlondraAttachmentsFeature",
         "//apple/Domain:AlondraDomain",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
 )
