@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "lab-waiter-metrics"))]
+mod lab_waiters;
 mod auth;
 mod management;
 mod pairing;
@@ -28,6 +30,8 @@ use std::{
 use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
+    #[cfg(any(test, feature = "lab-waiter-metrics"))]
+    lab_waiters: Arc<lab_waiters::Metrics>,
     auth: Auth,
     management_keycloak: Option<management::keycloak::Keycloak>,
     web_session: Option<Arc<web_session::WebSession>>,
@@ -621,7 +625,10 @@ async fn changes(
         drop(gate);
         // On notification or timeout, reacquire the gate and recheck both the
         // local device registry and account state before producing a snapshot.
-        let _ = tokio::time::timeout_at(deadline, notified).await;
+        let waiting = tokio::time::timeout_at(deadline, notified);
+        #[cfg(any(test, feature = "lab-waiter-metrics"))]
+        let waiting = server.lab_waiters.changes.observe(waiting);
+        let _ = waiting.await;
     }
 }
 
@@ -673,7 +680,10 @@ async fn work(
                 .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
         drop(gate);
-        let _ = tokio::time::timeout_at(deadline, notified).await;
+        let waiting = tokio::time::timeout_at(deadline, notified);
+        #[cfg(any(test, feature = "lab-waiter-metrics"))]
+        let waiting = server.lab_waiters.work.observe(waiting);
+        let _ = waiting.await;
     }
 }
 
@@ -789,6 +799,8 @@ async fn main() -> anyhow::Result<()> {
     let web_session = web_session::WebSession::from_env(&auth)?;
     let web_assets = web_assets::WebAssets::from_env(web_session.is_some())?;
     let server = Arc::new(Server {
+        #[cfg(any(test, feature = "lab-waiter-metrics"))]
+        lab_waiters: Arc::default(),
         auth,
         web_assets,
         web_session,
@@ -802,6 +814,8 @@ async fn main() -> anyhow::Result<()> {
         device_gate: Arc::new(RwLock::new(())),
         epoch,
     });
+    #[cfg(feature = "lab-waiter-metrics")]
+    server.lab_waiters.start(server.epoch.clone())?;
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
     if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
@@ -931,6 +945,8 @@ mod http_tests {
         auth.management=management;
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
+            #[cfg(any(test, feature = "lab-waiter-metrics"))]
+            lab_waiters: Arc::default(),
             auth,
             management_keycloak: None,
             web_session: None,

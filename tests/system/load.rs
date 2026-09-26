@@ -7,6 +7,51 @@ use std::sync::{
 };
 use tokio::sync::RwLock;
 
+#[derive(Default)]
+struct Latency(BTreeMap<u64, u64>);
+impl Latency {
+    fn record(&mut self, duration: Duration) {
+        *self.0.entry(duration.as_millis() as u64).or_default() += 1;
+    }
+    fn json(&self) -> Value {
+        let count: u64 = self.0.values().sum();
+        let percentile = |p: u64| {
+            let target = (count * p).div_ceil(100);
+            let mut n = 0;
+            for (ms, c) in &self.0 {
+                n += c;
+                if n >= target {
+                    return *ms;
+                }
+            }
+            0
+        };
+        json!({"count":count,"p50_ms":percentile(50),"p95_ms":percentile(95),"p99_ms":percentile(99),"histogram_ms":self.0})
+    }
+}
+#[derive(Default)]
+struct MixedLatency {
+    success: Latency,
+    success_after_overload: Latency,
+    failure: Latency,
+}
+impl MixedLatency {
+    fn record(&mut self, success: bool, retries: u64, duration: Duration) {
+        if success {
+            self.success.record(duration);
+            if retries > 0 {
+                self.success_after_overload.record(duration);
+            }
+        } else {
+            self.failure.record(duration);
+        }
+    }
+    fn json(&self) -> Value {
+        json!({"successful_roundtrips":self.success.json(),"successful_after_overload_subset":self.success_after_overload.json(),"failed_roundtrips":self.failure.json()})
+    }
+}
+tokio::task_local! {static LOCAL_CRYPTO_RETRIES:std::cell::Cell<u64>;}
+
 #[derive(Clone)]
 struct Link {
     owner: usize,
@@ -255,6 +300,7 @@ async fn reliable(
                 )
             });
             CRYPTO_RETRIES.fetch_add(1, Ordering::Relaxed);
+            let _ = LOCAL_CRYPTO_RETRIES.try_with(|count| count.set(count.get() + 1));
             tokio::time::sleep(Duration::from_millis(250 + (attempt % 7) * 19)).await;
             continue;
         }
@@ -296,6 +342,16 @@ async fn encrypted_roundtrip_with_envelope(
     id: &str,
     existing: Option<Vec<u8>>,
 ) -> Result<()> {
+    encrypted_roundtrip_on_work(driver, link, id, existing, None).await
+}
+type ParkedWork = tokio::task::JoinHandle<Result<(u16, Value, Instant)>>;
+async fn encrypted_roundtrip_on_work(
+    driver: &Driver,
+    link: &Link,
+    id: &str,
+    existing: Option<Vec<u8>>,
+    parked: Option<(ParkedWork, Arc<Mutex<Latency>>)>,
+) -> Result<()> {
     let plain = serde_json::to_vec(&json!({"synthetic":true,"owner":link.owner,"request":id}))?;
     let envelope = EnvelopeV1::seal_random(
         Context {
@@ -311,6 +367,7 @@ async fn encrypted_roundtrip_with_envelope(
         &agreement(link.mac_agreement).public_key(),
     )?;
     let bytes = existing.unwrap_or(serde_json::to_vec(&envelope)?);
+    let published = Instant::now();
     reliable(
         driver,
         link.phone_key,
@@ -333,17 +390,38 @@ async fn encrypted_roundtrip_with_envelope(
         202,
     )
     .await?;
-    let work = reliable(
-        driver,
-        link.mac_key,
-        &link.mac,
-        None,
-        "GET",
-        "/v1/work?wait_s=0",
-        vec![],
-        200,
-    )
-    .await?;
+    let work = if let Some((parked, delivery_latency)) = parked {
+        // Consume the SAME request proven Pending before the POST. Never hide a
+        // missed wakeup by sending another GET or a retry after its timeout.
+        let (status, work, received) =
+            tokio::time::timeout(Duration::from_secs(30), parked).await???;
+        ensure!(
+            status == 200,
+            "already parked Mac did not receive encrypted work"
+        );
+        ensure!(
+            work["request_id"] == id,
+            "parked delivery crossed request identity"
+        );
+        delivery_latency.lock().unwrap().record(
+            received
+                .checked_duration_since(published)
+                .context("delivery preceded publication")?,
+        );
+        work
+    } else {
+        reliable(
+            driver,
+            link.mac_key,
+            &link.mac,
+            None,
+            "GET",
+            "/v1/work?wait_s=0",
+            vec![],
+            200,
+        )
+        .await?
+    };
     ensure!(
         work["request_id"] == id,
         "load work crossed request identity"
@@ -609,6 +687,201 @@ async fn restart_probe(driver: Arc<Driver>, links: &[Link]) -> Result<Value> {
         "revocations_persisted":true,"volatile_pending_missing_explicit":true,"identical_ciphertext_resubmitted_and_decrypted":true}),
     )
 }
+fn read_waiters(epoch: &[u8; 16]) -> Result<Value> {
+    validate_waiters(
+        epoch,
+        &std::fs::read("/system/waiter-metrics/waiters.json")?,
+    )
+}
+fn validate_waiters(epoch: &[u8; 16], bytes: &[u8]) -> Result<Value> {
+    ensure!(bytes.len() <= 4096, "waiter sample too large");
+    let value: Value = serde_json::from_slice(&bytes)?;
+    ensure!(
+        value["schema"] == 1
+            && value["scope"] == "lab_pending_futures"
+            && value["epoch"] == B64.encode(epoch),
+        "waiter sample belongs to another epoch/schema"
+    );
+    ensure!(
+        value["sequence"].as_u64().is_some() && value["uptime_ms"].as_u64().is_some(),
+        "waiter sample lacks clock"
+    );
+    for route in ["work", "changes"] {
+        ensure!(
+            value[route]["threshold"] == 200,
+            "waiter threshold mismatch"
+        );
+        for field in [
+            "current",
+            "peak",
+            "entered",
+            "exited",
+            "above_ms",
+            "longest_above_ms",
+        ] {
+            ensure!(
+                value[route][field].as_u64().is_some(),
+                "invalid waiter counter"
+            );
+        }
+    }
+    Ok(value)
+}
+async fn fresh_waiters(epoch: &[u8; 16]) -> Result<Value> {
+    let first = read_waiters(epoch)?;
+    let sequence = first["sequence"].as_u64().unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            let sample = read_waiters(epoch)?;
+            ensure!(
+                sample["sequence"].as_u64().unwrap() >= sequence
+                    && sample["uptime_ms"].as_u64() >= first["uptime_ms"].as_u64(),
+                "waiter sample clock regressed"
+            );
+            if sample["sequence"].as_u64().unwrap() > sequence {
+                return Ok::<_, anyhow::Error>(sample);
+            }
+        }
+    })
+    .await?
+}
+async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -> Result<Value> {
+    let before = fresh_waiters(&driver.epoch).await?;
+    ensure!(
+        before["work"]["current"] == 0,
+        "parked delivery phase is not isolated"
+    );
+    let mut consumers = Vec::new();
+    for account in 0..accounts {
+        let d = driver.clone();
+        let link = links[account * 4].clone();
+        consumers.push(tokio::spawn(async move {
+            let (status, body) = d
+                .call_epoch(
+                    &d.epoch,
+                    link.mac_key,
+                    &link.mac,
+                    None,
+                    "GET",
+                    "/v1/work?wait_s=25",
+                    vec![],
+                )
+                .await?;
+            Ok::<_, anyhow::Error>((status, body, Instant::now()))
+        }));
+    }
+    let barrier = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let sample = fresh_waiters(&driver.epoch).await?;
+            ensure!(
+                consumers.iter().all(|job| !job.is_finished()),
+                "consumer returned before encrypted publication"
+            );
+            if sample["work"]["current"].as_u64() == Some(accounts as u64) {
+                return Ok::<_, anyhow::Error>(sample);
+            }
+        }
+    })
+    .await;
+    let barrier = match barrier {
+        Ok(Ok(value)) => value,
+        other => {
+            for job in consumers {
+                job.abort();
+                let _ = job.await;
+            }
+            return Err(anyhow::anyhow!(
+                "parked consumer server barrier failed: {}",
+                if other.is_err() {
+                    "deadline"
+                } else {
+                    "observation"
+                }
+            ));
+        }
+    };
+    let start = Instant::now();
+    let delivery_latency = Arc::new(Mutex::new(Latency::default()));
+    let mut transfers = Vec::new();
+    for (account, consumer) in consumers.into_iter().enumerate() {
+        let delivery_latency = delivery_latency.clone();
+        let d = driver.clone();
+        let link = links[account * 4].clone();
+        transfers.push(tokio::spawn(async move {
+            encrypted_roundtrip_on_work(
+                &d,
+                &link,
+                &format!("system-load-parked-{account}"),
+                None,
+                Some((consumer, delivery_latency)),
+            )
+            .await
+        }));
+    }
+    let mut failed = false;
+    for transfer in transfers {
+        if !matches!(transfer.await, Ok(Ok(()))) {
+            failed = true;
+        }
+    }
+    ensure!(
+        !failed,
+        "encrypted delivery to already parked consumers failed"
+    );
+    Ok(
+        json!({"consumers":accounts,"server_barrier":barrier,"encrypted_roundtrips":accounts,
+        "elapsed_ms":start.elapsed().as_millis() as u64,"post_to_parked_get":delivery_latency.lock().unwrap().json(),"same_get_response":true}),
+    )
+}
+
+fn steady_occupancy(start: &Value, end: &Value, profile: &Value) -> Result<Value> {
+    ensure!(start["epoch"] == end["epoch"], "steady epoch reset");
+    let duration = end["uptime_ms"]
+        .as_u64()
+        .context("end uptime")?
+        .checked_sub(start["uptime_ms"].as_u64().context("start uptime")?)
+        .context("steady clock reset")?;
+    ensure!(
+        end["sequence"].as_u64() > start["sequence"].as_u64() && duration > 0,
+        "steady sample stale"
+    );
+    let above = end["changes"]["above_ms"]
+        .as_u64()
+        .context("end duration")?
+        .checked_sub(
+            start["changes"]["above_ms"]
+                .as_u64()
+                .context("start duration")?,
+        )
+        .context("duration counter reset")?;
+    ensure!(above <= duration + 1, "invalid above-threshold duration");
+    let continuous = end["changes"]["longest_above_ms"]
+        .as_u64()
+        .context("continuous duration")?;
+    let gate = &profile["server_waiter_gate"];
+    ensure!(
+        gate == &json!({"pending_changes":200,"steady_fraction_percent":80,"continuous_ms":5000,"fresh_timeout_ms":3000}),
+        "unknown server waiter thresholds"
+    );
+    let pass = above as u128 * 100 >= duration as u128 * 80 && continuous >= 5000;
+    Ok(
+        json!({"window_ms":duration,"above_threshold_ms":above,"above_threshold_percent":above as f64*100.0/duration as f64,
+        "longest_continuous_ms":continuous,"threshold_passed":pass}),
+    )
+}
+
+async fn recover_after_pressure<F>(steady: Result<()>, operation: F) -> (Result<()>, Result<Value>)
+where
+    F: std::future::Future<Output = Result<Value>>,
+{
+    let recovery = match tokio::time::timeout(Duration::from_secs(90), operation).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("no-restart recovery deadline")),
+    };
+    (steady, recovery)
+}
+
 pub async fn run(driver: Arc<Driver>) -> Result<()> {
     let profile: Value = serde_json::from_slice(&std::fs::read("/system/load-profile.json")?)?;
     let seconds = profile["duration_seconds"]
@@ -634,6 +907,7 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     ensure!((2..=16).contains(&accounts), "account count");
     let links = Arc::new(links(accounts));
     setup(&driver, &links).await?;
+    let parked_delivery = parked_delivery(driver.clone(), &links, accounts).await?;
     let current = Arc::new(RwLock::new(driver));
     let stop = Arc::new(AtomicBool::new(false));
     let refresh = {
@@ -653,8 +927,20 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
             Ok::<_, anyhow::Error>(renewals)
         })
     };
+    let steady_start = fresh_waiters(&get(&current).await.epoch).await?;
+    ensure!(
+        steady_start["changes"]["above_ms"] == 0,
+        "prelude crossed steady-only threshold"
+    );
     let origin = Instant::now();
     let deadline = origin + Duration::from_secs(seconds);
+    let steady_end = {
+        let epoch = get(&current).await.epoch;
+        tokio::spawn(async move {
+            tokio::time::sleep_until(deadline.into()).await;
+            fresh_waiters(&epoch).await
+        })
+    };
     let polls = Arc::new(Mutex::new(Counters::default()));
     let bursts = Arc::new(Mutex::new(Counters::default()));
     let work_polls = Arc::new(Mutex::new(Counters::default()));
@@ -742,9 +1028,11 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     }
     let mut crypto_jobs = vec![];
     let mixed_counts = Arc::new(Mutex::new(vec![[0u64; 2]; accounts]));
+    let mixed_latency = Arc::new(Mutex::new(MixedLatency::default()));
     for account in 0..accounts {
         let (current, links) = (current.clone(), links.clone());
         let mixed_counts = mixed_counts.clone();
+        let mixed_latency = mixed_latency.clone();
         crypto_jobs.push(tokio::spawn(async move {
             let mut completed = 0;
             for iteration in 0..20 {
@@ -753,12 +1041,23 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                 }
                 let d = get(&current).await;
                 mixed_counts.lock().unwrap()[account][0] += 1;
-                encrypted_roundtrip(
-                    &d,
-                    &links[account * 4],
-                    &format!("system-load-mixed-{account}-{iteration}"),
-                )
-                .await?;
+                let began = Instant::now();
+                let (result, retries) = LOCAL_CRYPTO_RETRIES
+                    .scope(std::cell::Cell::new(0), async {
+                        let result = encrypted_roundtrip(
+                            &d,
+                            &links[account * 4],
+                            &format!("system-load-mixed-{account}-{iteration}"),
+                        )
+                        .await;
+                        (result, LOCAL_CRYPTO_RETRIES.with(|count| count.get()))
+                    })
+                    .await;
+                mixed_latency
+                    .lock()
+                    .unwrap()
+                    .record(result.is_ok(), retries, began.elapsed());
+                result?;
                 completed += 1;
                 mixed_counts.lock().unwrap()[account][1] += 1;
                 tokio::time::sleep(Duration::from_secs((seconds / 20).max(1))).await;
@@ -871,7 +1170,16 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
             None
         }
     };
+    let steady_end = match steady_end.await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("steady server sampler failed")),
+    };
+    let steady_occupancy = match &steady_end {
+        Ok(end) => steady_occupancy(&steady_start, end, &profile),
+        Err(_) => Err(anyhow::anyhow!("steady server sample unavailable")),
+    };
     let mixed_by_account = mixed_counts.lock().unwrap().clone();
+    let mixed_roundtrip_latency = mixed_latency.lock().unwrap().json();
     let mixed_roundtrips: u64 = mixed_by_account.iter().map(|counts| counts[1]).sum();
     let mixed_attempts: u64 = mixed_by_account.iter().map(|counts| counts[0]).sum();
     let poll_json = polls.lock().unwrap().json();
@@ -881,42 +1189,56 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
         "load-progress.json",
         json!({"phase":"steady_finished","polls":poll_json,"work_polls":work_json,"bursts":burst_json,
             "oidc_refresh_batches":refreshes,"mixed_roundtrips":mixed_roundtrips,
-            "mixed_attempts":mixed_attempts,"mixed_account_columns":["attempted","completed"],
+            "mixed_attempts":mixed_attempts,"mixed_roundtrip_latency":mixed_roundtrip_latency,"mixed_account_columns":["attempted","completed"],
             "mixed_by_account":mixed_by_account,"revocation_under_load_seconds":revoke_seconds,
             "mixed_overload_retries":CRYPTO_RETRIES.load(Ordering::Relaxed),"failures":failures}),
     )?;
-    ensure!(
-        failures.is_empty(),
-        "load workers failed; inspect load-progress.json"
-    );
-    let revoke_seconds = revoke_seconds.context("missing revocation observation")?;
-    let refreshes = refreshes.context("missing refresh observation")?;
-    ensure!(
-        polls.lock().unwrap().errors == 0
-            && bursts.lock().unwrap().errors == 0
-            && work_polls.lock().unwrap().errors == 0,
-        "unexpected load HTTP/transport errors; inspect load-progress.json"
-    );
-    for account in 0..accounts {
+    // Preserve the original sustained gate, but defer returning its failure
+    // until post-pressure recovery has been attempted and written to artifacts.
+    let sustained: Result<()> = (|| {
         ensure!(
-            polls
-                .lock()
-                .unwrap()
-                .accounts
-                .get(&account)
-                .is_some_and(|counts| counts[0] > 0),
-            "an account never obtained an admitted poll under shared limits"
+            failures.is_empty(),
+            "load workers failed; inspect load-progress.json"
         );
-    }
-    if seconds >= 600 && profile["limits"] == "tuned" {
+        revoke_seconds.context("missing revocation observation")?;
+        refreshes.context("missing refresh observation")?;
         ensure!(
-            poll_json["overlapping_successful_idle_holds"]
-                .as_u64()
-                .unwrap_or(0)
-                >= 200,
-            "tuned profile did not sustain hundreds of successfully completed overlapping long polls"
+            polls.lock().unwrap().errors == 0
+                && bursts.lock().unwrap().errors == 0
+                && work_polls.lock().unwrap().errors == 0,
+            "unexpected load HTTP/transport errors; inspect load-progress.json"
         );
-    }
+        for account in 0..accounts {
+            ensure!(
+                polls
+                    .lock()
+                    .unwrap()
+                    .accounts
+                    .get(&account)
+                    .is_some_and(|counts| counts[0] > 0),
+                "an account never obtained an admitted poll under shared limits"
+            );
+        }
+        if seconds >= 600 && profile["limits"] == "tuned" {
+            ensure!(
+                poll_json["overlapping_successful_idle_holds"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    >= 200,
+                "tuned profile did not sustain hundreds of successfully completed overlapping long polls"
+            );
+        }
+        Ok(())
+    })();
+    save(
+        "load-progress.json",
+        json!({"phase":"recovering_without_restart","steady_passed":sustained.is_ok(),
+        "polls":poll_json,"work_polls":work_json,"bursts":burst_json,"failures":failures}),
+    )?;
+    let (sustained,recovery) = recover_after_pressure(sustained,async {
+        let next=get(&current).await.refresh().await?;
+        ensure!(next.epoch==get(&current).await.epoch,"recovery unexpectedly changed epoch");
+        *current.write().await=Arc::new(next);
     // Once pressure ends, every account must regain access, with real encrypted work.
     for (index, link) in links.iter().enumerate() {
         let d = get(&current).await;
@@ -971,25 +1293,136 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     .await?;
     let survivor = &links[1];
     encrypted_roundtrip(&d, survivor, "system-load-survivor").await?;
+    let expected=get(&current).await.epoch.clone();
+    let bootstrap=get(&current).await.http.get("http://relay:18081/v1/bootstrap").send().await?.error_for_status()?.json::<Value>().await?;
+    ensure!(bootstrap["epoch"]==B64.encode(expected),"relay restarted during recovery");
+    Ok::<_,anyhow::Error>(json!({"all_links_readable_before_selective_revoke":true,"encrypted_roundtrips":accounts+1,
+        "revoked_link_rejected":true,"other_link_preserved":true,"same_epoch":true,"existing_grant_refreshed":true}))
+    }).await;
+    let server_waiters = fresh_waiters(&get(&current).await.epoch).await;
+    let waiter_gate = server_waiters.as_ref().is_ok_and(|v| {
+        v["work"]["current"] == 0
+            && v["changes"]["current"] == 0
+            && v["work"]["peak"].as_u64().unwrap()
+                <= profile["compiled_limits"]["work"].as_u64().unwrap()
+            && v["changes"]["peak"].as_u64().unwrap()
+                <= profile["compiled_limits"]["changes"].as_u64().unwrap()
+            && (seconds < 600
+                || profile["limits"] != "tuned"
+                || steady_occupancy
+                    .as_ref()
+                    .is_ok_and(|v| v["threshold_passed"] == true))
+    });
     save(
         "load-progress.json",
-        json!({"phase":"idle_before_restart","polls":poll_json,"work_polls":work_json,"bursts":burst_json}),
+        json!({"phase":"recovery_without_restart_finished","steady_passed":sustained.is_ok(),
+        "recovery_passed":recovery.is_ok(),"server_waiters_passed":waiter_gate,
+        "polls":poll_json,"work_polls":work_json,"bursts":burst_json,"failures":failures}),
     )?;
-    tokio::time::sleep(Duration::from_secs(15)).await;
-    let restarted = restart_probe(d.clone(), &links).await?;
+    let restart = if recovery.is_ok() {
+        save(
+            "load-progress.json",
+            json!({"phase":"idle_before_restart","steady_passed":sustained.is_ok(),
+            "recovery_passed":true,"polls":poll_json,"work_polls":work_json,"bursts":burst_json}),
+        )?;
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        Some(restart_probe(get(&current).await, &links).await)
+    } else {
+        None
+    };
+    let restart_passed = matches!(&restart, Some(Ok(_)));
+    let passed = sustained.is_ok()
+        && recovery.is_ok()
+        && steady_occupancy.is_ok()
+        && waiter_gate
+        && restart_passed;
     save(
         "load.json",
-        json!({"phase":"load","status":"passed","profile":profile,"accounts":accounts,"macs":accounts*2,"links":links.len(),
+        json!({"phase":"load","status":if passed {"passed"} else {"failed"},"profile":profile,"accounts":accounts,"macs":accounts*2,"links":links.len(),
         "elapsed_seconds":origin.elapsed().as_secs_f64(),"polls":poll_json,"work_polls":work_json,"bursts":burst_json,"oidc_refresh_batches":refreshes,"mixed_encrypted_roundtrips":mixed_roundtrips,"mixed_overload_retries":CRYPTO_RETRIES.load(Ordering::Relaxed),"revocation_under_load_seconds":revoke_seconds,
-        "recovery":{"all_links_readable_before_selective_revoke":true,"encrypted_roundtrips":accounts+1,"revoked_link_rejected":true,"other_link_preserved":true},
-        "restart":restarted,"scope":"real management/Keycloak/relay protocol, synthetic Macs; no daemon/Claude/application UI"}),
+        "steady_passed":sustained.is_ok(),"steady_failures":failures,"parked_delivery":parked_delivery,"mixed_roundtrip_latency":mixed_roundtrip_latency,
+        "server_waiters_passed":waiter_gate,"server_waiters":server_waiters.ok(),
+        "steady_server_start":steady_start,"steady_server_end":steady_end.ok(),"steady_occupancy":steady_occupancy.ok(),
+        "recovery_passed":recovery.is_ok(),"recovery":recovery.ok(),
+        "restart_passed":restart_passed,"restart":restart.and_then(Result::ok),
+        "scope":"real management/Keycloak/relay protocol, synthetic Macs; no daemon/Claude/application UI"}),
     )?;
+    ensure!(
+        passed,
+        "load/recovery evidence failed; inspect load.json (recovery never hides sustained failures)"
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn sustained_failure_still_executes_recovery_and_remains_failure() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let observed = completed.clone();
+        let (steady, recovery) = recover_after_pressure(
+            Err(anyhow::anyhow!("injected sustained failure")),
+            async move {
+                tokio::task::yield_now().await;
+                observed.store(true, Ordering::SeqCst);
+                Ok(json!({"probe":"completed"}))
+            },
+        )
+        .await;
+        assert!(completed.load(Ordering::SeqCst));
+        assert!(steady.is_err());
+        assert_eq!(recovery.unwrap()["probe"], "completed");
+    }
+    #[test]
+    fn server_occupancy_requires_eighty_percent_and_continuity_not_a_peak() {
+        let profile = json!({"server_waiter_gate":{"pending_changes":200,"steady_fraction_percent":80,"continuous_ms":5000,"fresh_timeout_ms":3000}});
+        let start =
+            json!({"epoch":"synthetic","sequence":1,"uptime_ms":100,"changes":{"above_ms":0}});
+        let mut end = json!({"epoch":"synthetic","sequence":2,"uptime_ms":600100,"changes":{"above_ms":480000,"longest_above_ms":5000}});
+        assert_eq!(
+            steady_occupancy(&start, &end, &profile).unwrap()["threshold_passed"],
+            true
+        );
+        end["changes"]["above_ms"] = json!(479999);
+        assert_eq!(
+            steady_occupancy(&start, &end, &profile).unwrap()["threshold_passed"],
+            false
+        );
+        end["changes"]["above_ms"] = json!(500000);
+        end["changes"]["longest_above_ms"] = json!(4999);
+        assert_eq!(
+            steady_occupancy(&start, &end, &profile).unwrap()["threshold_passed"],
+            false
+        );
+        end["epoch"] = json!("reset");
+        assert!(steady_occupancy(&start, &end, &profile).is_err());
+    }
+    #[test]
+    fn mixed_success_latency_includes_retries_but_never_failed_work() {
+        let mut latency = MixedLatency::default();
+        for _ in 0..99 {
+            latency.record(true, 0, Duration::from_millis(10));
+        }
+        latency.record(true, 3, Duration::from_millis(1000));
+        latency.record(false, 0, Duration::from_millis(60000));
+        let result = latency.json();
+        assert_eq!(result["successful_roundtrips"]["count"], 100);
+        assert_eq!(result["successful_roundtrips"]["p99_ms"], 10);
+        assert_eq!(result["successful_after_overload_subset"]["p95_ms"], 1000);
+        assert_eq!(result["failed_roundtrips"]["p95_ms"], 60000);
+    }
+    #[test]
+    fn waiter_evidence_rejects_another_epoch_and_missing_numeric_counters() {
+        let epoch = [7u8; 16];
+        let sample = json!({"schema":1,"scope":"lab_pending_futures","epoch":B64.encode(epoch),"sequence":1,"uptime_ms":20,
+            "work":{"current":1,"peak":2,"entered":4,"exited":3,"above_ms":0,"longest_above_ms":0,"threshold":200},"changes":{"current":0,"peak":4,"entered":8,"exited":8,"above_ms":0,"longest_above_ms":0,"threshold":200}});
+        assert!(validate_waiters(&epoch, &serde_json::to_vec(&sample).unwrap()).is_ok());
+        assert!(validate_waiters(&[8u8; 16], &serde_json::to_vec(&sample).unwrap()).is_err());
+        let mut broken = sample;
+        broken["work"]["current"] = json!("1");
+        assert!(validate_waiters(&epoch, &serde_json::to_vec(&broken).unwrap()).is_err());
+    }
     #[test]
     fn diagnostic_codes_are_allowlisted_and_bucketed_without_body_or_url() {
         let response = Ok((
