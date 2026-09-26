@@ -1,5 +1,6 @@
 import AlondraShared
-import AlondraiOSFeature
+import AlondraCloudPairingFeature
+import AlondraAppComposition
 import ComposableArchitecture
 import SwiftUI
 import VisionKit

@@ -1,4 +1,4 @@
-import AlondraiOSFeature
+import AlondraCloudPairingFeature
 import ComposableArchitecture
 import Testing
 

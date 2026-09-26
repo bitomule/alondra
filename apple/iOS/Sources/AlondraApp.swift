@@ -1,3 +1,4 @@
+import AlondraAppComposition
 import AlondraShared
 import AlondraCommands
 import AlondraiOSFeature
@@ -25,7 +26,7 @@ struct AlondraApp: App {
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    let cloudPairing = CloudPairingOwner()
+    let cloudPairing = makeCloudPairingOwner()
     let pairing = DevicePairing()
     lazy var fleet: FleetStore = {
         let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL

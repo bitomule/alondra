@@ -1,38 +1,32 @@
 import AlondraAuth
 import AlondraServicePairing
-import AlondraiOSFeature
+import AlondraCloudPairingFeature
 import ComposableArchitecture
-import UIKit
-import AVFoundation
-import VisionKit
 import Observation
 
 /// Process-owned credential and pairing use cases. Secrets never enter presentation state.
 @MainActor
 @Observable
-final class CloudPairingOwner {
-    let auth: AuthSession
+public final class CloudPairingOwner {
+    public let auth: AuthSession
+    private let displayName: String
+    private let prepareCamera: @Sendable () async -> Bool
     private let pairing = ServicePairingClient()
     private var attempt: UUID?
     private var generation = 0
-    private(set) var services: CloudAppServices?
-    @ObservationIgnored lazy var store = Store(initialState: CloudPairingFeature.State()) { CloudPairingFeature() } withDependencies: {
+    public private(set) var services: CloudAppServices?
+    @ObservationIgnored public lazy var store = Store(initialState: CloudPairingFeature.State()) { CloudPairingFeature() } withDependencies: {
         $0.cloudPairing = CloudPairingService(
             restore: { [self] in try await restore() }, login: { [self] in try await login() },
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
-        $0.cloudPairing.prepareCamera = {
-            guard await DataScannerViewController.isSupported else { return false }
-            let allowed = await AVCaptureDevice.requestAccess(for: .video)
-            let available = await MainActor.run { DataScannerViewController.isAvailable }
-            return allowed && available
-        }
+        $0.cloudPairing.prepareCamera = prepareCamera
     }
-    init() {
-        auth = AuthSession(browser: SystemAuthBrowser(anchor: {
-            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-                .first(where: { $0.activationState == .foregroundActive })?.windows.first(where: \.isKeyWindow) ?? UIWindow()
-        }))
+    public init(auth: AuthSession, displayName: String,
+                prepareCamera: @escaping @Sendable () async -> Bool = { false }) {
+        self.auth = auth
+        self.displayName = displayName
+        self.prepareCamera = prepareCamera
     }
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
     private static func validateRelay(_ url: URL) throws {
@@ -61,7 +55,7 @@ final class CloudPairingOwner {
         let subject = try await auth.verifiedSubject()
         let token = try await auth.bearerToken()
         let pending = try await pairing.begin(qrPayload: payload,
-            authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: "iPhone")
+            authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName)
         guard current == generation, !Task.isCancelled else {
             await pairing.discard(pending.attemptID)
             throw CancellationError()

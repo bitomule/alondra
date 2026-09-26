@@ -11,15 +11,15 @@ import CryptoKit
 import Foundation
 
 /// One approved service identity. Scene stores own presentation; this actor owns I/O.
-actor CloudAppServices {
-    let api: AlondraAPIClient
-    let sync: SyncSession
+public actor CloudAppServices {
+    public let api: AlondraAPIClient
+    public let sync: SyncSession
     private let operations: RelaySession
     private let gate: CommandGate
     private let scope: CommandScope
     private var active = true
 
-    init(approved: ApprovedServicePairing, auth: AuthSession) throws {
+    public init(approved: ApprovedServicePairing, auth: AuthSession) throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
         let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
@@ -42,7 +42,7 @@ actor CloudAppServices {
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
     }
 
-    func deactivate() async {
+    public func deactivate() async {
         active = false
         await operations.deactivate()
         await sync.stop()
@@ -50,7 +50,7 @@ actor CloudAppServices {
                                     credentialRevision: scope.credentialRevision, generation: scope.generation + 1))
     }
 
-    func triageService() -> TriageService {
+    public func triageService() -> TriageService {
         TriageService(observe: { await self.inboxUpdates() }, mutate: { kind, itemID, identity in
             await self.mutate(kind, itemID: itemID, identity: identity)
         })
@@ -79,14 +79,28 @@ actor CloudAppServices {
                        credentialRevision: scope.credentialRevision, generation: scope.generation)
     }
 
-    private func mutate(_ kind: CommandKind, itemID: String, identity: TriageIdentity) async -> TriageMutationOutcome {
-        guard active, identity == triageIdentity else { return .obsolete }
+    public func checkActive() throws {
+        guard active else { throw CancellationError() }
+    }
+
+    public func submitCommand(_ kind: CommandKind, itemID: String? = nil,
+        operation: @escaping @Sendable (AlondraAPIClient, UUID) async throws -> Void) async -> CommandResult {
+        guard active else { return .obsolete }
         let api = api
         let result = await gate.submitIdentified(kind, itemID: itemID, in: scope,
             isUnknown: { error in
-                if case ServiceAPIError.outcomeUnknown = error { return true }
-                return error is CancellationError || (error as? URLError) != nil
-            }) { operationID in
+                if let error = error as? ServiceAPIError { return error == .outcomeUnknown }
+                if error is APIError { return false }
+                if case RelaySessionError.invalidRequest = error { return false }
+                if case RelaySessionError.operationIdentityConflict = error { return false }
+                return true
+            }) { id in try await operation(api, id) }
+        return active ? result : .obsolete
+    }
+
+    private func mutate(_ kind: CommandKind, itemID: String, identity: TriageIdentity) async -> TriageMutationOutcome {
+        guard active, identity == triageIdentity else { return .obsolete }
+        let result = await submitCommand(kind, itemID: itemID) { api, operationID in
                 switch kind {
                 case .markRead(let id): try await api.markRead(id, operationID: operationID.uuidString)
                 case .dismissPullRequest(let id): try await api.dismissPullRequest(id, operationID: operationID.uuidString)

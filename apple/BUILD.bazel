@@ -89,6 +89,8 @@ swift_library(
     deps = [
         ":AlondraShared",
         "//apple/Auth:AlondraAuth",
+        "//apple/AppComposition:AlondraAppComposition",
+        "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/ServicePairing:AlondraServicePairing",
         "//apple/Data/RelaySession:AlondraRelaySession",
         "//apple/Data/RelayOutbox:AlondraRelayOutbox",
