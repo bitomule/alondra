@@ -1,23 +1,17 @@
-import AlondraShared
+import AlondraDomain
 import ComposableArchitecture
 import Foundation
 import PhotosUI
 import SwiftUI
 
-public struct AttachmentDraft: Equatable, Sendable, Identifiable {
-    public let id: UUID
-    public let name: String
-    public let data: Data
-    public init(id: UUID = UUID(), name: String, data: Data) {
-        self.id = id; self.name = name; self.data = data
-    }
-}
+public typealias AttachmentDraft = AlondraDomain.AttachmentDraft
+
 public struct AttachmentUploadClient: Sendable {
     public var upload: @Sendable (AttachmentDraft) async throws -> String
     public init(upload: @escaping @Sendable (AttachmentDraft) async throws -> String) { self.upload = upload }
 }
 private enum AttachmentUploadKey: DependencyKey {
-    static let liveValue = AttachmentUploadClient(upload: { _ in throw AttachmentImportError.unavailable })
+    static let liveValue = AttachmentUploadClient(upload: { _ in throw AttachmentFailure(message: "Attachment upload is unavailable") })
 }
 public extension DependencyValues {
     var attachmentUpload: AttachmentUploadClient {
@@ -38,6 +32,7 @@ public struct AttachmentFeature {
     }
     @ObservableState
     public struct State: Equatable {
+        public var instanceID = UUID()
         public var entries: [Entry] = []
         public var isImporting = false
         public var importID: UUID?
@@ -49,6 +44,10 @@ public struct AttachmentFeature {
         }
         public var storedIDs: [String] { entries.compactMap { if case .uploaded(let id) = $0.status { id } else { nil } } }
         public init() {}
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.entries == rhs.entries && lhs.isImporting == rhs.isImporting && lhs.importID == rhs.importID
+                && lhs.importError == rhs.importError && lhs.filesPresented == rhs.filesPresented && lhs.photos == rhs.photos
+        }
     }
     public enum Action: Sendable {
         case showFiles(Bool)
@@ -66,30 +65,33 @@ public struct AttachmentFeature {
         case retry(UUID)
     }
     @Dependency(\.attachmentUpload) var upload
-    private enum CancelID: Hashable, Sendable { case importFiles, upload(UUID) }
+    @Dependency(\.attachmentImport) var importer
+    private enum CancelID: Hashable, Sendable { case importFiles(UUID), upload(UUID) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .showFiles(let show): state.filesPresented = show; return .none
             case .filesSelected(let urls):
+                let ownerID = state.instanceID
                 let batchID = UUID(); state.importID = batchID
                 state.isImporting = true; state.importError = nil
                 return .run { send in
                     do {
-                        for url in urls { await send(.imported(try AttachmentImporter.file(url), batchID)) }
+                        for url in urls { await send(.imported(try await importer.file(url), batchID)) }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
-                }.cancellable(id: CancelID.importFiles, cancelInFlight: true)
+                }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
             case .photosSelected(let photos):
                 guard !photos.isEmpty else { state.photos = []; return .none }
+                let ownerID = state.instanceID
                 let batchID = UUID(); state.importID = batchID
                 state.photos = photos; state.isImporting = true; state.importError = nil
                 return .run { send in
                     do {
-                        for item in photos { await send(.imported(try await AttachmentImporter.photo(item), batchID)) }
+                        for item in photos { await send(.imported(try await importer.photo(item), batchID)) }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
-                }.cancellable(id: CancelID.importFiles, cancelInFlight: true)
+                }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
             case .imported(let draft, let batchID):
                 guard state.importID == batchID else { return .none }
                 state.entries.append(Entry(draft: draft)); return .send(.uploadNext)
@@ -104,9 +106,10 @@ public struct AttachmentFeature {
             case .importFailed(let message):
                 state.isImporting = false; state.photos = []; state.importError = message; return .none
             case .reset:
+                let ownerID = state.instanceID
                 let ids = state.entries.map(\.id)
                 state = State()
-                return .merge([.cancel(id: CancelID.importFiles)] + ids.map { .cancel(id: CancelID.upload($0)) })
+                return .merge([.cancel(id: CancelID.importFiles(ownerID))] + ids.map { .cancel(id: CancelID.upload($0)) })
             case .dismissError: state.importError = nil; return .none
             case .uploadNext:
                 guard !state.entries.contains(where: { $0.status == .uploading }),
@@ -141,35 +144,22 @@ public struct AttachmentFailure: Error, Equatable, Sendable {
     public let message: String
     public init(message: String) { self.message = message }
 }
-private enum AttachmentImportError: LocalizedError {
-    case invalidSize, unavailable
-    var errorDescription: String? {
-        switch self {
-        case .invalidSize: "Choose a non-empty file no larger than 20 MiB."
-        case .unavailable: "The attachment could not be loaded."
-        }
+
+public struct AttachmentImportClient: Sendable {
+    public var file: @Sendable (URL) async throws -> AttachmentDraft
+    public var photo: @Sendable (PhotosPickerItem) async throws -> AttachmentDraft
+    public init(file: @escaping @Sendable (URL) async throws -> AttachmentDraft,
+                photo: @escaping @Sendable (PhotosPickerItem) async throws -> AttachmentDraft) {
+        self.file = file; self.photo = photo
     }
 }
-private enum AttachmentImporter {
-    static func file(_ url: URL) throws -> AttachmentDraft {
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard (1...20 * 1024 * 1024).contains(size) else { throw AttachmentImportError.invalidSize }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let bytes = try handle.read(upToCount: 20 * 1024 * 1024 + 1) ?? Data()
-        guard (1...20 * 1024 * 1024).contains(bytes.count) else { throw AttachmentImportError.invalidSize }
-        let prepared = AttachmentFile.prepare(bytes, name: url.lastPathComponent)
-        guard prepared.data.count <= 20 * 1024 * 1024 else { throw AttachmentImportError.invalidSize }
-        return AttachmentDraft(name: prepared.name, data: prepared.data)
-    }
-    static func photo(_ item: PhotosPickerItem) async throws -> AttachmentDraft {
-        guard let bytes = try await item.loadTransferable(type: Data.self) else { throw AttachmentImportError.unavailable }
-        guard (1...20 * 1024 * 1024).contains(bytes.count) else { throw AttachmentImportError.invalidSize }
-        let suffix = item.supportedContentTypes.first?.preferredFilenameExtension ?? "image"
-        let prepared = AttachmentFile.prepare(bytes, name: "Photo." + suffix)
-        guard prepared.data.count <= 20 * 1024 * 1024 else { throw AttachmentImportError.invalidSize }
-        return AttachmentDraft(name: prepared.name, data: prepared.data)
+private enum AttachmentImportKey: DependencyKey {
+    static let liveValue = AttachmentImportClient(file: { _ in throw AttachmentFailure(message: "File import is unavailable") },
+        photo: { _ in throw AttachmentFailure(message: "Photo import is unavailable") })
+}
+public extension DependencyValues {
+    var attachmentImport: AttachmentImportClient {
+        get { self[AttachmentImportKey.self] }
+        set { self[AttachmentImportKey.self] = newValue }
     }
 }

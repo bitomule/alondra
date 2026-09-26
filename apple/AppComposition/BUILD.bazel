@@ -5,6 +5,8 @@ swift_library(
     srcs = glob(["Sources/*.swift"]),
     visibility = ["//visibility:public"],
     deps = [
+        "//apple/Data/Attachments:AlondraAttachmentsData",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple:AlondraShared", "//apple/Data/Notifications:AlondraNotificationActions", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", "//apple/Contracts:AlondraContracts",
         "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/APIClient:AlondraAPIClient", "//apple/Auth:AlondraAuth",
         "//apple/Data/Commands:AlondraCommands", "//apple/Data/RelayOutbox:AlondraRelayOutbox",
