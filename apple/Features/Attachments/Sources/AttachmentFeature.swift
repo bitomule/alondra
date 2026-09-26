@@ -2,6 +2,7 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 import PhotosUI
+import SwiftUI
 
 public struct AttachmentDraft: Equatable, Sendable, Identifiable {
     public let id: UUID
@@ -65,7 +66,7 @@ public struct AttachmentFeature {
         case retry(UUID)
     }
     @Dependency(\.attachmentUpload) var upload
-    private enum CancelID { case importFiles, upload(UUID) }
+    private enum CancelID: Hashable, Sendable { case importFiles, upload(UUID) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
