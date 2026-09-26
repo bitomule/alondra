@@ -92,7 +92,7 @@ class PublicationTests(unittest.TestCase):
         self.formula = None
         self.fail_formula_once = False
         self.uploads = 0
-        self.patchers = [patch.object(r, 'optional_api', self.optional_api), patch.object(r, 'api', self.api), patch.object(r, 'gh', self.gh)]
+        self.patchers = [patch.object(r, 'optional_api', self.optional_api), patch.object(r, 'api', self.api), patch.object(r, 'gh', self.gh), patch.object(r, 'download_asset', self.download)]
         for p in self.patchers:
             p.start()
             self.addCleanup(p.stop)
@@ -100,7 +100,10 @@ class PublicationTests(unittest.TestCase):
     def optional_api(self, endpoint):
         return self.api(endpoint)
 
-    def api(self, endpoint, payload=None):
+    def asset_records(self):
+        return [{'id': i + 100, 'name': name, 'state': 'uploaded'} for i, name in enumerate(self.assets)]
+
+    def api(self, endpoint, payload=None, method=None):
         if '/releases/tags/' in endpoint:
             raise RuntimeError('gh: Not Found (HTTP 404): draft has no published tag')
         if endpoint == f'repos/{r.REPO}':
@@ -109,37 +112,44 @@ class PublicationTests(unittest.TestCase):
             if payload:
                 self.assertFalse(self.remote['draft'])
                 self.assertEqual(len(self.assets), 2)
+                if self.formula:
+                    self.assertEqual(payload.get('sha'), self.formula['sha'], 'formula updates must use original blob CAS')
                 if self.fail_formula_once:
                     self.fail_formula_once = False
                     raise RuntimeError('simulated concurrent tap update')
                 self.formula = {'content': payload['content'], 'sha': 'new-sha'}
             return self.formula
-        if self.remote is None:
-            return None
-        return {**self.remote, 'assets': [{'name': name} for name in self.assets]}
+        if endpoint == f'repos/{r.REPO}/releases' and method == 'POST':
+            self.assertIsNone(self.remote)
+            self.remote = {'id': 42, 'tag_name': payload['tag_name'], 'draft': True}
+            return dict(self.remote)
+        if endpoint.startswith(f'repos/{r.REPO}/releases?'):
+            return [dict(self.remote, id=42, tag_name='alondra-v0.1.0')] if self.remote else []
+        if endpoint.startswith(f'repos/{r.REPO}/releases/42/assets?'):
+            return self.asset_records()
+        if endpoint == f'repos/{r.REPO}/releases/42':
+            if method == 'PATCH':
+                self.assertEqual(payload, {'draft': False, 'make_latest': 'false'})
+                self.assertEqual(len(self.assets), 2)
+                self.remote['draft'] = False
+            return dict(self.remote, id=42, tag_name='alondra-v0.1.0')
+        self.fail(f'Unexpected REST call: {endpoint} {method}')
 
     def gh(self, *args, **kwargs):
-        if args[:2] == ('api', 'graphql'):
-            release = {'databaseId': 42} if self.remote is not None else None
-            return json.dumps({'data': {'repository': {'release': release}}})
-        operation = args[1]
-        if operation == 'create':
-            self.remote = {'draft': True}
-        elif operation == 'upload':
-            self.assertTrue(self.remote['draft'])
-            path = pathlib.Path(args[3])
-            self.assertNotIn(path.name, self.assets)
-            self.assets[path.name] = path.read_bytes()
-            self.uploads += 1
-        elif operation == 'download':
-            name = args[args.index('--pattern') + 1]
-            directory = args[args.index('--dir') + 1]
-            (pathlib.Path(directory) / name).write_bytes(self.assets[name])
-        elif operation == 'edit':
-            self.remote['draft'] = False
-        else:
-            self.fail(f'Unexpected gh operation: {args}')
-        return ''
+        self.assertEqual(args[:3], ('api', '--hostname', 'uploads.github.com'))
+        self.assertEqual(args[3].split('?')[0], f'https://uploads.github.com/repos/{r.REPO}/releases/42/assets')
+        self.assertIn('Content-Type: application/octet-stream', args)
+        self.assertEqual(args[args.index('--method') + 1], 'POST')
+        self.assertTrue(self.remote['draft'])
+        path = pathlib.Path(args[args.index('--input') + 1])
+        self.assertNotIn(path.name, self.assets)
+        self.assets[path.name] = path.read_bytes()
+        self.uploads += 1
+        return json.dumps(self.asset_records()[-1])
+
+    def download(self, asset_id, destination):
+        name = next(asset['name'] for asset in self.asset_records() if asset['id'] == asset_id)
+        destination.write_bytes(self.assets[name])
 
     def test_release_lookup_uses_database_id_for_unpublished_draft(self):
         self.remote = {'draft': True}
@@ -148,30 +158,36 @@ class PublicationTests(unittest.TestCase):
             self.api(f'repos/{r.REPO}/releases/tags/alondra-v0.1.0')
 
     def test_release_lookup_does_not_treat_auth_or_network_errors_as_absence(self):
-        for message in ('HTTP 401: Bad credentials', 'network timeout', 'HTTP 403: forbidden'):
-            with patch.object(r, 'gh', side_effect=RuntimeError(message)):
-                with self.assertRaisesRegex(RuntimeError, message):
+        for message in ('HTTP 401: Bad credentials', 'network timeout', 'HTTP 403: forbidden', '(HTTP 404)'):
+            with patch.object(r, 'api', side_effect=RuntimeError(message)):
+                with self.assertRaises(RuntimeError):
                     r.publish(self.ver, self.path)
         self.assertIsNone(self.remote)
         self.assertEqual(self.uploads, 0)
 
-    def test_graphql_errors_and_inaccessible_repo_never_create_release(self):
-        responses = [
-            # Even release:null alongside an error does not prove absence.
-            {'data': {'repository': {'release': None}}, 'errors': [{'message': 'upstream timeout'}]},
-            {'data': {'repository': None}},
-            {'data': {'repository': {}}},
-            {'errors': [{'message': 'Bad credentials'}]},
-            {'data': {'repository': {'release': {'databaseId': None}}}},
-        ]
-        for response in responses:
-            with patch.object(r, 'gh', return_value=json.dumps(response)) as remote:
+    def test_rest_list_errors_and_invalid_draft_ids_never_create_release(self):
+        for response in ({'message': 'Bad credentials'}, None, [{'tag_name': 'alondra-v0.1.0', 'id': None}]):
+            def remote(endpoint, payload=None, method=None):
+                if endpoint == f'repos/{r.REPO}': return {}
+                self.assertIsNone(payload, 'failed discovery cannot mutate remote state')
+                return response
+            with patch.object(r, 'api', side_effect=remote):
                 with self.assertRaises(RuntimeError):
                     r.publish(self.ver, self.path)
-                self.assertEqual(remote.call_count, 1)
-                self.assertEqual(remote.call_args.args[:2], ('api', 'graphql'))
         self.assertIsNone(self.remote)
         self.assertEqual(self.uploads, 0)
+
+    def test_draft_lookup_paginates_before_proving_absence(self):
+        pages_seen = []
+        def remote(endpoint, payload=None, method=None):
+            if endpoint == f'repos/{r.REPO}': return {}
+            if endpoint.endswith('/42'): return {'id':42, 'tag_name':'alondra-v0.1.0', 'draft':True}
+            pages_seen.append(endpoint)
+            if endpoint.endswith('&page=1'): return [{'id': i+1000, 'tag_name': f'other-{i}'} for i in range(100)]
+            return [{'id':42, 'tag_name':'alondra-v0.1.0', 'draft':True}]
+        with patch.object(r, 'api', side_effect=remote):
+            self.assertTrue(r.lookup_release('alondra-v0.1.0')['draft'])
+        self.assertEqual(len(pages_seen), 2)
 
     def test_retry_after_formula_failure_reuses_immutable_assets(self):
         self.fail_formula_once = True
@@ -209,12 +225,66 @@ class PublicationTests(unittest.TestCase):
             r.publish(self.ver, self.path)
         self.assertIsNone(self.remote)
 
+    def test_existing_formula_update_uses_blob_compare_and_swap(self):
+        self.formula = {'content': base64.b64encode(b'  version "0.0.9"\n').decode(), 'sha': 'original-blob'}
+        r.publish(self.ver, self.path)
+        self.assertEqual(self.formula['sha'], 'new-sha')
+
+    def test_error_on_later_release_page_does_not_prove_absence(self):
+        def remote(endpoint, payload=None, method=None):
+            if endpoint == f'repos/{r.REPO}': return {}
+            if endpoint.endswith('&page=1'):
+                return [{'id': i+1000, 'tag_name': f'other-{i}'} for i in range(100)]
+            raise RuntimeError('upstream timeout page two')
+        with patch.object(r, 'api', side_effect=remote):
+            with self.assertRaisesRegex(RuntimeError, 'page two'):
+                r.publish(self.ver, self.path)
+        self.assertIsNone(self.remote)
+        self.assertEqual(self.uploads, 0)
+
+    def test_published_incomplete_or_unexpected_assets_are_never_modified(self):
+        for draft, name in [(False, f'alondra-{self.ver}-{r.TARGETS[0]}.tar.gz'), (True, 'unexpected-source.zip')]:
+            self.remote = {'draft': draft}
+            self.assets = {name: b'existing'}
+            with self.assertRaises(ValueError): r.publish(self.ver, self.path)
+            self.assertEqual(self.uploads, 0)
+            self.assertIsNone(self.formula)
+
+    def test_downloaded_upload_bytes_must_match_before_publication(self):
+        with patch.object(r, 'download_asset', side_effect=lambda _id, path: path.write_bytes(b'corrupt')):
+            with self.assertRaisesRegex(ValueError, 'Immutable asset differs'):
+                r.publish(self.ver, self.path)
+        self.assertTrue(self.remote['draft'])
+        self.assertIsNone(self.formula)
+
     def test_bad_payload_rejected_before_any_public_mutation(self):
         archive(self.path / f'alondra-{self.ver}-{r.TARGETS[1]}.tar.gz', tarfile.TarInfo('Cargo.toml'))
         with self.assertRaises(ValueError):
             r.publish(self.ver, self.path)
         self.assertIsNone(self.remote)
         self.assertEqual(self.uploads, 0)
+
+
+class RestTransportTests(unittest.TestCase):
+    def test_binary_download_preserves_non_utf8_bytes_and_uses_asset_id(self):
+        binary = b'\x00\xff\x1b[31m\r\n'
+        with tempfile.TemporaryDirectory() as temp:
+            destination = pathlib.Path(temp) / 'asset.tar.gz'
+            def run(args, **kwargs):
+                self.assertEqual(args[:4], ['gh', 'api', '--hostname', 'github.com'])
+                self.assertIn(f'repos/{r.REPO}/releases/assets/123', args)
+                self.assertIn('Accept: application/octet-stream', args)
+                self.assertNotIn('text', kwargs)
+                kwargs['stdout'].write(binary)
+                return type('Result', (), {'returncode': 0, 'stderr': b''})()
+            with patch.object(r.subprocess, 'run', side_effect=run):
+                r.download_asset(123, destination)
+            self.assertEqual(destination.read_bytes(), binary)
+
+    def test_formula_404_does_not_hide_repository_auth_failure(self):
+        with patch.object(r, 'api', side_effect=[RuntimeError('gh (HTTP 404)'), RuntimeError('gh (HTTP 401)')]):
+            with self.assertRaisesRegex(RuntimeError, '401'):
+                r.optional_api(f'repos/{r.REPO}/contents/Formula/alondra.rb')
 
 
 if __name__ == '__main__':
