@@ -1,0 +1,215 @@
+import AlondraShared
+import ComposableArchitecture
+import Foundation
+
+@Reducer
+public struct NodeDetailFeature {
+    @ObservableState
+    public struct State: Equatable {
+        public let sessionID: String
+        public var entry: FleetNode?
+        public var acceptedTick: UInt64?
+        public var acceptedSequence: UInt64?
+        public var isStale = false
+        public var isVisible = false
+        public var threads: [NodeActivity] = []
+        public var threadsError: String?
+        public var isLoadingThreads = false
+        public var message = ""
+        public var files: [NodeFile] = []
+        public var isSending = false
+        public var sendOutcome: NodeMutationOutcome?
+        public var sentCount = 0
+        public var showCloseConfirmation = false
+        public var isClosing = false
+        public var closeOutcome: NodeMutationOutcome?
+        public var shouldDismiss = false
+        public var presentationEpoch: UInt64 = 0
+        public let pollingID = UUID()
+        public let mutationID = UUID()
+
+        public init(sessionID: String) { self.sessionID = sessionID }
+        public var node: Node? { entry?.node }
+        public var tasks: [WorkTask] { entry?.tasks ?? [] }
+        public var canSend: Bool {
+            !isStale && node != nil && !isSending && !isClosing
+                && sendOutcome?.uncertainID == nil && closeOutcome?.uncertainID == nil
+                && closeOutcome != .confirmed
+                && SendNodeMessageUseCase().prepare(text: message, files: files) != nil
+        }
+    }
+
+    public enum Action {
+        case appeared
+        case disappeared
+        case snapshotChanged(FleetSnapshot)
+        case snapshotUnavailable
+        case identityChanged
+        case threadsTick
+        case threadsLoaded([NodeActivity]?, UInt64)
+        case threadsFailed(String, UInt64)
+        case messageChanged(String)
+        case filesChanged([NodeFile])
+        case sendTapped
+        case sendFinished(NodeMessage, NodeMutationOutcome, UInt64)
+        case closeRequested
+        case closeCancelled
+        case closeConfirmed
+        case closeFinished(NodeMutationOutcome, UInt64)
+        case commandReconciled(UUID)
+    }
+
+    @Dependency(\.nodeOperations) var operations
+    @Dependency(\.continuousClock) var clock
+    private let sendUseCase = SendNodeMessageUseCase()
+    private let threadsUseCase = ResolveNodeThreadsUseCase()
+
+    public init() {}
+
+    public var body: some ReducerOf<Self> {
+        Reduce { state, action in
+            switch action {
+            case .appeared:
+                guard !state.isVisible else { return .none }
+                state.isVisible = true
+                guard state.node != nil else { return .none }
+                return pollThreads(state)
+            case .disappeared:
+                state.isVisible = false
+                state.isLoadingThreads = false
+                return .cancel(id: state.pollingID)
+            case .snapshotChanged(let snapshot):
+                guard state.acceptedSequence == nil || snapshot.sequence > state.acceptedSequence! else { return .none }
+                let firstNode = state.entry == nil
+                state.acceptedSequence = snapshot.sequence
+                state.acceptedTick = snapshot.tick
+                state.isStale = false
+                state.entry = snapshot.node(state.sessionID)
+                if state.entry == nil {
+                    state.threads = []
+                    state.isLoadingThreads = false
+                    state.showCloseConfirmation = false
+                    return .cancel(id: state.pollingID)
+                }
+                if firstNode && state.isVisible { return pollThreads(state) }
+                return .none
+            case .snapshotUnavailable:
+                state.isStale = true
+                return .none
+            case .identityChanged:
+                state.presentationEpoch &+= 1
+                state.entry = nil
+                state.acceptedTick = nil
+                state.acceptedSequence = nil
+                state.isStale = false
+                state.threads = []
+                state.threadsError = nil
+                state.isLoadingThreads = false
+                state.message = ""
+                state.files = []
+                state.isSending = false
+                state.sendOutcome = nil
+                state.showCloseConfirmation = false
+                state.isClosing = false
+                state.closeOutcome = nil
+                state.shouldDismiss = false
+                return .merge(.cancel(id: state.pollingID), .cancel(id: state.mutationID))
+            case .threadsTick:
+                guard state.isVisible, state.node != nil, !state.isLoadingThreads else { return .none }
+                state.isLoadingThreads = true
+                let session = state.sessionID
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    do { await send(.threadsLoaded(try await operations.threads(session), epoch)) }
+                    catch where !error.isCancellation { await send(.threadsFailed(error.localizedDescription, epoch)) }
+                }.cancellable(id: state.pollingID)
+            case .threadsLoaded(let asked, let epoch):
+                guard epoch == state.presentationEpoch, let node = state.node else { return .none }
+                state.isLoadingThreads = false
+                state.threadsError = nil
+                state.threads = threadsUseCase.execute(asked: asked, node: node)
+                return .none
+            case .threadsFailed(let message, let epoch):
+                guard epoch == state.presentationEpoch, let node = state.node else { return .none }
+                state.isLoadingThreads = false
+                state.threadsError = message
+                if state.threads.isEmpty { state.threads = threadsUseCase.execute(asked: nil, node: node) }
+                return .none
+            case .messageChanged(let message):
+                state.message = message
+                return .none
+            case .filesChanged(let files):
+                state.files = files
+                return .none
+            case .sendTapped:
+                guard state.canSend, let outgoing = sendUseCase.prepare(text: state.message, files: state.files) else { return .none }
+                state.isSending = true
+                state.sendOutcome = nil
+                let session = state.sessionID
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    await send(.sendFinished(outgoing, await operations.send(session, outgoing), epoch))
+                }.cancellable(id: state.mutationID)
+            case .sendFinished(let outgoing, let outcome, let epoch):
+                guard epoch == state.presentationEpoch, state.isSending else { return .none }
+                state.isSending = false
+                state.sendOutcome = outcome
+                if outcome == .confirmed {
+                    // The user may have changed the draft while the request was in flight.
+                    if state.message.trimmingCharacters(in: .whitespacesAndNewlines) == outgoing.text,
+                       state.files == outgoing.files {
+                        state.message = ""
+                        state.files = []
+                    }
+                    state.sentCount += 1
+                }
+                return .none
+            case .closeRequested:
+                guard !state.isStale, state.node != nil, !state.isSending, !state.isClosing,
+                      state.closeOutcome?.uncertainID == nil,
+                      state.sendOutcome?.uncertainID == nil,
+                      state.closeOutcome != .confirmed else { return .none }
+                state.showCloseConfirmation = true
+                return .none
+            case .closeCancelled:
+                state.showCloseConfirmation = false
+                return .none
+            case .closeConfirmed:
+                guard state.showCloseConfirmation, !state.isStale, state.node != nil,
+                      !state.isSending, !state.isClosing, state.closeOutcome?.uncertainID == nil,
+                      state.sendOutcome?.uncertainID == nil,
+                      state.closeOutcome != .confirmed else { return .none }
+                state.showCloseConfirmation = false
+                state.isClosing = true
+                state.closeOutcome = nil
+                let session = state.sessionID
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    await send(.closeFinished(await operations.close(session), epoch))
+                }.cancellable(id: state.mutationID)
+            case .closeFinished(let outcome, let epoch):
+                guard epoch == state.presentationEpoch, state.isClosing else { return .none }
+                state.isClosing = false
+                state.closeOutcome = outcome
+                state.shouldDismiss = outcome == .confirmed
+                return .none
+            case .commandReconciled(let id):
+                if state.sendOutcome?.uncertainID == id { state.sendOutcome = nil }
+                if state.closeOutcome?.uncertainID == id { state.closeOutcome = nil }
+                return .none
+            }
+        }
+    }
+
+    private func pollThreads(_ state: State) -> Effect<Action> {
+        let id = state.pollingID
+        return .run { send in
+            await send(.threadsTick)
+            while !Task.isCancelled {
+                try await clock.sleep(for: .seconds(10))
+                try Task.checkCancellation()
+                await send(.threadsTick)
+            }
+        }.cancellable(id: id, cancelInFlight: true)
+    }
+}

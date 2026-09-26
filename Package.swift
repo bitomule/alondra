@@ -13,5 +13,9 @@ let package = Package(
             url: "https://github.com/appstefan/HighlightSwift",
             exact: "1.1.0"
         ),
+        .package(
+            url: "https://github.com/pointfreeco/swift-composable-architecture",
+            exact: "1.26.2"
+        ),
     ]
 )

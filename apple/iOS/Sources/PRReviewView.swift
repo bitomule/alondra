@@ -1,6 +1,16 @@
 import AlondraShared
 import SwiftUI
 
+extension PullRequestOutcome {
+    func commandKind(for id: UInt64) -> FleetStore.MutationKind {
+        switch self {
+        case .merged: .mergePullRequest(id)
+        case .conflictsSent: .resolveConflicts(id)
+        case .setAside: .dismissPullRequest(id)
+        }
+    }
+}
+
 /// A PR's diff on the phone: tap a line to comment on it; the comments and a note go back to the
 /// node as one change request.
 struct PRReviewView: View {
@@ -157,14 +167,14 @@ struct PRReviewView: View {
     private func finish(_ outcome: PullRequestOutcome) {
         sending = true
         let pr = current
-        let handoff = FleetStore.Handoff(itemID: InboxItem.pullRequest(pr).id, label: outcome.handoffLabel) {
+        let handoff = FleetStore.Handoff(presentationToken: fleet.presentationToken, itemID: InboxItem.pullRequest(pr).id, label: outcome.handoffLabel, kind: outcome.commandKind(for: pr.id)) {
             try await pr.perform(outcome, using: $0)
         }
         let fleet = fleet
         dismiss()
         Task {
             try? await Task.sleep(for: .milliseconds(320))
-            fleet.handoff = handoff
+            fleet.publishHandoff(handoff)
         }
     }
 
@@ -172,7 +182,7 @@ struct PRReviewView: View {
         let (id, text) = (pr.id, review)
         sending = true
         Task {
-            let ok = await fleet.resolve(.pullRequest(pr)) { [attachments] client in
+            let ok = await fleet.resolve(.pullRequest(pr), kind: .requestChanges(id)) { [attachments] client in
                 try await client.requestChanges(onPullRequest: id, text: text, attachments: try await attachments.storedIDs(using: client))
             }
             sending = false

@@ -1,0 +1,14 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraAuth",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraAuth",
+    visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "AlondraAuthTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [":AlondraAuth"],
+)

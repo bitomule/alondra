@@ -1,0 +1,19 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraSync",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraSync",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraAPIClient"],
+)
+
+swift_test(
+    name = "AlondraSyncTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [
+        ":AlondraSync",
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple:AlondraShared",
+    ],
+)

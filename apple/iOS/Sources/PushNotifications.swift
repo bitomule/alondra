@@ -1,101 +1,49 @@
 import AlondraShared
+import AlondraCommands
+import AlondraNotificationActions
+import AlondraNotificationPayload
+import AlondraPushBinding
 import Foundation
 import Observation
 import UIKit
 import UserNotifications
 
-struct NotificationItem: Hashable, Sendable {
-    enum Kind: String, Sendable {
-        case question, report, pr
-    }
-
-    let kind: Kind
-    let id: UInt64
-
-    var inboxID: String {
-        switch kind {
-        case .question: "q\(id)"
-        case .report: "r\(id)"
-        case .pr: "p\(id)"
-        }
-    }
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard let alondra = userInfo["alondra"] as? [String: Any],
-              let kind = (alondra["kind"] as? String).flatMap(Kind.init(rawValue:)),
-              let id = (alondra["id"] as? NSNumber)?.uint64Value else { return nil }
-        self.kind = kind
-        self.id = id
-    }
-}
+typealias NotificationItem = NotificationPayload.Item
 
 struct NotificationRoute: Hashable {
     let itemID: String
     let opensDetail: Bool
+    let binding: NotificationPayload.Binding
 }
 
 enum NotificationCategory {
-    static let question = "ALONDRA_QUESTION"
-    static let permission = "ALONDRA_PERMISSION"
-    static let plan = "ALONDRA_PLAN"
-    static let read = "ALONDRA_READ"
+    static let question = NotificationPayload.Category.question
+    static let permission = NotificationPayload.Category.permission
+    static let plan = NotificationPayload.Category.plan
+    static let read = NotificationPayload.Category.read
 
-    static let reply = "REPLY"
-    static let moreContext = "MORE_CONTEXT"
-    static let allow = "ALLOW"
-    static let deny = "DENY"
-    static let approve = "APPROVE"
-    static let review = "REVIEW"
-    static let markRead = "READ"
-    static let optionPrefix = "OPT:"
-    static let questionPrefix = "ALONDRA_Q_"
-
-    static var all: Set<UNNotificationCategory> {
-        [
-            UNNotificationCategory(identifier: question, actions: [
-                UNTextInputNotificationAction(
-                    identifier: reply,
-                    title: String(localized: "Reply"),
-                    options: [.authenticationRequired],
-                    icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
-                    textInputButtonTitle: String(localized: "Send"),
-                    textInputPlaceholder: String(localized: "Your answer")
-                ),
-                UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: permission, actions: [
-                UNNotificationAction(identifier: allow, title: String(localized: "Allow"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: deny, title: String(localized: "Deny"), options: [.destructive], icon: UNNotificationActionIcon(systemImageName: "xmark")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: plan, actions: [
-                UNNotificationAction(identifier: approve, title: String(localized: "Approve"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-                UNNotificationAction(identifier: review, title: String(localized: "Review"), options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "doc.text.magnifyingglass")),
-            ], intentIdentifiers: []),
-            UNNotificationCategory(identifier: read, actions: [
-                UNNotificationAction(identifier: markRead, title: String(localized: "Mark as Read"), icon: UNNotificationActionIcon(systemImageName: "checkmark")),
-            ], intentIdentifiers: []),
-        ]
-    }
+    static let reply = NotificationPayload.Action.reply
+    static let moreContext = NotificationPayload.Action.moreContext
+    static let allow = NotificationPayload.Action.allow
+    static let deny = NotificationPayload.Action.deny
+    static let approve = NotificationPayload.Action.approve
+    static let review = NotificationPayload.Action.review
+    static let markRead = NotificationPayload.Action.markRead
+    static let optionPrefix = NotificationPayload.Action.optionPrefix
 }
 
 struct NotificationResponse: Sendable {
     let action: String
     let text: String?
-    let item: NotificationItem?
+    let boundItem: NotificationPayload.BoundItem?
     let title: String
-    let category: String
-    let thread: String
-    let payload: Data?
 
     init(_ response: UNNotificationResponse) {
         let content = response.notification.request.content
         action = response.actionIdentifier
         text = (response as? UNTextInputNotificationResponse)?.userText
-        item = NotificationItem(userInfo: content.userInfo)
+        boundItem = NotificationPayload.BoundItem(userInfo: content.userInfo)
         title = content.title
-        category = content.categoryIdentifier
-        thread = content.threadIdentifier
-        payload = (content.userInfo["alondra"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
     }
 }
 
@@ -112,6 +60,7 @@ struct QuietHours: Equatable {
 @MainActor
 @Observable
 final class PushCenter {
+    private struct BindingChangedBeforeSend: Error {}
     enum Authorization: Equatable {
         case unknown, notDetermined, denied, authorized
     }
@@ -137,6 +86,7 @@ final class PushCenter {
 
     private let fleet: FleetStore
     private let pairing: DevicePairing
+    private let bindings: PushBindingStore
     @ObservationIgnored private var lastRegistered: String?
     @ObservationIgnored private var syncTask: Task<Void, Never>?
 
@@ -149,9 +99,10 @@ final class PushCenter {
     private static let actionDeadline: Duration = .seconds(22)
     private static let staleNotificationAge: TimeInterval = 10
 
-    init(fleet: FleetStore, pairing: DevicePairing) {
+    init(fleet: FleetStore, pairing: DevicePairing, bindings: PushBindingStore? = nil) {
         self.fleet = fleet
         self.pairing = pairing
+        self.bindings = bindings ?? PushBindingStore()
         let defaults = UserDefaults.standard
         quietHours = QuietHours(
             enabled: defaults.bool(forKey: Keys.quietEnabled),
@@ -196,33 +147,55 @@ final class PushCenter {
     }
 
     private func sync() async {
-        guard let token, pairing.isPaired, let client = currentClient() else { return }
+        guard let token, pairing.isPaired, let client = currentClient(), let binding = currentBinding() else {
+            registration = .idle
+            lastRegistered = nil
+            return
+        }
         let request = PushRegistration(
             token: token,
             environment: Self.environment,
             quietStart: quietHours.enabled ? QuietHours.clock(quietHours.start) : nil,
-            quietEnd: quietHours.enabled ? QuietHours.clock(quietHours.end) : nil
+            quietEnd: quietHours.enabled ? QuietHours.clock(quietHours.end) : nil,
+            pushBinding: binding.value
         )
         let fingerprint = "\(client.identity)|\(request)"
+        let scope = PushRegistrationScope(clientIdentity: client.identity, binding: binding, token: token)
         guard fingerprint != lastRegistered else { return }
         registration = .sending
         do {
             try await client.registerPush(request)
+            guard scope.acceptsCompletion(current: currentRegistrationScope(), cancelled: Task.isCancelled) else { return }
             lastRegistered = fingerprint
             registration = .registered
         } catch where error.isCancellation {
             return
         } catch {
+            guard scope.acceptsCompletion(current: currentRegistrationScope(), cancelled: Task.isCancelled) else { return }
             registration = .failed(error.friendlyDescription)
         }
     }
 
-    private func currentClient() -> AlondraClient? {
-        let url = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
-        guard let client = AlondraClient(string: url, device: "iphone", signer: pairing.signer) else { return nil }
-        fleet.use(client)
-        return fleet.client
+    private func currentRegistrationScope() -> PushRegistrationScope? {
+        guard let token, let client = currentClient(), let binding = currentBinding() else { return nil }
+        return PushRegistrationScope(clientIdentity: client.identity, binding: binding, token: token)
     }
+
+    private func currentClient() -> AlondraClient? {
+        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
+        guard let url = AlondraClient.serverURL(address), let signer = pairing.signer(for: url) else { return nil }
+        return AlondraClient(base: url, device: "iphone", signer: signer)
+    }
+
+    private func currentBinding() -> NotificationPayload.Binding? {
+        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
+        guard let url = AlondraClient.serverURL(address),
+              let signer = pairing.signer(for: url),
+              let revision = pairing.credentialRevision else { return nil }
+        return bindings.binding(server: url, deviceID: signer.deviceID, credentialRevision: revision)
+    }
+
+    func isCurrent(_ route: NotificationRoute) -> Bool { currentBinding() == route.binding }
 
     /// Simulators and development-signed builds talk to the APNs sandbox; the embedded
     /// provisioning profile says which one a device build was signed for, and App Store
@@ -244,60 +217,74 @@ final class PushCenter {
     func inboxChanged(pending: [InboxItem]) {
         guard fleet.connection == .online, authorization == .authorized else { return }
         center.setBadgeCount(pending.count)
+        guard let binding = currentBinding() else { return }
         let live = Set(pending.map(\.id))
         let cutoff = Date.now.addingTimeInterval(-Self.staleNotificationAge)
         Task {
             let stale = await center.deliveredNotifications().filter { notification in
-                guard notification.date < cutoff, let item = NotificationItem(userInfo: notification.request.content.userInfo) else { return false }
+                guard notification.date < cutoff,
+                      NotificationPayload.Binding(userInfo: notification.request.content.userInfo) == binding,
+                      let item = NotificationItem(userInfo: notification.request.content.userInfo) else { return false }
                 return !live.contains(item.inboxID)
             }
             guard !stale.isEmpty else { return }
+            guard currentBinding() == binding else { return }
             center.removeDeliveredNotifications(withIdentifiers: stale.map(\.request.identifier))
         }
     }
 
     func respond(to response: NotificationResponse) async {
-        guard let item = response.item else { return }
+        guard let boundItem = response.boundItem, boundItem.matches(currentBinding()) else { return }
+        let item = boundItem.item
+        let binding = boundItem.binding
         switch response.action {
         case UNNotificationDefaultActionIdentifier:
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question)
+            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question, binding: binding)
         case NotificationCategory.review:
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: true)
-        case NotificationCategory.reply:
-            guard let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
-            await send(response) { try await $0.answer(item.id, text: text, option: nil) }
-        case NotificationCategory.moreContext:
-            await send(response) { try await $0.moreContext(item.id, note: "") }
-        case NotificationCategory.allow:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.allow, option: AnswerOption.allow) }
-        case NotificationCategory.deny:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.deny, option: AnswerOption.deny) }
-        case NotificationCategory.approve:
-            await send(response) { try await $0.answer(item.id, text: AnswerOption.approve, option: AnswerOption.approve) }
-        case NotificationCategory.markRead:
-            await send(response) { try await $0.markRead(item.id) }
-        case let action where action.hasPrefix(NotificationCategory.optionPrefix):
-            let label = String(action.dropFirst(NotificationCategory.optionPrefix.count))
-            guard !label.isEmpty else { return }
-            await send(response) { try await $0.answer(item.id, text: label, option: label) }
+            route = NotificationRoute(itemID: item.inboxID, opensDetail: true, binding: binding)
         default:
-            return
+            guard let command = NotificationAction(item: item, action: response.action, text: response.text) else { return }
+            await send(response, itemID: item.inboxID, binding: binding, command: command)
         }
     }
 
-    private func send(_ response: NotificationResponse, _ action: @escaping @Sendable (AlondraClient) async throws -> Void) async {
-        guard let client = currentClient() else {
+    private func send(_ response: NotificationResponse, itemID: String, binding: NotificationPayload.Binding, command: NotificationAction) async {
+        guard let client = currentClient(), let credentialRevision = pairing.credentialRevision else {
             await reportFailure(response, reason: String(localized: "No server configured"))
             return
         }
         let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action")
         defer { UIApplication.shared.endBackgroundTask(background) }
-        do {
-            try await Self.withDeadline(Self.actionDeadline) { try await action(client) }
-            if UIApplication.shared.applicationState == .active { await fleet.refresh() }
-        } catch {
-            await reportFailure(response, reason: error.friendlyDescription)
+        guard currentBinding() == binding else { return }
+        let result = await fleet.submitCommand(command.commandKind, itemID: itemID,
+            expectedCredentialRevision: credentialRevision, using: client) { [self] scopedClient in
+            guard await currentBinding() == binding else { throw BindingChangedBeforeSend() }
+            try await Self.withDeadline(Self.actionDeadline) { try await command.execute(using: scopedClient) }
         }
+        guard currentBinding() == binding else { return }
+        switch result {
+        case .confirmed:
+            if UIApplication.shared.applicationState == .active {
+                await fleet.refresh(ifCurrentClientMatches: client.identity)
+            }
+        case .unknown:
+            await reportUncertain(response)
+        case .rejected(let error):
+            guard !(error is BindingChangedBeforeSend) else { return }
+            await reportFailure(response, reason: error.friendlyDescription)
+        case .obsolete:
+            return
+        }
+    }
+
+    private func reportUncertain(_ response: NotificationResponse) async {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Check Alondra")
+        content.body = response.title.isEmpty
+            ? String(localized: "The action may have completed. Check its current state before trying again.")
+            : String(localized: "\(response.title) may have completed. Check its current state before trying again.")
+        content.sound = .default
+        try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
     private func reportFailure(_ response: NotificationResponse, reason: String) async {
@@ -305,11 +292,8 @@ final class PushCenter {
         content.title = String(localized: "Couldn’t send")
         content.body = response.title.isEmpty ? reason : "\(response.title) — \(reason)"
         content.sound = .default
-        content.categoryIdentifier = response.category
-        content.threadIdentifier = response.thread
-        if let payload = response.payload, let alondra = try? JSONSerialization.jsonObject(with: payload) {
-            content.userInfo = ["alondra": alondra]
-        }
+        // A failed send is informational. Reusing its category or payload would
+        // expose actionable buttons that could target a different pairing.
         try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 

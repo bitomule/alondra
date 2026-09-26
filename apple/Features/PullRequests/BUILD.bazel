@@ -1,0 +1,23 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraPullRequestsFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraPullRequestsFeature",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple:AlondraShared",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraPullRequestsFeatureTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraPullRequestsFeature",
+        "//apple:AlondraShared",
+        "//apple/Data/Commands:AlondraCommands",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)

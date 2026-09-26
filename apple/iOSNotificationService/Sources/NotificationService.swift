@@ -1,4 +1,6 @@
+import AlondraNotificationPayload
 import Foundation
+import Darwin
 import os
 import UserNotifications
 
@@ -12,12 +14,14 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         let delivery = Delivery(content: content, handler: contentHandler)
         self.delivery = delivery
-        guard let question = OptionQuestion(userInfo: content.userInfo) else {
+        guard let binding = NotificationPayload.Binding(userInfo: content.userInfo) else {
+            content.categoryIdentifier = ""
             delivery.finish(category: nil)
             return
         }
         Task {
-            let category = await QuestionCategories.register(question)
+            let question = NotificationPayload.Question(userInfo: content.userInfo)
+            let category = await QuestionCategories.register(question, binding: binding)
             delivery.finish(category: category)
         }
     }
@@ -54,64 +58,85 @@ private final class Delivery: Sendable {
     }
 }
 
-struct OptionQuestion: Sendable {
-    static let maxOptions = 4
-    private static let origins: Set<String> = ["ask", "ask_user_question", "elicitation"]
-
-    let id: UInt64
-    let options: [String]
-
-    init?(userInfo: [AnyHashable: Any]) {
-        guard let alondra = userInfo["alondra"] as? [String: Any],
-              alondra["kind"] as? String == "question",
-              let origin = alondra["origin"] as? String, Self.origins.contains(origin),
-              let id = (alondra["id"] as? NSNumber)?.uint64Value,
-              let raw = alondra["options"] as? [String] else { return nil }
-        var seen = Set<String>()
-        let options = raw
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-            .prefix(Self.maxOptions)
-        guard !options.isEmpty else { return nil }
-        self.id = id
-        self.options = Array(options)
-    }
-}
-
 enum QuestionCategories {
-    static let prefix = "ALONDRA_Q_"
-    static let optionPrefix = "OPT:"
     static let limit = 20
 
-    private static let reply = "REPLY"
-    private static let moreContext = "MORE_CONTEXT"
+    private static var fixedCategories: Set<UNNotificationCategory> {
+        [
+            UNNotificationCategory(identifier: NotificationPayload.Category.question, actions: [
+                replyAction,
+                UNNotificationAction(identifier: NotificationPayload.Action.moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
+            ], intentIdentifiers: []),
+            UNNotificationCategory(identifier: NotificationPayload.Category.permission, actions: [
+                UNNotificationAction(identifier: NotificationPayload.Action.allow, title: String(localized: "Allow"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+                UNNotificationAction(identifier: NotificationPayload.Action.deny, title: String(localized: "Deny"), options: [.destructive], icon: UNNotificationActionIcon(systemImageName: "xmark")),
+            ], intentIdentifiers: []),
+            UNNotificationCategory(identifier: NotificationPayload.Category.plan, actions: [
+                UNNotificationAction(identifier: NotificationPayload.Action.approve, title: String(localized: "Approve"), options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+                UNNotificationAction(identifier: NotificationPayload.Action.review, title: String(localized: "Review"), options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "doc.text.magnifyingglass")),
+            ], intentIdentifiers: []),
+            UNNotificationCategory(identifier: NotificationPayload.Category.read, actions: [
+                UNNotificationAction(identifier: NotificationPayload.Action.markRead, title: String(localized: "Mark as Read"), icon: UNNotificationActionIcon(systemImageName: "checkmark")),
+            ], intentIdentifiers: []),
+        ]
+    }
+
+    private static var replyAction: UNTextInputNotificationAction {
+        UNTextInputNotificationAction(
+            identifier: NotificationPayload.Action.reply,
+            title: String(localized: "Reply"),
+            options: [.authenticationRequired],
+            icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
+            textInputButtonTitle: String(localized: "Send"),
+            textInputPlaceholder: String(localized: "Your answer")
+        )
+    }
+
     private static let registrationPolls = 20
     private static let pollInterval: Duration = .milliseconds(50)
 
     /// `setNotificationCategories` registers asynchronously; handing the content back before
     /// the new category is visible shows the notification without its buttons.
-    static func register(_ question: OptionQuestion) async -> String {
+    static func register(_ question: NotificationPayload.Question?, binding: NotificationPayload.Binding) async -> String? {
+        // Notification service instances can run in separate processes. Their common
+        // extension container gives flock a lock shared by those processes.
+        guard let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        catch { return nil }
+        let fd = open(directory.appending(path: "notification-categories.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { return nil }
+        defer { flock(fd, LOCK_UN) }
         let center = UNUserNotificationCenter.current()
-        let identifier = prefix + String(question.id)
+        let identifier = question.map { NotificationPayload.Category.questionID($0.id, binding: binding) }
         let existing = await center.notificationCategories()
-        let recent = existing
-            .compactMap { category in questionID(category).map { (id: $0, category: category) } }
-            .filter { $0.id != question.id }
-            .sorted { $0.id < $1.id }
-            .suffix(limit - 1)
-            .map(\.category)
-        let fixed = existing.filter { questionID($0) == nil }
-        center.setNotificationCategories(fixed.union(recent).union([category(for: question, identifier: identifier)]))
+        let orderURL = directory.appending(path: "notification-category-order.json")
+        let previousOrder = (try? Data(contentsOf: orderURL))
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        let retention = NotificationPayload.Category.retainedCategoryIDs(
+            from: existing.map(\.identifier), previousOrder: previousOrder,
+            incoming: identifier, limit: limit
+        )
+        let fixedIDs = Set(fixedCategories.map(\.identifier))
+        let retained = existing.filter {
+            retention.identifiers.contains($0.identifier) && !fixedIDs.contains($0.identifier) && $0.identifier != identifier
+        }
+        var categories = retained.union(fixedCategories)
+        if let question, let identifier { categories.insert(category(for: question, identifier: identifier)) }
+        do {
+            try JSONEncoder().encode(retention.dynamicOrder).write(to: orderURL, options: .atomic)
+        } catch {
+            return nil
+        }
+        center.setNotificationCategories(categories)
         for _ in 0..<registrationPolls {
-            if await center.notificationCategories().contains(where: { $0.identifier == identifier }) { break }
+            let visible = await center.notificationCategories()
+            if fixedCategories.allSatisfy({ fixed in visible.contains(where: { $0.identifier == fixed.identifier }) }) &&
+                (identifier == nil || visible.contains(where: { $0.identifier == identifier })) { return identifier }
             try? await Task.sleep(for: pollInterval)
         }
-        return identifier
-    }
-
-    private static func questionID(_ category: UNNotificationCategory) -> UInt64? {
-        guard category.identifier.hasPrefix(prefix) else { return nil }
-        return UInt64(category.identifier.dropFirst(prefix.count))
+        return nil
     }
 
     private static func title(for label: String) -> String {
@@ -124,20 +149,13 @@ enum QuestionCategories {
         }
     }
 
-    private static func category(for question: OptionQuestion, identifier: String) -> UNNotificationCategory {
+    private static func category(for question: NotificationPayload.Question, identifier: String) -> UNNotificationCategory {
         let options = question.options.map { label in
-            UNNotificationAction(identifier: optionPrefix + label, title: title(for: label), options: [.authenticationRequired])
+            UNNotificationAction(identifier: NotificationPayload.Action.option(label), title: title(for: label), options: [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: options + [
-            UNTextInputNotificationAction(
-                identifier: reply,
-                title: String(localized: "Reply"),
-                options: [.authenticationRequired],
-                icon: UNNotificationActionIcon(systemImageName: "arrowshape.turn.up.left"),
-                textInputButtonTitle: String(localized: "Send"),
-                textInputPlaceholder: String(localized: "Your answer")
-            ),
-            UNNotificationAction(identifier: moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
+            replyAction,
+            UNNotificationAction(identifier: NotificationPayload.Action.moreContext, title: String(localized: "I need more context"), icon: UNNotificationActionIcon(systemImageName: "questionmark.bubble")),
         ], intentIdentifiers: [])
     }
 }

@@ -5,6 +5,7 @@ import SwiftUI
 
 struct PairingView: View {
     @Environment(LocalDevice.self) private var device
+    @Environment(MacAppSync.self) private var services
     private var client: AlondraClient { device.client }
     private let fallbackURL = "http://\(ProcessInfo.processInfo.hostName):47800"
 
@@ -95,7 +96,7 @@ struct PairingView: View {
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
             Spacer(minLength: 0)
             Button(justPaired == nil ? String(localized: "Generate Another Code") : String(localized: "Pair Another")) {
-                Task { await newInvite() }
+                services.runMutation { await newInvite() }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,7 +118,7 @@ struct PairingView: View {
                     }
                     Spacer()
                     Button("Unpair", role: .destructive) {
-                        Task { await revoke(device) }
+                        services.runMutation { await revoke(device) }
                     }
                 }
             }

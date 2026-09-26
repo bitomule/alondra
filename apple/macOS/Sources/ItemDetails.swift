@@ -19,6 +19,7 @@ struct ItemDetail: View {
 }
 
 struct QuestionDetail: View {
+    @Environment(MacAppSync.self) private var services
     let question: Question
     let store: FleetStore
     let drafts: Drafts
@@ -188,13 +189,14 @@ struct QuestionDetail: View {
         focus = .pane
         let drafts = drafts
         let key = key
-        Task {
+        services.runMutation {
             if await action() { drafts.discard(key) }
         }
     }
 }
 
 struct ReportDetail: View {
+    @Environment(MacAppSync.self) private var services
     let report: Report
     let store: FleetStore
     let drafts: Drafts
@@ -346,7 +348,7 @@ struct ReportDetail: View {
         focus = .pane
         let drafts = drafts
         let key = key
-        Task {
+        services.runMutation {
             if await action() { drafts.discard(key) }
         }
     }

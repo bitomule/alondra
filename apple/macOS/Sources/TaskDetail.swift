@@ -1,9 +1,11 @@
 import AlondraShared
+import AlondraMacFeature
 import SwiftUI
 
 /// A task: why it is where it is, the request behind it, its PRs in merge order, what it depends
 /// on, its documents, options and history. Reopen and cancel live in the toolbar.
 struct TaskDetail: View {
+    @Environment(MacAppSync.self) private var services
     let task: WorkTask
     let store: FleetStore
     let select: (Selection) -> Void
@@ -265,7 +267,7 @@ struct TaskDetail: View {
 
     private func act(_ work: @escaping () async -> Bool) {
         acting = true
-        Task {
+        services.runMutation(onDiscard: { acting = false }) {
             _ = await work()
             acting = false
         }
@@ -274,6 +276,7 @@ struct TaskDetail: View {
 
 /// A request still being split into tasks: what the user asked, and that it is on its way.
 struct RequestDetail: View {
+    @Environment(MacAppSync.self) private var services
     let request: WorkRequest
     let store: FleetStore
     let select: (Selection) -> Void
@@ -354,7 +357,7 @@ struct RequestDetail: View {
         .confirmationDialog("Withdraw “\(store.title(of: request))”?", isPresented: $confirmingWithdraw) {
             Button("Withdraw Request", role: .destructive) {
                 acting = true
-                Task {
+                services.runMutation(onDiscard: { acting = false }) {
                     await store.withdraw(request)
                     acting = false
                 }

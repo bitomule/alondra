@@ -1,35 +1,65 @@
+import AlondraSettingsFeature
 import AlondraShared
+import ComposableArchitecture
 import SwiftUI
 
 struct SettingsView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(DevicePairing.self) private var pairing
     @AppStorage(ServerSetting.key) private var serverURL = ServerSetting.defaultURL
-    @State private var draft = ""
-    @State private var check: Check = .idle
-    @State private var detent = PresentationDetent.medium
 
-    private enum Check: Equatable {
-        case idle, checking, ok, failed(String)
+    var body: some View {
+        SettingsScreen(serverAddress: serverURL, pairing: pairing)
     }
+}
 
-    private var candidate: AlondraClient? { AlondraClient(string: draft, device: "iphone", signer: pairing.signer) }
+@MainActor
+private struct SettingsScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var store: StoreOf<SettingsFeature>
+    @State private var detent = PresentationDetent.medium
+    let serverAddress: String
+    let pairing: DevicePairing
+
+    init(serverAddress: String, pairing: DevicePairing) {
+        self.serverAddress = serverAddress
+        self.pairing = pairing
+        let connection = SettingsLive.connection(pairing: pairing)
+        _store = State(initialValue: Store(initialState: SettingsFeature.State(
+            serverAddress: serverAddress,
+            credentialRevision: pairing.revision.uuidString
+        )) {
+            SettingsFeature()
+        } withDependencies: {
+            $0.settingsConnection = connection
+        })
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 PairingSection(detent: $detent)
                 NotificationsSection()
+                if store.hasExternalChange {
+                    Section {
+                        Text("The server address changed in another window while you were editing. Choose which address to use before saving.")
+                        Button("Use Current Address") { store.send(.useCurrentAddress) }
+                        Button("Keep My Draft") { store.send(.keepDraft) }
+                    } header: {
+                        Text("Server Changed")
+                    }
+                }
                 Section {
-                    TextField(ServerSetting.defaultURL, text: $draft)
+                    TextField(ServerSetting.defaultURL, text: Binding(
+                        get: { store.draft },
+                        set: { store.send(.draftChanged($0)) }
+                    ))
                         .font(.mono(.body))
                         .keyboardType(.URL)
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .onChange(of: draft) { check = .idle }
                     Button {
-                        Task { await test() }
+                        store.send(.testTapped)
                     } label: {
                         HStack {
                             Text("Test Connection")
@@ -37,15 +67,15 @@ struct SettingsView: View {
                             checkBadge
                         }
                     }
-                    .disabled(candidate == nil || check == .checking)
+                    .disabled(!store.canCheck)
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text(candidate == nil && !draft.isEmpty ? String(localized: "Enter a full http:// or https:// address.") : String(localized: "Where alondrad listens. In the simulator, the Mac is 127.0.0.1."))
+                    Text(store.candidateURL == nil && !store.draft.isEmpty ? String(localized: "Enter a full http:// or https:// address.") : String(localized: "Where alondrad listens. In the simulator, the Mac is 127.0.0.1."))
                 }
                 Section {
-                    Button("Use the Local Address") { draft = ServerSetting.defaultURL }
-                        .disabled(draft == ServerSetting.defaultURL)
+                    Button("Use the Local Address") { store.send(.draftChanged(ServerSetting.defaultURL)) }
+                        .disabled(store.draft == ServerSetting.defaultURL)
                 }
             }
             .navigationTitle("Settings")
@@ -55,50 +85,34 @@ struct SettingsView: View {
                     Button("Close", systemImage: "xmark") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", systemImage: "checkmark") {
-                        if let candidate { serverURL = candidate.base.absoluteString }
-                        dismiss()
-                    }
-                    .disabled(candidate == nil)
+                    Button("Save", systemImage: "checkmark") { store.send(.saveTapped) }
+                        .disabled(!store.canSave)
                 }
             }
-            .onAppear { draft = serverURL }
             .presentationDetents([.medium, .large], selection: $detent)
-            .sensoryFeedback(trigger: check) { _, new in
+            .sensoryFeedback(trigger: store.check) { _, new in
                 switch new {
                 case .ok: .success
                 case .failed: .error
                 default: nil
                 }
             }
+            .onChange(of: pairing.revision) { store.send(.credentialChanged(pairing.revision.uuidString)) }
+            .onChange(of: serverAddress) { store.send(.configurationChanged(serverAddress)) }
+            .onChange(of: store.saved) { if store.saved { dismiss() } }
+            .onDisappear { store.send(.disappeared) }
         }
     }
 
     @ViewBuilder
     private var checkBadge: some View {
-        switch check {
+        switch store.check {
         case .idle: EmptyView()
         case .checking: ProgressView()
         case .ok: Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.sage)
         case .failed(let reason): Text(reason).foregroundStyle(Palette.rose).lineLimit(1)
         }
     }
-
-    private func test() async {
-        guard let candidate else { return }
-        check = .checking
-        do {
-            try await candidate.health()
-            check = .ok
-        } catch {
-            check = .failed(error.friendlyDescription)
-        }
-    }
-}
-
-enum ServerSetting {
-    static let key = "serverURL"
-    static let defaultURL = AlondraClient.defaultURL.absoluteString
 }
 
 private struct PairingSection: View {

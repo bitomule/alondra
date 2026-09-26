@@ -5,7 +5,7 @@ public struct ScheduledTaskList: Decodable, Sendable {
     public let schedules: [ScheduledTask]
 }
 
-public struct ScheduledTask: Decodable, Identifiable, Sendable {
+public struct ScheduledTask: Decodable, Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let text: String
@@ -29,7 +29,7 @@ public struct ScheduledTask: Decodable, Identifiable, Sendable {
     public let revision: Int
 }
 
-public struct ScheduledTaskDraft: Encodable, Sendable {
+public struct ScheduledTaskDraft: Encodable, Equatable, Sendable {
     public var title: String
     public var text: String
     public var project: String?

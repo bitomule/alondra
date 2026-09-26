@@ -1,0 +1,23 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraNewWorkFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraNewWorkFeature",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple:AlondraShared",
+        "//apple/Domain:AlondraDomain",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraNewWorkFeatureTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraNewWorkFeature",
+        "//apple:AlondraShared",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)

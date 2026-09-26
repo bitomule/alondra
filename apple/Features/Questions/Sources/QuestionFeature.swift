@@ -1,0 +1,153 @@
+import AlondraShared
+import ComposableArchitecture
+import Foundation
+
+@Reducer
+public struct QuestionFeature {
+    @ObservableState
+    public struct State: Equatable {
+        public var question: Question
+        public var draft = QuestionDraft()
+        public var isSubmitting = false
+        public var notice: String?
+        public var conflict: String?
+        public var completed = false
+        public var needsReconciliation = false
+        public var revision: UInt64 = 0
+
+        public init(question: Question) { self.question = question }
+    }
+
+    public enum Action {
+        case refreshed(Question)
+        case identityChanged
+        case textChanged(String)
+        case optionSelected(String?)
+        case attachmentsChanged([String])
+        case answerTapped
+        case moreContextTapped
+        case submissionFinished(UInt64, QuestionWorkOutcome)
+        /// H sends this only after command journal and snapshot reconciliation.
+        case reconciled(cardStillOpen: Bool)
+        case dismissNotice
+    }
+
+    @Dependency(\.questionWorkService) var service
+    private let useCase = AnswerQuestionUseCase()
+
+    public init() {}
+
+    public var body: some ReducerOf<Self> {
+        Reduce { state, action in
+            switch action {
+            case .refreshed(let question):
+                guard state.question.id == question.id else {
+                    let revision = state.revision &+ 1
+                    state = State(question: question)
+                    state.revision = revision
+                    return .cancel(id: CancelID.submit)
+                }
+                // Keep local text, option and stored attachments while a live card refreshes.
+                state.question = question
+                if let option = state.draft.selectedOption,
+                   !question.options.contains(where: { $0.label == option }),
+                   !(question.isPlan && [AnswerOption.approve, AnswerOption.requestChanges].contains(option)) {
+                    state.draft.selectedOption = nil
+                }
+                return .none
+            case .identityChanged:
+                state.draft = QuestionDraft()
+                state.isSubmitting = false
+                state.notice = nil
+                state.conflict = nil
+                state.completed = false
+                state.needsReconciliation = false
+                state.revision &+= 1
+                return .cancel(id: CancelID.submit)
+            case .textChanged(let text):
+                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                state.draft.text = text
+                return .none
+            case .optionSelected(let option):
+                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                state.draft.selectedOption = option
+                return .none
+            case .attachmentsChanged(let ids):
+                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                state.draft.attachmentIDs = ids
+                return .none
+            case .answerTapped, .moreContextTapped:
+                guard !state.isSubmitting, !state.completed, !state.needsReconciliation else { return .none }
+                let operation: QuestionOperation
+                do {
+                    if case .answerTapped = action {
+                        operation = try useCase.answer(state.question, draft: state.draft)
+                    } else {
+                        operation = try useCase.checkedMoreContext(state.question, draft: state.draft)
+                    }
+                } catch {
+                    state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
+                    return .none
+                }
+                state.isSubmitting = true
+                state.notice = nil
+                state.conflict = nil
+                let revision = state.revision
+                return .run { send in
+                    await send(.submissionFinished(revision, await service.submit(operation)))
+                }.cancellable(id: CancelID.submit)
+            case .submissionFinished(let revision, let outcome):
+                guard state.revision == revision, state.isSubmitting else { return .none }
+                state.isSubmitting = false
+                switch outcome {
+                case .confirmed:
+                    state.completed = true
+                    state.draft = QuestionDraft()
+                case .conflict(let reason):
+                    state.conflict = reason
+                case .forbidden(let reason), .failed(let reason):
+                    state.notice = reason
+                case .uncertain:
+                    state.notice = "The result is uncertain. Check the server before trying again."
+                    state.needsReconciliation = true
+                case .obsolete:
+                    break
+                }
+                return .none
+            case .reconciled(let cardStillOpen):
+                guard state.needsReconciliation else { return .none }
+                state.needsReconciliation = false
+                state.completed = !cardStillOpen
+                state.notice = nil
+                if !cardStillOpen { state.draft = QuestionDraft() }
+                return .none
+            case .dismissNotice:
+                state.notice = nil
+                return .none
+            }
+        }
+    }
+
+    private enum CancelID { case submit }
+}
+
+/// Action cards share the answer contract but have a distinct entry point for presentation.
+/// H can scope its Mac/iOS action view here without bypassing QuestionFeature's state machine.
+@Reducer
+public struct ActionFeature {
+    @ObservableState
+    public struct State: Equatable {
+        public var question: QuestionFeature.State
+        public init(question: Question) { self.question = QuestionFeature.State(question: question) }
+    }
+
+    public enum Action {
+        case question(QuestionFeature.Action)
+    }
+
+    public init() {}
+
+    public var body: some ReducerOf<Self> {
+        Scope(state: \.question, action: \.question) { QuestionFeature() }
+    }
+}

@@ -58,6 +58,8 @@ import Testing
     @Test func theBodyIsTheJSONAlondradReads() throws {
         var options = try loaded()
         options.project = "Lumo"
+        let lumoCatalog = Self.served.replacingOccurrences(of: #""project": null"#, with: #""project": "Lumo""#)
+        options.apply(try catalog(lumoCatalog))
         options.set(spec("device", in: options), to: .toggle(true))
         options.set(spec("pr", in: options), to: .value("auto_merge"))
         let encoder = JSONEncoder()

@@ -1,4 +1,8 @@
 import AlondraShared
+import AlondraCommands
+import AlondraiOSFeature
+import AlondraTriageFeature
+import ComposableArchitecture
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -10,7 +14,7 @@ struct AlondraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(serverURL: serverURL)
+            RootView(serverURL: serverURL, services: delegate.sync)
                 .environment(delegate.fleet)
                 .environment(delegate.pairing)
                 .environment(delegate.push)
@@ -20,18 +24,27 @@ struct AlondraApp: App {
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    let fleet = FleetStore(client: AlondraClient(base: AlondraClient.defaultURL, device: "iphone"), animated: true, retryDelay: .seconds(3))
     let pairing = DevicePairing()
+    lazy var fleet: FleetStore = {
+        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
+        let base = AlondraClient.serverURL(address) ?? AlondraClient.defaultURL
+        let signer = pairing.signer(for: base)
+        let client = AlondraClient(base: base, device: "iphone", signer: signer)
+        let scope = IOSAppSync.commandScope(for: IOSAppSync.identity(for: client), generation: 1)
+        let gate = CommandGate(
+            scope: scope,
+            journal: FileCommandJournal(directory: CommandJournalLocation.applicationSupport(
+                bundleID: Bundle.main.bundleIdentifier ?? "com.bitomule.alondra"))
+        )
+        return FleetStore(client: client, animated: true, retryDelay: .seconds(3), commandGate: gate, commandScope: scope)
+    }()
     lazy var push = PushCenter(fleet: fleet, pairing: pairing)
+    lazy var sync = IOSAppSync(fleet: fleet, pairing: pairing, push: push)
     private lazy var responder = NotificationResponder(push: push)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let center = UNUserNotificationCenter.current()
         center.delegate = responder
-        Task {
-            let questions = await center.notificationCategories().filter { $0.identifier.hasPrefix(NotificationCategory.questionPrefix) }
-            center.setNotificationCategories(NotificationCategory.all.union(questions))
-        }
         return true
     }
 
@@ -46,75 +59,65 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 private struct RootView: View {
     let serverURL: String
+    let services: IOSAppSync
+
+    @State private var context: IOSWindowContext
+    @State private var sceneID = UUID()
+
+    init(serverURL: String, services: IOSAppSync) {
+        self.serverURL = serverURL
+        self.services = services
+        _context = State(initialValue: IOSWindowContext(services: services))
+    }
 
     @Environment(FleetStore.self) private var fleet
     @Environment(DevicePairing.self) private var pairing
     @Environment(PushCenter.self) private var push
     @Environment(\.scenePhase) private var scenePhase
-    @State private var tab = AppTab.triage
-
-    enum AppTab: Hashable {
-        case triage, tasks, fleet, new
-    }
-
-    /// While the app is in front of the user (it leaves the foreground when the screen locks),
-    /// alondrad holds back pushes, as it does for the TUI and the Mac.
-    private func reportActivity() async {
-        while !Task.isCancelled {
-            try? await fleet.client.activity(client: "iphone")
-            try? await Task.sleep(for: .seconds(60))
-        }
-    }
-
     private struct SyncKey: Hashable {
         let url: String
-        let device: String?
-        let active: Bool
+        let revision: UUID
     }
 
     var body: some View {
-        TabView(selection: $tab) {
-            Tab("Waiting for You", systemImage: "tray.full", value: .triage) {
-                TriageView()
+        @Bindable var feature = context.feature
+        return TabView(selection: $feature.tab) {
+            Tab("Waiting for You", systemImage: "tray.full", value: IOSRootFeature.Tab.triage) {
+                TriageView(store: context.triage)
             }
-            .badge(fleet.connection == .unpaired ? 0 : fleet.queue.count)
-            Tab("Tasks", systemImage: "checklist", value: .tasks) {
+            .badge(feature.connection == .unpaired ? 0 : context.triage.queue.count)
+            Tab("Tasks", systemImage: "checklist", value: IOSRootFeature.Tab.tasks) {
                 TasksTab()
             }
-            Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
+            Tab("Fleet", systemImage: "circle.hexagongrid", value: IOSRootFeature.Tab.fleet) {
                 FleetTab()
             }
-            Tab("New", systemImage: "plus.bubble", value: .new) {
+            Tab("New", systemImage: "plus.bubble", value: IOSRootFeature.Tab.new) {
                 NewRequestView()
             }
         }
+        .id(feature.presentationGeneration)
         .tabBarMinimizeBehavior(.onScrollDown)
-        .onChange(of: fleet.focusRequest) { tab = .triage }
-        .onChange(of: push.route) { if push.route != nil { tab = .triage } }
-        .onChange(of: fleet.queue) { push.inboxChanged(pending: fleet.queue) }
-        .task(id: pairing.deviceID) {
-            guard pairing.isPaired else { return }
-            await push.activate()
-            push.scheduleSync()
+        .onChange(of: fleet.focusRequest) { context.feature.send(.focusTriage) }
+        .onChange(of: context.triage.queue.count) { _, count in context.feature.send(.inboxCountChanged(count)) }
+        .onChange(of: push.route) { if let route = push.route, push.isCurrent(route) { context.feature.send(.focusTriage) } }
+        .task(id: pairing.revision) {
+            context.feature.send(.pairingChanged)
         }
         .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            fleet.retryPendingSends()
-            await push.refreshAuthorization()
+            context.feature.send(.sceneActive(scenePhase != .background))
+            context.feature.send(.activityActive(sceneID, scenePhase == .active))
         }
-        .task(id: scenePhase) {
-            guard scenePhase == .active, pairing.isPaired else { return }
-            await reportActivity()
+        .onDisappear {
+            services.detachTriage(sceneID: sceneID)
+            context.feature.send(.sceneActive(false))
+            context.feature.send(.activityActive(sceneID, false))
         }
         .overlay(alignment: .bottom) { NoticeToast() }
         .closeRefusalAlert(fleet)
-        .task(id: SyncKey(url: serverURL, device: pairing.deviceID, active: scenePhase != .background)) {
-            guard scenePhase != .background else { return }
-            if let client = AlondraClient(string: serverURL, device: "iphone", signer: pairing.signer) {
-                fleet.use(client)
-                push.scheduleSync()
-            }
-            await fleet.run()
+        .task(id: SyncKey(url: serverURL, revision: pairing.revision)) {
+            services.attachTriage(context.triage, sceneID: sceneID)
+            context.feature.send(.configurationChanged(serverURL))
         }
     }
 }
@@ -143,22 +146,12 @@ private struct NoticeToast: View {
                     }
                     .id(notice.id)
             }
-            if !fleet.pendingSends.isEmpty {
-                Label(String(localized: "Alondra isn’t responding; \(fleet.pendingSends.count) pending, retrying"), systemImage: "arrow.clockwise")
-                    .font(.footnote.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(.regular, in: .capsule)
-                    .transition(.opacity)
-            }
-            if !fleet.stuckSends.isEmpty {
+            if !fleet.uncertainSends.isEmpty {
                 Button {
-                    fleet.dismissStuckSends()
+                    Task { await fleet.dismissUncertainSends() }
                 } label: {
                     HStack(spacing: 10) {
-                        Label(String(localized: "Couldn’t send \(fleet.stuckSends.count): Alondra didn’t answer for 2 minutes"), systemImage: "exclamationmark.triangle.fill")
+                        Label("Check Alondra: \(fleet.uncertainActionDescription) may have completed", systemImage: "exclamationmark.triangle.fill")
                             .lineLimit(2)
                         Image(systemName: "xmark")
                             .font(.caption.weight(.bold))
@@ -178,8 +171,7 @@ private struct NoticeToast: View {
         }
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: fleet.notice)
-        .animation(.snappy, value: fleet.pendingSends.count)
-        .animation(.snappy, value: fleet.stuckSends)
+        .animation(.snappy, value: fleet.uncertainSends)
         .sensoryFeedback(trigger: fleet.notice) { _, new in
             new?.failure == true ? .error : nil
         }

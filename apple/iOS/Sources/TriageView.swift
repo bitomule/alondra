@@ -1,16 +1,24 @@
 import AlondraShared
+import AlondraTriageFeature
+import ComposableArchitecture
 import SwiftUI
 
 struct TriageView: View {
+    let store: StoreOf<TriageFeature>
     @Environment(FleetStore.self) private var fleet
     @Environment(PushCenter.self) private var push
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var zoom
-    @State private var reviewing: InboxItem?
     @State private var showSettings = false
     @State private var showPairing = false
     @State private var showMachine = false
     @State private var keyboardVisible = false
+    @State private var pendingPush: PendingPush?
+
+    private struct PendingPush {
+        let route: NotificationRoute
+        let wait: TriageRouteWait
+    }
 
     var body: some View {
         NavigationStack {
@@ -23,13 +31,13 @@ struct TriageView: View {
                 if fleet.connection == .unpaired {
                     UnpairedNotice { showPairing = true }
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                } else if fleet.overview == nil {
+                } else if !store.hasSnapshot && store.queue.isEmpty {
                     loading
-                } else if fleet.queue.isEmpty {
+                } else if store.queue.isEmpty {
                     EmptyTriage()
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 } else {
-                    CardStack(zoom: zoom) { reviewing = $0 }
+                    CardStack(store: store, zoom: zoom) { store.send(.review($0.id)) }
                         .padding(.horizontal, 14)
                         .padding(.bottom, 8)
                         .transition(.opacity)
@@ -39,7 +47,7 @@ struct TriageView: View {
             .background(DawnBackground())
             .toolbar { toolbar }
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(item: $reviewing) { item in
+            .navigationDestination(item: Binding(get: { store.presentedItem }, set: { if $0 == nil { store.send(.dismissReview) } })) { item in
                 Group {
                     if case .pullRequest(let pr) = item {
                         PRReviewView(pr: pr)
@@ -53,6 +61,14 @@ struct TriageView: View {
             .sheet(isPresented: $showPairing) {
                 NavigationStack { PairingView(showsClose: true) }
             }
+            .alert("Check Alondra", isPresented: Binding(
+                get: { store.notice != nil },
+                set: { if !$0 { store.send(.dismissNotice) } }
+            )) {
+                Button("OK") { store.send(.dismissNotice) }
+            } message: {
+                Text(store.notice ?? "")
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             withAnimation(.smooth(duration: 0.3)) { keyboardVisible = true }
@@ -60,31 +76,43 @@ struct TriageView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.smooth(duration: 0.3)) { keyboardVisible = false }
         }
-        .sensoryFeedback(.success, trigger: fleet.resolvedCount)
-        .sensoryFeedback(.impact(weight: .light), trigger: fleet.skippedCount)
+        .sensoryFeedback(.success, trigger: store.resolvedCount)
+        .sensoryFeedback(.impact(weight: .light), trigger: store.skippedCount)
         .task(id: push.route) {
-            guard push.route != nil else { return }
-            await fleet.refresh()
-            open(push.route, giveUp: fleet.connected)
+            guard let route = push.route, push.isCurrent(route) else {
+                pendingPush = nil
+                push.route = nil
+                return
+            }
+            pendingPush = PendingPush(route: route,
+                wait: TriageRouteWait(itemID: route.itemID, afterSnapshotRevision: store.snapshotRevision))
+            openPendingPush()
         }
-        .onChange(of: fleet.inbox) { open(push.route, giveUp: false) }
+        .onChange(of: store.snapshotRevision) { openPendingPush() }
+        .onChange(of: store.routeTargets) { openPendingPush() }
     }
 
-    private func open(_ route: NotificationRoute?, giveUp: Bool) {
-        guard let route else { return }
-        guard let item = fleet.inbox.first(where: { $0.id == route.itemID }) else {
-            if giveUp {
-                push.route = nil
-                fleet.notice = Notice(String(localized: "That’s no longer pending"))
-            }
+    private func openPendingPush() {
+        guard let pendingPush, let route = push.route, pendingPush.route == route else { return }
+        guard push.isCurrent(route) else {
+            self.pendingPush = nil
+            push.route = nil
             return
         }
-        push.route = nil
-        showSettings = false
-        showPairing = false
-        reviewing = nil
-        fleet.focus(item)
-        if route.opensDetail { reviewing = item }
+        switch pendingPush.wait.resolve(snapshotRevision: store.snapshotRevision, targets: store.routeTargets) {
+        case .waiting:
+            return
+        case .unavailable:
+            self.pendingPush = nil
+            push.route = nil
+            fleet.notice = Notice(String(localized: "That’s no longer pending"))
+        case .open:
+            self.pendingPush = nil
+            push.route = nil
+            showSettings = false
+            showPairing = false
+            store.send(.route(route.itemID, opensDetail: route.opensDetail))
+        }
     }
 
     private var header: some View {
@@ -107,8 +135,8 @@ struct TriageView: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            if fleet.queue.count > 1 {
-                PageDots(count: fleet.queue.count, current: fleet.position % fleet.queue.count)
+            if store.queue.count > 1 {
+                PageDots(count: store.queue.count, current: store.position)
                     .padding(.top, 6)
             }
         }
@@ -117,13 +145,13 @@ struct TriageView: View {
     }
 
     private var summary: String {
-        let queue = fleet.queue
+        let queue = store.queue
         let questions = queue.filter { if case .question = $0 { true } else { false } }.count
         let reads = queue.count - questions
         var parts: [String] = []
         if questions > 0 { parts.append(String(localized: "\(questions) questions")) }
         if reads > 0 { parts.append(String(localized: "\(reads) to read")) }
-        let working = fleet.nodes.filter { $0.state == .working }.count
+        let working = store.workingNodes
         parts.append(String(localized: "\(working) nodes working"))
         return parts.joined(separator: " · ")
     }
@@ -166,10 +194,10 @@ struct TriageView: View {
 }
 
 private struct CardStack: View {
+    let store: StoreOf<TriageFeature>
     let zoom: Namespace.ID
     let onReview: (InboxItem) -> Void
 
-    @Environment(FleetStore.self) private var fleet
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: CGFloat = 0
     @State private var frontHeight: CGFloat?
@@ -177,13 +205,13 @@ private struct CardStack: View {
     private let depthLimit = 3
 
     var body: some View {
-        let queue = fleet.queue
+        let queue = store.queue
         let visible = Array(queue.prefix(depthLimit))
         VStack(spacing: 10) {
             ZStack(alignment: .top) {
                 ForEach(visible.reversed()) { item in
                     let depth = visible.firstIndex(of: item) ?? 0
-                    TriageCard(item: item, isFront: depth == 0, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) })
+                    card(item, isFront: depth == 0)
                         .frame(maxHeight: depth == 0 ? nil : frontHeight, alignment: .top)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                             if depth == 0 { frontHeight = height }
@@ -193,7 +221,7 @@ private struct CardStack: View {
                         .brightness(depth == 0 ? 0 : -0.04 * Double(depth))
                         .offset(x: depth == 0 ? drag : 0)
                         .opacity(depth == 0 ? 1 - Double(min(abs(drag) / 900, 0.35)) : 1)
-                        .zIndex(item.id == fleet.leaving ? 10 : Double(depthLimit - depth))
+                        .zIndex(store.hiddenIDs.contains(item.id) ? 10 : Double(depthLimit - depth))
                         .allowsHitTesting(depth == 0)
                         .accessibilityHidden(depth != 0)
                         .transition(transition(for: item))
@@ -206,9 +234,26 @@ private struct CardStack: View {
         }
     }
 
+    private func card(_ item: InboxItem, isFront: Bool) -> some View {
+        let questions: [Question]
+        let reports: [Report]
+        if case .pullRequest(let pr) = item {
+            questions = store.questionsByPullRequest[pr.id] ?? []
+            reports = store.reportsByPullRequest[pr.id] ?? []
+        } else {
+            questions = []
+            reports = []
+        }
+        return TriageCard(
+            item: item, isFront: isFront, zoom: zoom,
+            onReview: { onReview(item) }, onSkip: { skip(item) },
+            onHide: { store.send(.hide(item.id)) }, questions: questions, reports: reports
+        )
+    }
+
     private func transition(for item: InboxItem) -> AnyTransition {
         if reduceMotion { return .opacity }
-        let removal: AnyTransition = item.id == fleet.leaving ? AnyTransition(FileAway()) : .opacity
+        let removal: AnyTransition = store.hiddenIDs.contains(item.id) ? AnyTransition(FileAway()) : .opacity
         return .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: removal)
     }
 
@@ -233,13 +278,14 @@ private struct CardStack: View {
     /// Swiping either way moves on to the next card; the card leaves in the direction it was pushed.
     private func next(_ item: InboxItem) {
         let away: CGFloat = drag > 0 ? 420 : -420
+        let identity = store.identity
         withAnimation(.easeIn(duration: 0.16)) { drag = away }
         Task {
             try? await Task.sleep(for: .milliseconds(160))
             var instant = Transaction()
             instant.disablesAnimations = true
             withTransaction(instant) { drag = 0 }
-            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { fleet.skip(item) }
+            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { _ = store.send(.skipIfCurrent(item.id, identity)) }
         }
     }
 

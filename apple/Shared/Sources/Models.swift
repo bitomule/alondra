@@ -124,9 +124,14 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
 
     public var stateLabel: String { orchestratorState?.label ?? state.label }
 
+    /// Shared resource bundle owns this localization, including nodes with no project field.
+    public static var otherProjectName: String {
+        String(localized: "others", table: "AlondraShared", bundle: #bundle)
+    }
+
     public var projectName: String? {
         if isOrchestrator { return String(localized: "Orchestrator", table: "AlondraShared", bundle: #bundle) }
-        if project == "others" { return String(localized: "others", table: "AlondraShared", bundle: #bundle) }
+        if project == "others" { return Self.otherProjectName }
         return project
     }
 
@@ -162,6 +167,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
     public let links: [LinkRef]
     public let attachments: [Attachment]
     public let origin: String
+    /// `menu:<short>` identifies a terminal menu. Its answer accepts only an exact option.
+    public let toolUseId: String?
     public let nodeContext: String?
     public let status: String
     public let askedAt: Int64
@@ -186,6 +193,8 @@ public struct Question: Codable, Identifiable, Hashable, Sendable {
 
     /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
     public var isAction: Bool { action == true }
+
+    public var isTerminalMenu: Bool { toolUseId?.hasPrefix("menu:") == true }
 
     /// The steps numbered ahead of the detail, so every client reads an action the same way.
     public var readableDetail: String? {
