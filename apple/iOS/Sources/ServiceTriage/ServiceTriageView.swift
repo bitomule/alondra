@@ -124,9 +124,9 @@ private struct ServiceCardStack: View {
         }
     }
 
-    @ViewBuilder
-    private func card(_ item: InboxItem, isFront: Bool) -> some View {
-        let childStore: StoreOf<TriageCardFeature>? = store.scope(state: \.cards, action: \.cards).first { cardStore in cardStore.id == item.id }
+    private func card(_ item: InboxItem, isFront: Bool) -> ServiceTriageCard? {
+        let cards: [StoreOf<TriageCardFeature>] = Array(store.scope(\.cards, action: \.cards))
+        guard let child = cards.first(where: { $0.withState { $0.id } == item.id }) else { return nil }
         let questions: [Question]
         let reports: [Report]
         if case .pullRequest(let pr) = item {
@@ -136,12 +136,10 @@ private struct ServiceCardStack: View {
             questions = []
             reports = []
         }
-        if let child = childStore {
-            ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.withState { $0.task(for: item) },
-                isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
-                onHide: { _ = store.send(.triage(.hide(item.id))) },
-                questions: questions, reports: reports)
-        }
+        let task: WorkTask? = store.withState { $0.task(for: item) }
+        return ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: task,
+            isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
+            onHide: { _ = store.send(.triage(.hide(item.id))) }, questions: questions, reports: reports)
     }
 
     private func transition(for item: InboxItem) -> AnyTransition {
