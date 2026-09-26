@@ -87,11 +87,18 @@ public enum QuestionWorkError: Error, Equatable, Sendable {
 }
 
 /// The daemon's option labels are protocol values. UI translations must not be sent back.
+public enum QuestionExplanationPolicy: Equatable, Sendable { case phone, desktop }
+
 public struct AnswerQuestionUseCase: Sendable {
     public init() {}
 
-    public func answer(_ question: Question, draft: QuestionDraft) throws -> QuestionOperation {
-        let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    public func answer(_ question: Question, draft: QuestionDraft, explanationPolicy: QuestionExplanationPolicy = .phone) throws -> QuestionOperation {
+        var text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The original desktop option gesture used the selected label as its body
+        // unless the option explicitly requested written explanation.
+        if explanationPolicy == .desktop, text.isEmpty,
+           let label = draft.selectedOption, let selected = question.options.first(where: { $0.label == label }),
+           !Self.needsExplanation(selected, policy: .desktop) { text = label }
         if question.isTerminalMenu {
             guard let option = draft.selectedOption,
                   question.options.contains(where: { $0.label == option }) else {
@@ -105,7 +112,8 @@ public struct AnswerQuestionUseCase: Sendable {
                     (question.isPlan && [AnswerOption.approve, AnswerOption.requestChanges].contains(option))
             else { throw QuestionWorkError.invalidOption }
             if let selected = question.options.first(where: { $0.label == option }),
-               Self.needsExplanation(selected), text.isEmpty, draft.attachmentIDs.isEmpty {
+               Self.needsExplanation(selected, policy: explanationPolicy), text.isEmpty,
+               explanationPolicy == .desktop || draft.attachmentIDs.isEmpty {
                 throw QuestionWorkError.explanationRequired
             }
             if (question.isPlan && option == AnswerOption.requestChanges ||
@@ -131,10 +139,10 @@ public struct AnswerQuestionUseCase: Sendable {
         return moreContext(question, draft: draft)
     }
 
-    public static func needsExplanation(_ option: QuestionOption) -> Bool {
+    public static func needsExplanation(_ option: QuestionOption, policy: QuestionExplanationPolicy = .phone) -> Bool {
         let description = option.description?.lowercased() ?? ""
         return description.hasPrefix("write") || description.hasPrefix("escribe")
-            || [AnswerOption.deny, AnswerOption.requestChanges].contains(option.label)
+            || (policy == .phone && [AnswerOption.deny, AnswerOption.requestChanges].contains(option.label))
     }
 }
 

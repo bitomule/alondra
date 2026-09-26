@@ -101,6 +101,7 @@ public struct DocumentReviewFeature {
         public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject
         public var sourcePolicy: DocumentSourcePolicy = .allSections
+        public var explanationPolicy: QuestionExplanationPolicy { sourcePolicy == .phone ? .phone : .desktop }
         public var identity: QuestionWorkIdentity?
         public var sourceText: String?
         public var sections: [DocumentSection] = []
@@ -312,7 +313,9 @@ public struct DocumentReviewFeature {
             case .chooseReviewOption(let option, let author):
                 guard canReview(state) else { return .none }
                 state.draft.selectedOption = option.label
-                if DocumentReviewChoices().requiresText(option), !state.hasFeedback {
+                let hasExplanation = state.explanationPolicy == .phone ? state.hasFeedback
+                    : !ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author).isEmpty
+                if DocumentReviewChoices().requiresText(option, policy: state.explanationPolicy), !hasExplanation {
                     state.generalFocusRequest &+= 1
                     return .none
                 }
@@ -328,7 +331,7 @@ public struct DocumentReviewFeature {
                 guard canReview(state), case .question(let question) = state.subject, let option = state.approveOption else { return .none }
                 var draft = QuestionDraft()
                 draft.selectedOption = option
-                do { return submit(try answerUseCase.answer(question, draft: draft), state: &state) }
+                do { return submit(try answerUseCase.answer(question, draft: draft, explanationPolicy: state.explanationPolicy), state: &state) }
                 catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .composeComment(let anchor):
                 clearPending(&state)
@@ -541,7 +544,7 @@ public struct DocumentReviewFeature {
                     answer.text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
                     answer.selectedOption = state.draft.selectedOption
                     answer.attachmentIDs = state.draft.attachmentIDs
-                    return submit(try answerUseCase.answer(question, draft: answer), state: &state)
+                    return submit(try answerUseCase.answer(question, draft: answer, explanationPolicy: state.explanationPolicy), state: &state)
                 case .report(let report):
                     guard let identity = state.identity else {
                         state.noticeIsSubmissionFailure = false

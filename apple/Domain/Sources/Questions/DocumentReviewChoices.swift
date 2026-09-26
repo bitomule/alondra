@@ -11,7 +11,7 @@ public struct DocumentReviewChoices: Sendable {
         if question.isPlan { return AnswerOption.requestChanges }
         return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
     }
-    public func requiresText(_ option: QuestionOption) -> Bool {
-        AnswerQuestionUseCase.needsExplanation(option) || [AnswerOption.requestChanges, AnswerOption.deny].contains(option.label)
+    public func requiresText(_ option: QuestionOption, policy: QuestionExplanationPolicy = .phone) -> Bool {
+        AnswerQuestionUseCase.needsExplanation(option, policy: policy)
     }
 }

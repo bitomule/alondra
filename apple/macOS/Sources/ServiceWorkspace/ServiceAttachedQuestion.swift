@@ -59,6 +59,7 @@ struct ServiceAttachedQuestion: View {
         }
         .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .disabled(store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed)
+        .onAppear { store.send(.explanationPolicyChanged(.desktop)) }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
         .padding(16)

@@ -11,6 +11,7 @@ public struct QuestionFeature {
         public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var question: Question
+        public var explanationPolicy: QuestionExplanationPolicy = .phone
         public var draft = QuestionDraft()
         public var isSubmitting = false
         public var pendingAttachedAnswer: QuestionDraft?
@@ -45,6 +46,7 @@ public struct QuestionFeature {
         case identityChanged, disappeared
         case textChanged(String)
         case optionSelected(String?)
+        case explanationPolicyChanged(QuestionExplanationPolicy)
         case optionTapped(String)
         case attachedOptionTapped(String)
         case attachedAnswerTapped
@@ -150,11 +152,14 @@ public struct QuestionFeature {
                 state.noticeIsSubmissionFailure = false
                 state.notice = message
                 return .none
+            case .explanationPolicyChanged(let policy):
+                state.explanationPolicy = policy
+                return .none
             case .attachedOptionTapped(let label):
                 guard !state.isSubmitting, state.pendingSubmission == nil,
                       !state.completed, !state.needsReconciliation,
                       let option = state.question.options.first(where: { $0.label == label }) else { return .none }
-                if AnswerQuestionUseCase.needsExplanation(option), state.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if AnswerQuestionUseCase.needsExplanation(option, policy: state.explanationPolicy), state.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     state.draft.selectedOption = label
                     state.replyFocusRequest &+= 1
                     return .none
@@ -175,7 +180,7 @@ public struct QuestionFeature {
                 guard state.question.options.contains(where: { $0.label == option }) else { return .none }
                 state.draft.selectedOption = option
                 do {
-                    _ = try useCase.answer(state.question, draft: state.draft)
+                    _ = try useCase.answer(state.question, draft: state.draft, explanationPolicy: state.explanationPolicy)
                     return .send(.answerTapped)
                 } catch QuestionWorkError.explanationRequired {
                     state.replyFocusRequest &+= 1
@@ -273,7 +278,7 @@ public struct QuestionFeature {
         do {
             let operation = try moreContext
                 ? useCase.checkedMoreContext(state.question, draft: state.draft)
-                : useCase.answer(state.question, draft: state.draft)
+                : useCase.answer(state.question, draft: state.draft, explanationPolicy: state.explanationPolicy)
             state.isSubmitting = true
             state.noticeIsSubmissionFailure = false
             state.notice = nil
@@ -302,7 +307,7 @@ public struct QuestionFeature {
 
     private func submitAttached(_ draft: QuestionDraft, state: inout State) -> Effect<Action> {
         do {
-            let operation = try useCase.answer(state.question, draft: draft)
+            let operation = try useCase.answer(state.question, draft: draft, explanationPolicy: state.explanationPolicy)
             state.isSubmitting = true
             state.noticeIsSubmissionFailure = false
             state.notice = nil
