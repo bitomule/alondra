@@ -333,6 +333,12 @@ impl Queue {
         drop(inner);self.changed.notify_waiters();
     }
 
+    pub fn purge_mac(&self,mac_id:&str) {
+        let mut inner=self.inner.lock().unwrap();
+        inner.jobs.retain(|_,j|j.mac_id!=mac_id);inner.tombstones.retain(|_,t|t.mac_id!=mac_id);
+        inner.revision+=1;drop(inner);self.changed.notify_waiters();
+    }
+
     /// Drop pending and completed ciphertext for a revoked phone immediately.
     pub fn purge_phone(&self, phone_id: &str) -> usize {
         let mut inner = self.inner.lock().unwrap();
