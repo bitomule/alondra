@@ -43,10 +43,10 @@ fn owner(mac: usize) -> usize {
     usize::from(mac == 2)
 }
 fn save(name: &str, value: Value) -> Result<()> {
-    std::fs::write(
-        Path::new("/system").join(name),
-        serde_json::to_vec_pretty(&value)?,
-    )?;
+    let target = Path::new("/system").join(name);
+    let temporary = target.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&value)?)?;
+    std::fs::rename(temporary, target)?;
     Ok(())
 }
 #[derive(Clone)]
