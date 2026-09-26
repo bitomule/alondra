@@ -35,6 +35,8 @@ final class ServiceNotificationRuntime {
         push = PushCenter(decryptionStore: store)
     }
 
+    func owns(_ services: CloudAppServices) -> Bool { identity == ObjectIdentifier(services) }
+
     func installDelegate() { UNUserNotificationCenter.current().delegate = responder }
 
     func activate(_ approved: ApprovedServicePairing, services: CloudAppServices) async throws {
