@@ -76,7 +76,22 @@ public enum CommandResult: Sendable {
 /// snapshot, never as an executable operation. Switching scope invalidates in-flight results.
 public actor CommandGate {
     public private(set) var scope: CommandScope
-    public private(set) var uncertain: [UncertainCommand] = []
+    public private(set) var uncertain: [UncertainCommand] = [] {
+        didSet { for observer in uncertaintyObservers.values { observer.yield(uncertain) } }
+    }
+    private var uncertaintyObservers: [UUID: AsyncStream<[UncertainCommand]>.Continuation] = [:]
+
+    /// Logical operations only. Active submissions are not warnings; restored pending records are.
+    public func observeUncertainty() async throws -> AsyncStream<[UncertainCommand]> {
+        try await restore()
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            uncertaintyObservers[id] = continuation
+            continuation.yield(uncertain)
+            continuation.onTermination = { _ in Task { await self.removeUncertaintyObserver(id) } }
+        }
+    }
+    private func removeUncertaintyObserver(_ id: UUID) { uncertaintyObservers[id] = nil }
     private var generation: UInt64 = 0
     private let journal: (any CommandJournaling)?
     private var loaded = false
@@ -101,7 +116,7 @@ public actor CommandGate {
         guard restoringScope == scope, restoringGeneration == generation,
               restoringVersion == mutationVersion else { return uncertain }
         let relevant = records.filter { $0.command.scope.sameIdentity(as: restoringScope) }
-        uncertain = relevant.filter { $0.state == .pending || $0.state == .unknown }.map(\.command)
+        uncertain = relevant.filter { ($0.state == .pending || $0.state == .unknown) && !pending.contains($0.command) }.map(\.command)
         loaded = true
         return uncertain
     }
@@ -142,12 +157,48 @@ public actor CommandGate {
         mutationVersion &+= 1
     }
 
+    /// Completes an authoritative status reconciliation, never an in-flight submission.
+    /// The owner must have verified every step of its semantic operation first.
+    public func confirmReconciled(_ id: UUID, in expectedScope: CommandScope) async -> Bool {
+        guard expectedScope == scope, !dismissalInFlight else { return false }
+        if !loaded { do { try await restore() } catch { return false } }
+        guard expectedScope == scope, !dismissalInFlight,
+              !pending.contains(where: { $0.id == id }) else { return false }
+        guard let command = uncertain.first(where: { $0.id == id }) else { return true }
+        dismissalInFlight = true
+        defer {
+            dismissalInFlight = false
+            let waiters = dismissalWaiters
+            dismissalWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
+        do { try await journal?.save(.init(command: command, state: .confirmed)) }
+        catch { return false }
+        uncertain.removeAll { $0.id == id }
+        mutationVersion &+= 1
+        return true
+    }
+
     public func submit(
         _ kind: CommandKind,
         itemID: String? = nil,
         in expectedScope: CommandScope,
         isUnknown: @Sendable (any Error) -> Bool,
         operation: @Sendable () async throws -> Void
+    ) async -> CommandResult {
+        await submitIdentified(kind, itemID: itemID, in: expectedScope, isUnknown: isUnknown) { _ in
+            try await operation()
+        }
+    }
+
+    /// Supplies the identity reserved in the durable command journal. The service must use
+    /// this same ID for its encrypted outbox; a second generated ID breaks crash recovery.
+    public func submitIdentified(
+        _ kind: CommandKind,
+        itemID: String? = nil,
+        in expectedScope: CommandScope,
+        isUnknown: @Sendable (any Error) -> Bool,
+        operation: @Sendable (UUID) async throws -> Void
     ) async -> CommandResult {
         guard expectedScope == scope else { return .obsolete }
         let submittedGeneration = generation
@@ -185,7 +236,7 @@ public actor CommandGate {
             return .obsolete
         }
         do {
-            try await operation()
+            try await operation(command.id)
             guard submittedGeneration == generation else { return .obsolete }
             if let journal {
                 do { try await journal.save(.init(command: command, state: .confirmed)) }

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -6,6 +7,7 @@ import Foundation
 public struct TaskDetailFeature {
     @ObservableState
     public struct State: Equatable {
+        public var downloads = AttachmentDownloadFeature.State()
         public let taskID: String
         public var task: WorkTask?
         public var detail: TaskInFull?
@@ -20,7 +22,7 @@ public struct TaskDetailFeature {
         public init(taskID: String) { self.taskID = taskID }
 
         public static func == (lhs: Self, rhs: Self) -> Bool {
-            lhs.taskID == rhs.taskID && lhs.task == rhs.task &&
+            lhs.downloads == rhs.downloads && lhs.taskID == rhs.taskID && lhs.task == rhs.task &&
                 lhs.detail?.task == rhs.detail?.task &&
                 lhs.detail?.documents?.map(\.id) == rhs.detail?.documents?.map(\.id) &&
                 lhs.isActing == rhs.isActing && lhs.confirmation == rhs.confirmation &&
@@ -35,6 +37,7 @@ public struct TaskDetailFeature {
     public enum Mutation: Equatable, Sendable { case cancel, reopen }
 
     public enum Action: Sendable {
+        case downloads(AttachmentDownloadFeature.Action)
         case taskChanged(WorkTask?)
         case detailLoaded(TaskInFull?, Int64, UInt64)
         case cancelTapped
@@ -43,6 +46,7 @@ public struct TaskDetailFeature {
         case reopenTapped
         case mutationFinished(TaskMutationOutcome, Mutation, UInt64)
         /// Sent only by the scoped journal owner after it reconciles this exact command ID.
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
         case identityChanged
         case disappeared
@@ -52,11 +56,14 @@ public struct TaskDetailFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
         Reduce { state, action in
             switch action {
+            case .downloads: return .none
             case .taskChanged(let task):
                 guard task?.id == state.taskID || task == nil else { return .none }
                 let previous = state.task?.historyKey
+                if state.mutationOutcome == .confirmed, task?.historyKey != previous { state.mutationOutcome = nil }
                 state.task = task
                 if task == nil {
                     state.detail = nil
@@ -77,7 +84,7 @@ public struct TaskDetailFeature {
                 return .none
             case .cancelTapped:
                 guard state.task?.state.isFinished == false, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil else { return .none }
+                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
                 state.confirmation = .cancel
                 return .none
             case .cancelConfirmationDismissed:
@@ -86,7 +93,7 @@ public struct TaskDetailFeature {
             case .cancelConfirmed:
                 guard state.confirmation == .cancel, let task = state.task,
                     !task.state.isFinished, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil else { return .none }
+                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
                 state.confirmation = nil
                 state.isActing = true
                 state.mutationOutcome = nil
@@ -97,7 +104,7 @@ public struct TaskDetailFeature {
                 .cancellable(id: state.mutationID)
             case .reopenTapped:
                 guard let task = state.task, task.state.isFinished, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil else { return .none }
+                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
                 state.isActing = true
                 state.mutationOutcome = nil
                 let epoch = state.presentationEpoch
@@ -111,6 +118,10 @@ public struct TaskDetailFeature {
                 state.mutationOutcome = outcome
                 if outcome == .confirmed { state.successfulActionCount += 1 }
                 // The next sync projection owns the task state. A successful POST does not.
+                return .none
+            case .commandResolved(let id, let rejection):
+                guard state.mutationOutcome?.uncertainID == id else { return .none }
+                state.mutationOutcome = rejection.map(TaskMutationOutcome.rejected) ?? .confirmed
                 return .none
             case .commandReconciled(let id):
                 if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }

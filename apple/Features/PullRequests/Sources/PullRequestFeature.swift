@@ -10,6 +10,7 @@ public struct PullRequestFeature {
         public var pr: PullRequest?
         public var isClosed = false
         public var isStale = false
+        public var mergeConfirmationPresented = false
         public var selectedMergeMethod: String?
         public var isSending = false
         public var mutationOutcome: PRMutationOutcome?
@@ -36,12 +37,15 @@ public struct PullRequestFeature {
         case pullRequestChanged(PullRequest?)
         case snapshotUnavailable
         case identityChanged
+        case presentMergeConfirmation(Bool)
+        case mergeMethodConfirmed(String)
         case chooseMergeMethod(String)
         case cancelMerge
         case confirmMerge
         case resolveConflictsTapped
         case setAsideTapped
         case mutationFinished(PRMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -67,6 +71,7 @@ public struct PullRequestFeature {
                 return .none
             case .identityChanged:
                 state.presentationEpoch &+= 1
+                state.mergeConfirmationPresented = false
                 state.pr = nil
                 state.isClosed = true
                 state.isStale = false
@@ -75,6 +80,14 @@ public struct PullRequestFeature {
                 state.mutationOutcome = nil
                 state.shouldDismiss = false
                 return .cancel(id: state.mutationID)
+            case .presentMergeConfirmation(let presented):
+                state.mergeConfirmationPresented = presented && state.canAct
+                return .none
+            case .mergeMethodConfirmed(let method):
+                state.mergeConfirmationPresented = false
+                guard state.canAct, mergeRule.allows(method, on: state.pr) else { return .none }
+                state.selectedMergeMethod = method
+                return .send(.confirmMerge)
             case .chooseMergeMethod(let method):
                 guard state.canAct, mergeRule.allows(method, on: state.pr) else { return .none }
                 state.selectedMergeMethod = method
@@ -122,6 +135,10 @@ public struct PullRequestFeature {
                     state.isClosed = true
                 }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.mutationOutcome?.uncertainID == id else { return .none }
+                state.isSending = true
+                return .send(.mutationFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
             case .commandReconciled(let id):
                 if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none

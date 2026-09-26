@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraDomain
 import AlondraShared
 import ComposableArchitecture
@@ -7,7 +8,13 @@ import Foundation
 public struct NewRequestFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public var text = ""
+        public var optionsPresented = false
+        public var projectQuery = ""
+        public var orchestratorName: String?
+        public var hasSnapshot = false
+        public var sentMessages: [SentMessage] = []
         public var attachments: [NewRequestAttachment] = []
         public var selection = NewWorkSelection()
         public var projects: [String] = []
@@ -22,6 +29,7 @@ public struct NewRequestFeature {
         public var optionsError: String?
         public var issuesError: String?
         public var submissionError: String?
+        public var uncertainCommandID: UUID?
         public var submissionUncertain = false
         public var successfulSubmissionCount = 0
         public var presentationEpoch: UInt64 = 0
@@ -32,13 +40,18 @@ public struct NewRequestFeature {
         public var visibleIssues: [IssueSummary] { issues.filter { $0.matches(issueQuery) } }
         public var pastedIssue: String? { IssueSummary.pasted(in: issueQuery, besides: issues) }
         public var submitEnabled: Bool {
-            canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
+            attachmentPicker.allReady && canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
                 && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
         }
     }
 
     public enum Action: Sendable {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
+        case optionsPresented(Bool)
+        case projectPickerOpened
+        case projectQueryChanged(String)
+        case workspaceUpdated(Overview?)
         case identityChanged
         case availabilityChanged(Bool)
         case textChanged(String)
@@ -58,6 +71,7 @@ public struct NewRequestFeature {
         case issuesFailed(String, UInt64)
         case submitTapped
         case submitFinished(CreateRequestResult, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case discardUncertainDraft
     }
 
@@ -67,8 +81,21 @@ public struct NewRequestFeature {
     private enum CancelID { case projects, options, issues, submit }
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
+            case .optionsPresented(let shown): state.optionsPresented = shown; return .none
+            case .projectPickerOpened: state.projectQuery = ""; return .none
+            case .projectQueryChanged(let query): state.projectQuery = query; return .none
+            case .workspaceUpdated(let overview):
+                state.hasSnapshot = overview != nil
+                state.orchestratorName = overview?.nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince }?.displayName
+                state.sentMessages = (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
+                state.canSubmit = state.orchestratorName != nil
+                return .none
             case .appeared:
                 let epoch = state.presentationEpoch
                 state.catalogGeneration &+= 1
@@ -133,6 +160,7 @@ public struct NewRequestFeature {
                 state.issueQuery = query
                 return .none
             case .issuesOpened:
+                state.issueQuery = ""
                 guard !state.issuesLoaded, !state.isLoadingIssues else { return .none }
                 return loadIssues(state: &state, refresh: false)
             case .issuesRefreshRequested:
@@ -198,9 +226,14 @@ public struct NewRequestFeature {
                 case .confirmed:
                     state.text = ""
                     state.attachments = []
+                    state.attachmentPicker = AttachmentFeature.State()
                     state.successfulSubmissionCount += 1
                 case .failed(let message):
                     state.submissionError = message
+                case .uncertainCommand(let id, let message):
+                    state.uncertainCommandID = id
+                    state.submissionError = message
+                    state.submissionUncertain = true
                 case .uncertain(let message):
                     state.submissionError = message
                     state.submissionUncertain = true
@@ -208,13 +241,31 @@ public struct NewRequestFeature {
                     break
                 }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.submissionUncertain, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.submissionUncertain = false
+                state.submissionError = rejection
+                if rejection == nil {
+                    state.text = ""
+                    state.attachments = []
+                    state.attachmentPicker = AttachmentFeature.State()
+                    state.successfulSubmissionCount += 1
+                }
+                return .none
             case .discardUncertainDraft:
                 guard state.submissionUncertain else { return .none }
                 state.text = ""
                 state.attachments = []
+                state.attachmentPicker = AttachmentFeature.State()
                 state.submissionError = nil
+                state.uncertainCommandID = nil
                 state.submissionUncertain = false
                 return .none
+            }
+        }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
+            Reduce { _, _ in
+                AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
     }

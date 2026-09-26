@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraNewWorkFeature
 import AlondraShared
 import ComposableArchitecture
@@ -234,6 +235,52 @@ struct NewRequestFeatureTests {
 
     private func catalog(_ json: String) throws -> OptionsCatalog {
         try JSONDecoder().decode(OptionsCatalog.self, from: Data(json.utf8))
+    }
+
+    @Test
+    func failedAttachmentBlocksFinalRequestUntilSameTransferIsRecovered() async throws {
+        let id = UUID()
+        let draft = AttachmentDraft(id: id, name: "proof.txt", data: Data("proof".utf8))
+        var initial = NewRequestFeature.State()
+        initial.canSubmit = true
+        initial.catalogIsCurrent = true
+        initial.text = "Use the proof"
+        initial.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data)]
+        initial.attachmentPicker.entries = [.init(draft: draft, status: .failed("Lost receipt"))]
+        let sent = SentBody()
+        let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.attachmentUpload = AttachmentUploadClient(upload: { retry in
+                #expect(retry.id == id)
+                #expect(retry.data == draft.data)
+                return "stored-proof"
+            })
+            $0.newWorkOperations = operations(upload: { attachment in
+                #expect(attachment.id == id)
+                return "stored-proof"
+            }, create: { body in
+                await sent.record(body)
+                return .confirmed
+            })
+        }
+        await store.send(.submitTapped)
+        #expect(await sent.body == nil)
+        await store.send(.attachmentPicker(.retry(id))) { $0.attachmentPicker.entries[0].status = .queued }
+        await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("stored-proof")
+            $0.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data, storedID: "stored-proof")]
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.receive(\.submitFinished) {
+            $0.isSubmitting = false
+            $0.text = ""
+            $0.attachments = []
+            $0.attachmentPicker = AttachmentFeature.State()
+            $0.successfulSubmissionCount = 1
+        }
+        #expect(await sent.body?.attachments == ["stored-proof"])
+        await store.finish()
     }
 
     private func operations(

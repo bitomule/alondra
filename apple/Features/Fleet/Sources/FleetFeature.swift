@@ -11,6 +11,11 @@ public struct FleetFeature {
         public var query = ""
         public var selectedNodeID: String?
         public var closeConfirmationID: String?
+        public var closeRefusal: String?
+        public var closeRequest: CloseRequest? {
+            guard let id = closeConfirmationID, let entry = snapshot?.node(id) else { return nil }
+            return CloseRequest(session: id, name: entry.node.displayName)
+        }
         public var closingIDs: Set<String> = []
         public var closeOutcomeByID: [String: NodeMutationOutcome] = [:]
         public var presentationEpoch: UInt64 = 0
@@ -32,9 +37,11 @@ public struct FleetFeature {
         case searchChanged(String)
         case selectNode(String?)
         case closeRequested(String)
+        case dismissCloseRefusal
         case closeCancelled
         case closeConfirmed
         case closeFinished(String, NodeMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -62,12 +69,16 @@ public struct FleetFeature {
                 state.closeConfirmationID = nil
                 state.closingIDs = []
                 state.closeOutcomeByID = [:]
+                state.closeRefusal = nil
                 return .cancel(id: state.cancellationID)
             case .searchChanged(let query):
                 state.query = query
                 return .none
             case .selectNode(let id):
                 state.selectedNodeID = id.flatMap { state.snapshot?.node($0) != nil ? $0 : nil }
+                return .none
+            case .dismissCloseRefusal:
+                state.closeRefusal = nil
                 return .none
             case .closeRequested(let id):
                 guard !state.isStale, state.snapshot?.node(id) != nil,
@@ -93,7 +104,15 @@ public struct FleetFeature {
             case .closeFinished(let id, let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.closingIDs.remove(id) != nil else { return .none }
                 state.closeOutcomeByID[id] = outcome
+                if case .rejected(let message) = outcome { state.closeRefusal = message }
                 if outcome == .confirmed, state.selectedNodeID == id { state.selectedNodeID = nil }
+                return .none
+            case .commandResolved(let id, let rejection):
+                for (node, outcome) in state.closeOutcomeByID where outcome.uncertainID == id {
+                    state.closeOutcomeByID[node] = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
+                    if let rejection { state.closeRefusal = rejection }
+                    if rejection == nil, state.selectedNodeID == node { state.selectedNodeID = nil }
+                }
                 return .none
             case .commandReconciled(let commandID):
                 state.closeOutcomeByID = state.closeOutcomeByID.filter { $0.value.uncertainID != commandID }

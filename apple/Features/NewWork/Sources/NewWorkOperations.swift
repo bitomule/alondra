@@ -79,11 +79,13 @@ public struct NewRequestAttachment: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let name: String
     public let data: Data
+    public let storedID: String?
 
-    public init(id: UUID, name: String, data: Data) {
+    public init(id: UUID, name: String, data: Data, storedID: String? = nil) {
         self.id = id
         self.name = name
         self.data = data
+        self.storedID = storedID
     }
 }
 
@@ -121,5 +123,6 @@ public enum CreateRequestResult: Equatable, Sendable {
     case confirmed
     case failed(String)
     case uncertain(String)
+    case uncertainCommand(UUID, String)
     case cancelled
 }

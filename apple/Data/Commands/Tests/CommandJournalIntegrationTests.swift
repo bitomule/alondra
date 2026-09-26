@@ -17,6 +17,51 @@ import AlondraCommands
         return (directory, FileCommandJournal(directory: directory))
     }
 
+    @Test func identifiedOperationUsesTheDurableReservationBeforeSending() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = CommandGate(scope: scope, journal: journal)
+        let result = await gate.submitIdentified(.markRead(42), itemID: "r42", in: scope,
+                                                isUnknown: { _ in true }) { id in
+            let records = try await journal.records()
+            let pending = try #require(records.first { $0.command.id == id })
+            #expect(pending.state == .pending)
+            #expect(pending.command.kind == .markRead(42))
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let original) = result else { Issue.record("Expected uncertain delivery"); return }
+        let recreated = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory))
+        let repeated = await recreated.submitIdentified(.markRead(42), itemID: "r42", in: scope,
+                                                       isUnknown: { _ in true }) { _ in
+            Issue.record("A recreated service sent a second operation")
+        }
+        guard case .unknown(let restored) = repeated else { Issue.record("Lost durable identity"); return }
+        #expect(restored.id == original.id)
+    }
+
+    @Test func uncertainPRQuestionBlocksOtherActionsAcrossGateRecreation() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = CommandGate(scope: scope, journal: journal)
+        let result = await first.submitIdentified(.askOnPullRequest(42), itemID: "p42", in: scope,
+                                                  isUnknown: { _ in true }) { _ in
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let original) = result else { Issue.record("Lost uncertain PR question"); return }
+        let secondWindow = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory))
+        for kind: CommandKind in [.requestChanges(42), .mergePullRequest(42), .resolveConflicts(42), .dismissPullRequest(42)] {
+            let blocked = await secondWindow.submitIdentified(kind, itemID: "p42", in: scope,
+                                                               isUnknown: { _ in true }) { _ in
+                Issue.record("Another action bypassed the unresolved PR question")
+            }
+            guard case .unknown(let command) = blocked else { Issue.record("Lost cross-action PR exclusion"); return }
+            #expect(command.id == original.id)
+        }
+        let independent = await secondWindow.submitIdentified(.mergePullRequest(43), itemID: "p43", in: scope,
+                                                               isUnknown: { _ in true }) { _ in }
+        guard case .confirmed = independent else { Issue.record("Unrelated PR was blocked"); return }
+    }
+
     @Test func delayedDismissalCannotEraseWarningAfterScopeSwitch() async throws {
         let (directory, journal) = try temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -98,11 +98,14 @@ struct FleetFeatureTests {
         await store.receive(\.closeFinished) {
             $0.closingIDs.remove("s1")
             $0.closeOutcomeByID["s1"] = .rejected("uncommitted changes")
+            $0.closeRefusal = "uncommitted changes"
         }
         await store.send(.snapshotUnavailable) { $0.isStale = true }
         await store.send(.closeRequested("s1"))
         #expect(store.state.selectedNodeID == "s1")
         #expect(store.state.closeOutcomeByID["s1"] == .rejected("uncommitted changes"))
+        await store.send(.dismissCloseRefusal) { $0.closeRefusal = nil }
+        #expect(store.state.snapshot?.node("s1") != nil)
         await store.finish()
     }
 

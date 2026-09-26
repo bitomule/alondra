@@ -31,10 +31,14 @@ extension View {
     }
 
     public func closeRefusalAlert(_ store: FleetStore) -> some View {
+        closeRefusalAlert(Binding(get: { store.refusal }, set: { store.refusal = $0 }))
+    }
+
+    public func closeRefusalAlert(_ refusal: Binding<String?>) -> some View {
         alert(
             String(localized: "Couldn’t close the node", table: "AlondraShared", bundle: #bundle),
-            isPresented: Binding { store.refusal != nil } set: { if !$0 { store.refusal = nil } },
-            presenting: store.refusal
+            isPresented: Binding { refusal.wrappedValue != nil } set: { if !$0 { refusal.wrappedValue = nil } },
+            presenting: refusal.wrappedValue
         ) { _ in
             Button(String(localized: "OK", table: "AlondraShared", bundle: #bundle), role: .cancel) {}
         } message: { message in

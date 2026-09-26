@@ -27,6 +27,128 @@ struct TriageFeatureTests {
     }
 
     @Test
+    func staleSnapshotDoesNotClaimOnlineAndOldIdentityCannotChangeConnection() async throws {
+        let snapshot = try overview(question(1))
+        let updates = AsyncStream<TriageInboxUpdate>.makeStream()
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.triageService = TriageService(observe: { updates.stream }, mutate: { _, _, _ in .obsolete })
+        }
+        await store.send(.appeared)
+        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .online))
+        await store.receive(\.inboxUpdated) {
+            $0.identity = a
+            $0.connection = .online
+            $0.hasSnapshot = true
+            $0.snapshotRevision = 1
+            $0.items = ObserveInboxUseCase().execute(snapshot).items
+        }
+        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .offline("Connection lost")))
+        await store.receive(\.inboxUpdated) {
+            $0.connection = .offline("Connection lost")
+            $0.snapshotRevision = 2
+        }
+        #expect(store.state.hasSnapshot)
+        #expect(store.state.queue.map(\.id) == ["q1"])
+        updates.continuation.yield(TriageInboxUpdate(identity: b, overview: snapshot, connection: .online))
+        await store.receive(\.inboxUpdated)
+        #expect(store.state.connection == .offline("Connection lost"))
+        await store.send(.disappeared)
+        updates.continuation.finish()
+        await store.finish()
+    }
+
+    @Test
+    func readConfirmationSurvivesSnapshotUntilStampFinishes() async throws {
+        let snapshot = try overview("", reports: report(4))
+        var initial = TriageFeature.State()
+        initial.identity = a
+        initial.items = ObserveInboxUseCase().execute(snapshot).items
+        let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
+            $0.triageService = TriageService(observe: { AsyncStream { $0.finish() } }, mutate: { _, _, _ in .confirmed })
+        }
+        await store.send(.readWithPresentation("r4")) {
+            $0.pendingIDs = ["r4"]
+            $0.deferredReadIDs = ["r4"]
+        }
+        await store.receive(\.mutationFinished) { $0.pendingIDs = [] }
+        await store.receive(\.readAcknowledged)
+        // The daemon already removed the report. Preserve its card for the confirmation animation.
+        await store.send(.inboxUpdated(TriageInboxUpdate(identity: a, overview: try overview("")))) {
+            $0.hasSnapshot = true
+            $0.snapshotRevision = 1
+        }
+        #expect(store.state.queue.map(\.id) == ["r4"])
+        await store.send(.readPresentationFinished("r4")) {
+            $0.deferredReadIDs = []
+            $0.hiddenIDs = ["r4"]
+            $0.resolvedCount = 1
+        }
+        #expect(store.state.queue.isEmpty)
+        await store.send(.readPresentationFinished("r4"))
+    }
+
+    @Test(arguments: [false, true])
+    func deferredReadKeepsFrontAndCursorAcrossOmittedAndReintroducedSnapshots(withCursor: Bool) async throws {
+        let target = withCursor ? "r5" : "r4"
+        let snapshot = try overview("", reports: [report(4), report(5), report(6)].joined(separator: ","))
+        let omitted = try overview("", reports: [4, 5, 6].filter { "r\($0)" != target }.map { report($0) }.joined(separator: ","))
+        let (results, continuation) = AsyncStream<TriageMutationOutcome>.makeStream()
+        var initial = TriageFeature.State()
+        initial.identity = a
+        initial.items = ObserveInboxUseCase().execute(snapshot).items
+        if withCursor { initial.cursor = initial.items.first { $0.id == target }?.place }
+        let originalCursor = initial.cursor
+        let originalQueue = initial.queue.map(\.id)
+        let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
+            $0.triageService = TriageService(observe: { AsyncStream { $0.finish() } }, mutate: { _, _, _ in
+                for await result in results { return result }
+                return .obsolete
+            })
+        }
+        await store.send(.readWithPresentation(target)) {
+            $0.pendingIDs = [target]
+            $0.deferredReadIDs = [target]
+        }
+        // The daemon can remove and reintroduce the report before its response reaches us.
+        for (index, update) in [omitted, snapshot].enumerated() {
+            await store.send(.inboxUpdated(TriageInboxUpdate(identity: a, overview: update))) {
+                $0.hasSnapshot = true
+                $0.snapshotRevision = UInt64(index + 1)
+            }
+            #expect(store.state.queue.map(\.id) == originalQueue)
+            #expect(store.state.cursor == originalCursor)
+            await store.send(.readWithPresentation(target)) // Pending guard prevents another mutation.
+        }
+        continuation.yield(.confirmed)
+        continuation.finish()
+        await store.receive(\.mutationFinished) { $0.pendingIDs = [] }
+        await store.receive(\.readAcknowledged)
+        // The card owns the 520 ms stamp timer. Until its completion event, snapshots must
+        // neither move the stamped report behind a neighbour nor start another read.
+        for (index, update) in [omitted, snapshot, omitted].enumerated() {
+            await store.send(.inboxUpdated(TriageInboxUpdate(identity: a, overview: update))) {
+                $0.snapshotRevision = UInt64(index + 3)
+            }
+            #expect(store.state.queue.map(\.id) == originalQueue)
+            #expect(store.state.cursor == originalCursor)
+            await store.send(.readWithPresentation(target)) // Deferred guard covers the stamp interval.
+        }
+        await store.send(.readPresentationFinished(target)) {
+            $0.deferredReadIDs = []
+            $0.hiddenIDs = [target]
+            $0.resolvedCount = 1
+        }
+        #expect(store.state.queue.map(\.id) == originalQueue.filter { $0 != target })
+        #expect(store.state.cursor == originalCursor)
+        await store.send(.readPresentationFinished(target)) // Duplicate completion is inert.
+        await store.send(.inboxUpdated(TriageInboxUpdate(identity: a, overview: snapshot))) {
+            $0.snapshotRevision = 6
+        }
+        #expect(store.state.queue.map(\.id) == originalQueue.filter { $0 != target })
+        await store.finish()
+    }
+
+    @Test
     func oneCardPerIDAndAttachedQuestionStaysInsidePR() throws {
         let pr = #"{"id":9,"url":"https://example.test/p/9","repo":"a/b","number":9,"sessionId":"s","title":"PR","state":"open","openedAt":3}"#
         let snapshot = try overview(

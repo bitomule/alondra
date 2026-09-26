@@ -1,8 +1,8 @@
 import AlondraShared
+import AlondraAPIClient
 import AlondraCommands
 import AlondraNotificationActions
 import AlondraNotificationPayload
-import AlondraPushBinding
 import Foundation
 import Observation
 import UIKit
@@ -35,14 +35,14 @@ enum NotificationCategory {
 struct NotificationResponse: Sendable {
     let action: String
     let text: String?
-    let boundItem: NotificationPayload.BoundItem?
+    let encryptedPayload: Data?
     let title: String
 
     init(_ response: UNNotificationResponse) {
         let content = response.notification.request.content
         action = response.actionIdentifier
         text = (response as? UNTextInputNotificationResponse)?.userText
-        boundItem = NotificationPayload.BoundItem(userInfo: content.userInfo)
+        encryptedPayload = try? JSONSerialization.data(withJSONObject: content.userInfo)
         title = content.title
     }
 }
@@ -60,7 +60,6 @@ struct QuietHours: Equatable {
 @MainActor
 @Observable
 final class PushCenter {
-    private struct BindingChangedBeforeSend: Error {}
     enum Authorization: Equatable {
         case unknown, notDetermined, denied, authorized
     }
@@ -84,9 +83,9 @@ final class PushCenter {
         }
     }
 
-    private let fleet: FleetStore
-    private let pairing: DevicePairing
-    private let bindings: PushBindingStore
+    private var client: ServiceNotificationClient?
+    private let decryptionStore: NotificationDecryptionStore?
+    private let preferences: PushPreferencesLedger
     @ObservationIgnored private var lastRegistered: String?
     @ObservationIgnored private var syncTask: Task<Void, Never>?
 
@@ -96,13 +95,12 @@ final class PushCenter {
         static let quietEnd = "quietHoursEnd"
     }
 
-    private static let actionDeadline: Duration = .seconds(22)
     private static let staleNotificationAge: TimeInterval = 10
 
-    init(fleet: FleetStore, pairing: DevicePairing, bindings: PushBindingStore? = nil) {
-        self.fleet = fleet
-        self.pairing = pairing
-        self.bindings = bindings ?? PushBindingStore()
+    init(decryptionStore: NotificationDecryptionStore? = nil) {
+        self.decryptionStore = decryptionStore
+        preferences = PushPreferencesLedger(file: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
+            .appendingPathComponent("push-preferences.json"))
         let defaults = UserDefaults.standard
         quietHours = QuietHours(
             enabled: defaults.bool(forKey: Keys.quietEnabled),
@@ -132,6 +130,8 @@ final class PushCenter {
         UIApplication.shared.registerForRemoteNotifications()
     }
 
+    func registerWithAPNs() { UIApplication.shared.registerForRemoteNotifications() }
+
     func didRegister(deviceToken: Data) {
         token = deviceToken.map { String(format: "%02x", $0) }.joined()
         scheduleSync()
@@ -141,60 +141,58 @@ final class PushCenter {
         registration = .failed(error.localizedDescription)
     }
 
+    func install(_ client: ServiceNotificationClient?) {
+        self.client = client
+        route = nil
+        lastRegistered = nil
+        scheduleSync()
+    }
+
     func scheduleSync() {
-        syncTask?.cancel()
-        syncTask = Task { await sync() }
+        let previous = syncTask
+        previous?.cancel()
+        // Serialize idempotent APNs upserts so an older token cannot finish last.
+        syncTask = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await sync()
+        }
     }
 
     private func sync() async {
-        guard let token, pairing.isPaired, let client = currentClient(), let binding = currentBinding() else {
-            registration = .idle
-            lastRegistered = nil
-            return
-        }
-        let request = PushRegistration(
-            token: token,
-            environment: Self.environment,
-            quietStart: quietHours.enabled ? QuietHours.clock(quietHours.start) : nil,
-            quietEnd: quietHours.enabled ? QuietHours.clock(quietHours.end) : nil,
-            pushBinding: binding.value
-        )
-        let fingerprint = "\(client.identity)|\(request)"
-        let scope = PushRegistrationScope(clientIdentity: client.identity, binding: binding, token: token)
+        guard let token, let client else { registration = .idle; return }
+        let quietStart = quietHours.enabled ? QuietHours.clock(quietHours.start) : nil
+        let quietEnd = quietHours.enabled ? QuietHours.clock(quietHours.end) : nil
+        let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(Self.environment.rawValue)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
         guard fingerprint != lastRegistered else { return }
         registration = .sending
         do {
-            try await client.registerPush(request)
-            guard scope.acceptsCompletion(current: currentRegistrationScope(), cancelled: Task.isCancelled) else { return }
+            let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                                                         quietStart: quietStart, quietEnd: quietEnd)
+            try Task.checkCancellation()
+            do {
+                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, revision)
+            } catch ServicePushPreferencesError.stale(let currentRevision) {
+                // A restored Keychain identity can outlive its app container. Advance only
+                // after the authenticated executor tells us its accepted revision.
+                try Task.checkCancellation()
+                let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                    quietStart: quietStart, quietEnd: quietEnd, newerThan: currentRevision)
+                try Task.checkCancellation()
+                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, newer)
+            }
+            guard self.client?.identity == client.identity, self.client?.binding == client.binding,
+                  self.token == token, !Task.isCancelled else { return }
             lastRegistered = fingerprint
             registration = .registered
-        } catch where error.isCancellation {
-            return
         } catch {
-            guard scope.acceptsCompletion(current: currentRegistrationScope(), cancelled: Task.isCancelled) else { return }
-            registration = .failed(error.friendlyDescription)
+            guard self.client?.identity == client.identity, self.client?.binding == client.binding,
+                  !Task.isCancelled else { return }
+            registration = .failed(error.localizedDescription)
         }
     }
 
-    private func currentRegistrationScope() -> PushRegistrationScope? {
-        guard let token, let client = currentClient(), let binding = currentBinding() else { return nil }
-        return PushRegistrationScope(clientIdentity: client.identity, binding: binding, token: token)
-    }
-
-    private func currentClient() -> AlondraClient? {
-        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
-        guard let url = AlondraClient.serverURL(address), let signer = pairing.signer(for: url) else { return nil }
-        return AlondraClient(base: url, device: "iphone", signer: signer)
-    }
-
-    private func currentBinding() -> NotificationPayload.Binding? {
-        let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
-        guard let url = AlondraClient.serverURL(address),
-              let signer = pairing.signer(for: url),
-              let revision = pairing.credentialRevision else { return nil }
-        return bindings.binding(server: url, deviceID: signer.deviceID, credentialRevision: revision)
-    }
-
+    private func currentBinding() -> NotificationPayload.Binding? { client?.binding }
     func isCurrent(_ route: NotificationRoute) -> Bool { currentBinding() == route.binding }
 
     /// Simulators and development-signed builds talk to the APNs sandbox; the embedded
@@ -215,7 +213,7 @@ final class PushCenter {
     }()
 
     func inboxChanged(pending: [InboxItem]) {
-        guard fleet.connection == .online, authorization == .authorized else { return }
+        guard client != nil, authorization == .authorized else { return }
         center.setBadgeCount(pending.count)
         guard let binding = currentBinding() else { return }
         let live = Set(pending.map(\.id))
@@ -234,7 +232,13 @@ final class PushCenter {
     }
 
     func respond(to response: NotificationResponse) async {
-        guard let boundItem = response.boundItem, boundItem.matches(currentBinding()) else { return }
+        guard let raw = response.encryptedPayload,
+              let context = try? decryptionStore?.load(), context.binding == currentBinding()?.value,
+              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context,
+                  nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)),
+              let payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [AnyHashable: Any],
+              let boundItem = NotificationPayload.BoundItem(userInfo: payload),
+              boundItem.matches(currentBinding()) else { return }
         let item = boundItem.item
         let binding = boundItem.binding
         switch response.action {
@@ -249,28 +253,20 @@ final class PushCenter {
     }
 
     private func send(_ response: NotificationResponse, itemID: String, binding: NotificationPayload.Binding, command: NotificationAction) async {
-        guard let client = currentClient(), let credentialRevision = pairing.credentialRevision else {
-            await reportFailure(response, reason: String(localized: "No server configured"))
-            return
+        guard let client, client.binding == binding else { return }
+        let submission = Task { await client.submit(command, itemID) }
+        let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action") {
+            submission.cancel()
         }
-        let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action")
         defer { UIApplication.shared.endBackgroundTask(background) }
-        guard currentBinding() == binding else { return }
-        let result = await fleet.submitCommand(command.commandKind, itemID: itemID,
-            expectedCredentialRevision: credentialRevision, using: client) { [self] scopedClient in
-            guard await currentBinding() == binding else { throw BindingChangedBeforeSend() }
-            try await Self.withDeadline(Self.actionDeadline) { try await command.execute(using: scopedClient) }
-        }
+        let result = await submission.value
         guard currentBinding() == binding else { return }
         switch result {
         case .confirmed:
-            if UIApplication.shared.applicationState == .active {
-                await fleet.refresh(ifCurrentClientMatches: client.identity)
-            }
+            break
         case .unknown:
             await reportUncertain(response)
         case .rejected(let error):
-            guard !(error is BindingChangedBeforeSend) else { return }
             await reportFailure(response, reason: error.friendlyDescription)
         case .obsolete:
             return
@@ -297,32 +293,25 @@ final class PushCenter {
         try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
-    private static func withDeadline(_ deadline: Duration, _ work: @escaping @Sendable () async throws -> Void) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { try await work() }
-            group.addTask {
-                try await Task.sleep(for: deadline)
-                throw URLError(.timedOut)
-            }
-            try await group.next()
-            group.cancelAll()
-        }
-    }
+
 }
 
 /// UserNotifications calls its delegate off the main thread, and on iOS 26 the completion
 /// handler must run on the main thread, so the handler is carried across to it explicitly.
 final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
     private let push: PushCenter
+    private let prepare: @MainActor @Sendable () async -> Void
 
-    init(push: PushCenter) {
+    init(push: PushCenter, prepare: @escaping @MainActor @Sendable () async -> Void = {}) {
         self.push = push
+        self.prepare = prepare
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let response = NotificationResponse(response)
         let completion = MainThreadCompletion(completionHandler)
-        Task { @MainActor [push] in
+        Task { @MainActor [push, prepare] in
+            await prepare()
             await push.respond(to: response)
             completion.run()
         }

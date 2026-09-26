@@ -1,0 +1,26 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+swift_library(
+    name = "AlondraDemoWorkspace",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraDemoWorkspace",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple:AlondraShared",
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Data/Attachments:AlondraAttachmentsData",
+        "//apple/Data/Commands:AlondraCommands",
+        "//apple/Features/Triage:AlondraTriageFeature",
+        "//apple/Features/Questions:AlondraQuestionsFeature",
+        "//apple/Features/PullRequests:AlondraPullRequestsFeature",
+        "//apple/Features/Tasks:AlondraTasksFeature",
+        "//apple/Features/Fleet:AlondraFleetFeature",
+        "//apple/Features/NewWork:AlondraNewWorkFeature",
+        "//apple/Features/Workspace:AlondraWorkspaceFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+swift_test(
+    name = "AlondraDemoWorkspaceTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)

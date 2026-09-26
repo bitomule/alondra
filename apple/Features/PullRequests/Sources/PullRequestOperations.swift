@@ -2,6 +2,12 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 
+public struct PRDiffSnapshot: Equatable, Sendable {
+    public let diff: String
+    public let headSHA: String
+    public init(diff: String, headSHA: String) { self.diff = diff; self.headSHA = headSHA }
+}
+
 public enum PRMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
@@ -19,11 +25,13 @@ public struct PRReviewAttachment: Equatable, Sendable, Identifiable {
     public let id: UUID
     public let name: String
     public let data: Data
+    public let storedID: String?
 
-    public init(id: UUID, name: String, data: Data) {
+    public init(id: UUID, name: String, data: Data, storedID: String? = nil) {
         self.id = id
         self.name = name
         self.data = data
+        self.storedID = storedID
     }
 }
 
@@ -45,18 +53,18 @@ public enum PRPostFailureClassifier {
 /// H installs a credential-scoped adapter. Mutations must pass through CommandGate; the
 /// adapter reserves before uploading attachments and never retries an unknown dispatch.
 public struct PullRequestOperations: Sendable {
-    public var diff: @Sendable (UInt64) async throws -> String
+    public var diff: @Sendable (UInt64) async throws -> PRDiffSnapshot
     public var merge: @Sendable (UInt64, String) async -> PRMutationOutcome
     public var resolveConflicts: @Sendable (UInt64) async -> PRMutationOutcome
     public var setAside: @Sendable (UInt64) async -> PRMutationOutcome
-    public var review: @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind) async -> PRMutationOutcome
+    public var review: @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String) async -> PRMutationOutcome
 
     public init(
-        diff: @escaping @Sendable (UInt64) async throws -> String,
+        diff: @escaping @Sendable (UInt64) async throws -> PRDiffSnapshot,
         merge: @escaping @Sendable (UInt64, String) async -> PRMutationOutcome,
         resolveConflicts: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
         setAside: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
-        review: @escaping @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind) async -> PRMutationOutcome
+        review: @escaping @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String) async -> PRMutationOutcome
     ) {
         self.diff = diff
         self.merge = merge
@@ -72,7 +80,7 @@ private enum PullRequestOperationsKey: DependencyKey {
         merge: { _, _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
         resolveConflicts: { _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
         setAside: { _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
-        review: { _, _, _, _ in preconditionFailure("Install PullRequestOperations at the app composition root") }
+        review: { _, _, _, _, _ in preconditionFailure("Install PullRequestOperations at the app composition root") }
     )
     static let testValue = liveValue
 }

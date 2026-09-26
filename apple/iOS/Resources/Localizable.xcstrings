@@ -1,6 +1,46 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%lld feedback messages were not sent; review your drafts": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mensajes de comentarios no enviados: %lld; revisa tus borradores"
+          }
+        }
+      }
+    },
+    "%lld operations are still unconfirmed": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operaciones que siguen sin confirmar: %lld"
+          }
+        }
+      }
+    },
+    "%lld operations unconfirmed; checking their status": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operaciones sin confirmar: %lld; comprobando su estado"
+          }
+        }
+      }
+    },
+    "Feedback delivered; %lld reports could not be marked read": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comentarios entregados; informes que no se pudieron marcar como leídos: %lld"
+          }
+        }
+      }
+    },
     "%@ On": {
       "localizations": {
         "es": {
@@ -1376,7 +1416,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Horas de silencio"
+            "value": "Horario de silencio"
           }
         }
       }
@@ -1926,7 +1966,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Esperando token"
+            "value": "Esperando registro de notificaciones"
           }
         }
       }
@@ -3237,6 +3277,778 @@
           "stringUnit": {
             "state": "translated",
             "value": "¿Qué debe hacer el orquestador?"
+          }
+        }
+      }
+    },
+    "Service": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Servicio"
+          }
+        }
+      }
+    },
+    "Account": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cuenta"
+          }
+        }
+      }
+    },
+    "Checking connection…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprobando conexión…"
+          }
+        }
+      }
+    },
+    "Notifications enabled": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notificaciones activadas"
+          }
+        }
+      }
+    },
+    "Open Notification Settings": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir ajustes de notificaciones"
+          }
+        }
+      }
+    },
+    "Registering notifications…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registrando notificaciones…"
+          }
+        }
+      }
+    },
+    "Registered": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registrado"
+          }
+        }
+      }
+    },
+    "Notification settings changed in another window. Your draft has been kept.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los ajustes de notificaciones han cambiado en otra ventana. Se ha conservado tu borrador."
+          }
+        }
+      }
+    },
+    "Use Current Settings": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar los ajustes actuales"
+          }
+        }
+      }
+    },
+    "Save Notification Settings": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar ajustes de notificaciones"
+          }
+        }
+      }
+    },
+    "Loading settings…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cargando ajustes…"
+          }
+        }
+      }
+    },
+    "Quiet hours use the time zone of the Mac running your agents. Changes sync through the encrypted service.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El horario de silencio usa la zona horaria del Mac donde se ejecutan tus agentes. Los cambios se sincronizan mediante el servicio cifrado."
+          }
+        }
+      }
+    },
+    "Signing out removes this device’s saved connection and notification keys.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Al cerrar sesión se eliminan la conexión guardada y las claves de notificaciones de este dispositivo."
+          }
+        }
+      }
+    },
+    "Sign out of Alondra?": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Cerrar sesión en Alondra?"
+          }
+        }
+      }
+    },
+    "Sign out": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrar sesión"
+          }
+        }
+      }
+    },
+    "Choose a valid start and end time.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elige una hora de inicio y de fin válidas."
+          }
+        }
+      }
+    },
+    "Your work stays encrypted between your devices.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu trabajo permanece cifrado entre tus dispositivos."
+          }
+        }
+      }
+    },
+    "Bring your Mac along.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lleva tu Mac contigo."
+          }
+        }
+      }
+    },
+    "One last check.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una última comprobación."
+          }
+        }
+      }
+    },
+    "You're connected.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ya estás conectado."
+          }
+        }
+      }
+    },
+    "Your work.\nWithin reach.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu trabajo.\nSiempre a mano."
+          }
+        }
+      }
+    },
+    "Connect to the Mac running Alondra to see what needs you, wherever you are.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta con el Mac donde se ejecuta Alondra para ver qué necesita tu atención, estés donde estés."
+          }
+        }
+      }
+    },
+    "Confirm this connection on your Mac. Only devices you approve can access your work.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirma esta conexión en tu Mac. Solo los dispositivos que apruebes podrán acceder a tu trabajo."
+          }
+        }
+      }
+    },
+    "Your inbox, tasks and conversations are ready.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu bandeja de entrada, tareas y conversaciones están listas."
+          }
+        }
+      }
+    },
+    "Keep up with your agents, answer a question, and help your work move forward.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sigue a tus agentes, responde preguntas y haz avanzar tu trabajo."
+          }
+        }
+      }
+    },
+    "Your Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu Mac"
+          }
+        }
+      }
+    },
+    "Confirm": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirmar"
+          }
+        }
+      }
+    },
+    "Start with your account": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empieza con tu cuenta"
+          }
+        }
+      }
+    },
+    "Use the same account on your iPhone and Mac.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usa la misma cuenta en tu iPhone y en tu Mac."
+          }
+        }
+      }
+    },
+    "Sign in": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Iniciar sesión"
+          }
+        }
+      }
+    },
+    "Finish signing in in your browser…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completa el inicio de sesión en tu navegador…"
+          }
+        }
+      }
+    },
+    "Connecting securely…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectando de forma segura…"
+          }
+        }
+      }
+    },
+    "Open Alondra on your Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre Alondra en tu Mac"
+          }
+        }
+      }
+    },
+    "Run this command in Terminal to show your connection code.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ejecuta este comando en Terminal para mostrar tu código de conexión."
+          }
+        }
+      }
+    },
+    "Point your camera at the QR code on your Mac.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apunta la cámara al código QR de tu Mac."
+          }
+        }
+      }
+    },
+    "Scan Mac code": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escanear el código del Mac"
+          }
+        }
+      }
+    },
+    "Connect without a camera": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar sin cámara"
+          }
+        }
+      }
+    },
+    "Copy the invitation from your Mac and paste it here.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copia la invitación de tu Mac y pégala aquí."
+          }
+        }
+      }
+    },
+    "Connection invitation": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invitación de conexión"
+          }
+        }
+      }
+    },
+    "Connect to Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar al Mac"
+          }
+        }
+      }
+    },
+    "Use another account": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usar otra cuenta"
+          }
+        }
+      }
+    },
+    "Confirm on your Mac": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirma en tu Mac"
+          }
+        }
+      }
+    },
+    "Enter this code in Alondra setup, then approve your iPhone.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introduce este código en la configuración de Alondra y aprueba tu iPhone."
+          }
+        }
+      }
+    },
+    "Waiting for your Mac…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando a tu Mac…"
+          }
+        }
+      }
+    },
+    "Start again": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empezar de nuevo"
+          }
+        }
+      }
+    },
+    "Mac connected": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac conectado"
+          }
+        }
+      }
+    },
+    "This device has secure access to your workspace.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este dispositivo tiene acceso seguro a tu espacio de trabajo."
+          }
+        }
+      }
+    },
+    "A home for your work.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Un lugar para tu trabajo."
+          }
+        }
+      }
+    },
+    "Connect your account and the Mac running your agents. Your questions, tasks and conversations come together here.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta tu cuenta y el Mac donde se ejecutan tus agentes. Aquí encontrarás tus preguntas, tareas y conversaciones."
+          }
+        }
+      }
+    },
+    "Encrypted between your devices": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cifrado entre tus dispositivos"
+          }
+        }
+      }
+    },
+    "Restoring your connection…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restaurando tu conexión…"
+          }
+        }
+      }
+    },
+    "Complete sign in in your browser…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completa el inicio de sesión en tu navegador…"
+          }
+        }
+      }
+    },
+    "Signing out…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cerrando sesión…"
+          }
+        }
+      }
+    },
+    "Checking the pairing invitation…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprobando la invitación de conexión…"
+          }
+        }
+      }
+    },
+    "Connect your workspace": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conecta tu espacio de trabajo"
+          }
+        }
+      }
+    },
+    "On the Mac running Alondra, run this command in Terminal and copy the connection invitation.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En el Mac donde se ejecuta Alondra, ejecuta este comando en Terminal y copia la invitación de conexión."
+          }
+        }
+      }
+    },
+    "Paste connection invitation": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pegar invitación de conexión"
+          }
+        }
+      }
+    },
+    "Enter invitation manually": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introducir la invitación manualmente"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conectar"
+          }
+        }
+      }
+    },
+    "Approve this Mac in Alondra setup": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aprueba este Mac en la configuración de Alondra"
+          }
+        }
+      }
+    },
+    "Enter this code in the setup terminal and approve this Mac. Keep this window open until approval completes.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Introduce este código en el terminal de configuración y aprueba este Mac. Mantén esta ventana abierta hasta que termine la aprobación."
+          }
+        }
+      }
+    },
+    "Waiting for approval…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando aprobación…"
+          }
+        }
+      }
+    },
+    "Cancel pairing": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar conexión"
+          }
+        }
+      }
+    },
+    "Demo workspace": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Demo workspace"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espacio de ejemplo"
+          }
+        }
+      }
+    },
+    "Demo · Sample data": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Demo · Sample data"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Demo · Datos de ejemplo"
+          }
+        }
+      }
+    },
+    "Everything here is sample data. Actions stay in memory and never reach a real account. Use Reset demo to start over or Exit demo to connect your workspace.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Everything here is sample data. Actions stay in memory and never reach a real account. Use Reset demo to start over or Exit demo to connect your workspace."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Todo lo que ves son datos de ejemplo. Las acciones se guardan en memoria y nunca llegan a una cuenta real. Usa Reiniciar demo para empezar de nuevo o Salir de la demo para conectar tu espacio de trabajo."
+          }
+        }
+      }
+    },
+    "Exit demo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exit demo"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salir de la demo"
+          }
+        }
+      }
+    },
+    "Explore the demo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explore the demo"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explorar la demo"
+          }
+        }
+      }
+    },
+    "Opening demo…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening demo…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abriendo demo…"
+          }
+        }
+      }
+    },
+    "Reset demo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset demo"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reiniciar demo"
+          }
+        }
+      }
+    },
+    "Remove %@": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitar %@"
+          }
+        }
+      }
+    },
+    "Copying to Alondra": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copiando a Alondra"
+          }
+        }
+      }
+    },
+    "Not copied · Retry": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se copió · Reintentar"
           }
         }
       }

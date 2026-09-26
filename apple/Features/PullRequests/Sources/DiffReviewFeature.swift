@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -10,12 +11,19 @@ public enum PRDiffLoadError: Error, Equatable, Sendable {
 public struct DiffReviewFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public let prID: UInt64
         public var files: [DiffFile]?
         /// Exact raw diff text is the revision token; path:line alone cannot identify content.
+        public var loadedHeadSHA: String?
+        public var commentsHeadSHA: String?
         public var loadedDiffText: String?
         public var commentsDiffText: String?
         public var collapsed: Set<String> = []
+        public var highlightedLines: [String: AttributedString] = [:]
+        public var highlightingDark: Bool?
+        public var highlightGeneration: UInt64 = 0
+        public let highlightID = UUID()
         public var isLoading = false
         public var loadError: String?
         public var isOpen = true
@@ -27,6 +35,7 @@ public struct DiffReviewFeature {
         public var submittedNote: String?
         public var submittedAttachments: [PRReviewAttachment]?
         public var editingAnchor: String?
+        public var editingText = ""
         public var isSending = false
         public var mutationOutcome: PRMutationOutcome?
         public var validationError: String?
@@ -40,29 +49,35 @@ public struct DiffReviewFeature {
         public init(prID: UInt64) { self.prID = prID }
 
         public var canReview: Bool {
-            isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
+            attachmentPicker.allReady && isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
+                && loadedHeadSHA != nil
                 && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
         }
         public var hasDraft: Bool {
             !comments.isEmpty || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
         }
         public var commentsNeedReview: Bool {
-            !comments.isEmpty && (loadedDiffText == nil || commentsDiffText != loadedDiffText)
+            !comments.isEmpty && (loadedDiffText == nil || commentsDiffText != loadedDiffText || commentsHeadSHA != loadedHeadSHA)
         }
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case retryTapped
         case disappeared
         case identityChanged
         case pullRequestChanged(PullRequest?)
         case snapshotUnavailable
-        case diffLoaded([DiffFile], String, UInt64)
+        case diffLoaded([DiffFile], PRDiffSnapshot, UInt64)
         case diffFailed(String, UInt64)
+        case colorSchemeChanged(dark: Bool)
+        case highlighted([String: AttributedString], UInt64)
         case toggleFile(String)
         case toggleAllFiles
         case editLine(String)
+        case lineEditorChanged(String)
+        case saveEditedLine
         case saveLineComment(String, String)
         case removeLineComment(String)
         case confirmCommentsForCurrentDiff
@@ -71,20 +86,26 @@ public struct DiffReviewFeature {
         case attachmentsChanged([PRReviewAttachment])
         case askTapped
         case requestChangesTapped
-        case reviewDiffChanged([DiffFile], String, UInt64)
+        case reviewDiffChanged([DiffFile], PRDiffSnapshot, UInt64)
         case reviewPreflightFailed(String, UInt64)
         case reviewFinished(PRMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
     @Dependency(\.pullRequestOperations) var operations
+    @Dependency(\.diffHighlighting) var highlighting
     private let prepareReview = PreparePRReviewUseCase()
 
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.attachments = state.attachmentPicker.entries.map { PRReviewAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
             case .appeared, .retryTapped:
                 guard state.isOpen, !state.isLoading else { return .none }
                 state.isLoading = true
@@ -95,23 +116,36 @@ public struct DiffReviewFeature {
                 return .run { send in
                     do {
                         let text = try await operations.diff(id)
-                        await send(.diffLoaded(UnifiedDiff.parse(text), text, generation))
+                        await send(.diffLoaded(UnifiedDiff.parse(text.diff), text, generation))
                     } catch PRDiffLoadError.responseTooLarge {
                         await send(.diffFailed("This diff is too large to review on this device", generation))
                     } catch where !error.isCancellation {
                         await send(.diffFailed(error.localizedDescription, generation))
                     }
                 }.cancellable(id: state.loadID, cancelInFlight: true)
+            case .colorSchemeChanged(let dark):
+                state.highlightingDark = dark
+                return highlight(&state)
+            case .highlighted(let lines, let generation):
+                guard generation == state.highlightGeneration else { return .none }
+                state.highlightedLines = lines
+                return .none
             case .disappeared:
+                state.highlightGeneration &+= 1
                 state.loadGeneration &+= 1
                 state.isLoading = false
-                return .cancel(id: state.loadID)
+                return .merge(.cancel(id: state.loadID), .cancel(id: state.highlightID))
             case .identityChanged:
+                state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.loadGeneration &+= 1
                 state.files = nil
+                state.highlightedLines = [:]
+                state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
+                state.loadedHeadSHA = nil
                 state.commentsDiffText = nil
+                state.commentsHeadSHA = nil
                 state.collapsed = []
                 state.isLoading = false
                 state.loadError = nil
@@ -124,6 +158,7 @@ public struct DiffReviewFeature {
                 state.submittedNote = nil
                 state.submittedAttachments = nil
                 state.editingAnchor = nil
+                state.editingText = ""
                 state.isSending = false
                 state.mutationOutcome = nil
                 state.validationError = nil
@@ -142,16 +177,20 @@ public struct DiffReviewFeature {
                 guard generation == state.loadGeneration, state.isLoading else { return .none }
                 state.isLoading = false
                 state.files = files
-                state.loadedDiffText = text
+                state.loadedDiffText = text.diff
+                state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.loadError = nil
-                return .none
+                return highlight(&state)
             case .diffFailed(let error, let generation):
                 guard generation == state.loadGeneration, state.isLoading else { return .none }
                 state.isLoading = false
                 state.loadError = error
                 state.files = nil
+                state.highlightedLines = [:]
+                state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
+                state.loadedHeadSHA = nil
                 state.collapsed = []
                 return .none
             case .toggleFile(let id):
@@ -166,18 +205,28 @@ public struct DiffReviewFeature {
             case .editLine(let anchor):
                 guard state.files?.contains(where: { $0.lines.contains(where: { $0.anchor == anchor }) }) == true else { return .none }
                 state.editingAnchor = anchor
+                state.editingText = state.comments[anchor] ?? ""
                 return .none
+            case .lineEditorChanged(let text):
+                guard state.editingAnchor != nil, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                state.editingText = text
+                return .none
+            case .saveEditedLine:
+                guard let anchor = state.editingAnchor, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                return .send(.saveLineComment(anchor, state.editingText))
             case .saveLineComment(let anchor, let text):
-                guard state.editingAnchor == anchor else { return .none }
+                guard state.editingAnchor == anchor,
+                      state.files?.contains(where: { $0.lines.contains(where: { $0.anchor == anchor }) }) == true else { return .none }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if state.comments.isEmpty, !trimmed.isEmpty { state.commentsDiffText = state.loadedDiffText }
+                if state.comments.isEmpty, !trimmed.isEmpty { state.commentsDiffText = state.loadedDiffText; state.commentsHeadSHA = state.loadedHeadSHA }
                 state.comments[anchor] = trimmed.isEmpty ? nil : trimmed
-                if state.comments.isEmpty { state.commentsDiffText = nil }
+                if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                 state.editingAnchor = nil
+                state.editingText = ""
                 return .none
             case .removeLineComment(let anchor):
                 state.comments[anchor] = nil
-                if state.comments.isEmpty { state.commentsDiffText = nil }
+                if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                 if state.editingAnchor == anchor { state.editingAnchor = nil }
                 return .none
             case .confirmCommentsForCurrentDiff:
@@ -185,9 +234,11 @@ public struct DiffReviewFeature {
                 let anchors = Set(files.flatMap(\.lines).compactMap(\.anchor))
                 guard state.comments.keys.allSatisfy(anchors.contains) else { return .none }
                 state.commentsDiffText = revision
+                state.commentsHeadSHA = state.loadedHeadSHA
                 state.validationError = nil
                 return .none
             case .cancelLineComment:
+                state.editingText = ""
                 state.editingAnchor = nil
                 return .none
             case .noteChanged(let note):
@@ -208,13 +259,14 @@ public struct DiffReviewFeature {
                 state.loadGeneration &+= 1
                 state.isLoading = false
                 state.files = files
-                state.loadedDiffText = text
+                state.loadedDiffText = text.diff
+                state.loadedHeadSHA = text.headSHA
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.validationError = "The PR changed; review the new diff before sending"
                 state.submittedComments = nil
                 state.submittedNote = nil
                 state.submittedAttachments = nil
-                return .cancel(id: state.loadID)
+                return .merge(.cancel(id: state.loadID), highlight(&state))
             case .reviewPreflightFailed(let message, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
@@ -232,9 +284,12 @@ public struct DiffReviewFeature {
                     for (anchor, text) in state.submittedComments ?? [:] where state.comments[anchor] == text {
                         state.comments[anchor] = nil
                     }
-                    if state.comments.isEmpty { state.commentsDiffText = nil }
+                    if state.comments.isEmpty { state.commentsDiffText = nil; state.commentsHeadSHA = nil }
                     if state.note == state.submittedNote { state.note = "" }
-                    if state.attachments == state.submittedAttachments { state.attachments = [] }
+                    if state.attachments == state.submittedAttachments {
+                        state.attachments = []
+                        state.attachmentPicker = AttachmentFeature.State()
+                    }
                     state.successfulActionCount += 1
                     // An edit made while the request was in flight is a new draft. Keep the
                     // screen and let the user decide whether to send it separately.
@@ -248,15 +303,38 @@ public struct DiffReviewFeature {
                 case .unknown, .obsolete:
                     break
                 }
-                state.submittedComments = nil
-                state.submittedNote = nil
-                state.submittedAttachments = nil
+                if outcome.uncertainID == nil {
+                    state.submittedComments = nil
+                    state.submittedNote = nil
+                    state.submittedAttachments = nil
+                }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.mutationOutcome?.uncertainID == id else { return .none }
+                state.isSending = true
+                return .send(.reviewFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
             case .commandReconciled(let id):
                 if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none
             }
+        }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
+            Reduce { _, _ in
+                AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
+            }
         }
+    }
+
+    private func highlight(_ state: inout State) -> Effect<Action> {
+        state.highlightGeneration &+= 1
+        state.highlightedLines = [:]
+        let generation = state.highlightGeneration
+        let files = state.files ?? []
+        guard let dark = state.highlightingDark, !files.isEmpty else { return .cancel(id: state.highlightID) }
+        return .run { send in
+            let lines = await highlighting.render(files, dark)
+            try Task.checkCancellation()
+            await send(.highlighted(lines, generation))
+        }.cancellable(id: state.highlightID, cancelInFlight: true)
     }
 
     private func sendReview(_ state: inout State, kind: PRReviewKind) -> Effect<Action> {
@@ -277,7 +355,7 @@ public struct DiffReviewFeature {
             state.validationError = "Add a note or line comment before sending attachments"
             return .none
         case .ready(let text):
-            guard let expectedDiff = state.loadedDiffText else { return .none }
+            guard let expectedDiff = state.loadedDiffText, let expectedHead = state.loadedHeadSHA else { return .none }
             state.isSending = true
             state.validationError = nil
             state.mutationOutcome = nil
@@ -287,15 +365,17 @@ public struct DiffReviewFeature {
             let id = state.prID
             let attachments = state.attachments
             let epoch = state.presentationEpoch
+            let useCase = SubmitPRReviewUseCase(operations: operations)
+            let expected = PRDiffSnapshot(diff: expectedDiff, headSHA: expectedHead)
             return .run { send in
                 do {
-                    let currentDiff = try await operations.diff(id)
-                    try Task.checkCancellation()
-                    guard currentDiff == expectedDiff else {
-                        await send(.reviewDiffChanged(UnifiedDiff.parse(currentDiff), currentDiff, epoch))
-                        return
+                    switch try await useCase.execute(prID: id, text: text, attachments: attachments,
+                                                     kind: kind, expected: expected) {
+                    case .diffChanged(let current):
+                        await send(.reviewDiffChanged(UnifiedDiff.parse(current.diff), current, epoch))
+                    case .finished(let outcome):
+                        await send(.reviewFinished(outcome, epoch))
                     }
-                    await send(.reviewFinished(await operations.review(id, text, attachments, kind), epoch))
                 } catch PRDiffLoadError.responseTooLarge {
                     await send(.reviewPreflightFailed("This diff is too large to verify; review was not sent", epoch))
                 } catch where !error.isCancellation {

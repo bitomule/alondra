@@ -7,7 +7,9 @@ public struct LineCommentSheet: View {
     let onSave: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
+    @State private var localText = ""
+    private let externalText: Binding<String>?
+    private var text: Binding<String> { externalText ?? $localText }
     @FocusState private var focused: Bool
 
     /// `initial` seeds the text once; later changes to it are not followed.
@@ -15,10 +17,19 @@ public struct LineCommentSheet: View {
         self.line = line
         self.initial = initial
         self.onSave = onSave
-        _text = State(initialValue: initial)
+        _localText = State(initialValue: initial)
+        externalText = nil
     }
 
-    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// The feature owns the editable buffer; the view only renders and forwards editing.
+    public init(line: DiffLine, initial: String, text: Binding<String>, onSave: @escaping (String) -> Void) {
+        self.line = line
+        self.initial = initial
+        self.onSave = onSave
+        self.externalText = text
+    }
+
+    private var trimmed: String { text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     public var body: some View {
         NavigationStack {
@@ -34,7 +45,7 @@ public struct LineCommentSheet: View {
                         .textCase(nil)
                 }
                 Section {
-                    TextField(String(localized: "What should change here?", table: "AlondraShared", bundle: #bundle), text: $text, axis: .vertical)
+                    TextField(String(localized: "What should change here?", table: "AlondraShared", bundle: #bundle), text: text, axis: .vertical)
                         .lineLimit(4...12)
                         .focused($focused)
                 }

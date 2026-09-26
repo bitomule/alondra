@@ -7,6 +7,7 @@ public enum TriageMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
     case unknown
+    case unknownCommand(UUID)
     case obsolete
 }
 
@@ -50,9 +51,12 @@ public struct TriageFeature {
         public var reportsByPullRequest: [UInt64: [Report]] = [:]
         public var hiddenIDs: Set<String> = []
         public var pendingIDs: Set<String> = []
+        public var deferredReadIDs: Set<String> = []
+        public var uncertainByItem: [String: UUID] = [:]
         public var cursor: InboxPlace?
         public var presentedID: String?
         public var notice: String?
+        public var connection: TriageConnection = .connecting
         public var hasSnapshot = false
         /// Increases for every accepted overview, including one with unchanged card IDs.
         public var snapshotRevision: UInt64 = 0
@@ -101,9 +105,11 @@ public struct TriageFeature {
                 && lhs.questionsByPullRequest == rhs.questionsByPullRequest
                 && lhs.reportsByPullRequest == rhs.reportsByPullRequest
                 && lhs.hiddenIDs == rhs.hiddenIDs
+                && lhs.uncertainByItem == rhs.uncertainByItem
+                && lhs.deferredReadIDs == rhs.deferredReadIDs
                 && lhs.pendingIDs == rhs.pendingIDs && lhs.cursor == rhs.cursor
                 && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice
-                && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
+                && lhs.connection == rhs.connection && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
                 && lhs.workingNodes == rhs.workingNodes
                 && lhs.waitingNodes == rhs.waitingNodes && lhs.totalNodes == rhs.totalNodes
                 && lhs.skippedCount == rhs.skippedCount && lhs.resolvedCount == rhs.resolvedCount
@@ -123,7 +129,11 @@ public struct TriageFeature {
         case review(String)
         case route(String, opensDetail: Bool)
         case hide(String)
+        case readWithPresentation(String)
+        case readAcknowledged(String, confirmed: Bool)
+        case readPresentationFinished(String)
         case mutationFinished(String, TriageIdentity, TriageMutationOutcome)
+        case commandResolved(UUID, rejection: String?)
         case dismissReview
         case dismissNotice
     }
@@ -158,12 +168,16 @@ public struct TriageFeature {
                 } else {
                     state.identity = update.identity
                 }
+                state.connection = update.connection
                 guard let overview = update.overview else {
                     state.hasSnapshot = false
                     return .none
                 }
                 let inbox = observeInbox.execute(overview)
-                state.items = inbox.items
+                // Preserve an acknowledged card until its confirmation stamp finishes.
+                let incomingIDs = Set(inbox.items.map(\.id))
+                let retained = state.items.filter { state.deferredReadIDs.contains($0.id) && !incomingIDs.contains($0.id) }
+                state.items = InboxRing.ordered(inbox.items + retained)
                 state.questionsByPullRequest = inbox.questionsByPullRequest
                 state.reportsByPullRequest = inbox.reportsByPullRequest
                 state.hasSnapshot = true
@@ -201,9 +215,26 @@ public struct TriageFeature {
                 state.cursor = ring.cursor
                 if opensDetail { state.presentedID = item.id }
                 return .none
+            case .readAcknowledged: return .none
+            case .readPresentationFinished(let id):
+                guard state.deferredReadIDs.remove(id) != nil else { return .none }
+                state.hiddenIDs.insert(id)
+                state.resolvedCount += 1
+                return .none
+            case .readWithPresentation(let id):
+                guard let item = state.queue.first(where: { $0.id == id }), case .report = item,
+                      let identity = state.identity, !state.pendingIDs.contains(id),
+                      !state.deferredReadIDs.contains(id), state.uncertainByItem[id] == nil,
+                      let kind = mutationKind(for: item) else { return .none }
+                state.deferredReadIDs.insert(id)
+                state.pendingIDs.insert(id)
+                return .run { send in
+                    let result = await service.mutate(kind, id, identity)
+                    await send(.mutationFinished(id, identity, result))
+                }
             case .hide(let id):
                 guard let item = state.queue.first(where: { $0.id == id }),
-                      let identity = state.identity, !state.pendingIDs.contains(id),
+                      let identity = state.identity, !state.pendingIDs.contains(id), state.uncertainByItem[id] == nil,
                       let kind = mutationKind(for: item) else { return .none }
                 var ring = InboxRing(cursor: state.cursor)
                 ring.resolve(item, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
@@ -219,19 +250,38 @@ public struct TriageFeature {
                 guard state.identity == identity, state.pendingIDs.remove(id) != nil else { return .none }
                 switch result {
                 case .confirmed:
+                    if state.deferredReadIDs.contains(id) { return .send(.readAcknowledged(id, confirmed: true)) }
                     // A later snapshot that omits the card clears this tombstone.
                     state.hiddenIDs.insert(id)
                     state.resolvedCount += 1
                 case .rejected(let reason):
                     state.hiddenIDs.remove(id)
                     state.notice = reason
+                    if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
+                case .unknownCommand(let commandID):
+                    state.uncertainByItem[id] = commandID
+                    state.hiddenIDs.remove(id)
+                    state.notice = "The result is uncertain. Checking its status…"
                 case .unknown:
                     state.hiddenIDs.remove(id)
                     state.notice = String(localized: "The result is uncertain. Check the server before trying again.")
                 case .obsolete:
                     state.hiddenIDs.remove(id)
+                    if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
                 }
                 return .none
+            case .commandResolved(let commandID, let rejection):
+                let matches = state.uncertainByItem.filter { $0.value == commandID }.map(\.key)
+                var effects: [Effect<Action>] = []
+                for id in matches {
+                    state.uncertainByItem[id] = nil
+                    if state.deferredReadIDs.contains(id) {
+                        if rejection != nil { state.deferredReadIDs.remove(id) }
+                        effects.append(.send(.readAcknowledged(id, confirmed: rejection == nil)))
+                    } else if rejection == nil { state.hiddenIDs.insert(id) }
+                }
+                if !matches.isEmpty { state.notice = rejection }
+                return .merge(effects)
             case .dismissReview:
                 state.presentedID = nil
                 return .none
@@ -258,10 +308,13 @@ public struct TriageFeature {
         state.reportsByPullRequest = [:]
         state.hiddenIDs = []
         state.pendingIDs = []
+        state.deferredReadIDs = []
+        state.uncertainByItem = [:]
         state.cursor = nil
         state.presentedID = nil
         state.notice = nil
         state.hasSnapshot = false
+        state.connection = .connecting
         state.workingNodes = 0
         state.waitingNodes = 0
         state.totalNodes = 0

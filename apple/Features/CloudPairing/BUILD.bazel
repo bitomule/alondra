@@ -1,0 +1,3 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+swift_library(name = "AlondraCloudPairingFeature", srcs = glob(["Sources/*.swift"]), module_name = "AlondraCloudPairingFeature", visibility = ["//visibility:public"], deps = ["@swiftpkg_swift_composable_architecture//:ComposableArchitecture"])
+swift_test(name = "AlondraCloudPairingFeatureTests", srcs = glob(["Tests/*.swift"]), deps = [":AlondraCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"])

@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraQuestionsFeature
 import AlondraShared
 import ComposableArchitecture
@@ -19,6 +20,100 @@ struct QuestionsFeatureTests {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Report.self, from: Data(json.utf8))
+    }
+
+    @Test
+    func attachedDenyRequiresTextEvenWithUploadedAttachment() async throws {
+        let q = try question(options: #"[{"label":"Deny"}]"#)
+        var state = QuestionFeature.State(question: q)
+        state.draft.attachmentIDs = ["stored"]
+        state.attachmentPicker.entries = [.init(draft: .init(name: "a.txt", data: Data([1])), status: .uploaded("stored"))]
+        let store = TestStore(initialState: state) { QuestionFeature() }
+        await store.send(.attachedOptionTapped("Deny")) {
+            $0.draft.selectedOption = "Deny"
+            $0.replyFocusRequest = 1
+        }
+        await store.finish()
+    }
+
+    @Test(arguments: [("My explanation", "My explanation"), ("", "Allow")])
+    func attachedOptionWaitsForUploadOnceWithoutChangingPickedAndFailureKeepsDraft(text: String, sentText: String) async throws {
+        let q = try question(options: #"[{"label":"Allow"}]"#)
+        let attachment = AttachmentDraft(name: "a.txt", data: Data([1]))
+        var state = QuestionFeature.State(question: q)
+        state.draft.text = text
+        state.attachmentPicker.entries = [.init(draft: attachment, status: .uploading)]
+        let clock = TestClock()
+        let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { operation in
+                #expect(operation == .answer(id: 1, text: sentText, option: "Allow", attachments: ["stored"]))
+                try? await clock.sleep(for: .seconds(1))
+                return .failed("Offline")
+            }, document: { _ in "" })
+        }
+        await store.send(.attachedOptionTapped("Allow")) {
+            var pending = $0.draft
+            pending.selectedOption = "Allow"
+            pending.text = sentText
+            $0.pendingAttachedAnswer = pending
+        }
+        await store.send(.attachedOptionTapped("Allow"))
+        #expect(store.state.draft.selectedOption == nil)
+        await store.send(.attachmentPicker(.uploaded(attachment.id, .success("stored")))) {
+            $0.attachmentPicker.entries[0].status = .uploaded("stored")
+            $0.draft.attachmentIDs = ["stored"]
+            $0.pendingAttachedAnswer = nil
+            $0.isSubmitting = true
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(.attachedOptionTapped("Allow"))
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.submissionFinished) {
+            $0.isSubmitting = false
+            $0.notice = "Offline"
+        }
+        #expect(store.state.draft.text == text)
+        #expect(store.state.draft.selectedOption == nil)
+        await store.finish()
+    }
+
+    @Test
+    func pendingAttachedAnswerIsDiscardedOnIdentityChange() async throws {
+        var state = QuestionFeature.State(question: try question())
+        state.draft.text = "Draft"
+        state.attachmentPicker.entries = [.init(draft: .init(name: "a.txt", data: Data([1])), status: .uploading)]
+        let store = TestStore(initialState: state) { QuestionFeature() }
+        await store.send(.attachedAnswerTapped) { $0.pendingAttachedAnswer = $0.draft }
+        await store.send(.identityChanged) {
+            $0.draft = QuestionDraft()
+            $0.pendingAttachedAnswer = nil
+            $0.attachmentPicker = AttachmentFeature.State()
+            $0.revision = 1
+        }
+        await store.finish()
+    }
+
+    @Test
+    func optionTapRequestsMissingExplanationThenSubmitsCompleteAnswerWithoutExtraSendTap() async throws {
+        let q = try question(options: #"[{"label":"Deny","description":"Write the reason"}]"#)
+        let store = TestStore(initialState: QuestionFeature.State(question: q)) { QuestionFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { operation in
+                #expect(operation == .answer(id: 1, text: "Keep existing files", option: "Deny", attachments: []))
+                return .confirmed
+            }, document: { _ in "" })
+        }
+        await store.send(.optionTapped("Deny")) {
+            $0.draft.selectedOption = "Deny"
+            $0.replyFocusRequest = 1
+        }
+        await store.send(.textChanged("Keep existing files")) { $0.draft.text = "Keep existing files" }
+        await store.send(.optionTapped("Deny"))
+        await store.receive(\.answerTapped) { $0.isSubmitting = true }
+        await store.receive(\.submissionFinished) {
+            $0.isSubmitting = false
+            $0.completed = true
+            $0.draft = QuestionDraft()
+        }
     }
 
     @Test
@@ -132,10 +227,12 @@ struct QuestionsFeatureTests {
             $0.notice = "The document changed. Review it again before sending comments."
             $0.isLoading = true
             $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("Updated content"), text: "Updated content")]
         }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Updated content"
+            $0.sections = [DocumentSection(source: .inline("Updated content"), text: "Updated content")]
         }
     }
 
@@ -156,11 +253,75 @@ struct QuestionsFeatureTests {
         await store.send(.appeared) {
             $0.isLoading = true
             $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "first.md", path: "a"), text: "", isLoading: true), DocumentSection(source: .stored(name: "second.md", path: "b"), text: "", isLoading: true)]
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "First content" }
+        await store.receive(\.sectionLoaded) { $0.sections[2].isLoading = false; $0.sections[2].text = "Second content" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# first.md\n\nFirst content\n\n---\n\n# second.md\n\nSecond content"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "first.md", path: "a"), text: "First content"), DocumentSection(source: .stored(name: "second.md", path: "b"), text: "Second content")]
         }
+    }
+
+    @Test
+    func phoneDocumentLoadsOnlyOriginalStoredSourceAndKeepsAnchorsWhenHiddenBodyChanges() async throws {
+        let attachments = #"[{"name":"local.md","sourcePath":"/local"},{"name":"first.md","sourcePath":"/a","storedPath":"a"},{"name":"second.md","sourcePath":"/b","storedPath":"b"}]"#
+        let original = try report(attachments: attachments, body: "Report summary")
+        let text = "## Original heading\n\nThe paragraph to review."
+        let source = DocumentSource.stored(name: "first.md", path: "a")
+        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(original))) { DocumentReviewFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { path in
+                #expect(path == "a")
+                return text
+            })
+        }
+        await store.send(.phoneAppeared) {
+            $0.sourcePolicy = .phone
+            $0.isLoading = true
+            $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: source, text: "", isLoading: true)]
+        }
+        await store.receive(\.sectionLoaded) {
+            $0.sections[0].isLoading = false
+            $0.sections[0].text = text
+        }
+        await store.receive(\.loaded) {
+            $0.isLoading = false
+            $0.sourceText = text
+        }
+        let anchor = try #require(MarkdownParser.blocks(from: text).last)
+        await store.send(.commentChanged(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")) {
+            $0.draft.comments = [ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
+        }
+        let refreshed = try report(attachments: attachments, body: "Updated summary")
+        await store.send(.refreshed(.report(refreshed))) { $0.subject = .report(refreshed) }
+        #expect(store.state.sourceText == text)
+        #expect(store.state.draft.comments.first?.anchor == MarkdownParser.blocks(from: text).last?.draftKey)
+        await store.finish()
+    }
+
+    @Test
+    func phonePlanUsesDetailVerbatimEvenWithStoredAttachments() async throws {
+        let json = ###"{"id":1,"sessionId":"s","title":"Plan","detail":"## Plan","options":[],"links":[],"attachments":[{"name":"other.md","sourcePath":"/a","storedPath":"a"}],"origin":"plan","status":"open","askedAt":1}"###
+        let plan = try JSONDecoder().decode(Question.self, from: Data(json.utf8))
+        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .question(plan))) { DocumentReviewFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in
+                Issue.record("Phone plan review must not fetch attachments when detail is present")
+                return "Unexpected"
+            })
+        }
+        await store.send(.phoneAppeared) {
+            $0.sourcePolicy = .phone
+            $0.isLoading = true
+            $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("## Plan"), text: "## Plan")]
+        }
+        await store.receive(\.loaded) {
+            $0.isLoading = false
+            $0.sourceText = "## Plan"
+        }
+        await store.finish()
     }
 
     @Test
@@ -170,10 +331,12 @@ struct QuestionsFeatureTests {
         let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in try await reader.read() })
         }
-        await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1 }
+        await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1; $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)] }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "Old" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nOld"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "Old")]
         }
         await store.send(.commentChanged(anchor: "p1", quote: "Old", text: "Fix this")) {
             $0.draft.comments = [ReviewComment(anchor: "p1", quote: "Old", text: "Fix this")]
@@ -181,9 +344,11 @@ struct QuestionsFeatureTests {
         await store.send(.appeared) {
             $0.isLoading = true
             $0.sourceText = nil
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)]
             $0.previousTextForComparison = "Text\n\n---\n\n# draft.md\n\nOld"
             $0.loadRevision = 2
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].error = QuestionWorkError.unavailable.localizedDescription }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.loadError = QuestionWorkError.unavailable.localizedDescription
@@ -192,10 +357,13 @@ struct QuestionsFeatureTests {
             $0.isLoading = true
             $0.loadError = nil
             $0.loadRevision = 3
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)]
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "New" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nNew"
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "New")]
             $0.previousTextForComparison = nil
             $0.draft.comments = []
             $0.notice = "The document changed. Review it again before sending comments."

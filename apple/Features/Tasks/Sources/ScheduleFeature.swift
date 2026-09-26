@@ -23,6 +23,8 @@ public struct ScheduleFeature {
         /// One command at a time per schedule, across save/run/enable/delete.
         public var inFlightTargets: Set<ScheduleCommandTarget> = []
         /// Journal IDs remain blocked through refresh and editor dismissal.
+        public var submittedDrafts: [UInt64: ScheduledTaskDraft] = [:]
+        public var uncertainDraftRevisions: [UUID: UInt64] = [:]
         public var uncertainByTarget: [ScheduleCommandTarget: UUID] = [:]
         public var lastMutationOutcome: TaskMutationOutcome?
         public var loadError: String?
@@ -60,6 +62,7 @@ public struct ScheduleFeature {
         case deleteConfirmed(String)
         case deleted(String, TaskMutationOutcome, UInt64)
         /// Sent only by the scoped journal owner after resolving the exact command ID.
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
         case selected(String?)
         case identityChanged
@@ -157,6 +160,7 @@ public struct ScheduleFeature {
                 let id = state.editingID
                 let epoch = state.presentationEpoch
                 let revision = state.editorRevision
+                state.submittedDrafts[revision] = draft
                 return .run { send in
                     await send(.saved(await operations.save(payload, id), target, epoch, revision))
                 }
@@ -165,14 +169,18 @@ public struct ScheduleFeature {
                 guard epoch == state.presentationEpoch else { return .none }
                 state.inFlightTargets.remove(target)
                 record(outcome, for: target, in: &state)
+                if let id = outcome.uncertainID { state.uncertainDraftRevisions[id] = revision }
                 guard revision == state.editorRevision else {
                     return .send(.reconcile)
                 }
                 state.isSaving = false
                 switch outcome {
                 case .confirmed:
-                    state.draft = nil
-                    state.editingID = nil
+                    if state.draft == state.submittedDrafts[revision] {
+                        state.draft = nil
+                        state.editingID = nil
+                    }
+                    state.submittedDrafts[revision] = nil
                     return .send(.reconcile)
                 case .unknown: return .send(.reconcile)
                 case .rejected, .obsolete: return .none
@@ -230,6 +238,20 @@ public struct ScheduleFeature {
                 state.busyIDs.remove(id)
                 state.inFlightTargets.remove(.schedule(id))
                 record(outcome, for: .schedule(id), in: &state)
+                return .send(.reconcile)
+            case .commandResolved(let id, let rejection):
+                let targets = state.uncertainByTarget.filter { $0.value == id }.map(\.key)
+                guard !targets.isEmpty else { return .none }
+                if let revision = state.uncertainDraftRevisions.removeValue(forKey: id) {
+                    if rejection == nil, revision == state.editorRevision,
+                       state.draft == state.submittedDrafts[revision] {
+                        state.draft = nil; state.editingID = nil
+                    }
+                    state.submittedDrafts[revision] = nil
+                }
+                for target in targets { state.uncertainByTarget[target] = nil }
+                state.lastMutationOutcome = rejection.map(TaskMutationOutcome.rejected) ?? .confirmed
+                state.mutationError = rejection
                 return .send(.reconcile)
             case .commandReconciled(let id):
                 let matching = state.uncertainByTarget.filter { $0.value == id }.map(\.key)

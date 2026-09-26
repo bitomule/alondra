@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
@@ -6,6 +7,7 @@ import Foundation
 public struct NodeDetailFeature {
     @ObservableState
     public struct State: Equatable {
+        public var attachmentPicker = AttachmentFeature.State()
         public let sessionID: String
         public var entry: FleetNode?
         public var acceptedTick: UInt64?
@@ -19,6 +21,7 @@ public struct NodeDetailFeature {
         public var files: [NodeFile] = []
         public var isSending = false
         public var sendOutcome: NodeMutationOutcome?
+        public var uncertainMessage: NodeMessage?
         public var sentCount = 0
         public var showCloseConfirmation = false
         public var isClosing = false
@@ -32,7 +35,7 @@ public struct NodeDetailFeature {
         public var node: Node? { entry?.node }
         public var tasks: [WorkTask] { entry?.tasks ?? [] }
         public var canSend: Bool {
-            !isStale && node != nil && !isSending && !isClosing
+            attachmentPicker.allReady && !isStale && node != nil && !isSending && !isClosing
                 && sendOutcome?.uncertainID == nil && closeOutcome?.uncertainID == nil
                 && closeOutcome != .confirmed
                 && SendNodeMessageUseCase().prepare(text: message, files: files) != nil
@@ -40,6 +43,7 @@ public struct NodeDetailFeature {
     }
 
     public enum Action {
+        case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case disappeared
         case snapshotChanged(FleetSnapshot)
@@ -56,6 +60,7 @@ public struct NodeDetailFeature {
         case closeCancelled
         case closeConfirmed
         case closeFinished(NodeMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -67,8 +72,12 @@ public struct NodeDetailFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .attachmentPicker:
+                state.files = state.attachmentPicker.entries.map { NodeFile(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
             case .appeared:
                 guard !state.isVisible else { return .none }
                 state.isVisible = true
@@ -97,6 +106,7 @@ public struct NodeDetailFeature {
                 state.isStale = true
                 return .none
             case .identityChanged:
+                state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.entry = nil
                 state.acceptedTick = nil
@@ -109,6 +119,7 @@ public struct NodeDetailFeature {
                 state.files = []
                 state.isSending = false
                 state.sendOutcome = nil
+                state.uncertainMessage = nil
                 state.showCloseConfirmation = false
                 state.isClosing = false
                 state.closeOutcome = nil
@@ -154,12 +165,14 @@ public struct NodeDetailFeature {
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
                 state.sendOutcome = outcome
+                state.uncertainMessage = outcome.uncertainID == nil ? nil : outgoing
                 if outcome == .confirmed {
                     // The user may have changed the draft while the request was in flight.
                     if state.message.trimmingCharacters(in: .whitespacesAndNewlines) == outgoing.text,
                        state.files == outgoing.files {
                         state.message = ""
                         state.files = []
+                        state.attachmentPicker = AttachmentFeature.State()
                     }
                     state.sentCount += 1
                 }
@@ -193,10 +206,25 @@ public struct NodeDetailFeature {
                 state.closeOutcome = outcome
                 state.shouldDismiss = outcome == .confirmed
                 return .none
+            case .commandResolved(let id, let rejection):
+                let outcome = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
+                if state.sendOutcome?.uncertainID == id, let outgoing = state.uncertainMessage {
+                    state.isSending = true
+                    return .send(.sendFinished(outgoing, outcome, state.presentationEpoch))
+                }
+                if state.closeOutcome?.uncertainID == id {
+                    state.isClosing = true
+                    return .send(.closeFinished(outcome, state.presentationEpoch))
+                }
+                return .none
             case .commandReconciled(let id):
                 if state.sendOutcome?.uncertainID == id { state.sendOutcome = nil }
                 if state.closeOutcome?.uncertainID == id { state.closeOutcome = nil }
                 return .none
+            }
+        }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
+            Reduce { _, _ in
+                AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
     }

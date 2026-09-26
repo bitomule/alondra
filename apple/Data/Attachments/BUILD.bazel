@@ -1,0 +1,14 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+swift_library(
+    name = "AlondraAttachmentsData",
+    module_name = "AlondraAttachmentsData",
+    srcs = glob(["Sources/*.swift"]),
+    visibility = ["//visibility:public"],
+    deps = ["//apple:AlondraShared", "//apple/Domain:AlondraDomain"],
+)
+
+swift_test(
+    name = "AlondraAttachmentsDataTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [":AlondraAttachmentsData"],
+)

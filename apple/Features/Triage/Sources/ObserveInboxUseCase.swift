@@ -1,10 +1,6 @@
 import AlondraShared
 import Foundation
 
-// All associated payloads are immutable Sendable models. The legacy shared module omitted the
-// conformance from its sum type; keep this local until the final Shared removal in step I.
-extension InboxItem: @retroactive @unchecked Sendable {}
-
 public struct TriageIdentity: Equatable, Sendable {
     public let server: URL
     public let deviceID: String
@@ -19,13 +15,20 @@ public struct TriageIdentity: Equatable, Sendable {
     }
 }
 
+public enum TriageConnection: Equatable, Sendable {
+    case connecting, online, unpaired
+    case offline(String)
+}
+
 public struct TriageInboxUpdate: Sendable {
     public let identity: TriageIdentity
     public let overview: Overview?
+    public let connection: TriageConnection
 
-    public init(identity: TriageIdentity, overview: Overview?) {
+    public init(identity: TriageIdentity, overview: Overview?, connection: TriageConnection = .connecting) {
         self.identity = identity
         self.overview = overview
+        self.connection = connection
     }
 }
 
