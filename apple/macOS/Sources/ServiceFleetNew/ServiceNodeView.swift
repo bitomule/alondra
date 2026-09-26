@@ -79,8 +79,6 @@ struct ServiceNodeView: View {
                 }
             } bar: {
                 VStack(alignment: .leading, spacing: 8) {
-                    AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                        .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
                     ServiceNodeComposer(store: store, name: node.displayName)
                     ServiceNodeOutcome(outcome: store.sendOutcome)
                     ServiceNodeOutcome(outcome: store.closeOutcome)
@@ -125,22 +123,14 @@ private struct ServiceNodeHeader: View {
 private struct ServiceNodeComposer: View {
     let store: StoreOf<NodeDetailFeature>
     let name: String
-    @FocusState private var focused: Bool
+    @FocusState private var focused: DetailField?
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(String(localized: "Write to \(shortName(name))…"), text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }), axis: .vertical)
-                .textFieldStyle(.plain).lineLimit(1...8).focused($focused)
-                .onSubmit { if store.canSend { store.send(.sendTapped) } }
-                .onExitCommand { focused = false }
-                .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(.background, in: .rect(cornerRadius: 10))
-                .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Color.accentColor.opacity(0.7) : Color.primary.opacity(0.12)) }
-                .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
-            if store.canSend {
-                SendButton(title: String(localized: "Send")) { store.send(.sendTapped) }
-                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)))
-            }
-        }.animation(.snappy(duration: 0.18), value: store.canSend)
+        ServiceComposer(placeholder: String(localized: "Write to \(shortName(name))…"),
+            text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }),
+            focus: $focused, sendTitle: String(localized: "Send"), canSend: store.canSend,
+            submit: { store.send(.sendTapped) },
+            attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+            .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
     }
 }
 

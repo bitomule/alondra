@@ -15,7 +15,13 @@ struct MacNewRequestPresentation {
         var projectQuery = ""
     }
     enum Action: BindableAction { case binding(BindingAction<State>) }
-    var body: some ReducerOf<Self> { BindingReducer() }
+    var body: some ReducerOf<Self> {
+        BindingReducer()
+        Reduce { state, action in
+            if case .binding(\.projectPicker) = action, state.projectPicker { state.projectQuery = "" }
+            return .none
+        }
+    }
 }
 
 struct ServiceNewRequestView: View {
@@ -41,6 +47,8 @@ struct ServiceNewRequestView: View {
                             .foregroundStyle(.tertiary).padding(.horizontal, 13).padding(.vertical, 8).allowsHitTesting(false)
                     }
                 }.focused($focused)
+                .modifier(ServiceDropsFiles(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker)))
+            ServiceAttachmentStrip(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     Text("Project").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
@@ -78,9 +86,9 @@ struct ServiceNewRequestView: View {
             if let error = store.optionsError {
                 HStack { Text(error).font(.callout).foregroundStyle(.red); Button("Retry") { store.send(.appeared) } }
             }
-            AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
             if let error = store.submissionError { Text(error).foregroundStyle(store.submissionUncertain ? .orange : .red) }
             HStack {
+                ServiceAttachFilesButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button { store.send(.submitTapped) } label: {

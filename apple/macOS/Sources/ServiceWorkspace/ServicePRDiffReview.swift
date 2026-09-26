@@ -16,7 +16,7 @@ struct ServicePRDiffReview: View {
         let allCollapsed = collapsed.count == files.count
         VStack(alignment: .trailing, spacing: 6) {
             Button(allCollapsed ? String(localized: "Expand All Files") : String(localized: "Collapse All Files")) {
-                withAnimation(.snappy(duration: 0.2)) { store.send(.toggleAllFiles) }
+                withAnimation(.snappy(duration: 0.2)) { _ = store.send(.toggleAllFiles) }
             }
             .buttonStyle(.link)
             .font(.caption)
@@ -30,7 +30,7 @@ struct ServicePRDiffReview: View {
                         }
                     } header: {
                         DiffFileHeader(file: file, comments: comments(in: file), collapsed: collapsed.contains(file.id)) {
-                            withAnimation(.snappy(duration: 0.2)) { store.send(.toggleFile(file.id)) }
+                            withAnimation(.snappy(duration: 0.2)) { _ = store.send(.toggleFile(file.id)) }
                         }
                     }
                 }
