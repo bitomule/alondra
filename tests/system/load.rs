@@ -349,9 +349,33 @@ async fn wakeup_bound<T, F>(deadline: Instant, operation: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {
-    tokio::time::timeout_at(deadline.into(), operation)
+    strict_deadline(deadline, operation)
         .await
-        .context("parked delivery missed wakeup bound")?
+        .context("parked delivery missed wakeup bound")
+}
+// Tokio polls the operation before its timer. A Ready result after scheduler
+// starvation must not certify an observation or pressure phase as timely.
+async fn strict_deadline<T, F>(deadline: Instant, operation: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    ensure!(
+        Instant::now() <= deadline,
+        "operation deadline already expired"
+    );
+    let result = tokio::time::timeout_at(deadline.into(), operation).await?;
+    ensure!(
+        Instant::now() <= deadline,
+        "operation completed after deadline"
+    );
+    result
+}
+fn validate_delivery_time(received: Instant, deadline: Instant) -> Result<()> {
+    ensure!(
+        received <= deadline,
+        "parked GET received after wakeup deadline"
+    );
+    Ok(())
 }
 async fn encrypted_roundtrip_on_work(
     driver: &Driver,
@@ -416,6 +440,7 @@ async fn encrypted_roundtrip_on_work(
             // missed wakeup by sending another GET or a retry after its timeout.
             let (status, work, received) =
                 tokio::time::timeout(Duration::from_secs(30), parked).await???;
+            validate_delivery_time(received, delivery_deadline.expect("parked deadline"))?;
             ensure!(
                 status == 200,
                 "already parked Mac did not receive encrypted work"
@@ -541,23 +566,23 @@ async fn bounded_pressure<T, F>(deadline: Instant, operation: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {
-    tokio::time::timeout_at(deadline.into(), operation)
+    strict_deadline(deadline, operation)
         .await
-        .context("pressure budget exhausted; recovery reserved")?
+        .context("pressure budget exhausted; recovery reserved")
 }
 async fn join_pressure(jobs: &mut tokio::task::JoinSet<()>, deadline: Instant) -> Result<()> {
-    let result = tokio::time::timeout_at(deadline.into(), async {
+    let result = strict_deadline(deadline, async {
         while let Some(result) = jobs.join_next().await {
             result?;
         }
         Ok::<_, anyhow::Error>(())
     })
     .await;
-    if !matches!(&result, Ok(Ok(()))) {
+    if result.is_err() {
         jobs.abort_all();
         while jobs.join_next().await.is_some() {} // join every cancelled lane
     }
-    result.context("burst pressure budget exhausted; lanes cancelled and joined")?
+    result.context("burst pressure budget exhausted; lanes cancelled and joined")
 }
 
 async fn burst(
@@ -787,7 +812,8 @@ async fn fresh_waiters_at(epoch: &[u8; 16], directory: &Path, budget: Duration) 
         .fill(&mut bytes)
         .map_err(|_| anyhow::anyhow!("lab challenge RNG"))?;
     let nonce: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    tokio::time::timeout(budget, async {
+    let deadline = Instant::now() + budget;
+    strict_deadline(deadline, async {
         let first = validate_waiters(
             epoch,
             &tokio::fs::read(directory.join("waiters.json")).await?,
@@ -823,7 +849,7 @@ async fn fresh_waiters_at(epoch: &[u8; 16], directory: &Path, budget: Duration) 
             }
         }
     })
-    .await?
+    .await
 }
 
 async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -> Result<Value> {
@@ -959,10 +985,9 @@ async fn recover_after_pressure<F>(steady: Result<()>, operation: F) -> (Result<
 where
     F: std::future::Future<Output = Result<Value>>,
 {
-    let recovery = match tokio::time::timeout(Duration::from_secs(90), operation).await {
-        Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!("no-restart recovery deadline")),
-    };
+    let recovery = strict_deadline(Instant::now() + Duration::from_secs(90), operation)
+        .await
+        .context("no-restart recovery deadline");
     (steady, recovery)
 }
 
@@ -1591,6 +1616,52 @@ mod tests {
             })
             .await
             .unwrap()
+        );
+    }
+    #[tokio::test]
+    async fn ready_results_cannot_pass_expired_observation_or_pressure_deadlines() {
+        let expired = Instant::now() - Duration::from_millis(1);
+        assert!(
+            wakeup_bound(expired, std::future::ready(Ok(())))
+                .await
+                .is_err()
+        );
+        assert!(
+            bounded_pressure(expired, std::future::ready(Ok(())))
+                .await
+                .is_err()
+        );
+        let mut jobs = tokio::task::JoinSet::new();
+        assert!(join_pressure(&mut jobs, expired).await.is_err());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let late_received = deadline + Duration::from_millis(1);
+        assert!(
+            wakeup_bound(
+                deadline,
+                std::future::ready(validate_delivery_time(late_received, deadline))
+            )
+            .await
+            .is_err(),
+            "already Ready GET with late receive timestamp must fail"
+        );
+        assert!(
+            wakeup_bound(
+                deadline,
+                std::future::ready(validate_delivery_time(Instant::now(), deadline))
+            )
+            .await
+            .is_ok()
+        );
+        // This poll blocks past the deadline then returns Ready without yielding:
+        // timeout_at alone accepts it because the inner future wins over the timer.
+        let deadline = Instant::now() + Duration::from_millis(10);
+        assert!(
+            strict_deadline(deadline, async {
+                std::thread::sleep(Duration::from_millis(25));
+                Ok(())
+            })
+            .await
+            .is_err()
         );
     }
     #[tokio::test]
