@@ -2,6 +2,28 @@ import AlondraShared
 import Foundation
 
 enum DemoFixture {
+    /// The same built-in catalogue served by core/options.rs, plus a sample project option.
+    static func options(project: String?) -> [String: Any] {
+        var specs: [[String: Any]] = [
+            ["id": "pr", "label": "PR handling", "kind": "choice", "default": "review", "builtin": true,
+             "values": [
+                ["id": "review", "label": "review each PR", "description": "Each PR the node opens is a card for you; the node waits for your merge"],
+                ["id": "auto_merge", "label": "auto-merge", "description": "Alondra merges the node's PR once its checks pass"]]],
+            ["id": "effort", "label": "Effort", "kind": "choice", "default": "auto", "builtin": true,
+             "values": [
+                ["id": "auto", "label": "auto", "description": "The orchestrator picks the model and effort from the task"],
+                ["id": "light", "label": "light", "description": "A quick, cheaper model for small, clear work"],
+                ["id": "normal", "label": "normal", "description": "Claude's default model and effort"],
+                ["id": "hard", "label": "hard", "description": "The strongest model and the most effort"]]]
+        ]
+        if project == "Demo Garden" {
+            specs.append(["id": "screenshots", "label": "Include screenshots", "kind": "toggle", "default": true, "builtin": false])
+        }
+        var catalogue: [String: Any] = ["options": specs]
+        if let project { catalogue["project"] = project }
+        return catalogue
+    }
+
     static func make(now: Int64) -> [String: Any] {
         let question: [String: Any] = ["id": 1, "sessionId": "demo-design", "nodeName": "Design assistant",
             "title": "Which welcome screen should we use?", "detail": "Choose the calmer layout or keep the current design.",

@@ -224,7 +224,7 @@ public actor DemoWorkspace {
         guard active else { return .obsolete }
         schedules.removeAll { $0["id"] as? String == id }; return .confirmed
     }
-    private func options() throws -> OptionsCatalog { try ensureActive(); return try DemoFixture.decode(["options": []]) }
+    private func options(project: String?) throws -> OptionsCatalog { try ensureActive(); return try DemoFixture.decode(DemoFixture.options(project: project)) }
     private func issues() throws -> IssueList { try ensureActive(); return try DemoFixture.decode(["issues": []]) }
     private func scope() -> NewWorkSubmissionScope? {
         guard active else { return nil }
@@ -243,14 +243,14 @@ public actor DemoWorkspace {
         values.taskOperations = TaskOperations(withdraw: { await self.withdraw($0.id) }, cancel: { await self.task($0.id, state: "cancelled") },
             reopen: { await self.task($0.id, state: "running") }, archiveCompleted: { await self.archive() }, details: { await self.details($0) })
         values.scheduleOperations = ScheduleOperations(list: { try await self.scheduleList() }, save: { await self.saveSchedule($0, id: $1) },
-            run: { await self.runSchedule($0) }, delete: { await self.deleteSchedule($0) }, projects: { ["Demo Garden"] }, options: { _ in [] })
+            run: { await self.runSchedule($0) }, delete: { await self.deleteSchedule($0) }, projects: { ["Demo Garden"] }, options: { try await self.options(project: $0).options })
         values.nodeOperations = NodeOperations(send: { await self.node($0, message: $1) }, close: { await self.node($0, message: nil) }, threads: { _ in [] })
         values.pullRequestOperations = PullRequestOperations(diff: { _ in try await self.ensureActive(); return PRDiffSnapshot(diff: DemoFixture.diff, headSHA: String(repeating: "d", count: 40)) },
             merge: { id, _ in await self.pr(id, state: "merged", message: "Example pull request merged in demo.") },
             resolveConflicts: { await self.pr($0, state: "open", message: "Demo assistant will resolve the sample conflicts.") },
             setAside: { await self.pr($0, state: "dismissed", message: "Example pull request set aside.") },
             review: { id, text, files, kind, head in await self.reviewPR(id, text: text, attachments: files, kind: kind, head: head) })
-        values.newWorkOperations = NewWorkOperations(projects: { ["Demo Garden"] }, options: { _ in try await self.options() },
+        values.newWorkOperations = NewWorkOperations(projects: { ["Demo Garden"] }, options: { try await self.options(project: $0) },
             issues: { _ in try await self.issues() }, captureSubmissionScope: { await self.scope() })
         values.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { AsyncStream { $0.finish() } }, observeFeedback: { AsyncStream { $0.finish() } })
     }
