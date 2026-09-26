@@ -47,6 +47,7 @@ public struct AttachmentFeature {
         public var isImporting = false
         public var importID: UUID?
         public var importError: String?
+        public var dropTargeted = false
         public var filesPresented = false
         public var photosPresented = false
         public var cameraPresented = false
@@ -58,11 +59,12 @@ public struct AttachmentFeature {
         public init() {}
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.entries == rhs.entries && lhs.isImporting == rhs.isImporting && lhs.importID == rhs.importID
-                && lhs.photosPresented == rhs.photosPresented && lhs.cameraPresented == rhs.cameraPresented
+                && lhs.dropTargeted == rhs.dropTargeted && lhs.photosPresented == rhs.photosPresented && lhs.cameraPresented == rhs.cameraPresented
                 && lhs.importError == rhs.importError && lhs.filesPresented == rhs.filesPresented && lhs.photos == rhs.photos
         }
     }
     public enum Action: Sendable {
+        case dropTargetChanged(Bool)
         case showFiles(Bool)
         case showPhotos(Bool)
         case showCamera(Bool)
@@ -92,6 +94,7 @@ public struct AttachmentFeature {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .dropTargetChanged(let targeted): state.dropTargeted = targeted; return .none
             case .showPhotos(let show): state.photosPresented = show; return .none
             case .showCamera(let show): state.cameraPresented = show; return .none
             case .cameraCaptured(let data):
