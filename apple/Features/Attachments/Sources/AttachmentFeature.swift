@@ -255,9 +255,10 @@ public struct AttachmentFeature {
         }
     }
 }
-public struct AttachmentFailure: Error, Equatable, Sendable {
+public struct AttachmentFailure: LocalizedError, Equatable, Sendable {
     public let message: String
     public init(message: String) { self.message = message }
+    public var errorDescription: String? { message }
 }
 
 public struct AttachmentImportClient: Sendable {

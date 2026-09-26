@@ -36,6 +36,7 @@ struct FeedbackAuthorIntegrationTests {
         func documentAction(_ action: DocumentReviewFeature.Action) -> ServiceTriageFeature.Action {
             detail ? .documents(.element(id: id, action: action)) : .cards(.element(id: id, action: .document(action)))
         }
+        await store.send(documentAction(.appeared)).finish()
         await store.send(documentAction(.generalChanged("Retain this"))).finish()
         await store.send(documentAction(.commentChanged(anchor: "block-1", quote: "Body", text: "Change spacing"))).finish()
         if detail {
