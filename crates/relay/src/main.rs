@@ -1098,9 +1098,10 @@ mod http_tests {
         let captured = delivered.clone();
         let apns_router = Router::new().route(
             "/3/device/{token}",
-            post(move |Json(body): Json<Value>| {
+            post(move |version: axum::http::Version, Json(body): Json<Value>| {
                 let captured = captured.clone();
                 async move {
+                    assert_eq!(version, axum::http::Version::HTTP_2);
                     let reject = body["alondra"]["envelope"]["request_id"] == "push-reject";
                     captured.lock().unwrap().push(body);
                     if reject {
