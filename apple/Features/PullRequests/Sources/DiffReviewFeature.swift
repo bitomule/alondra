@@ -365,15 +365,17 @@ public struct DiffReviewFeature {
             let id = state.prID
             let attachments = state.attachments
             let epoch = state.presentationEpoch
+            let useCase = SubmitPRReviewUseCase(operations: operations)
+            let expected = PRDiffSnapshot(diff: expectedDiff, headSHA: expectedHead)
             return .run { send in
                 do {
-                    let currentDiff = try await operations.diff(id)
-                    try Task.checkCancellation()
-                    guard currentDiff.diff == expectedDiff, currentDiff.headSHA == expectedHead else {
-                        await send(.reviewDiffChanged(UnifiedDiff.parse(currentDiff.diff), currentDiff, epoch))
-                        return
+                    switch try await useCase.execute(prID: id, text: text, attachments: attachments,
+                                                     kind: kind, expected: expected) {
+                    case .diffChanged(let current):
+                        await send(.reviewDiffChanged(UnifiedDiff.parse(current.diff), current, epoch))
+                    case .finished(let outcome):
+                        await send(.reviewFinished(outcome, epoch))
                     }
-                    await send(.reviewFinished(await operations.review(id, text, attachments, kind, expectedHead), epoch))
                 } catch PRDiffLoadError.responseTooLarge {
                     await send(.reviewPreflightFailed("This diff is too large to verify; review was not sent", epoch))
                 } catch where !error.isCancellation {

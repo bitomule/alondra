@@ -45,3 +45,26 @@ public struct PRMergeUseCase: Sendable {
         return pr.methods.contains(method)
     }
 }
+
+public enum SubmitPRReviewResult: Equatable, Sendable {
+    case diffChanged(PRDiffSnapshot)
+    case finished(PRMutationOutcome)
+}
+
+/// Verify the revision immediately before dispatch. This boundary can be reused by
+/// non-UI callers without bypassing the same stale-review protection.
+public struct SubmitPRReviewUseCase: Sendable {
+    private let operations: PullRequestOperations
+
+    public init(operations: PullRequestOperations) { self.operations = operations }
+
+    public func execute(
+        prID: UInt64, text: String, attachments: [PRReviewAttachment],
+        kind: PRReviewKind, expected: PRDiffSnapshot
+    ) async throws -> SubmitPRReviewResult {
+        let current = try await operations.diff(prID)
+        try Task.checkCancellation()
+        guard current == expected else { return .diffChanged(current) }
+        return .finished(await operations.review(prID, text, attachments, kind, expected.headSHA))
+    }
+}
