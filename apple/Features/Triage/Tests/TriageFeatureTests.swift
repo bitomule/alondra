@@ -27,6 +27,37 @@ struct TriageFeatureTests {
     }
 
     @Test
+    func staleSnapshotDoesNotClaimOnlineAndOldIdentityCannotChangeConnection() async throws {
+        let snapshot = try overview(question(1))
+        let updates = AsyncStream<TriageInboxUpdate>.makeStream()
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.triageService = TriageService(observe: { updates.stream }, mutate: { _, _, _ in .obsolete })
+        }
+        await store.send(.appeared)
+        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .online))
+        await store.receive(\.inboxUpdated) {
+            $0.identity = a
+            $0.connection = .online
+            $0.hasSnapshot = true
+            $0.snapshotRevision = 1
+            $0.items = ObserveInboxUseCase().execute(snapshot).items
+        }
+        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .offline("Connection lost")))
+        await store.receive(\.inboxUpdated) {
+            $0.connection = .offline("Connection lost")
+            $0.snapshotRevision = 2
+        }
+        #expect(store.state.hasSnapshot)
+        #expect(store.state.queue.map(\.id) == ["q1"])
+        updates.continuation.yield(TriageInboxUpdate(identity: b, overview: snapshot, connection: .online))
+        await store.receive(\.inboxUpdated)
+        #expect(store.state.connection == .offline("Connection lost"))
+        await store.send(.disappeared)
+        updates.continuation.finish()
+        await store.finish()
+    }
+
+    @Test
     func oneCardPerIDAndAttachedQuestionStaysInsidePR() throws {
         let pr = #"{"id":9,"url":"https://example.test/p/9","repo":"a/b","number":9,"sessionId":"s","title":"PR","state":"open","openedAt":3}"#
         let snapshot = try overview(

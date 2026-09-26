@@ -55,6 +55,7 @@ public struct TriageFeature {
         public var cursor: InboxPlace?
         public var presentedID: String?
         public var notice: String?
+        public var connection: TriageConnection = .connecting
         public var hasSnapshot = false
         /// Increases for every accepted overview, including one with unchanged card IDs.
         public var snapshotRevision: UInt64 = 0
@@ -106,7 +107,7 @@ public struct TriageFeature {
                 && lhs.uncertainByItem == rhs.uncertainByItem
                 && lhs.pendingIDs == rhs.pendingIDs && lhs.cursor == rhs.cursor
                 && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice
-                && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
+                && lhs.connection == rhs.connection && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
                 && lhs.workingNodes == rhs.workingNodes
                 && lhs.waitingNodes == rhs.waitingNodes && lhs.totalNodes == rhs.totalNodes
                 && lhs.skippedCount == rhs.skippedCount && lhs.resolvedCount == rhs.resolvedCount
@@ -162,6 +163,7 @@ public struct TriageFeature {
                 } else {
                     state.identity = update.identity
                 }
+                state.connection = update.connection
                 guard let overview = update.overview else {
                     state.hasSnapshot = false
                     return .none
@@ -279,6 +281,7 @@ public struct TriageFeature {
         state.presentedID = nil
         state.notice = nil
         state.hasSnapshot = false
+        state.connection = .connecting
         state.workingNodes = 0
         state.waitingNodes = 0
         state.totalNodes = 0

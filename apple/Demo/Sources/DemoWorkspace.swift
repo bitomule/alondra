@@ -75,7 +75,7 @@ public actor DemoWorkspace {
         AsyncStream { continuation in
             let task = Task {
                 for await snapshot in self.snapshots() {
-                    continuation.yield(TriageInboxUpdate(identity: self.identity, overview: snapshot))
+                    continuation.yield(TriageInboxUpdate(identity: self.identity, overview: snapshot, connection: .online))
                 }
                 continuation.finish()
             }

@@ -110,7 +110,14 @@ public actor CloudAppServices {
                 for await update in updates {
                     guard active, !Task.isCancelled else { break }
                     let overview = update.snapshot.flatMap { try? decoder.decode(Overview.self, from: $0.body) }
-                    continuation.yield(TriageInboxUpdate(identity: triageIdentity, overview: overview))
+                    let connection: TriageConnection
+                    switch update.connection {
+                    case .connecting: connection = .connecting
+                    case .online: connection = .online
+                    case .offline(let reason), .invalidConfiguration(let reason): connection = .offline(reason)
+                    case .unpaired: connection = .unpaired
+                    }
+                    continuation.yield(TriageInboxUpdate(identity: triageIdentity, overview: overview, connection: connection))
                 }
                 continuation.finish()
             }

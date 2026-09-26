@@ -19,13 +19,20 @@ public struct TriageIdentity: Equatable, Sendable {
     }
 }
 
+public enum TriageConnection: Equatable, Sendable {
+    case connecting, online, unpaired
+    case offline(String)
+}
+
 public struct TriageInboxUpdate: Sendable {
     public let identity: TriageIdentity
     public let overview: Overview?
+    public let connection: TriageConnection
 
-    public init(identity: TriageIdentity, overview: Overview?) {
+    public init(identity: TriageIdentity, overview: Overview?, connection: TriageConnection = .connecting) {
         self.identity = identity
         self.overview = overview
+        self.connection = connection
     }
 }
 

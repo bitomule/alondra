@@ -193,11 +193,11 @@ private struct MacServiceDetail: View {
         switch presentation.selection {
         case .item(let id):
             if let child = store.scope(state: \.pullRequest, action: \.pullRequest.presented), id == "p\(child.pr.id)" {
-                ServicePullRequestView(store: child, taskTitle: store.taskTitle(forInboxID: id))
+                ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
-                ServiceQuestionView(store: child, taskTitle: store.taskTitle(forInboxID: id))
+                ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.document, action: \.triage.document.presented), child.subject.id == id {
-                ServiceDocumentView(store: child, taskTitle: store.taskTitle(forInboxID: id), markRead: { store.send(.triage(.triage(.hide(id)))) })
+                ServiceDocumentView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) }, markRead: { store.send(.triage(.triage(.hide(id)))) })
             } else { MacServiceHome(store: store, presentation: presentation) }
         case .node:
             if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) {

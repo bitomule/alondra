@@ -7,7 +7,6 @@ import SwiftUI
 struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
     @Environment(\.dismiss) private var dismiss
-    @State private var colours = DiffColours()
     @Environment(\.colorScheme) private var scheme
     private var commenting: DiffLine? {
         store.diff.files?.flatMap(\.lines).first { $0.anchor != nil && $0.anchor == store.diff.editingAnchor }
@@ -55,7 +54,7 @@ struct ServicePullRequestView: View {
                             Section {
                                 if !store.diff.collapsed.contains(file.id) {
                                     ForEach(file.lines) { line in
-                                        ServicePhoneDiffLine(line: line, coloured: colours.lines[line.id], comment: line.anchor.flatMap { store.diff.comments[$0] }) {
+                                        ServicePhoneDiffLine(line: line, coloured: store.diff.highlightedLines[line.id], comment: line.anchor.flatMap { store.diff.comments[$0] }) {
                                             if let anchor = $0.anchor { _ = store.send(.diff(.editLine(anchor))) }
                                         }
                                     }
@@ -67,7 +66,7 @@ struct ServicePullRequestView: View {
                             }
                         }
                     }
-                    .task(id: scheme) { await colours.load(files, dark: scheme == .dark) }
+                    .task(id: scheme) { store.send(.diff(.colorSchemeChanged(dark: scheme == .dark))) }
                 } else if let failure = store.diff.loadError {
                     Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
                     Button("Try Again") { _ = store.send(.diff(.retryTapped)) }

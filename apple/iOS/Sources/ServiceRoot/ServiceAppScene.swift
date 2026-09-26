@@ -117,7 +117,7 @@ private struct ServiceRootView<AccountContent: View>: View {
         TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
-                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage))
+                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) })
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }

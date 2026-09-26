@@ -8,13 +8,13 @@ import SwiftUI
 
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
+    let showSettings: () -> Void
     @Namespace private var zoom
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !store.keyboardVisible { header.padding(.horizontal, 20).transition(.move(edge: .top).combined(with: .opacity)) }
             if !store.triage.hasSnapshot && store.triage.queue.isEmpty {
-                VStack(spacing: 16) { ProgressView().controlSize(.large).tint(Palette.dawn); Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary) }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                loading
             } else if store.triage.queue.isEmpty {
                 ServiceEmptyTriage(nodes: store.nodes).transition(.opacity.combined(with: .scale(scale: 0.96)))
             } else {
@@ -27,8 +27,8 @@ struct ServiceTriageView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { store.send(.machinePresented(true)) } label: { ServiceMachineBadge(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot) }
-                    .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) { ServiceMachineDetail(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot).presentationCompactAdaptation(.popover) }
+                Button { store.send(.machinePresented(true)) } label: { ServiceMachineBadge(machine: store.machine, usage: store.usage, connection: store.triage.connection) }
+                    .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) { ServiceMachineDetail(machine: store.machine, usage: store.usage, connection: store.triage.connection).presentationCompactAdaptation(.popover) }
                     .accessibilityLabel("Mac Status")
             }
         }
@@ -42,8 +42,8 @@ struct ServiceTriageView: View {
             ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
                 .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { store.send(.keyboardVisibilityChanged(true)) } }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { store.send(.keyboardVisibilityChanged(false)) } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(true)) } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { _ = store.send(.keyboardVisibilityChanged(false)) } }
         .sensoryFeedback(.success, trigger: store.triage.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: store.triage.skippedCount)
         .task { await store.send(.triage(.appeared)).finish() }
@@ -55,7 +55,13 @@ struct ServiceTriageView: View {
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             HStack(spacing: 8) {
-                Text(summary).contentTransition(.numericText())
+                if case .offline(let reason) = store.triage.connection {
+                    Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
+                } else if store.triage.connection == .unpaired {
+                    Label("Not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
+                } else {
+                    Text(summary).contentTransition(.numericText())
+                }
             }
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.secondary)
@@ -66,6 +72,21 @@ struct ServiceTriageView: View {
             }
         }
         .padding(.bottom, 14)
+    }
+
+    private var loading: some View {
+        VStack(spacing: 16) {
+            ProgressView().controlSize(.large).tint(Palette.dawn)
+            Text(store.triage.connection == .connecting ? String(localized: "Connecting to the fleet…") : String(localized: "Retrying every few seconds…"))
+                .font(.subheadline).foregroundStyle(.secondary)
+            if case .offline = store.triage.connection {
+                Button("Check the Server", systemImage: "gearshape", action: showSettings)
+                    .buttonStyle(.glass).padding(.top, 8)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+        }
+        .animation(.smooth, value: store.triage.connection)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var summary: String {
@@ -158,7 +179,7 @@ private struct ServiceCardStack: View {
             }
             .onEnded { value in
                 withAnimation(.spring(duration: 0.4, bounce: 0.35)) {
-                    store.send(.cardStack(.dragEnded(projectedWidth: Double(value.predictedEndTranslation.width))))
+                    _ = store.send(.cardStack(.dragEnded(projectedWidth: Double(value.predictedEndTranslation.width))))
                 }
             }
     }
@@ -166,11 +187,11 @@ private struct ServiceCardStack: View {
     /// SwiftUI owns animation transactions; the feature owns eligibility and the captured identity.
     private func animate(_ departure: CardStackFeature.Departure) {
         withAnimation(.easeIn(duration: 0.16), completionCriteria: .logicallyComplete) {
-            store.send(.cardStack(.animateDeparture(departure)))
+            _ = store.send(.cardStack(.animateDeparture(departure)))
         } completion: {
             var instant = Transaction(); instant.disablesAnimations = true
-            withTransaction(instant) { store.send(.cardStack(.resetDrag(departure))) }
-            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { store.send(.cardStack(.animationCompleted(departure))) }
+            withTransaction(instant) { _ = store.send(.cardStack(.resetDrag(departure))) }
+            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { _ = store.send(.cardStack(.animationCompleted(departure))) }
         }
     }
 
@@ -272,7 +293,7 @@ private struct ServiceEmptyTriage: View {
 struct ServiceMachineBadge: View {
     let machine: Machine?
     let usage: Usage?
-    let online: Bool
+    let connection: TriageConnection
 
     var body: some View {
         HStack(spacing: 6) {
@@ -295,11 +316,15 @@ struct ServiceMachineBadge: View {
             }
         }
         .foregroundStyle(Palette.ink.opacity(0.65))
-        .animation(.smooth, value: online)
+        .animation(.smooth, value: connection)
     }
 
     private var dotColor: Color {
-        online ? (machine?.unreliable == true ? Palette.dawn : Palette.sage) : Palette.rose
+        switch connection {
+        case .online: machine?.unreliable == true ? Palette.dawn : Palette.sage
+        case .connecting: Palette.slate
+        case .offline, .unpaired: Palette.rose
+        }
     }
 }
 
@@ -332,13 +357,20 @@ private extension StatusReading.Level {
 private struct ServiceMachineDetail: View {
     let machine: Machine?
     let usage: Usage?
-    let online: Bool
+    let connection: TriageConnection
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Mac")
                 .font(.display(.title3, weight: .bold))
-            if online {
+            switch connection {
+            case .offline(let reason):
+                Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
+            case .connecting:
+                Label("Connecting…", systemImage: "antenna.radiowaves.left.and.right")
+            case .unpaired:
+                Label("This device is not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
+            case .online:
                 if let machine = machine {
                     ForEach(StatusReadings.of(machine: machine, usage: usage)) { reading in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
