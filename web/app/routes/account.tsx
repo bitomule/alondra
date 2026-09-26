@@ -1,0 +1,10 @@
+import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router';
+import { PrivatePage, Feedback } from '../components/private';
+import { api, type Mac, type Session } from '../lib/api';
+export function meta() { return [{ title: 'Mi cuenta · Alondra' }, { name: 'robots', content: 'noindex, nofollow' }]; }
+export default function AccountPage() { return <PrivatePage>{session => <AccountContent session={session}/>}</PrivatePage>; }
+function AccountContent({ session }: { session: Session }) {
+  const macs = useQuery({ queryKey: ['macs', session.account.id], queryFn: ({ signal }) => api<{ macs: Mac[] }>('/v1/macs', { signal }), staleTime: 0 });
+  return <><p className="eyebrow">Tu cuenta</p><h1>Hola, {session.account.display_name}.</h1><p className="lede">Aquí gestionas tu acceso. Tus tareas y conversaciones siguen en tus dispositivos.</p><div className="account-grid"><section aria-labelledby="macs-heading"><div className="section-heading"><h2 id="macs-heading">Tus Macs</h2><button className="text-button" disabled={macs.isFetching} onClick={() => void macs.refetch()}>{macs.isFetching ? 'Actualizando…' : 'Actualizar'}</button></div>{macs.isPending ? <p role="status">Buscando tus Macs…</p> : macs.isError ? <Feedback error={macs.error}/> : macs.data.macs.length === 0 ? <div className="empty-state"><h3>Tu primer Mac empieza aquí.</h3><p>Instala Alondra y ejecuta <code>alondra setup</code>. Entra con esta cuenta para registrar el equipo.</p><Link className="button" to="/install">Preparar mi Mac</Link></div> : <ul className="record-list">{macs.data.macs.map(mac => <li key={mac.mac_id}><h3>{mac.label || 'Mac registrado'}</h3><code>{mac.mac_id}</code><p className="small muted">Registrado en tu cuenta. Su disponibilidad se comprueba desde la app.</p></li>)}</ul>}</section><aside className="aside-note"><h2>Una cuenta. Tus vínculos.</h2><p>Puedes añadir más Macs y usar varios clientes. Cada cliente necesita la aprobación del Mac al que quiere acceder.</p><p>El login y la administración no dan acceso al contenido cifrado.</p><Link to="/privacy">Cómo funciona la privacidad</Link></aside></div></>;
+}
