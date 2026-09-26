@@ -350,9 +350,8 @@ impl Queue {
             inner.revision += 1;
         }
         drop(inner);
-        if removed > 0 {
-            self.changed.notify_waiters();
-        }
+        // Revocation must wake idle clients even when no ciphertext was queued.
+        self.changed.notify_waiters();
         removed
     }
 
