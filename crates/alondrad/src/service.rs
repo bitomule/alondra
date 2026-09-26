@@ -220,7 +220,8 @@ impl Service {
 
     fn atomic_local(&self, request: &LocalRequest) -> bool {
         request.method == "POST" && request.path == "/v1/service/push-binding"
-            || self.hub.is_some() && crate::http::atomic_local_path(&request.method, &request.path)
+            || self.hub.is_some() && (crate::http::atomic_local_path(&request.method, &request.path)
+                || crate::schedules::atomic_local_path(&request.method, &request.path))
     }
 
     fn execute_atomic_local(&self, envelope: &EnvelopeV1, device: &Device, request: &LocalRequest, digest: &[u8; 32]) -> Result<Vec<u8>> {
@@ -239,8 +240,13 @@ impl Service {
         }
         approved_method(request)?;
         let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
-        let result = crate::http::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
-            &request.path, request.body.as_ref())?;
+        let result = if crate::schedules::atomic_local_path(&request.method, &request.path) {
+            crate::schedules::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
+                &request.method, &request.path, request.body.as_ref())?
+        } else {
+            crate::http::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
+                &request.path, request.body.as_ref())?
+        };
         let bytes = self.encode_response(envelope, device, &result, request)?;
         self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
         Ok(bytes)
@@ -1490,6 +1496,55 @@ agreement_key = "{}"
         assert_eq!(hub.read(|v|v.seq), committed_seq, "recovery must not append another ReportRead");
         let results = opened_results(&service, &phone, &responses);
         assert_eq!(results, vec![json!({"status":200,"body":{"id":7}});2]);
+        let bytes = responses.lock().unwrap();
+        assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
+        drop(bytes); relay_task.abort(); drop(service); drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_schedule_recovers_commit_before_transport_receipt() {
+        let (mut service, phone) = push_fixture();
+        activate_push(&service);
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("David".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        let projects = home.join("projects");
+        std::fs::create_dir(&projects).unwrap();
+        let options = alondra_core::options::OptionsFile { projects_root: Some(projects.to_str().unwrap().into()), ..Default::default() };
+        std::fs::write(alondra_core::options::path_in(&home), toml::to_string(&options).unwrap()).unwrap();
+        service = service.with_hub(hub.clone());
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sent = responses.clone();
+        let relay = Router::new().route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post(move |bytes: axum::body::Bytes| {
+                let sent = sent.clone();
+                async move { sent.lock().unwrap().push(bytes.to_vec()); StatusCode::ACCEPTED }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+        service.relay = url.clone();
+        let work = changes_work(&service, "atomic-schedule-create", json!({"method":"POST","path":"/v1/schedules","body":{"title":"Durable schedule","text":"Review","frequency":"daily","hour":10,"minute":0,"enabled":false}}));
+        service.journal.db().unwrap().execute_batch("CREATE TRIGGER fail_transport_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'crash window after local commit'); END;").unwrap();
+        assert!(service.handle(repeat_work(&work), &[1u8;16]).await.is_err());
+        let schedule_db = Connection::open(home.join("schedules.db")).unwrap();
+        let committed: String = schedule_db.query_row("SELECT body FROM schedules", [], |r|r.get(0)).unwrap();
+        drop(schedule_db);
+        assert!(responses.lock().unwrap().is_empty());
+        service.journal.db().unwrap().execute_batch("DROP TRIGGER fail_transport_receipt;").unwrap();
+        drop(service); drop(hub);
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap().with_hub(hub.clone());
+        service.relay = url;
+        service.handle(repeat_work(&work), &[1u8;16]).await.unwrap();
+        service.handle(work, &[1u8;16]).await.unwrap();
+        let schedule_db = Connection::open(home.join("schedules.db")).unwrap();
+        assert_eq!(schedule_db.query_row("SELECT count(*) FROM schedules", [], |r|r.get::<_,i64>(0)).unwrap(), 1);
+        assert_eq!(schedule_db.query_row("SELECT body FROM schedules", [], |r|r.get::<_,String>(0)).unwrap(), committed);
+        drop(schedule_db);
+        let results = opened_results(&service, &phone, &responses);
+        assert_eq!(results, vec![json!({"status":201,"body":serde_json::from_str::<Value>(&committed).unwrap()});2]);
         let bytes = responses.lock().unwrap();
         assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
         drop(bytes); relay_task.abort(); drop(service); drop(hub);

@@ -192,7 +192,11 @@ impl Schedules {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schedules (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS local_command_results (
+                sender TEXT NOT NULL, request_id TEXT NOT NULL, digest BLOB NOT NULL,
+                result TEXT NOT NULL, PRIMARY KEY(sender,request_id));
             CREATE TABLE IF NOT EXISTS schedule_failed_launches (request TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS schedule_launch_tools (request TEXT PRIMARY KEY, patterns TEXT NOT NULL);")?;
         // A process killed after claiming must never replay that dispatch on restart.
@@ -216,6 +220,7 @@ impl Schedules {
         body.map(|b| serde_json::from_str(&b).map_err(Into::into)).transpose()
     }
 
+    #[cfg(test)]
     fn save(&self, schedule: &Schedule) -> anyhow::Result<()> {
         let conn = self.0.lock().unwrap();
         conn.execute("INSERT INTO schedules(id,body) VALUES(?1,?2)",
@@ -235,8 +240,7 @@ impl Schedules {
         Ok(())
     }
 
-    fn replace(&self, id: &str, revision: i64, draft: Draft) -> anyhow::Result<Result<Schedule, &'static str>> {
-        let conn = self.0.lock().unwrap();
+    fn replace(conn: &Connection, id: &str, revision: i64, draft: Draft) -> anyhow::Result<Result<Schedule, &'static str>> {
         let body: Option<String> = conn.query_row("SELECT body FROM schedules WHERE id=?1", [id], |r| r.get(0)).optional()?;
         let Some(body) = body else { return Ok(Err("not_found")); };
         let old: Schedule = serde_json::from_str(&body)?;
@@ -294,8 +298,7 @@ impl Schedules {
         Ok(conn.query_row("SELECT 1 FROM schedule_failed_launches WHERE request=?1", [request], |_| Ok(())).optional()?.is_some())
     }
 
-    fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let conn = self.0.lock().unwrap();
+    fn delete(conn: &Connection, id: &str) -> anyhow::Result<bool> {
         let body: Option<String> = conn.query_row("SELECT body FROM schedules WHERE id=?1", [id], |r| r.get(0)).optional()?;
         if body.as_deref().is_some_and(|b| serde_json::from_str::<Schedule>(b).is_ok_and(|s| s.status == "launching")) { return Ok(false); }
         Ok(conn.execute("DELETE FROM schedules WHERE id=?1", [id])? > 0)
@@ -330,32 +333,89 @@ pub async fn list(State(hub): State<Arc<Hub>>) -> Response {
     }
 }
 
+enum Mutation { Create(Draft), Update(String, Draft), Delete(String) }
+
+impl Schedules {
+    /// The receipt is authoritative: validation and generated IDs run only for a new command.
+    fn mutate(&self, identity: Option<(&str, &str, &[u8; 32])>,
+        prepare: impl FnOnce() -> Result<Mutation, Value>) -> anyhow::Result<Value> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((sender, id, digest)) = identity {
+            if let Some(result) = crate::store::Store::command_result(&tx, sender, id, digest)? {
+                return Ok(result);
+            }
+        }
+        let result = match prepare() {
+            Err(result) => result,
+            Ok(Mutation::Create(draft)) => {
+                let schedule = draft.into_schedule(crate::auth::random_hex(16), 1);
+                tx.execute("INSERT INTO schedules(id,body) VALUES(?1,?2)", params![schedule.id, serde_json::to_string(&schedule)?])?;
+                json!({"status":201,"body":schedule})
+            }
+            Ok(Mutation::Update(id, draft)) => match Self::replace(&tx, &id, draft.revision, draft)? {
+                Ok(schedule) => json!({"status":200,"body":schedule}),
+                Err("not_found") => failure(404, "schedule not found"),
+                Err(_) => failure(409, "schedule changed elsewhere; refresh before editing"),
+            },
+            Ok(Mutation::Delete(id)) => if Self::delete(&tx, &id)? {
+                json!({"status":200,"body":{"ok":true}})
+            } else { failure(409, "schedule not found or a run is being sent") },
+        };
+        if let Some((sender, id, digest)) = identity {
+            crate::store::Store::save_command_result(&tx, sender, id, digest, &result)?;
+        }
+        tx.commit()?;
+        Ok(result)
+    }
+}
+
+fn failure(status: u16, message: impl Into<String>) -> Value {
+    json!({"status":status,"body":{"error":message.into()}})
+}
+fn validate(hub: &Hub, mutation: Mutation) -> Result<Mutation, Value> {
+    match &mutation {
+        Mutation::Create(draft) | Mutation::Update(_, draft) =>
+            draft.validate(hub).map_err(|e| failure(400, e))?,
+        Mutation::Delete(_) => (),
+    }
+    Ok(mutation)
+}
+fn response(result: anyhow::Result<Value>) -> Response {
+    match result {
+        Ok(result) => (StatusCode::from_u16(result["status"].as_u64().unwrap() as u16).unwrap(), Json(result["body"].clone())).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
 pub async fn create(State(hub): State<Arc<Hub>>, Json(draft): Json<Draft>) -> Response {
-    if let Err(e) = draft.validate(&hub) { return error(StatusCode::BAD_REQUEST, e); }
-    let s = draft.into_schedule(crate::auth::random_hex(16), 1);
-    match hub.schedules.save(&s) {
-        Ok(()) => (StatusCode::CREATED, Json(json!(s))).into_response(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    response(hub.schedules.mutate(None, || validate(&hub, Mutation::Create(draft))))
 }
-
 pub async fn update(State(hub): State<Arc<Hub>>, RoutePath(id): RoutePath<String>, Json(draft): Json<Draft>) -> Response {
-    if let Err(e) = draft.validate(&hub) { return error(StatusCode::BAD_REQUEST, e); }
-    let revision = draft.revision;
-    match hub.schedules.replace(&id, revision, draft) {
-        Ok(Ok(s)) => Json(json!(s)).into_response(),
-        Ok(Err("not_found")) => error(StatusCode::NOT_FOUND, "schedule not found"),
-        Ok(Err(_)) => error(StatusCode::CONFLICT, "schedule changed elsewhere; refresh before editing"),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+    response(hub.schedules.mutate(None, || validate(&hub, Mutation::Update(id, draft))))
+}
+pub async fn delete(State(hub): State<Arc<Hub>>, RoutePath(id): RoutePath<String>) -> Response {
+    response(hub.schedules.mutate(None, || Ok(Mutation::Delete(id))))
 }
 
-pub async fn delete(State(hub): State<Arc<Hub>>, RoutePath(id): RoutePath<String>) -> Response {
-    match hub.schedules.delete(&id) {
-        Ok(true) => Json(json!({"ok": true})).into_response(),
-        Ok(false) => error(StatusCode::CONFLICT, "schedule not found or a run is being sent"),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    }
+pub(crate) fn atomic_local_path(method: &str, path: &str) -> bool {
+    (method == "POST" && path == "/v1/schedules") ||
+        (matches!(method, "PUT" | "DELETE") && path.strip_prefix("/v1/schedules/")
+            .is_some_and(|id| !id.is_empty() && !id.contains('/')))
+}
+pub(crate) fn atomic_local_request(hub: &Hub, sender: &str, id: &str, digest: &[u8; 32],
+    method: &str, path: &str, body: Option<&Value>) -> anyhow::Result<Value> {
+    anyhow::ensure!(atomic_local_path(method, path), "unsupported atomic schedule route");
+    hub.schedules.mutate(Some((sender, id, digest)), || {
+        let mutation = if method == "DELETE" {
+            Mutation::Delete(path.strip_prefix("/v1/schedules/").unwrap().into())
+        } else {
+            let draft = serde_json::from_value(body.cloned().unwrap_or(Value::Null))
+                .map_err(|_| failure(422, "invalid schedule"))?;
+            if method == "POST" { Mutation::Create(draft) }
+            else { Mutation::Update(path.strip_prefix("/v1/schedules/").unwrap().into(), draft) }
+        };
+        validate(hub, mutation)
+    })
 }
 
 async fn dispatch(hub: Arc<Hub>, id: &str, due_only: bool) -> Response {
@@ -437,6 +497,71 @@ mod tests {
         };
         std::fs::write(alondra_core::options::path_in(&hub.home), toml::to_string(&options).unwrap()).unwrap();
         assert_eq!(crate::options::load(hub).file.projects_root(std::path::Path::new("/unused-home")), projects);
+    }
+
+    fn receipt_draft() -> Draft {
+        serde_json::from_value(json!({"title":"Review","text":"Review project","frequency":"daily","hour":10,"minute":0,"enabled":false})).unwrap()
+    }
+
+    #[test]
+    fn schedule_receipts_recover_crud_and_reject_changed_digest() {
+        let path = std::env::temp_dir().join(format!("schedule-receipts-{}.db", crate::auth::random_hex(6)));
+        // The previous schema has no receipt table. Opening must preserve its schedules.
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);").unwrap();
+        let existing = receipt_draft().into_schedule("legacy".into(), 1);
+        legacy.execute("INSERT INTO schedules VALUES(?1,?2)", params![existing.id, serde_json::to_string(&existing).unwrap()]).unwrap();
+        drop(legacy);
+        let store = Schedules::open(&path).unwrap();
+        assert_eq!(store.get("legacy").unwrap().unwrap().title, "Review");
+        let created = store.mutate(Some(("phone", "create", &[1;32])), || Ok(Mutation::Create(receipt_draft()))).unwrap();
+        assert_eq!(created["status"], 201);
+        let id = created["body"]["id"].as_str().unwrap().to_owned();
+        drop(store);
+        let store = Schedules::open(&path).unwrap();
+        assert_eq!(store.mutate(Some(("phone", "create", &[1;32])), || panic!("replay must bypass validation and ID generation")).unwrap(), created);
+        assert!(store.mutate(Some(("phone", "create", &[2;32])), || panic!("changed digest must not execute")).is_err());
+        assert_eq!(store.all().unwrap().len(), 2);
+        let updated = store.mutate(Some(("phone", "update", &[3;32])), || {
+            let mut draft = receipt_draft(); draft.revision = 1; draft.title = "Updated".into();
+            Ok(Mutation::Update(id.clone(), draft))
+        }).unwrap();
+        assert_eq!(updated["body"]["revision"], 2);
+        assert_eq!(store.mutate(Some(("phone", "update", &[3;32])), || panic!("update replay")).unwrap(), updated);
+        assert_eq!(store.get(&id).unwrap().unwrap().revision, 2);
+        let deleted = store.mutate(Some(("phone", "delete", &[4;32])), || Ok(Mutation::Delete(id.clone()))).unwrap();
+        assert_eq!(deleted, json!({"status":200,"body":{"ok":true}}));
+        assert!(store.get(&id).unwrap().is_none());
+        drop(store);
+        let store = Schedules::open(&path).unwrap();
+        assert_eq!(store.mutate(Some(("phone", "delete", &[4;32])), || panic!("delete replay")).unwrap(), deleted);
+        // A different client uses its own namespace and observes the already-deleted target.
+        assert_eq!(store.mutate(Some(("other-phone", "delete", &[4;32])), || Ok(Mutation::Delete(id))).unwrap()["status"], 409);
+        drop(store); std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn schedule_receipt_failure_rolls_back_create_update_delete() {
+        let path = std::env::temp_dir().join(format!("schedule-rollback-{}.db", crate::auth::random_hex(6)));
+        let store = Schedules::open(&path).unwrap();
+        let original = receipt_draft().into_schedule("existing".into(), 1);
+        store.save(&original).unwrap();
+        store.0.lock().unwrap().execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;").unwrap();
+        assert!(store.mutate(Some(("phone", "create", &[1;32])), || Ok(Mutation::Create(receipt_draft()))).is_err());
+        assert_eq!(store.all().unwrap().len(), 1);
+        assert!(store.mutate(Some(("phone", "update", &[2;32])), || {
+            let mut draft = receipt_draft(); draft.revision=1; draft.title="Lost edit".into();
+            Ok(Mutation::Update("existing".into(), draft))
+        }).is_err());
+        assert_eq!(json!(store.get("existing").unwrap().unwrap()), json!(original));
+        assert!(store.mutate(Some(("phone", "delete", &[3;32])), || Ok(Mutation::Delete("existing".into()))).is_err());
+        drop(store);
+        let store = Schedules::open(&path).unwrap();
+        assert_eq!(json!(store.get("existing").unwrap().unwrap()), json!(original));
+        assert_eq!(store.0.lock().unwrap().query_row("SELECT count(*) FROM local_command_results", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+        store.0.lock().unwrap().execute_batch("DROP TRIGGER fail_receipt;").unwrap();
+        assert_eq!(store.mutate(Some(("phone", "delete", &[3;32])), || Ok(Mutation::Delete("existing".into()))).unwrap()["status"], 200);
+        drop(store); std::fs::remove_file(path).unwrap();
     }
 
     fn local_at(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> i64 {
