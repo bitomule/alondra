@@ -79,7 +79,7 @@ pub struct MacRegistration {
     pub agreement_key: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct DeviceRegistry {
     devices: HashMap<String, PhoneDevice>,
     phone_macs: HashMap<String, String>,
@@ -153,6 +153,7 @@ pub struct Identity {
 
 pub struct Auth {
     pub config: Config,
+    pub management: Option<crate::management::Management>,
     jwks: RwLock<CachedJwks>,
     jwks_refresh: AsyncMutex<()>,
     last_unknown_refresh: Mutex<Option<Instant>>,
@@ -357,6 +358,7 @@ impl Auth {
         Ok(Self {
             config,
             jwks: RwLock::new(jwks),
+            management: None,
             jwks_refresh: AsyncMutex::new(()),
             last_unknown_refresh: Mutex::new(None),
             devices: Mutex::new(devices),
@@ -552,6 +554,23 @@ impl Auth {
         Ok(true)
     }
 
+    /// Product-account cleanup; caller holds device_gate exclusively.
+    /// This removes cloud authorization, never local Mac trust or private keys.
+    pub fn revoke_owner(&self,owner:&str)->Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry=self.devices.lock().unwrap();
+        let before=registry.clone();
+        let phones:Vec<String>=registry.devices.values().filter(|d|d.owner_sub==owner).map(|d|d.device_id.clone()).collect();
+        let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
+        if phones.is_empty() && macs.is_empty() {return Ok(())}
+        for id in phones {
+            registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.revoked_ids.insert(id);
+        }
+        for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
+        if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
+        Ok(())
+    }
+
     pub fn revoke_mac(&self, who: &Identity) -> Result<()> {
         self.ensure_registry_ready()?;
         let mut registry = self.devices.lock().unwrap();
@@ -647,7 +666,7 @@ impl Auth {
         self.devices.lock().unwrap().macs.contains_key(mac_id)
     }
 
-    pub fn authenticate_mac(
+    pub async fn authenticate_mac(
         &self,
         headers: &HeaderMap,
         method: &Method,
@@ -674,6 +693,7 @@ impl Auth {
             &mac.mac_id,
             &mac.signing_key,
         )?;
+        self.require_active_owner(&mac.owner_sub).await?;
         Ok(Identity {
             device_id: mac.mac_id,
             owner_sub: mac.owner_sub,
@@ -872,12 +892,24 @@ impl Auth {
         if !audience_ok {
             bail!("JWT audience mismatch");
         }
+        self.require_active_owner(&c.sub).await?;
         Ok(c.sub)
     }
 
     #[cfg(test)]
     pub(crate) fn set_verification_time(&self, now_ms: u64) {
         *self.verification_time.lock().unwrap() = Some(now_ms);
+    }
+
+    pub async fn require_active_owner(&self,subject:&str)->Result<()> {
+        if let Some(management)=&self.management {
+            management.active_identity(&self.config.issuer,subject).await.map_err(|error| {
+                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
+                    anyhow::anyhow!(AccountGateError::Denied)
+                } else {anyhow::anyhow!(AccountGateError::Unavailable)}
+            })?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)] // The signed HTTP request and bound identity are intentionally explicit.
@@ -1076,3 +1108,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
+
+#[derive(Debug)]
+pub enum AccountGateError { Denied, Unavailable }
+impl std::fmt::Display for AccountGateError {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(match self {Self::Denied=>"account_access_denied",Self::Unavailable=>"account_access_unavailable"})}
+}
+impl std::error::Error for AccountGateError {}

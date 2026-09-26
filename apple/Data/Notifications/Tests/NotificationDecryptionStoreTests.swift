@@ -1,3 +1,4 @@
+@testable import AlondraServicePairing
 import AlondraAPIClient
 import AlondraNotificationPayload
 import CryptoKit
@@ -170,4 +171,67 @@ func failedContextMigrationDoesNotDeletePreviousKeys(failure: String) throws {
     let store = NotificationDecryptionStore(item: item)
     #expect(throws: (any Error).self) { try store.save(PushFixture(2).context) }
     #expect(item.bytes == original)
+}
+
+@Test func authorizedContextSnapshotRetainsTwoMacsAndPrunesPreviousAccountAtomically() throws {
+    let a = try PushFixture(1), b = try PushFixture(2), other = try PushFixture(3, owner: "owner-b")
+    let item = MemoryDecryptionItem()
+    let store = NotificationDecryptionStore(item: item)
+    try store.replaceAuthorizedContexts([a.context, b.context])
+    #expect(try store.load(binding: a.binding)?.agreementPrivateKey == a.context.agreementPrivateKey)
+    #expect(try store.load(binding: b.binding)?.agreementPrivateKey == b.context.agreementPrivateKey)
+    let before = item.bytes
+    item.state.withLock { $0.writeError = .keychain(errSecNotAvailable) }
+    #expect(throws: (any Error).self) { try store.replaceAuthorizedContexts([other.context]) }
+    #expect(item.bytes == before)
+    item.state.withLock { $0.writeError = nil }
+    try store.replaceAuthorizedContexts([other.context])
+    #expect(try store.load(binding: a.binding) == nil)
+    #expect(try store.load(binding: b.binding) == nil)
+    #expect(try store.load(binding: other.binding)?.scope?.ownerSub == "owner-b")
+}
+
+
+@MainActor private final class VaultSession {}
+@MainActor private final class BeforeVaultWriteGate {
+    var waiting = false
+    var entered: CheckedContinuation<Void, Never>?
+    var suspended: CheckedContinuation<Void, Never>?
+    func pause() async {
+        waiting = true; entered?.resume(); entered = nil
+        await withCheckedContinuation { suspended = $0 }
+    }
+    func waitUntilPaused() async { if !waiting { await withCheckedContinuation { entered = $0 } } }
+    func resume() { suspended?.resume(); suspended = nil }
+}
+
+@Test @MainActor func logoutImmediatelyBeforeVaultPublicationCannotRestorePrivateKeys() async throws {
+    let fixture = try PushFixture(1)
+    let pairing = ApprovedServicePairing(relayURL: URL(string: "https://relay.example")!,
+        macID: fixture.context.macID, deviceID: fixture.context.deviceID, ownerSub: "owner-a",
+        macSigningKey: "pin", macAgreementKey: "agreement", signingPrivateKey: Data([1]),
+        agreementPrivateKey: fixture.context.agreementPrivateKey, approvedAtMs: 1)
+    let item = MemoryDecryptionItem()
+    let store = NotificationDecryptionStore(item: item)
+    try store.save(fixture.context)
+    let gate = BeforeVaultWriteGate()
+    var committed = false
+    let registry = ApprovedSessionRegistry<VaultSession>(make: { _ in VaultSession() }, stop: { _ in },
+        publish: { _ in
+            await gate.pause() // the last suspension immediately before the real vault write
+            return {
+                try store.replaceAuthorizedContexts([fixture.context])
+                committed = true
+            }
+        }, clearPlatform: { try store.clear() })
+    let restoration = Task { try await registry.reconcile([pairing], verifiedSubject: "owner-a", preferred: nil) }
+    await gate.waitUntilPaused()
+    try await registry.clear()
+    #expect(item.bytes == nil)
+    gate.resume()
+    await #expect(throws: CancellationError.self) { try await restoration.value }
+    #expect(!committed)
+    #expect(item.bytes == nil)
+    #expect(try store.load(binding: fixture.binding) == nil)
+    #expect(registry.snapshot.entries.isEmpty)
 }

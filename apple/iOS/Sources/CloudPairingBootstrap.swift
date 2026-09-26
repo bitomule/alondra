@@ -18,9 +18,9 @@ func makeCloudPairingOwner(notifications: ServiceNotificationRuntime) -> CloudPa
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
         let available = await MainActor.run { DataScannerViewController.isAvailable }
         return allowed && available
-    }, didActivate: { approved, services in
-        try await notifications.activate(approved, services: services)
-    }, willDeactivate: { services in
-        try await notifications.deactivate(services)
+    }, didReconcile: { snapshot in
+        return try await notifications.prepare(snapshot)
+    }, willDeactivate: {
+        try await notifications.deactivate()
     })
 }

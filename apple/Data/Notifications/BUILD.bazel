@@ -12,5 +12,5 @@ swift_library(
 swift_test(
     name = "AlondraNotificationActionsTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraNotificationActions", "//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = ["//apple/ServicePairing:AlondraServicePairing", ":AlondraNotificationActions", "//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )

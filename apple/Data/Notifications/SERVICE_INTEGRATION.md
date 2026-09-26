@@ -87,10 +87,26 @@ writer and the extension reads atomic item snapshots. This is not an interproces
 writer lock. Migration supports existing data, not running an older app against a
 new collection format.
 
-Runtime activation remains single-session and its existing deactivate path still
-clears both stores and notifications. No Mac selector is enabled by this change.
-The next increment must separate selection from logout, keep registration and
-sessions per approved pairing, coordinate selective revocation across stores, and
-verify APNs fanout to two real Macs. Logout continues to attempt complete cleanup.
+Runtime restoration now prepares contexts and immutable notification clients for
+every approved pairing belonging to the verified subject. It publishes an exact
+authorized context snapshot with one Keychain update, pruning another account's
+contexts. Preparation performs no private-key writes. The registry commits the
+Keychain replacement, its session selection and PushCenter's clients in one
+synchronous, throwing MainActor step after preparation succeeds. Keychain failure
+aborts publication; logout cannot be overtaken by an actor-queued stale write. Selecting a Mac retains
+other clients, bindings and contexts; logout/account replacement still cancels all
+registrations and clears both stores plus delivered/pending notifications.
+
+PushRegistrationCoordinator serializes token upserts for all retained bindings.
+Each binding has its own durable preferences revision and success fingerprint. A
+failure from one Mac remains visible while the coordinator attempts the others.
+Late completions from a cancelled generation cannot mark a replacement identity
+registered. A token or quiet-hours change updates every binding; a selection-only
+change reuses completed registrations. Tests exercise this with recording transports
+and real preference ledgers, not physical APNs deliveries.
+
+No Mac selector is enabled by this change. Remaining gates include Settings UI,
+verified activation when tapping an inactive Mac notification, coordinated selective
+revocation, and full protocol/app verification with two isolated Macs.
 Scope records include relay and owner subject; the pairing model does not record
 an OIDC issuer, so this does not establish support for arbitrary multiple issuers.
