@@ -119,14 +119,28 @@ struct NewRequestFeatureTests {
         let attachment = NewRequestAttachment(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, name: "proof.txt", data: Data("proof".utf8))
         var initial = NewRequestFeature.State()
         initial.catalogIsCurrent = true
+        let confirmation = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<Void>.makeStream()
+        let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.newWorkOperations = operations(upload: { _ in "stored-1" })
+            $0.newWorkOperations = operations(upload: { _ in "stored-1" }, create: { body in
+                await sent.record(body)
+                started.continuation.yield(())
+                for await _ in confirmation.stream { return .confirmed }
+                return .cancelled
+            })
         }
         await store.send(.availabilityChanged(true)) { $0.canSubmit = true }
         await store.send(.textChanged(" first ")) { $0.text = " first " }
         await store.send(.attachmentAdded(attachment)) { $0.attachments = [attachment] }
         await store.send(.submitTapped) { $0.isSubmitting = true }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
         await store.send(.submitTapped)
+        #expect(store.state.text == " first " && store.state.attachments == [attachment])
+        #expect(await sent.calls == 1)
+        confirmation.continuation.yield(())
+        confirmation.continuation.finish()
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
             $0.text = ""
@@ -134,6 +148,8 @@ struct NewRequestFeatureTests {
             $0.successfulSubmissionCount = 1
         }
         await store.finish()
+        #expect(await sent.calls == 1)
+        started.continuation.finish()
     }
 
     @Test
