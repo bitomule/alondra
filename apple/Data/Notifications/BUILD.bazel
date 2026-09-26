@@ -4,6 +4,7 @@ swift_library(
     name = "AlondraNotificationActions",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraNotificationActions",
+    features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
     deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )

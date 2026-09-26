@@ -233,7 +233,9 @@ final class PushCenter {
 
     func respond(to response: NotificationResponse) async {
         guard let raw = response.encryptedPayload,
-              let context = try? decryptionStore?.load(), context.binding == currentBinding()?.value,
+              let hint = try? ServiceNotificationDecoder.bindingHint(raw),
+              hint == currentBinding(),
+              let context = try? decryptionStore?.load(binding: hint),
               let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context,
                   nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)),
               let payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [AnyHashable: Any],

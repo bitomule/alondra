@@ -12,8 +12,9 @@ Root integration requirements:
 - Provision the same explicit `keychain-access-groups` entry on iOS app and
   extension and put its fully expanded value in `AlondraPushKeychainAccessGroup`
   in both Info plists. Do not derive it from the bundle identifier alone.
-- At approved service activation derive a fresh PushBindingStore binding from
-  relay URL, device ID and credential revision. Save NotificationDecryptionContext
+- At approved service activation resolve a PushBindingStore binding from
+  relay URL, owner subject, Mac ID, device ID and credential revision. Returning to
+  an existing scope retains its binding; a distinct scope receives a new label. Save NotificationDecryptionContext
   with approved macID/deviceID, that binding, Mac signing public raw representation,
   and the client's agreement private key to NotificationDecryptionStore. No bearer
   or client signing private key belongs in that store.
@@ -61,3 +62,35 @@ or reverting settings advances it; the executor rejects delayed older writes.
 An authenticated stale_push_preferences response permits one bounded retry above
 current_revision, with the corrected local snapshot persisted before dispatch.
 Corrupt/unwritable ledger state fails visibly and cannot silently reset counters.
+
+## Multiple-context storage boundary
+
+The binding defaults and shared decryption Keychain item now hold version-1
+collections. Legacy records are decoded without writing. Binding adoption requires
+the old relay/device/credential context to match the approved activation; the
+credential revision includes the owner and pinned keys. Decryption-context adoption
+also requires identical Mac/device IDs, binding and key bytes. Corrupt, locked or
+future-version data cannot be overwritten as an empty collection. Duplicate labels
+and changing the owner or keys behind an existing label fail closed.
+
+The notification extension extracts the outer binding only as a lookup hint. It
+loads exactly that record, then verifies the signed envelope, sender, recipient,
+Mac route, expiration and inner binding before rendering any private text. It does
+not fall back to another context. The app additionally requires the active binding
+before routing an action; a retained inactive context cannot dispatch through the
+current Mac's session. The shared item still contains only agreement private keys
+and Mac public pins, never account tokens or client signing private keys.
+
+Each store supports selective removal and explicit full cleanup. Synchronous
+Keychain read/modify/write operations share a process mutex; the app is the only
+writer and the extension reads atomic item snapshots. This is not an interprocess
+writer lock. Migration supports existing data, not running an older app against a
+new collection format.
+
+Runtime activation remains single-session and its existing deactivate path still
+clears both stores and notifications. No Mac selector is enabled by this change.
+The next increment must separate selection from logout, keep registration and
+sessions per approved pairing, coordinate selective revocation across stores, and
+verify APNs fanout to two real Macs. Logout continues to attempt complete cleanup.
+Scope records include relay and owner subject; the pairing model does not record
+an OIDC issuer, so this does not establish support for arbitrary multiple issuers.

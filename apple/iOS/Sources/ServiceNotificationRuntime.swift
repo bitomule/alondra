@@ -1,5 +1,6 @@
 import AlondraAppComposition
 import AlondraNotificationActions
+import AlondraNotificationPayload
 import AlondraPushBinding
 import AlondraServicePairing
 import CryptoKit
@@ -48,12 +49,13 @@ final class ServiceNotificationRuntime {
         let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
             + Data(approved.ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
             .map { String(format: "%02x", $0) }.joined()
-        guard let binding = bindings.binding(server: approved.relayURL, deviceID: approved.deviceID,
-                                             credentialRevision: revision) else { throw ProvisioningError.binding }
+        let scope = NotificationBindingScope(relayURL: approved.relayURL, ownerSub: approved.ownerSub,
+            macID: approved.macID, deviceID: approved.deviceID, credentialRevision: revision)
+        guard let binding = bindings.binding(scope: scope) else { throw ProvisioningError.binding }
         do {
             try await vault.save(NotificationDecryptionContext(macID: approved.macID, deviceID: approved.deviceID,
                 binding: binding.value, macSigningKey: try approved.macSigningPublicKey().rawRepresentation,
-                agreementPrivateKey: approved.agreementPrivateKey))
+                agreementPrivateKey: approved.agreementPrivateKey, scope: scope))
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             let client = await services.notificationClient(identity: revision, binding: binding)
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
