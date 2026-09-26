@@ -139,7 +139,7 @@ fn card(v: &View, node: &Node, screen: &str) -> Question {
         ),
     };
     Question {
-        id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_question_id(),
         session_id: node.session_id.clone(),
         node_name: Some(name),
         title,

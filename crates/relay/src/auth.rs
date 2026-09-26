@@ -1,5 +1,5 @@
 use alondra_e2e::HttpChallengeVerifier;
-use anyhow::{Context, Result, bail};
+use anyhow::{ensure, Context, Result, bail};
 use axum::http::{HeaderMap, Method, Uri};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::VerifyingKey;
@@ -79,7 +79,7 @@ pub struct MacRegistration {
     pub agreement_key: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct DeviceRegistry {
     devices: HashMap<String, PhoneDevice>,
     phone_macs: HashMap<String, String>,
@@ -153,6 +153,7 @@ pub struct Identity {
 
 pub struct Auth {
     pub config: Config,
+    pub management: Option<crate::management::Management>,
     jwks: RwLock<CachedJwks>,
     jwks_refresh: AsyncMutex<()>,
     last_unknown_refresh: Mutex<Option<Instant>>,
@@ -355,6 +356,7 @@ impl Auth {
         Ok(Self {
             config,
             jwks: RwLock::new(jwks),
+            management: None,
             jwks_refresh: AsyncMutex::new(()),
             last_unknown_refresh: Mutex::new(None),
             devices: Mutex::new(devices),
@@ -503,6 +505,7 @@ impl Auth {
             &request.mac_id,
             &request.signing_key,
         )?;
+        self.require_live_route(&owner_sub,&request.mac_id,None).await?;
         Ok(MacDevice {
             mac_id: request.mac_id,
             owner_sub,
@@ -546,6 +549,50 @@ impl Auth {
             return Err(err);
         }
         Ok(true)
+    }
+
+    /// Product-account cleanup; caller holds device_gate exclusively.
+    /// This removes cloud authorization, never local Mac trust or private keys.
+    /// Deliberately metadata-only: no public keys or push tokens leave this API.
+    pub fn account_device_metadata(&self,owner:&str)->Result<Vec<(String,Vec<String>)>> {
+        self.ensure_registry_ready()?;
+        let registry=self.devices.lock().unwrap();
+        let mut macs=registry.macs.values().filter(|m|m.owner_sub==owner).map(|m| {
+            let mut clients=registry.devices.values().filter(|d|d.owner_sub==owner && registry.phone_macs.get(&d.device_id)==Some(&m.mac_id)).map(|d|d.device_id.clone()).collect::<Vec<_>>();clients.sort();
+            (m.mac_id.clone(),clients)
+        }).collect::<Vec<_>>();macs.sort_by(|a,b|a.0.cmp(&b.0));Ok(macs)
+    }
+    pub fn reconcile_device_revocation(&self,owner:&str,kind:&str,id:&str,mac_id:&str)->Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry=self.devices.lock().unwrap();let before=registry.clone();
+        let clients=if kind=="mac" {
+            if let Some(mac)=registry.macs.get(id) {ensure!(mac.owner_sub==owner,"revocation owner mismatch");}
+            registry.phone_macs.iter().filter(|(_,mac)|mac.as_str()==id).map(|(client,_)|client.clone()).collect::<Vec<_>>()
+        } else {vec![id.to_owned()]};
+        for client in &clients {
+            if let Some(record)=registry.devices.get(client) {
+                ensure!(record.owner_sub==owner && registry.phone_macs.get(client).map(String::as_str)==Some(mac_id),"revocation binding mismatch");
+            }
+        }
+        if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
+        for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.revoked_ids.insert(client);}
+        if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
+        Ok(())
+    }
+
+    pub fn revoke_owner(&self,owner:&str)->Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry=self.devices.lock().unwrap();
+        let before=registry.clone();
+        let phones:Vec<String>=registry.devices.values().filter(|d|d.owner_sub==owner).map(|d|d.device_id.clone()).collect();
+        let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
+        if phones.is_empty() && macs.is_empty() {return Ok(())}
+        for id in phones {
+            registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.revoked_ids.insert(id);
+        }
+        for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
+        if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
+        Ok(())
     }
 
     pub fn revoke_mac(&self, who: &Identity) -> Result<()> {
@@ -643,7 +690,7 @@ impl Auth {
         self.devices.lock().unwrap().macs.contains_key(mac_id)
     }
 
-    pub fn authenticate_mac(
+    pub async fn authenticate_mac(
         &self,
         headers: &HeaderMap,
         method: &Method,
@@ -670,6 +717,7 @@ impl Auth {
             &mac.mac_id,
             &mac.signing_key,
         )?;
+        self.require_live_route(&mac.owner_sub,&mac.mac_id,None).await?;
         Ok(Identity {
             device_id: mac.mac_id,
             owner_sub: mac.owner_sub,
@@ -771,6 +819,8 @@ impl Auth {
             bail!("device does not belong to token subject");
         }
         self.verify_device(headers, method, uri, body, now_ms, id, &device.signing_key)?;
+        let mac=self.paired_mac_for_phone(id,&sub)?;
+        self.require_live_route(&sub,&mac,Some(id)).await?;
         Ok(Identity {
             device_id: id.into(),
             owner_sub: sub,
@@ -799,6 +849,7 @@ impl Auth {
             .context("expected Bearer token")?;
         let sub = self.verify_jwt(token, now_ms).await?;
         self.mac_for_owner(mac_id, &sub)?;
+        self.require_live_route(&sub,mac_id,Some(device_id)).await?;
         self.verify_device(headers, method, uri, body, now_ms, device_id, signing_key)?;
         Ok(Identity { device_id: device_id.to_owned(), owner_sub: sub })
     }
@@ -868,7 +919,31 @@ impl Auth {
         if !audience_ok {
             bail!("JWT audience mismatch");
         }
+        self.require_active_owner(&c.sub).await?;
         Ok(c.sub)
+    }
+
+    pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
+        if let Some(db)=&self.management {
+            db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
+                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {anyhow::anyhow!(AccountGateError::Unavailable)}
+            })?;
+        }
+        Ok(())
+    }
+    pub async fn require_live_phone(&self,who:&Identity)->Result<()> {
+        let mac=self.paired_mac_for_phone(&who.device_id,&who.owner_sub)?;
+        self.require_live_route(&who.owner_sub,&mac,Some(&who.device_id)).await
+    }
+    pub async fn require_active_owner(&self,subject:&str)->Result<()> {
+        if let Some(management)=&self.management {
+            management.active_identity(&self.config.issuer,subject).await.map_err(|error| {
+                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
+                    anyhow::anyhow!(AccountGateError::Denied)
+                } else {anyhow::anyhow!(AccountGateError::Unavailable)}
+            })?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)] // The signed HTTP request and bound identity are intentionally explicit.
@@ -1056,3 +1131,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
+
+#[derive(Debug)]
+pub enum AccountGateError { Denied, Unavailable }
+impl std::fmt::Display for AccountGateError {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(match self {Self::Denied=>"account_access_denied",Self::Unavailable=>"account_access_unavailable"})}
+}
+impl std::error::Error for AccountGateError {}

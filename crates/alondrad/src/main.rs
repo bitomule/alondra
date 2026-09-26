@@ -4,6 +4,7 @@ mod auth;
 mod classify;
 mod http;
 mod hook_socket;
+mod delivery;
 mod issues;
 mod keeper;
 mod hub;
@@ -66,8 +67,10 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
 
-    let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
+    // Own the per-home socket before recovery/migration can change durable delivery state.
+    std::fs::create_dir_all(&config.home)?;
     let hooks = hook_socket::bind(&config.home).await?;
+    let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
     tokio::spawn(hook_socket::serve(hooks, hub.clone()));
     tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
     if config.legacy_bridge {

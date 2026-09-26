@@ -11,13 +11,18 @@ anyhow.workspace = true
 axum.workspace = true
 base64 = "0.23.1"
 p256 = { version = "0.14.0", features = ["ecdsa"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "json", "http2", "form", "query"] }
 ring = "0.17.14"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
 subtle = "2.6.1"
+openidconnect = { version = "=4.0.1", default-features = false }
 tokio.workspace = true
+
+sqlx-core = { version = "=0.8.6", default-features = false, features = ["_rt-tokio", "_tls-native-tls", "migrate"] }
+sqlx-postgres = { version = "=0.8.6", default-features = false, features = ["uuid", "migrate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 axum = { workspace = true, features = ["http2"] }

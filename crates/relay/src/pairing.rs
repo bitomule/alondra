@@ -112,6 +112,11 @@ struct Session {
 pub struct Mailbox(Mutex<HashMap<String, Session>>);
 
 impl Mailbox {
+    pub fn purge_device(&self,owner:&str,kind:&str,id:&str) {
+        self.0.lock().unwrap().retain(|_,s|s.owner_sub!=owner || if kind=="mac" {s.mac_id!=id} else {s.candidate.as_ref().is_none_or(|c|c.device_id!=id)});
+    }
+    pub fn purge_owner(&self,owner:&str) {self.0.lock().unwrap().retain(|_,session|session.owner_sub!=owner);}
+
     pub fn open(&self, req: SessionRequest, owner_sub: &str, now: u64) -> Result<(), &'static str> {
         if !valid_id(&req.session_id)
             || req.mac_id.is_empty()

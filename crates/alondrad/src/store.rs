@@ -10,18 +10,21 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).with_context(|| format!("abriendo {}", path.display()))?;
+        let mut conn = Connection::open(path).with_context(|| format!("abriendo {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS events (
-                seq INTEGER PRIMARY KEY,
-                at INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                session TEXT,
-                body TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS events_session ON events(session);
+        // An old writer must fail before replay, even after snapshots compact away new events.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let kind: Option<String> = tx.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r|r.get(0)).optional()?;
+        let new_kind: Option<String> = tx.query_row("SELECT type FROM sqlite_schema WHERE name='event_log'", [], |r|r.get(0)).optional()?;
+        match (kind.as_deref(), new_kind.as_deref()) {
+            (Some("table"), None) => tx.execute_batch("DROP INDEX IF EXISTS events_session; ALTER TABLE events RENAME TO event_log;")?,
+            (None, None) => tx.execute_batch("CREATE TABLE event_log (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, session TEXT, body TEXT NOT NULL);")?,
+            (Some("view"), Some("table")) => (),
+            _ => anyhow::bail!("unsupported event storage layout; refusing delivery migration"),
+        }
+        tx.execute_batch("CREATE VIEW IF NOT EXISTS events AS SELECT seq,at,kind,session,body FROM event_log;
+            CREATE INDEX IF NOT EXISTS event_log_session ON event_log(session);
             CREATE TABLE IF NOT EXISTS local_command_results (
                 sender TEXT NOT NULL, request_id TEXT NOT NULL, digest BLOB NOT NULL,
                 result TEXT NOT NULL, PRIMARY KEY(sender, request_id)
@@ -32,6 +35,7 @@ impl Store {
                 body TEXT NOT NULL
             );",
         )?;
+        tx.commit()?;
         Ok(Store { conn })
     }
 
@@ -60,9 +64,9 @@ impl Store {
         // Compaction can delete every event while keeping a snapshot. SQLite's implicit
         // rowid would then restart at 1, below that snapshot, and replay would miss writes.
         conn.execute(
-            "INSERT INTO events (seq, at, kind, session, body)
+            "INSERT INTO event_log (seq, at, kind, session, body)
              VALUES ((SELECT MAX(seq) + 1 FROM (
-                 SELECT COALESCE(MAX(seq), 0) AS seq FROM events
+                 SELECT COALESCE(MAX(seq), 0) AS seq FROM event_log
                  UNION ALL SELECT COALESCE(MAX(seq), 0) FROM snapshots
              )), ?1, ?2, ?3, ?4)",
             params![at, event.kind(), event.session_id(), body],
@@ -99,14 +103,14 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute("INSERT OR REPLACE INTO snapshots (seq, at, body) VALUES (?1, ?2, ?3)", params![view.seq as i64, at, body])?;
         tx.execute("DELETE FROM snapshots WHERE seq < ?1", params![view.seq as i64])?;
-        let deleted = tx.execute("DELETE FROM events WHERE seq <= ?1 AND at < ?2", params![view.seq as i64, before])?;
+        let deleted = tx.execute("DELETE FROM event_log WHERE seq <= ?1 AND at < ?2", params![view.seq as i64, before])?;
         tx.commit()?;
         self.conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(deleted)
     }
 
     pub fn replay(&self, after: u64, mut f: impl FnMut(u64, Millis, Event)) -> Result<u64> {
-        let mut stmt = self.conn.prepare("SELECT seq, at, body FROM events WHERE seq > ?1 ORDER BY seq")?;
+        let mut stmt = self.conn.prepare("SELECT seq, at, body FROM event_log WHERE seq > ?1 ORDER BY seq")?;
         let mut rows = stmt.query(params![after as i64])?;
         let mut count = 0;
         while let Some(row) = rows.next()? {
@@ -124,7 +128,7 @@ impl Store {
     /// The session's newest `limit` events before `before` (all of them when it is `None`), newest first.
     pub fn session_timeline(&self, session: &str, limit: usize, before: Option<u64>) -> Result<Vec<(u64, Millis, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT seq, at, body FROM events WHERE session = ?1 AND seq < ?3 ORDER BY seq DESC LIMIT ?2",
+            "SELECT seq, at, body FROM event_log WHERE session = ?1 AND seq < ?3 ORDER BY seq DESC LIMIT ?2",
         )?;
         let before = before.map_or(i64::MAX, |b| b as i64);
         let rows = stmt.query_map(params![session, limit as i64, before], |r| {
@@ -139,6 +143,67 @@ mod tests {
     use super::*;
     use alondra_core::{HookEvent, states, upkeep};
     use std::collections::BTreeSet;
+
+    #[test]
+    #[ignore = "requires ALONDRA_LEGACY_DAEMON_TEST pointing to released 0.1.4 daemon"]
+    fn delivery_released_014_daemon_refuses_migrated_database_before_event_mutation() {
+        let binary=std::env::var_os("ALONDRA_LEGACY_DAEMON_TEST").expect("provide released daemon path");
+        let version=std::process::Command::new(&binary).arg("--version").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&version.stdout).trim(),"alondrad 0.1.4");
+        let home=std::env::temp_dir().join(format!("delivery-old-writer-{}",crate::auth::random_hex(6)));
+        std::fs::create_dir(&home).unwrap();
+        let mut store=Store::open(&home.join("alondra.db")).unwrap();
+        store.append(1,&Event::Clock {machine_strained:false}).unwrap();
+        let before:Vec<(i64,String)>=store.conn.prepare("SELECT seq,body FROM events ORDER BY seq").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let stderr=std::fs::File::create(home.join("old-stderr.log")).unwrap();
+        let mut child=std::process::Command::new(&binary).env("ALONDRA_HOME",&home).env("ALONDRA_PORT","0").env("ALONDRA_WAKE","0").env("ALONDRA_SANDBOX","1")
+            .stdout(std::process::Stdio::null()).stderr(stderr).spawn().unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let status=loop {
+            if let Some(status)=child.try_wait().unwrap() {break status;}
+            if std::time::Instant::now()>deadline {child.kill().unwrap();child.wait().unwrap();panic!("legacy daemon failed to reject migration promptly");}
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(!status.success());
+        let error=std::fs::read_to_string(home.join("old-stderr.log")).unwrap();
+        assert!(error.contains("views may not be indexed"),"{error}");
+        let after:Vec<(i64,String)>=store.conn.prepare("SELECT seq,body FROM events ORDER BY seq").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(before,after);assert!(!home.join("hooks.sock").exists());
+        drop(store);std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn delivery_schema_migration_preserves_rows_snapshots_and_blocks_previous_writer() {
+        let path=std::env::temp_dir().join(format!("delivery-migration-{}.db",crate::auth::random_hex(6)));
+        let old=Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE INDEX events_session ON events(session); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
+        let event=serde_json::to_string(&Event::Clock {machine_strained:false}).unwrap();
+        let snapshot=serde_json::to_string(&View::default()).unwrap();
+        old.execute("INSERT INTO events VALUES(9,123,'clock',NULL,?1)",[&event]).unwrap();
+        old.execute("INSERT INTO snapshots VALUES(3,99,?1)",[&snapshot]).unwrap();drop(old);
+        let mut store=Store::open(&path).unwrap();
+        assert_eq!(store.conn.query_row("SELECT body FROM events WHERE seq=9",[],|r|r.get::<_,String>(0)).unwrap(),event);
+        assert_eq!(store.conn.query_row("SELECT body FROM snapshots WHERE seq=3",[],|r|r.get::<_,String>(0)).unwrap(),snapshot);
+        // This is the unmodified 0.1.4 Store::open index statement. The compatibility view must reject it.
+        assert!(store.conn.execute_batch("CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE INDEX IF NOT EXISTS events_session ON events(session);").unwrap_err().to_string().contains("views may not be indexed"));
+        let mut view=View::default();view.seq=9;
+        store.compact(&view,200,199).unwrap();
+        assert!(store.conn.execute_batch("CREATE INDEX IF NOT EXISTS events_session ON events(session);").is_err(),"snapshot/compaction must not remove downgrade barrier");
+        drop(store);std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delivery_schema_failure_rolls_back_rename_index_and_rows() {
+        let path=std::env::temp_dir().join(format!("delivery-migration-failure-{}.db",crate::auth::random_hex(6)));
+        let db=Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE INDEX events_session ON events(session); INSERT INTO events VALUES(7,42,'clock',NULL,'original bytes'); CREATE TABLE event_log_session(x);").unwrap();
+        assert!(Store::open(&path).is_err(),"index namespace collision injects failure after rename");
+        assert_eq!(db.query_row("SELECT type FROM sqlite_schema WHERE name='events'",[],|r|r.get::<_,String>(0)).unwrap(),"table");
+        assert_eq!(db.query_row("SELECT body FROM events WHERE seq=7",[],|r|r.get::<_,String>(0)).unwrap(),"original bytes");
+        assert!(db.query_row("SELECT 1 FROM sqlite_schema WHERE name='events_session'",[],|r|r.get::<_,u8>(0)).is_ok());
+        assert!(db.query_row("SELECT 1 FROM sqlite_schema WHERE name='event_log'",[],|r|r.get::<_,u8>(0)).optional().unwrap().is_none());
+        drop(db);std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn append_then_replay_rebuilds_same_events() {

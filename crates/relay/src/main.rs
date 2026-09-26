@@ -1,7 +1,10 @@
 mod auth;
+mod management;
 mod pairing;
 mod push;
 mod state;
+mod web_session;
+mod web_assets;
 
 use alondra_e2e::EnvelopeV1;
 use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
@@ -26,6 +29,9 @@ use tokio::sync::{RwLock, Semaphore};
 
 struct Server {
     auth: Auth,
+    management_keycloak: Option<management::keycloak::Keycloak>,
+    web_session: Option<Arc<web_session::WebSession>>,
+    web_assets: Option<web_assets::WebAssets>,
     apns: Option<push::Apns>,
     queue: Queue,
     pairing: pairing::Mailbox,
@@ -38,6 +44,8 @@ struct Server {
 
 fn router(server: Arc<Server>) -> Router {
     Router::new()
+        .merge(management::http::routes())
+        .merge(web_session::routes())
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
@@ -57,7 +65,9 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/work", get(work))
         .route("/v1/work/{id}/receipt", post(receipt))
         .route("/v1/work/{id}/response", post(respond))
+        .fallback(web_assets::serve)
         .layer(DefaultBodyLimit::max(state::MAX_RESPONSE_BYTES))
+        .layer(middleware::from_fn_with_state(server.clone(),web_session::middleware))
         .layer(middleware::from_fn_with_state(
             server.clone(),
             limit_and_headers,
@@ -89,8 +99,8 @@ async fn pairing_open(
     State(server): State<Arc<Server>>, headers: HeaderMap, method: Method, uri: Uri, body: Bytes,
 ) -> ApiResult {
     if body.len() > 2048 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
-    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     let request: pairing::SessionRequest = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_pairing_session"))?;
     if request.mac_id != mac.device_id { return Err(unauthorized()); }
@@ -103,8 +113,8 @@ async fn pairing_pending(
     State(server): State<Arc<Server>>, Path(id): Path<String>, headers: HeaderMap,
     method: Method, uri: Uri,
 ) -> ApiResult {
-    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &[], now_ms())
-        .map_err(|_| unauthorized())?;
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
+        .map_err(authentication_error)?;
     match server.pairing.mac(&id, &mac.device_id, now_ms()) {
         Ok(Some(candidate)) => Ok(Json(candidate).into_response()),
         Ok(None) => Ok(StatusCode::NO_CONTENT.into_response()),
@@ -123,7 +133,7 @@ async fn pairing_candidate(
         .map_err(|_| error(StatusCode::NOT_FOUND, "pairing_not_found"))?;
     let who = server.auth.authenticate_pairing_candidate(
         &headers, &method, &uri, &body, now_ms(), &request.device_id, &request.signing_key, &mac_id,
-    ).await.map_err(|_| unauthorized())?;
+    ).await.map_err(authentication_error)?;
     if who.owner_sub != owner { return Err(unauthorized()); }
     server.pairing.candidate(&id, request, &who.owner_sub, now_ms())
         .map_err(|code| error(StatusCode::CONFLICT, code))?;
@@ -135,12 +145,12 @@ async fn pairing_approve(
     method: Method, uri: Uri, body: Bytes,
 ) -> ApiResult {
     if body.len() > 4096 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
-    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+    let mac = server.auth.authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     let proof: pairing::ApprovalProof = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_approval"))?;
     let mac_record = server.auth.mac_public_identity(&mac.device_id)
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     if proof.approval.mac_signing_key != mac_record.signing_key
         || proof.approval.mac_agreement_key != mac_record.agreement_key
     { return Err(error(StatusCode::BAD_REQUEST, "approval_mac_key_mismatch")); }
@@ -163,7 +173,7 @@ async fn pairing_approval(
         .map_err(|_| error(StatusCode::NOT_FOUND, "pairing_not_found"))?;
     let who = server.auth.authenticate_pairing_candidate(
         &headers, &method, &uri, &[], now_ms(), device_id, &key, &mac_id,
-    ).await.map_err(|_| unauthorized())?;
+    ).await.map_err(authentication_error)?;
     match server.pairing.approval(&id, device_id, &who.owner_sub, now_ms()) {
         Ok(Some(proof)) => Ok(Json(proof).into_response()),
         Ok(None) => Ok(StatusCode::NO_CONTENT.into_response()),
@@ -187,7 +197,7 @@ async fn enroll_mac(
         .auth
         .authorize_mac_enrollment(&headers, &method, &uri, &body, now_ms(), request)
         .await
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     let created = server
         .auth
         .enroll_mac(mac)
@@ -205,7 +215,7 @@ async fn enroll_mac(
 
 /// OIDC authenticates ownership for discovery, never authorizes content access.
 async fn list_macs(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiResult {
-    let owner = server.auth.account_owner(&headers, now_ms()).await.map_err(|_| unauthorized())?;
+    let owner = server.auth.account_owner(&headers, now_ms()).await.map_err(authentication_error)?;
     let _gate = server.device_gate.read().await;
     let ids = server.auth.mac_ids_for_owner(&owner)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_directory_unavailable"))?;
@@ -223,8 +233,8 @@ async fn revoke_mac(
     let _gate = server.device_gate.write().await;
     let who = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &[], now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
+        .map_err(authentication_error)?;
     if who.device_id != id {
         return Err(unauthorized());
     }
@@ -283,13 +293,14 @@ async fn enroll(
     let _gate = server.device_gate.write().await;
     let mac = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     if body.len() > 4096 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
     let device: PhoneDevice = serde_json::from_slice(&body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_device"))?;
+    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&device.device_id)).await.map_err(authentication_error)?;
     server
         .auth
         .enroll(&mac, device)
@@ -307,8 +318,8 @@ async fn revoke(
     let _gate = server.device_gate.write().await;
     let mac = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &[], now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
+        .map_err(authentication_error)?;
     server
         .auth
         .revoke(&mac, &id)
@@ -332,7 +343,7 @@ async fn register_push(
         .auth
         .authenticate_phone(&headers, &method, &uri, &body, now_ms())
         .await
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     if body.len() > 1024 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
@@ -369,8 +380,8 @@ async fn send_push(
     let _gate = server.device_gate.read().await;
     let mac = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     if body.len() > 4096 {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
     }
@@ -391,7 +402,7 @@ async fn send_push(
         &server
             .auth
             .mac_key(&mac.device_id)
-            .map_err(|_| unauthorized())?,
+            .map_err(authentication_error)?,
         &mac.device_id,
         &request.device_id,
         &mac.device_id,
@@ -414,6 +425,7 @@ async fn send_push(
             "apns_payload_too_large",
         ));
     }
+    server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&request.device_id)).await.map_err(authentication_error)?;
     apns.send(&registration, e)
         .await
         .map_err(|_| error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"))?;
@@ -455,7 +467,7 @@ async fn submit(
         .auth
         .authenticate_phone(&headers, &method, &uri, &body, now_ms())
         .await
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     let (fields, v) = parse_envelope(&body, state::MAX_ENVELOPE_BYTES)?;
     if fields.kind != "request"
         || fields.route != fields.recipient
@@ -485,7 +497,7 @@ async fn submit(
     let sender_key = server
         .auth
         .phone_key(&who.device_id)
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     fields
         .verify_signature(
             &sender_key,
@@ -529,7 +541,7 @@ async fn request_status(
         .auth
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
         .await
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     let result = server
         .queue
         .get(&who.owner_sub, &who.device_id, &id, now_ms())
@@ -562,7 +574,7 @@ async fn changes(
         .auth
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
         .await
-        .map_err(|_| unauthorized())?;
+        .map_err(authentication_error)?;
     if query.epoch.as_deref().is_some_and(|e| e != server.epoch) {
         return Err((
             StatusCode::CONFLICT,
@@ -580,6 +592,7 @@ async fn changes(
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
         let (revision, events) =
             server
                 .queue
@@ -601,6 +614,7 @@ async fn changes(
                 .into_response());
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
             drop(permit);
             return Ok((
                 StatusCode::OK,
@@ -627,8 +641,8 @@ async fn work(
     let _gate = server.device_gate.read().await;
     let who = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &[], now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
+        .map_err(authentication_error)?;
     let wait_s = query.wait_s.min(25);
     let permit = server
         .work_waiters
@@ -640,6 +654,7 @@ async fn work(
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
         if let Some(item) = server.queue.next_work(&who.device_id, now_ms()) {
             drop(permit);
             return Ok((
@@ -653,6 +668,7 @@ async fn work(
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
             drop(permit);
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
@@ -670,8 +686,8 @@ async fn receipt(
     let _gate = server.device_gate.read().await;
     let who = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     if !body.is_empty() {
         return Err(error(StatusCode::BAD_REQUEST, "receipt_body_must_be_empty"));
     }
@@ -697,8 +713,8 @@ async fn respond(
     let _gate = server.device_gate.read().await;
     let who = server
         .auth
-        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
-        .map_err(|_| unauthorized())?;
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms()).await
+        .map_err(authentication_error)?;
     let (fields, v) = parse_envelope(&body, state::MAX_RESPONSE_BYTES)?;
     let phone_id = server
         .queue
@@ -720,13 +736,14 @@ async fn respond(
             &server
                 .auth
                 .mac_key(&who.device_id)
-                .map_err(|_| unauthorized())?,
+                .map_err(authentication_error)?,
             &who.device_id,
             &phone_id,
             &who.device_id,
             now_ms(),
         )
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope_signature"))?;
+    server.auth.require_live_route(&who.owner_sub,&who.device_id,Some(&phone_id)).await.map_err(authentication_error)?;
     let status = server
         .queue
         .respond(&who.device_id, &phone_id, &id, v, now_ms())
@@ -751,11 +768,29 @@ async fn main() -> anyhow::Result<()> {
     let config: Config = serde_json::from_slice(&std::fs::read(path)?)?;
     let listen = config.listen.clone();
     let apns = config.apns.clone().map(push::Apns::open).transpose()?;
-    let auth = Auth::open(config).await?;
+    let mut auth = Auth::open(config).await?;
+    if let Ok(database_url)=std::env::var("ALONDRA_MANAGEMENT_DATABASE_URL") {
+        let management=management::Management::open(&database_url,auth.config.issuer.clone()).await?;
+        management.bootstrap(&std::env::var("ALONDRA_MANAGEMENT_ADMIN_SUB")?,"Administrator").await?;
+        auth.management=Some(management);
+    }
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
+    let management_keycloak=if auth.management.is_some() {
+        let keycloak=management::keycloak::Keycloak::new(
+            std::env::var("ALONDRA_MANAGEMENT_KC_ADMIN_REALM_URL")?.parse()?,
+            std::env::var("ALONDRA_MANAGEMENT_KC_TOKEN_URL")?.parse()?,
+            std::env::var("ALONDRA_MANAGEMENT_KC_CLIENT_ID")?,
+            std::fs::read_to_string(std::env::var("ALONDRA_MANAGEMENT_KC_SECRET_FILE")?)?.trim().into())?;
+        keycloak.verify_realm().await?;Some(keycloak)
+    } else {None};
+    let web_session = web_session::WebSession::from_env(&auth)?;
+    let web_assets = web_assets::WebAssets::from_env(web_session.is_some())?;
     let server = Arc::new(Server {
         auth,
+        web_assets,
+        web_session,
+        management_keycloak,
         apns,
         queue: Queue::new(),
         pairing: pairing::Mailbox::default(),
@@ -766,6 +801,8 @@ async fn main() -> anyhow::Result<()> {
         epoch,
     });
     let listener = tokio::net::TcpListener::bind(&listen).await?;
+    if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
+    if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
     let refreshing = server.clone();
     tokio::spawn(async move {
         loop {
@@ -866,6 +903,10 @@ mod http_tests {
         mac_key: &SigningKey,
         apns_endpoint: Option<String>,
     ) -> (String, Arc<Server>, tokio::task::JoinHandle<()>) {
+        test_server_with_management(mac_key,apns_endpoint,None).await
+    }
+
+    async fn test_server_with_management(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
         let registry = std::env::temp_dir().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
             std::process::id(),
@@ -884,10 +925,14 @@ mod http_tests {
             device_registry_path: registry,
             apns: None,
         };
-        let auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        let mut auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        auth.management=management;
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
             auth,
+            management_keycloak: None,
+            web_session: None,
+            web_assets: None,
             apns: apns_endpoint.map(push::Apns::test),
             queue: Queue::new(),
             pairing: pairing::Mailbox::default(),
@@ -904,6 +949,92 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    #[ignore="requires disposable local PostgreSQL"]
+    async fn management_http_own_device_revocation_isolated_immediate_and_reconciled()->anyhow::Result<()> {
+        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        for (email,subject) in [("first@example.com","owner"),("second@example.com","other")] {
+            let invite=db.create_invitation(admin.id,email,300).await?;
+            db.reserve_acceptance(&invite.token,"Owner").await?.complete(subject).await?;
+        }
+        let mac_key=SigningKey::from_slice(&[21u8;32]).unwrap();let phone_key=SigningKey::from_slice(&[22u8;32]).unwrap();
+        let (url,server,join)=test_server_with_management(&mac_key,None,Some(db.clone())).await;
+        server.auth.enroll_mac(auth::MacDevice{mac_id:"mac-other".into(),owner_sub:"other".into(),signing_key:key_bytes(&mac_key),agreement_key:key_bytes(&phone_key)})?;
+        for (mac,owner,id) in [("mac-1","owner","client-first"),("mac-other","other","client-other")] {
+            server.auth.enroll(&auth::Identity{device_id:mac.into(),owner_sub:owner.into()},PhoneDevice{device_id:id.into(),owner_sub:owner.into(),signing_key:key_bytes(&phone_key)})?;
+        }
+        let client=reqwest::Client::new();
+        let auth=jwt("owner",now_ms());
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"].as_array().unwrap().len(),1);assert_eq!(listing["macs"][0]["mac_id"],"mac-1");
+        assert_eq!(listing["macs"][0]["clients"][0]["device_id"],"client-first");
+        assert!(!listing.to_string().contains("signing_key"));assert!(!listing.to_string().contains("client-other"));
+        let denied=client.delete(format!("{url}/v1/account/devices/clients/client-other")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-foreign-0001").send().await?;
+        assert_eq!(denied.status(),StatusCode::NOT_FOUND);
+        let path="/v1/changes?since=0&wait_s=25";
+        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")).bearer_auth(&auth),&phone_key,"client-first","GET",path,&[],181).send();
+        let pending=tokio::spawn(pending);
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {while server.change_waiters.available_permits()==64 {tokio::task::yield_now().await;}}).await?;
+        let response=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???.status(),StatusCode::FORBIDDEN);
+        assert!(server.auth.phone_key("client-first").is_ok(),"SQL tombstone must deny before registry worker runs");
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"][0]["clients"][0]["status"],"revoked");assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"pending");
+        let body=serde_json::to_vec(&json!({"device_id":"client-first","owner_sub":"owner","signing_key":key_bytes(&phone_key)}))?;
+        let response=sign(&server.auth.server_epoch(),client.post(format!("{url}/v1/devices")).body(body.clone()),&mac_key,"mac-1","POST","/v1/devices",&body,182).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"a Mac signature cannot resurrect a PG-revoked binding");
+        let repeated=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-own-00001").send().await?;
+        assert_eq!(repeated.status(),StatusCode::CONFLICT);
+        assert!(management::worker::step(&server).await?);
+        assert!(server.auth.phone_key("client-first").is_err());assert!(server.auth.phone_key("client-other").is_ok());
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
+        assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"completed");
+        server.auth.enroll(&auth::Identity{device_id:"mac-1".into(),owner_sub:"owner".into()},PhoneDevice{device_id:"client-descendant".into(),owner_sub:"owner".into(),signing_key:key_bytes(&phone_key)})?;
+        let response=client.delete(format!("{url}/v1/account/devices/macs/mac-1")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-mac-00001").send().await?;
+        assert_eq!(response.status(),StatusCode::ACCEPTED);
+        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&mac_key,"mac-1","GET","/v1/work?wait_s=0",&[],183).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        assert!(db.require_live_device("owner","fresh-mac",Some("client-descendant")).await.is_err(),"Mac revocation persists child IDs independently from the old route");
+        while management::worker::step(&server).await? {}
+        assert!(!server.auth.is_mac_registered("mac-1"));assert!(server.auth.is_mac_registered("mac-other"));
+        let response=client.delete(format!("{url}/v1/account")).bearer_auth(&auth).header("Idempotency-Key","self-delete-confirm-0001").json(&json!({"confirm":false})).send().await?;
+        assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(db.active_identity("https://id.example/realms/alondra","owner").await.is_ok());
+        join.abort();management::tests::cleanup(db,schema).await
+    }
+
+    #[tokio::test]
+    #[ignore="requires disposable local PostgreSQL"]
+    async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage_after_wait() -> anyhow::Result<()> {
+        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        let invitation=db.create_invitation(admin.id,"gate@example.com",300).await?;
+        let owner=db.reserve_acceptance(&invitation.token,"Owner").await?.complete("owner").await?;
+        let key=SigningKey::from_slice(&[21u8;32]).unwrap();
+        let (url,server,join)=test_server_with_management(&key,None,Some(db.clone())).await;
+        let client=reqwest::Client::new();
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("uninvited",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("owner",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::OK);
+        let path="/v1/work?wait_s=25";
+        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")),&key,"mac-1","GET",path,&[],211).send();
+        let pending=tokio::spawn(pending);
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {
+            while server.work_waiters.available_permits()==16 {tokio::task::yield_now().await;}
+        }).await?;
+        db.disable_account(admin.id,owner.id,false).await?;
+        server.queue.changed.notify_waiters();
+        let response=tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"already authenticated long poll must revalidate after wake");
+        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&key,"mac-1","GET","/v1/work?wait_s=0",&[],212).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
+        db.pool.close().await;
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("stable-admin-sub",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE,"database outage must not fall back to OIDC-only admission");
+        join.abort();management::tests::cleanup(db,schema).await
     }
 
     #[tokio::test]
@@ -2061,20 +2192,20 @@ mod http_tests {
         assert!(
             server
                 .auth
-                .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000)
+                .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000).await
                 .is_ok()
         );
         let later = headers_at(1_300_001, 2);
         assert!(
             server
                 .auth
-                .authenticate_mac(&later, &Method::GET, &uri, &[], 1_300_001)
+                .authenticate_mac(&later, &Method::GET, &uri, &[], 1_300_001).await
                 .is_ok()
         );
         assert!(
             server
                 .auth
-                .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000)
+                .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000).await
                 .is_err(),
             "rollback must not revive a pruned nonce"
         );
@@ -2616,5 +2747,13 @@ mod http_tests {
         assert!(restarted.jwks_ready());
         assert!(restarted.is_phone_registered("phone-after-rename"));
         handle.abort();
+    }
+}
+
+fn authentication_error(error_value:anyhow::Error)->(StatusCode,Json<Value>) {
+    match error_value.downcast_ref::<auth::AccountGateError>() {
+        Some(auth::AccountGateError::Unavailable)=>error(StatusCode::SERVICE_UNAVAILABLE,"account_access_unavailable"),
+        Some(auth::AccountGateError::Denied)=>error(StatusCode::FORBIDDEN,"account_access_denied"),
+        None=>unauthorized(),
     }
 }

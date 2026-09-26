@@ -3,6 +3,9 @@ import Security
 import Synchronization
 
 public protocol ApprovedPairingStore: Sendable {
+    func loadCollection() throws -> ApprovedPairingCollection
+    func select(_ id: ApprovedPairingID) throws
+    func restoreSelection(_ previous: ApprovedPairingID, ifSelected attempted: ApprovedPairingID) throws
     func load() throws -> ApprovedServicePairing?
     func save(_ pairing: ApprovedServicePairing) throws
     /// Explicit logout removes every locally retained pairing, not only selection.
@@ -36,6 +39,26 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
         try Self.transaction.withLock { _ in
             var collection = try readCollection()
             try collection.upsert(pairing)
+            try item.write(JSONEncoder().encode(collection))
+        }
+    }
+
+    public func select(_ id: ApprovedPairingID) throws {
+        try Self.transaction.withLock { _ in
+            var collection = try readCollection()
+            try collection.select(id)
+            try item.write(JSONEncoder().encode(collection))
+        }
+    }
+
+    /// Compensate a failed publication only while its selection is still current.
+    /// Never reconstruct a deleted collection or overwrite a newer approval.
+    public func restoreSelection(_ previous: ApprovedPairingID, ifSelected attempted: ApprovedPairingID) throws {
+        try Self.transaction.withLock { _ in
+            var collection = try readCollection()
+            guard collection.selectedID == attempted,
+                  collection.pairings.contains(where: { ApprovedPairingID($0) == previous }) else { return }
+            try collection.select(previous)
             try item.write(JSONEncoder().encode(collection))
         }
     }

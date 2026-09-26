@@ -12,8 +12,9 @@ Root integration requirements:
 - Provision the same explicit `keychain-access-groups` entry on iOS app and
   extension and put its fully expanded value in `AlondraPushKeychainAccessGroup`
   in both Info plists. Do not derive it from the bundle identifier alone.
-- At approved service activation derive a fresh PushBindingStore binding from
-  relay URL, device ID and credential revision. Save NotificationDecryptionContext
+- At approved service activation resolve a PushBindingStore binding from
+  relay URL, owner subject, Mac ID, device ID and credential revision. Returning to
+  an existing scope retains its binding; a distinct scope receives a new label. Save NotificationDecryptionContext
   with approved macID/deviceID, that binding, Mac signing public raw representation,
   and the client's agreement private key to NotificationDecryptionStore. No bearer
   or client signing private key belongs in that store.
@@ -61,3 +62,84 @@ or reverting settings advances it; the executor rejects delayed older writes.
 An authenticated stale_push_preferences response permits one bounded retry above
 current_revision, with the corrected local snapshot persisted before dispatch.
 Corrupt/unwritable ledger state fails visibly and cannot silently reset counters.
+
+## Multiple-context storage boundary
+
+The binding defaults and shared decryption Keychain item now hold version-1
+collections. Legacy records are decoded without writing. Binding adoption requires
+the old relay/device/credential context to match the approved activation; the
+credential revision includes the owner and pinned keys. Decryption-context adoption
+also requires identical Mac/device IDs, binding and key bytes. Corrupt, locked or
+future-version data cannot be overwritten as an empty collection. Duplicate labels
+and changing the owner or keys behind an existing label fail closed.
+
+The notification extension extracts the outer binding only as a lookup hint. It
+loads exactly that record, then verifies the signed envelope, sender, recipient,
+Mac route, expiration and inner binding before rendering any private text. It does
+not fall back to another context. The app additionally requires the active binding
+before routing an action; a retained inactive context cannot dispatch through the
+current Mac's session. The shared item still contains only agreement private keys
+and Mac public pins, never account tokens or client signing private keys.
+
+Each store supports selective removal and explicit full cleanup. Synchronous
+Keychain read/modify/write operations share a process mutex; the app is the only
+writer and the extension reads atomic item snapshots. This is not an interprocess
+writer lock. Migration supports existing data, not running an older app against a
+new collection format.
+
+Runtime restoration now prepares contexts and immutable notification clients for
+every approved pairing belonging to the verified subject. It publishes an exact
+authorized context snapshot with one Keychain update, pruning another account's
+contexts. Preparation performs no private-key writes. The registry commits the
+Keychain replacement, its session selection and PushCenter's clients in one
+synchronous, throwing MainActor step after preparation succeeds. Keychain failure
+aborts publication; logout cannot be overtaken by an actor-queued stale write. Selecting a Mac retains
+other clients, bindings and contexts; logout/account replacement still cancels all
+registrations and clears both stores plus delivered/pending notifications.
+
+PushRegistrationCoordinator serializes token upserts for all retained bindings.
+Each binding has its own durable preferences revision and success fingerprint. A
+failure from one Mac remains visible while the coordinator attempts the others.
+Late completions from a cancelled generation cannot mark a replacement identity
+registered. A token or quiet-hours change updates every binding; a selection-only
+change reuses completed registrations. Tests exercise this with recording transports
+and real preference ledgers, not physical APNs deliveries.
+
+No Mac selector is enabled by this change. Remaining gates include Settings UI,
+verified activation when tapping an inactive Mac notification, coordinated selective
+revocation, and full protocol/app verification with two isolated Macs.
+Scope records include relay and owner subject; the pairing model does not record
+an OIDC issuer, so this does not establish support for arbitrary multiple issuers.
+
+## Multiple Macs: authenticated routes and immutable commands
+
+`NotificationRoutingCoordinator` receives the same verified account's scoped contexts
+and immutable clients during the synchronous platform commit. It accepts an outer
+binding only as a lookup hint; the normal encrypted decoder verifies signature,
+Mac, recipient, expiry, route and inner binding before returning a capability.
+Capabilities survive selection changes, but removal, key replacement and logout
+invalidate them. Reinstalling after logout does not revive an old capability.
+
+A tap selects its exact approved Mac through the owner, including a signed connection
+check before publication. The old scene cannot claim the new Mac's route: consumption
+requires the selected `CloudAppServices` object. An offline or revoked target leaves
+the current workspace unchanged. A notification command captures its own approved
+client and authenticated item before suspension; selecting another Mac cannot change
+its destination. Logout/revocation invalidates local results, and the command transport
+still enforces server authorization. As with any network operation, logout cannot undo
+a command already accepted by the Mac.
+
+Settings lists only presentation-safe opaque IDs and Mac identifiers, without keys.
+The current wire pairing has no display name, so the label uses a short Mac ID with
+the full identifier available to accessibility. The additional-Mac sheet reuses the
+pairing reducer in scanning mode. Cancelling it only discards that sheet's leased
+attempt; it never signs out or clears other Macs. This remains one configured issuer,
+not an arbitrary multi-issuer account switcher. Synthetic tests are not a substitute
+for the isolated two-daemon/client end-to-end gate before the next beta.
+
+Adding a Mac already linked to this account and relay is rejected before candidate
+creation. Removing/rotating an existing pairing remains an explicit future operation;
+this path never silently overwrites its keys. Failed selection publication restores
+the live registry selection only if the attempted selection is still persisted.
+That compensation is synchronous under the store mutex and the owner's generation
+guard, so it cannot recreate logout state or overwrite a newer approval.

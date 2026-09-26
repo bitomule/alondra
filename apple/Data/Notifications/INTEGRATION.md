@@ -3,8 +3,10 @@
 `AlondraNotificationActions` is a headless action boundary. `PushCenter` obtains a
 server-scoped signer through D2's `DevicePairing.signer(for:)`, owns the iOS
 background-task deadline, and passes the signed client to the action. The
-notification extension imports only the pure `AlondraNotificationPayload`
-module. It has no keychain, client, SwiftUI, TCA, or application state access.
+notification extension uses `AlondraNotificationPayload` and the decryption
+boundary from `AlondraNotificationActions`. It reads the shared Keychain
+decryption context but has no bearer, client signing key, SwiftUI, TCA, or
+application session access. See SERVICE_INTEGRATION.md for the service path.
 
 The service extension is the only writer of `UNNotificationCategory` data. It
 registers fixed categories alongside dynamic question categories under an
@@ -16,8 +18,9 @@ daemon's report payload (`ALONDRA_READ`) gains that field in backend PR #130,
 commit `2c899d8`. Merge and deploy that backend change before this iOS app version.
 The backend push binding must also be active for the paired iPhone. Registration
 now sends a canonical 43-character base64url `push_binding` generated from 32
-random bytes and stored for the current server URL, device ID, and credential.
-Changing any of those rotates the binding. APNs must echo it inside `alondra`;
+random bytes and stored per approved relay, owner, Mac, device and credential
+revision. A new scope receives a new binding; returning to a retained scope reuses
+its binding. APNs must echo it inside `alondra`;
 payloads without a matching binding cannot open an item or send an action.
 Dynamic question categories include the binding in their IDs. The extension
 keeps at most 20 recognized dynamic categories globally, ordered by a small
