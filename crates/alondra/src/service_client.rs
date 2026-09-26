@@ -488,7 +488,18 @@ impl Profile {
     }
 
     pub fn upload(&self, name: &str, bytes: &[u8], timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
+        Self::upload_via(name, bytes, timeout, |suffix, body, deadline| {
+            let (status, value) = self.request(
+                "POST", &format!("/v1/service/uploads/{suffix}"), Some(&body), remaining(deadline)?,
+            )?;
+            if status >= 400 { bail!("attachment transfer failed ({status})"); }
+            Ok(value)
+        })
+    }
+    fn upload_via(name: &str, bytes: &[u8], timeout: Duration,
+        mut call: impl FnMut(&str, Value, Instant) -> Result<Value>) -> Result<Value> {
+        let started = Instant::now();
+        let deadline = started + timeout;
         if bytes.is_empty() || bytes.len() > 20 * 1024 * 1024 {
             bail!("attachment must contain 1 byte to 20 MB");
         }
@@ -506,33 +517,28 @@ impl Profile {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let call = |suffix: &str, body: Value| -> Result<Value> {
-            let (status, value) = self.request(
-                "POST",
-                &format!("/v1/service/uploads/{suffix}"),
-                Some(&body),
-                remaining(deadline)?,
-            )?;
-            if status >= 400 {
-                bail!("attachment transfer failed ({status}): {value}");
-            }
-            Ok(value)
-        };
-        call(
-            "start",
-            json!({"transfer_id":id,"name":name,"bytes":bytes.len(),"sha256":hash}),
-        )?;
+        let mut phase = "start";
+        let mut confirmed = 0usize;
+        let mut accepted = false;
         let result = (|| {
+            call("start", json!({"transfer_id":id,"name":name,"bytes":bytes.len(),"sha256":hash}), deadline)?;
+            accepted = true;
+            phase = "chunk";
             for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
-                call(
-                    "chunk",
-                    json!({"transfer_id":id,"offset":index * 64 * 1024,"data":B64.encode(chunk)}),
-                )?;
+                call("chunk", json!({"transfer_id":id,"offset":index * 64 * 1024,"data":B64.encode(chunk)}), deadline)?;
+                confirmed += chunk.len();
             }
-            call("finish", json!({"transfer_id":id}))
+            phase = "finish";
+            call("finish", json!({"transfer_id":id}), deadline)
         })();
-        if result.is_err() {
-            let _ = call("cancel", json!({"transfer_id":id}));
+        // Snapshot before best-effort cancellation: never expose the name, path,
+        // transfer ID, credentials or payload in the progress diagnostic.
+        let result = result.with_context(|| format!(
+            "attachment upload failed: phase={phase}, bytes_confirmed={confirmed}/{}, elapsed_ms={}",
+            bytes.len(), started.elapsed().as_millis(),
+        ));
+        if result.is_err() && accepted {
+            let _ = call("cancel", json!({"transfer_id":id}), deadline);
         }
         result
     }
@@ -721,6 +727,51 @@ mod tests {
     }
     fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
         t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/requests", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+    }
+
+    #[test]
+    fn upload_failure_reports_acknowledged_progress_before_cancel() {
+        let mut calls = Vec::new();
+        let mut original_deadline = None;
+        let result = Profile::upload_via("private-name.txt", &vec![7; 65537], Duration::from_secs(1),
+            |phase, _, deadline| {
+                if let Some(expected) = original_deadline { assert_eq!(deadline, expected); }
+                original_deadline = Some(deadline);
+                calls.push(phase.to_owned());
+                match calls.len() {
+                    1 | 2 => Ok(json!({"ok":true})),
+                    3 => bail!("deadline exceeded"),
+                    4 => { assert_eq!(phase,"cancel"); bail!("cancel also failed") },
+                    _ => panic!("unexpected retry"),
+                }
+            });
+        assert_eq!(calls,["start","chunk","chunk","cancel"]);
+        let error = result.unwrap_err();
+        let diagnostic = error.to_string();
+        assert!(diagnostic.starts_with("attachment upload failed: phase=chunk, bytes_confirmed=65536/65537, elapsed_ms="));
+        assert!(!diagnostic.contains("private-name"));
+        assert!(format!("{error:#}").contains("deadline exceeded"));
+        assert!(!format!("{error:#}").contains("cancel also failed"));
+    }
+
+    #[test]
+    fn upload_start_and_finish_failures_keep_distinct_progress() {
+        for failed_phase in ["start", "finish"] {
+            let mut phases = Vec::new();
+            let error = Profile::upload_via("private.txt", &[1,2,3], Duration::from_secs(1),
+                |phase, _, _| { phases.push(phase.to_owned());
+                    if phase == failed_phase { bail!("rejected"); } Ok(json!({"ok":true}))
+                }).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains(&format!("phase={failed_phase}")));
+            if failed_phase == "start" {
+                assert_eq!(phases,["start"]);
+                assert!(message.contains("bytes_confirmed=0/3"));
+            } else {
+                assert_eq!(phases,["start","chunk","finish","cancel"]);
+                assert!(message.contains("bytes_confirmed=3/3"));
+            }
+        }
     }
 
     #[test]
