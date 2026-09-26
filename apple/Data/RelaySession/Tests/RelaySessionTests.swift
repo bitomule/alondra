@@ -1,6 +1,6 @@
 import AlondraAPIClient
 import AlondraRelayOutbox
-import AlondraRelaySession
+@testable import AlondraRelaySession
 import CryptoKit
 import Foundation
 import XCTest
@@ -254,6 +254,24 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(readsAfter, readsBefore)
     }
 
+    func testReadCancelsDeadlineChildOnSuccessAndBootstrapFailure() async throws {
+        for mode in [FakeHTTP.Mode.overview, .bootstrapFailure] {
+            let fixture = try Fixture(mode: mode)
+            defer { try? FileManager.default.removeItem(at: fixture.directory) }
+            let timer = DeadlineHTTPGate(returnsLate: false)
+            let session = fixture.session(readDeadline: { _ in try await timer.wait() })
+            do {
+                try await session.waitForChange(afterSnapshotTick: 42, seconds: 50)
+                XCTAssertEqual(mode, .overview)
+            } catch RelayWireError.unauthorized {
+                XCTAssertEqual(mode, .bootstrapFailure, "Bootstrap errors retain their original policy")
+            }
+            await timer.cancelled()
+            let posts = await fixture.http.mutations
+            XCTAssertEqual(posts.count, mode == .overview ? 1 : 0)
+        }
+    }
+
     func testReadBudgetCancelsInFlightHTTPAndRejectsLateResponsesAtEveryPhase() async throws {
         for phase in ["bootstrap", "status", "changes"] {
             for returnsLate in [false, true] {
@@ -320,7 +338,7 @@ private struct Fixture {
 }
 
 private actor FakeHTTP: ServiceHTTPTransport {
-    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange, longChange, changeUnauthorized, changeConflict, changeEpoch, changeForged }
+    enum Mode { case bootstrapFailure, success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange, longChange, changeUnauthorized, changeConflict, changeEpoch, changeForged }
     let macSigning: P256.Signing.PrivateKey
     let phoneAgreement: P256.KeyAgreement.PublicKey
     let mode: Mode
@@ -352,6 +370,7 @@ private actor FakeHTTP: ServiceHTTPTransport {
             try await stallGate.wait()
         }
         if request.url?.path == "/v1/bootstrap" {
+            if mode == .bootstrapFailure { return ServiceHTTPResponse(status: 401, body: Data()) }
             let epoch = restarted ? "AQEBAQEBAQEBAQEBAQEBAQ" : "AAAAAAAAAAAAAAAAAAAAAA"
             return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["protocol": 1, "epoch": epoch]))
         }
@@ -438,6 +457,7 @@ private actor DeadlineHTTPGate {
     func wait() async throws {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                if didCancel { continuation.resume(throwing: CancellationError()); return }
                 response = continuation
                 didStart = true
                 startObserver?.resume(); startObserver = nil

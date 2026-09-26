@@ -34,8 +34,20 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
+                sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
+        try self.init(journalFile: journalFile, scope: scope, bearer: bearer, transport: transport,
+            signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
+            now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
+    }
+
+    init(journalFile: URL, scope: RelayOutboxScope,
+                bearer: @escaping @Sendable () async throws -> String,
+                transport: (any ServiceHTTPTransport)? = nil,
+                signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
+                macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
+                now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
-                waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { try await ContinuousClock().sleep(until: $0) }) throws {
+                waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) throws {
         let client = try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, transport: transport)
         self.client = client; self.scope = scope

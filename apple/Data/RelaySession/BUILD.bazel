@@ -3,6 +3,7 @@ swift_library(
     name = "AlondraRelaySession",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraRelaySession",
+    features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
     deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
 )
