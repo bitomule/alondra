@@ -25,6 +25,10 @@ const CALLBACK_PATH: &str = "/oauth2redirect/alondra-cli";
 const LOGIN_SCOPE: &str = "openid profile offline_access";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "account_native_smoke.rs"]
+mod native_smoke;
+
 #[derive(Debug)]
 struct SessionExpired;
 
