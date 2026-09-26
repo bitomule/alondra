@@ -35,6 +35,10 @@ swift_library(
     module_name = "AlondraMac",
     deps = [
         ":AlondraShared",
+        "//apple/Features/Fleet:AlondraFleetFeature",
+        "//apple/Features/NewWork:AlondraNewWorkFeature",
+        "//apple/Domain:AlondraDomain",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Features/Questions:AlondraQuestionsFeature",
         "//apple/Features/Tasks:AlondraTasksFeature",
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
@@ -60,6 +64,10 @@ swift_test(
     ),
     deps = [
         ":AlondraShared",
+        "//apple/Features/Fleet:AlondraFleetFeature",
+        "//apple/Features/NewWork:AlondraNewWorkFeature",
+        "//apple/Domain:AlondraDomain",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Features/Questions:AlondraQuestionsFeature",
         "//apple/Features/Tasks:AlondraTasksFeature",
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
@@ -102,6 +110,10 @@ swift_library(
     module_name = "AlondraiOS",
     deps = [
         ":AlondraShared",
+        "//apple/Features/Fleet:AlondraFleetFeature",
+        "//apple/Features/NewWork:AlondraNewWorkFeature",
+        "//apple/Domain:AlondraDomain",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Features/Workspace:AlondraWorkspaceFeature",
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
         "//apple/Features/Questions:AlondraQuestionsFeature",
