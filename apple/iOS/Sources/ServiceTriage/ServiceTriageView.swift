@@ -9,7 +9,7 @@ import SwiftUI
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
     let showSettings: () -> Void
-    @Namespace private var zoom
+    let zoom: Namespace.ID
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !store.keyboardVisible { header.padding(.horizontal, 20).transition(.move(edge: .top).combined(with: .opacity)) }

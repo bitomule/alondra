@@ -17,6 +17,15 @@ public struct ServiceRootFeature {
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
         public var tab = Tab.inbox
         public var settingsPresented = false
+        public var delivery = DeliveryNoticeFeature.State()
+        public var macError: WorkspaceNotice?
+        var lastMacErrorMessage: String?
+        var macErrorMessage: String? {
+            if let error = delivery.acknowledgementError ?? delivery.status?.persistenceError { return error }
+            if let error = triage.triage.notice { return error }
+            if case .failure(let error) = notice?.event { return error }
+            return nil
+        }
         public var notice: WorkspaceNotice?
         public var closeRefusal: String?
         public var triage = ServiceTriageFeature.State()
@@ -48,6 +57,8 @@ public struct ServiceRootFeature {
     }
     public enum Action {
         case appeared, disappeared
+        case delivery(DeliveryNoticeFeature.Action)
+        case dismissMacError(UUID)
         case dismissNotice(UUID)
         case dismissCloseRefusal
         case commandResolved(CommandResolution)
@@ -62,7 +73,7 @@ public struct ServiceRootFeature {
         case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
     }
     @Dependency(\.continuousClock) var noticeClock
-    private enum NoticeCancelID { case timeout }
+    private enum NoticeCancelID { case timeout, macTimeout }
     @Dependency(\.serviceCommandRecovery) var recovery
     private enum RecoveryCancelID { case observation }
     public var body: some ReducerOf<Self> {
@@ -72,6 +83,11 @@ public struct ServiceRootFeature {
                 guard state.notice?.id == id else { return .none }
                 state.notice = nil
                 return .cancel(id: NoticeCancelID.timeout)
+            }
+            if case .dismissMacError(let id) = action {
+                guard state.macError?.id == id else { return .none }
+                state.macError = nil
+                return .cancel(id: NoticeCancelID.macTimeout)
             }
             if case .dismissCloseRefusal = action { state.closeRefusal = nil; return .none }
             guard let event = noticeEvent(state: state, action: action) else { return .none }
@@ -83,6 +99,7 @@ public struct ServiceRootFeature {
                 await send(.dismissNotice(notice.id))
             }.cancellable(id: NoticeCancelID.timeout, cancelInFlight: true)
         }
+        Scope(state: \.delivery, action: \.delivery) { DeliveryNoticeFeature() }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
@@ -90,7 +107,7 @@ public struct ServiceRootFeature {
         Reduce { state, action in
             switch action {
             case .appeared:
-                return .run { send in
+                return .merge(.send(.delivery(.appeared)), .run { send in
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask {
                             for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
@@ -99,8 +116,8 @@ public struct ServiceRootFeature {
                             for await events in await recovery.observeFeedback() { await send(.feedbackRecovered(events)) }
                         }
                     }
-                }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true)
-            case .disappeared: return .cancel(id: RecoveryCancelID.observation)
+                }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true))
+            case .disappeared: return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
@@ -140,13 +157,31 @@ public struct ServiceRootFeature {
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
                 return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
+            case .dismissMacError, .delivery, .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
             }
         }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
+        Reduce { state, _ in
+            let message = state.macErrorMessage
+            guard state.lastMacErrorMessage != message else { return .none }
+            state.lastMacErrorMessage = message
+            guard let message else { return .none }
+            let notice = WorkspaceNotice(event: .failure(message))
+            state.macError = notice
+            return .run { send in
+                try await noticeClock.sleep(for: .seconds(6))
+                await send(.dismissMacError(notice.id))
+            }.cancellable(id: NoticeCancelID.macTimeout, cancelInFlight: true)
+        }
     }
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .delivery(.acknowledgementFinished(let scope, let error)):
+            guard state.delivery.status?.scope == scope, let error else { return nil }
+            return .failure(error)
+        case .delivery(.updated(let status)):
+            guard let error = status.persistenceError, error != state.delivery.status?.persistenceError else { return nil }
+            return .failure(error)
         case .newRequest(.submitFinished(let result, let epoch)):
             guard state.newRequest.isSubmitting, epoch == state.newRequest.presentationEpoch else { return nil }
             switch result {

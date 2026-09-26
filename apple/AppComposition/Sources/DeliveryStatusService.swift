@@ -179,7 +179,7 @@ public actor DeliveryStatusService {
             }
             if next.count != records.count { try storage.save(Array(next.values)) }
             records = next; error = nil
-        } catch { error = error.localizedDescription }
+        } catch { self.error = error.localizedDescription }
         publish()
     }
     private var snapshot: DeliveryStatus {

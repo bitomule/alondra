@@ -37,16 +37,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
             }
             .animation(.smooth(duration: 0.22), value: presentation.selection)
-            .overlay(alignment: .top) {
-                if let notice = store.triage.triage.notice {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        Text(notice)
-                        Button { store.send(.triage(.triage(.dismissNotice))) } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.borderless).accessibilityLabel("Close")
-                    }.padding(10).background(.regularMaterial, in: .capsule).padding(.top, 8)
-                }
-            }
+            .overlay(alignment: .top) { ServiceDeliveryBanner(store: store) }
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")

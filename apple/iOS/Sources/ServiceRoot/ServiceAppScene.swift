@@ -69,7 +69,9 @@ private final class ServiceSceneContext {
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
-                observeFeedback: { await services.reportFeedbackRecoveryEvents() })
+                observeFeedback: { await services.reportFeedbackRecoveryEvents() },
+                observeDelivery: { await services.deliveryStatuses() },
+                acknowledgeDelivery: { try await services.acknowledgeDeliveryWarnings($0, in: $1) })
             $0.attachmentDownload = downloads
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
@@ -113,11 +115,16 @@ private struct ApprovedServiceScene: View {
 private struct ServiceRootView<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
+    @Namespace private var triageZoom
     var body: some View {
         TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
-                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) })
+                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) }, zoom: triageZoom)
+                        .navigationDestination(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
+                            ServicePullRequestView(store: child)
+                                .navigationTransition(.zoom(sourceID: "p\(child.pr.id)", in: triageZoom))
+                        }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
@@ -146,8 +153,5 @@ private struct ServiceRootView<AccountContent: View>: View {
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
-        .sheet(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
-            NavigationStack { ServicePullRequestView(store: child) }
-        }
     }
 }

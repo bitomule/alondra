@@ -63,7 +63,9 @@ private final class MacServiceWindowContext {
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
-                observeFeedback: { await services.reportFeedbackRecoveryEvents() })
+                observeFeedback: { await services.reportFeedbackRecoveryEvents() },
+                observeDelivery: { await services.deliveryStatuses() },
+                acknowledgeDelivery: { try await services.acknowledgeDeliveryWarnings($0, in: $1) })
             $0.attachmentDownload = downloads
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
