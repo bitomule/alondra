@@ -60,6 +60,8 @@ private struct MacServicePairingStep: View {
             case .loggingIn:
                 ProgressView("Complete sign in in your browser…")
                 Button("Cancel") { store.send(.cancel) }
+            case .cancelling:
+                ProgressView("Cancelling connection…")
             case .signingOut:
                 ProgressView("Signing out…")
             case .submitting:
@@ -90,7 +92,7 @@ private struct MacServicePairingStep: View {
                             .accessibilityIdentifier("pairing.submit")
                     }.padding(.top, 10)
                 }
-                Button("Use another account") { store.send(.logout) }
+                if !store.additionalMac { Button("Use another account") { store.send(.logout) } }
             case .pending(let code):
                 Text("Approve this Mac in Alondra setup").font(.headline)
                 Text(verbatim: code)
@@ -102,7 +104,7 @@ private struct MacServicePairingStep: View {
                 Button("Cancel pairing") { store.send(.cancel) }
             case .approved:
                 Label("Mac connected", systemImage: "checkmark.shield")
-                Button("Sign out") { store.send(.logout) }
+                if !store.additionalMac { Button("Sign out") { store.send(.logout) } }
             }
         }
     }

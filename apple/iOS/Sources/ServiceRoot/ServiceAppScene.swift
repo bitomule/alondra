@@ -48,8 +48,8 @@ private final class ServiceSceneContext {
     let settings = ServiceSettingsContext()
     private(set) var store: StoreOf<ServiceRootFeature>?
 
-    func consumeNotification(_ notifications: ServiceNotificationRuntime, active: Bool) {
-        guard active, let store, let route = notifications.consumeRoute() else { return }
+    func consumeNotification(_ notifications: ServiceNotificationRuntime, services: CloudAppServices, active: Bool) {
+        guard active, let store, let route = notifications.consumeRoute(for: services) else { return }
         store.send(.focusInbox(route.itemID))
     }
 
@@ -102,13 +102,13 @@ private struct ApprovedServiceScene: View {
         }
         .task {
             await context.connect(services)
-            context.consumeNotification(notifications, active: phase == .active)
+            context.consumeNotification(notifications, services: services, active: phase == .active)
         }
         .onChange(of: notifications.push.route) { _, _ in
-            context.consumeNotification(notifications, active: phase == .active)
+            context.consumeNotification(notifications, services: services, active: phase == .active)
         }
         .onChange(of: phase) { _, phase in
-            context.consumeNotification(notifications, active: phase == .active)
+            context.consumeNotification(notifications, services: services, active: phase == .active)
         }
     }
 }

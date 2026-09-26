@@ -9,7 +9,7 @@ import UIKit
 @MainActor
 extension ServiceNotificationRuntime {
     func settingsClient(services: CloudAppServices, owner: CloudPairingOwner) -> ServiceSettingsClient {
-        ServiceSettingsClient(observe: { [weak self] in
+        var client = ServiceSettingsClient(observe: { [weak self] in
             await MainActor.run { [weak self] in
                 guard let self else { return AsyncStream { $0.finish() } }
                 return SettingsObservation.stream(push: self.push)
@@ -36,6 +36,11 @@ extension ServiceNotificationRuntime {
                 _ = owner.store.send(.logout)
             }
         })
+        client.selectMac = { id in
+            guard await owner.services === services else { throw CancellationError() }
+            try await owner.selectMac(choice: id)
+        }
+        return client
     }
 }
 

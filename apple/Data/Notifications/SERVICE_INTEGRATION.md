@@ -110,3 +110,29 @@ verified activation when tapping an inactive Mac notification, coordinated selec
 revocation, and full protocol/app verification with two isolated Macs.
 Scope records include relay and owner subject; the pairing model does not record
 an OIDC issuer, so this does not establish support for arbitrary multiple issuers.
+
+## Multiple Macs: authenticated routes and immutable commands
+
+`NotificationRoutingCoordinator` receives the same verified account's scoped contexts
+and immutable clients during the synchronous platform commit. It accepts an outer
+binding only as a lookup hint; the normal encrypted decoder verifies signature,
+Mac, recipient, expiry, route and inner binding before returning a capability.
+Capabilities survive selection changes, but removal, key replacement and logout
+invalidate them. Reinstalling after logout does not revive an old capability.
+
+A tap selects its exact approved Mac through the owner, including a signed connection
+check before publication. The old scene cannot claim the new Mac's route: consumption
+requires the selected `CloudAppServices` object. An offline or revoked target leaves
+the current workspace unchanged. A notification command captures its own approved
+client and authenticated item before suspension; selecting another Mac cannot change
+its destination. Logout/revocation invalidates local results, and the command transport
+still enforces server authorization. As with any network operation, logout cannot undo
+a command already accepted by the Mac.
+
+Settings lists only presentation-safe opaque IDs and Mac identifiers, without keys.
+The current wire pairing has no display name, so the label uses a short Mac ID with
+the full identifier available to accessibility. The additional-Mac sheet reuses the
+pairing reducer in scanning mode. Cancelling it only discards that sheet's leased
+attempt; it never signs out or clears other Macs. This remains one configured issuer,
+not an arbitrary multi-issuer account switcher. Synthetic tests are not a substitute
+for the isolated two-daemon/client end-to-end gate before the next beta.
