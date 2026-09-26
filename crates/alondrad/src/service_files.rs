@@ -15,6 +15,7 @@ use std::{
 pub const CHUNK: usize = 64 * 1024;
 const TTL: Duration = Duration::from_secs(600);
 const SLOTS: usize = 2;
+const UNCERTAIN: &str = "transfer already finalized or interrupted; previous receipt unavailable";
 #[derive(Default)]
 pub struct Transfers(Mutex<HashMap<(String, String), Transfer>>);
 struct Transfer {
@@ -23,6 +24,7 @@ struct Transfer {
     hash: String,
     data: Vec<u8>,
     result: Option<Value>,
+    finalization_attempted: bool,
     received: usize,
     touched: Instant,
 }
@@ -106,6 +108,7 @@ impl Transfers {
             );
             let key = (sender.to_owned(), b.transfer_id);
             if let Some(t) = transfers.get_mut(&key) {
+                ensure!(!t.finalization_attempted || t.result.is_some(), UNCERTAIN);
                 ensure!(
                     t.name == b.name && t.size == b.bytes && t.hash == b.sha256,
                     "transfer ID already used with different metadata"
@@ -138,6 +141,7 @@ impl Transfers {
                     hash: b.sha256,
                     data: Vec::with_capacity(b.bytes),
                     result: None,
+                    finalization_attempted: false,
                     received: 0,
                     touched: Instant::now(),
                 },
@@ -155,9 +159,13 @@ impl Transfers {
             transfers.remove(&key);
             return Ok(json!({"cancelled":true}));
         }
+        if !transfers.contains_key(&key) {
+            ensure!(!attempted(home, sender, &key.1)?, UNCERTAIN);
+        }
         let t = transfers
             .get_mut(&key)
             .context("transfer expired or missing; restart upload")?;
+        ensure!(!t.finalization_attempted || t.result.is_some(), UNCERTAIN);
         if route == "/v1/service/uploads/chunk" {
             let b: Chunk = serde_json::from_value(body)?;
             ensure!(b.data.len() <= CHUNK.div_ceil(3) * 4, "chunk too large");
@@ -205,6 +213,12 @@ impl Transfers {
         // tombstone and refuses reuse, rather than silently duplicating a file.
         let mut ledger = ledger(home)?;
         let transaction = ledger.transaction()?;
+        let seen: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attempts WHERE sender=?1 AND transfer_id=?2)",
+            rusqlite::params![sender, &key.1],
+            |r| r.get(0),
+        )?;
+        ensure!(!seen, UNCERTAIN);
         let count: i64 =
             transaction.query_row("SELECT count(*) FROM attempts", [], |r| r.get(0))?;
         ensure!(count < 10000, "transfer ledger capacity reached");
@@ -212,9 +226,11 @@ impl Transfers {
             "INSERT INTO attempts(sender,transfer_id) VALUES(?1,?2)",
             rusqlite::params![sender, &key.1],
         )?;
-        transaction.commit()?;
+        t.finalization_attempted = true;
+        transaction.commit().context(UNCERTAIN)?;
         let (id, a) =
-            crate::uploads::store_identified(home, &t.name, &t.data, &upload_id(sender, &key.1))?;
+            crate::uploads::store_identified(home, &t.name, &t.data, &upload_id(sender, &key.1))
+                .context(UNCERTAIN)?;
         let result = json!({"id":id,"name":a.name,"bytes":a.bytes,"kind":if crate::uploads::is_image(&a.name) {"image"} else {"file"},"path":a.stored_path});
         t.result = Some(result.clone());
         t.data = Vec::new();
@@ -233,6 +249,13 @@ pub fn error_code(error: &anyhow::Error) -> &'static str {
         "file changed; restart download" | "file changed during read" => "attachment_file_changed",
         _ => "attachment_transfer_rejected",
     }
+}
+fn attempted(home: &Path, sender: &str, id: &str) -> Result<bool> {
+    Ok(ledger(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM attempts WHERE sender=?1 AND transfer_id=?2)",
+        rusqlite::params![sender, id],
+        |r| r.get(0),
+    )?)
 }
 fn ledger(home: &Path) -> Result<rusqlite::Connection> {
     let connection = rusqlite::Connection::open(home.join("service-upload-attempts.sqlite"))?;
@@ -357,6 +380,45 @@ mod tests {
             "/v1/service/uploads/finish",
             json!({"transfer_id":ID}),
         )
+    }
+    #[test]
+    fn failed_store_after_tombstone_remains_uncertain_across_retries_and_restart() {
+        let h = home();
+        let t = Transfers::default();
+        start(&t, &h, b"abc").unwrap();
+        send(&t, &h, 0, b"abc").unwrap();
+        // Force store_identified's create_dir to fail after the ledger commit.
+        let destination = h.join("files/uploads").join(upload_id("phone-1", ID));
+        std::fs::create_dir_all(&destination).unwrap();
+        let sentinel = destination.join("existing.bin");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                error_code(&finish(&t, &h).unwrap_err()),
+                "attachment_transfer_finalization_uncertain"
+            );
+        }
+        assert_eq!(
+            error_code(&start(&t, &h, b"abc").unwrap_err()),
+            "attachment_transfer_finalization_uncertain"
+        );
+        drop(t);
+        let restarted = Transfers::default();
+        assert_eq!(
+            error_code(&finish(&restarted, &h).unwrap_err()),
+            "attachment_transfer_finalization_uncertain"
+        );
+        assert_eq!(
+            error_code(&start(&restarted, &h, b"abc").unwrap_err()),
+            "attachment_transfer_finalization_uncertain"
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+        assert_eq!(
+            std::fs::read_dir(h.join("files/uploads")).unwrap().count(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(destination).unwrap().count(), 1);
+        std::fs::remove_dir_all(h).unwrap();
     }
     #[test]
     fn binary_roundtrip_retry_restart_and_download_version() {
