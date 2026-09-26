@@ -22,6 +22,29 @@ struct QuestionsFeatureTests {
     }
 
     @Test
+    func optionTapRequestsMissingExplanationThenSubmitsCompleteAnswerWithoutExtraSendTap() async throws {
+        let q = try question(options: #"[{"label":"Deny","description":"Write the reason"}]"#)
+        let store = TestStore(initialState: QuestionFeature.State(question: q)) { QuestionFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { operation in
+                #expect(operation == .answer(id: 1, text: "Keep existing files", option: "Deny", attachments: []))
+                return .confirmed
+            }, document: { _ in "" })
+        }
+        await store.send(.optionTapped("Deny")) {
+            $0.draft.selectedOption = "Deny"
+            $0.replyFocusRequest = 1
+        }
+        await store.send(.textChanged("Keep existing files")) { $0.draft.text = "Keep existing files" }
+        await store.send(.optionTapped("Deny"))
+        await store.receive(\.answerTapped) { $0.isSubmitting = true }
+        await store.receive(\.submissionFinished) {
+            $0.isSubmitting = false
+            $0.completed = true
+            $0.draft = QuestionDraft()
+        }
+    }
+
+    @Test
     func explanationOptionCannotSubmitWithoutExplanationAndKeepsDraftOnConflict() async throws {
         let q = try question(options: #"[{"label":"Deny","description":"Write the reason"}]"#)
         let store = TestStore(initialState: QuestionFeature.State(question: q)) { QuestionFeature() } withDependencies: {

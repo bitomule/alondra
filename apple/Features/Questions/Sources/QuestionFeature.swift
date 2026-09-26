@@ -18,6 +18,7 @@ public struct QuestionFeature {
         public var uncertainCommandID: UUID?
         public var needsReconciliation = false
         public var revision: UInt64 = 0
+        public var replyFocusRequest: UInt64 = 0
 
         public init(question: Question) { self.question = question }
     }
@@ -29,6 +30,7 @@ public struct QuestionFeature {
         case identityChanged
         case textChanged(String)
         case optionSelected(String?)
+        case optionTapped(String)
         case attachmentsChanged([String])
         case answerTapped
         case moreContextTapped
@@ -83,6 +85,21 @@ public struct QuestionFeature {
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
                 state.draft.text = text
                 return .none
+            case .optionTapped(let option):
+                guard state.attachmentPicker.allReady, !state.isSubmitting,
+                      !state.completed, !state.needsReconciliation else { return .none }
+                guard state.question.options.contains(where: { $0.label == option }) else { return .none }
+                state.draft.selectedOption = option
+                do {
+                    _ = try useCase.answer(state.question, draft: state.draft)
+                    return .send(.answerTapped)
+                } catch QuestionWorkError.explanationRequired {
+                    state.replyFocusRequest &+= 1
+                    return .none
+                } catch {
+                    state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
+                    return .none
+                }
             case .optionSelected(let option):
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
                 state.draft.selectedOption = option
