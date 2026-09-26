@@ -10,13 +10,14 @@ final class ServiceAttachmentTests: XCTestCase {
         let api = AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "client-test", operations: transport)
         let id = UUID()
         do {
-            _ = try await api.uploadAttachment(data, name: "evidence.bin", transferID: id)
+            _ = try await api.uploadAttachment(data, name: "a b&c.txt", transferID: id)
             XCTFail("Lost finish receipt must not report success")
         } catch { XCTAssertEqual(error as? ServiceAPIError, .outcomeUnknown) }
-        let stored = try await api.uploadAttachment(data, name: "evidence.bin", transferID: id)
+        let stored = try await api.uploadAttachment(data, name: "a b&c.txt", transferID: id)
         XCTAssertEqual(stored, "stored-evidence")
         let result = await transport.result()
         XCTAssertEqual(result.bytes, data)
+        XCTAssertEqual(result.name, "a b&c.txt")
         XCTAssertEqual(result.finishCount, 1)
         XCTAssertEqual(result.maxChunk, 65_536)
         XCTAssertEqual(result.transferIDs, [id.uuidString.lowercased()])
@@ -39,6 +40,7 @@ final class ServiceAttachmentTests: XCTestCase {
 
 private actor AttachmentServiceFixture: ServiceOperationTransport {
     var bytes = Data()
+    var name: String?
     var maxChunk = 0
     var finishCount = 0
     var transfers: Set<String> = []
@@ -50,6 +52,7 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
         let response: [String: Any]
         switch request.path {
         case "/v1/service/uploads/start":
+            name = try XCTUnwrap(object["name"] as? String)
             response = ["offset": bytes.count, "chunk_bytes": 65_536, "completed": false]
         case "/v1/service/uploads/chunk":
             let encoded = try XCTUnwrap(object["data"] as? String)
@@ -72,7 +75,7 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
         return result
     }
     func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {}
-    func result() -> (bytes: Data, finishCount: Int, maxChunk: Int, transferIDs: Set<String>) { (bytes, finishCount, maxChunk, transfers) }
+    func result() -> (bytes: Data, name: String?, finishCount: Int, maxChunk: Int, transferIDs: Set<String>) { (bytes, name, finishCount, maxChunk, transfers) }
 }
 private actor DownloadFixture: ServiceOperationTransport {
     var requests: [ServiceRequest] = []

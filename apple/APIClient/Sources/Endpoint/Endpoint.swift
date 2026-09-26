@@ -13,7 +13,6 @@ public struct Endpoint<Response: Sendable>: Sendable {
     public let query: [(String, String)]
     public let body: Data?
     public let contentType: String?
-    public let policy: RequestPolicy
     public let decode: @Sendable (Data) throws -> Response
 
     public init(
@@ -22,7 +21,6 @@ public struct Endpoint<Response: Sendable>: Sendable {
         query: [(String, String)] = [],
         body: Data? = nil,
         contentType: String? = nil,
-        policy: RequestPolicy = .normal,
         decode: @escaping @Sendable (Data) throws -> Response
     ) {
         self.method = method
@@ -30,7 +28,6 @@ public struct Endpoint<Response: Sendable>: Sendable {
         self.query = query
         self.body = body
         self.contentType = contentType
-        self.policy = policy
         self.decode = decode
     }
 }
@@ -41,10 +38,9 @@ extension Endpoint where Response == Data {
         path: [String],
         query: [(String, String)] = [],
         body: Data? = nil,
-        contentType: String? = nil,
-        policy: RequestPolicy = .normal
+        contentType: String? = nil
     ) -> Self {
-        .init(method, path: path, query: query, body: body, contentType: contentType, policy: policy) { $0 }
+        .init(method, path: path, query: query, body: body, contentType: contentType) { $0 }
     }
 }
 
@@ -53,10 +49,9 @@ extension Endpoint where Response: Decodable {
         _ method: HTTPMethod,
         path: [String],
         query: [(String, String)] = [],
-        body: Data? = nil,
-        policy: RequestPolicy = .normal
+        body: Data? = nil
     ) -> Self {
-        .init(method, path: path, query: query, body: body, contentType: body == nil ? nil : "application/json", policy: policy) { data in
+        .init(method, path: path, query: query, body: body, contentType: body == nil ? nil : "application/json") { data in
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             return try decoder.decode(Response.self, from: data)

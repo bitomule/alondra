@@ -2,28 +2,20 @@ import AlondraContracts
 import Foundation
 
 public enum AlondraEndpoints {
-    public static func health() -> Endpoint<Data> { .data(.get, path: ["v1", "health"]) }
     public static func overview() -> Endpoint<Data> { .data(.get, path: ["v1", "overview"]) }
-    public static func waitForChange(after tick: UInt64) -> Endpoint<Data> {
-        .data(.get, path: ["v1", "changes"], query: [("after", String(tick)), ("wait", "50")], policy: .longPoll)
-    }
     public static func task(_ id: String) -> Endpoint<Data> { .data(.get, path: ["v1", "tasks", id]) }
     public static func nodeActivity(_ session: String) -> Endpoint<Data> { .data(.get, path: ["v1", "nodes", session, "activity"]) }
-    public static func nodeDetail(_ session: String) -> Endpoint<Data> {
-        .data(.get, path: ["v1", "nodes", session], query: [("limit", "1")])
-    }
     public static func pullRequestDiff(_ id: UInt64) -> Endpoint<Data> { .data(.get, path: ["v1", "prs", String(id), "diff"]) }
     public static func schedules() -> Endpoint<Data> { .data(.get, path: ["v1", "schedules"]) }
     public static func options(project: String?) -> Endpoint<Data> {
         .data(.get, path: ["v1", "options"], query: project.map { [("project", $0)] } ?? [])
     }
     public static func issues(refresh: Bool) -> Endpoint<Data> {
-        .data(.get, path: ["v1", "issues"], query: refresh ? [("refresh", "1")] : [], policy: .merge)
+        .data(.get, path: ["v1", "issues"], query: refresh ? [("refresh", "1")] : [])
     }
     public static func projects() -> Endpoint<Data> { .data(.get, path: ["v1", "projects"]) }
     public static func search(_ query: String) -> Endpoint<Data> { .data(.get, path: ["v1", "search"], query: [("q", query)]) }
     public static func fileText(_ path: String) -> Endpoint<Data> { .data(.get, path: ["v1", "file"], query: [("path", path)]) }
-    public static func pairedDevices() -> Endpoint<Data> { .data(.get, path: ["v1", "devices"]) }
 
     public static func answer(_ question: UInt64, text: String, option: String?, attachments: [String], device: String) throws -> Endpoint<Data> {
         var body: [String: Any] = ["text": text, "device": device, "attachments": attachments]
@@ -34,7 +26,7 @@ public enum AlondraEndpoints {
         try json(.post, ["v1", "questions", String(question), "more-context"], ["note": note, "attachments": attachments])
     }
     public static func mergePullRequest(_ id: UInt64, method: String) throws -> Endpoint<Data> {
-        try json(.post, ["v1", "prs", String(id), "merge"], ["method": method], policy: .merge)
+        try json(.post, ["v1", "prs", String(id), "merge"], ["method": method])
     }
     public static func requestChanges(_ id: UInt64, text: String, attachments: [String]) throws -> Endpoint<Data> {
         try json(.post, ["v1", "prs", String(id), "changes"], ["text": text, "attachments": attachments])
@@ -66,23 +58,13 @@ public enum AlondraEndpoints {
         try json(.post, ["v1", "reports", String(report), "review"], ["verdict": verdict])
     }
     public static func closeNode(_ key: String, force: Bool) -> Endpoint<Data> {
-        .data(.post, path: ["v1", "nodes", key, "close"], body: Data((force ? #"{"force":true}"# : "{}").utf8), contentType: "application/json", policy: .longPoll)
+        .data(.post, path: ["v1", "nodes", key, "close"], body: Data((force ? #"{"force":true}"# : "{}").utf8), contentType: "application/json")
     }
     public static func send(to session: String, text: String, attachments: [String]) throws -> Endpoint<Data> {
         try json(.post, ["v1", "nodes", session, "messages"], ["text": text, "from": "david", "attachments": attachments])
     }
-    public static func pair(code: String, deviceName: String, publicKey: Data) throws -> Endpoint<Data> {
-        try json(.post, ["v1", "pair"], ["code": code, "device_name": deviceName, "public_key": publicKey.base64EncodedString()])
-    }
-    public static func createPairing() -> Endpoint<Data> {
-        .data(.post, path: ["v1", "pairing"], body: Data("{}".utf8), contentType: "application/json")
-    }
-    public static func revokeDevice(_ id: String) -> Endpoint<Data> { .data(.delete, path: ["v1", "devices", id]) }
-    public static func registerPush(_ registration: PushRegistration) throws -> Endpoint<Data> {
-        .data(.post, path: ["v1", "push", "register"], body: try JSONEncoder().encode(registration), contentType: "application/json")
-    }
 
-    private static func json(_ method: HTTPMethod, _ path: [String], _ object: [String: Any], policy: RequestPolicy = .normal) throws -> Endpoint<Data> {
-        .data(method, path: path, body: try JSONSerialization.data(withJSONObject: object), contentType: "application/json", policy: policy)
+    private static func json(_ method: HTTPMethod, _ path: [String], _ object: [String: Any]) throws -> Endpoint<Data> {
+        .data(method, path: path, body: try JSONSerialization.data(withJSONObject: object), contentType: "application/json")
     }
 }
