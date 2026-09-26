@@ -41,6 +41,39 @@ import Synchronization
         await service.stop()
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func feedbackSnapshotCannotClearUnreadableCommandJournal() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = FileCommandJournal(directory: directory.appendingPathComponent("commands"))
+        let original = CommandGate(scope: scope, journal: journal)
+        let result = await original.submitIdentified(.newRequest, in: scope, isUnknown: { _ in true }) { _ in
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let command) = result else { Issue.record("Expected uncertainty"); return }
+        let interrupted = InterruptedJournal(base: journal, readFailures: 2)
+        let retry = DeliveryRetryGate()
+        let feedback = AsyncStream<[ReportFeedbackRecoveryEvent]>.makeStream()
+        let service = DeliveryStatusService(gate: CommandGate(scope: scope, journal: interrupted), scope: scope,
+            storage: .file(directory.appendingPathComponent("warnings.json")),
+            retryDelay: { await retry.wait() }, feedback: { feedback.stream })
+        var updates = await service.observe().makeAsyncIterator()
+        // Both journal failures have been published; no further reads happen before release.
+        await retry.started()
+        let failed = try #require(await updates.next())
+        #expect(failed.persistenceError != nil)
+        feedback.continuation.yield([])
+        let feedbackUpdate = try #require(await updates.next())
+        #expect(feedbackUpdate.persistenceError == failed.persistenceError,
+                "Successful feedback/metadata work cannot imply that command-journal recovery succeeded")
+        await retry.release()
+        let recovered = try #require(await updates.next())
+        #expect(recovered.persistenceError == nil)
+        #expect(recovered.operations.map(\.id) == [command.id])
+        await service.stop()
+        feedback.continuation.finish()
+    }
+
     @Test func warningAcknowledgementSurvivesRelaunchWithoutUnlockingOrResending() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -148,4 +181,21 @@ private actor InterruptedJournal: CommandJournaling {
     func reserve(_ command: UncertainCommand) async throws -> CommandJournalReservation { try await base.reserve(command) }
     func save(_ record: CommandJournalRecord) async throws { try await base.save(record) }
     func remove(_ id: UUID) async throws { try await base.remove(id) }
+}
+
+private actor DeliveryRetryGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            for waiter in startWaiters { waiter.resume() }
+            startWaiters = []
+        }
+    }
+    func started() async {
+        if continuation != nil { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+    func release() { continuation?.resume(); continuation = nil }
 }

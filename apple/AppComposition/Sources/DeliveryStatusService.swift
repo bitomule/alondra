@@ -51,7 +51,8 @@ public actor DeliveryStatusService {
     private var commands: [UncertainCommand] = []
     private var feedbackEvents: [ReportFeedbackRecoveryEvent] = []
     private var loaded = false
-    private var error: String?
+    private var journalError: String?
+    private var metadataError: String?
     private var active = true
     private var observation: Task<Void, Never>?
     private var listeners: [UUID: AsyncStream<DeliveryStatus>.Continuation] = [:]
@@ -99,7 +100,7 @@ public actor DeliveryStatusService {
                     await receive(commands)
                 }
             } catch is CancellationError { return }
-            catch { storageFailed(error) }
+            catch { journalFailed(error) }
             guard active, !Task.isCancelled else { return }
             // A temporarily unreadable journal must not permanently detach this scene's warnings.
             do { try await retryDelay() } catch { return }
@@ -113,7 +114,7 @@ public actor DeliveryStatusService {
             let commands = try await gate.restore()
             guard active, await gate.scope == scope else { return snapshot }
             await receive(commands)
-        } catch { storageFailed(error) }
+        } catch { journalFailed(error) }
         return snapshot
     }
 
@@ -135,8 +136,8 @@ public actor DeliveryStatusService {
         }
         guard changed else { publish(); return }
         do { try storage.save(Array(next.values)) }
-        catch { storageFailed(error); throw error }
-        records = next; error = nil; publish()
+        catch { metadataFailed(error); throw error }
+        records = next; metadataError = nil; publish()
     }
 
     public func stop() {
@@ -153,6 +154,7 @@ public actor DeliveryStatusService {
     private func receive(_ commands: [UncertainCommand]) async {
         guard await gate.scope == scope else { stop(); return }
         guard active, !Task.isCancelled else { return }
+        journalError = nil
         self.commands = commands.filter { $0.scope.sameIdentity(as: scope) }
         rebuild()
     }
@@ -162,9 +164,14 @@ public actor DeliveryStatusService {
         feedbackEvents = events.filter { $0.scope.sameIdentity(as: scope) }
         rebuild()
     }
-    private func storageFailed(_ failure: any Error) {
+    private func journalFailed(_ failure: any Error) {
         guard active, !Task.isCancelled else { return }
-        error = failure.localizedDescription
+        journalError = failure.localizedDescription
+        publish()
+    }
+    private func metadataFailed(_ failure: any Error) {
+        guard active, !Task.isCancelled else { return }
+        metadataError = failure.localizedDescription
         publish()
     }
     private func rebuild() {
@@ -192,8 +199,8 @@ public actor DeliveryStatusService {
                 next[id] = DeliveryWarningRecord(id: id, scope: scope, firstObservedUncertainAt: observedAt[id] ?? now())
             }
             if next.count != records.count { try storage.save(Array(next.values)) }
-            records = next; error = nil
-        } catch { self.error = error.localizedDescription }
+            records = next; metadataError = nil
+        } catch { metadataError = error.localizedDescription }
         publish()
     }
     private var snapshot: DeliveryStatus {
@@ -201,7 +208,7 @@ public actor DeliveryStatusService {
             DeliveryStatus.Operation(id: id, phase: phase,
                 firstObservedUncertainAt: records[id]?.firstObservedUncertainAt ?? observedAt[id] ?? now(),
                 acknowledged: records[id]?.acknowledgedPhase == phase)
-        }.sorted { $0.id.uuidString < $1.id.uuidString }, persistenceError: error)
+        }.sorted { $0.id.uuidString < $1.id.uuidString }, persistenceError: journalError ?? metadataError)
     }
     private func publish() { for listener in listeners.values { listener.yield(snapshot) } }
     public enum Failure: Error { case obsolete, storageUnavailable }
