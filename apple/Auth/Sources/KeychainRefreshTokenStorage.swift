@@ -7,7 +7,7 @@ public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
 
     public init(service: String = "com.bitomule.alondra.auth") { self.service = service }
 
-    public func read() throws -> String? {
+    public func read() throws -> RefreshCredential? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -15,15 +15,14 @@ public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw AuthError.keychain(status) }
-        guard let data = result as? Data, let value = String(data: data, encoding: .utf8), !value.isEmpty else {
+        guard let data = result as? Data else {
             throw AuthError.invalidToken
         }
-        return value
+        return try RefreshCredential.decodePersisted(data)
     }
 
-    public func write(_ token: String) throws {
-        guard !token.isEmpty else { throw AuthError.invalidToken }
-        let data = Data(token.utf8)
+    public func write(_ credential: RefreshCredential) throws {
+        let data = try credential.persistedData()
         let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecSuccess { return }
         guard status == errSecItemNotFound else { throw AuthError.keychain(status) }

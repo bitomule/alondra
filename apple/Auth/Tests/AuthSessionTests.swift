@@ -188,10 +188,10 @@ private actor DelayedCancelBrowser: AuthBrowser {
 
 private final class MemoryStorage: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
-    private var token: String?
-    init(_ token: String? = nil) { self.token = token }
-    func read() throws -> String? { lock.lock(); defer { lock.unlock() }; return token }
-    func write(_ token: String) throws { lock.lock(); defer { lock.unlock() }; self.token = token }
+    private var token: RefreshCredential?
+    init(_ token: String? = nil) { self.token = token.map { RefreshCredential(token: $0) } }
+    func read() throws -> RefreshCredential? { lock.lock(); defer { lock.unlock() }; return token }
+    func write(_ token: RefreshCredential) throws { lock.lock(); defer { lock.unlock() }; self.token = token }
     func delete() throws { lock.lock(); defer { lock.unlock() }; token = nil }
 }
 
@@ -262,7 +262,7 @@ final class AuthSessionTests: XCTestCase {
         XCTAssertTrue(signedIn)
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "access-1")
-        XCTAssertEqual(try storage.read(), "refresh-1")
+        XCTAssertEqual(try storage.read()?.token, "refresh-1")
         let posts = await transport.tokenRequests()
         XCTAssertEqual(posts.count, 1)
         let form = Self.form(posts[0])
@@ -311,7 +311,7 @@ final class AuthSessionTests: XCTestCase {
         let session = AuthSession(transport: transport, browser: browser, storage: storage)
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "new-access")
-        XCTAssertEqual(try storage.read(), "new-refresh")
+        XCTAssertEqual(try storage.read()?.token, "new-refresh")
         try await session.logout()
         let signedIn = try await session.hasSession()
         XCTAssertFalse(signedIn)
@@ -361,7 +361,7 @@ final class AuthSessionTests: XCTestCase {
         try await second.value
         let bearer = try await session.bearerToken()
         XCTAssertEqual(bearer, "account-b")
-        XCTAssertEqual(try storage.read(), "refresh-b")
+        XCTAssertEqual(try storage.read()?.token, "refresh-b")
         let posts = await transport.tokenRequests()
         XCTAssertEqual(posts.count, 1)
         XCTAssertEqual(Self.form(posts[0])["code"], "b")
@@ -380,11 +380,11 @@ final class AuthSessionTests: XCTestCase {
         let oldLogout = Task { try await session.logout() }
         await browser.waitForFirstCancel()
         try await session.login()
-        XCTAssertEqual(try storage.read(), "account-b-refresh")
+        XCTAssertEqual(try storage.read()?.token, "account-b-refresh")
         await browser.releaseFirstCancel()
         do { try await oldLogout.value; XCTFail("Superseded logout should be cancelled") }
         catch is CancellationError { }
-        XCTAssertEqual(try storage.read(), "account-b-refresh")
+        XCTAssertEqual(try storage.read()?.token, "account-b-refresh")
         let token = try await session.bearerToken()
         XCTAssertEqual(token, "account-b-access")
     }

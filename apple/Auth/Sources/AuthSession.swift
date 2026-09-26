@@ -121,18 +121,19 @@ public actor AuthSession {
         guard epoch == startedAt else { throw CancellationError() }
         try validateIDToken(result.id_token, nonce: nonce)
         guard let refresh = result.refresh_token, !refresh.isEmpty else { throw AuthError.invalidToken }
-        try storage.write(refresh)
+        try storage.write(RefreshCredential(token: refresh))
         accessToken = result.access_token
         expiresAt = now().addingTimeInterval(TimeInterval(result.expires_in))
     }
 
     /// Returns a bearer token for the relay; caller must also sign the request with the paired device.
     public func bearerToken() async throws -> String {
+        let credential = try activeCredential()
         if let accessToken, expiresAt.timeIntervalSince(now()) > 30 { return accessToken }
         if let refreshTask { return try await refreshTask.value }
-        guard let saved = try storage.read(), !saved.isEmpty else { throw AuthError.noSession }
+        guard let saved = credential, !saved.token.isEmpty else { throw AuthError.noSession }
         let startedAt = epoch
-        let task = Task { [self] in try await refresh(saved: saved, startedAt: startedAt) }
+        let task = Task { [self] in try await refresh(saved: saved.token, startedAt: startedAt) }
         refreshTask = task
         defer { if epoch == startedAt { refreshTask = nil } }
         return try await task.value
@@ -163,7 +164,16 @@ public actor AuthSession {
     }
 
     /// UI may show a signed-in state without starting a refresh request.
-    public func hasSession() throws -> Bool { try storage.read() != nil }
+    public func hasSession() throws -> Bool { try activeCredential() != nil }
+
+    private func activeCredential() throws -> RefreshCredential? {
+        guard let credential = try storage.read() else { return nil }
+        switch credential.status {
+        case .active: return credential
+        case .pendingRevocation: throw AuthError.pendingRevocation
+        case .rotationUncertain: throw AuthError.rotationUncertain
+        }
+    }
 
     public func logout() async throws {
         epoch += 1
@@ -184,7 +194,7 @@ public actor AuthSession {
         ])
         try Task.checkCancellation()
         guard epoch == startedAt else { throw CancellationError() }
-        if let rotated = result.refresh_token, !rotated.isEmpty { try storage.write(rotated) }
+        if let rotated = result.refresh_token, !rotated.isEmpty { try storage.write(RefreshCredential(token: rotated)) }
         accessToken = result.access_token
         expiresAt = now().addingTimeInterval(TimeInterval(result.expires_in))
         return result.access_token

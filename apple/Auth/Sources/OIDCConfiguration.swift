@@ -27,6 +27,8 @@ public enum AuthError: Error, Equatable, Sendable {
     case stateMismatch
     case invalidToken
     case noSession
+    case pendingRevocation
+    case rotationUncertain
     case httpStatus(Int)
     case keychain(Int32)
 }
@@ -70,7 +72,7 @@ public protocol AuthBrowser: Sendable {
 }
 
 public protocol RefreshTokenStorage: Sendable {
-    func read() throws -> String?
-    func write(_ token: String) throws
+    func read() throws -> RefreshCredential?
+    func write(_ credential: RefreshCredential) throws
     func delete() throws
 }
