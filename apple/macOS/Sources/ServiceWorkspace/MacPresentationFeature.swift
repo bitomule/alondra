@@ -14,9 +14,11 @@ struct MacPresentationFeature {
     struct State: Equatable {
         var selection: Selection?
         var query = ""
-        var tasksExpanded = true
-        var collapsedProjects: Set<String> = []
-        var toggledTaskGroups: Set<String> = []
+        @Shared(.appStorage("tasksExpanded")) var tasksExpanded = true
+        @Shared(.appStorage("collapsedProjects")) var collapsedProjectsRaw = ""
+        @Shared(.appStorage("toggledTaskGroups")) var toggledTaskGroupsRaw = ""
+        var collapsedProjects: Set<String> { Set(collapsedProjectsRaw.split(separator: "\n").map(String.init)) }
+        var toggledTaskGroups: Set<String> { Set(toggledTaskGroupsRaw.split(separator: "\n").map(String.init)) }
         var newRequestPresented = false
         var inboxIDs: [String] = []
         var didAutoSelect = false
@@ -117,11 +119,19 @@ struct MacPresentationFeature {
             case .disappeared:
                 state.searchRevision &+= 1
                 return .cancel(id: CancelID.search)
-            case .tasksExpanded(let expanded): state.tasksExpanded = expanded
+            case .tasksExpanded(let expanded): state.$tasksExpanded.withLock { $0 = expanded }
             case .projectExpanded(let name, let expanded):
-                if expanded { state.collapsedProjects.remove(name) } else { state.collapsedProjects.insert(name) }
+                state.$collapsedProjectsRaw.withLock { raw in
+                    var collapsed = Set(raw.split(separator: "\n").map(String.init))
+                    if expanded { collapsed.remove(name) } else { collapsed.insert(name) }
+                    raw = collapsed.sorted().joined(separator: "\n")
+                }
             case .groupExpanded(let key, let defaultExpanded, let expanded):
-                if expanded == defaultExpanded { state.toggledTaskGroups.remove(key) } else { state.toggledTaskGroups.insert(key) }
+                state.$toggledTaskGroupsRaw.withLock { raw in
+                    var toggled = Set(raw.split(separator: "\n").map(String.init))
+                    if expanded == defaultExpanded { toggled.remove(key) } else { toggled.insert(key) }
+                    raw = toggled.sorted().joined(separator: "\n")
+                }
             case .newRequestPresented(let presented): state.newRequestPresented = presented
             }
             return .none
