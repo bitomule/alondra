@@ -18,7 +18,9 @@ struct TaskRejectionNoticeIntegrationTests {
         let task = try decoder.decode(WorkTask.self, from: Data("""
         {"id":"t-1","request":"r-1","title":"Task","state":"\(reopening ? "done" : "running")","state_since":1,"created_at":1}
         """.utf8))
-        let request = try decoder.decode(WorkRequest.self, from: Data(#"{"id":"r-1","text":"Request","created_at":1,"state":"in_progress","tasks":["t-1"]}"#.utf8))
+        let request = try decoder.decode(WorkRequest.self, from: Data("""
+        {"id":"r-1","text":"Request","created_at":1,"state":"\(route == .withdraw ? "defining" : "in_progress")","tasks":\(route == .withdraw ? "[]" : "[\"t-1\"]")}
+        """.utf8))
         var initial = ServiceRootFeature.State()
         initial.tasks.taskBoard = TaskBoard(requests: [request], tasks: [task])
         initial.tasks.board.canArchive = true
@@ -71,6 +73,7 @@ struct TaskRejectionNoticeIntegrationTests {
         case .archive: submit = .tasks(.board(.archiveTapped))
         case .withdraw:
             await store.send(.tasks(.withdrawRequested("r-1"))).finish()
+            try #require(store.tasks.withdrawingRequestID == "r-1")
             submit = .tasks(.withdrawConfirmed)
         default:
             if !reopening { await store.send(detailAction(.cancelTapped)).finish() }
