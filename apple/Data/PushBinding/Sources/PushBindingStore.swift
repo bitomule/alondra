@@ -41,7 +41,8 @@ public final class PushBindingStore {
 
     public func clear() { defaults.removeObject(forKey: key) }
 
-    public static func secureRandomBytes() -> Data? {
+    // Random generation uses only local memory and has no dependency on store isolation.
+    nonisolated public static func secureRandomBytes() -> Data? {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
         return Data(bytes)
