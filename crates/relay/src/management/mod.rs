@@ -422,7 +422,7 @@ impl Management {
             request.reserve(&mut tx, actor).await?;
         }
         // Expired invitations must be canceled explicitly, so provisioning cleanup is never skipped.
-        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_invitations WHERE email=$1 AND status IN ('pending','provisioning'))")
+        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_invitations i LEFT JOIN management_accounts a ON a.id=i.account_id WHERE i.email=$1 AND (i.status IN ('pending','provisioning') OR a.status!='deleted'))")
             .bind(&address).fetch_one(&mut *tx).await?;
         ensure!(!exists, DomainError::Conflict);
         let row=sqlx::query("INSERT INTO management_invitations(id,email,token_hash,status,expires_at,created_by) VALUES($1,$2,$3,'pending',now()+make_interval(secs=>$4),$5) RETURNING id,email,status,account_id,(extract(epoch FROM expires_at)*1000)::bigint AS expires_at_ms")
@@ -459,9 +459,10 @@ impl Management {
                 .execute(&mut *tx)
                 .await?;
             if let Some(account) = invitation.account_id {
-                sqlx::query("UPDATE management_accounts SET status='disabled',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
+                sqlx::query("UPDATE management_accounts SET status='deleting',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
                 enqueue(&mut tx, account, "keycloak_disable").await?;
                 enqueue(&mut tx, account, "relay_revoke").await?;
+                enqueue(&mut tx, account, "keycloak_delete").await?;
             }
             audit(&mut tx, Some(actor), "invite_cancel", id).await?;
             invitation.status = "canceled".into();
@@ -572,12 +573,13 @@ impl Acceptance {
         .await?;
         ensure!(actual == self.account_id, DomainError::Conflict);
         if status != "provisioning" || !live || account_status != "provisioning" {
-            sqlx::query("UPDATE management_accounts SET status='disabled',updated_at=now() WHERE id=$1 AND status='provisioning'")
+            sqlx::query("UPDATE management_accounts SET status='deleting',updated_at=now() WHERE id=$1 AND status='provisioning'")
                 .bind(self.account_id).execute(&mut *tx).await?;
             sqlx::query("UPDATE management_invitations SET status='canceled' WHERE id=$1 AND status='provisioning'")
                 .bind(self.invitation_id).execute(&mut *tx).await?;
             enqueue(&mut tx, self.account_id, "keycloak_disable").await?;
             enqueue(&mut tx, self.account_id, "relay_revoke").await?;
+            enqueue(&mut tx, self.account_id, "keycloak_delete").await?;
             tx.commit().await?;
             return domain(DomainError::Unavailable);
         }
@@ -721,9 +723,10 @@ impl Management {
             .execute(&mut *tx)
             .await?;
         if let Some(account) = row.try_get::<Option<Uuid>, _>("account_id")? {
-            sqlx::query("UPDATE management_accounts SET status='disabled',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
+            sqlx::query("UPDATE management_accounts SET status='deleting',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
             enqueue(&mut tx, account, "keycloak_disable").await?;
             enqueue(&mut tx, account, "relay_revoke").await?;
+            enqueue(&mut tx, account, "keycloak_delete").await?;
         }
         let row=sqlx::query("INSERT INTO management_invitations(id,email,token_hash,status,expires_at,created_by) VALUES($1,$2,$3,'pending',now()+make_interval(secs=>$4),$5) RETURNING id,email,status,account_id,(extract(epoch FROM expires_at)*1000)::bigint AS expires_at_ms")
             .bind(next_id).bind(address).bind(hash).bind(seconds as f64).bind(actor).fetch_one(&mut *tx).await?;
@@ -738,7 +741,7 @@ impl Management {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[derive(Debug)]
 pub struct Reconciliation {
@@ -758,9 +761,10 @@ impl Management {
             .fetch_all(&mut *tx).await?;
         for row in expired {
             if let Some(account) = row.try_get::<Option<Uuid>, _>("account_id")? {
-                sqlx::query("UPDATE management_accounts SET status='disabled',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
+                sqlx::query("UPDATE management_accounts SET status='deleting',updated_at=now() WHERE id=$1 AND status='provisioning'").bind(account).execute(&mut *tx).await?;
                 enqueue(&mut tx, account, "keycloak_disable").await?;
                 enqueue(&mut tx, account, "relay_revoke").await?;
+                enqueue(&mut tx, account, "keycloak_delete").await?;
             }
         }
         // Keep desired-state tombstones: an upstream create can commit after our

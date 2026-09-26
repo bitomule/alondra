@@ -100,6 +100,10 @@ impl Keycloak {
         );
         let realm = bounded_json(response).await?;
         ensure!(
+            realm.get("loginWithEmailAllowed").and_then(Value::as_bool) == Some(true),
+            "Keycloak email login must be enabled for invited users"
+        );
+        ensure!(
             realm
                 .get("adminEventsDetailsEnabled")
                 .and_then(Value::as_bool)
@@ -213,6 +217,7 @@ impl Keycloak {
         let mut url = self.admin_realm.join("users/")?;
         url.path_segments_mut()
             .map_err(|_| DomainError::InvalidInput)?
+            .pop_if_empty()
             .push(&subject);
         let response = self
             .http
@@ -256,6 +261,7 @@ impl Keycloak {
         let mut url = self.admin_realm.join("users/")?;
         url.path_segments_mut()
             .map_err(|_| DomainError::InvalidInput)?
+            .pop_if_empty()
             .push(&subject);
         let response = self
             .http
@@ -288,4 +294,145 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| DomainError::ProviderUnavailable.into())
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::management::tests::{cleanup, fixture_for_issuer};
+    use anyhow::Context;
+
+    #[tokio::test]
+    async fn management_realm_preflight_rejects_unusable_email_login_and_password_audit()
+    -> Result<()> {
+        use axum::{
+            Json, Router,
+            extract::State,
+            routing::{get, post},
+        };
+        use std::sync::{Arc, Mutex};
+        let realm = Arc::new(Mutex::new(
+            json!({"adminEventsDetailsEnabled":false,"registrationAllowed":false,"registrationEmailAsUsername":false,"loginWithEmailAllowed":false}),
+        ));
+        let router = Router::new()
+            .route(
+                "/token",
+                post(|| async { Json(json!({"access_token":"synthetic"})) }),
+            )
+            .route(
+                "/realm/",
+                get(|State(state): State<Arc<Mutex<Value>>>| async move {
+                    Json(state.lock().unwrap().clone())
+                }),
+            )
+            .with_state(realm.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let kc = Keycloak::new(
+            format!("{base}/realm/").parse()?,
+            format!("{base}/token").parse()?,
+            "fixture".into(),
+            "synthetic".into(),
+        )?;
+        assert!(
+            kc.verify_realm().await.is_err(),
+            "internal username cannot be the only login route for an invited user"
+        );
+        realm.lock().unwrap()["loginWithEmailAllowed"] = json!(true);
+        kc.verify_realm().await?;
+        realm.lock().unwrap()["adminEventsDetailsEnabled"] = json!(true);
+        assert!(
+            kc.verify_realm().await.is_err(),
+            "credentials representation must never enter admin event details"
+        );
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL and Keycloak fixture"]
+    async fn management_real_keycloak_reissue_releases_unique_email_without_relinking_identity()
+    -> Result<()> {
+        let path = std::env::var("ALONDRA_MANAGEMENT_TEST_CONNECTIONS")?;
+        let fixture: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        ensure!(
+            fixture["marker"] == "alondra-disposable-system-v1",
+            "disposable fixture required"
+        );
+        let field = |name: &str| -> Result<String> {
+            Ok(fixture[name]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing fixture field"))?
+                .into())
+        };
+        let realm: Url = field("admin_realm")?.parse()?;
+        ensure!(
+            matches!(realm.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
+            "fixture must be loopback"
+        );
+        let kc = Keycloak::new(
+            realm,
+            field("token_url")?.parse()?,
+            field("client_id")?,
+            field("client_secret")?,
+        )?;
+        kc.verify_realm()
+            .await
+            .context("real fixture realm preflight")?;
+        let (db, admin, schema) = fixture_for_issuer(&field("issuer")?).await?;
+        let email = format!("invited-{}@example.invalid", Uuid::new_v4());
+        let invite = db.create_invitation(admin.id, &email, 300).await?;
+        let reserved = db.reserve_acceptance(&invite.token, "Test Friend").await?;
+        let old_id = reserved.account_id;
+        let first = kc
+            .provision(&reserved, "Fixture-first-password-123")
+            .await
+            .context("real fixture first create")?;
+        assert!(!first.already_existed);
+        let retry = kc
+            .provision(&reserved, "Fixture-different-password-456")
+            .await
+            .context("real fixture retry lookup")?;
+        assert!(retry.already_existed);
+        assert_eq!(first.subject, retry.subject);
+        drop(reserved); // request vanished after provider create, before local activation
+        let replacement = db
+            .reissue_invitation(admin.id, invite.invitation.id, 300)
+            .await?;
+        while let Some(job) = db.next_reconciliation().await? {
+            match job.action.as_str() {
+                "keycloak_disable" => kc
+                    .disable(job.account_id)
+                    .await
+                    .context("real fixture disable")?,
+                "keycloak_delete" => kc
+                    .delete(job.account_id)
+                    .await
+                    .context("real fixture delete")?,
+                "relay_revoke" => (), // no devices were admitted for an unactivated identity
+                _ => unreachable!(),
+            }
+            db.reconciliation_complete(&job).await?;
+        }
+        let token = kc.token().await?;
+        assert!(
+            kc.lookup(&token, old_id).await?.is_none(),
+            "disable alone does not release a unique email"
+        );
+        let next = db
+            .reserve_acceptance(&replacement.token, "Test Friend")
+            .await?;
+        let new_id = next.account_id;
+        assert_ne!(new_id, old_id);
+        let provisioned = kc
+            .provision(&next, "Fixture-new-account-password-789")
+            .await
+            .context("real fixture replacement create")?;
+        assert!(!provisioned.already_existed);
+        assert_ne!(provisioned.subject, first.subject);
+        next.complete(&provisioned.subject).await?;
+        kc.delete(new_id).await?;
+        cleanup(db, schema).await
+    }
 }

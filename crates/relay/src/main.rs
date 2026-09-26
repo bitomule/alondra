@@ -889,6 +889,10 @@ mod http_tests {
         mac_key: &SigningKey,
         apns_endpoint: Option<String>,
     ) -> (String, Arc<Server>, tokio::task::JoinHandle<()>) {
+        test_server_with_management(mac_key,apns_endpoint,None).await
+    }
+
+    async fn test_server_with_management(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
         let registry = std::env::temp_dir().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
             std::process::id(),
@@ -907,7 +911,8 @@ mod http_tests {
             device_registry_path: registry,
             apns: None,
         };
-        let auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        let mut auth = Auth::test(config, include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+        auth.management=management;
         let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
         let server = Arc::new(Server {
             auth,
@@ -928,6 +933,37 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    #[ignore="requires disposable local PostgreSQL"]
+    async fn management_http_private_gate_blocks_unknown_disabled_and_database_outage_after_wait() -> anyhow::Result<()> {
+        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        let invitation=db.create_invitation(admin.id,"gate@example.com",300).await?;
+        let owner=db.reserve_acceptance(&invitation.token,"Owner").await?.complete("owner").await?;
+        let key=SigningKey::from_slice(&[21u8;32]).unwrap();
+        let (url,server,join)=test_server_with_management(&key,None,Some(db.clone())).await;
+        let client=reqwest::Client::new();
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("uninvited",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("owner",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::OK);
+        let path="/v1/work?wait_s=25";
+        let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")),&key,"mac-1","GET",path,&[],211).send();
+        let pending=tokio::spawn(pending);
+        tokio::time::timeout(std::time::Duration::from_secs(3),async {
+            while server.work_waiters.available_permits()==16 {tokio::task::yield_now().await;}
+        }).await?;
+        db.disable_account(admin.id,owner.id,false).await?;
+        server.queue.changed.notify_waiters();
+        let response=tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"already authenticated long poll must revalidate after wake");
+        let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&key,"mac-1","GET","/v1/work?wait_s=0",&[],212).send().await?;
+        assert_eq!(response.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
+        db.pool.close().await;
+        let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("stable-admin-sub",now_ms())).send().await?;
+        assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE,"database outage must not fall back to OIDC-only admission");
+        join.abort();management::tests::cleanup(db,schema).await
     }
 
     #[tokio::test]
