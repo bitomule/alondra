@@ -59,14 +59,12 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             accountContent.frame(minWidth: 600, minHeight: 520)
         }
         .task { guard isActive else { return }; await store.send(.appeared).finish() }
-        .task { guard isActive else { return }; await store.send(.triage(.triage(.appeared))).finish() }
         .task { guard isActive else { return }; await store.send(.tasks(.appeared)).finish() }
         .task { guard isActive else { return }; await store.send(.fleet(.appeared)).finish() }
         .onDisappear {
             presentation.send(.disappeared)
             guard isActive else { return }
             store.send(.disappeared)
-            store.send(.triage(.triage(.disappeared)))
             store.send(.tasks(.disappeared))
             store.send(.fleet(.disappeared))
         }

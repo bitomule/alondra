@@ -34,8 +34,7 @@ struct ServiceTriageView: View {
             }
         }
         .navigationTitle("Triage")
-        .task { await store.send(.triage(.appeared)).finish() }
-        .onDisappear { store.send(.triage(.disappeared)) }
+        .onDisappear { store.send(.presentationDisappeared) }
         .sheet(item: $store.scope(state: \.question, action: \.question)) { child in
             NavigationStack { ServiceQuestionView(store: child) }.frame(minWidth: 560, minHeight: 480)
         }
