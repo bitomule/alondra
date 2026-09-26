@@ -50,12 +50,15 @@ struct CardPendingLifecycleTests {
             card.pullRequest?.diff.pendingSubmission = .awaitingReceipts
             card.pullRequest?.diff.pendingReviewKind = .ask
         case .attachedQuestion:
-            var attached = AttachedPRQuestionFeature.State(question)
-            attached.question.draft.text = "Keep this draft"
-            attached.question.attachmentPicker = picker
-            attached.question.pendingSubmission = .awaitingReceipts
-            attached.question.pendingAttachedAnswer = attached.question.draft
-            card.pullRequest?.questionFeatures = [attached]
+            // A visible question owns both its source context and its draft. A child
+            // without that context represents a retired owner awaiting reconciliation.
+            var detail = ServicePullRequestFeature.State(pr: pr, questions: [question])
+            detail.questionFeatures[id: question.id]?.question.draft.text = "Keep this draft"
+            detail.questionFeatures[id: question.id]?.question.attachmentPicker = picker
+            detail.questionFeatures[id: question.id]?.question.pendingSubmission = .awaitingReceipts
+            let draft = detail.questionFeatures[id: question.id]?.question.draft
+            detail.questionFeatures[id: question.id]?.question.pendingAttachedAnswer = draft
+            card.pullRequest = detail
         }
         var initial = ServiceRootFeature.State()
         initial.triage.triage.items = [item, .report(next)]
