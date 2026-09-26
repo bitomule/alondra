@@ -899,7 +899,8 @@ mod tests {
                     let since = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
                         .find(|(key,_)| key == "since").unwrap().1.parse::<u64>().unwrap();
                     assert_eq!(since,1001,"the receipt and observed state are already known");
-                    retained.push(json!({"request_id":request_id,"status":"completed","revision":1002}));
+                    *retained.iter_mut().find(|event| event["request_id"] == request_id).unwrap() =
+                        json!({"request_id":request_id,"status":"completed","revision":1002});
                     let changes: Vec<_> = retained.iter().filter(|event| event["revision"].as_u64().unwrap()>since).cloned().collect();
                     assert_eq!(changes.len(),1,"historical jobs and our own queued event must not trigger another GET");
                     assert_eq!(changes[0]["request_id"],request_id);
