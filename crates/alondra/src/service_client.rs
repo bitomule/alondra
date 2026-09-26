@@ -896,6 +896,13 @@ mod tests {
                 2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","revision":1001,"response":null}))) }
                 3 => {
                     assert_eq!(method,"GET");
+                    assert!(path.starts_with("/v1/changes?"));
+                    let wait_s = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+                        .find(|(key,_)| key == "wait_s").expect("long poll wait parameter").1.parse::<u64>().unwrap();
+                    assert!(wait_s <= 25);
+                    // The request was created just before this callback. Permit at
+                    // most the second crossed while entering it, never a fresh budget.
+                    assert!(wait_s <= deadline.saturating_duration_since(Instant::now()).as_secs().saturating_add(1));
                     let since = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
                         .find(|(key,_)| key == "since").unwrap().1.parse::<u64>().unwrap();
                     assert_eq!(since,1001,"the receipt and observed state are already known");
