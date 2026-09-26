@@ -7,7 +7,7 @@ import SwiftUI
 struct ServiceAttachmentDocument: View {
     let name: String
     let path: String
-    let text: String
+    let section: DocumentSection
     let store: StoreOf<DocumentReviewFeature>
     var focus: FocusState<DetailField?>.Binding
     var body: some View {
@@ -21,7 +21,14 @@ struct ServiceAttachmentDocument: View {
                     .disabled(store.downloads.isLoading || store.downloads.isOpening)
             }.padding(.horizontal, 10)
             Divider()
-            ServiceReviewableDocument(text: text, anchorPrefix: path, store: store, focus: focus)
+            if section.isLoading {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 60)
+            } else if let error = section.error {
+                Label("Couldn’t read it: \(error)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary).padding(.horizontal, 10)
+            } else {
+                ServiceReviewableDocument(text: section.text, anchorPrefix: path, store: store, focus: focus)
+            }
         }
     }
 }

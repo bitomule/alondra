@@ -47,11 +47,15 @@ public enum DocumentSource: Equatable, Sendable {
 
 public struct DocumentSection: Equatable, Sendable, Identifiable {
     public let source: DocumentSource
-    public let text: String
+    public var text: String
+    public var isLoading: Bool
+    public var error: String?
     public var id: String {
         switch source { case .inline: "body"; case .stored(_, let path): path }
     }
-    public init(source: DocumentSource, text: String) { self.source = source; self.text = text }
+    public init(source: DocumentSource, text: String, isLoading: Bool = false, error: String? = nil) {
+        self.source = source; self.text = text; self.isLoading = isLoading; self.error = error
+    }
 }
 
 public struct DocumentDraft: Equatable, Sendable {
@@ -118,6 +122,7 @@ public struct DocumentReviewFeature {
         case refreshed(DocumentSubject)
         case identityChanged(QuestionWorkIdentity?)
         case loaded(UInt64, Result<String, DocumentLoadFailure>, sections: [DocumentSection] = [])
+        case sectionLoaded(UInt64, source: DocumentSource, Result<String, DocumentLoadFailure>)
         case chooseReviewOption(QuestionOption, author: String)
         case submitFeedback(author: String)
         case approveQuestion
@@ -214,9 +219,19 @@ public struct DocumentReviewFeature {
                 state.revision &+= 1
                 state.loadRevision &+= 1
                 return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit), .cancel(id: CancelID.retryRead))
+            case .sectionLoaded(let revision, let source, let result):
+                guard state.loadRevision == revision, state.isLoading,
+                      let index = state.sections.firstIndex(where: { $0.source == source }) else { return .none }
+                state.sections[index].isLoading = false
+                switch result {
+                case .success(let text): state.sections[index].text = text
+                case .failure(let error): state.sections[index].error = error.message
+                }
+                return .none
             case .loaded(let revision, let result, let sections):
                 guard state.loadRevision == revision else { return .none }
                 state.isLoading = false
+                state.sections = sections
                 switch result {
                 case .success(let text):
                     if let previous = state.previousTextForComparison, previous != text {
@@ -405,7 +420,12 @@ public struct DocumentReviewFeature {
         // comparison baseline for the next retry. Otherwise V2 could retain V1 anchors.
         state.previousTextForComparison = state.sourceText ?? state.previousTextForComparison
         state.sourceText = nil
-        state.sections = []
+        state.sections = state.subject.sources.map { source in
+            switch source {
+            case .inline(let text): DocumentSection(source: source, text: text)
+            case .stored: DocumentSection(source: source, text: "", isLoading: true)
+            }
+        }
         state.loadError = nil
         state.loadRevision &+= 1
         let revision = state.loadRevision
@@ -414,6 +434,7 @@ public struct DocumentReviewFeature {
             do {
                 var documents: [String] = []
                 var sections: [DocumentSection] = []
+                var firstError: DocumentLoadFailure?
                 for source in sources {
                     try Task.checkCancellation()
                     switch source {
@@ -421,12 +442,23 @@ public struct DocumentReviewFeature {
                         documents.append(inline)
                         sections.append(DocumentSection(source: source, text: inline))
                     case .stored(let name, let path):
-                        let text = try await service.document(path)
-                        documents.append("# \(name)\n\n" + text)
-                        sections.append(DocumentSection(source: source, text: text))
+                        do {
+                            let text = try await service.document(path)
+                            try Task.checkCancellation()
+                            documents.append("# \(name)\n\n" + text)
+                            sections.append(DocumentSection(source: source, text: text))
+                            await send(.sectionLoaded(revision, source: source, .success(text)))
+                        } catch is CancellationError { throw CancellationError() }
+                        catch {
+                            let failure = DocumentLoadFailure(message: error.localizedDescription)
+                            firstError = firstError ?? failure
+                            sections.append(DocumentSection(source: source, text: "", error: failure.message))
+                            await send(.sectionLoaded(revision, source: source, .failure(failure)))
+                        }
                     }
                 }
-                await send(.loaded(revision, .success(documents.joined(separator: "\n\n---\n\n")), sections: sections))
+                if let firstError { await send(.loaded(revision, .failure(firstError), sections: sections)) }
+                else { await send(.loaded(revision, .success(documents.joined(separator: "\n\n---\n\n")), sections: sections)) }
             } catch is CancellationError {
             } catch {
                 await send(.loaded(revision, .failure(DocumentLoadFailure(message: error.localizedDescription))))

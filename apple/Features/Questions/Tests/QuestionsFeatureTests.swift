@@ -155,6 +155,7 @@ struct QuestionsFeatureTests {
             $0.notice = "The document changed. Review it again before sending comments."
             $0.isLoading = true
             $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("Updated content"), text: "Updated content")]
         }
         await store.receive(\.loaded) {
             $0.isLoading = false
@@ -180,7 +181,10 @@ struct QuestionsFeatureTests {
         await store.send(.appeared) {
             $0.isLoading = true
             $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "first.md", path: "a"), text: "", isLoading: true), DocumentSection(source: .stored(name: "second.md", path: "b"), text: "", isLoading: true)]
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "First content" }
+        await store.receive(\.sectionLoaded) { $0.sections[2].isLoading = false; $0.sections[2].text = "Second content" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# first.md\n\nFirst content\n\n---\n\n# second.md\n\nSecond content"
@@ -195,7 +199,8 @@ struct QuestionsFeatureTests {
         let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(report))) { DocumentReviewFeature() } withDependencies: {
             $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in try await reader.read() })
         }
-        await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1 }
+        await store.send(.appeared) { $0.isLoading = true; $0.loadRevision = 1; $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)] }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "Old" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nOld"
@@ -207,10 +212,11 @@ struct QuestionsFeatureTests {
         await store.send(.appeared) {
             $0.isLoading = true
             $0.sourceText = nil
-            $0.sections = []
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)]
             $0.previousTextForComparison = "Text\n\n---\n\n# draft.md\n\nOld"
             $0.loadRevision = 2
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].error = QuestionWorkError.unavailable.localizedDescription }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.loadError = QuestionWorkError.unavailable.localizedDescription
@@ -219,7 +225,9 @@ struct QuestionsFeatureTests {
             $0.isLoading = true
             $0.loadError = nil
             $0.loadRevision = 3
+            $0.sections = [DocumentSection(source: .inline("Text"), text: "Text"), DocumentSection(source: .stored(name: "draft.md", path: "a"), text: "", isLoading: true)]
         }
+        await store.receive(\.sectionLoaded) { $0.sections[1].isLoading = false; $0.sections[1].text = "New" }
         await store.receive(\.loaded) {
             $0.isLoading = false
             $0.sourceText = "Text\n\n---\n\n# draft.md\n\nNew"

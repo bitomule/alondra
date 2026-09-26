@@ -177,9 +177,8 @@ struct ServiceDocumentView: View {
                             .buttonStyle(.borderedProminent).controlSize(.large).help(url.absoluteString)
                     }
                 }
-                if store.isLoading { ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 60) }
                 if let error = store.loadError {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                    if !store.sections.contains(where: { $0.error != nil }) { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary) }
                     Button("Retry") { store.send(.appeared) }
                 }
                 ForEach(store.sections) { section in
@@ -191,7 +190,7 @@ struct ServiceDocumentView: View {
                             } else { MarkdownText(text: section.text) }
                         }
                     case .stored(let name, let path):
-                        ServiceAttachmentDocument(name: name, path: path, text: section.text, store: store, focus: $focus)
+                        ServiceAttachmentDocument(name: name, path: path, section: section, store: store, focus: $focus)
                     }
                 }
                 context
