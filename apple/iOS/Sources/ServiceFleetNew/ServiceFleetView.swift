@@ -10,6 +10,10 @@ struct ServiceFleetView: View {
     @Bindable var store: StoreOf<ServiceFleetFeature>
     var focusInbox: (String) -> Void = { _ in }
     private var sections: [FleetSection] { store.fleet.filteredSections }
+    private var showsOrchestrator: Bool {
+        store.fleet.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && store.fleet.snapshot?.orchestrator != nil
+    }
     var body: some View {
         NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
             List {
@@ -17,7 +21,7 @@ struct ServiceFleetView: View {
                 ForEach(Array(store.fleet.closeOutcomeByID.keys.sorted()), id: \.self) { id in
                     ServiceNodeOutcome(outcome: store.fleet.closeOutcomeByID[id])
                 }
-                if store.fleet.query.trimmingCharacters(in: .whitespaces).isEmpty, let orchestrator = store.fleet.snapshot?.orchestrator {
+                if showsOrchestrator, let orchestrator = store.fleet.snapshot?.orchestrator {
                     Section {
                         NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailRouteFeature.State(sessionID: orchestrator.id))) {
                             ServiceNodeRow(entry: orchestrator)
@@ -57,7 +61,7 @@ struct ServiceFleetView: View {
             .scrollContentBackground(.hidden)
             .background(DawnBackground(glow: Palette.sky))
             .overlay {
-                if sections.isEmpty, store.overview != nil {
+                if sections.isEmpty, !showsOrchestrator, store.overview != nil {
                     ContentUnavailableView.search(text: store.fleet.query)
                 }
             }

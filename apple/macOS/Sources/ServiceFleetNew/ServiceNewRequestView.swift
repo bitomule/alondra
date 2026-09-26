@@ -32,10 +32,7 @@ struct ServiceNewRequestView: View {
     var body: some View {
         @Bindable var presentation = presentation
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("What do you want done?").font(.title3.weight(.semibold))
-                Text("I’ll pass it to the orchestrator: it prepares the mission and launches the node.").foregroundStyle(.secondary)
-            }
+            Text("What do you want done?").font(.title3.weight(.semibold))
             TextEditor(text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
                 .font(.body).scrollContentBackground(.hidden).padding(8)
                 .frame(minWidth: 520, minHeight: 180)

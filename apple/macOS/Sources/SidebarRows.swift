@@ -213,7 +213,7 @@ extension NodeOccupancy {
 
 extension Node {
     /// The orchestrator keeps its node state; every other node shows whether it is busy.
-    var dotColor: Color { isOrchestrator ? state.color : occupancy.color }
+    var dotColor: Color { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).color : occupancy.color }
 }
 
 extension NodeState {
