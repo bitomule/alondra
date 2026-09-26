@@ -3,11 +3,6 @@ import AlondraDomain
 import Foundation
 import Observation
 
-public typealias OptionChoice = AlondraContracts.OptionChoice
-public typealias OptionSpec = AlondraContracts.OptionSpec
-public typealias OptionsCatalog = AlondraContracts.OptionsCatalog
-public typealias ProjectList = AlondraContracts.ProjectList
-public typealias NewRequestBody = AlondraContracts.NewRequestBody
 public typealias WorkOptions = AlondraDomain.NewWorkSelection
 
 extension OptionSpec {

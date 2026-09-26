@@ -1,4 +1,5 @@
-import AlondraShared
+import AlondraContracts
+import AlondraDomain
 import Foundation
 import Testing
 
@@ -71,7 +72,7 @@ import Testing
     }
 
     @Test func theRequestCarriesTheIssueWithTheOptionsAndAttachments() throws {
-        var options = WorkOptions(project: "App")
+        var options = NewWorkSelection(project: "App")
         options.issue = "me/App#1"
         var body = options.body(text: "Arréglalo")
         body.attachments = ["f1"]
