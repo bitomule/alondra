@@ -107,7 +107,7 @@ impl Store {
         raw.fill(0);
         result
     }
-    fn from_key(pool: PgPool, raw: &[u8]) -> Result<Self> {
+    pub(super) fn from_key(pool: PgPool, raw: &[u8]) -> Result<Self> {
         let key = aead::UnboundKey::new(&aead::AES_256_GCM, raw)
             .map_err(|_| anyhow::anyhow!("invalid session key"))?;
         Ok(Self {
@@ -238,7 +238,7 @@ impl Store {
             .bind(cookie_digest(cookie)?).bind(revision).bind(now).bind(now-SESSION_IDLE_MS).execute(&self.pool).await?;
         Ok(result.rows_affected() == 1)
     }
-    pub async fn finish_refresh(
+    pub async fn retain_rotated(
         &self,
         cookie: &str,
         revision: i64,
@@ -248,15 +248,48 @@ impl Store {
     ) -> Result<bool> {
         let hash = cookie_digest(cookie)?;
         let sealed = self.seal(secrets, b"alondra-web-session-v1", &hash)?;
-        // Keep newly rotated provider credentials for revocation even when the
-        // account or session expired during the provider request.
-        let row=query("UPDATE web_sessions s SET sealed=$3,access_expires_ms=$4,used_ms=$5,revision=revision+1,refresh_state=CASE WHEN expires_ms>$5 AND used_ms>$6 AND EXISTS(SELECT 1 FROM management_accounts a WHERE a.id=s.account_id AND a.status='active') THEN 'ready' ELSE 'revoked' END WHERE cookie_hash=$1 AND revision=$2 AND refresh_state='refreshing' RETURNING refresh_state")
+        // Persist the rotation before validating its authority. An expired or
+        // disabled session remains denied until local cleanup deletes its secrets.
+        let row=query("UPDATE web_sessions s SET sealed=$3,access_expires_ms=$4,used_ms=$5,revision=revision+1,refresh_state=CASE WHEN expires_ms>$5 AND used_ms>$6 AND EXISTS(SELECT 1 FROM management_accounts a WHERE a.id=s.account_id AND a.status='active') THEN 'refreshing' ELSE 'revoked' END WHERE cookie_hash=$1 AND revision=$2 AND refresh_state='refreshing' RETURNING refresh_state")
             .bind(hash).bind(revision).bind(sealed).bind(access_expires).bind(now).bind(now-SESSION_IDLE_MS).fetch_optional(&self.pool).await?;
         Ok(row
             .map(|row| row.try_get::<String, _>("refresh_state"))
             .transpose()?
             .as_deref()
+            == Some("refreshing"))
+    }
+    pub async fn activate_rotated(&self, cookie: &str, revision: i64, now: i64) -> Result<bool> {
+        let result=query("UPDATE web_sessions s SET refresh_state=CASE WHEN expires_ms>$3 AND used_ms>$4 AND EXISTS(SELECT 1 FROM management_accounts a WHERE a.id=s.account_id AND a.status='active') THEN 'ready' ELSE 'revoked' END WHERE cookie_hash=$1 AND revision=$2 AND refresh_state='refreshing' RETURNING refresh_state")
+            .bind(cookie_digest(cookie)?).bind(revision).bind(now).bind(now-SESSION_IDLE_MS).fetch_optional(&self.pool).await?;
+        Ok(result
+            .map(|row| row.try_get::<String, _>("refresh_state"))
+            .transpose()?
+            .as_deref()
             == Some("ready"))
+    }
+    /// Logout must work even when authentication cannot refresh, or the account
+    /// is disabled. This returns only the CSRF proof for an existing capability.
+    /// Caller holds the session lock through the subsequent deletion.
+    pub async fn logout_csrf(&self, cookie: &str) -> Result<Option<String>> {
+        let hash = cookie_digest(cookie)?;
+        let row = query("SELECT sealed FROM web_sessions WHERE cookie_hash=$1")
+            .bind(&hash)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| {
+            self.unseal::<SessionSecrets>(row.try_get("sealed")?, b"alondra-web-session-v1", &hash)
+                .map(|value| value.csrf_token)
+        })
+        .transpose()
+    }
+    /// Local browser logout, not provider-wide SSO logout. Caller holds the
+    /// session lock. Deletion also makes any stale refresh CAS unable to revive it.
+    pub async fn forget_session(&self, cookie: &str) -> Result<()> {
+        query("DELETE FROM web_sessions WHERE cookie_hash=$1")
+            .bind(cookie_digest(cookie)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
     pub async fn revoke(&self, cookie: &str) -> Result<()> {
         query("UPDATE web_sessions SET refresh_state='revoked' WHERE cookie_hash=$1")
@@ -280,11 +313,9 @@ impl Store {
     pub async fn expire_locked(&self, hash: &[u8], now: i64) -> Result<()> {
         query("UPDATE web_sessions s SET refresh_state='revoked' WHERE cookie_hash=$1 AND (expires_ms<=$2 OR used_ms<=$3 OR NOT EXISTS(SELECT 1 FROM management_accounts a WHERE a.id=s.account_id AND a.status='active'))")
             .bind(hash).bind(now).bind(now-SESSION_IDLE_MS).execute(&self.pool).await?;
-        // Bounded seven-day retry retention after absolute session expiry.
-        query("DELETE FROM web_sessions WHERE cookie_hash=$1 AND refresh_state='revoked' AND expires_ms<$2")
-            .bind(hash).bind(now-7*24*60*60*1000i64).execute(&self.pool).await?;
         Ok(())
     }
+    #[cfg(test)]
     pub async fn revoked_token(&self, hash: &[u8]) -> Result<Option<String>> {
         let row = query(
             "SELECT sealed FROM web_sessions WHERE cookie_hash=$1 AND refresh_state='revoked'",
@@ -442,6 +473,39 @@ mod tests {
         )
         .await?;
         assert!(s.load_session(&cookie, 1001).await?.is_some());
+        // Successful rotation is two-phase: retaining credentials must never
+        // publish them as authenticated before validation and the revision CAS.
+        let happy = random_token()?;
+        s.create_session(&happy, account.id, "stable-admin-sub", &secrets, 2000, 1000)
+            .await?;
+        assert!(s.begin_refresh(&happy, 0, 1001).await?);
+        let new_secrets = SessionSecrets {
+            access_token: "verified-new-access".into(),
+            refresh_token: "new-refresh".into(),
+            csrf_token: secrets.csrf_token.clone(),
+            nonce: secrets.nonce.clone(),
+        };
+        assert!(
+            s.retain_rotated(&happy, 0, &new_secrets, 5000, 1002)
+                .await?
+        );
+        let pending = s.load_session(&happy, 1003).await?.unwrap();
+        assert_eq!(pending.refresh_state, "refreshing");
+        assert_eq!(pending.revision, 1);
+        assert!(!s.touch(&happy, 1003).await?);
+        assert!(!s.activate_rotated(&happy, 0, 1003).await?);
+        assert_eq!(
+            s.load_session(&happy, 1003).await?.unwrap().refresh_state,
+            "refreshing"
+        );
+        assert!(s.activate_rotated(&happy, 1, 1004).await?);
+        let ready = s.load_session(&happy, 1005).await?.unwrap();
+        assert_eq!(ready.refresh_state, "ready");
+        assert_eq!(ready.secrets.access_token, new_secrets.access_token);
+        assert_eq!(ready.secrets.refresh_token, new_secrets.refresh_token);
+        assert!(s.touch(&happy, 1005).await?);
+        s.forget_session(&happy).await?;
+
         let raw: Vec<u8> = query("SELECT sealed FROM web_sessions WHERE cookie_hash=$1")
             .bind(cookie_digest(&cookie)?)
             .fetch_one(&db.pool)
@@ -474,14 +538,14 @@ mod tests {
             nonce: secrets.nonce.clone(),
         };
         assert!(
-            !s.finish_refresh(&cookie, 0, &rotated, 5000, 1005).await?,
+            !s.retain_rotated(&cookie, 0, &rotated, 5000, 1005).await?,
             "disabled during refresh must not regain access"
         );
         assert!(s.load_session(&cookie, 1006).await?.is_none());
         assert_eq!(
             s.revoked_token(&cookie_digest(&cookie)?).await?.as_deref(),
             Some("synthetic second refresh"),
-            "retain the new token only for provider revocation"
+            "retain the rotated credential until local invalidation cleanup; never restore access"
         );
         query("UPDATE management_accounts SET status='active' WHERE id=$1")
             .bind(account.id)
@@ -501,6 +565,87 @@ mod tests {
         );
         assert!(!s.touch(&idle, 1000 + SESSION_IDLE_MS).await?);
         drop(restarted);
+        drop(s);
+        crate::management::tests::cleanup(db, schema).await
+    }
+    #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL"]
+    async fn local_logout_and_cleanup_preserve_new_login_without_shared_grant_revocation()
+    -> Result<()> {
+        let (db, account, schema) =
+            crate::management::tests::fixture_for_issuer("https://identity.example/realms/test")
+                .await?;
+        sqlx_core::raw_sql::raw_sql(include_str!("../../migrations/0002_web_sessions.sql"))
+            .execute(&db.pool)
+            .await?;
+        let s = Store::from_key(db.pool.clone(), &[7; 32])?;
+        let first = random_token()?;
+        let second = random_token()?;
+        // Two browser capabilities can carry tokens from one Keycloak client session.
+        let secrets = SessionSecrets {
+            access_token: "shared grant access".into(),
+            refresh_token: "shared grant refresh".into(),
+            csrf_token: random_token()?,
+            nonce: random_token()?,
+        };
+        for cookie in [&first, &second] {
+            s.create_session(cookie, account.id, "stable-admin-sub", &secrets, 5000, 1000)
+                .await?;
+        }
+        assert!(s.begin_refresh(&first, 0, 1001).await?);
+        {
+            let _lock = s.lock(&first).await?;
+            s.forget_session(&first).await?;
+            // A lost logout response is safe to retry and never targets another login.
+            s.forget_session(&first).await?;
+        }
+        assert!(s.load_session(&first, 1002).await?.is_none());
+        assert!(!s.retain_rotated(&first, 0, &secrets, 5000, 1002).await?);
+        assert!(!s.activate_rotated(&first, 1, 1003).await?);
+        assert!(s.load_session(&second, 1003).await?.is_some());
+        let count: i64 = query("SELECT count(*) AS n FROM web_sessions WHERE cookie_hash=$1")
+            .bind(cookie_digest(&first)?)
+            .fetch_one(&db.pool)
+            .await?
+            .try_get("n")?;
+        assert_eq!(
+            count, 0,
+            "logout removes the encrypted credentials as well as the capability"
+        );
+        let expired = random_token()?;
+        let revoked = random_token()?;
+        s.create_session(
+            &expired,
+            account.id,
+            "stable-admin-sub",
+            &secrets,
+            5000,
+            1000 - SESSION_IDLE_MS,
+        )
+        .await?;
+        s.create_session(
+            &revoked,
+            account.id,
+            "stable-admin-sub",
+            &secrets,
+            5000,
+            1000,
+        )
+        .await?;
+        s.revoke(&revoked).await?;
+        let candidates = s.revoke_expired(1004).await?;
+        assert_eq!(candidates.len(), 2);
+        for hash in candidates {
+            let _lock = s.lock_hash(&hash).await?;
+            s.expire_locked(&hash, 1004).await?;
+            s.forget_revoked(&hash).await?;
+        }
+        let remaining: i64 = query("SELECT count(*) AS n FROM web_sessions")
+            .fetch_one(&db.pool)
+            .await?
+            .try_get("n")?;
+        assert_eq!(remaining, 1);
+        assert!(s.load_session(&second, 1005).await?.is_some());
         drop(s);
         crate::management::tests::cleanup(db, schema).await
     }

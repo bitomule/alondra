@@ -11,7 +11,7 @@ use openidconnect::{
 use reqwest::Url;
 use std::time::Duration;
 
-type OidcClient = CoreClient<
+pub(super) type OidcClient = CoreClient<
     EndpointSet,
     EndpointNotSet,
     EndpointNotSet,
@@ -38,6 +38,7 @@ pub struct Tokens {
     pub access: String,
     pub refresh: String,
     pub expires_ms: i64,
+    pub valid_id: bool,
 }
 
 pub fn allowed_origin(value: &Url) -> Result<String> {
@@ -182,57 +183,47 @@ impl Provider {
             .await
             .map_err(|_| anyhow::anyhow!("OIDC exchange failed"))?;
         let subject =
-            verify_id(&client, &response, &flow.nonce)?.context("OIDC ID token missing")?;
+            verify_id(&client, &response, &flow.nonce, false)?.context("OIDC ID token missing")?;
         tokens(response, subject, None, now)
     }
-    pub async fn refresh(&self, old: &SessionSecrets, subject: &str, now: i64) -> Result<Tokens> {
-        let client = self.client().await?;
+    pub async fn prepare_refresh(&self) -> Result<OidcClient> {
+        self.client().await
+    }
+    pub async fn refresh(
+        &self,
+        client: &OidcClient,
+        old: &SessionSecrets,
+        subject: &str,
+        now: i64,
+    ) -> Result<Tokens> {
         let refresh = RefreshToken::new(old.refresh_token.clone());
         let response = client
             .exchange_refresh_token(&refresh)?
             .request_async(self)
             .await
             .map_err(|_| anyhow::anyhow!("OIDC refresh failed"))?;
-        if let Some(returned) = verify_id(&client, &response, &old.nonce)? {
-            ensure!(returned == subject, "OIDC refresh subject mismatch");
-        }
-        tokens(
+        // Return issued credentials even on a bad ID token so the caller can
+        // durably deny and clean up that rotation. Never activate the session.
+        let valid_id = match verify_id(client, &response, &old.nonce, true) {
+            Ok(Some(returned)) => returned == subject,
+            Ok(None) => true,
+            Err(_) => false,
+        };
+        let mut result = tokens(
             response,
             subject.into(),
             Some(old.refresh_token.clone()),
             now,
-        )
-    }
-    pub async fn revoke(&self, token: &str) -> Result<()> {
-        // Alondra's configured identity provider is Keycloak. This endpoint is
-        // derived from the trusted issuer, never from request parameters.
-        let url = format!(
-            "{}/protocol/openid-connect/revoke",
-            self.issuer.as_str().trim_end_matches('/')
-        );
-        let response = self
-            .http
-            .post(url)
-            .form(&[
-                ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.as_str()),
-                ("token", token),
-                ("token_type_hint", "refresh_token"),
-            ])
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("OIDC revocation unavailable"))?;
-        ensure!(
-            response.status().is_success(),
-            "OIDC revocation unavailable"
-        );
-        Ok(())
+        )?;
+        result.valid_id = valid_id;
+        Ok(result)
     }
 }
 fn verify_id(
     client: &OidcClient,
     response: &CoreTokenResponse,
     nonce: &str,
+    refresh: bool,
 ) -> Result<Option<String>> {
     let Some(id) = response.id_token() else {
         return Ok(None);
@@ -240,7 +231,9 @@ fn verify_id(
     let verifier = client.id_token_verifier();
     let nonce = Nonce::new(nonce.into());
     let claims = id
-        .claims(&verifier, &nonce)
+        .claims(&verifier, |claim: Option<&Nonce>| {
+            validate_nonce(&nonce, claim, refresh)
+        })
         .map_err(|_| anyhow::anyhow!("OIDC claims invalid"))?;
     if let Some(expected) = claims.access_token_hash() {
         let actual = AccessTokenHash::from_token(
@@ -281,6 +274,7 @@ fn tokens(
         access,
         refresh,
         expires_ms: now + expires as i64,
+        valid_id: true,
     })
 }
 
@@ -296,5 +290,35 @@ impl<'c> openidconnect::AsyncHttpClient<'c> for Provider {
     >;
     fn call(&'c self, request: openidconnect::HttpRequest) -> Self::Future {
         Box::pin(self.request(request))
+    }
+}
+
+// OIDC Core 12.2: refreshed ID tokens normally omit nonce; if present it must
+// match the original authentication. Authorization-code exchange still requires it.
+fn validate_nonce(
+    expected: &Nonce,
+    claim: Option<&Nonce>,
+    refresh: bool,
+) -> std::result::Result<(), String> {
+    use openidconnect::NonceVerifier;
+    if refresh && claim.is_none() {
+        Ok(())
+    } else {
+        expected.verify(claim)
+    }
+}
+#[cfg(test)]
+mod nonce_tests {
+    use super::*;
+    #[test]
+    fn refresh_only_allows_absent_nonce_never_a_different_nonce() {
+        let expected = Nonce::new("synthetic-original".into());
+        let different = Nonce::new("synthetic-other".into());
+        assert!(validate_nonce(&expected, None, true).is_ok());
+        assert!(validate_nonce(&expected, None, false).is_err());
+        for refresh in [false, true] {
+            assert!(validate_nonce(&expected, Some(&expected), refresh).is_ok());
+            assert!(validate_nonce(&expected, Some(&different), refresh).is_err());
+        }
     }
 }

@@ -4,6 +4,7 @@ mod pairing;
 mod push;
 mod state;
 mod web_session;
+mod web_assets;
 
 use alondra_e2e::EnvelopeV1;
 use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
@@ -30,6 +31,7 @@ struct Server {
     auth: Auth,
     management_keycloak: Option<management::keycloak::Keycloak>,
     web_session: Option<Arc<web_session::WebSession>>,
+    web_assets: Option<web_assets::WebAssets>,
     apns: Option<push::Apns>,
     queue: Queue,
     pairing: pairing::Mailbox,
@@ -63,6 +65,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/work", get(work))
         .route("/v1/work/{id}/receipt", post(receipt))
         .route("/v1/work/{id}/response", post(respond))
+        .fallback(web_assets::serve)
         .layer(DefaultBodyLimit::max(state::MAX_RESPONSE_BYTES))
         .layer(middleware::from_fn_with_state(server.clone(),web_session::middleware))
         .layer(middleware::from_fn_with_state(
@@ -779,8 +782,10 @@ async fn main() -> anyhow::Result<()> {
         keycloak.verify_realm().await?;Some(keycloak)
     } else {None};
     let web_session = web_session::WebSession::from_env(&auth)?;
+    let web_assets = web_assets::WebAssets::from_env(web_session.is_some())?;
     let server = Arc::new(Server {
         auth,
+        web_assets,
         web_session,
         management_keycloak,
         apns,
@@ -924,6 +929,7 @@ mod http_tests {
             auth,
             management_keycloak: None,
             web_session: None,
+            web_assets: None,
             apns: apns_endpoint.map(push::Apns::test),
             queue: Queue::new(),
             pairing: pairing::Mailbox::default(),

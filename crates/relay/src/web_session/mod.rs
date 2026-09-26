@@ -29,7 +29,6 @@ pub struct WebSession {
 }
 #[derive(Clone)]
 struct BrowserIdentity {
-    cookie: String,
     csrf: String,
     account: Account,
 }
@@ -166,9 +165,16 @@ impl WebSession {
             return Err(unauthorized()); // previous process may have spent the refresh token
         }
         if session.access_expires_ms <= now + 30_000 {
+            // Discovery is read-only. A transient failure here has not spent the
+            // refresh token and must not force another login.
+            let prepared = self
+                .provider
+                .prepare_refresh()
+                .await
+                .map_err(|_| unavailable())?;
             if !self
                 .store
-                .begin_refresh(cookie, session.revision, now)
+                .begin_refresh(cookie, session.revision, now_ms() as i64)
                 .await
                 .map_err(|_| unavailable())?
             {
@@ -176,8 +182,12 @@ impl WebSession {
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(25),
-                self.provider
-                    .refresh(&session.secrets, &session.subject, now),
+                self.provider.refresh(
+                    &prepared,
+                    &session.secrets,
+                    &session.subject,
+                    now_ms() as i64,
+                ),
             )
             .await;
             let tokens = match result {
@@ -187,27 +197,36 @@ impl WebSession {
                     return Err(unauthorized());
                 }
             };
-            if auth
-                .verify_jwt(&tokens.access, now_ms())
-                .await
-                .ok()
-                .as_deref()
-                != Some(session.subject.as_str())
-            {
-                self.store.revoke(cookie).await.map_err(|_| unavailable())?;
-                return Err(unauthorized());
-            }
             session.secrets.access_token = tokens.access;
             session.secrets.refresh_token = tokens.refresh;
             if !self
                 .store
-                .finish_refresh(
+                .retain_rotated(
                     cookie,
                     session.revision,
                     &session.secrets,
                     tokens.expires_ms,
                     now_ms() as i64,
                 )
+                .await
+                .map_err(|_| unavailable())?
+            {
+                return Err(unauthorized());
+            }
+            if !tokens.valid_id
+                || auth
+                    .verify_jwt(&session.secrets.access_token, now_ms())
+                    .await
+                    .ok()
+                    .as_deref()
+                    != Some(session.subject.as_str())
+            {
+                self.store.revoke(cookie).await.map_err(|_| unavailable())?;
+                return Err(unauthorized());
+            }
+            if !self
+                .store
+                .activate_rotated(cookie, session.revision + 1, now_ms() as i64)
                 .await
                 .map_err(|_| unavailable())?
             {
@@ -250,7 +269,6 @@ impl WebSession {
         }
         Ok((
             BrowserIdentity {
-                cookie: cookie.into(),
                 csrf: session.secrets.csrf_token,
                 account,
             },
@@ -301,6 +319,11 @@ pub async fn middleware(
     if !browser_path(path, request.method()) {
         return next.run(request).await;
     }
+    // Logout validates its own local capability and CSRF under a lock; do not
+    // refresh a token or require an active account merely to erase that session.
+    if path == "/auth/logout" && request.method() == Method::POST {
+        return logout(State(server.clone()), request.headers().clone()).await;
+    }
     let cookie = match cookie_value(request.headers(), web.session_name()) {
         Ok(value) => value,
         Err(_) => return unauthorized(),
@@ -311,6 +334,12 @@ pub async fn middleware(
         return next.run(request).await;
     };
     if request.headers().contains_key(header::AUTHORIZATION) {
+        return forbidden();
+    }
+    if request.method() != Method::GET
+        && request.method() != Method::HEAD
+        && !web.check_origin(request.headers())
+    {
         return forbidden();
     }
     let _permit = match web.permits.try_acquire() {
@@ -446,10 +475,11 @@ async fn callback(
                 now_ms() as i64,
             )
             .await?;
-        // Rotate capability even if this browser had an earlier valid session.
+        // Rotate only the local browser capability. Keycloak refresh tokens may
+        // share a client session; revoking the old grant could kill this new login.
         if let Some(previous) = cookie_value(&headers, web.session_name())? {
             let _lock = web.store.lock(&previous).await?;
-            web.store.revoke(&previous).await?;
+            web.store.forget_session(&previous).await?;
         }
         Ok::<_, anyhow::Error>(session_cookie)
     };
@@ -482,19 +512,48 @@ async fn session(identity: Option<axum::Extension<BrowserIdentity>>) -> Response
         None => unauthorized(),
     }
 }
-async fn logout(
-    State(server): State<Arc<Server>>,
-    identity: Option<axum::Extension<BrowserIdentity>>,
-) -> Response {
-    let (Some(web), Some(axum::Extension(identity))) = (&server.web_session, identity) else {
-        return unauthorized();
+async fn logout(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    let Some(web) = &server.web_session else {
+        return unavailable();
     };
-    let _lock = match web.store.lock(&identity.cookie).await {
+    // This is only local browser logout, not Keycloak SSO logout. Never accept
+    // an injected bearer alongside the cookie or turn it into account authority.
+    if !web.check_origin(&headers) || headers.contains_key(header::AUTHORIZATION) {
+        return forbidden();
+    }
+    let cookie = match cookie_value(&headers, web.session_name()) {
+        Ok(value) => value,
+        Err(_) => return unauthorized(),
+    };
+    let _permit = match web.permits.try_acquire() {
         Ok(value) => value,
         Err(_) => return unavailable(),
     };
-    if web.store.revoke(&identity.cookie).await.is_err() {
-        return unavailable();
+    if let Some(cookie) = cookie {
+        let _lock = match web.store.lock(&cookie).await {
+            Ok(value) => value,
+            Err(_) => return unavailable(),
+        };
+        let csrf = match web.store.logout_csrf(&cookie).await {
+            Ok(value) => value,
+            Err(_) => return unavailable(),
+        };
+        if let Some(expected) = csrf {
+            let mut supplied = headers.get_all("x-csrf-token").iter();
+            let actual = supplied
+                .next()
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            use subtle::ConstantTimeEq;
+            if supplied.next().is_some() || !bool::from(digest(actual).ct_eq(&digest(&expected))) {
+                return forbidden();
+            }
+            if web.store.forget_session(&cookie).await.is_err() {
+                return unavailable();
+            }
+        }
+        // Already absent is idempotent cleanup: there is no remaining authority
+        // or encrypted credential to delete and no provider request to replay.
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().append(
@@ -510,11 +569,10 @@ pub async fn reconcile(web: Arc<WebSession>) {
             for hash in web.store.revoke_expired(now_ms() as i64).await? {
                 let _lock = web.store.lock_hash(&hash).await?;
                 web.store.expire_locked(&hash, now_ms() as i64).await?;
-                if let Some(token) = web.store.revoked_token(&hash).await? {
-                    if web.provider.revoke(&token).await.is_ok() {
-                        web.store.forget_revoked(&hash).await?;
-                    }
-                }
+                // Local logout/expiry is not Keycloak SSO logout. Tokens never
+                // reach the browser; deleting its capability and encrypted secrets
+                // prevents reuse without revoking another login's shared grant.
+                web.store.forget_revoked(&hash).await?;
             }
             Ok::<_, anyhow::Error>(())
         }
@@ -561,5 +619,312 @@ mod tests {
         }
         assert!(browser_path("/v1/macs", &Method::GET));
         assert!(!browser_path("/v1/macs", &Method::POST));
+    }
+    #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL and loopback HTTP"]
+    async fn http_logout_works_without_identity_provider_for_expired_and_revoked_sessions()
+    -> Result<()> {
+        use base64::Engine as _;
+        use sqlx_core::{query::query, row::Row};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let idp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let issuer = format!("http://{}/realms/test", idp_listener.local_addr()?);
+        let mode = Arc::new(AtomicUsize::new(0));
+        let token_calls = Arc::new(AtomicUsize::new(0));
+        let mock_mode = mode.clone();
+        let mock_tokens = token_calls.clone();
+        let mock_issuer = issuer.clone();
+        let idp = tokio::spawn(async move {
+            axum::serve(
+                idp_listener,
+                Router::new().fallback(move |uri: axum::http::Uri, method: Method| {
+                    let calls = observed.clone();
+                    let mode = mock_mode.clone();
+                    let tokens = mock_tokens.clone();
+                    let issuer = mock_issuer.clone();
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if mode.load(Ordering::SeqCst) == 0 { return StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                        match uri.path() {
+                            "/realms/test/.well-known/openid-configuration" => Json(json!({
+                                "issuer":issuer, "authorization_endpoint":format!("{issuer}/authorize"),
+                                "token_endpoint":format!("{issuer}/token"), "jwks_uri":format!("{issuer}/jwks"),
+                                "response_types_supported":["code"], "subject_types_supported":["public"],
+                                "id_token_signing_alg_values_supported":["RS256"],
+                                "token_endpoint_auth_methods_supported":["client_secret_basic"]
+                            })).into_response(),
+                            "/realms/test/jwks" => ([(header::CONTENT_TYPE,"application/json")], include_str!("../../tests/fixtures/jwks.json")).into_response(),
+                            "/realms/test/token" if method == Method::POST => {
+                                tokens.fetch_add(1, Ordering::SeqCst);
+                                Json(json!({"access_token":"invalid-issued-access", "refresh_token":"rotated-before-jwt-denial", "token_type":"Bearer", "expires_in":300})).into_response()
+                            }
+                            _ => StatusCode::NOT_FOUND.into_response(),
+                        }
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        });
+        let (db, account, schema) = crate::management::tests::fixture_for_issuer(&issuer).await?;
+        sqlx_core::raw_sql::raw_sql(include_str!("../../migrations/0002_web_sessions.sql"))
+            .execute(&db.pool)
+            .await?;
+        let registry = std::env::temp_dir().join(format!(
+            "alondra-web-logout-test-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let signer = p256::ecdsa::SigningKey::from_slice(&[11; 32])?;
+        let config = crate::auth::Config {
+            listen: "127.0.0.1:0".into(),
+            issuer: issuer.clone(),
+            audience: "alondra-relay".into(),
+            jwks_url: format!("{issuer}/jwks"),
+            allow_internal_http_jwks: false,
+            owner_sub: "stable-admin-sub".into(),
+            mac_id: "mac-test".into(),
+            mac_signing_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(signer.verifying_key().to_sec1_point(false).as_bytes()),
+            device_registry_path: registry.clone(),
+            apns: None,
+        };
+        let mut auth = Auth::test(config, include_bytes!("../../tests/fixtures/jwks.json"))?;
+        auth.management = Some(db.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let web = Arc::new(WebSession {
+            store: Store::from_key(db.pool.clone(), &[7; 32])?,
+            provider: oidc::Provider::new(
+                &issuer,
+                &origin,
+                "synthetic-web".into(),
+                "synthetic-secret".into(),
+            )?,
+            origin: origin.clone(),
+            secure: false,
+            permits: Semaphore::new(2),
+        });
+        let server = Arc::new(Server {
+            auth,
+            management_keycloak: None,
+            web_session: Some(web.clone()),
+            web_assets: None,
+            apns: None,
+            queue: crate::state::Queue::new(),
+            pairing: crate::pairing::Mailbox::default(),
+            work_waiters: Arc::new(Semaphore::new(1)),
+            change_waiters: Arc::new(Semaphore::new(1)),
+            requests: Arc::new(Semaphore::new(8)),
+            device_gate: Arc::new(tokio::sync::RwLock::new(())),
+            epoch: "synthetic".into(),
+        });
+        let run = tokio::spawn(async move {
+            axum::serve(listener, crate::router(server)).await.unwrap();
+        });
+        let http = reqwest::Client::new();
+        let now = now_ms() as i64;
+        for state in ["expired", "refreshing", "revoked"] {
+            let cookie = random_token()?;
+            let csrf = random_token()?;
+            let secrets = SessionSecrets {
+                access_token: "deliberately-invalid-jwt".into(),
+                refresh_token: "synthetic-refresh".into(),
+                csrf_token: csrf.clone(),
+                nonce: random_token()?,
+            };
+            web.store
+                .create_session(
+                    &cookie,
+                    account.id,
+                    "stable-admin-sub",
+                    &secrets,
+                    now - 1,
+                    now - store::SESSION_MAX_MS - 1,
+                )
+                .await?;
+            if state != "expired" {
+                query("UPDATE web_sessions SET refresh_state=$2 WHERE cookie_hash=$1")
+                    .bind(store::cookie_digest(&cookie)?)
+                    .bind(state)
+                    .execute(&db.pool)
+                    .await?;
+            }
+            let request = || {
+                http.post(format!("{origin}/auth/logout"))
+                    .header(header::COOKIE, format!("{}={cookie}", web.session_name()))
+            };
+            assert_eq!(
+                request()
+                    .header(header::ORIGIN, "https://adversary.example")
+                    .header("x-csrf-token", &csrf)
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                request()
+                    .header(header::ORIGIN, &origin)
+                    .header("x-csrf-token", "wrong")
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                request()
+                    .header(header::ORIGIN, &origin)
+                    .header("x-csrf-token", &csrf)
+                    .bearer_auth("injected")
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                web.store.logout_csrf(&cookie).await?.as_deref(),
+                Some(csrf.as_str()),
+                "rejected requests must preserve the row"
+            );
+            let response = request()
+                .header(header::ORIGIN, &origin)
+                .header("x-csrf-token", &csrf)
+                .send()
+                .await?;
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert!(
+                response.headers()[header::SET_COOKIE]
+                    .to_str()?
+                    .contains("Max-Age=0")
+            );
+            assert!(web.store.logout_csrf(&cookie).await?.is_none());
+            assert_eq!(
+                request()
+                    .header(header::ORIGIN, &origin)
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::NO_CONTENT,
+                "retry after deletion needs no now-unavailable CSRF row"
+            );
+            assert_eq!(
+                request()
+                    .header(header::ORIGIN, "https://adversary.example")
+                    .send()
+                    .await?
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "local logout must never contact the failing identity provider"
+        );
+        // A hostile unsafe request cannot even start discovery/refresh; a
+        // discovery failure on a legitimate read must leave the token unspent.
+        let ready_cookie = random_token()?;
+        let ready_secrets = SessionSecrets {
+            access_token: "deliberately-invalid-jwt".into(),
+            refresh_token: "unspent-refresh".into(),
+            csrf_token: random_token()?,
+            nonce: random_token()?,
+        };
+        web.store
+            .create_session(
+                &ready_cookie,
+                account.id,
+                "stable-admin-sub",
+                &ready_secrets,
+                now - 1,
+                now,
+            )
+            .await?;
+        let cookie_header = format!("{}={ready_cookie}", web.session_name());
+        assert_eq!(
+            http.delete(format!("{origin}/v1/account"))
+                .header(header::COOKIE, &cookie_header)
+                .header(header::ORIGIN, "https://adversary.example")
+                .header("x-csrf-token", &ready_secrets.csrf_token)
+                .send()
+                .await?
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let before = web.store.load_session(&ready_cookie, now).await?.unwrap();
+        assert_eq!(before.refresh_state, "ready");
+        assert_eq!(before.revision, 0);
+        assert_eq!(
+            http.get(format!("{origin}/v1/session"))
+                .header(header::COOKIE, &cookie_header)
+                .send()
+                .await?
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "discovery failed before any token POST"
+        );
+        let after = web.store.load_session(&ready_cookie, now).await?.unwrap();
+        assert_eq!(after.refresh_state, "ready");
+        assert_eq!(after.revision, 0);
+        assert_eq!(after.secrets.refresh_token, "unspent-refresh");
+        // Now allow real discovery + token HTTP, but issue an invalid access JWT.
+        // The new refresh credential must be durable before that validation fails.
+        mode.store(1, Ordering::SeqCst);
+        assert_eq!(
+            http.get(format!("{origin}/v1/session"))
+                .header(header::COOKIE, &cookie_header)
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(token_calls.load(Ordering::SeqCst), 1);
+        let row = query("SELECT revision,refresh_state FROM web_sessions WHERE cookie_hash=$1")
+            .bind(store::cookie_digest(&ready_cookie)?)
+            .fetch_one(&db.pool)
+            .await?;
+        assert_eq!(row.try_get::<i64, _>("revision")?, 1);
+        assert_eq!(row.try_get::<String, _>("refresh_state")?, "revoked");
+        assert_eq!(
+            web.store
+                .revoked_token(&store::cookie_digest(&ready_cookie)?)
+                .await?
+                .as_deref(),
+            Some("rotated-before-jwt-denial")
+        );
+        assert_eq!(
+            http.get(format!("{origin}/v1/session"))
+                .header(header::COOKIE, &cookie_header)
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            token_calls.load(Ordering::SeqCst),
+            1,
+            "denied session must never replay its refresh"
+        );
+        web.store.forget_session(&ready_cookie).await?;
+        let remaining: i64 = query("SELECT count(*) AS n FROM web_sessions")
+            .fetch_one(&db.pool)
+            .await?
+            .try_get("n")?;
+        assert_eq!(remaining, 0);
+        run.abort();
+        idp.abort();
+        let _ = run.await;
+        let _ = idp.await;
+        drop(web);
+        crate::management::tests::cleanup(db, schema).await?;
+        let _ = std::fs::remove_file(registry);
+        Ok(())
     }
 }
