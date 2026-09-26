@@ -1326,7 +1326,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn work_epoch_is_reused_until_failure_and_revocations_resync_after_restart() {
-        use axum::{routing::delete, http::HeaderMap};
+        use axum::{routing::delete, http::HeaderMap, Json};
         let (mut service, _) = push_fixture();
         activate_push(&service);
         let boots=Arc::new(AtomicUsize::new(0));
