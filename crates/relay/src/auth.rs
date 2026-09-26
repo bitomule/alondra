@@ -160,6 +160,8 @@ pub struct Auth {
     devices: Mutex<DeviceRegistry>,
     registry_poisoned: AtomicBool,
     verifier: Mutex<HttpChallengeVerifier>,
+    #[cfg(test)]
+    verification_time: Mutex<Option<u64>>,
 }
 
 impl Auth {
@@ -362,6 +364,8 @@ impl Auth {
             devices: Mutex::new(devices),
             registry_poisoned: AtomicBool::new(false),
             verifier: Mutex::new(verifier),
+            #[cfg(test)]
+            verification_time: Mutex::new(None),
         })
     }
 
@@ -933,6 +937,7 @@ impl Auth {
     }
     pub async fn require_live_phone(&self,who:&Identity)->Result<()> {
         let mac=self.paired_mac_for_phone(&who.device_id,&who.owner_sub)?;
+        self.mac_for_owner(&mac,&who.owner_sub)?;
         self.require_live_route(&who.owner_sub,&mac,Some(&who.device_id)).await
     }
     pub async fn require_active_owner(&self,subject:&str)->Result<()> {
@@ -946,6 +951,11 @@ impl Auth {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_verification_time(&self, now_ms: u64) {
+        *self.verification_time.lock().unwrap() = Some(now_ms);
+    }
+
     #[allow(clippy::too_many_arguments)] // The signed HTTP request and bound identity are intentionally explicit.
     fn verify_device(
         &self,
@@ -953,7 +963,7 @@ impl Auth {
         method: &Method,
         uri: &Uri,
         body: &[u8],
-        now_ms: u64,
+        _request_started_ms: u64,
         id: &str,
         public_key: &str,
     ) -> Result<()> {
@@ -963,7 +973,7 @@ impl Auth {
         }
         let timestamp_str = header(headers, "x-device-timestamp-ms")?;
         let timestamp: u64 = timestamp_str.parse()?;
-        if timestamp.to_string() != timestamp_str || now_ms.abs_diff(timestamp) > CLOCK_SKEW_MS {
+        if timestamp.to_string() != timestamp_str {
             bail!("stale device signature");
         }
         let nonce_vec = URL_SAFE_NO_PAD.decode(header(headers, "x-device-nonce")?)?;
@@ -975,11 +985,22 @@ impl Auth {
             bail!("relay epoch mismatch");
         }
         let path = uri.path_and_query().map_or(uri.path(), |p| p.as_str());
-        self.verifier
+        let key = verifying_key(public_key)?;
+        let mut verifier = self.verifier.lock().unwrap();
+        // Request arrival order can differ from verification order after JWT I/O
+        // or mutex contention. Sample under this lock so that only an actual
+        // wall-clock rollback trips the verifier's rollback protection.
+        #[cfg(not(test))]
+        let now_ms = crate::now_ms();
+        #[cfg(test)]
+        let now_ms = self
+            .verification_time
             .lock()
             .unwrap()
+            .unwrap_or_else(crate::now_ms);
+        verifier
             .verify(
-                &verifying_key(public_key)?,
+                &key,
                 signature,
                 id,
                 method.as_str(),

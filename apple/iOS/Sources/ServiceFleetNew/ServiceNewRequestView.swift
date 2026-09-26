@@ -67,11 +67,8 @@ struct ServiceNewRequestView: View {
 
     private var orchestratorStatus: some View {
         Group {
-            if let name = store.orchestratorName {
-                Label("\(name) receives it, prepares the mission and launches the node.", systemImage: "point.3.connected.trianglepath.dotted")
-                    .foregroundStyle(.secondary)
-            } else if store.hasSnapshot {
-                Label("No orchestrator is connected to Alondra, so nothing can be sent right now.", systemImage: "exclamationmark.triangle")
+            if store.hasSnapshot && !store.canSubmit {
+                Label("Requests are unavailable right now.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Palette.rose)
             }
         }

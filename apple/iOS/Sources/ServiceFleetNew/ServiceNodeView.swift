@@ -28,8 +28,26 @@ struct ServiceNodeView: View {
         .background(DawnBackground(glow: store.node?.glyphTint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .alert("Continue without repeating?", isPresented: Binding(get: { store.acknowledgeConfirmationRunID != nil }, set: { if !$0 { store.send(.acknowledgeCancelled) } })) {
+            Button("Continue") { store.send(.acknowledgeConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.acknowledgeCancelled) }
+        } message: {
+            Text("The interrupted work will not be repeated. Check what was completed first; pending messages will continue.")
+        }
+        .alert("Stop the current intervention?", isPresented: Binding(get: { store.cancelConfirmationRunID != nil }, set: { if !$0 { store.send(.cancelCancelled) } })) {
+            Button("Stop", role: .destructive) { store.send(.cancelConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.cancelCancelled) }
+        } message: {
+            Text("Actions already completed will not be undone. You can review the result before continuing.")
+        }
+        .alert("Retry the interrupted work?", isPresented: Binding(get: { store.retryConfirmationRunID != nil }, set: { if !$0 { store.send(.retryCancelled) } })) {
+            Button("Retry") { store.send(.retryConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.retryCancelled) }
+        } message: {
+            Text("Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.")
+        }
         .toolbar {
-            if store.node != nil {
+            if store.node?.isOrchestrator == false {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button(role: .destructive) {
@@ -71,12 +89,16 @@ struct ServiceNodeView: View {
                     Text(node.displayName)
                         .font(.display(.largeTitle, weight: .bold))
                         .fixedSize(horizontal: false, vertical: true)
-                    if let cwd = node.cwd {
+                    if !node.isOrchestrator, let cwd = node.cwd {
                         Text(cwd.replacing(/^\/Users\/[^\/]+\//, with: "~/"))
                             .font(.mono(.caption))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
+                }
+
+                if let runtime = node.orchestratorRuntime {
+                    orchestratorControls(runtime)
                 }
 
                 let tasks = store.tasks
@@ -180,6 +202,66 @@ struct ServiceNodeView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { composer(node) }
+    }
+
+    @ViewBuilder
+    private func orchestratorControls(_ runtime: OrchestratorRuntime) -> some View {
+        if let count = runtime.queueDepth, count > 0 {
+            Label(runtime.queueLabel, systemImage: "text.bubble")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        if runtime.canRetry == true || runtime.lastError != nil {
+            VStack(alignment: .leading, spacing: 14) {
+                if runtime.canRetry == true {
+                    Label("Review the activity before continuing.", systemImage: "exclamationmark.circle")
+                        .font(.subheadline.weight(.medium))
+                }
+                if let error = runtime.lastError {
+                    DisclosureGroup("View details") {
+                        Text(error).font(.callout).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 6)
+                    }
+                    .font(.subheadline)
+                }
+                if runtime.canRetry == true {
+                    VStack(spacing: 10) {
+                        ServiceActionButton(title: String(localized: "Retry"), symbol: "arrow.clockwise", tint: Palette.ember,
+                                            enabled: store.canRetryOrchestrator, isWorking: store.isRetrying) {
+                            store.send(.retryRequested)
+                        }
+                        ServiceActionButton(title: String(localized: "Continue without repeating"), symbol: "arrow.right", tint: Palette.slate,
+                                            enabled: store.canAcknowledgeOrchestrator, isWorking: store.isAcknowledging) {
+                            store.send(.acknowledgeRequested)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+            .background(Palette.card.opacity(0.9), in: .rect(cornerRadius: 20, style: .continuous))
+        }
+        if runtime.canCancel == true {
+            ServiceActionButton(title: String(localized: "Stop"), symbol: "stop.fill", tint: Palette.rose,
+                                enabled: store.canCancelOrchestrator, isWorking: store.isCancelling, role: .destructive) {
+                store.send(.cancelRequested)
+            }
+        }
+        orchestratorOutcome(store.retryOutcome)
+        orchestratorOutcome(store.acknowledgeOutcome)
+        orchestratorOutcome(store.cancelOutcome)
+    }
+
+    @ViewBuilder
+    private func orchestratorOutcome(_ outcome: NodeMutationOutcome?) -> some View {
+        switch outcome {
+        case .confirmed, nil: EmptyView()
+        case .rejected(let message): Text(message).font(.callout).foregroundStyle(Palette.rose)
+        case .unknown:
+            Text("The action could not be confirmed. Check the status before trying again.")
+                .font(.callout).foregroundStyle(.secondary)
+        case .obsolete: Text("The connection changed. Reopen the node.").font(.callout)
+        }
     }
 
     private func taskLine(_ task: WorkTask) -> String {

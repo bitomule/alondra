@@ -29,6 +29,36 @@ public struct NodeDetailFeature {
         public var showCloseConfirmation = false
         public var isClosing = false
         public var closeOutcome: NodeMutationOutcome?
+        public var retryOutcome: NodeMutationOutcome?
+        public var retryConfirmationRunID: String?
+        public var retryRunID: String?
+        public var isRetrying = false
+        public var canRetryOrchestrator: Bool {
+            !isStale && !hasOutstandingOrchestratorControl
+                && !(acknowledgeOutcome == .confirmed && acknowledgedRunID == node?.orchestratorRuntime?.activeRunId)
+                && !(retryOutcome == .confirmed && retryRunID == node?.orchestratorRuntime?.activeRunId)
+                && node?.orchestratorRuntime?.canRetry == true
+                && node?.orchestratorRuntime?.activeRunId != nil
+        }
+        public var cancelOutcome: NodeMutationOutcome?
+        public var cancelConfirmationRunID: String?
+        public var cancelledRunID: String?
+        public var isCancelling = false
+        public var canCancelOrchestrator: Bool {
+            !isStale && !hasOutstandingOrchestratorControl
+                && !(cancelOutcome == .confirmed && cancelledRunID == node?.orchestratorRuntime?.activeRunId)
+                && node?.orchestratorRuntime?.canCancel == true
+                && node?.orchestratorRuntime?.activeRunId != nil
+        }
+        public var acknowledgeOutcome: NodeMutationOutcome?
+        public var acknowledgeConfirmationRunID: String?
+        public var acknowledgedRunID: String?
+        public var isAcknowledging = false
+        public var canAcknowledgeOrchestrator: Bool { canRetryOrchestrator }
+        public var hasOutstandingOrchestratorControl: Bool {
+            isRetrying || isCancelling || isAcknowledging
+                || retryOutcome?.uncertainID != nil || cancelOutcome?.uncertainID != nil || acknowledgeOutcome?.uncertainID != nil
+        }
         public var shouldDismiss = false
         public var presentationEpoch: UInt64 = 0
         public let pollingID = UUID()
@@ -60,6 +90,18 @@ public struct NodeDetailFeature {
         case filesChanged([NodeFile])
         case sendTapped
         case sendFinished(NodeMessage, NodeMutationOutcome, UInt64)
+        case acknowledgeRequested
+        case acknowledgeCancelled
+        case acknowledgeConfirmed
+        case acknowledgeFinished(NodeMutationOutcome, UInt64)
+        case cancelRequested
+        case cancelCancelled
+        case cancelConfirmed
+        case cancelFinished(NodeMutationOutcome, UInt64)
+        case retryRequested
+        case retryCancelled
+        case retryConfirmed
+        case retryFinished(NodeMutationOutcome, UInt64)
         case closeRequested
         case closeCancelled
         case closeConfirmed
@@ -96,6 +138,9 @@ public struct NodeDetailFeature {
                 guard state.node != nil else { return .none }
                 return pollThreads(state)
             case .disappeared:
+                state.retryConfirmationRunID = nil
+                state.cancelConfirmationRunID = nil
+                state.acknowledgeConfirmationRunID = nil
                 state.pendingSubmission = nil
                 state.isVisible = false
                 state.isLoadingThreads = false
@@ -108,6 +153,15 @@ public struct NodeDetailFeature {
                 state.acceptedTick = snapshot.tick
                 state.isStale = false
                 state.entry = snapshot.node(state.sessionID)
+                if state.acknowledgeConfirmationRunID != state.node?.orchestratorRuntime?.activeRunId {
+                    state.acknowledgeConfirmationRunID = nil
+                }
+                if state.cancelConfirmationRunID != state.node?.orchestratorRuntime?.activeRunId {
+                    state.cancelConfirmationRunID = nil
+                }
+                if state.retryConfirmationRunID != state.node?.orchestratorRuntime?.activeRunId {
+                    state.retryConfirmationRunID = nil
+                }
                 if state.entry == nil {
                     state.pendingSubmission = nil
                     state.threads = []
@@ -123,6 +177,9 @@ public struct NodeDetailFeature {
             case .snapshotUnavailable:
                 state.pendingSubmission = nil
                 state.isStale = true
+                state.acknowledgeConfirmationRunID = nil
+                state.cancelConfirmationRunID = nil
+                state.retryConfirmationRunID = nil
                 return .none
             case .identityChanged:
                 state.pendingSubmission = nil
@@ -144,6 +201,18 @@ public struct NodeDetailFeature {
                 state.isClosing = false
                 state.closeOutcome = nil
                 state.shouldDismiss = false
+                state.isRetrying = false
+                state.retryOutcome = nil
+                state.retryConfirmationRunID = nil
+                state.retryRunID = nil
+                state.isCancelling = false
+                state.cancelOutcome = nil
+                state.cancelConfirmationRunID = nil
+                state.cancelledRunID = nil
+                state.isAcknowledging = false
+                state.acknowledgeOutcome = nil
+                state.acknowledgeConfirmationRunID = nil
+                state.acknowledgedRunID = nil
                 return .merge(.cancel(id: state.pollingID), .cancel(id: state.mutationID))
             case .threadsTick:
                 guard state.isVisible, state.node != nil, !state.isLoadingThreads else { return .none }
@@ -204,8 +273,86 @@ public struct NodeDetailFeature {
                     state.sentCount += 1
                 }
                 return .none
+            case .acknowledgeRequested:
+                guard state.canAcknowledgeOrchestrator else { return .none }
+                state.acknowledgeConfirmationRunID = state.node?.orchestratorRuntime?.activeRunId
+                return .none
+            case .acknowledgeCancelled:
+                state.acknowledgeConfirmationRunID = nil
+                return .none
+            case .acknowledgeConfirmed:
+                guard state.canAcknowledgeOrchestrator, let runID = state.acknowledgeConfirmationRunID,
+                      runID == state.node?.orchestratorRuntime?.activeRunId else {
+                    state.acknowledgeConfirmationRunID = nil
+                    return .none
+                }
+                state.acknowledgeConfirmationRunID = nil
+                state.acknowledgeOutcome = nil
+                state.acknowledgedRunID = runID
+                state.isAcknowledging = true
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    await send(.acknowledgeFinished(await operations.acknowledgeOrchestrator(runID), epoch))
+                }.cancellable(id: state.mutationID)
+            case .acknowledgeFinished(let outcome, let epoch):
+                guard epoch == state.presentationEpoch, state.isAcknowledging else { return .none }
+                state.isAcknowledging = false
+                state.acknowledgeOutcome = outcome
+                return .none
+            case .cancelRequested:
+                guard state.canCancelOrchestrator else { return .none }
+                state.cancelConfirmationRunID = state.node?.orchestratorRuntime?.activeRunId
+                return .none
+            case .cancelCancelled:
+                state.cancelConfirmationRunID = nil
+                return .none
+            case .cancelConfirmed:
+                guard state.canCancelOrchestrator, let runID = state.cancelConfirmationRunID,
+                      runID == state.node?.orchestratorRuntime?.activeRunId else {
+                    state.cancelConfirmationRunID = nil
+                    return .none
+                }
+                state.cancelConfirmationRunID = nil
+                state.cancelOutcome = nil
+                state.cancelledRunID = runID
+                state.isCancelling = true
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    await send(.cancelFinished(await operations.cancelOrchestrator(runID), epoch))
+                }.cancellable(id: state.mutationID)
+            case .cancelFinished(let outcome, let epoch):
+                guard epoch == state.presentationEpoch, state.isCancelling else { return .none }
+                state.isCancelling = false
+                state.cancelOutcome = outcome
+                return .none
+            case .retryRequested:
+                guard state.canRetryOrchestrator else { return .none }
+                state.retryConfirmationRunID = state.node?.orchestratorRuntime?.activeRunId
+                return .none
+            case .retryCancelled:
+                state.retryConfirmationRunID = nil
+                return .none
+            case .retryConfirmed:
+                guard state.canRetryOrchestrator, let runID = state.retryConfirmationRunID,
+                      runID == state.node?.orchestratorRuntime?.activeRunId else {
+                    state.retryConfirmationRunID = nil
+                    return .none
+                }
+                state.retryConfirmationRunID = nil
+                state.retryOutcome = nil
+                state.retryRunID = runID
+                state.isRetrying = true
+                let epoch = state.presentationEpoch
+                return .run { send in
+                    await send(.retryFinished(await operations.retryOrchestrator(runID), epoch))
+                }.cancellable(id: state.mutationID)
+            case .retryFinished(let outcome, let epoch):
+                guard epoch == state.presentationEpoch, state.isRetrying else { return .none }
+                state.isRetrying = false
+                state.retryOutcome = outcome
+                return .none
             case .closeRequested:
-                guard !state.isStale, state.node != nil, !state.isSending, !state.isClosing,
+                guard !state.isStale, state.node?.isOrchestrator == false, !state.isSending, !state.isClosing,
                       state.closeOutcome?.uncertainID == nil,
                       state.sendOutcome?.uncertainID == nil,
                       state.closeOutcome != .confirmed else { return .none }
@@ -216,7 +363,7 @@ public struct NodeDetailFeature {
                 state.showCloseConfirmation = false
                 return .none
             case .closeConfirmed:
-                guard state.showCloseConfirmation, !state.isStale, state.node != nil,
+                guard state.showCloseConfirmation, !state.isStale, state.node?.isOrchestrator == false,
                       !state.isSending, !state.isClosing, state.closeOutcome?.uncertainID == nil,
                       state.sendOutcome?.uncertainID == nil,
                       state.closeOutcome != .confirmed else { return .none }
@@ -241,6 +388,11 @@ public struct NodeDetailFeature {
                     state.isSending = true
                     return .send(.sendFinished(outgoing, outcome, state.presentationEpoch))
                 }
+                if state.cancelOutcome?.uncertainID == id { state.cancelOutcome = outcome }
+                if state.acknowledgeOutcome?.uncertainID == id { state.acknowledgeOutcome = outcome }
+                if state.retryOutcome?.uncertainID == id {
+                    state.retryOutcome = outcome
+                }
                 if state.closeOutcome?.uncertainID == id {
                     state.isClosing = true
                     return .send(.closeFinished(outcome, state.presentationEpoch))
@@ -249,6 +401,9 @@ public struct NodeDetailFeature {
             case .commandReconciled(let id):
                 if state.sendOutcome?.uncertainID == id { state.sendOutcome = nil }
                 if state.closeOutcome?.uncertainID == id { state.closeOutcome = nil }
+                if state.retryOutcome?.uncertainID == id { state.retryOutcome = nil }
+                if state.cancelOutcome?.uncertainID == id { state.cancelOutcome = nil }
+                if state.acknowledgeOutcome?.uncertainID == id { state.acknowledgeOutcome = nil }
                 return .none
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in

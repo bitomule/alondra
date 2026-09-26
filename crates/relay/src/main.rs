@@ -242,6 +242,7 @@ async fn revoke_mac(
         .auth
         .revoke_mac(&who)
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_revocation_failed"))?;
+    server.queue.purge_mac(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -568,13 +569,14 @@ async fn changes(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
-    // The read lock covers this bounded poll so revocation cannot race a ciphertext read.
-    let _gate = server.device_gate.read().await;
+    // Protect authentication and snapshots, never the idle network wait.
+    let gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
         .await
         .map_err(authentication_error)?;
+    drop(gate);
     if query.epoch.as_deref().is_some_and(|e| e != server.epoch) {
         return Err((
             StatusCode::CONFLICT,
@@ -582,16 +584,13 @@ async fn changes(
         ));
     }
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .change_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        let gate = server.device_gate.read().await;
         server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
         let (revision, events) =
             server
@@ -613,15 +612,16 @@ async fn changes(
             )
                 .into_response());
         }
-        if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
-            drop(permit);
-            return Ok((
-                StatusCode::OK,
-                Json(json!({"epoch":server.epoch,"revision":revision,"changes":[]})),
-            )
-                .into_response());
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.change_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
+        drop(gate);
+        // On notification or timeout, reacquire the gate and recheck both the
+        // local device registry and account state before producing a snapshot.
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -638,22 +638,21 @@ async fn work(
     method: Method,
     uri: Uri,
 ) -> ApiResult {
-    let _gate = server.device_gate.read().await;
+    let gate = server.device_gate.read().await;
     let who = server
         .auth
         .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
         .map_err(authentication_error)?;
+    drop(gate);
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .work_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        let gate = server.device_gate.read().await;
+        server.auth.mac_for_owner(&who.device_id, &who.owner_sub).map_err(authentication_error)?;
         server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
         if let Some(item) = server.queue.next_work(&who.device_id, now_ms()) {
             drop(permit);
@@ -667,11 +666,14 @@ async fn work(
             drop(permit);
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
-        if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            server.auth.require_live_route(&who.owner_sub,&who.device_id,None).await.map_err(authentication_error)?;
-            drop(permit);
-            return Ok(StatusCode::NO_CONTENT.into_response());
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.work_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
+        drop(gate);
+        let _ = tokio::time::timeout_at(deadline, notified).await;
     }
 }
 
@@ -949,6 +951,172 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    // Saturate actual idle HTTP polls from owner A; owner B has either an
+    // immediate empty snapshot or already-queued work, so never needs to wait.
+    async fn saturated_idle_polls_allow_immediate_case(work: bool, ready: bool) {
+        let mac_key = SigningKey::from_slice(&[113; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[114; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "idle-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        server.auth.enroll_mac(auth::MacDevice { mac_id: "target-mac".into(), owner_sub: "target-owner".into(),
+            signing_key: key_bytes(&mac_key), agreement_key: key_bytes(&phone_key) }).unwrap();
+        server.auth.enroll(&auth::Identity { device_id: "target-mac".into(), owner_sub: "target-owner".into() },
+            PhoneDevice { device_id: "target-phone".into(), owner_sub: "target-owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        if ready {
+            server.queue.submit("target-owner", "target-phone", "target-mac", "ready-request", [17; 32],
+                json!({"ciphertext":"opaque-fixture"}), now_ms()+60_000, now_ms()).unwrap();
+        }
+        let client = reqwest::Client::new();
+        let epoch = server.auth.server_epoch();
+        let idle_path = if work { "/v1/work?wait_s=25" } else { "/v1/changes?since=0&wait_s=25" };
+        let permits = if work { &server.work_waiters } else { &server.change_waiters };
+        let capacity = permits.available_permits();
+        let mut polls = tokio::task::JoinSet::new();
+        for nonce in 1..=capacity {
+            let request = client.get(format!("{url}{idle_path}"));
+            let request = if work { request } else { request.bearer_auth(jwt("owner", now_ms())) };
+            polls.spawn(sign(&epoch, request, if work { &mac_key } else { &phone_key },
+                if work { "mac-1" } else { "idle-phone" }, "GET", idle_path, &[], nonce as u8).send());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while permits.available_permits()!=0 { tokio::task::yield_now().await; }
+        }).await.expect("all real idle requests must hold their waiter slots");
+        assert!(polls.try_join_next().is_none(), "idle controls must still be pending");
+        // A genuinely new empty wait still overloads instead of exceeding the
+        // fixed waiter budget; only nonwaiting snapshots may bypass that budget.
+        let overflow = client.get(format!("{url}{idle_path}"));
+        let overflow = if work { overflow } else { overflow.bearer_auth(jwt("owner", now_ms())) };
+        let overflow = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, overflow,
+            if work { &mac_key } else { &phone_key }, if work { "mac-1" } else { "idle-phone" },
+            "GET", idle_path, &[], 201).send()).await.unwrap().unwrap();
+        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(overflow.json::<serde_json::Value>().await.unwrap()["error"], "too_many_polls");
+        assert_eq!(permits.available_permits(), 0, "waiter capacity remains exhausted, never expanded");
+        let path = match (work, ready) {
+            (true, false) => "/v1/work?wait_s=0",
+            (true, true) => "/v1/work?wait_s=25",
+            (false, false) => "/v1/changes?since=0&wait_s=0",
+            (false, true) => "/v1/changes?since=0&wait_s=25",
+        };
+        let request = client.get(format!("{url}{path}"));
+        let request = if work { request } else { request.bearer_auth(jwt("target-owner", now_ms())) };
+        let result = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, request,
+            if work { &mac_key } else { &phone_key }, if work { "target-mac" } else { "target-phone" },
+            "GET", path, &[], 200).send()).await;
+        polls.abort_all();
+        serving.abort();
+        let response = result.expect("immediate snapshot must not queue behind idle polls").unwrap();
+        let expected = if work && !ready { StatusCode::NO_CONTENT } else { StatusCode::OK };
+        assert_eq!(response.status(), expected, "a request that does not wait must not consume a waiter slot");
+        if ready {
+            let body: serde_json::Value = response.json().await.unwrap();
+            if work { assert_eq!(body["request_id"], "ready-request"); }
+            else { assert_eq!(body["changes"][0]["request_id"], "ready-request"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_work_waiters_allow_empty_immediate_poll() {
+        saturated_idle_polls_allow_immediate_case(true, false).await;
+    }
+    #[tokio::test]
+    async fn saturated_changes_waiters_allow_empty_immediate_poll() {
+        saturated_idle_polls_allow_immediate_case(false, false).await;
+    }
+    #[tokio::test]
+    async fn saturated_work_waiters_allow_already_ready_work() {
+        saturated_idle_polls_allow_immediate_case(true, true).await;
+    }
+    #[tokio::test]
+    async fn saturated_changes_waiters_allow_already_ready_snapshot() {
+        saturated_idle_polls_allow_immediate_case(false, true).await;
+    }
+
+    async fn idle_poll_revocation_case(work_poll: bool) {
+            let mac_key = SigningKey::from_slice(&[111; 32]).unwrap();
+            let phone_key = SigningKey::from_slice(&[112; 32]).unwrap();
+            let (url, server, serving) = test_server(&mac_key).await;
+            server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+                PhoneDevice { device_id: "idle-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+            server.auth.enroll_mac(auth::MacDevice { mac_id: "other-mac".into(), owner_sub: "other".into(),
+                signing_key: key_bytes(&mac_key), agreement_key: key_bytes(&phone_key) }).unwrap();
+            server.auth.enroll(&auth::Identity { device_id: "other-mac".into(), owner_sub: "other".into() },
+                PhoneDevice { device_id: "other-phone".into(), owner_sub: "other".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+            let client = reqwest::Client::new();
+            let epoch = server.auth.server_epoch();
+            let path = if work_poll { "/v1/work?wait_s=25" } else { "/v1/changes?since=0&wait_s=25" };
+            let request = client.get(format!("{url}{path}"));
+            let request = if work_poll { request } else { request.bearer_auth(jwt("owner", now_ms())) };
+            let pending = tokio::spawn(sign(&epoch, request,
+                if work_poll { &mac_key } else { &phone_key },
+                if work_poll { "mac-1" } else { "idle-phone" }, "GET", path, &[], 1).send());
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while if work_poll { server.work_waiters.available_permits() == 16 }
+                    else { server.change_waiters.available_permits() == 64 } {
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("poll must actually be admitted before revocation");
+            assert!(!pending.is_finished(), "control: idle poll must still be waiting");
+            let revoke_path = if work_poll { "/v1/macs/mac-1" } else { "/v1/devices/idle-phone" };
+            let revoked = tokio::time::timeout(Duration::from_secs(3), sign(&epoch,
+                client.delete(format!("{url}{revoke_path}")), &mac_key, "mac-1", "DELETE", revoke_path, &[], 2).send())
+                .await.expect("idle long poll must not hold the global revocation gate").unwrap();
+            assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+            let response = tokio::time::timeout(Duration::from_secs(3), pending).await
+                .expect("revocation must wake an idle poll even without queued ciphertext").unwrap().unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "revoked poll cannot return a successful snapshot");
+            let path = "/v1/changes?since=0&wait_s=0";
+            let other = tokio::time::timeout(Duration::from_secs(3), sign(&epoch,
+                client.get(format!("{url}{path}")).bearer_auth(jwt("other", now_ms())), &phone_key,
+                "other-phone", "GET", path, &[], 3).send()).await.unwrap().unwrap();
+            assert_eq!(other.status(), StatusCode::OK, "another account remains usable");
+            serving.abort();
+    }
+
+    #[tokio::test]
+    async fn idle_changes_do_not_block_revocation_or_other_accounts() {
+        idle_poll_revocation_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn idle_work_does_not_block_revocation_or_other_accounts() {
+        idle_poll_revocation_case(true).await;
+    }
+
+    #[tokio::test]
+    async fn idle_poll_timeout_rechecks_locally_revoked_mac_for_both_clients() {
+        for work_poll in [false, true] {
+            let mac_key = SigningKey::from_slice(&[113; 32]).unwrap();
+            let phone_key = SigningKey::from_slice(&[114; 32]).unwrap();
+            let (url, server, serving) = test_server(&mac_key).await;
+            let identity = auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() };
+            server.auth.enroll(&identity, PhoneDevice { device_id: "timeout-phone".into(),
+                owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+            let client = reqwest::Client::new();
+            let path = if work_poll { "/v1/work?wait_s=1" } else { "/v1/changes?since=0&wait_s=1" };
+            let request = client.get(format!("{url}{path}"));
+            let request = if work_poll { request } else { request.bearer_auth(jwt("owner", now_ms())) };
+            let pending = tokio::spawn(sign(&server.auth.server_epoch(), request,
+                if work_poll { &mac_key } else { &phone_key },
+                if work_poll { "mac-1" } else { "timeout-phone" }, "GET", path, &[], 1).send());
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while if work_poll { server.work_waiters.available_permits() == 16 }
+                    else { server.change_waiters.available_permits() == 64 } { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            assert!(!pending.is_finished());
+            // Deliberately omit queue notification: the deadline path itself
+            // must reject the revoked Mac, including a surviving phone binding.
+            {
+                let _gate = server.device_gate.write().await;
+                server.auth.revoke_mac(&identity).unwrap();
+            }
+            let response = tokio::time::timeout(Duration::from_secs(3), pending).await.unwrap().unwrap().unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            serving.abort();
+        }
     }
 
     #[tokio::test]
@@ -2153,6 +2321,57 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn mac_auth_accepts_requests_verified_in_reverse_arrival_order() {
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let (url, server, join) = test_server(&key).await;
+        let client = reqwest::Client::new();
+        let path = "/v1/work?wait_s=0";
+        let uri: Uri = path.parse().unwrap();
+        let earlier_arrival = now_ms();
+        let later_arrival = earlier_arrival + 1;
+        let headers = |nonce| {
+            sign(
+                &server.auth.server_epoch(),
+                client.get(format!("{url}{path}")),
+                &key,
+                "mac-1",
+                "GET",
+                path,
+                &[],
+                nonce,
+            )
+            .build()
+            .unwrap()
+            .headers()
+            .clone()
+        };
+        let earlier = headers(1);
+        let later = headers(2);
+        // Deterministic interleaving: the newer arrival wins the verifier lock.
+        // A timestamp sampled at handler entry must not become a clock rollback.
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&later, &Method::GET, &uri, &[], later_arrival).await
+                .is_ok()
+        );
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], earlier_arrival).await
+                .is_ok()
+        );
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], later_arrival).await
+                .is_err(),
+            "accepting reordered requests must not permit nonce replay"
+        );
+        join.abort();
+    }
+
+    #[tokio::test]
     async fn mac_auth_rejects_replay_when_wall_clock_moves_back() {
         let mac_sign = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let (_url, server, join) = test_server(&mac_sign).await;
@@ -2188,6 +2407,7 @@ mod http_tests {
             headers.insert("x-device-signature", signature.parse().unwrap());
             headers
         };
+        server.auth.set_verification_time(1_000_000);
         let early = headers_at(1_000_000, 1);
         assert!(
             server
@@ -2195,6 +2415,7 @@ mod http_tests {
                 .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000).await
                 .is_ok()
         );
+        server.auth.set_verification_time(1_300_001);
         let later = headers_at(1_300_001, 2);
         assert!(
             server
@@ -2202,6 +2423,7 @@ mod http_tests {
                 .authenticate_mac(&later, &Method::GET, &uri, &[], 1_300_001).await
                 .is_ok()
         );
+        server.auth.set_verification_time(1_000_000);
         assert!(
             server
                 .auth

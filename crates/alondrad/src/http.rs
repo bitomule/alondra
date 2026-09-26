@@ -61,6 +61,9 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/reports/{id}/review", post(review_artifact))
         .route("/v1/waiting-machine", post(waiting_machine))
         .route("/v1/orchestrator", post(mark_orchestrator))
+        .route("/v1/orchestrator/retry", post(retry_orchestrator))
+        .route("/v1/orchestrator/cancel", post(cancel_orchestrator))
+        .route("/v1/orchestrator/acknowledge", post(acknowledge_orchestrator))
         .route("/v1/launch", post(launch))
         .route("/v1/requests", post(new_request))
         .route("/v1/schedules", get(crate::schedules::list).post(crate::schedules::create))
@@ -94,9 +97,54 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/tasks/{id}/title", post(title_task))
         .route("/v1/file", get(file))
         .route("/v1/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_UPLOAD_BYTES + 64 * 1024)))
+        .layer(axum::middleware::from_fn_with_state(hub.clone(), orchestrator_authority))
         .layer(Extension(auth))
         .layer(Extension(push))
         .with_state(hub)
+}
+
+/// A lease spans awaits and external action bookkeeping, so cancellation cannot revoke
+/// a command halfway through launching a node and then lose the launch's durable record.
+async fn orchestrator_authority(State(hub): State<AppState>, request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let run = request.headers().get("x-alondra-orchestrator-execution").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let session = request.headers().get("x-alondra-session").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let marked = run.is_some() || session.as_deref().is_some_and(|sid| hub.read(|v| sid == alondra_core::orchestrator::NODE_ID
+        || v.nodes.get(sid).is_some_and(|n| n.is_orchestrator)
+        || v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == sid)
+        || v.orchestrator.as_ref().is_some_and(|r| r.session_id.as_deref() == Some(sid))));
+    if !marked {
+        // Lifecycle endpoints acquire a write lease themselves. Other mutations take the
+        // read lease BEFORE observing migration state, closing the upgrade TOCTOU window.
+        if request.method() == axum::http::Method::GET || matches!(request.uri().path(),
+            "/v1/orchestrator/cancel" | "/v1/orchestrator/retry" | "/v1/orchestrator/acknowledge") {
+            return next.run(request).await;
+        }
+        let _lease = hub.orchestrator_commands.read().await;
+        let state = hub.read(|v| (v.orchestrator.is_some(), v.orchestrator_migration.is_some()));
+        if state.1 { return err(StatusCode::CONFLICT, "orchestrator migration is in progress; refresh and retry"); }
+        if state.0 && orchestrator_mutation_path(request.uri().path()) && request.extensions().get::<crate::auth::Signed>().is_none() {
+            return err(StatusCode::UNAUTHORIZED, "This operation requires the current orchestrator execution or a signed user request");
+        }
+        return next.run(request).await;
+    }
+    if matches!(request.uri().path(), "/v1/orchestrator/cancel" | "/v1/orchestrator/retry" | "/v1/orchestrator/acknowledge") {
+        return err(StatusCode::FORBIDDEN, "Only the user can resolve or cancel an orchestrator execution");
+    }
+    let _lease = hub.orchestrator_commands.read().await;
+    let valid = hub.read(|v| match run.as_deref() {
+        Some(run) => session.as_deref() == Some(alondra_core::orchestrator::NODE_ID) && managed_execution(v, run, None),
+        None => v.orchestrator.is_none() && v.orchestrator_migration.is_none(),
+    });
+    if !valid { return err(StatusCode::CONFLICT, "stale orchestrator execution"); }
+    next.run(request).await
+}
+
+fn orchestrator_mutation_path(path: &str) -> bool {
+    matches!(path, "/v1/tasks" | "/v1/launch")
+        || [ ("/v1/nodes/", "/messages"), ("/v1/nodes/", "/interrupt"),
+             ("/v1/requests/", "/close"), ("/v1/tasks/", "/cancel"),
+             ("/v1/tasks/", "/reopen"), ("/v1/tasks/", "/title") ]
+            .iter().any(|(prefix, suffix)| path.strip_prefix(prefix).and_then(|p| p.strip_suffix(suffix)).is_some_and(|id| !id.is_empty() && !id.contains('/')))
 }
 
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
@@ -213,7 +261,7 @@ fn document_refusal(user: &str) -> String {
 }
 
 pub const USER_KEY_FILE: &str = "tui-key.pem";
-const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices"];
+const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices", "orchestrator-retry", "orchestrator-cancel", "orchestrator-acknowledge"];
 
 /// Nodes share the user's account, so they could run the CLI that signs as the user. The
 /// plugin's hook refuses it; a determined node could still hide the command, which is why
@@ -444,10 +492,25 @@ pub(crate) async fn hook(state: State<AppState>, headers: axum::http::HeaderMap,
     hook_with_ack(state,headers,body,false).await
 }
 
-pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>, has_ack:bool) -> Response {
-    let Some(session_id) = str_field(&p, "session_id") else {
+pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(mut p): Json<Value>, has_ack:bool) -> Response {
+    let Some(actual_session_id) = str_field(&p, "session_id") else {
         return Json(json!({})).into_response();
     };
+    if hub.read(|v| v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == actual_session_id)) {
+        return err(StatusCode::CONFLICT, "legacy orchestrator migration is in progress");
+    }
+    let managed_run = str_field(&p, "_alondra_run");
+    // Unix hooks bypass the HTTP router, so they participate in the same lifecycle barrier.
+    let _lease = if managed_run.is_some() { Some(hub.orchestrator_commands.read().await) } else { None };
+    let managed = managed_run.is_some();
+    let session_id = if let Some(run) = managed_run.as_deref() {
+        if !hub.read(|v| managed_execution(v, run, Some(&actual_session_id))) {
+            return err(StatusCode::CONFLICT, "stale orchestrator execution");
+        }
+        p["session_id"] = json!(alondra_core::orchestrator::NODE_ID);
+        p.as_object_mut().map(|o| o.remove("cwd"));
+        alondra_core::orchestrator::NODE_ID.to_string()
+    } else { actual_session_id.clone() };
     let event = str_field(&p, "hook_event_name").unwrap_or_default();
     // MessageDisplay is invoked for each rendered batch, synchronously with the UI. The
     // final batch is a reliable once-per-message liveness signal without flooding the log.
@@ -491,6 +554,14 @@ pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::ht
     let mut denied = None;
     let mut updated_agent_input = None;
     let recorded = hub.append_all(|v| {
+        if managed_run.as_deref().is_some_and(|run| !managed_execution(v, run, Some(&actual_session_id))) {
+            denied = Some("stale orchestrator execution".to_string());
+            return Ok::<_, ()>(vec![]);
+        }
+        if v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == session_id) {
+            denied = Some("legacy orchestrator migration is in progress".into());
+            return Ok::<_, ()>(vec![]);
+        }
         denied = hook_denial(v, &h, &p);
         if denied.is_none() && event == "PreToolUse" && tool.as_deref() == Some("Agent") {
             match agent_spawn_task(v, &h, &p) {
@@ -637,6 +708,9 @@ pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::ht
         return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
             "permissionDecisionReason": "Alondra tool"}})).into_response();
     }
+    if managed && (matches!(tool.as_deref(), Some("AskUserQuestion" | "ExitPlanMode")) || matches!(event.as_str(), "PermissionRequest" | "Elicitation")) {
+        return err(StatusCode::CONFLICT, "The orchestrator must use Alondra ask; terminal prompts are unavailable");
+    }
     let only_parent_may_ask = h.agent_id.is_some() && !matches!(event.as_str(), "PermissionRequest" | "Elicitation");
     if hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| states::watching(v, n, now_millis()))) {
         return Json(json!({})).into_response();
@@ -645,10 +719,10 @@ pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::ht
         return Json(json!({})).into_response();
     }
     match (event.as_str(), tool.as_deref()) {
-        ("PreToolUse", Some("AskUserQuestion")) => hold(hub, p, h, QuestionOrigin::AskUserQuestion).await,
-        ("PreToolUse", Some("ExitPlanMode")) => hold(hub, p, h, QuestionOrigin::Plan).await,
-        ("PermissionRequest", _) => hold(hub, p, h, QuestionOrigin::Permission).await,
-        ("Elicitation", _) => hold(hub, p, h, QuestionOrigin::Elicitation).await,
+        ("PreToolUse", Some("AskUserQuestion")) => hold(hub.clone(), p, h, QuestionOrigin::AskUserQuestion).await,
+        ("PreToolUse", Some("ExitPlanMode")) => hold(hub.clone(), p, h, QuestionOrigin::Plan).await,
+        ("PermissionRequest", _) => hold(hub.clone(), p, h, QuestionOrigin::Permission).await,
+        ("Elicitation", _) => hold(hub.clone(), p, h, QuestionOrigin::Elicitation).await,
         _ => Json(json!({})).into_response(),
     }
 }
@@ -681,6 +755,7 @@ fn hook_detail(event: &str, input: &Value) -> Option<String> {
 /// `additionalContext` keeps the turn going with the messages (code.claude.com/docs/en/hooks,
 /// "Stop decision control"). Background jobs get theirs typed in by `wake`.
 fn hand_over_at_turn_end(hub: &Hub, session_id: &str) -> Option<Response> {
+    if hub.read(|v| v.nodes.get(session_id).is_some_and(|n| n.is_orchestrator)) { return None; }
     let attempt=match crate::delivery::claim(hub,session_id,alondra_core::delivery::Channel::HookStop) {
         Ok(Some(attempt))=>attempt, Ok(None)=>return None,
         Err(e)=>{log!("could not claim hook delivery: {e}");return None;}
@@ -1532,7 +1607,7 @@ fn tell_review_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: Str
             return Err(refused(StatusCode::CONFLICT, "head_changed", "The PR changed since the diff was reviewed; load the new diff"));
         }
         let node = view.nodes.get(&current.session_id).filter(|node| node.alive || node.in_daemon);
-        let Some(to) = node.or_else(|| view.nodes.values().find(|node| node.is_orchestrator && node.alive)) else {
+        let Some(to) = node.or_else(|| view.nodes.values().find(|node| node.is_orchestrator && (node.alive || view.orchestrator.is_some()))) else {
             return Err(err(StatusCode::CONFLICT, "neither the node nor an orchestrator is there to receive it"));
         };
         Ok(vec![Event::MessageQueued(Message {
@@ -1560,7 +1635,7 @@ pub(crate) fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text:
     let text = format!("{text}{}", uploads::delivery_note(&hub.config.name, &attachments));
     let res = hub.append_with(|v| {
         let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
-        let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
+        let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && (n.alive || v.orchestrator.is_some())))?;
         Some(Event::MessageQueued(Message {
             id: v.next_message_id(),
             session_id: to.session_id.clone(),
@@ -1674,6 +1749,7 @@ async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
 /// Mutations wholly represented by events. Local HTTP and the encrypted service
 /// share this implementation; the latter additionally supplies a durable request identity.
 enum LocalMutation {
+    Orchestrator(alondra_core::orchestrator::Transition),
     DismissPr(u64),
     ReadReport(u64),
     Archive(Option<Vec<String>>),
@@ -1690,6 +1766,8 @@ fn local_mutation(
 ) -> anyhow::Result<Value> {
     hub.local_command(identity, |v| {
         Ok(match &command {
+            LocalMutation::Orchestrator(transition) => vec![alondra_core::orchestrator::checked_transition(v, transition.clone(), now_millis())
+                .map_err(|e| local_error(409, e))?],
             LocalMutation::ReviewArtifact(id, body) => {
                 let report = v.reports.get(id).ok_or_else(|| local_error(404, format!("report #{id} does not exist")))?;
                 if report.read { return Err(local_refusal("report_closed", format!("report #{id} was already reviewed or read"))); }
@@ -1762,13 +1840,14 @@ fn local_mutation(
         })
     }, |v, recorded| {
         let body = match &command {
+            LocalMutation::Orchestrator(_) => json!({"ok": true}),
             LocalMutation::ReviewArtifact(id, body) => json!({"id":id,"verdict":body.verdict}),
             LocalMutation::CloseRequest(id, _) => json!({"request":id,"state":v.board.request_state(id)}),
             LocalMutation::SendMessage(_, body) => {
                 let message = recorded.iter().find_map(|(_,e)| if let Event::MessageQueued(m)=e { Some(m) } else { None }).expect("message mutation records a message");
                 let mut result = json!({"id":message.id,"session_id":message.session_id});
                 if let Some(task) = body.task.as_deref().map(str::trim).filter(|t|!t.is_empty()) { result["task"]=json!(task); }
-                if let Some(node) = v.nodes.get(&message.session_id).filter(|n|!n.in_daemon) {
+                if let Some(node) = v.nodes.get(&message.session_id).filter(|n|!n.in_daemon && !n.is_orchestrator) {
                     result["interactive"]=json!(true); result["note"]=json!(held_for_turn_end_note(node.display_name()));
                 }
                 result
@@ -1793,6 +1872,7 @@ fn local_refusal(kind: &str, message: impl Into<String>) -> Value {
 
 /// Task assignment serializes with starts and closes before taking the Hub writer lock.
 async fn serialized_local_mutation(hub: &Hub, identity: Option<(&str, &str, &[u8;32])>, command: LocalMutation, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> anyhow::Result<Value> {
+    let _orchestrator_lease = if matches!(&command, LocalMutation::Orchestrator(_)) { Some(hub.orchestrator_commands.write().await) } else { None };
     let requires_start_lock = matches!(&command, LocalMutation::SendMessage(_, body)
         if body.task.as_deref().is_some_and(|task| !task.trim().is_empty()));
     let _start = if requires_start_lock { Some(hub.starts.lock().await) } else { None };
@@ -1817,7 +1897,7 @@ pub(crate) fn atomic_local_path(method: &str, path: &str) -> bool {
     if method != "POST" {
         return false;
     }
-    path == "/v1/tasks/archive" || atomic_local_target(path).is_some() || delivery_target(path).is_some()
+    matches!(path, "/v1/tasks/archive" | "/v1/orchestrator/retry" | "/v1/orchestrator/cancel" | "/v1/orchestrator/acknowledge") || atomic_local_target(path).is_some() || delivery_target(path).is_some()
 }
 
 fn atomic_local_target(path: &str) -> Option<(&str, &str)> {
@@ -1860,7 +1940,16 @@ pub(crate) async fn atomic_local_request(
         };
     }
     let parsed = (|| -> anyhow::Result<LocalMutation> {
-        Ok(if path == "/v1/tasks/archive" {
+        Ok(if path == "/v1/orchestrator/retry" {
+            let body: RetryOrchestratorBody = serde_json::from_value(body.cloned().unwrap_or(Value::Null))?;
+            LocalMutation::Orchestrator(alondra_core::orchestrator::Transition::RetryApproved { run_id: body.run_id })
+        } else if path == "/v1/orchestrator/cancel" {
+            let body: RetryOrchestratorBody = serde_json::from_value(body.cloned().unwrap_or(Value::Null))?;
+            LocalMutation::Orchestrator(alondra_core::orchestrator::Transition::CancelRequested { run_id: body.run_id })
+        } else if path == "/v1/orchestrator/acknowledge" {
+            let body: RetryOrchestratorBody = serde_json::from_value(body.cloned().unwrap_or(Value::Null))?;
+            LocalMutation::Orchestrator(alondra_core::orchestrator::Transition::Acknowledged { run_id: body.run_id })
+        } else if path == "/v1/tasks/archive" {
             let body: ArchiveBody = serde_json::from_value(body.cloned().unwrap_or(json!({})))?;
             LocalMutation::Archive(body.ids)
         } else {
@@ -2048,7 +2137,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         let nodes: Vec<Value> = nodes
             .into_iter()
             .map(|n| {
-                let mut value = client_node(n);
+                let mut value = client_node(v, n);
                 value["project"] = Value::String(n.project());
                 value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
                 value["background"] = json!(states::background(n, now));
@@ -2057,7 +2146,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             .collect();
         json!({
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
-            "orchestrator_messages": orchestrator_messages,
+            "orchestrator_messages": orchestrator_messages, "orchestrator": public_orchestrator(v),
             "delivery_attempts":v.delivery_attempts.values().collect::<Vec<_>>(),
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
             "prs": v.in_train_order(crate::prs::in_inbox(v)).into_iter().map(|p| pr_card(v, p)).collect::<Vec<Value>>(),
@@ -2078,6 +2167,7 @@ pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let text = |value: Value| value.to_string();
+    public_orchestrator(v).to_string().hash(&mut h);
     for n in v.nodes.values() {
         (&n.session_id, &n.short_id, &n.name, n.project(), n.alive, n.in_daemon, n.is_orchestrator, n.has_plugin, n.created_at).hash(&mut h);
         (text(json!(n.state)), text(json!(n.status)), text(json!(n.orchestrator_state)), n.waiting_permission, n.attached, n.menu_waiting.is_some(), &n.mission, n.usage_limited).hash(&mut h);
@@ -2205,7 +2295,7 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
         let messages: Vec<Value> = v.messages.values().filter(|m| m.session_id == sid).map(|m|crate::delivery::message_value(v,m)).collect();
-        let mut node = client_node(&n);
+        let mut node = client_node(v, &n);
         node["background"] = json!(states::background(&n, now_millis()));
         node["activity"] = json!(v.activity(&n, now_millis()));
         node["delivery_attempts"]=json!(v.delivery_attempts.values().filter(|a|a.session_id==sid).collect::<Vec<_>>());
@@ -2234,8 +2324,9 @@ async fn node_activity(State(hub): State<AppState>, Path(key): Path<String>) -> 
 
 /// A node as clients see it: whether its session is attached is the daemon's business, and its
 /// ledger reaches them as `activity`.
-fn client_node(n: &alondra_core::Node) -> Value {
+fn client_node(v: &View, n: &alondra_core::Node) -> Value {
     let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
+    if n.is_orchestrator { value["orchestrator_runtime"] = public_orchestrator(v); }
     if let Some(o) = value.as_object_mut() {
         o.remove("alive");
         o.remove("ledger");
@@ -2243,8 +2334,30 @@ fn client_node(n: &alondra_core::Node) -> Value {
     value
 }
 
+fn public_orchestrator(v: &View) -> Value {
+    let Some(r) = &v.orchestrator else {
+        return v.orchestrator_migration_error.as_ref().map_or(Value::Null, |error| json!({
+            "phase": "failed", "last_error": error, "retry_at": null, "updated_at": 0,
+            "queue_depth": v.nodes.values().find(|n| n.is_orchestrator).map_or(0, |n| v.pending_messages(&n.session_id).count()),
+            "can_retry": false, "can_cancel": false, "cancel_requested": false, "active_run_id": null
+        }));
+    };
+    let can_retry = r.phase == alondra_core::orchestrator::Phase::Failed && r.active_run.is_some();
+    json!({"phase": r.phase, "last_error": r.last_error, "retry_at": r.retry_at,
+        "updated_at": r.updated_at, "queue_depth": v.pending_messages(alondra_core::orchestrator::NODE_ID).count(),
+        "can_retry": can_retry, "can_cancel": r.is_active() && !r.cancel_requested, "cancel_requested": r.cancel_requested, "active_run_id": r.active_run.as_ref().map(|run| &run.id)})
+}
+
+fn managed_execution(v: &View, run: &str, actual_session: Option<&str>) -> bool {
+    v.orchestrator.as_ref().is_some_and(|r| r.is_active() && !r.cancel_requested
+        && r.active_run.as_ref().is_some_and(|a| a.id == run)
+        && actual_session.is_none_or(|sid| r.session_id.as_deref() == Some(sid)))
+}
+
 #[derive(Deserialize)]
 struct Caller {
+    #[serde(default)]
+    orchestrator_run: Option<String>,
     session_id: Option<String>,
     #[serde(default)]
     pids: Vec<i32>,
@@ -2262,6 +2375,11 @@ fn not_alondras(user: &str) -> String {
 /// The answer for a caller from a session Alondra does not follow. One Alondra launched and has
 /// not heard from yet joins now.
 fn outside_caller(hub: &Hub, c: &Caller) -> Option<Response> {
+    if c.orchestrator_run.is_some() || c.session_id.as_deref() == Some(alondra_core::orchestrator::NODE_ID) {
+        return (!hub.read(|v| c.session_id.as_deref() == Some(alondra_core::orchestrator::NODE_ID)
+            && c.orchestrator_run.as_deref().is_some_and(|run| managed_execution(v, run, None))))
+            .then(|| err(StatusCode::CONFLICT, "stale orchestrator execution"));
+    }
     let sid = c.session_id.as_deref().filter(|s| !s.is_empty())?;
     match hub.admit(sid, c.launched) {
         Ok(true) => None,
@@ -2271,6 +2389,9 @@ fn outside_caller(hub: &Hub, c: &Caller) -> Option<Response> {
 }
 
 fn resolve_caller(view: &View, c: &Caller) -> Option<(String, Option<String>)> {
+    if c.session_id.as_deref().is_some_and(|sid| view.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == sid)) { return None; }
+    if (c.orchestrator_run.is_some() || c.session_id.as_deref() == Some(alondra_core::orchestrator::NODE_ID))
+        && !c.orchestrator_run.as_deref().is_some_and(|run| managed_execution(view, run, None)) { return None; }
     if let Some(sid) = &c.session_id
         && !sid.is_empty()
     {
@@ -2670,8 +2791,8 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
 }
 
 async fn question_detail(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    match hub.read(|v| v.questions.get(&id).cloned().map(|q| (q.clone(), v.nodes.get(&q.session_id).cloned()))) {
-        Some((q, node)) => Json(json!({"question": q, "node": node.as_ref().map(client_node)})).into_response(),
+    match hub.read(|v| v.questions.get(&id).cloned().map(|q| (q.clone(), v.nodes.get(&q.session_id).map(|n| client_node(v, n))))) {
+        Some((q, node)) => Json(json!({"question": q, "node": node})).into_response(),
         None => err(StatusCode::NOT_FOUND, format!("question #{id} does not exist")),
     }
 }
@@ -2979,7 +3100,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     note_prs(&hub, &b.caller, &texts, task.clone()).await;
     let stamp = now_millis();
     let report = |v: &View, attachments: Vec<Attachment>, looks_like_question: bool| Report {
-        id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_report_id(),
         session_id: sid.clone(),
         node_name: name.clone(),
         title: b.title.clone(),
@@ -3118,6 +3239,9 @@ pub(crate) struct MessageBody {
 }
 
 async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
+    if hub.read(|v| v.resolve_node(&key).is_some_and(|n| n.is_orchestrator)) {
+        return err(StatusCode::CONFLICT, "the orchestrator is managed by Alondra and has no attached terminal");
+    }
     let Some(short) = hub.read(|v| v.resolve_node(&key).map(|n| n.short_id.clone())) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
@@ -3198,9 +3322,9 @@ pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Op
     }) else {
         return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
     };
-    if orchestrator && !force {
+    if orchestrator && (!force || hub.read(|v| v.orchestrator.is_some())) {
         return err_reasons(
-            format!("{name} is the orchestrator, which Alondra keeps alive; close it from the fleet if you really mean to"),
+            format!("{name} is the orchestrator, which Alondra manages automatically"),
             vec![CloseReason { kind: "orchestrator", detail: None }],
         );
     }
@@ -3358,7 +3482,7 @@ fn listed(agents_json: &str, short: &str) -> bool {
 async fn forget_node(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
     let res = hub.append_with(|v| {
         let n = v.resolve_node(&key)?;
-        (!n.in_daemon || !n.alive).then(|| Event::NodeRemoved { session_id: n.session_id.clone() })
+        (!n.is_orchestrator && (!n.in_daemon || !n.alive)).then(|| Event::NodeRemoved { session_id: n.session_id.clone() })
     });
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
@@ -3377,11 +3501,33 @@ async fn acknowledge(State(hub): State<AppState>, Path(key): Path<String>) -> Re
     }
 }
 
+#[derive(Deserialize)]
+struct RetryOrchestratorBody { run_id: String }
+async fn retry_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryOrchestratorBody>) -> Response {
+    let _lease = hub.orchestrator_commands.write().await;
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::Orchestrator(
+        alondra_core::orchestrator::Transition::RetryApproved { run_id: body.run_id })))
+}
+
+async fn cancel_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryOrchestratorBody>) -> Response {
+    let _lease = hub.orchestrator_commands.write().await;
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::Orchestrator(
+        alondra_core::orchestrator::Transition::CancelRequested { run_id: body.run_id })))
+}
+
+async fn acknowledge_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryOrchestratorBody>) -> Response {
+    let _lease = hub.orchestrator_commands.write().await;
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::Orchestrator(
+        alondra_core::orchestrator::Transition::Acknowledged { run_id: body.run_id })))
+}
+
 async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -> Response {
     if let Some(r) = outside_caller(&hub, &c) {
         return r;
     }
-    let res = hub.append_with(|v| resolve_caller(v, &c).map(|(sid, _)| Event::MarkedOrchestrator { session_id: sid }));
+    let res = hub.append_with(|v| resolve_caller(v, &c)
+        .filter(|(sid, _)| v.orchestrator.is_none() || sid == alondra_core::orchestrator::NODE_ID)
+        .map(|(sid, _)| Event::MarkedOrchestrator { session_id: sid }));
     match res {
         Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
         Ok(None) => err(StatusCode::BAD_REQUEST, "unknown orchestrator session"),
@@ -3498,9 +3644,6 @@ pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl cr
     };
     let request_id = format!("r-{}-{}", now_millis(), crate::auth::random_hex(4));
     let sent = Event::RequestSent { request_id: request_id.clone(), options: resolved.clone(), text: Some(b.text.clone()), attachments: attachments.clone() };
-    if let Err(e) = hub.append(sent) {
-        return internal(e);
-    }
     let text = request_text(
         &hub.config.name,
         &b.text,
@@ -3510,24 +3653,17 @@ pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl cr
         &resolved,
         issue_text.as_deref(),
     );
-    let res = hub.append_with(|v| {
-        let o = v.nodes.values().find(|n| n.is_orchestrator)?;
-        Some(Event::MessageQueued(Message {
-            id: v.next_message_id(),
-            session_id: o.session_id.clone(),
-            from: MessageFrom::User,
-            text: text.clone(),
-            answers_question: None,
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            about: None,
-            attachments: attachments.clone(),
-        }))
+    let res = hub.append_all(|v| {
+        let o = v.nodes.values().find(|n| n.is_orchestrator).ok_or(())?;
+        Ok(vec![sent, Event::MessageQueued(Message {
+            id: v.next_message_id(), session_id: o.session_id.clone(), from: MessageFrom::User,
+            text, answers_question: None, created_at: now_millis(), handed_at: None,
+            delivered_at: None, about: None, attachments,
+        })])
     });
     match res {
-        Ok(Some(_)) => Json(json!({"ok": true, "request_id": request_id})).into_response(),
-        Ok(None) => err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra"),
+        Ok(Ok(_)) => Json(json!({"ok": true, "request_id": request_id})).into_response(),
+        Ok(Err(())) => err(StatusCode::CONFLICT, "the orchestrator is not connected to Alondra"),
         Err(e) => internal(e),
     }
 }
@@ -4150,7 +4286,7 @@ mod tests {
             let hub = temp_hub("report-pr");
             hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
             let body = ReportBody {
-                caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
+                caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
                 title: "Listo".into(),
                 body: Some("Hecho y probado".into()),
                 kind: Some(ReportKind::Final),
@@ -4178,7 +4314,7 @@ mod tests {
         hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
 
         let ask_body = AskBody {
-            caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
+            caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
             title: "Sigo con la fase 3?".into(),
             detail: Some("Fase 2 medida; esto es lo que debería venir después".into()),
             options: vec![],
@@ -4196,7 +4332,7 @@ mod tests {
         assert_eq!(asked["to_orchestrator"], true, "{asked}");
 
         let report_body = ReportBody {
-            caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false },
+            caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
             title: "Fase 2 medida".into(),
             body: Some("Nada pendiente de mi parte; el orquestador debería seguir con la fase 3".into()),
             kind: Some(ReportKind::Final),
@@ -4489,6 +4625,7 @@ mod tests {
                 Json(ClaimTaskBody {
                     token: token.into(),
                     caller: Caller {
+                        orchestrator_run: None,
                         session_id: Some("s".into()),
                         pids: vec![],
                         launched: true,
@@ -4671,6 +4808,7 @@ mod tests {
                 Json(ClaimTaskBody {
                     token: "missing".into(),
                     caller: Caller {
+                        orchestrator_run: None,
                         session_id: Some("s".into()),
                         pids: vec![],
                         launched: true,
@@ -4699,6 +4837,7 @@ mod tests {
                             Json(ClaimTaskBody {
                                 token: token.to_string(),
                                 caller: Caller {
+                        orchestrator_run: None,
                                     session_id: Some("s".into()),
                                     pids: vec![],
                                     launched: true,
@@ -4874,7 +5013,7 @@ mod tests {
 
         let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo?"))).await).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "several open tasks and no focus: {said}");
-        let focus_on = |task: &str, minutes: Option<u32>| FocusBody { caller: Caller { session_id: Some("s".into()), pids: vec![], launched: false }, task: task.into(), minutes };
+        let focus_on = |task: &str, minutes: Option<u32>| FocusBody { caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false }, task: task.into(), minutes };
         let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-missing", None))).await).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
         let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-other", Some(1000)))).await).await;
@@ -4890,14 +5029,14 @@ mod tests {
 
     fn ask_body(sid: &str, title: &str) -> AskBody {
         AskBody {
-            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
+            caller: Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched: false }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
             attachments: vec![], blocking: true, to_orchestrator: false, steps: vec![], related: None, replaces: None, about_pr: None, task: None,
         }
     }
 
     fn report_body(sid: &str, kind: ReportKind, links: &[&str]) -> ReportBody {
         ReportBody {
-            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false }, title: "Hecho".into(), body: Some("Detalle".into()), kind: Some(kind),
+            caller: Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched: false }, title: "Hecho".into(), body: Some("Detalle".into()), kind: Some(kind),
             links: links.iter().map(|u| Link { url: (*u).into(), title: None }).collect(), attachments: vec![], related: None, to_orchestrator: false, task: None,
         }
     }
@@ -5053,7 +5192,7 @@ mod tests {
         assert_eq!(hub.read(|v| (v.questions.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "nothing recorded, no anomaly");
 
         let body = |sid: &str, title: &str| NewTaskBody {
-            caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false },
+            caller: Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched: false },
             title: title.into(),
             brief: Some("El cron del 30-09 entrega con el report de Alondra, que ya no tendrá.".into()),
             task: None,
@@ -5716,7 +5855,7 @@ mod tests {
             }
             let before = hub.read(|v| v.questions.len());
             let body = AskBody {
-                caller: Caller { session_id: Some("mine".into()), pids: vec![], launched: false },
+                caller: Caller { orchestrator_run: None, session_id: Some("mine".into()), pids: vec![], launched: false },
                 title: "Apple no exige capturas del iPhone Duo: ¿las hago igual?".into(),
                 detail: Some("No se pueden subir aún".into()),
                 options: vec![],
@@ -6014,7 +6153,7 @@ mod tests {
             let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
             let hub = hub_on("fixture-pr", false, github.clone());
             hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-            let caller = Caller { session_id: Some("s".into()), pids: vec![], launched: false };
+            let caller = Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false };
             let links = vec![Link { url: FIXTURE.into(), title: None }];
             let response = match kind {
                 NewCard::Ask => ask(State(hub.clone()), Json(AskBody {
@@ -6045,7 +6184,7 @@ mod tests {
                 hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: sid.into(), short_id: sid.into(), name: Some(name.into()), ..Default::default() })).unwrap();
             }
             let body = |sid: &str| ReportBody {
-                caller: Caller { session_id: Some(sid.into()), pids: vec![], launched: false },
+                caller: Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched: false },
                 title: "Menú leído".into(),
                 body: Some("La sonda leyó el menú".into()),
                 kind: Some(ReportKind::Final),
@@ -7088,7 +7227,7 @@ mod owned_session_tests {
     }
 
     fn caller(sid: &str, launched: bool) -> Caller {
-        Caller { session_id: Some(sid.into()), pids: vec![], launched }
+        Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched }
     }
 
     fn question(sid: &str) -> AskBody {
@@ -7214,4 +7353,133 @@ mod owned_session_tests {
         let (status, said) = status_and_body(ask(State(hub.clone()), Json(question(OWN))).await).await;
         assert_eq!(status, StatusCode::OK, "its tools still reach David: {said}");
     }
+}
+
+#[cfg(test)]
+mod managed_orchestrator_tests {
+    use super::*;
+    use super::tests::{temp_hub, launched, status_and_body};
+    use alondra_core::orchestrator::{NODE_ID, Transition, RunKind, Outcome};
+
+    fn enabled(tag: &str) -> Arc<Hub> {
+        let hub = temp_hub(tag);
+        hub.append(Event::Orchestrator(Transition::Enabled { session_id: None })).unwrap();
+        hub
+    }
+    fn start(hub: &Hub) {
+        hub.append_with(|v| v.alondra_message(NODE_ID, "A durable request".into(), now_millis()).map(Event::MessageQueued)).unwrap();
+        let ids = hub.read(|v| v.pending_messages(NODE_ID).map(|m| m.id).collect());
+        hub.append(Event::Orchestrator(Transition::Started { run_id: "run-1".into(), kind: RunKind::Work, message_ids: ids })).unwrap();
+        hub.append(Event::Orchestrator(Transition::SessionBound { run_id: "run-1".into(), session_id: "claude-1".into() })).unwrap();
+    }
+    #[tokio::test]
+    async fn idle_orchestrator_projection_has_no_terminal_or_private_session() {
+        let hub = enabled("managed-overview");
+        let Json(body) = overview(State(hub.clone())).await;
+        assert_eq!(body["orchestrator"]["phase"], "idle");
+        assert_eq!(body["nodes"][0]["orchestrator_runtime"]["phase"], "idle");
+        assert_eq!(body["nodes"][0]["messages_held_for_turn_end"], 0);
+        assert!(body["orchestrator"].get("session_id").is_none());
+        assert_eq!(forget_node(State(hub.clone()), Path(NODE_ID.into())).await.status(), StatusCode::CONFLICT);
+        assert_eq!(close(&hub, NODE_ID, true).await.status(), StatusCode::CONFLICT);
+        let (status, queued) = status_and_body(send_message(State(hub.clone()), Path(NODE_ID.into()), Json(MessageBody { text: "Hello".into(), from: None, attachments: vec![], task: None })).await).await;
+        assert_eq!(status, StatusCode::OK, "{queued}");
+        assert!(queued.get("interactive").is_none());
+        assert_eq!(hub.read(|v| v.pending_messages(NODE_ID).count()), 1);
+    }
+    #[tokio::test]
+    async fn managed_hooks_bind_actual_session_to_logical_identity_and_fence_old_runs() {
+        let hub = enabled("managed-hooks"); start(&hub);
+        let payload = |run: &str, session: &str, event: &str| json!({"session_id":session, "_alondra_run":run, "hook_event_name":event, "cwd":"/private/internal/path"});
+        assert_eq!(hook_with_ack(State(hub.clone()), launched(), Json(payload("run-1", "claude-1", "SessionStart")), false).await.status(), StatusCode::OK);
+        assert!(hub.read(|v| v.nodes[NODE_ID].cwd.is_none() && !v.nodes.contains_key("claude-1")));
+        let (status, stop) = status_and_body(hook_with_ack(State(hub.clone()), launched(), Json(payload("run-1", "claude-1", "Stop")), true).await).await;
+        assert_eq!(status, StatusCode::OK); assert!(stop.get("hookSpecificOutput").is_none());
+        assert_eq!(hub.read(|v| v.pending_messages(NODE_ID).count()), 1, "Stop must not consume the executor's claim");
+        let seq = hub.read(|v| v.seq);
+        for (run, session) in [("old", "claude-1"), ("run-1", "wrong")] {
+            assert_eq!(hook_with_ack(State(hub.clone()), launched(), Json(payload(run, session, "PreToolUse")), false).await.status(), StatusCode::CONFLICT);
+        }
+        assert_eq!(hub.read(|v| v.seq), seq);
+        let c = Caller { session_id: Some(NODE_ID.into()), orchestrator_run: Some("run-1".into()), pids: vec![], launched: true };
+        assert!(outside_caller(&hub, &c).is_none());
+        cancel_orchestrator(State(hub.clone()), Json(RetryOrchestratorBody { run_id: "run-1".into() })).await;
+        assert!(outside_caller(&hub, &c).is_some(), "cancel immediately revokes authority");
+        hub.append(Event::Orchestrator(Transition::Finished { run_id:"run-1".into(), outcome:Outcome::Ambiguous, context:None, error:Some("cancelled".into()), retry_at:None, compact_pending:false })).unwrap();
+        let payload = hub.read(public_orchestrator);
+        assert_eq!(payload["phase"], "failed");
+        assert_eq!(payload["cancel_requested"], false, "a stopped process cannot keep displaying stopping");
+        assert_eq!(payload["can_retry"], true);
+
+    }
+    #[tokio::test]
+    async fn service_retry_receipt_and_transition_commit_once_and_replay_after_restart() {
+        let hub = enabled("managed-retry"); start(&hub);
+        hub.append(Event::Orchestrator(Transition::Finished { run_id:"run-1".into(), outcome:Outcome::Ambiguous, context:None, error:Some("lost process".into()), retry_at:None, compact_pending:false })).unwrap();
+        let body = json!({"run_id":"run-1"});
+        let first = atomic_local_request(&hub, "phone", "retry-command", &[7;32], "/v1/orchestrator/retry", Some(&body), ||Ok(())).await.unwrap();
+        assert_eq!(first["status"], 200);
+        let seq = hub.read(|v| v.seq);
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let again = atomic_local_request(&reopened, "phone", "retry-command", &[7;32], "/v1/orchestrator/retry", Some(&body), ||Ok(())).await.unwrap();
+        assert_eq!(again, first); assert_eq!(reopened.read(|v| v.seq), seq);
+        assert_eq!(retry_orchestrator(State(hub), Json(RetryOrchestratorBody {run_id:"run-1".into()})).await.status(), StatusCode::CONFLICT);
+    }
+    struct BlockingJudge { entered: Arc<tokio::sync::Notify>, release: Arc<tokio::sync::Notify> }
+    impl crate::classify::JudgesReports for BlockingJudge {
+        fn judge<'a>(&'a self, _: &'a str, _: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::classify::ReportVerdict> + Send + 'a>> {
+            Box::pin(async move { self.entered.notify_one(); self.release.notified().await; crate::classify::ReportVerdict::Fine })
+        }
+    }
+    async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>) {
+        let app = router(hub.clone(), Arc::new(Auth::open(&hub.home).unwrap()), Arc::new(Push::open(&hub.home).unwrap()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        (format!("http://{address}"), task)
+    }
+    #[tokio::test]
+    async fn all_managed_mutations_reject_stale_authority_before_decoding_or_external_work() {
+        let hub = enabled("managed-routes"); start(&hub);
+        let (url, task) = server(hub.clone()).await;
+        let client = reqwest::Client::new();
+        let seq = hub.read(|v|v.seq);
+        for path in ["/v1/tasks", "/v1/launch", "/v1/nodes/worker/messages", "/v1/nodes/worker/interrupt", "/v1/requests/r/close", "/v1/tasks/t/cancel", "/v1/tasks/t/reopen", "/v1/tasks/t/title", "/v1/questions", "/v1/reports"] {
+            let response = client.post(format!("{url}{path}")).header("x-alondra-orchestrator-execution", "stale")
+                .header("x-alondra-session", NODE_ID).json(&json!({})).send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 409, "{path}");
+        }
+        let response = tokio::time::timeout(Duration::from_secs(2), client.post(format!("{url}/v1/orchestrator/cancel"))
+            .header("x-alondra-orchestrator-execution", "run-1").header("x-alondra-session", NODE_ID).json(&json!({"run_id":"run-1"})).send()).await.unwrap().unwrap();
+        assert_eq!(response.status().as_u16(), 403, "agent lifecycle call must reject instead of upgrading its own lease");
+        for path in ["/v1/tasks", "/v1/launch", "/v1/nodes/worker/messages", "/v1/nodes/worker/interrupt", "/v1/requests/r/close", "/v1/tasks/t/cancel", "/v1/tasks/t/reopen", "/v1/tasks/t/title"] {
+            let response = client.post(format!("{url}{path}")).json(&json!({})).send().await.unwrap();
+            assert_eq!(response.status().as_u16(), 401, "untagged pre-upgrade MCP: {path}");
+        }
+        assert_eq!(hub.read(|v|v.seq),seq);
+        task.abort();
+    }
+    #[tokio::test]
+    async fn cancellation_linearizes_after_accepted_rpc_finishes_its_bookkeeping() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hub = Arc::new(Arc::try_unwrap(enabled("managed-barrier")).ok().unwrap().with_report_judge(BlockingJudge {entered:entered.clone(),release:release.clone()}));
+        start(&hub);
+        let (url, server) = server(hub.clone()).await;
+        let post_url = url.clone();
+        let posting = tokio::spawn(async move { reqwest::Client::new().post(format!("{post_url}/v1/reports"))
+            .header("x-alondra-orchestrator-execution", "run-1").header("x-alondra-session", NODE_ID)
+            .json(&json!({"session_id":NODE_ID,"orchestrator_run":"run-1","launched":true,"title":"Result","body":"Completed the analysis","kind":"notice"})).send().await.unwrap().status() });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
+        let cancelling = tokio::spawn(async move { reqwest::Client::new().post(format!("{url}/v1/orchestrator/cancel")).json(&json!({"run_id":"run-1"})).send().await.unwrap().status() });
+        tokio::task::yield_now().await;
+        assert!(!cancelling.is_finished());
+        assert!(!hub.read(|v|v.orchestrator.as_ref().unwrap().cancel_requested));
+        release.notify_one();
+        assert_eq!(posting.await.unwrap().as_u16(), 200);
+        assert_eq!(cancelling.await.unwrap().as_u16(), 200);
+        assert!(hub.read(|v|v.orchestrator.as_ref().unwrap().cancel_requested && v.reports.len() == 1));
+        server.abort();
+    }
+
 }

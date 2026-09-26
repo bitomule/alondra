@@ -1075,7 +1075,7 @@ fn node_row(n: &FleetNode, width: usize, selected: bool) -> Line<'static> {
     }
     spans.push(Span::raw(" ".repeat(pad)));
     if state_w > 0 {
-        spans.push(Span::styled(format!(" {:<19}", truncate(i18n::fleet_state(n), 19)), Style::new().fg(node_color(n))));
+        spans.push(Span::styled(format!(" {:<19}", truncate(n.status_label(), 19)), Style::new().fg(node_color(n))));
     }
     spans.push(Span::styled(format!("{since:>5}"), Style::new().fg(DIM)));
     fit(spans, width)
@@ -1097,7 +1097,7 @@ fn draw_orchestrator_strip(f: &mut Frame, area: Rect, n: &FleetNode, selected: b
         vec![
             Span::styled(" ★ ", Style::new().fg(ACCENT).bold()),
             Span::styled(format!("{} ", tr!("Orchestrator", "Orquestador")), Style::new().bold()),
-            Span::styled(format!("● {}", i18n::node_state(n)), Style::new().fg(state_color(n.state))),
+            Span::styled(format!("● {}", n.status_label()), Style::new().fg(state_color(n.state))),
             Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
         ],
         width,
@@ -1228,7 +1228,7 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let width = text.width as usize;
     let mut lines = vec![fit(
         vec![
-            Span::styled(format!("● {}", i18n::fleet_state(&n)), Style::new().fg(node_color(&n)).bold()),
+            Span::styled(format!("● {}", n.status_label()), Style::new().fg(node_color(&n)).bold()),
             Span::styled(format!(" · {}", since_phrase(n.state_since)), Style::new().fg(DIM)),
         ],
         width,
@@ -1237,8 +1237,15 @@ fn draw_node_detail(f: &mut Frame, app: &mut App, area: Rect) {
         let id = &n.short_id;
         lines.push(Line::from(trf!("project {p} · {id}", "proyecto {p} · {id}").fg(DIM)));
     }
-    if let Some(cwd) = &n.cwd {
+    if let Some(cwd) = n.cwd.as_ref().filter(|_| !n.is_orchestrator) {
         lines.push(fit(vec![Span::styled(cwd.clone(), Style::new().fg(DIM))], width));
+    }
+    if let Some(runtime) = &n.orchestrator_runtime {
+        let queued = runtime.queue_depth;
+        lines.push(Line::from(trf!("Queued messages: {queued}", "Mensajes en cola: {queued}").fg(DIM)));
+        if let Some(error) = &runtime.last_error {
+            lines.extend(wrap(vec![Span::styled(error.clone(), Style::new().fg(Color::Yellow))], width, vec![], vec![]));
+        }
     }
     lines.extend(tasks::node_detail_lines(app, &n, width));
     lines.extend(background_lines(&n, width));
@@ -1296,7 +1303,7 @@ fn draw_compact_fleet(f: &mut Frame, app: &App, area: Rect) {
                     vec![
                         Span::styled("  ● ", Style::new().fg(node_color(n))),
                         Span::raw(md::one_line(&name)),
-                        Span::styled(format!(" {}", i18n::fleet_state(n)), Style::new().fg(DIM)),
+                        Span::styled(format!(" {}", n.status_label()), Style::new().fg(DIM)),
                     ],
                     width,
                 ));
@@ -1777,6 +1784,17 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
     if app.screen == Screen::Fleet {
         if app.search.as_ref().is_some_and(|s| s.editing) {
             return vec![k("⏎", tr!("keep filter", "fijar filtro")), k("Esc", tr!("clear search", "quitar búsqueda"))];
+        }
+        if let Some(node) = app.selected_node().filter(|node| node.is_orchestrator) {
+            let mut keys = vec![k("j/k", tr!("move", "mover")), k("⏎/o", tr!("activity", "actividad"))];
+            if let Some(runtime) = &node.orchestrator_runtime {
+                if runtime.can_retry {
+                    keys.extend([k("C", tr!("continue without repeating", "continuar sin repetir")), k("R", tr!("retry", "reintentar"))]);
+                }
+                if runtime.can_cancel { keys.push(k("S", tr!("stop", "detener"))); }
+            }
+            keys.extend([k("r", tr!("message", "mensaje")), k("Esc", tr!("back", "volver")), k("n", tr!("new", "nuevo")), k("Tab", tr!("inbox", "bandeja"))]);
+            return keys;
         }
         if app.fleet_zoom {
             return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("a", tr!("its terminal", "su terminal"))];

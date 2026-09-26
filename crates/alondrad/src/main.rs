@@ -7,6 +7,8 @@ mod hook_socket;
 mod delivery;
 mod issues;
 mod keeper;
+mod managed_orchestrator;
+mod orchestrator_process;
 mod hub;
 mod legacy;
 mod machine;

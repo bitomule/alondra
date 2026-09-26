@@ -1,6 +1,24 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "In progress": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En curso"}}}},
+    "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
+    "Review the activity before continuing.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Revisa la actividad antes de continuar."}}}},
+    "View details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver detalles"}}}},
+    "The action could not be confirmed. Check the status before trying again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se ha podido confirmar la acción. Comprueba el estado antes de volver a intentarlo."}}}},
+    "The interrupted work will not be repeated. Check what was completed first; pending messages will continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El trabajo interrumpido no se repetirá. Revisa primero qué se ha completado; los mensajes pendientes seguirán adelante."}}}},
+    "Actions already completed will not be undone. You can review the result before continuing.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las acciones ya completadas no se desharán. Podrás revisar el resultado antes de continuar."}}}},
+    "Requests are unavailable right now.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora mismo no se pueden enviar peticiones."}}}},
+    "Continue without repeating?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Continuar sin repetir?"}}}},
+
+    "Stop": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener"}}}},
+
+    "Stop the current intervention?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Detener la intervención actual?"}}}},
+
+    "Retry the interrupted work?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Reintentar el trabajo interrumpido?"}}}},
+    "Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que algunas acciones ya se hayan completado. Revisa la actividad y las tareas antes de reintentar para evitar repetir trabajo."}}}},
+
+
     "%lld feedback messages were not sent; review your drafts": {
       "localizations": {
         "es": {

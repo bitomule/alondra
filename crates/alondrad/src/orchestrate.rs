@@ -122,7 +122,7 @@ pub fn task_options(hub: &Hub, task: &Task, effort: Option<&str>) -> Resolved {
 }
 
 fn live(v: &View, session_id: &str) -> bool {
-    !v.removed.contains_key(session_id) && v.nodes.get(session_id).is_some_and(|n| n.alive || n.in_daemon)
+    !v.removed.contains_key(session_id) && v.nodes.get(session_id).is_some_and(|n| n.alive || n.in_daemon || (n.is_orchestrator && v.orchestrator.is_some()))
 }
 
 fn node_name(v: &View, session_id: &str) -> String {

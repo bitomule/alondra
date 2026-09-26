@@ -63,6 +63,8 @@ pub struct Hub {
     pub report_judge: Box<dyn crate::classify::JudgesReports>,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
+    /// Accepted orchestrator RPCs finish before lifecycle changes revoke their authority.
+    pub orchestrator_commands: tokio::sync::RwLock<()>,
     pub schedules: crate::schedules::Schedules,
     /// Runs once as clients are about to be told of a change, so a test can record something then.
     #[cfg(test)]
@@ -137,6 +139,7 @@ impl Hub {
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
             report_judge: Box::new(crate::classify::LocalJudge),
             starts: tokio::sync::Mutex::new(()),
+            orchestrator_commands: tokio::sync::RwLock::new(()),
             schedules,
             #[cfg(test)]
             before_telling: Mutex::new(None),
@@ -268,6 +271,8 @@ impl Hub {
     /// joins now, with the hooks it sent before Alondra could tell it was its own. Nothing is
     /// recorded for any other session.
     pub fn admit(&self, session_id: &str, marked: bool) -> Result<bool> {
+        if self.read(|v| v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == session_id)
+            || v.orchestrator.as_ref().is_some_and(|r| r.session_id.as_deref() == Some(session_id))) { return Ok(false); }
         match self.read(|v| v.admission(session_id, marked)) {
             Admission::Follows => return Ok(true),
             Admission::Outside => return Ok(false),

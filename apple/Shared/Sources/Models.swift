@@ -32,7 +32,7 @@ extension OrchestratorState {
 
 extension Node {
     public var backgroundBadge: BackgroundBadge? { BackgroundBadge(running) }
-    public var stateLabel: String { orchestratorState?.label ?? state.label }
+    public var stateLabel: String { orchestratorRuntime?.label ?? orchestratorState?.label ?? state.label }
     public static var otherProjectName: String {
         String(localized: "others", table: "AlondraShared", bundle: #bundle)
     }
@@ -99,5 +99,35 @@ extension InboxItem {
         let flat = (mission ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
         guard !flat.isEmpty else { return nil }
         return flat.count <= 240 ? flat : String(flat.prefix(240)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+}
+
+
+extension OrchestratorRuntime {
+    public var label: String {
+        if cancelRequested == true { return String(localized: "stopping", table: "AlondraShared", bundle: #bundle) }
+        return switch phase {
+        case .idle: String(localized: "available", table: "AlondraShared", bundle: #bundle)
+        case .starting: String(localized: "starting", table: "AlondraShared", bundle: #bundle)
+        case .running: String(localized: "handling a request", table: "AlondraShared", bundle: #bundle)
+        case .compacting: String(localized: "working", table: "AlondraShared", bundle: #bundle)
+        case .failed where retryAt != nil: String(localized: "retrying", table: "AlondraShared", bundle: #bundle)
+        case .failed: String(localized: "needs attention", table: "AlondraShared", bundle: #bundle)
+        case .unknown: String(localized: "unknown", table: "AlondraShared", bundle: #bundle)
+        }
+    }
+
+    public var queueLabel: String {
+        String(localized: "Queued messages: \(queueDepth ?? 0)", table: "AlondraShared", bundle: #bundle)
+    }
+    /// Presentation follows the runtime even when the last worker hook says done.
+    public var activityState: NodeState {
+        if cancelRequested == true { return .waitingMachine }
+        return switch phase {
+        case .idle: .done
+        case .starting, .running, .compacting: .working
+        case .failed: retryAt == nil ? .stalled : .waitingMachine
+        case .unknown: .unclear
+        }
     }
 }
