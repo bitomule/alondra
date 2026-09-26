@@ -50,7 +50,7 @@ struct ServiceAttachmentStrip: View {
 
     @ViewBuilder
     private func preview(_ item: AttachmentFeature.Entry) -> some View {
-        if let thumbnail = AttachmentFile.thumbnail(item.draft.data) {
+        if let thumbnail = item.thumbnail {
             Image(decorative: thumbnail, scale: 1)
                 .resizable()
                 .scaledToFill()

@@ -1,6 +1,7 @@
 import AlondraDomain
 import ComposableArchitecture
 import Foundation
+import CoreGraphics
 import PhotosUI
 import SwiftUI
 
@@ -36,9 +37,17 @@ public struct AttachmentFeature {
         public var id: UUID { draft.id }
         public var storedID: String? { if case .uploaded(let id) = status { id } else { nil } }
         public let draft: AttachmentDraft
+        /// Decoded once during import; upload progress and body updates reuse the same image.
+        public let thumbnail: CGImage?
         public var status: Status = .queued
         public var progress: Double = 0
-        public init(draft: AttachmentDraft, status: Status = .queued) { self.draft = draft; self.status = status }
+        public init(draft: AttachmentDraft, status: Status = .queued, thumbnail: CGImage? = nil) {
+            self.draft = draft; self.status = status; self.thumbnail = thumbnail
+        }
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.draft == rhs.draft && lhs.status == rhs.status && lhs.progress == rhs.progress
+                && lhs.thumbnail === rhs.thumbnail
+        }
     }
     @ObservableState
     public struct State: Equatable {
@@ -71,7 +80,7 @@ public struct AttachmentFeature {
         case cameraCaptured(Data)
         case filesSelected([URL])
         case photosSelected([PhotosPickerItem])
-        case imported(AttachmentDraft, UUID)
+        case imported(AttachmentDraft, UUID, thumbnail: CGImage? = nil)
         case importFinished(UUID)
         case importFailed(String)
         case batchFailed(String, UUID)
@@ -106,7 +115,9 @@ public struct AttachmentFeature {
                     do {
                         let draft = try await importer.camera(data)
                         try Task.checkCancellation()
-                        await send(.imported(draft, batchID))
+                        let thumbnail = await importer.thumbnail(draft)
+                        try Task.checkCancellation()
+                        await send(.imported(draft, batchID, thumbnail: thumbnail))
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
                 }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
@@ -121,7 +132,9 @@ public struct AttachmentFeature {
                             try Task.checkCancellation()
                             let draft = try await importer.file(url)
                             try Task.checkCancellation()
-                            await send(.imported(draft, batchID))
+                            let thumbnail = await importer.thumbnail(draft)
+                            try Task.checkCancellation()
+                            await send(.imported(draft, batchID, thumbnail: thumbnail))
                         }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
@@ -137,12 +150,14 @@ public struct AttachmentFeature {
                             try Task.checkCancellation()
                             let draft = try await importer.photo(item)
                             try Task.checkCancellation()
-                            await send(.imported(draft, batchID))
+                            let thumbnail = await importer.thumbnail(draft)
+                            try Task.checkCancellation()
+                            await send(.imported(draft, batchID, thumbnail: thumbnail))
                         }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
                 }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
-            case .imported(let draft, let batchID):
+            case .imported(let draft, let batchID, let thumbnail):
                 guard state.importID == batchID else { return .none }
                 guard budget.accepts(draft, retained: state.entries.map(\.draft)) else {
                     state.importID = nil
@@ -151,7 +166,7 @@ public struct AttachmentFeature {
                     state.importError = "Attachment limit exceeded. Remove files or continue with only the selected attachments."
                     return .cancel(id: CancelID.importFiles(state.instanceID))
                 }
-                state.entries.append(Entry(draft: draft)); return .send(.uploadNext)
+                state.entries.append(Entry(draft: draft, thumbnail: thumbnail)); return .send(.uploadNext)
             case .importFinished(let batchID):
                 guard state.importID == batchID else { return .none }
                 state.importID = nil
@@ -225,10 +240,12 @@ public struct AttachmentImportClient: Sendable {
     public var file: @Sendable (URL) async throws -> AttachmentDraft
     public var photo: @Sendable (PhotosPickerItem) async throws -> AttachmentDraft
     public var camera: @Sendable (Data) async throws -> AttachmentDraft
+    public var thumbnail: @Sendable (AttachmentDraft) async -> CGImage?
     public init(file: @escaping @Sendable (URL) async throws -> AttachmentDraft,
                 photo: @escaping @Sendable (PhotosPickerItem) async throws -> AttachmentDraft,
-                camera: @escaping @Sendable (Data) async throws -> AttachmentDraft = { _ in throw AttachmentFailure(message: "Camera import is unavailable") }) {
-        self.file = file; self.photo = photo; self.camera = camera
+                camera: @escaping @Sendable (Data) async throws -> AttachmentDraft = { _ in throw AttachmentFailure(message: "Camera import is unavailable") },
+                thumbnail: @escaping @Sendable (AttachmentDraft) async -> CGImage? = { _ in nil }) {
+        self.file = file; self.photo = photo; self.camera = camera; self.thumbnail = thumbnail
     }
 }
 private enum AttachmentImportKey: DependencyKey {

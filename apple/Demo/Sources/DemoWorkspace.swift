@@ -232,7 +232,7 @@ public actor DemoWorkspace {
             isCurrent: { await self.active }, create: { await self.create($0) })
     }
     public nonisolated func install(into values: inout DependencyValues) {
-        values.attachmentImport = AttachmentImportClient(file: { try AttachmentImporter.file($0) }, photo: { try await AttachmentImporter.photo($0) }, camera: { try AttachmentImporter.camera($0) })
+        values.attachmentImport = AttachmentImportClient(file: { try AttachmentImporter.file($0) }, photo: { try await AttachmentImporter.photo($0) }, camera: { try AttachmentImporter.camera($0) }, thumbnail: { await AttachmentImporter.thumbnail($0) })
         values.attachmentUpload = AttachmentUploadClient(upload: {
             try await self.storeAttachment(id: $0.id, name: $0.name, data: $0.data)
         })

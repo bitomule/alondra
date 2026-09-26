@@ -1,6 +1,7 @@
 import AlondraDomain
 import AlondraShared
 import CoreTransferable
+import CoreGraphics
 import Foundation
 import PhotosUI
 import SwiftUI
@@ -16,6 +17,12 @@ public enum AttachmentImportError: LocalizedError {
     }
 }
 public enum AttachmentImporter {
+    /// Decode once off the main actor; keep the original 160px thumbnail and image orientation.
+    @concurrent public static func thumbnail(_ draft: AttachmentDraft) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        return AttachmentFile.thumbnail(draft.data)
+    }
+
     public static func file(_ url: URL) throws -> AttachmentDraft {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
