@@ -25,11 +25,27 @@ struct NormalQuestionCardIntegrationTests {
         let clock = TestClock()
         let uploads = LockIsolated<[AttachmentDraft]>([])
         let submissions = LockIsolated<[QuestionOperation]>([])
-        let store = TestStore(initialState: initial) { ServiceRootFeature() } withDependencies: {
+        let uploadStarted = AsyncStream<Void>.makeStream()
+        let releaseUpload = AsyncStream<Void>.makeStream()
+        let rejectionReduced = AsyncStream<Void>.makeStream()
+        let store = Store(initialState: initial) {
+            CombineReducers {
+                ServiceRootFeature()
+                // Observation barrier only: the production root has already reduced
+                // the real transport response when this signal is delivered.
+                Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { _, action in
+                    if case .triage(.cards(.element(_, .question(.submissionFinished)))) = action {
+                        rejectionReduced.continuation.yield(())
+                    }
+                    return .none
+                }
+            }
+        } withDependencies: {
             $0.continuousClock = clock
             $0.attachmentUpload = .init(upload: { draft in
                 uploads.withValue { $0.append(draft) }
-                try await clock.sleep(for: .seconds(1))
+                uploadStarted.continuation.yield(())
+                for await _ in releaseUpload.stream { break }
                 return "receipt"
             })
             $0.questionWorkService = .init(submit: { operation in
@@ -37,34 +53,31 @@ struct NormalQuestionCardIntegrationTests {
                 return .failed("Rejected")
             }, document: { _ in "" })
         }
-        // Root + card + question + attachment integration: assert externally visible
-        // presentation, preserved data and transport commands instead of child plumbing.
-        store.exhaustivity = .off(showSkippedAssertions: true)
-        await store.send(.triage(.cards(.element(id: card.id, action: .send))))
-        await store.receive { action in
-            if case .triage(.cards(.element(_, .question(.attachmentPicker(.uploadNext))))) = action { return true }
-            return false
-        }
-        await store.send(.triage(.cards(.element(id: card.id, action: .send))))
+        // Hold the real upload effect while another Send reaches the production root.
+        let submission = store.send(.triage(.cards(.element(id: card.id, action: .send))))
+        var started = uploadStarted.stream.makeAsyncIterator()
+        _ = await started.next()
+        await store.send(.triage(.cards(.element(id: card.id, action: .send)))).finish()
         #expect(submissions.value.isEmpty)
-        await clock.advance(by: .seconds(1))
-        await store.receive { action in
-            if case .triage(.cards(.element(_, .question(.submissionFinished)))) = action { return true }
-            return false
-        }
+        releaseUpload.continuation.yield(())
+        var rejected = rejectionReduced.stream.makeAsyncIterator()
+        _ = await rejected.next()
         #expect(uploads.value == [file])
         #expect(submissions.value == [.answer(id: 1, text: "Keep this answer", option: nil, attachments: ["receipt"])])
-        let retained = try #require(store.state.triage.cards[id: card.id])
+        let retained = try #require(store.triage.cards[id: card.id])
         #expect(retained.notice == nil)
         #expect(retained.question?.draft.text == "Keep this answer")
         #expect(retained.question?.draft.attachmentIDs == ["receipt"])
         #expect(retained.question?.attachmentPicker.entries.first?.draft == file)
         #expect(retained.question?.attachmentPicker.entries.first?.status == .uploaded("receipt"))
-        #expect(store.state.notice?.event == .failure(couldNotSendMessage("Rejected")))
+        #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
         await clock.advance(by: .seconds(6))
-        await store.finish()
-        #expect(store.state.notice == nil)
-        #expect(store.state.triage.cards[id: card.id]?.notice == nil)
+        await submission.finish()
+        #expect(store.notice == nil)
+        #expect(store.triage.cards[id: card.id]?.notice == nil)
+        uploadStarted.continuation.finish()
+        releaseUpload.continuation.finish()
+        rejectionReduced.continuation.finish()
     }
 
     @Test

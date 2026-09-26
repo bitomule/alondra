@@ -72,7 +72,10 @@ struct ServiceTriageCard: View {
             .alert("What do you need to decide?", isPresented: Binding(get: { store.askingContext }, set: { _ = store.send(.contextPresented($0)) })) {
                 TextField("Optional", text: Binding(get: { store.contextNote }, set: { _ = store.send(.contextChanged($0)) }))
                 Button("Cancel", role: .cancel) {}
-                Button("Ask for Context") { _ = store.send(.requestContext) }
+                Button("Ask for Context") {
+                    replyFocused = false
+                    store.send(.requestContext)
+                }
             } message: {
                 Text("The node will explain and ask again.")
             }
@@ -504,6 +507,7 @@ struct ServiceTriageCard: View {
         case .question(let question):
             VStack(spacing: 8) {
                 ServiceOptionGrid(options: question.options, picked: pickedOption) { option in
+                    replyFocused = false
                     store.send(.choose(option))
                 }
                 replyField(placeholder: pickedOption?.displayDescription ?? String(localized: "Answer in your own words…")) {
