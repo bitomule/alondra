@@ -66,4 +66,3 @@ public struct PullRequestOperations: Sendable {
         self.review = review
     }
 }
-

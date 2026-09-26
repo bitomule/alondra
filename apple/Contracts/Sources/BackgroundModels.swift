@@ -28,4 +28,3 @@ public struct BackgroundItem: Codable, Hashable, Sendable {
     public var isSuspect: Bool { suspect == true }
 
 }
-

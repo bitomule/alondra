@@ -65,4 +65,3 @@ public struct ScheduledTaskDraft: Encodable, Equatable, Sendable {
         revision = task?.revision ?? 0
     }
 }
-

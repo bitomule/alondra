@@ -7,4 +7,3 @@ extension Node {
         return [NodeActivity(agentId: nil, agentType: nil, task: nil, tool: tool.name, summary: tool.summary, since: tool.since)]
     }
 }
-

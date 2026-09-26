@@ -39,4 +39,3 @@ public struct TaskOperations: Sendable {
         self.details = details
     }
 }
-

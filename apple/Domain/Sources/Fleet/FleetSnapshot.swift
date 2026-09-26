@@ -45,4 +45,3 @@ public struct FleetSnapshot: Equatable, Sendable {
         return sections.lazy.flatMap(\.nodes).first { $0.id == id }
     }
 }
-

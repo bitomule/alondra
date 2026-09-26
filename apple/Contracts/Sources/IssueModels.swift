@@ -35,4 +35,3 @@ public struct IssueList: Decodable, Sendable {
     public let issues: [IssueSummary]
     public let error: String?
 }
-

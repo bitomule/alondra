@@ -24,4 +24,3 @@ public struct ScheduleOperations: Sendable {
         self.options = options
     }
 }
-
