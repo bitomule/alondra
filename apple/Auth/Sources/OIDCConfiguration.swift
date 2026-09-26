@@ -1,23 +1,34 @@
 import Foundation
 
 public struct OIDCConfiguration: Sendable {
+    public enum RevocationScope: Sendable {
+        case credential
+        /// Requires a verified issuer contract: revoking a predecessor invalidates its successor.
+        case offlineSession
+    }
     public let issuer: URL
     public let clientID: String
     public let redirectURI: URL
     public let scopes: [String]
+    public let revocationScope: RevocationScope
 
-    public init(issuer: URL, clientID: String, redirectURI: URL, scopes: [String]) {
+    public init(issuer: URL, clientID: String, redirectURI: URL, scopes: [String],
+                revocationScope: RevocationScope = .credential) {
         self.issuer = issuer
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.scopes = scopes
+        self.revocationScope = revocationScope
     }
 
     public static let alondra = OIDCConfiguration(
         issuer: URL(string: "https://alondra-auth.davidcollado.dev/realms/alondra")!,
         clientID: "alondra-ios",
         redirectURI: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak")!,
-        scopes: ["openid", "profile", "offline_access"]
+        scopes: ["openid", "profile", "offline_access"],
+        // Keycloak 26.7.4, revokeRefreshToken=false: deploy/pi smoke verifies
+        // predecessor revocation invalidates both tokens. Recheck on issuer drift.
+        revocationScope: .offlineSession
     )
 }
 

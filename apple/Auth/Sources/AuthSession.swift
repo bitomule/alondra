@@ -278,8 +278,13 @@ public actor AuthSession {
 
     private func revokeStoredCredential() async throws {
         guard var credential = try unpersistedCredential ?? storage.read() else { return }
-        guard credential.status != .rotationUncertain else { throw AuthError.rotationUncertain }
-        credential.status = .pendingRevocation
+        if credential.status == .rotationUncertain {
+            guard case .offlineSession = configuration.revocationScope else { throw AuthError.rotationUncertain }
+            // Keep uncertainty durable until revocation succeeds. A failed request
+            // must not downgrade it into an ordinary credential-only cleanup.
+        } else {
+            credential.status = .pendingRevocation
+        }
         try storage.write(credential)
         unpersistedCredential = nil // The exact candidate is now durable for retry.
         accessToken = nil
