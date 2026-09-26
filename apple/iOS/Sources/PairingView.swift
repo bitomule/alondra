@@ -47,6 +47,7 @@ struct CloudPairingScreen: View {
             .frame(maxWidth: 540).frame(maxWidth: .infinity)
         }
         .background(DawnBackground())
+        .accessibilityIdentifier("pairing.screen")
         .toolbar(.hidden, for: .navigationBar)
         .task { store.send(.appeared) }
     }
@@ -77,11 +78,11 @@ struct CloudPairingScreen: View {
     private var steps: some View {
         HStack(spacing: 8) {
             ForEach(Array([String(localized: "Account"), String(localized: "Your Mac"), String(localized: "Confirm")].enumerated()), id: \.offset) { index, label in
-                HStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Image(systemName: index < step ? "checkmark.circle.fill" : "\(index + 1).circle.fill")
-                    Text(label).font(.caption.weight(.medium))
+                    Text(label).font(.caption.weight(.medium)).lineLimit(1)
                 }.foregroundStyle(index == step ? Palette.ink : .secondary)
-                if index < 2 { Rectangle().fill(Palette.hairline).frame(height: 1) }
+                    .frame(maxWidth: .infinity)
             }
         }.accessibilityElement(children: .combine)
     }

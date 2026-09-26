@@ -29,13 +29,15 @@ import Testing
         try await api.registerServicePush(token: "abcd", environment: "sandbox", binding: binding, preferencesRevision: 1,
                                           quietStart: "23:00", quietEnd: "08:00")
         let enabled = try #require(await transport.request)
-        let object = try #require(JSONSerialization.jsonObject(with: #require(enabled.body)) as? [String: Any])
+        let enabledData = try #require(enabled.body)
+        let object = try #require(JSONSerialization.jsonObject(with: enabledData) as? [String: Any])
         #expect(object["quiet_start"] as? String == "23:00")
         #expect(object["quiet_end"] as? String == "08:00")
         try await api.registerServicePush(token: "abcd", environment: "sandbox", binding: binding, preferencesRevision: 2)
         let disabled = try #require(await transport.request)
         #expect(disabled.operationID != enabled.operationID)
-        let disabledBody = try #require(JSONSerialization.jsonObject(with: #require(disabled.body)) as? [String: Any])
+        let disabledData = try #require(disabled.body)
+        let disabledBody = try #require(JSONSerialization.jsonObject(with: disabledData) as? [String: Any])
         #expect(disabledBody["quiet_start"] is NSNull)
         #expect(disabledBody["quiet_end"] is NSNull)
         try await api.registerServicePush(token: "abcd", environment: "sandbox", binding: binding, preferencesRevision: 3,

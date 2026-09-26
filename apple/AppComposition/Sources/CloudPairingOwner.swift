@@ -120,6 +120,7 @@ public final class CloudPairingOwner {
             await next.deactivate()
             throw CancellationError()
         }
+        await next.startRecovery()
         services = next
     }
     private func deactivate() async throws {

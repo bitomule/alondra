@@ -17,9 +17,11 @@ public actor CloudAppServices {
     public let sync: SyncSession
     private let operations: RelaySession
     private let gate: CommandGate
+    private let commandRecovery: CommandRecovery
     private let reportFeedback: ReportFeedbackCoordinator
     private let scope: CommandScope
     private var active = true
+    private var feedbackRecoveryTask: Task<Void, Never>?
 
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL) throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
@@ -43,14 +45,50 @@ public actor CloudAppServices {
             identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
         reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate, scope: scope, api: api, operations: operations, bindingSecret: approved.signingPrivateKey)
+        let serviceOperations = operations
+        commandRecovery = CommandRecovery(gate: gate, scope: scope,
+            file: directory.appendingPathComponent("command-resolutions.json"), status: { id in
+                switch try await serviceOperations.resume(requestID: id.uuidString, statusPolls: 1) {
+                case .completed(let status, _): return status
+                case .unknown: return nil
+                }
+            })
     }
 
     public func deactivate() async {
         active = false
+        feedbackRecoveryTask?.cancel()
+        feedbackRecoveryTask = nil
+        await commandRecovery.stop()
         await operations.deactivate()
         await sync.stop()
         await gate.use(CommandScope(server: scope.server, deviceID: scope.deviceID,
                                     credentialRevision: scope.credentialRevision, generation: scope.generation + 1))
+    }
+
+    public func startRecovery() {
+        guard active, feedbackRecoveryTask == nil else { return }
+        feedbackRecoveryTask = Task {
+            while active, !Task.isCancelled {
+                // A failed status read leaves the durable command pending; the next
+                // pass checks status again and never repeats the message.
+                _ = try? await reportFeedback.recover()
+                do { try await Task.sleep(for: .seconds(5)) } catch { break }
+            }
+        }
+    }
+
+    public func reportFeedbackRecoveryEvents() async -> AsyncStream<[ReportFeedbackRecoveryEvent]> {
+        await reportFeedback.recoveryEvents()
+    }
+
+    public func retryReportFeedbackRead(_ id: UUID) async {
+        guard active else { return }
+        _ = try? await reportFeedback.recover(retryingReadFor: id)
+    }
+
+    public func commandResolutions() async -> AsyncStream<CommandResolution> {
+        await commandRecovery.subscribe()
     }
 
     public func triageService() -> TriageService {
@@ -104,6 +142,7 @@ public actor CloudAppServices {
         operation: @escaping @Sendable (AlondraAPIClient, UUID) async throws -> Void) async -> CommandResult {
         guard active else { return .obsolete }
         let api = api
+        let witness = CommandDispatchWitness()
         let result = await gate.submitIdentified(kind, itemID: itemID, in: scope,
             isUnknown: { error in
                 if let error = error as? ServiceAPIError { return error == .outcomeUnknown }
@@ -111,8 +150,15 @@ public actor CloudAppServices {
                 if case RelaySessionError.invalidRequest = error { return false }
                 if case RelaySessionError.operationIdentityConflict = error { return false }
                 return true
-            }) { id in try await operation(api, id) }
-        return active ? result : .obsolete
+            }) { id in
+                await witness.markInvoked()
+                try await operation(api, id)
+            }
+        guard active else { return .obsolete }
+        if case .unknown = result, !(await witness.invoked) {
+            return .rejected(PreviousCommandStillPending())
+        }
+        return result
     }
 
     private func mutate(_ kind: CommandKind, itemID: String, identity: TriageIdentity) async -> TriageMutationOutcome {
@@ -127,7 +173,7 @@ public actor CloudAppServices {
         guard active else { return .obsolete }
         switch result {
         case .confirmed: return .confirmed
-        case .unknown: return .unknown
+        case .unknown(let command): return .unknownCommand(command.id)
         case .obsolete: return .obsolete
         case .rejected(let error): return .rejected(error.localizedDescription)
         }
