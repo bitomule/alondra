@@ -27,8 +27,10 @@ feedback, task cancel/reopen/archive, node message/close, new task and schedule
 operations. Attachments are stored only in memory by stable draft UUID. No real
 GitHub PR is opened, merged or messaged. The service identity uses demo://.
 
-The module has no file reads/writes, UserDefaults, Keychain, notification calls,
-HTTP client, sockets, or timers. All feature dependencies are explicitly replaced,
+The synthetic workspace has no persistent database, UserDefaults, Keychain,
+notification calls, HTTP client, sockets, or timers. Explicit file/photo selection
+uses the shared local importer through Data/Attachments; uploaded bytes stay in
+the demo actor and are never sent to the service. All feature dependencies are explicitly replaced,
 including attachment uploads and command recovery. The integration tests check
 an action's visible snapshot, isolation of simultaneous demo sessions, and the
 rejection of stale work after reset/exit. They do not establish UI integration or
