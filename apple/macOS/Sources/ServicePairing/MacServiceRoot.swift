@@ -83,7 +83,8 @@ private struct MacServiceWindow: View {
     var body: some View {
         Group {
             if let store = context.store {
-                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
+                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account),
+                search: MacConversationSearch(run: { try await services.searchConversations($0) }))
             } else {
                 ProgressView("Opening workspace…")
             }

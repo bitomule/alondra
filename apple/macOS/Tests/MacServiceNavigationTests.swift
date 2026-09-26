@@ -1,8 +1,33 @@
+import AlondraShared
+import Foundation
 import ComposableArchitecture
 import Testing
 
 @MainActor
 struct MacServiceNavigationTests {
+    @Test
+    func changingSearchCancelsTheConversationFallbackBeforeDispatch() async throws {
+        let clock = TestClock()
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.macConversationSearch = MacConversationSearch(run: { query in
+                #expect(query == "new query")
+                return try JSONDecoder().decode(SearchResult.self, from: Data(#"{"via":"conversation","sessions":["new-node"]}"#.utf8))
+            })
+        }
+        await store.send(.queryChanged("old query")) { $0.query = "old query"; $0.searchRevision = 1 }
+        await store.send(.searchRequested(inbox: [], board: .empty, fleet: nil))
+        await clock.advance(by: .milliseconds(600))
+        await store.send(.queryChanged("new query")) { $0.query = "new query"; $0.searchRevision = 2 }
+        await store.send(.searchRequested(inbox: [], board: .empty, fleet: nil))
+        await clock.advance(by: .milliseconds(1200))
+        await store.receive(\.searchStarted) { $0.smartStatus = String(localized: "Searching the conversations…") }
+        await store.receive(\.searchFinished) {
+            $0.smartMatches = ["new-node"]
+            $0.smartStatus = String(localized: "Found in the conversations")
+        }
+    }
+
     @Test
     func resolvingMiddleCardFollowsItsNeighbourWithoutStealingAnotherWindowsSelection() {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }

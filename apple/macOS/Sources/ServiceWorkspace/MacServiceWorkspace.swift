@@ -11,11 +11,24 @@ struct MacServiceWorkspace<AccountContent: View>: View {
     @State private var presentation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
     @FocusState private var searchFocused: Bool
 
+    init(store: StoreOf<ServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true,
+         search: MacConversationSearch = .unavailable) {
+        self.store = store
+        self.accountContent = accountContent
+        self.isActive = isActive
+        _presentation = State(initialValue: Store(initialState: MacPresentationFeature.State()) {
+            MacPresentationFeature()
+        } withDependencies: { $0.macConversationSearch = search })
+    }
+
     var body: some View {
         NavigationSplitView {
             MacServiceSidebar(store: store, presentation: presentation)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
-                .searchable(text: Binding(get: { presentation.query }, set: { presentation.send(.queryChanged($0)) }), placement: .sidebar, prompt: "Search")
+                .searchable(text: Binding(get: { presentation.query }, set: {
+                    presentation.send(.queryChanged($0))
+                    presentation.send(.searchRequested(inbox: store.triage.triage.queue, board: store.tasks.taskBoard, fleet: store.fleet.fleet.snapshot))
+                }), placement: .sidebar, prompt: "Search")
                 .searchFocused($searchFocused)
         } detail: {
             ZStack {
@@ -64,6 +77,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         .task { guard isActive else { return }; await store.send(.tasks(.appeared)).finish() }
         .task { guard isActive else { return }; await store.send(.fleet(.appeared)).finish() }
         .onDisappear {
+            presentation.send(.disappeared)
             guard isActive else { return }
             store.send(.disappeared)
             store.send(.triage(.triage(.disappeared)))
@@ -90,6 +104,9 @@ private struct MacServiceSidebar: View {
     let presentation: StoreOf<MacPresentationFeature>
     var body: some View {
         List(selection: Binding(get: { presentation.selection }, set: { presentation.send(.select($0)) })) {
+            if !presentation.smartStatus.isEmpty {
+                Label(presentation.smartStatus, systemImage: "text.magnifyingglass").font(.callout).foregroundStyle(.secondary)
+            }
             if let entry = store.fleet.fleet.snapshot?.orchestrator {
                 Section {
                     NodeRow(node: entry.node).tag(MacPresentationFeature.Selection.node(entry.id))

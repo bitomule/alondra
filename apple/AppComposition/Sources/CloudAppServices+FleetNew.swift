@@ -6,6 +6,10 @@ import AlondraShared
 import Foundation
 
 extension CloudAppServices {
+    public func searchConversations(_ query: String) async throws -> SearchResult {
+        try await workspaceDecode(SearchResult.self, endpoint: AlondraEndpoints.search(query))
+    }
+
     public func nodeOperations() -> NodeOperations {
         NodeOperations(send: { session, message in
             var stored: [String] = []

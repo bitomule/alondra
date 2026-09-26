@@ -20,11 +20,15 @@ struct MacPresentationFeature {
         var newRequestPresented = false
         var inboxIDs: [String] = []
         var didAutoSelect = false
+        var smartMatches: Set<String>?
+        var smartStatus = ""
+        var searchRevision: UInt64 = 0
 
         func projects(_ snapshot: FleetSnapshot?) -> [MacSidebarProject] {
             (snapshot?.sections ?? []).compactMap { section in
                 let nodes = section.nodes.filter { entry in
-                    matches(([entry.node.displayName, section.name, entry.node.fleetLabel, entry.node.summary] + entry.tasks.map(\.title)).joined(separator: " "))
+                    if let smartMatches { return smartMatches.contains(entry.id) }
+                    return matches(([entry.node.displayName, section.name, entry.node.fleetLabel, entry.node.summary] + entry.tasks.map(\.title)).joined(separator: " "))
                 }
                 return nodes.isEmpty ? nil : MacSidebarProject(name: section.name, nodes: nodes)
             }
@@ -54,11 +58,18 @@ struct MacPresentationFeature {
         case select(Selection?)
         case inboxChanged([String])
         case queryChanged(String)
+        case searchRequested(inbox: [InboxItem], board: TaskBoard, fleet: FleetSnapshot?)
+        case searchStarted(UInt64)
+        case searchFinished(UInt64, SearchResult?)
+        case disappeared
         case tasksExpanded(Bool)
         case projectExpanded(String, Bool)
         case groupExpanded(String, defaultExpanded: Bool, expanded: Bool)
         case newRequestPresented(Bool)
     }
+    @Dependency(\.macConversationSearch) var search
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID { case search }
     var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -76,7 +87,36 @@ struct MacPresentationFeature {
                     } else { state.selection = ids.first.map(Selection.item) }
                 }
                 state.inboxIDs = ids
-            case .queryChanged(let query): state.query = query
+            case .queryChanged(let query):
+                state.query = query
+                state.smartMatches = nil
+                state.smartStatus = ""
+                state.searchRevision &+= 1
+                return .cancel(id: CancelID.search)
+            case .searchRequested(let inbox, let board, let fleet):
+                let query = state.query.trimmingCharacters(in: .whitespaces)
+                guard query.count >= 3, state.projects(fleet).isEmpty,
+                      state.inbox(inbox, pullRequests: false).isEmpty,
+                      state.inbox(inbox, pullRequests: true).isEmpty,
+                      state.groups(in: board).isEmpty else { return .none }
+                let revision = state.searchRevision
+                return .run { send in
+                    try await clock.sleep(for: .milliseconds(1200))
+                    await send(.searchStarted(revision))
+                    let result = try? await search.run(query)
+                    try Task.checkCancellation()
+                    await send(.searchFinished(revision, result))
+                }.cancellable(id: CancelID.search, cancelInFlight: true)
+            case .searchStarted(let revision):
+                guard revision == state.searchRevision else { return .none }
+                state.smartStatus = String(localized: "Searching the conversations…")
+            case .searchFinished(let revision, let result):
+                guard revision == state.searchRevision else { return .none }
+                state.smartMatches = result.map { Set($0.sessions) }
+                state.smartStatus = result.map { $0.sessions.isEmpty ? String(localized: "Not in the conversations either") : String(localized: "Found in the conversations") } ?? ""
+            case .disappeared:
+                state.searchRevision &+= 1
+                return .cancel(id: CancelID.search)
             case .tasksExpanded(let expanded): state.tasksExpanded = expanded
             case .projectExpanded(let name, let expanded):
                 if expanded { state.collapsedProjects.remove(name) } else { state.collapsedProjects.insert(name) }
@@ -93,4 +133,19 @@ struct MacSidebarProject: Identifiable {
     var id: String { name }
     let name: String
     let nodes: [FleetNode]
+}
+
+struct MacConversationSearch: Sendable {
+    var run: @Sendable (String) async throws -> SearchResult?
+    static let unavailable = Self(run: { _ in nil })
+}
+private enum MacConversationSearchKey: DependencyKey {
+    static let liveValue = MacConversationSearch.unavailable
+    static let testValue = liveValue
+}
+extension DependencyValues {
+    var macConversationSearch: MacConversationSearch {
+        get { self[MacConversationSearchKey.self] }
+        set { self[MacConversationSearchKey.self] = newValue }
+    }
 }
