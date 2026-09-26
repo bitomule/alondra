@@ -24,6 +24,26 @@ def archive(path, extra=None):
 
 
 class PublicPayloadTests(unittest.TestCase):
+    def test_real_tracked_assets_materialize_known_wrapper_without_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = pathlib.Path(temp)
+            r.stage_assets(r.ROOT, stage)
+            files = {str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_file()}
+            self.assertEqual(files, r.PUBLIC_FILES - {'alondra', 'alondrad'})
+            self.assertFalse(any(p.is_symlink() for p in stage.rglob('*')))
+            wrapper = stage / 'plugin-orchestrator/bin/alondra'
+            self.assertEqual(wrapper.read_bytes(), (r.ROOT / 'plugin/bin/alondra').read_bytes())
+            self.assertTrue(wrapper.stat().st_mode & 0o111)
+            # Validate a package with the actual tracked runtime assets, rather
+            # than only generated fixture names that missed the original link.
+            (stage / 'alondra').write_bytes(b'fake binary')
+            (stage / 'alondrad').write_bytes(b'fake daemon')
+            package = stage / 'package.tar.gz'
+            with tarfile.open(package, 'w:gz') as output:
+                for name in sorted(r.PUBLIC_FILES):
+                    output.add(stage / name, arcname=name)
+            r.validate_archive(package)
+
     def test_rejects_private_source_and_links_even_under_allowed_names(self):
         with tempfile.TemporaryDirectory() as temp:
             path = pathlib.Path(temp) / 'test.tar.gz'

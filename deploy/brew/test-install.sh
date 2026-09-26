@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Hosted CI runner only: install actual local tarball through Homebrew's full pipeline.
+# Disposable CI/test environment only: never replace an existing Alondra installation.
 set -euo pipefail
+# Validation must not update the host toolchain or link over an active runtime.
+export HOMEBREW_NO_AUTO_UPDATE=1
 version=$1
 target=$2
 archive=$(cd "$3" && pwd -P)/alondra-$version-$target.tar.gz
+if brew list --formula --versions alondra >/dev/null 2>&1; then
+  echo 'Alondra is already installed; use a clean test environment' >&2
+  exit 1
+fi
 brew tap-new alondra/release-test
 formula="$(brew --repository alondra/release-test)/Formula/alondra.rb"
 python3 - "$version" "$archive" "$formula" <<'PY'
@@ -16,8 +22,8 @@ text = text.replace('@ARM_SHA256@', checksum).replace('@INTEL_SHA256@', checksum
 pathlib.Path(output).write_text(text)
 PY
 trap 'brew uninstall --force alondra/release-test/alondra >/dev/null 2>&1 || true; brew untap alondra/release-test >/dev/null 2>&1 || true' EXIT
-HOMEBREW_NO_INSTALL_CLEANUP=1 brew install alondra/release-test/alondra
-brew test alondra/release-test/alondra
+HOMEBREW_NO_INSTALL_CLEANUP=1 brew install --skip-link alondra/release-test/alondra
+brew test --force alondra/release-test/alondra
 prefix=$(brew --prefix alondra/release-test/alondra)
 for binary in alondra alondrad; do
   codesign --verify --strict "$prefix/bin/$binary"

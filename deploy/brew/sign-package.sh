@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # CI-only ephemeral keychain. Never enable shell tracing here.
 set -euo pipefail
-[[ $# == 3 ]] || { echo 'usage: sign-notarize.sh VERSION TARGET OUTPUT_DIR' >&2; exit 2; }
+[[ $# == 3 ]] || { echo 'usage: sign-package.sh VERSION TARGET OUTPUT_DIR' >&2; exit 2; }
 version=$1
 target=$2
 output=$3
-for variable in DEVELOPER_ID_P12_BASE64 DEVELOPER_ID_P12_PASSWORD DEVELOPER_ID_IDENTITY APPLE_TEAM_ID NOTARY_KEY_P8_BASE64 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
+for variable in DEVELOPER_ID_P12_BASE64 DEVELOPER_ID_P12_PASSWORD DEVELOPER_ID_IDENTITY APPLE_TEAM_ID ; do
   [[ -n ${!variable:-} ]] || { echo "Missing required secret: $variable" >&2; exit 1; }
 done
 [[ $APPLE_TEAM_ID == 658YBSK6MG ]] || { echo 'Unexpected signing team' >&2; exit 1; }
@@ -18,7 +18,6 @@ cleanup() {
 trap cleanup EXIT
 umask 077
 printf '%s' "$DEVELOPER_ID_P12_BASE64" | base64 --decode > "$private/signing.p12"
-printf '%s' "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$private/AuthKey.p8"
 keychain_password=$(openssl rand -hex 32)
 security create-keychain -p "$keychain_password" "$keychain"
 security set-keychain-settings -lut 21600 "$keychain"
@@ -35,20 +34,5 @@ for binary in alondra alondrad; do
     echo 'Unexpected signing identity or missing timestamp' >&2; exit 1;
   }
 done
-# ZIP is only submitted to Apple; public tarballs contain these identical signed bytes.
-ditto -c -k --keepParent "$private/payload" "$private/notary.zip"
-notary_status=0
-xcrun notarytool submit "$private/notary.zip" --key "$private/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait --timeout 30m --output-format json > "$private/notary.json" || notary_status=$?
-python3 - "$private/notary.json" <<'PY'
-import json, sys
-try:
-    result = json.load(open(sys.argv[1]))
-except (ValueError, OSError):
-    raise SystemExit('Notary request failed without a JSON response; inspect preceding tool error')
-print('Notarization:', result.get('id'), result.get('status'))
-if result.get('status') != 'Accepted':
-    raise SystemExit('Apple did not accept notarization; no package will be published')
-PY
-[[ $notary_status == 0 ]] || { echo "Notary command failed: $notary_status" >&2; exit 1; }
 bash deploy/brew/package-cli.sh "$version" "$target" "$private/payload/alondra" "$private/payload/alondrad" "$output"
 python3 deploy/brew/release.py validate "$version" "$output/alondra-$version-$target.tar.gz"

@@ -6,6 +6,7 @@ import hashlib
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -19,6 +20,7 @@ PUBLIC_FILES = {
     'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
     'plugin-orchestrator/.mcp.json', 'plugin-orchestrator/.claude-plugin/plugin.json',
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
+    'plugin-orchestrator/bin/alondra',
 }
 
 
@@ -30,6 +32,22 @@ def version(value):
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def stage_assets(root, destination):
+    """Copy explicit runtime files; materialize only the known orchestrator wrapper."""
+    root = root.resolve()
+    alias = root / 'plugin-orchestrator/bin'
+    if not alias.is_symlink() or alias.readlink() != pathlib.Path('../plugin/bin'):
+        raise ValueError('Unexpected orchestrator bin alias; review the packaging mapping')
+    for name in sorted(PUBLIC_FILES - {'alondra', 'alondrad'}):
+        source_name = 'plugin/bin/alondra' if name == 'plugin-orchestrator/bin/alondra' else name
+        source = root / source_name
+        if not source.is_file() or source.resolve() != source:
+            raise ValueError(f'Runtime source missing or contains an unexpected symlink: {source_name}')
+        output = destination / name
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, output)
 
 
 def validate_archive(path):
@@ -125,7 +143,7 @@ def publish(ver, directory):
     release = lookup_release(tag)
     if release is None:
         gh('release', 'create', tag, '--repo', REPO, '--draft', '--title', f'Alondra {ver}',
-           '--notes', 'Signed and notarized macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
+           '--notes', 'Signed macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
         release = lookup_release(tag)
     names = {asset['name'] for asset in release['assets']}
     archives = [directory / f'alondra-{ver}-{target}.tar.gz' for target in TARGETS]
@@ -158,12 +176,14 @@ def publish(ver, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('validate', 'render', 'publish'))
+    parser.add_argument('mode', choices=('validate', 'render', 'publish', 'stage-assets'))
     parser.add_argument('version')
     parser.add_argument('path', type=pathlib.Path)
     args = parser.parse_args()
     version(args.version)
-    if args.mode == 'validate':
+    if args.mode == 'stage-assets':
+        stage_assets(ROOT, args.path)
+    elif args.mode == 'validate':
         validate_archive(args.path)
     elif args.mode == 'render':
         print(render(args.version, args.path), end='')
