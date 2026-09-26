@@ -1,4 +1,4 @@
-import AlondraShared
+import AlondraDomain
 import Foundation
 import Testing
 
