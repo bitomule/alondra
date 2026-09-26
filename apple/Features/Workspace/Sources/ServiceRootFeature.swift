@@ -37,6 +37,7 @@ public struct ServiceRootFeature {
         public var newRequest = NewRequestFeature.State()
         public var pullRequests: IdentifiedArrayOf<ServicePullRequestFeature.State> = []
         public var pullRequestID: UInt64?
+        public var pullRequestIdentity: TriageIdentity?
         public var pullRequest: ServicePullRequestFeature.State? {
             get { pullRequestID.flatMap { pullRequests[id: $0] } }
             set {
@@ -93,11 +94,6 @@ public struct ServiceRootFeature {
     public var body: some ReducerOf<Self> {
         // Observe the accepted operation before child navigation removes its state.
         Reduce { state, action in
-            if case .triage(.triage(.identityChanged(let identity))) = action,
-               state.triage.triage.identity != identity {
-                state.pullRequestID = nil
-                state.pullRequests = []
-            }
 
             if case .dismissNotice(let id) = action {
                 guard state.notice?.id == id else { return .none }
@@ -201,13 +197,34 @@ public struct ServiceRootFeature {
                         if case .pullRequest(let pr) = item, pr.id == id { return pr }
                         return nil
                     }.first
+                    if pr == nil, !detail.hasOutstandingCommand {
+                        state.pullRequests.remove(id: id)
+                        if state.pullRequestID == id { state.pullRequestID = nil }
+                        continue
+                    }
+                    if pr == nil { state.pullRequests[id: id]?.cancelPendingSubmission() }
+                    let questions = state.triage.triage.questions(forPullRequest: id)
+                    let visibleQuestionIDs = Set(questions.map(\.id))
+                    for questionID in detail.questionFeatures.ids where !visibleQuestionIDs.contains(questionID) {
+                        state.pullRequests[id: id]?.questionFeatures[id: questionID]?.question.cancelPendingSubmission()
+                    }
                     updates.append(.send(.pullRequests(.element(id: id, action: .updated(pr)))))
+                    // A disappeared PR cannot supply authoritative attached context while
+                    // its dispatched commands are still awaiting a terminal result.
+                    guard pr != nil else { continue }
                     updates.append(.send(.pullRequests(.element(id: id, action: .contextUpdated(
                         reports: state.triage.triage.reports(forPullRequest: id),
                         questions: state.triage.triage.questions(forPullRequest: id))))))
                 }
                 return .merge(updates)
+            case .triage(.triage(.identityChanged(let identity))):
+                guard state.pullRequestIdentity != identity else { return .none }
+                state.pullRequestIdentity = identity
+                state.pullRequestID = nil
+                state.pullRequests = []
+                return .none
             case .triage(.delegate(.pullRequest(let pr))):
+                state.pullRequestIdentity = state.triage.triage.identity
                 state.pullRequest?.cancelPendingSubmission()
                 if state.pullRequests[id: pr.id] == nil {
                     state.pullRequest = ServicePullRequestFeature.State(pr: pr, reports: state.triage.triage.reports(forPullRequest: pr.id), questions: state.triage.triage.questions(forPullRequest: pr.id))
@@ -449,12 +466,17 @@ public struct ServicePullRequestFeature {
     @ObservableState
     public struct State: Equatable, Identifiable {
         public var id: UInt64 { pr.id }
+        public var hasOutstandingCommand: Bool {
+            pr.isSending || pr.mutationOutcome?.uncertainID != nil || diff.isSending || diff.mutationOutcome?.uncertainID != nil
+                || questionFeatures.contains { $0.question.isSubmitting || $0.question.needsReconciliation }
+        }
         public var downloads = AttachmentDownloadFeature.State()
         public var pr: PullRequestFeature.State
         public var diff: DiffReviewFeature.State
         public var reports: [Report] = []
         public var questions: [Question] = []
         public var questionFeatures: IdentifiedArrayOf<AttachedPRQuestionFeature.State> = []
+        public var visibleQuestionIDs: Set<UInt64> { Set(questions.map(\.id)) }
         public var descriptionExpanded: Bool?
         public mutating func cancelPendingSubmission() {
             diff.cancelPendingSubmission()
@@ -490,7 +512,12 @@ public struct ServicePullRequestFeature {
                 state.reports = reports
                 state.questions = questions
                 let ids = Set(questions.map(\.id))
-                state.questionFeatures.removeAll { !ids.contains($0.id) }
+                for id in state.questionFeatures.ids where !ids.contains(id) {
+                    state.questionFeatures[id: id]?.question.cancelPendingSubmission()
+                }
+                state.questionFeatures.removeAll {
+                    !ids.contains($0.id) && !$0.question.isSubmitting && !$0.question.needsReconciliation
+                }
                 var effects: [Effect<Action>] = []
                 for question in questions {
                     if state.questionFeatures[id: question.id] == nil {
@@ -500,6 +527,13 @@ public struct ServicePullRequestFeature {
                     }
                 }
                 return .merge(effects)
+            case .attachedQuestion(.element(let id, .question(.submissionFinished))),
+                 .attachedQuestion(.element(let id, .question(.commandResolved))):
+                if !state.visibleQuestionIDs.contains(id), let child = state.questionFeatures[id: id],
+                   !child.question.isSubmitting, !child.question.needsReconciliation {
+                    state.questionFeatures.remove(id: id)
+                }
+                return .none
             case .toggleDescription:
                 state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
                 return .none

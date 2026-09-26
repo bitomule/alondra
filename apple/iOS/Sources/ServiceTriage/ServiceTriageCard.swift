@@ -278,7 +278,7 @@ struct ServiceTriageCard: View {
                 AttachedReport(report: report)
             }
             if let prStore = store.scope(state: \.pullRequest, action: \.pullRequest) {
-                ForEach(prStore.scope(state: \.questionFeatures, action: \.attachedQuestion)) { child in
+                ForEach(prStore.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { prStore.visibleQuestionIDs.contains($0.id) }) { child in
                     ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question))
                 }
             }

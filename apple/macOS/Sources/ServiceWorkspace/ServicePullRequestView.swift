@@ -157,7 +157,7 @@ struct ServicePullRequestView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("The node asks")
                     .font(.title3.weight(.semibold))
-                ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion)) { child in
+                ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { store.visibleQuestionIDs.contains($0.id) }) { child in
                     ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), pullRequestURL: pr.url)
                 }
             }

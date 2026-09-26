@@ -2,6 +2,7 @@ import AlondraAttachmentsFeature
 import AlondraCommands
 import AlondraDomain
 import AlondraPullRequestsFeature
+import AlondraQuestionsFeature
 import AlondraShared
 import AlondraWorkspaceFeature
 import ComposableArchitecture
@@ -17,6 +18,7 @@ struct PullRequestOwnerIntegrationTests {
             """.utf8))
         }
         var state = ServiceRootFeature.State()
+        state.triage.triage.identity = TriageIdentity(server: URL(string: "https://service.example")!, deviceID: "phone", credentialRevision: "one", generation: 1)
         state.triage.triage.items = [.pullRequest(try pr(5)), .pullRequest(try pr(6))]
         return state
     }
@@ -144,4 +146,79 @@ struct PullRequestOwnerIntegrationTests {
         #expect(store.pullRequests.isEmpty && calls.value == 1)
         started.continuation.finish()
     }
+    @Test(.timeLimit(.minutes(1)))
+    func identityReplacementCancelsTheActualOwnedOperation() async throws {
+        let started = AsyncStream<Void>.makeStream()
+        let result = AsyncStream<PRMutationOutcome>.makeStream()
+        let terminations = LockIsolated(0)
+        result.continuation.onTermination = { _ in terminations.withValue { $0 += 1 } }
+        let store = Store(initialState: try initial()) { ServiceRootFeature() } withDependencies: {
+            $0.pullRequestOperations = .init(diff: { _ in .init(diff: "", headSHA: "head") },
+                merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
+                review: { _, _, _, _, _ in
+                    started.continuation.yield(())
+                    var iterator = result.stream.makeAsyncIterator()
+                    return await iterator.next() ?? .obsolete
+                })
+        }
+        await store.send(.focusInbox("p5")).finish()
+        await store.send(diff(5, .appeared)).finish()
+        await store.send(diff(5, .noteChanged("A"))).finish()
+        let operation = store.send(diff(5, .askTapped))
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        let identity = try #require(store.triage.triage.identity)
+        await store.send(.triage(.triage(.identityChanged(identity)))).finish()
+        #expect(store.pullRequests.count == 1 && terminations.value == 0)
+        let next = TriageIdentity(server: identity.server, deviceID: "other", credentialRevision: "two", generation: 2)
+        await store.send(.triage(.triage(.identityChanged(next)))).finish()
+        await operation.finish()
+        #expect(store.pullRequests.isEmpty && store.pullRequestID == nil)
+        #expect(terminations.value == 1)
+        started.continuation.finish()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func missingAttachedQuestionAndPRRemainOwnedUntilFinalReconciliation() async throws {
+        let question = try JSONDecoder().decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
+        var state = try initial()
+        guard case .pullRequest(let pr) = state.triage.triage.items[0] else { Issue.record("Fixture PR missing"); return }
+        state.pullRequest = ServicePullRequestFeature.State(pr: pr, questions: [question])
+        state.pullRequestIdentity = state.triage.triage.identity
+        let started = AsyncStream<Void>.makeStream()
+        let result = AsyncStream<QuestionWorkOutcome>.makeStream()
+        let calls = LockIsolated(0)
+        let commandID = UUID()
+        let store = Store(initialState: state) { ServiceRootFeature() } withDependencies: {
+            $0.continuousClock = ImmediateClock()
+            $0.questionWorkService = .init(submit: { _ in
+                calls.withValue { $0 += 1 }
+                started.continuation.yield(())
+                var iterator = result.stream.makeAsyncIterator()
+                return await iterator.next() ?? .obsolete
+            }, document: { _ in "" })
+        }
+        await store.send(.pullRequests(.element(id: 5, action: .attachedQuestion(.element(id: 1, action: .question(.textChanged("Answer"))))))).finish()
+        let operation = store.send(.pullRequests(.element(id: 5, action: .attachedQuestion(.element(id: 1, action: .question(.attachedAnswerTapped))))))
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        await store.send(.pullRequests(.element(id: 5, action: .contextUpdated(reports: [], questions: [])))).finish()
+        #expect(store.pullRequests[id: 5]?.visibleQuestionIDs.isEmpty == true)
+        #expect(store.pullRequests[id: 5]?.questionFeatures[id: 1]?.question.isSubmitting == true)
+        result.continuation.yield(.uncertainCommand(commandID))
+        result.continuation.finish()
+        await operation.finish()
+        let overview = try JSONDecoder().decode(Overview.self, from: Data(#"{"tick":2,"nodes":[],"openQuestions":[],"news":[],"orchestratorMessages":[],"machine":{"memoryTotal":1,"memoryAvailable":1,"load":[0],"diskAvailable":1,"unreliable":false}}"#.utf8))
+        let identity = try #require(state.triage.triage.identity)
+        let snapshot = ServiceRootFeature.Action.triage(.triage(.inboxUpdated(.init(identity: identity, overview: overview, connection: .online))))
+        await store.send(snapshot).finish()
+        #expect(store.pullRequests[id: 5]?.questionFeatures[id: 1]?.question.uncertainCommandID == commandID)
+        let scope = CommandScope(server: identity.server, deviceID: identity.deviceID, credentialRevision: identity.credentialRevision, generation: identity.generation)
+        await store.send(.commandResolved(.init(command: .init(id: commandID, scope: scope, kind: .answer(1), itemID: nil), status: 200))).finish()
+        #expect(store.pullRequests[id: 5]?.questionFeatures.isEmpty == true)
+        await store.send(snapshot).finish()
+        #expect(store.pullRequests.isEmpty && store.pullRequestID == nil && calls.value == 1)
+        started.continuation.finish()
+    }
+
 }

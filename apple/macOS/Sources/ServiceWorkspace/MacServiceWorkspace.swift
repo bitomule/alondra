@@ -173,7 +173,8 @@ private struct MacServiceDetail: View {
     var body: some View {
         switch presentation.selection {
         case .item(let id):
-            if let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { "p\($0.id)" == id }) {
+            if let selected = store.pullRequestID, id == "p\(selected)",
+               let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == selected }) {
                 ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
                 ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
