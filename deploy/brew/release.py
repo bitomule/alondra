@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from urllib.parse import urlencode
 
 REPO = 'bitomule/homebrew-tap'
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -88,10 +89,12 @@ def gh(*args, payload=None):
     return result.stdout
 
 
-def api(endpoint, payload=None):
-    args = ['api', endpoint]
+def api(endpoint, payload=None, method=None):
+    args = ['api', '--hostname', 'github.com', endpoint]
     if payload is not None:
-        args += ['--method', 'PUT', '--input', '-']
+        args += ['--method', method or 'PUT', '--input', '-']
+    elif method:
+        args += ['--method', method]
     return json.loads(gh(*args, payload=payload))
 
 
@@ -101,35 +104,90 @@ def optional_api(endpoint):
     except RuntimeError as error:
         if '(HTTP 404)' not in str(error):
             raise
+        # A masked auth/repository failure must not look like a missing formula.
+        api(f'repos/{REPO}')
         return None
 
 
+def identifier(value):
+    if type(value) is not int or value <= 0:
+        raise RuntimeError('REST response has no valid numeric ID')
+    return value
+
+
+def pages(endpoint):
+    page = 1
+    while True:
+        items = api(f'{endpoint}?per_page=100&page={page}')
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise RuntimeError('Invalid REST list response')
+        yield from items
+        if len(items) < 100:
+            return
+        page += 1
+
+
+def release_assets(release_id):
+    assets = {}
+    for asset in pages(f'repos/{REPO}/releases/{identifier(release_id)}/assets'):
+        identifier(asset.get('id'))
+        name = asset.get('name')
+        if not isinstance(name, str) or name in assets:
+            raise RuntimeError('Invalid or duplicate release asset name')
+        assets[name] = asset
+    return assets
+
+
 def lookup_release(tag):
-    # Query GraphQL directly: gh release view combines REST and GraphQL lookups
-    # and can mask a GraphQL failure behind the REST 404 of an unpublished draft.
-    owner, name = REPO.split('/')
-    result = json.loads(gh('api', 'graphql', '--method', 'POST', '--input', '-', payload={
-        'query': 'query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}',
-        'variables': {'owner': owner, 'name': name, 'tag': tag},
-    }))
-    if result.get('errors'):
-        raise RuntimeError('GraphQL release lookup failed: ' + json.dumps(result['errors']))
-    repository = (result.get('data') or {}).get('repository')
-    if repository is None or 'release' not in repository:
-        raise RuntimeError('Release repository inaccessible or incomplete GraphQL response')
-    release = repository['release']
-    if release is None:
-        return None  # Only an error-free, explicit null proves absence.
-    release_id = release.get('databaseId')
-    if type(release_id) is not int or release_id <= 0:
-        raise RuntimeError('GraphQL release has no valid database ID')
-    return api(f'repos/{REPO}/releases/{release_id}')
+    # The authenticated list includes drafts. Never infer absence from a tag
+    # endpoint's 404, which may instead hide a draft or missing permissions.
+    api(f'repos/{REPO}')
+    matches = []
+    for item in pages(f'repos/{REPO}/releases'):
+        identifier(item.get('id'))
+        if not isinstance(item.get('tag_name'), str):
+            raise RuntimeError('Invalid REST release listing')
+        if item['tag_name'] == tag:
+            matches.append(item)
+    if len(matches) > 1:
+        raise RuntimeError('Multiple releases use the requested tag')
+    if not matches:
+        return None
+    release = api(f'repos/{REPO}/releases/{identifier(matches[0].get("id"))}')
+    if release.get('tag_name') != tag or type(release.get('draft')) is not bool:
+        raise RuntimeError('Invalid REST release response')
+    identifier(release.get('id'))
+    return release
+
+
+def upload_asset(release_id, path):
+    # Full URL avoids gh treating uploads.github.com as an Enterprise /api/v3
+    # endpoint. gh normalizes *.github.com for authentication; no token in argv.
+    endpoint = f'https://uploads.github.com/repos/{REPO}/releases/{identifier(release_id)}/assets?{urlencode({"name": path.name})}'
+    asset = json.loads(gh('api', '--hostname', 'uploads.github.com', endpoint,
+        '--method', 'POST', '--header', 'Content-Type: application/octet-stream',
+        '--input', str(path)))
+    identifier(asset.get('id'))
+    if asset.get('name') != path.name or asset.get('state') != 'uploaded':
+        raise RuntimeError('Upload did not return the expected complete asset')
+    return asset
+
+
+def download_asset(asset_id, destination):
+    with destination.open('wb') as output:
+        result = subprocess.run(['gh', 'api', '--hostname', 'github.com',
+            f'repos/{REPO}/releases/assets/{identifier(asset_id)}',
+            '--header', 'Accept: application/octet-stream', '--allow-escape-sequences'],
+            stdout=output, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise RuntimeError(result.stderr.decode(errors='replace').strip())
 
 
 def publish(ver, directory):
     formula = render(ver, directory)  # fail closed before any external mutation
     tag = f'alondra-v{ver}'
     formula_endpoint = f'repos/{REPO}/contents/Formula/alondra.rb'
+    release = lookup_release(tag)  # successful authenticated listing proves absence
     current = optional_api(formula_endpoint)
     if current:
         old = base64.b64decode(current['content']).decode()
@@ -140,12 +198,16 @@ def publish(ver, directory):
             raise ValueError('Refusing to downgrade the public formula')
         if match[1] == ver and old != formula:
             raise ValueError('Same version already has different formula; issue a new version')
-    release = lookup_release(tag)
     if release is None:
-        gh('release', 'create', tag, '--repo', REPO, '--draft', '--title', f'Alondra {ver}',
-           '--notes', 'Signed macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra')
-        release = lookup_release(tag)
-    names = {asset['name'] for asset in release['assets']}
+        release = api(f'repos/{REPO}/releases', {
+            'tag_name': tag, 'draft': True, 'name': f'Alondra {ver}',
+            'body': 'Signed macOS CLI, TUI, daemon and Claude integration. Install: brew install bitomule/tap/alondra',
+        }, method='POST')
+        if release.get('tag_name') != tag or release.get('draft') is not True:
+            raise RuntimeError('Release creation did not return the expected draft')
+    release_id = identifier(release.get('id'))
+    assets = release_assets(release_id)
+    names = set(assets)
     archives = [directory / f'alondra-{ver}-{target}.tar.gz' for target in TARGETS]
     expected = {p.name for p in archives}
     if names - expected:
@@ -154,17 +216,24 @@ def publish(ver, directory):
         raise ValueError('Published release is incomplete; do not mutate it')
     with tempfile.TemporaryDirectory() as temp:
         for path in archives:
-            if path.name in names:
-                gh('release', 'download', tag, '--repo', REPO, '--pattern', path.name, '--dir', temp)
-                if sha(pathlib.Path(temp) / path.name) != sha(path):
-                    raise ValueError(f'Immutable asset differs: {path.name}. Reuse original workflow artifacts.')
-            else:
-                gh('release', 'upload', tag, str(path), '--repo', REPO)  # never --clobber
-                gh('release', 'download', tag, '--repo', REPO, '--pattern', path.name, '--dir', temp)
-                if sha(pathlib.Path(temp) / path.name) != sha(path):
-                    raise ValueError('Uploaded asset checksum mismatch')
+            existing = path.name in assets
+            asset = assets[path.name] if existing else upload_asset(release_id, path)
+            if asset.get('state') != 'uploaded':
+                raise ValueError('Existing release asset is incomplete; inspect manually')
+            downloaded = pathlib.Path(temp) / path.name
+            download_asset(asset['id'], downloaded)
+            if sha(downloaded) != sha(path):
+                raise ValueError(f'Immutable asset differs: {path.name}. Reuse the original signed archives.')
+            assets[path.name] = asset
+    # Catch unexpected concurrent uploads before making the release public.
+    latest = release_assets(release_id)
+    if set(latest) != expected or any(latest[name]['id'] != assets[name]['id'] for name in expected):
+        raise ValueError('Release assets changed during verification')
     if release['draft']:
-        gh('release', 'edit', tag, '--repo', REPO, '--draft=false', '--latest=false')
+        published = api(f'repos/{REPO}/releases/{release_id}',
+            {'draft': False, 'make_latest': 'false'}, method='PATCH')
+        if published.get('draft') is not False:
+            raise RuntimeError('Release remains a draft; formula was not updated')
     if current and old == formula:
         return
     # GitHub Contents API compares the original blob SHA, preventing lost updates.
