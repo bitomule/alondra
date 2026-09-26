@@ -64,6 +64,23 @@ independent store instances; they do not use personal Keychain data.
 The legacy model does not record an OIDC issuer. Filtering by subject and relay is
 not a claim of multi-issuer isolation. `CloudPairingOwner` retains its configured
 provider, verified-subject comparison and relay allowlist before activating keys.
-Do not expose Mac selection until push bindings, NSE contexts, account scoping and
-notification routing are stored and selected per binding. No UI or notification
-storage changes ship in this foundation block.
+`select(_:)` persists only a previously approved identity and keeps other entries.
+`ServicePairingClient` exposes collection and selection operations; logout discards
+all pending approvals before removing credentials, so late approval responses cannot
+reinsert a removed pairing.
+
+`ApprovedSessionRegistry` owns sessions for one verified subject. Restoration filters
+the collection by that subject, and CloudPairingOwner validates the relay allowlist
+before constructing services. Selection retains both sessions and journal scopes.
+Account replacement/logout stops all sessions and clears platform capabilities,
+including in-flight preparations. Platform preparation returns a synchronous commit;
+the registry checks generation/cancellation and publishes the selected session and
+platform clients together without another suspension. Tests force logout during
+preparation and verify that the old account never commits after the new account.
+
+CloudPairingOwner continues to expose one selected service to the existing scene UI;
+no selector design is introduced here. Selection controls belong in Settings in a
+following increment. Notifications for inactive bindings are decryptable but their
+actions remain rejected until explicit verified route activation is implemented.
+The lifecycle tests use isolated session probes, not real network executors; the
+full two-Mac protocol and app verification remains a separate integration gate.

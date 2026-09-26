@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 import AlondraAPIClient
 @testable import AlondraServicePairing
@@ -19,12 +20,13 @@ private func invitation(expiry: UInt64 = fixedNow + 600_000) throws -> String {
     return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
 }
 
-private final class MemoryStore: ApprovedPairingStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: ApprovedServicePairing?
-    func load() throws -> ApprovedServicePairing? { lock.withLock { value } }
-    func save(_ pairing: ApprovedServicePairing) throws { lock.withLock { value = pairing } }
-    func delete() throws { lock.withLock { value = nil } }
+private final class MemoryStore: ApprovedPairingStore {
+    private let value = Mutex(ApprovedPairingCollection())
+    func loadCollection() throws -> ApprovedPairingCollection { value.withLock { $0 } }
+    func load() throws -> ApprovedServicePairing? { value.withLock { $0.selected } }
+    func save(_ pairing: ApprovedServicePairing) throws { try value.withLock { try $0.upsert(pairing) } }
+    func select(_ id: ApprovedPairingID) throws { try value.withLock { try $0.select(id) } }
+    func delete() throws { value.withLock { $0 = ApprovedPairingCollection() } }
 }
 
 private actor FakeRelay: ServiceHTTPTransport {

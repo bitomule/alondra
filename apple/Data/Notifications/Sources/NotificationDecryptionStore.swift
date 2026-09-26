@@ -83,6 +83,23 @@ public struct NotificationDecryptionStore: Sendable {
         }
     }
 
+    /// Publish exactly the currently authenticated account's approved contexts in one
+    /// Keychain update. Validate collisions against existing bytes before pruning.
+    public func replaceAuthorizedContexts(_ contexts: [NotificationDecryptionContext]) throws {
+        try Self.transaction.withLock { _ in
+            var existing = try read()
+            var replacement = NotificationDecryptionCollection()
+            for context in contexts {
+                try existing.upsert(context)
+                try replacement.upsert(context)
+            }
+            guard Set(contexts.map(\.binding)).count == contexts.count else {
+                throw NotificationDecryptionError.invalidCollection
+            }
+            try item.write(JSONEncoder().encode(replacement))
+        }
+    }
+
     public func remove(binding: NotificationPayload.Binding) throws {
         try Self.transaction.withLock { _ in
             var collection = try read()
