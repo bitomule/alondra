@@ -87,7 +87,7 @@ struct ServiceNodeView: View {
             .toolbar {
                 ToolbarItem {
                     Button(role: .destructive) { store.send(.closeRequested) } label: { Label("Close Node…", systemImage: "xmark.bin") }
-                        .disabled(store.isStale || store.isClosing || store.isSending || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
+                        .disabled(store.isStale || store.isClosing || store.isSendInFlight || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
                         .help("Close this node")
                 }
             }
@@ -130,7 +130,7 @@ private struct ServiceNodeComposer: View {
             focus: $focused, sendTitle: String(localized: "Send"), canSend: store.canSend,
             submit: { store.send(.sendTapped) },
             attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-            .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
+            .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
     }
 }
 

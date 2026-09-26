@@ -92,14 +92,15 @@ struct ServiceNewRequestView: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button { store.send(.submitTapped) } label: {
-                    if store.isSubmitting { ProgressView().controlSize(.small) } else { Text("Send") }
+                    if store.isSubmissionInFlight { ProgressView().controlSize(.small) } else { Text("Send") }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
                     .help(Text(verbatim: "\(String(localized: "Send")) (⌘↩)")).disabled(!store.submitEnabled)
             }
         }.padding(22)
-            .disabled(store.isSubmitting || store.submissionUncertain)
+            .disabled(store.isSubmissionInFlight || store.submissionUncertain)
             .onAppear { focused = true }
             .task { await store.send(.appeared).finish() }
+            .onDisappear { store.send(.disappeared) }
             .onChange(of: store.successfulSubmissionCount) { _, _ in dismiss() }
     }
 }

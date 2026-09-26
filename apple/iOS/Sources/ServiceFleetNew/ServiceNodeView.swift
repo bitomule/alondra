@@ -210,7 +210,7 @@ struct ServiceNodeView: View {
     private func composer(_ node: Node) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ServiceAttachmentStrip(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
+                .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
             ServiceNodeOutcome(outcome: store.sendOutcome)
             if case .unknown = store.closeOutcome {
                 ServiceNodeOutcome(outcome: store.closeOutcome)
@@ -225,7 +225,7 @@ struct ServiceNodeView: View {
         HStack(alignment: .bottom, spacing: 10) {
             HStack(alignment: .bottom, spacing: 4) {
                 ServiceAttachButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                    .disabled(store.isSending || store.sendOutcome?.uncertainID != nil)
+                    .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
                     .padding(.leading, 6)
                     .padding(.bottom, 4)
                 TextField("Write to \(node.displayName)…", text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }), axis: .vertical)
@@ -238,10 +238,10 @@ struct ServiceNodeView: View {
             Button {
                 store.send(.sendTapped)
             } label: {
-                Image(systemName: store.isSending ? "ellipsis" : "arrow.up")
+                Image(systemName: store.isSendInFlight ? "ellipsis" : "arrow.up")
                     .font(.body.weight(.bold))
                     .frame(width: 26, height: 26)
-                    .symbolEffect(.variableColor.iterative, isActive: store.isSending)
+                    .symbolEffect(.variableColor.iterative, isActive: store.isSendInFlight)
             }
             .buttonStyle(.glassProminent)
             .buttonBorderShape(.circle)

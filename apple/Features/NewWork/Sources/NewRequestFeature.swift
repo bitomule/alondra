@@ -24,6 +24,7 @@ public struct NewRequestFeature {
         public var isLoadingIssues = false
         public var isLoadingOptions = false
         public var catalogIsCurrent = false
+        public var pendingSubmission: AttachmentSubmissionIntent?
         public var isSubmitting = false
         public var canSubmit = false
         public var optionsError: String?
@@ -39,8 +40,9 @@ public struct NewRequestFeature {
 
         public var visibleIssues: [IssueSummary] { issues.filter { $0.matches(issueQuery) } }
         public var pastedIssue: String? { IssueSummary.pasted(in: issueQuery, besides: issues) }
+        public var isSubmissionInFlight: Bool { pendingSubmission != nil || isSubmitting }
         public var submitEnabled: Bool {
-            attachmentPicker.allReady && canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
+            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
                 && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
         }
     }
@@ -48,6 +50,7 @@ public struct NewRequestFeature {
     public enum Action: Sendable {
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
+        case disappeared
         case optionsPresented(Bool)
         case projectPickerOpened
         case projectQueryChanged(String)
@@ -84,8 +87,20 @@ public struct NewRequestFeature {
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
-            case .attachmentPicker:
+            case .attachmentPicker(let event):
                 state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                if state.pendingSubmission != nil, case .uploaded(_, .failure) = event,
+                   let failure = state.attachmentPicker.failedUploadMessage {
+                    state.pendingSubmission = nil
+                    state.submissionError = failure
+                }
+                if event.invalidatesPendingSubmission { state.pendingSubmission = nil }
+                guard state.pendingSubmission != nil, state.attachmentPicker.allReady else { return .none }
+                state.pendingSubmission = nil
+                guard state.submitEnabled else { return .none }
+                return submit(&state)
+            case .disappeared:
+                state.pendingSubmission = nil
                 return .none
             case .optionsPresented(let shown): state.optionsPresented = shown; return .none
             case .projectPickerOpened: state.projectQuery = ""; return .none
@@ -95,8 +110,10 @@ public struct NewRequestFeature {
                 state.orchestratorName = overview?.nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince }?.displayName
                 state.sentMessages = (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
                 state.canSubmit = state.orchestratorName != nil
+                if !state.canSubmit { state.pendingSubmission = nil }
                 return .none
             case .appeared:
+                state.pendingSubmission = nil
                 let epoch = state.presentationEpoch
                 state.catalogGeneration &+= 1
                 state.isLoadingOptions = true
@@ -118,23 +135,28 @@ public struct NewRequestFeature {
                 )
             case .availabilityChanged(let available):
                 state.canSubmit = available
+                if !available { state.pendingSubmission = nil }
                 return .none
             case .textChanged(let text):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
+                state.pendingSubmission = nil
                 state.text = text
                 return .none
             case .attachmentAdded(let attachment):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
                 guard !state.attachments.contains(where: { $0.id == attachment.id }) else { return .none }
+                state.pendingSubmission = nil
                 state.attachments.append(attachment)
                 return .none
             case .attachmentRemoved(let id):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
+                state.pendingSubmission = nil
                 state.attachments.removeAll { $0.id == id }
                 return .none
             case .projectSelected(let project):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
                 guard state.selection.project != project else { return .none }
+                state.pendingSubmission = nil
                 state.selection.project = project
                 state.catalogGeneration &+= 1
                 state.isLoadingOptions = true
@@ -144,10 +166,12 @@ public struct NewRequestFeature {
             case .optionSelected(let id, let choice):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
                 guard let spec = state.selection.specs.first(where: { $0.id == id }) else { return .none }
+                state.pendingSubmission = nil
                 state.selection.set(spec, to: choice)
                 return .none
             case .issueSelected(let issue):
                 guard !state.isSubmitting, !state.submissionUncertain else { return .none }
+                state.pendingSubmission = nil
                 let previousProject = state.selection.project
                 state.selection.select(issue: issue, inferredProject: IssueSummary.project(of: issue, among: state.projects))
                 guard state.selection.project != previousProject else { return .none }
@@ -172,6 +196,7 @@ public struct NewRequestFeature {
                 if let issue = state.selection.issue,
                    let inferred = IssueSummary.project(of: issue, among: projects),
                    inferred != state.selection.project {
+                    state.pendingSubmission = nil
                     state.selection.select(issue: issue, inferredProject: inferred)
                     state.catalogGeneration &+= 1
                     state.isLoadingOptions = true
@@ -185,6 +210,7 @@ public struct NewRequestFeature {
                 return .none
             case .optionsLoaded(let catalog, let epoch, let generation):
                 guard epoch == state.presentationEpoch, generation == state.catalogGeneration else { return .none }
+                state.pendingSubmission = nil
                 state.selection.apply(catalog)
                 state.isLoadingOptions = false
                 state.catalogIsCurrent = catalog.project == state.selection.project && catalog.error == nil
@@ -210,15 +236,12 @@ public struct NewRequestFeature {
                 return .none
             case .submitTapped:
                 guard state.submitEnabled else { return .none }
-                state.isSubmitting = true
-                state.submissionError = nil
-                let body = state.selection.body(text: state.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                let attachments = state.attachments
-                let epoch = state.presentationEpoch
-                let useCase = CreateRequestUseCase(operations: operations)
-                return .run { send in
-                    await send(.submitFinished(await useCase.run(body, attachments), epoch))
-                }.cancellable(id: CancelID.submit)
+                if !state.attachmentPicker.allReady {
+                    state.pendingSubmission = .awaitingReceipts
+                    state.submissionError = nil
+                    return .send(.attachmentPicker(.prepareForSubmission))
+                }
+                return submit(&state)
             case .submitFinished(let result, let epoch):
                 guard epoch == state.presentationEpoch else { return .none }
                 state.isSubmitting = false
@@ -268,6 +291,18 @@ public struct NewRequestFeature {
                 AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
+    }
+
+    private func submit(_ state: inout State) -> Effect<Action> {
+        state.isSubmitting = true
+        state.submissionError = nil
+        let body = state.selection.body(text: state.text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let attachments = state.attachments
+        let epoch = state.presentationEpoch
+        let useCase = CreateRequestUseCase(operations: operations)
+        return .run { send in
+            await send(.submitFinished(await useCase.run(body, attachments), epoch))
+        }.cancellable(id: CancelID.submit)
     }
 
     private func loadOptions(project: String?, epoch: UInt64, generation: UInt64) -> Effect<Action> {

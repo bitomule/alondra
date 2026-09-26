@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraFleetFeature
 import AlondraShared
 import ComposableArchitecture
@@ -107,6 +108,57 @@ struct FleetFeatureTests {
         await store.send(.dismissCloseRefusal) { $0.closeRefusal = nil }
         #expect(store.state.snapshot?.node("s1") != nil)
         await store.finish()
+    }
+
+    @Test(arguments: [false, true])
+    func attachmentReceiptSendsOnceUnlessCloseCancelledTheIntent(closeBeforeReceipt: Bool) async throws {
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let draft = AttachmentDraft(id: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!, name: "proof.txt", data: Data("proof".utf8))
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = snapshot.node("s1")
+        initial.message = "Use the proof"
+        initial.files = [.init(id: draft.id, name: draft.name, data: draft.data)]
+        initial.attachmentPicker.entries = [.init(draft: draft, status: .failed("Offline"))]
+        let receipt = AsyncStream<String>.makeStream()
+        let messages = SentNodeMessages()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.attachmentUpload = AttachmentUploadClient(upload: { retry in
+                #expect(retry == draft)
+                for await value in receipt.stream { return value }
+                throw CancellationError()
+            })
+            $0.nodeOperations = operations(send: { _, message in
+                await messages.record(message)
+                return .confirmed
+            })
+        }
+        // Cross-feature integration; final outgoing content and duplicate prevention
+        // are asserted independently of child effect ordering.
+        store.exhaustivity = .off(showSkippedAssertions: true)
+        await store.send(.sendTapped)
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.send(.sendTapped)
+        #expect(await messages.values.isEmpty)
+        if closeBeforeReceipt { await store.send(.closeRequested) }
+        receipt.continuation.yield("stored-proof")
+        receipt.continuation.finish()
+        await store.receive(\.attachmentPicker.uploaded)
+        if !closeBeforeReceipt { await store.receive(\.sendFinished) }
+        await store.finish()
+        #expect(store.state.pendingSubmission == nil)
+        #expect(!store.state.isSending)
+        let outgoing = await messages.values
+        if closeBeforeReceipt {
+            #expect(outgoing.isEmpty)
+            #expect(store.state.message == "Use the proof")
+            #expect(store.state.showCloseConfirmation)
+        } else {
+            #expect(outgoing.count == 1)
+            #expect(outgoing.first?.text == "Use the proof")
+            #expect(outgoing.first?.files.map(\.storedID) == ["stored-proof"])
+            #expect(store.state.sentCount == 1)
+            #expect(store.state.message.isEmpty)
+        }
     }
 
     @Test func staleDetailRejectsSendAndConfirmedSendKeepsNewDraft() async throws {
@@ -294,4 +346,9 @@ private actor ThreadReadCounts {
     private(set) var cancellations = 0
     func started() -> Int { reads += 1; return reads }
     func cancelled() { cancellations += 1 }
+}
+
+private actor SentNodeMessages {
+    private(set) var values: [NodeMessage] = []
+    func record(_ value: NodeMessage) { values.append(value) }
 }

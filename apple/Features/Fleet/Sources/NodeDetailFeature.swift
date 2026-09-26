@@ -20,6 +20,7 @@ public struct NodeDetailFeature {
         public var isLoadingThreads = false
         public var message = ""
         public var files: [NodeFile] = []
+        public var pendingSubmission: AttachmentSubmissionIntent?
         public var isSending = false
         public var sendOutcome: NodeMutationOutcome?
         public var uncertainMessage: NodeMessage?
@@ -35,8 +36,9 @@ public struct NodeDetailFeature {
         public init(sessionID: String) { self.sessionID = sessionID }
         public var node: Node? { entry?.node }
         public var tasks: [WorkTask] { entry?.tasks ?? [] }
+        public var isSendInFlight: Bool { pendingSubmission != nil || isSending }
         public var canSend: Bool {
-            attachmentPicker.allReady && !isStale && node != nil && !isSending && !isClosing
+            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && !isStale && node != nil && !isSending && !isClosing
                 && sendOutcome?.uncertainID == nil && closeOutcome?.uncertainID == nil
                 && closeOutcome != .confirmed
                 && SendNodeMessageUseCase().prepare(text: message, files: files) != nil
@@ -76,15 +78,24 @@ public struct NodeDetailFeature {
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
-            case .attachmentPicker:
+            case .attachmentPicker(let event):
                 state.files = state.attachmentPicker.entries.map { NodeFile(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
-                return .none
+                if state.pendingSubmission != nil, case .uploaded(_, .failure) = event,
+                   let failure = state.attachmentPicker.failedUploadMessage {
+                    state.pendingSubmission = nil
+                    state.sendOutcome = .rejected(failure)
+                }
+                if event.invalidatesPendingSubmission { state.pendingSubmission = nil }
+                guard state.pendingSubmission != nil, state.attachmentPicker.allReady else { return .none }
+                state.pendingSubmission = nil
+                return sendMessage(&state)
             case .appeared:
                 guard !state.isVisible else { return .none }
                 state.isVisible = true
                 guard state.node != nil else { return .none }
                 return pollThreads(state)
             case .disappeared:
+                state.pendingSubmission = nil
                 state.isVisible = false
                 state.isLoadingThreads = false
                 return .cancel(id: state.pollingID)
@@ -97,6 +108,7 @@ public struct NodeDetailFeature {
                 state.isStale = false
                 state.entry = snapshot.node(state.sessionID)
                 if state.entry == nil {
+                    state.pendingSubmission = nil
                     state.threads = []
                     state.isLoadingThreads = false
                     state.showCloseConfirmation = false
@@ -108,9 +120,11 @@ public struct NodeDetailFeature {
                 }
                 return .none
             case .snapshotUnavailable:
+                state.pendingSubmission = nil
                 state.isStale = true
                 return .none
             case .identityChanged:
+                state.pendingSubmission = nil
                 state.attachmentPicker = AttachmentFeature.State()
                 state.presentationEpoch &+= 1
                 state.entry = nil
@@ -157,20 +171,21 @@ public struct NodeDetailFeature {
                 if state.threads.isEmpty { state.threads = threadsUseCase.execute(asked: nil, node: node) }
                 return .none
             case .messageChanged(let message):
+                state.pendingSubmission = nil
                 state.message = message
                 return .none
             case .filesChanged(let files):
+                state.pendingSubmission = nil
                 state.files = files
                 return .none
             case .sendTapped:
-                guard state.canSend, let outgoing = sendUseCase.prepare(text: state.message, files: state.files) else { return .none }
-                state.isSending = true
-                state.sendOutcome = nil
-                let session = state.sessionID
-                let epoch = state.presentationEpoch
-                return .run { send in
-                    await send(.sendFinished(outgoing, await operations.send(session, outgoing), epoch))
-                }.cancellable(id: state.mutationID)
+                guard state.canSend else { return .none }
+                if !state.attachmentPicker.allReady {
+                    state.pendingSubmission = .awaitingReceipts
+                    state.sendOutcome = nil
+                    return .send(.attachmentPicker(.prepareForSubmission))
+                }
+                return sendMessage(&state)
             case .sendFinished(let outgoing, let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
@@ -182,6 +197,7 @@ public struct NodeDetailFeature {
                        state.files == outgoing.files {
                         state.message = ""
                         state.files = []
+                        state.pendingSubmission = nil
                         state.attachmentPicker = AttachmentFeature.State()
                     }
                     state.sentCount += 1
@@ -192,6 +208,7 @@ public struct NodeDetailFeature {
                       state.closeOutcome?.uncertainID == nil,
                       state.sendOutcome?.uncertainID == nil,
                       state.closeOutcome != .confirmed else { return .none }
+                state.pendingSubmission = nil
                 state.showCloseConfirmation = true
                 return .none
             case .closeCancelled:
@@ -202,6 +219,7 @@ public struct NodeDetailFeature {
                       !state.isSending, !state.isClosing, state.closeOutcome?.uncertainID == nil,
                       state.sendOutcome?.uncertainID == nil,
                       state.closeOutcome != .confirmed else { return .none }
+                state.pendingSubmission = nil
                 state.showCloseConfirmation = false
                 state.isClosing = true
                 state.closeOutcome = nil
@@ -237,6 +255,17 @@ public struct NodeDetailFeature {
                 AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
+    }
+
+    private func sendMessage(_ state: inout State) -> Effect<Action> {
+        guard state.canSend, let outgoing = sendUseCase.prepare(text: state.message, files: state.files) else { return .none }
+        state.isSending = true
+        state.sendOutcome = nil
+        let session = state.sessionID
+        let epoch = state.presentationEpoch
+        return .run { send in
+            await send(.sendFinished(outgoing, await operations.send(session, outgoing), epoch))
+        }.cancellable(id: state.mutationID)
     }
 
     private func pollThreads(_ state: State) -> Effect<Action> {
