@@ -94,6 +94,7 @@ swift_library(
     module_name = "AlondraiOS",
     deps = [
         ":AlondraShared",
+        "//apple/Features/PullRequests:AlondraPullRequestsFeature",
         "//apple/Features/Questions:AlondraQuestionsFeature",
         "//apple/Features/Tasks:AlondraTasksFeature",
         "//apple/Auth:AlondraAuth",
