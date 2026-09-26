@@ -44,8 +44,8 @@ private actor ControlledTransport: SyncTransport {
     func respond(_ index: Int, body: String) {
         pending.removeValue(forKey: index)?.resume(returning: Data(body.utf8))
     }
-    func fail(_ index: Int) {
-        pending.removeValue(forKey: index)?.resume(throwing: URLError(.networkConnectionLost))
+    func fail(_ index: Int, error: any Error = URLError(.networkConnectionLost)) {
+        pending.removeValue(forKey: index)?.resume(throwing: error)
     }
     func waitForCancellations(_ count: Int) async {
         if cancelled >= count { return }
@@ -256,6 +256,40 @@ final class SyncSessionIntegrationTests: XCTestCase {
         await transport.waitForRequests(3)
         let poll = await transport.request(2)
         XCTAssertEqual(poll, .changes(after: 1, seconds: 10))
+        await session.stop()
+    }
+
+    func testLateUnauthorizedFromRetiredIdentityCannotUnpairCurrentSession() async throws {
+        let transport = ControlledTransport(lateResponses: [0])
+        let old = identity("key-1")
+        let new = identity("key-2", server: URL(string: "https://new.example")!)
+        let session = SyncSession(transport: transport, identity: old, isUnauthorized: { _ in
+            XCTFail("The cancelled old read reached error presentation after identity replacement")
+            return true
+        })
+        var observer = await session.subscribe().makeAsyncIterator()
+        await transport.waitForRequests(1)
+        await session.use(transport: transport, identity: new, isUnauthorized: {
+            ($0 as? URLError)?.code == .userAuthenticationRequired
+        })
+        await transport.waitForRequests(2)
+        await transport.waitForCancellations(1)
+        // The transport deliberately completes despite cancellation, as a late HTTP 401 can.
+        await transport.fail(0, error: URLError(.userAuthenticationRequired))
+        await transport.respond(1, body: try overview(2))
+        let current = await nextSnapshot(from: &observer)
+        XCTAssertEqual(current?.identity, new)
+        XCTAssertEqual(current?.snapshot?.tick, 2)
+        XCTAssertEqual(current?.connection, .online)
+        await transport.waitForRequests(3)
+
+        // Positive control: an unauthorized response belonging to the current identity MUST
+        // unpair it. Ignoring every authentication error would not satisfy this regression.
+        await transport.fail(2, error: URLError(.userAuthenticationRequired))
+        let unauthorized = await observer.next()
+        XCTAssertEqual(unauthorized?.identity, new)
+        XCTAssertEqual(unauthorized?.connection, .unpaired)
+        XCTAssertEqual(unauthorized?.snapshot?.tick, 2)
         await session.stop()
     }
 

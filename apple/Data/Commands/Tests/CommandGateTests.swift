@@ -58,6 +58,30 @@ import AlondraCommands
         #expect(await gate.uncertain.isEmpty)
     }
 
+    @Test func newCredentialCannotReserveUnderOldScopeBeforeActivation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = FileCommandJournal(directory: directory)
+        let gate = CommandGate(scope: a, journal: journal)
+        let rotated = CommandScope(server: a.server, deviceID: a.deviceID,
+            credentialRevision: "key-2", generation: a.generation + 1)
+        let premature = await gate.submitIdentified(.answer(7), itemID: "q7", in: rotated,
+            isUnknown: { _ in true }) { _ in
+                Issue.record("New credential dispatched before its scope activated")
+            }
+        guard case .obsolete = premature else { Issue.record("Mismatched credential was accepted"); return }
+        #expect(try await journal.records().isEmpty, "No old-credential reservation may block the new signer")
+
+        await gate.use(rotated)
+        let ready = await gate.submitIdentified(.answer(7), itemID: "q7", in: rotated,
+            isUnknown: { _ in true }) { id in
+                let reservation = try #require(try await journal.records().first { $0.command.id == id })
+                #expect(reservation.command.scope == rotated)
+                #expect(reservation.state == .pending)
+            }
+        guard case .confirmed = ready else { Issue.record("Activated credential could not dispatch"); return }
+    }
+
     @Test func explicitServerFailureIsRejectedWithoutUnknownRecord() async {
         let gate = CommandGate(scope: a)
         let result = await gate.submit(.answer(7), in: a, isUnknown: { _ in false }) {
