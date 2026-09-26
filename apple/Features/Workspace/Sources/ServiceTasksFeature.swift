@@ -29,6 +29,7 @@ public struct ServiceTasksFeature {
         public var taskPath = StackState<TaskDetailFeature.State>()
         public var schedules = ScheduleFeature.State()
         public var presentation = ServiceTaskPresentation(overview: nil)
+        public var hiddenInboxIDs: Set<String> = []
         public var withdrawingRequestID: String?
         public var isWithdrawing = false
         public var withdrawOutcome: TaskMutationOutcome?
@@ -50,6 +51,7 @@ public struct ServiceTasksFeature {
         case withdrawFinished(String, TaskMutationOutcome)
         case withdrawalResolved(UUID, rejection: String?)
         case snapshot(Overview?)
+        case hiddenInboxChanged(Set<String>)
         case board(TaskBoardFeature.Action)
         case schedules(ScheduleFeature.Action)
         case detail(PresentationAction<TaskDetailFeature.Action>)
@@ -73,6 +75,7 @@ public struct ServiceTasksFeature {
             case .refresh: return .run { _ in await client.refresh() }
             case .withdrawRequested(let id):
                 guard !state.isWithdrawing, state.withdrawOutcome?.uncertainID == nil,
+                      !(state.withdrawOutcome == .confirmed && state.withdrawOperationRequestID == id),
                       state.taskBoard.request(id)?.canWithdraw == true else { return .none }
                 state.withdrawingRequestID = id
                 return .none
@@ -80,6 +83,7 @@ public struct ServiceTasksFeature {
             case .withdrawConfirmed:
                 guard let id = state.withdrawingRequestID, !state.isWithdrawing,
                       state.withdrawOutcome?.uncertainID == nil,
+                      !(state.withdrawOutcome == .confirmed && state.withdrawOperationRequestID == id),
                       let request = state.taskBoard.request(id), request.canWithdraw else { return .none }
                 state.withdrawingRequestID = nil
                 state.withdrawOperationRequestID = id
@@ -100,9 +104,14 @@ public struct ServiceTasksFeature {
                     for await overview in await client.observe() { await send(.snapshot(overview)) }
                 }.cancellable(id: CancelID.observation, cancelInFlight: true)
             case .disappeared: return .cancel(id: CancelID.observation)
+            case .hiddenInboxChanged(let ids):
+                guard state.hiddenInboxIDs != ids else { return .none }
+                state.hiddenInboxIDs = ids
+                state.presentation = ServiceTaskPresentation(overview: state.overview, hiddenIDs: ids)
+                return .none
             case .snapshot(let overview):
                 state.overview = overview
-                state.presentation = ServiceTaskPresentation(overview: overview)
+                state.presentation = ServiceTaskPresentation(overview: overview, hiddenIDs: state.hiddenInboxIDs)
                 state.taskBoard = TaskBoard(requests: overview?.requests ?? [], tasks: overview?.tasks ?? [])
                 state.openTrees = state.taskBoard.openTrees
                 state.doneTrees = state.taskBoard.doneTrees
