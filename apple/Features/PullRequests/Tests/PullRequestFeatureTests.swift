@@ -306,6 +306,7 @@ struct PullRequestFeatureTests {
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 1 }
         await store.receive(\.diffFailed) {
+            $0.highlightGeneration = 1
             $0.isLoading = false
             $0.loadError = "This diff is too large to review on this device"
         }
@@ -345,11 +346,12 @@ struct PullRequestFeatureTests {
             )
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 1 }
-        await store.send(.disappeared) { $0.isLoading = false; $0.loadGeneration = 2 }
+        await store.send(.disappeared) { $0.highlightGeneration = 1; $0.isLoading = false; $0.loadGeneration = 2 }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 3 }
         await store.send(.diffLoaded([], PRDiffSnapshot(diff: "stale", headSHA: String(repeating: "a", count: 40)), 1))
         #expect(store.state.isLoading && store.state.files == nil)
         await store.send(.diffLoaded([], PRDiffSnapshot(diff: "current", headSHA: String(repeating: "a", count: 40)), 3)) {
+            $0.highlightGeneration = 2
             $0.isLoading = false
             $0.files = []
             $0.loadedDiffText = "current"
@@ -380,6 +382,7 @@ struct PullRequestFeatureTests {
         state.loadGeneration = 1
         let store = TestStore(initialState: state) { DiffReviewFeature() }
         await store.send(.diffLoaded(UnifiedDiff.parse(newText), PRDiffSnapshot(diff: newText, headSHA: String(repeating: "a", count: 40)), 1)) {
+            $0.highlightGeneration = 1
             $0.isLoading = false
             $0.files = UnifiedDiff.parse(newText)
             $0.loadedDiffText = newText
@@ -522,6 +525,7 @@ struct PullRequestFeatureTests {
             $0.submittedAttachments = []
         }
         await store.receive(\.reviewDiffChanged) {
+            $0.highlightGeneration = 1
             $0.isSending = false
             $0.loadGeneration = 1
             $0.files = UnifiedDiff.parse(latest)
@@ -568,6 +572,7 @@ struct PullRequestFeatureTests {
             $0.submittedAttachments = []
         }
         await store.receive(\.reviewDiffChanged) {
+            $0.highlightGeneration = 1
             $0.isSending = false
             $0.loadGeneration = 1
             $0.files = UnifiedDiff.parse(latest)
@@ -680,6 +685,7 @@ struct PullRequestFeatureTests {
         state.loadGeneration = 7
         let store = TestStore(initialState: state) { DiffReviewFeature() }
         await store.send(.reviewDiffChanged(UnifiedDiff.parse(latest), PRDiffSnapshot(diff: latest, headSHA: String(repeating: "a", count: 40)), 0)) {
+            $0.highlightGeneration = 1
             $0.isSending = false
             $0.isLoading = false
             $0.loadGeneration = 8

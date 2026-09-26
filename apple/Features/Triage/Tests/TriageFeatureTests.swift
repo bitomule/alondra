@@ -411,6 +411,7 @@ struct TriageFeatureTests {
             $0.hasSnapshot = true
         }
         await store.send(.hide("r4")) {
+            $0.cursor = $0.items[0].place
             $0.hiddenIDs = ["r4"]
             $0.pendingIDs = ["r4"]
         }
@@ -455,6 +456,7 @@ struct TriageFeatureTests {
             $0.hasSnapshot = true
         }
         await store.send(.hide("r4")) {
+            $0.cursor = $0.items[0].place
             $0.hiddenIDs = ["r4"]
             $0.pendingIDs = ["r4"]
         }
