@@ -115,7 +115,9 @@ impl Selection {
             fs::create_dir_all(&self.root).with_context(|| format!("Cannot create projects directory {}", self.root.display()))?;
             let canonical = self.root.canonicalize()?;
             let text = with_root(self.original.as_deref().unwrap_or(""), &canonical)?;
-            fs::create_dir_all(self.file.parent().context("Options parent")?)?;
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new().recursive(true).mode(0o700)
+                .create(self.file.parent().context("Options parent")?)?;
             crate::service_client::atomic_write(&self.file, text.as_bytes())?;
             println!("Projects root: {}", canonical.display());
         } else { println!("Projects root: {} (unchanged)", self.root.display()); }
@@ -155,6 +157,9 @@ mod tests {
         let f = Fixture::new();
         f.choose(None, true, false, "").unwrap().apply(false).unwrap();
         assert!(f.0.join("Projects").is_dir());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(f.file().parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(f.file()).unwrap().permissions().mode() & 0o777, 0o600);
         let before = fs::read_to_string(f.file()).unwrap();
         let next = f.choose(None, false, false, "").unwrap();
         assert!(!next.write); next.apply(false).unwrap();
