@@ -233,3 +233,160 @@ class LocalReleaseTests(unittest.TestCase):
                 self.assertNotEqual(environment['HOME'], str(pathlib.Path.home()))
                 self.assertNotEqual(environment['CARGO_HOME'], str(pathlib.Path(environment['HOME']) / '.cargo'))
                 self.assertNotEqual(environment['RUSTUP_HOME'], str(pathlib.Path(environment['HOME']) / '.rustup'))
+
+    def ephemeral_fixture(self, *, failure=None, fail_disk_after_tests=False):
+        tools, _ = self.toolchain_fixture()
+        target = self.root / 'shared-target'
+        target.mkdir()
+        sentinel = target / 'owner-cache'
+        sentinel.write_bytes(b'preserve user cache')
+        output = self.root / 'artifacts'
+        caches, stages, archive_bytes = [], [], {}
+        def fake(*args, **kwargs):
+            if args[0] == tools['cargo']:
+                phase = args[1]
+                cache = pathlib.Path(kwargs['env']['CARGO_TARGET_DIR'])
+                self.assertNotEqual(cache, target)
+                self.assertEqual(cache.parent, target.parent)
+                self.assertTrue(cache.is_dir())
+                self.assertTrue(all(not prior.exists() for prior in caches))
+                caches.append(cache)
+                stages.append(phase)
+                (cache / 'owned-cache').write_bytes(b'cache bytes')
+                (cache / 'outside-link').symlink_to(sentinel)
+                self.assertEqual(kwargs['env']['CARGO_INCREMENTAL'], '0')
+                self.assertIn('--locked', args)
+                if phase == failure:
+                    raise subprocess.CalledProcessError(1, args)
+                if phase == 'build':
+                    arch = args[args.index('--target') + 1]
+                    directory = cache / arch / 'release'
+                    directory.mkdir(parents=True)
+                    for name in ('alondra', 'alondrad'):
+                        (directory / name).write_bytes(f'{arch}:{name}'.encode())
+            elif args[0] == 'security':
+                return f'1) {l.IDENTITY} "local identity"'
+            elif args[0] == '/usr/bin/arch':
+                return 'x86_64'
+            elif args[0] == 'bash':
+                arch = args[3]
+                path = output / f'alondra-0.1.2-{arch}.tar.gz'
+                self.assertFalse(path.exists())
+                with tarfile.open(path, 'w:gz') as archive:
+                    for name in sorted(l.release.PUBLIC_FILES):
+                        payload = pathlib.Path(args[4]).parent / name
+                        data = payload.read_bytes() if name in ('alondra', 'alondrad') else name.encode()
+                        item = tarfile.TarInfo(name)
+                        item.size = len(data)
+                        archive.addfile(item, io.BytesIO(data))
+            return ''
+        def sign(binary, identifier):
+            binary.write_bytes(binary.read_bytes() + b':signed')
+        def smoke(ver, arch, archive):
+            self.assertTrue(caches[-1].exists(), 'build cache survives through archive smoke')
+            self.assertFalse((output / 'manifest.json').exists())
+            l.release.validate_archive(archive)
+            for name, data in archive_bytes.items():
+                self.assertEqual((output / name).read_bytes(), data)
+            archive_bytes[archive.name] = archive.read_bytes()
+            with tarfile.open(archive) as package:
+                for name in ('alondra', 'alondrad'):
+                    self.assertTrue(package.extractfile(name).read().endswith(b':signed'))
+            if failure == 'smoke':
+                raise RuntimeError('smoke failed')
+        guards = []
+        def guard(path):
+            guards.append(path)
+            if fail_disk_after_tests and stages == ['test']:
+                self.assertFalse(caches[-1].exists(), 'test cache removed before release disk guard')
+                raise RuntimeError('At least 8 GiB free is required')
+        patch.object(l.platform, 'system', return_value='Darwin').start()
+        patch.object(l.platform, 'machine', return_value='arm64').start()
+        patch.object(l, 'rust_toolchain', return_value=('pinned', tools)).start()
+        patch.object(l, 'run', side_effect=fake).start()
+        patch.object(l, 'sign', side_effect=sign).start()
+        patch.object(l, 'smoke', side_effect=smoke).start()
+        patch.object(l, 'disk_guard', side_effect=guard).start()
+        return output, target, sentinel, caches, stages, archive_bytes, guards
+
+    def test_ephemeral_caches_are_freed_per_stage_and_exact_signed_archives_survive(self):
+        output, target, sentinel, caches, stages, originals, guards = self.ephemeral_fixture()
+        l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
+        self.assertEqual(stages, ['test', 'build', 'test', 'build'])
+        self.assertEqual(len(set(caches)), 4)
+        self.assertTrue(all(not cache.exists() for cache in caches))
+        self.assertEqual(sentinel.read_bytes(), b'preserve user cache')
+        self.assertEqual(list(target.iterdir()), [sentinel])
+        self.assertEqual(len(guards), 6, 'initial target/output plus every heavy stage')
+        self.assertEqual(len(originals), 2)
+        for name, original in originals.items():
+            self.assertEqual((output / name).read_bytes(), original)
+        l.verify_prepared('0.1.2', 'source', output)
+
+    def test_failed_ephemeral_test_cleans_only_its_cache(self):
+        self.check_ephemeral_failure('test')
+
+    def test_failed_ephemeral_build_cleans_only_its_cache(self):
+        self.check_ephemeral_failure('build')
+
+    def test_failed_ephemeral_smoke_keeps_original_archive_without_manifest(self):
+        self.check_ephemeral_failure('smoke')
+
+    def check_ephemeral_failure(self, phase):
+        output, target, sentinel, caches, stages, originals, _ = self.ephemeral_fixture(failure=phase)
+        with self.assertRaises((subprocess.CalledProcessError, RuntimeError)):
+            l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
+        self.assertTrue(caches)
+        self.assertTrue(all(not cache.exists() for cache in caches))
+        self.assertEqual(sentinel.read_bytes(), b'preserve user cache')
+        self.assertEqual(list(target.iterdir()), [sentinel])
+        self.assertFalse((output / 'manifest.json').exists())
+        if phase == 'smoke':
+            self.assertEqual(len(originals), 1)
+            for name, original in originals.items():
+                self.assertEqual((output / name).read_bytes(), original)
+
+    def test_ephemeral_mode_preserves_disk_gate_after_test_cleanup(self):
+        output, target, sentinel, caches, stages, _, _ = self.ephemeral_fixture(fail_disk_after_tests=True)
+        with self.assertRaisesRegex(RuntimeError, '8 GiB'):
+            l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
+        self.assertEqual(stages, ['test'])
+        self.assertTrue(all(not cache.exists() for cache in caches))
+        self.assertFalse(list(self.root.glob('alondra-release-*')))
+        self.assertTrue(sentinel.exists())
+
+    def test_retry_rejects_ephemeral_flag_before_any_files_or_checks(self):
+        from contextlib import redirect_stderr
+        untouched = self.root / 'not-created' / 'target'
+        with patch.dict(os.environ, {'CARGO_TARGET_DIR': str(untouched)}), \
+             patch.object(sys, 'argv', ['local-release.py', '0.1.2', '--retry-publish', '--ephemeral-build-cache']), \
+             patch.object(l, 'preflight') as preflight, patch.object(l, 'build_cache') as cache, \
+             redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+            l.main()
+        self.assertEqual(stopped.exception.code, 2)
+        preflight.assert_not_called()
+        cache.assert_not_called()
+        self.assertFalse(untouched.parent.exists())
+
+
+    def test_ephemeral_target_mountpoint_is_rejected_before_creating_cache(self):
+        target = self.root / 'mounted-target'
+        target.mkdir()
+        sentinel = target / 'owner-file'
+        sentinel.write_bytes(b'unchanged')
+        original_stat = pathlib.Path.stat
+        def mounted_stat(path, *args, **kwargs):
+            result = original_stat(path, *args, **kwargs)
+            if path == target:
+                fields = list(result)
+                fields[2] = result.st_dev + 1
+                return os.stat_result(fields)
+            return result
+        with patch.object(pathlib.Path, 'stat', mounted_stat), \
+             patch.object(l.tempfile, 'TemporaryDirectory') as temporary:
+            with self.assertRaisesRegex(RuntimeError, 'mount point'):
+                with l.build_cache(target, True, 'test'):
+                    self.fail('cross-volume cache must not be created')
+            temporary.assert_not_called()
+        self.assertEqual(sentinel.read_bytes(), b'unchanged')
+        self.assertEqual(list(target.iterdir()), [sentinel])

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """On-demand local release; never exports signing keys or starts hosted jobs."""
 import argparse
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -173,7 +174,21 @@ def cargo_environment(target_dir, name, tools):
     return environment
 
 
-def prepare(ver, source, output, target_dir):
+@contextmanager
+def build_cache(target_dir, ephemeral, phase):
+    if not ephemeral:
+        yield target_dir
+        return
+    # Never clean the caller's target. Only TemporaryDirectory's own freshly
+    # created sibling is removed, including on failed checks/builds/smokes.
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    if target_dir.exists() and target_dir.stat().st_dev != target_dir.parent.stat().st_dev:
+        raise RuntimeError('Ephemeral cache target must be a subdirectory on its parent volume, not a mount point; choose a target subdirectory')
+    with tempfile.TemporaryDirectory(prefix=f'alondra-release-{phase}-', dir=target_dir.parent) as temp:
+        yield pathlib.Path(temp)
+
+
+def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('Preparation requires this Apple Silicon Mac with Rosetta')
     if run('/usr/bin/arch', '-x86_64', 'uname', '-m', capture=True).strip() != 'x86_64':
@@ -187,24 +202,27 @@ def prepare(ver, source, output, target_dir):
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
-    env = cargo_environment(target_dir, toolchain_name, tools)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
     for target in release.TARGETS:
-        disk_guard(target_dir)
-        with tempfile.TemporaryDirectory(prefix='alondra-release-test-home-') as home:
-            test_env = dict(env, HOME=home)
-            run(tools['cargo'], 'test', '--locked', '--target', target, '--jobs', '1',
-                '-p', 'alondra', '-p', 'alondrad', '-p', 'alondra-e2e', env=test_env)
-        disk_guard(target_dir)
-        run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
-            '-p', 'alondra', '-p', 'alondrad', env=env)
-        with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
-            payload = pathlib.Path(temp)
-            for name in ('alondra', 'alondrad'):
-                shutil.copy2(target_dir / target / 'release' / name, payload / name)
-                sign(payload / name, f'com.bitomule.{name}')
-            run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad', output)
-        smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
+        with build_cache(target_dir, ephemeral_build_cache, 'tests') as test_target:
+            disk_guard(test_target)
+            env = cargo_environment(test_target, toolchain_name, tools)
+            with tempfile.TemporaryDirectory(prefix='alondra-release-test-home-') as home:
+                test_env = dict(env, HOME=home)
+                run(tools['cargo'], 'test', '--locked', '--target', target, '--jobs', '1',
+                    '-p', 'alondra', '-p', 'alondrad', '-p', 'alondra-e2e', env=test_env)
+        with build_cache(target_dir, ephemeral_build_cache, 'build') as build_target:
+            disk_guard(build_target)
+            env = cargo_environment(build_target, toolchain_name, tools)
+            run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
+                '-p', 'alondra', '-p', 'alondrad', env=env)
+            with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
+                payload = pathlib.Path(temp)
+                for name in ('alondra', 'alondrad'):
+                    shutil.copy2(build_target / target / 'release' / name, payload / name)
+                    sign(payload / name, f'com.bitomule.{name}')
+                run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad', output)
+            smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
     verify_prepared(ver, source, output)
     print(f'Prepared immutable release artifacts: {output}')
@@ -231,7 +249,11 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--prepare', action='store_true', help='Build, verify and preserve artifacts without tagging or publishing')
     modes.add_argument('--retry-publish', action='store_true', help='Publish only the original prepared bytes; never rebuild or sign')
+    parser.add_argument('--ephemeral-build-cache', action='store_true',
+                        help='Use disposable per-stage caches on the target volume; never remove the supplied target directory')
     args = parser.parse_args()
+    if args.retry_publish and args.ephemeral_build_cache:
+        parser.error('--ephemeral-build-cache cannot be combined with --retry-publish')
     ver = release.version(args.version)
     output = pathlib.Path(os.environ.get('ALONDRA_RELEASE_DIR', str(pathlib.Path.home() / 'Library/Caches/Alondra/releases' / ver))).expanduser().resolve()
     target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', '/private/tmp/alondra-service-crypto/target')).expanduser().resolve()
@@ -248,7 +270,7 @@ def main():
         source = preflight(ver, retry_source=retry_source)
         tag_state(ver, source, args.retry_publish)
         if not args.retry_publish:
-            prepare(ver, source, output, target)
+            prepare(ver, source, output, target, ephemeral_build_cache=args.ephemeral_build_cache)
         if not args.prepare:
             publish(ver, source, output, retry=args.retry_publish)
 
