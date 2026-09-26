@@ -64,6 +64,16 @@ pub fn payload(envelope: &EnvelopeV1, binding: &str) -> Value {
 }
 
 impl Apns {
+    fn http_client() -> Result<reqwest::Client> {
+        // APNs requires HTTP/2 over TLS. Do not fall back to HTTP/1.1.
+        Ok(reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .timeout(APNS_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?)
+    }
+
     pub fn open(config: ApnsConfig) -> Result<Self> {
         if config.team_id.len() != 10
             || !config.team_id.bytes().all(|b| b.is_ascii_alphanumeric())
@@ -92,10 +102,7 @@ impl Apns {
         let rng = SystemRandom::new();
         let private_key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, &rng)
             .map_err(|_| anyhow::anyhow!("invalid APNs private key"))?;
-        let client = reqwest::Client::builder()
-            .timeout(APNS_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+        let client = Self::http_client()?;
         Ok(Self {
             team_id: config.team_id,
             key_id: config.key_id,
@@ -119,7 +126,7 @@ impl Apns {
             key_id: "KEYID12345".into(),
             topic: "com.bitomule.alondra".into(),
             private_key,
-            client: reqwest::Client::new(),
+            client: Self::http_client().unwrap(),
             test_endpoint: Some(endpoint),
         }
     }
