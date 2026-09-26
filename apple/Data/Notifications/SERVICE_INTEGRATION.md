@@ -33,13 +33,23 @@ Root integration requirements:
 
 Registration uses signed relay POST /v1/push/register, then E2E executor POST
 /v1/service/push-binding. The relay upsert is idempotent and serialized by
-PushCenter; E2E binding uses a stable request ID and durable outbox reconciliation.
+PushCenter; each settings update gets a fresh UUID reserved durably by the E2E
+outbox. Reusing an old completed ID would suppress changing settings A → B → A.
 The APNs token never reaches the executor. Source contracts were checked in the
 service encrypted push worktrees (relay push.rs, Mac service.rs).
 
-Release limitations: service quiet-hours configuration is absent; PushCenter
-reports that explicitly instead of registering while promising quiet hours.
+Quiet hours use encrypted `quiet_start`/`quiet_end` HH:mm fields together;
+null/null disables them. The relay receives neither field. The executor uses
+its local timezone, as the prior daemon implementation did.
 Real APNs delivery and signing/provisioning remain unverified. The keychain group
 must be provisioned before enabling encrypted rendering. Notifications older
 than the signed ten-minute envelope validity fail closed on action/tap; a later
 product flow may open the inbox without treating expired payload as authority.
+
+Implemented platform wiring lives in ServiceNotificationRuntime, CloudPairingBootstrap,
+and AppDelegate. CloudPairingOwner lifecycle hooks clean notification state before
+logout while independently attempting pairing and Auth revocation even on errors.
+Cold notification responses coalesce approved-session restoration before decoding.
+Active scenes claim each route once; each scene keeps its own TCA Store.
+Provisioning errors are visible; incomplete Keychain configuration is not silently
+accepted. Signing/provisioning and actual APNs delivery remain release gates.

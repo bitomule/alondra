@@ -13,9 +13,10 @@ import SwiftUI
 
 struct ServiceAppScene: View {
     let owner: CloudPairingOwner
+    let notifications: ServiceNotificationRuntime
     var body: some View {
         if let services = owner.services {
-            ApprovedServiceScene(services: services, pairing: owner.store)
+            ApprovedServiceScene(services: services, pairing: owner.store, notifications: notifications)
                 .id(ObjectIdentifier(services))
         } else {
             NavigationStack { CloudPairingScreen(store: owner.store) }
@@ -27,6 +28,11 @@ struct ServiceAppScene: View {
 @MainActor @Observable
 private final class ServiceSceneContext {
     private(set) var store: StoreOf<ServiceRootFeature>?
+
+    func consumeNotification(_ notifications: ServiceNotificationRuntime, active: Bool) {
+        guard active, let store, let route = notifications.consumeRoute() else { return }
+        store.send(.focusInbox(route.itemID))
+    }
 
     func connect(_ services: CloudAppServices) async {
         let triage = await services.triageService()
@@ -54,13 +60,28 @@ private final class ServiceSceneContext {
 private struct ApprovedServiceScene: View {
     let services: CloudAppServices
     let pairing: StoreOf<CloudPairingFeature>
+    let notifications: ServiceNotificationRuntime
+    @Environment(\.scenePhase) private var phase
     // This scene's context is discarded whenever the approved service identity changes.
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
             if let store = context.store { ServiceRootView(store: store, pairing: pairing) }
             else { ProgressView("Opening workspace…") }
-        }.task { await context.connect(services) }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let error = notifications.statusError { Text(error).font(.footnote).padding().accessibilityLabel("Notifications: " + error) }
+        }
+        .task {
+            await context.connect(services)
+            context.consumeNotification(notifications, active: phase == .active)
+        }
+        .onChange(of: notifications.push.route) { _, _ in
+            context.consumeNotification(notifications, active: phase == .active)
+        }
+        .onChange(of: phase) { _, phase in
+            context.consumeNotification(notifications, active: phase == .active)
+        }
     }
 }
 

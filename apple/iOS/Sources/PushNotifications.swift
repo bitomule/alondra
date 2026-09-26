@@ -126,6 +126,8 @@ final class PushCenter {
         UIApplication.shared.registerForRemoteNotifications()
     }
 
+    func registerWithAPNs() { UIApplication.shared.registerForRemoteNotifications() }
+
     func didRegister(deviceToken: Data) {
         token = deviceToken.map { String(format: "%02x", $0) }.joined()
         scheduleSync()
@@ -155,15 +157,13 @@ final class PushCenter {
 
     private func sync() async {
         guard let token, let client else { registration = .idle; return }
-        guard !quietHours.enabled else {
-            registration = .failed("Quiet hours are not supported by the service yet")
-            return
-        }
-        let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(Self.environment.rawValue)"
+        let quietStart = quietHours.enabled ? QuietHours.clock(quietHours.start) : nil
+        let quietEnd = quietHours.enabled ? QuietHours.clock(quietHours.end) : nil
+        let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(Self.environment.rawValue)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
         guard fingerprint != lastRegistered else { return }
         registration = .sending
         do {
-            try await client.register(token, Self.environment.rawValue)
+            try await client.register(token, Self.environment.rawValue, quietStart, quietEnd)
             guard self.client?.identity == client.identity, self.client?.binding == client.binding,
                   self.token == token, !Task.isCancelled else { return }
             lastRegistered = fingerprint
@@ -283,15 +283,18 @@ final class PushCenter {
 /// handler must run on the main thread, so the handler is carried across to it explicitly.
 final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
     private let push: PushCenter
+    private let prepare: @MainActor @Sendable () async -> Void
 
-    init(push: PushCenter) {
+    init(push: PushCenter, prepare: @escaping @MainActor @Sendable () async -> Void = {}) {
         self.push = push
+        self.prepare = prepare
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let response = NotificationResponse(response)
         let completion = MainThreadCompletion(completionHandler)
-        Task { @MainActor [push] in
+        Task { @MainActor [push, prepare] in
+            await prepare()
             await push.respond(to: response)
             completion.run()
         }

@@ -13,7 +13,10 @@ public final class CloudPairingOwner {
     private let displayName: String
     private let storageDirectory: URL
     private let prepareCamera: @Sendable () async -> Bool
+    private let didActivate: @MainActor (ApprovedServicePairing, CloudAppServices) async throws -> Void
+    private let willDeactivate: @MainActor (CloudAppServices?) async throws -> Void
     private let pairing = ServicePairingClient()
+    private var restoreTask: Task<Bool, Error>?
     private var attempt: UUID?
     private var generation = 0
     public private(set) var services: CloudAppServices?
@@ -25,11 +28,15 @@ public final class CloudPairingOwner {
         $0.cloudPairing.prepareCamera = self.prepareCamera
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
-                prepareCamera: @escaping @Sendable () async -> Bool = { false }) {
+                prepareCamera: @escaping @Sendable () async -> Bool = { false },
+                didActivate: @escaping @MainActor (ApprovedServicePairing, CloudAppServices) async throws -> Void = { _, _ in },
+                willDeactivate: @escaping @MainActor (CloudAppServices?) async throws -> Void = { _ in }) {
         self.auth = auth
         self.displayName = displayName
         self.storageDirectory = storageDirectory
         self.prepareCamera = prepareCamera
+        self.didActivate = didActivate
+        self.willDeactivate = willDeactivate
     }
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
     private static func validateRelay(_ url: URL) throws {
@@ -39,10 +46,21 @@ public final class CloudPairingOwner {
             throw ServicePairingError.invalidInvitation
         }
     }
+    public func prepareNotificationSession() async throws {
+        if services == nil { _ = try await restore() }
+    }
     private func restore() async throws -> Bool {
+        if services != nil { return true }
+        if let restoreTask { return try await restoreTask.value }
+        let task = Task { try await self.restoreApprovedPairing() }
+        restoreTask = task
+        defer { restoreTask = nil }
+        return try await task.value
+    }
+    private func restoreApprovedPairing() async throws -> Bool {
+        let current = generation
         guard let approved = try await pairing.approvedPairing() else { return false }
         try Self.validateRelay(approved.relayURL)
-        let current = generation
         let subject = try await auth.verifiedSubject()
         guard subject == approved.ownerSub else { throw ServicePairingError.invalidIdentity }
         try Task.checkCancellation()
@@ -90,21 +108,38 @@ public final class CloudPairingOwner {
         let previous = services
         services = nil
         await previous?.deactivate()
+        do {
+            if previous != nil { try await willDeactivate(previous) }
+            guard current == generation, !Task.isCancelled else { throw CancellationError() }
+            try await didActivate(approved, next)
+        } catch {
+            await next.deactivate()
+            throw error
+        }
         guard current == generation, !Task.isCancelled else {
             await next.deactivate()
             throw CancellationError()
         }
         services = next
     }
-    private func deactivate() async {
+    private func deactivate() async throws {
         generation += 1
+        restoreTask?.cancel()
         let previous = services
         services = nil
         await previous?.deactivate()
+        try await willDeactivate(previous)
     }
     private func logout() async throws {
-        await deactivate()
-        try await pairing.removeApprovedPairing()
-        try await auth.logout()
+        // Attempt every revocation even when notification/keychain cleanup fails.
+        var failures: [String] = []
+        do { try await deactivate() } catch { failures.append(error.localizedDescription) }
+        do { try await pairing.removeApprovedPairing() } catch { failures.append(error.localizedDescription) }
+        do { try await auth.logout() } catch { failures.append(error.localizedDescription) }
+        if !failures.isEmpty { throw CleanupFailure(details: failures.joined(separator: "\n")) }
+    }
+    private struct CleanupFailure: LocalizedError {
+        let details: String
+        var errorDescription: String? { details }
     }
 }
