@@ -387,6 +387,13 @@ private struct ServiceCommentSheet: View {
     @Binding var text: String
     @FocusState private var focused: Bool
 
+    init(block: MarkdownBlock, initial: String, text: Binding<String>, onSave: @escaping (String) -> Void) {
+        self.block = block
+        self.initial = initial
+        self._text = text
+        self.onSave = onSave
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {

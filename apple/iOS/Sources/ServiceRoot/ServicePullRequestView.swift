@@ -29,7 +29,7 @@ struct ServicePullRequestView: View {
             }
         }
         .sheet(item: Binding(get: { commenting }, set: { if $0 == nil { _ = store.send(.diff(.cancelLineComment)) } })) { line in
-            LineCommentSheet(line: line, initial: line.anchor.flatMap { store.diff.comments[$0] } ?? "") { text in
+            LineCommentSheet(line: line, initial: line.anchor.flatMap { store.diff.comments[$0] } ?? "", text: Binding(get: { store.diff.editingText }, set: { store.send(.diff(.lineEditorChanged($0))) })) { text in
                 if let anchor = line.anchor { _ = store.send(.diff(.saveLineComment(anchor, text))) }
             }.presentationDetents([.medium, .large])
         }

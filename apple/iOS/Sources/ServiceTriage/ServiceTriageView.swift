@@ -126,12 +126,21 @@ private struct ServiceCardStack: View {
 
     @ViewBuilder
     private func card(_ item: InboxItem, isFront: Bool) -> some View {
-        if let child = store.scope(state: \.cards, action: \.cards).first(where: { $0.id == item.id }) {
-            ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.task(for: item),
+        let childStore: StoreOf<TriageCardFeature>? = store.scope(state: \.cards, action: \.cards).first { cardStore in cardStore.id == item.id }
+        let questions: [Question]
+        let reports: [Report]
+        if case .pullRequest(let pr) = item {
+            questions = store.triage.questionsByPullRequest[pr.id] ?? []
+            reports = store.triage.reportsByPullRequest[pr.id] ?? []
+        } else {
+            questions = []
+            reports = []
+        }
+        if let child = childStore {
+            ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.withState { $0.task(for: item) },
                 isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
                 onHide: { _ = store.send(.triage(.hide(item.id))) },
-                questions: { if case .pullRequest(let pr) = item { return store.triage.questionsByPullRequest[pr.id] ?? [] }; return [] }(),
-                reports: { if case .pullRequest(let pr) = item { return store.triage.reportsByPullRequest[pr.id] ?? [] }; return [] }())
+                questions: questions, reports: reports)
         }
     }
 
