@@ -149,6 +149,20 @@ public actor CommandGate {
         isUnknown: @Sendable (any Error) -> Bool,
         operation: @Sendable () async throws -> Void
     ) async -> CommandResult {
+        await submitIdentified(kind, itemID: itemID, in: expectedScope, isUnknown: isUnknown) { _ in
+            try await operation()
+        }
+    }
+
+    /// Supplies the identity reserved in the durable command journal. The service must use
+    /// this same ID for its encrypted outbox; a second generated ID breaks crash recovery.
+    public func submitIdentified(
+        _ kind: CommandKind,
+        itemID: String? = nil,
+        in expectedScope: CommandScope,
+        isUnknown: @Sendable (any Error) -> Bool,
+        operation: @Sendable (UUID) async throws -> Void
+    ) async -> CommandResult {
         guard expectedScope == scope else { return .obsolete }
         let submittedGeneration = generation
         if !loaded {
@@ -185,7 +199,7 @@ public actor CommandGate {
             return .obsolete
         }
         do {
-            try await operation()
+            try await operation(command.id)
             guard submittedGeneration == generation else { return .obsolete }
             if let journal {
                 do { try await journal.save(.init(command: command, state: .confirmed)) }

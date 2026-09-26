@@ -89,6 +89,16 @@ public struct ApprovedServicePairing: Codable, Sendable {
     public let signingPrivateKey: Data
     public let agreementPrivateKey: Data
     public let approvedAtMs: UInt64
+
+    public func macSigningPublicKey() throws -> P256.Signing.PublicKey {
+        guard let bytes = PairingWire.decode(macSigningKey) else { throw ServicePairingError.invalidIdentity }
+        return try P256.Signing.PublicKey(x963Representation: bytes)
+    }
+
+    public func macAgreementPublicKey() throws -> P256.KeyAgreement.PublicKey {
+        guard let bytes = PairingWire.decode(macAgreementKey) else { throw ServicePairingError.invalidIdentity }
+        return try P256.KeyAgreement.PublicKey(x963Representation: bytes)
+    }
 }
 
 struct PairingCandidate: Codable {

@@ -90,6 +90,8 @@ swift_library(
         ":AlondraShared",
         "//apple/Auth:AlondraAuth",
         "//apple/ServicePairing:AlondraServicePairing",
+        "//apple/Data/RelaySession:AlondraRelaySession",
+        "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",

@@ -15,8 +15,7 @@ final class CloudPairingOwner {
     private let pairing = ServicePairingClient()
     private var attempt: UUID?
     private var generation = 0
-    var activate: @MainActor (ApprovedServicePairing, AuthSession) async throws -> Void = { _, _ in }
-    var deactivate: @MainActor () async -> Void = {}
+    private(set) var services: CloudAppServices?
     @ObservationIgnored lazy var store = Store(initialState: CloudPairingFeature.State()) { CloudPairingFeature() } withDependencies: {
         $0.cloudPairing = CloudPairingService(
             restore: { [self] in try await restore() }, login: { [self] in try await login() },
@@ -87,6 +86,24 @@ final class CloudPairingOwner {
     private func cancel() async {
         generation += 1
         if let attempt { self.attempt = nil; await pairing.discard(attempt) }
+    }
+    private func activate(_ approved: ApprovedServicePairing, _ auth: AuthSession) async throws {
+        let current = generation
+        let next = try CloudAppServices(approved: approved, auth: auth)
+        let previous = services
+        services = nil
+        await previous?.deactivate()
+        guard current == generation, !Task.isCancelled else {
+            await next.deactivate()
+            throw CancellationError()
+        }
+        services = next
+    }
+    private func deactivate() async {
+        generation += 1
+        let previous = services
+        services = nil
+        await previous?.deactivate()
     }
     private func logout() async throws {
         await deactivate()

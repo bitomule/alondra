@@ -17,6 +17,28 @@ import AlondraCommands
         return (directory, FileCommandJournal(directory: directory))
     }
 
+    @Test func identifiedOperationUsesTheDurableReservationBeforeSending() async throws {
+        let (directory, journal) = try temporaryJournal()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = CommandGate(scope: scope, journal: journal)
+        let result = await gate.submitIdentified(.markRead(42), itemID: "r42", in: scope,
+                                                isUnknown: { _ in true }) { id in
+            let records = try await journal.records()
+            let pending = try #require(records.first { $0.command.id == id })
+            #expect(pending.state == .pending)
+            #expect(pending.command.kind == .markRead(42))
+            throw URLError(.timedOut)
+        }
+        guard case .unknown(let original) = result else { Issue.record("Expected uncertain delivery"); return }
+        let recreated = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory))
+        let repeated = await recreated.submitIdentified(.markRead(42), itemID: "r42", in: scope,
+                                                       isUnknown: { _ in true }) { _ in
+            Issue.record("A recreated service sent a second operation")
+        }
+        guard case .unknown(let restored) = repeated else { Issue.record("Lost durable identity"); return }
+        #expect(restored.id == original.id)
+    }
+
     @Test func delayedDismissalCannotEraseWarningAfterScopeSwitch() async throws {
         let (directory, journal) = try temporaryJournal()
         defer { try? FileManager.default.removeItem(at: directory) }
