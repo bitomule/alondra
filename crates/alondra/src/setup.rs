@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, IsTerminal, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -101,6 +100,7 @@ pub struct Observed {
     pub apns_key_exists: bool,
     pub claude: bool,
     pub marketplace: bool,
+    pub marketplace_path: Option<PathBuf>,
     /// Alondra's plugins that a global install enables in every session, with the scope of
     /// each install.
     pub enabled_globally: Vec<(String, String)>,
@@ -122,12 +122,31 @@ pub struct Plan {
     pub conflicts: Vec<String>,
 }
 
+fn xml_escape(value: &str) -> String {
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv {
+    let mut context = crate::claude_auth::ContextEnv::for_setup(&paths.home, &paths.bin);
+    // A setup retry from another shell must not silently switch an installed Claude profile.
+    if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() && std::env::var_os("CLAUDE_HOME").is_none() {
+        context.config_dir = read_plist(&paths.plist(label)).ok()
+            .and_then(|v| v.get("EnvironmentVariables")?.get("CLAUDE_CONFIG_DIR").or_else(|| v.get("EnvironmentVariables")?.get("CLAUDE_HOME"))?.as_str().map(str::to_owned));
+    }
+    context
+}
+
 pub fn render_plist(label: &str, paths: &Paths) -> String {
+    let context = claude_context(paths, label);
+    let profile = context.config_dir.clone().unwrap_or_else(|| paths.home.join(".claude").to_string_lossy().into_owned());
+    let config = format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string>", xml_escape(&profile));
     TEMPLATE
+        .replace("@CLAUDE_CONFIG_ENV@", &config)
+        .replace("@PATH@", &xml_escape(&context.path))
         .replace("@LABEL@", label)
-        .replace("@BIN@", &paths.bin.display().to_string())
-        .replace("@HOME@", &paths.home.display().to_string())
-        .replace("@ALONDRA_HOME@", &paths.alondra_home.display().to_string())
+        .replace("@BIN@", &xml_escape(&paths.bin.display().to_string()))
+        .replace("@HOME@", &xml_escape(&paths.home.display().to_string()))
+        .replace("@ALONDRA_HOME@", &xml_escape(&paths.alondra_home.display().to_string()))
 }
 
 /// Keys the user already has keep their value unless `force`; missing keys are filled in.
@@ -194,13 +213,7 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 restart = true;
             }
         }
-        (None, None) => steps.push(Step::Warn(
-            tr!(
-                "No apns.json: the iPhone gets no notifications. Rerun with --apns-key-path --apns-key-id --apns-team-id --apns-topic.",
-                "Sin apns.json: el iPhone no recibe notificaciones. Vuelve a ejecutarlo con --apns-key-path --apns-key-id --apns-team-id --apns-topic."
-            )
-            .into(),
-        )),
+        (None, None) => {}
         (None, Some(_)) => steps.push(Step::Unchanged { path: paths.apns() }),
     }
 
@@ -252,7 +265,12 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
                 .into(),
             ));
         } else {
-            if !seen.marketplace {
+            if seen.marketplace_path.as_ref().is_some_and(|p| paths.repo.as_ref().is_some_and(|wanted| p != wanted)) {
+                steps.push(claude(&["plugin", "marketplace", "remove", MARKETPLACE]));
+                if let Some(repo) = &paths.repo {
+                    steps.push(claude(&["plugin", "marketplace", "add", &repo.display().to_string()]));
+                }
+            } else if !seen.marketplace {
                 match &paths.repo {
                     Some(repo) => steps.push(claude(&["plugin", "marketplace", "add", &repo.display().to_string()])),
                     None => steps.push(Step::Warn(
@@ -297,7 +315,7 @@ pub fn migrate_env(label: Option<&str>, env: &BTreeMap<String, String>) -> FileC
     }
 }
 
-fn read_plist(path: &Path) -> Result<Value> {
+pub(crate) fn read_plist(path: &Path) -> Result<Value> {
     let out = Command::new("/usr/bin/plutil").args(["-convert", "json", "-o", "-"]).arg(path).output().context("plutil")?;
     if !out.status.success() {
         bail!("{}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim());
@@ -319,18 +337,32 @@ pub fn find_repo(start: &Path) -> Option<PathBuf> {
     start.ancestors().find(|d| d.join(".claude-plugin/marketplace.json").is_file() && d.join("plugin").is_dir()).map(Path::to_path_buf)
 }
 
-fn prompt(question: &str, default: &str) -> Result<String> {
-    let mut out = std::io::stderr();
-    if default.is_empty() {
-        write!(out, "{question}: ")?;
-    } else {
-        write!(out, "{question} [{default}]: ")?;
+/// A release can carry the marketplace next to its binaries, without a source checkout.
+fn installed_package() -> Option<(PathBuf, PathBuf)> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    brew_package_for_executable(&executable)
+}
+
+fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    // Homebrew launches the real executable from its versioned Cellar keg. Persist
+    // paths through opt/alondra so launchd and Claude survive a formula upgrade.
+    let bin = executable.parent()?;
+    let keg = bin.parent()?;
+    let rack = keg.parent()?;
+    let cellar = rack.parent()?;
+    if executable.file_name()? != "alondra"
+        || bin.file_name()? != "bin"
+        || rack.file_name()? != "alondra"
+        || cellar.file_name()? != "Cellar"
+    {
+        return None;
     }
-    out.flush()?;
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
-    let line = line.trim();
-    Ok(if line.is_empty() { default.to_string() } else { line.to_string() })
+    let stable = cellar.parent()?.join("opt/alondra");
+    let assets = stable.join("libexec/alondra");
+    (stable.join("bin/alondrad").is_file())
+        .then(|| find_repo(&assets))
+        .flatten()
+        .map(|assets| (stable.join("bin"), assets))
 }
 
 pub fn local_host_name() -> Option<String> {
@@ -376,28 +408,8 @@ fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig>
     };
     wanted = wanted.overlay(&flags);
     let known = |w: &FileConfig, f: fn(&FileConfig) -> bool| f(w) || existing.is_some_and(f);
-    let interactive = !args.no_input && std::io::stdin().is_terminal();
     if !known(&wanted, |c| c.name.is_some()) {
-        let fallback = config::system_name().unwrap_or_default();
-        let name = if interactive { prompt(tr!("Your name (the nodes address you by it)", "Tu nombre (los nodos te llaman así)"), &fallback)? } else { fallback };
-        wanted.name = Some(name).filter(|n| !n.is_empty());
-    }
-    if interactive && !known(&wanted, |c| c.public_url.is_some()) {
-        let port = wanted.port.or(existing.and_then(|e| e.port)).unwrap_or(alondra_core::DEFAULT_PORT);
-        let suggestion = lan_url(port).unwrap_or_default();
-        let url = prompt(
-            tr!(
-                "URL the iPhone uses to reach this Mac (LAN, Tailscale or a tunnel; empty for none)",
-                "URL por la que el iPhone llega a este Mac (red local, Tailscale o un túnel; vacío para ninguna)"
-            ),
-            &suggestion,
-        )?;
-        if !url.is_empty() {
-            if url == suggestion && !known(&wanted, |c| c.listen.is_some()) {
-                wanted.listen = Some([0, 0, 0, 0].into());
-            }
-            wanted.public_url = Some(url);
-        }
+        wanted.name = config::system_name().filter(|n| !n.is_empty());
     }
     Ok(wanted)
 }
@@ -411,8 +423,13 @@ pub fn service_loaded(uid: u32, label: &str) -> bool {
     command_ok("launchctl", &["print", &format!("gui/{uid}/{label}")]).is_some()
 }
 
-pub fn plugin_list() -> Option<Value> {
-    command_ok("claude", &["plugin", "list", "--json"]).and_then(|t| serde_json::from_str(&t).ok())
+fn claude_output(context: &crate::claude_auth::ContextEnv, args: &[&str]) -> Option<String> {
+    let out = context.command().ok()?.args(args).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+pub fn plugin_list(context: &crate::claude_auth::ContextEnv) -> Option<Value> {
+    claude_output(context, &["plugin", "list", "--json"]).and_then(|t| serde_json::from_str(&t).ok())
 }
 
 /// Alondra's plugins that `claude plugin list --json` shows enabled, with the scope of each
@@ -429,11 +446,19 @@ pub fn enabled_globally(list: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-pub fn has_marketplace() -> bool {
-    command_ok("claude", &["plugin", "marketplace", "list", "--json"])
+pub fn has_marketplace(context: &crate::claude_auth::ContextEnv) -> bool {
+    claude_output(context, &["plugin", "marketplace", "list", "--json"])
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v.as_array().cloned())
         .is_some_and(|a| a.iter().any(|m| m.get("name").and_then(Value::as_str) == Some(MARKETPLACE)))
+}
+
+fn marketplace_path(context: &crate::claude_auth::ContextEnv) -> Option<PathBuf> {
+    claude_output(context, &["plugin", "marketplace", "list", "--json"])
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.as_array().cloned())
+        .and_then(|a| a.into_iter().find(|m| m.get("name").and_then(Value::as_str) == Some(MARKETPLACE)))
+        .and_then(|m| m.get("path").and_then(Value::as_str).map(PathBuf::from))
 }
 
 fn other_services(paths: &Paths, label: &str) -> Vec<PathBuf> {
@@ -450,7 +475,8 @@ fn other_services(paths: &Paths, label: &str) -> Vec<PathBuf> {
 
 fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Observed {
     let read = |p: PathBuf| std::fs::read_to_string(p).ok();
-    let plugins = if args.skip_plugin { None } else { plugin_list() };
+    let context = claude_context(paths, label);
+    let plugins = if args.skip_plugin { None } else { plugin_list(&context) };
     Observed {
         config: read(paths.config()),
         apns: read(paths.apns()),
@@ -459,8 +485,9 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Obse
         other_services: other_services(paths, label),
         binaries: paths.bin.join("alondrad").is_file() && paths.bin.join("alondra").is_file(),
         apns_key_exists: apns.is_some_and(|a| a.key_path.is_file()),
-        claude: args.skip_plugin || command_ok("claude", &["--version"]).is_some(),
-        marketplace: !args.skip_plugin && has_marketplace(),
+        claude: args.skip_plugin || claude_output(&context, &["--version"]).is_some(),
+        marketplace: !args.skip_plugin && has_marketplace(&context),
+        marketplace_path: if args.skip_plugin { None } else { marketplace_path(&context) },
         enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
         tuicr: command_ok("tuicr", &["--version"]).is_some(),
         brew: command_ok("brew", &["--version"]).is_some(),
@@ -471,9 +498,12 @@ pub fn run(args: Args) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok();
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
+    let packaged = installed_package();
+    let brew_executable = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())
+        .filter(|p| brew_package_for_executable(p).is_some());
     let paths = Paths {
-        bin: args.bin.clone().unwrap_or_else(|| home.join(".local/bin")),
-        repo: args.repo.clone().or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
+        bin: args.bin.clone().or_else(|| packaged.as_ref().map(|(bin, _)| bin.clone())).unwrap_or_else(|| home.join(".local/bin")),
+        repo: args.repo.clone().or_else(|| packaged.as_ref().map(|(_, assets)| assets.clone())).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
         uid: unsafe { libc::getuid() },
         home,
         alondra_home,
@@ -486,6 +516,10 @@ pub fn run(args: Args) -> Result<()> {
         .clone()
         .or_else(|| existing.as_ref().and_then(|e| e.service_label.clone()))
         .unwrap_or_else(|| config::DEFAULT_LABEL.into());
+    if let (Ok(config), Ok(watcher)) = (std::env::var("CLAUDE_CONFIG_DIR"), std::env::var("CLAUDE_HOME")) {
+        if config != watcher { bail!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup"); }
+    }
+    let context = claude_context(&paths, &label);
     let seen = observe(&paths, &label, apns.as_ref(), &args);
     let plan = plan(&wanted, apns.as_ref(), &args, &paths, &seen);
 
@@ -496,13 +530,55 @@ pub fn run(args: Args) -> Result<()> {
         }
         bail!(tr!("setup stopped", "setup detenido"));
     }
+    if !args.dry_run && !args.skip_service && !seen.binaries {
+        bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
+    }
+    if args.dry_run {
+        println!("would verify Claude Code authentication in the daemon environment (no login during dry run)");
+    } else {
+        context.ensure(args.no_input)?;
+    }
+    let service_created = if !args.dry_run {
+        crate::service_setup::enroll(&paths.alondra_home)?
+    } else {
+        println!("would sign in if needed and enroll this Mac with the Alondra service");
+        false
+    };
     for step in &plan.steps {
         print_step(step, args.dry_run);
         if !args.dry_run {
-            execute(step)?;
+            execute(step, &context)?;
         }
     }
-    let config = Config::resolve(paths.alondra_home.clone(), &plan.config, env, config::system_name);
+    let launched_by_plan = plan.steps.iter().any(|step| {
+        matches!(step, Step::Run { program, args } if program == "launchctl"
+            && matches!(args.first().map(String::as_str), Some("bootstrap" | "kickstart")))
+    });
+    let restarted_for_enrollment = service_created && seen.binaries && seen.service_loaded && !launched_by_plan;
+    if restarted_for_enrollment {
+        let target = format!("gui/{}/{}", paths.uid, label);
+        execute(&Step::Run {
+            program: "launchctl".into(),
+            args: vec!["kickstart".into(), "-k".into(), target],
+        }, &context)?;
+    }
+    if !args.dry_run && !args.skip_service && seen.binaries
+        && let Some(executable) = brew_executable
+    {
+        let stamp = paths.alondra_home.join("brew-keg-path");
+        let current = executable.to_string_lossy().into_owned();
+        let changed = std::fs::read_to_string(&stamp).ok().as_deref() != Some(current.as_str());
+        if changed && seen.service_loaded && !launched_by_plan && !restarted_for_enrollment {
+            let target = format!("gui/{}/{}", paths.uid, label);
+            execute(&Step::Run {
+                program: "launchctl".into(),
+                args: vec!["kickstart".into(), "-k".into(), target],
+            }, &context)?;
+        }
+        if changed {
+            execute(&Step::Write { path: stamp, contents: current, private: true }, &context)?;
+        }
+    }
     if args.dry_run {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
         return Ok(());
@@ -510,7 +586,10 @@ pub fn run(args: Args) -> Result<()> {
     if args.skip_pair || args.skip_service {
         return Ok(());
     }
-    pair_when_ready(&config)
+    if !crate::service_pair::has_paired_device(&paths.alondra_home)? {
+        crate::service_pair::run(&paths.alondra_home)?;
+    }
+    Ok(())
 }
 
 fn print_step(step: &Step, dry: bool) {
@@ -544,7 +623,7 @@ fn print_step(step: &Step, dry: bool) {
     }
 }
 
-fn execute(step: &Step) -> Result<()> {
+fn execute(step: &Step, context: &crate::claude_auth::ContextEnv) -> Result<()> {
     match step {
         Step::Write { path, contents, private } => {
             if let Some(dir) = path.parent() {
@@ -559,7 +638,8 @@ fn execute(step: &Step) -> Result<()> {
             std::fs::rename(&tmp, path)?;
         }
         Step::Run { program, args } => {
-            let out = Command::new(program).args(args).output().with_context(|| program.clone())?;
+            let mut command = if program == "claude" { context.command()? } else { Command::new(program) };
+            let out = command.args(args).output().with_context(|| program.clone())?;
             if !out.status.success() {
                 let cmd = format!("{program} {}", args.join(" "));
                 let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -582,31 +662,6 @@ fn execute(step: &Step) -> Result<()> {
     Ok(())
 }
 
-fn pair_when_ready(config: &Config) -> Result<()> {
-    let client = crate::client::Client::new(Duration::from_secs(2));
-    let up = (0..20).any(|_| {
-        let ok = client.get::<Value>("/v1/health").is_ok();
-        if !ok {
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        ok
-    });
-    if !up {
-        println!("{}", tr!("! alondrad did not answer yet; pair later with `alondra pair`.", "! alondrad aún no responde; vincula después con `alondra pair`."));
-        return Ok(());
-    }
-    match pairing_url(config) {
-        Some(url) => crate::pair(&url),
-        None => {
-            println!("{}", tr!(
-                "! No URL the iPhone can reach: set --public-url (and --listen 0.0.0.0 for the LAN), then run `alondra pair`.",
-                "! No hay URL a la que llegue el iPhone: pon --public-url (y --listen 0.0.0.0 para la red local) y ejecuta `alondra pair`."
-            ));
-            Ok(())
-        }
-    }
-}
-
 pub fn pairing_url(config: &Config) -> Option<String> {
     config.public_url.clone().or_else(|| (!config.listen.is_loopback()).then(|| lan_url(config.port)).flatten())
 }
@@ -614,6 +669,71 @@ pub fn pairing_url(config: &Config) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_profile_retry_keeps_auth_plugins_and_watcher_together() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("alondra-profile-retry-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut paths = paths();
+        paths.home = root.clone();
+        paths.bin = root.join("bin");
+        let plist = paths.plist("test-profile");
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        let profile = root.join("profile").to_string_lossy().into_owned();
+        std::fs::write(&plist, format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict><key>CLAUDE_CONFIG_DIR</key><string>{profile}</string></dict></dict></plist>")).unwrap();
+        // No environment mutation: retry must recover the persisted profile.
+        let context = claude_context(&paths, "test-profile");
+        assert_eq!(context.config_dir.as_deref(), Some(profile.as_str()));
+        std::fs::write(&plist, render_plist("test-profile", &paths)).unwrap();
+        let value = read_plist(&plist).unwrap();
+        assert_eq!(value["EnvironmentVariables"]["CLAUDE_HOME"], profile);
+        assert_eq!(value["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"], profile);
+        let script = paths.bin.join("claude");
+        std::fs::write(&script, r#"#!/bin/sh
+[ "$CLAUDE_HOME" = "$CLAUDE_CONFIG_DIR" ] && [ "$CLAUDE_CONFIG_DIR" = "$HOME/profile" ] || exit 12
+case "$1 $2" in
+  'plugin list') printf '[{"id":"alondra@alondra","enabled":false}]' ;;
+  'plugin marketplace') printf '%s' "$CLAUDE_CONFIG_DIR" > "$HOME/plugin-profile" ;;
+  *) exit 13 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(plugin_list(&context).unwrap().is_array());
+        execute(&Step::Run { program: "claude".into(), args: vec!["plugin".into(), "marketplace".into(), "add".into(), "/assets".into()] }, &context).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("plugin-profile")).unwrap(), profile);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn homebrew_formula_uses_stable_opt_paths_for_daemon_and_plugins() {
+        let root = std::env::temp_dir().join(format!("alondra-brew-package-test-{}", std::process::id()));
+        let keg = root.join("Cellar/alondra/0.1.0");
+        let bin = keg.join("bin");
+        let assets = keg.join("libexec/alondra");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(assets.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(assets.join("plugin")).unwrap();
+        std::fs::write(bin.join("alondra"), "").unwrap();
+        std::fs::write(bin.join("alondrad"), "").unwrap();
+        std::fs::write(assets.join(".claude-plugin/marketplace.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("opt")).unwrap();
+        std::os::unix::fs::symlink(&keg, root.join("opt/alondra")).unwrap();
+        let stable = root.join("opt/alondra");
+        assert_eq!(brew_package_for_executable(&bin.join("alondra")),
+            Some((stable.join("bin"), stable.join("libexec/alondra"))));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_package_replaces_a_marketplace_at_the_old_location() {
+        let seen = Observed { marketplace: true, marketplace_path: Some("/old/alondra".into()), ..fresh() };
+        let p = plan(&named("Ana"), None, &Args::default(), &paths(), &seen);
+        let commands = runs(&p);
+        assert!(commands.iter().any(|c| c == "claude plugin marketplace remove alondra"));
+        assert!(commands.iter().any(|c| c == "claude plugin marketplace add /src/alondra"));
+    }
 
     fn paths() -> Paths {
         Paths {
@@ -665,7 +785,7 @@ mod tests {
             ],
             "the plugin is not installed for every session: alondrad loads it into the ones it launches"
         );
-        assert!(p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("apns.json"))));
+        assert!(!p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("apns.json"))));
     }
 
     #[test]

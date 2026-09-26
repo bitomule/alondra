@@ -35,6 +35,7 @@ crate.from_cargo(
         "//:Cargo.toml",
         "//crates/core:Cargo.toml",
         "//crates/alondrad:Cargo.toml",
+        "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",
     ],
 )

@@ -305,6 +305,8 @@ pub enum FleetRow {
 enum Msg {
     Data(Box<Overview>),
     Offline,
+    SyncError(String),
+    RemoteDiff { id: u64, result: Result<Value, String> },
     Posted { key: Option<Key>, result: Result<String, String> },
     Closed { name: String, result: Result<Closed, String> },
     File { path: String, result: Result<files::FileBody, String> },
@@ -444,8 +446,8 @@ pub fn run() -> Result<()> {
 }
 
 fn sync_loop(tx: SyncSender<Msg>) {
-    let quick = Client::new(Duration::from_secs(5));
-    let waiter = Client::new(Duration::from_secs(70));
+    let quick = if crate::service_client::target().is_some() { Client::for_tui(Duration::from_secs(15)) } else { Client::new(Duration::from_secs(5)) };
+    let waiter = if crate::service_client::target().is_some() { Client::for_tui(Duration::from_secs(70)) } else { Client::new(Duration::from_secs(70)) };
     let mut was_online = true;
     loop {
         let tick = match quick.overview() {
@@ -457,7 +459,8 @@ fn sync_loop(tx: SyncSender<Msg>) {
                 }
                 tick
             }
-            Err(_) => {
+            Err(error) => {
+                if was_online && crate::service_client::target().is_some() { let _ = tx.send(Msg::SyncError(error.to_string())); }
                 if was_online && tx.send(Msg::Offline).is_err() {
                     return;
                 }
@@ -466,7 +469,8 @@ fn sync_loop(tx: SyncSender<Msg>) {
                 continue;
             }
         };
-        if waiter.get::<Value>(&format!("/v1/changes?after={tick}&wait=50")).is_err() {
+        if let Err(error) = waiter.get::<Value>(&format!("/v1/changes?after={tick}&wait=50")) {
+            if crate::service_client::target().is_some() { let _ = tx.send(Msg::SyncError(format!("Remote change wait failed: {error}"))); }
             std::thread::sleep(Duration::from_secs(1));
         }
     }
@@ -508,6 +512,10 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
                         Flow::Quit => return Ok(()),
                         Flow::Attach(short) => {
+                            if crate::service_client::target().is_some() {
+                                app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
+                                break;
+                            }
                             let _ = execute!(stdout(), DisableBracketedPaste);
                             let res = crate::attach::attach(&short, crate::attach::Over::Tui);
                             crossterm::terminal::enable_raw_mode()?;
@@ -519,6 +527,10 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             break;
                         }
                         Flow::Review { id, number, dir } => {
+                            if crate::service_client::target().is_some() {
+                                app.fail(tr!("Interactive tuicr review requires the destination Mac; use its PR link to review remotely", "La revisión interactiva con tuicr requiere el Mac de destino; usa el enlace del PR para revisar en remoto"));
+                                break;
+                            }
                             draw(terminal, &mut app)?;
                             let _ = execute!(stdout(), DisableBracketedPaste);
                             let res = crate::attach::run_tool("tuicr", &["--stdout", "--no-update-check", "pr", &number.to_string()], &dir, crate::attach::Over::Tui);
@@ -583,7 +595,7 @@ fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
     let edited = edited?;
     if edited == before { return Ok(None); }
     body = serde_json::from_slice(&edited).map_err(|e| anyhow::anyhow!("Invalid schedule JSON: {e}"))?;
-    let client = Client::for_user(Duration::from_secs(15));
+    let client = Client::for_tui(Duration::from_secs(15));
     if let Some(id) = existing.as_ref().and_then(|v| v["id"].as_str()) {
         client.put(&format!("/v1/schedules/{}", urlencode(id)), &body)?;
     } else {
@@ -630,6 +642,22 @@ fn open_with_mac(target: &str) {
         return;
     }
     let _ = std::process::Command::new("/usr/bin/open").arg(target).spawn();
+}
+
+/// Download remote attachments before invoking a local application. Never pass a remote
+/// filesystem path to `open`, even when a same-named file happens to exist locally.
+fn open_remote_file(path: &str) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let bytes = Client::for_tui(Duration::from_secs(120)).get_bytes(&format!("/v1/file?path={}", urlencode(path)))?;
+    let suffix: String = crate::service_client::random::<16>()?.iter().map(|b| format!("{b:02x}")).collect();
+    let dir = std::env::temp_dir().join(format!("alondra-attachment-{suffix}"));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    let name = std::path::Path::new(path).file_name().filter(|n| !n.is_empty()).unwrap_or(std::ffi::OsStr::new("attachment"));
+    let local = dir.join(name);
+    let mut file = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&local)?;
+    std::io::Write::write_all(&mut file, &bytes)?;
+    open_with_mac(&local.to_string_lossy());
+    Ok(())
 }
 
 fn clone_of(node_cwd: Option<&str>, repo: &str) -> Option<std::path::PathBuf> {
@@ -898,7 +926,7 @@ impl App {
         }
         self.activity_told = now;
         self.spawn(|_| {
-            let _ = Client::for_user(Duration::from_secs(5)).post("/v1/activity", &json!({"client": "tui"}));
+            let _ = Client::for_tui(Duration::from_secs(5)).post("/v1/activity", &json!({"client": "tui"}));
         });
     }
 
@@ -908,7 +936,7 @@ impl App {
         #[cfg(test)]
         self.posted_keys.borrow_mut().push(key);
         self.spawn(move |tx| {
-            let client = Client::for_user(Duration::from_secs(15));
+            let client = Client::for_tui(Duration::from_secs(15));
             let mut result = Ok(ok);
             for (i, (path, body)) in calls.into_iter().enumerate() {
                 if let Err(e) = client.post(&path, &body)
@@ -928,7 +956,7 @@ impl App {
         }
         let path = path.to_string();
         self.spawn(move |tx| {
-            let result = Client::for_user(Duration::from_secs(10))
+            let result = Client::for_tui(Duration::from_secs(10))
                 .get_bytes(&format!("/v1/file?path={}", urlencode(&path)))
                 .map(files::FileBody::classify)
                 .map_err(|e| e.to_string());
@@ -1001,7 +1029,7 @@ impl App {
         }
         self.threads_asked = Some((session.clone(), self.data.tick, now));
         self.spawn(move |tx| {
-            let client = Client::for_user(Duration::from_secs(10));
+            let client = Client::for_tui(Duration::from_secs(10));
             let threads = node_threads(|path| client.get::<Value>(path), &session);
             let _ = tx.send(Msg::NodeThreads { session, threads });
         });
@@ -1018,6 +1046,22 @@ impl App {
                 self.loaded = true;
                 self.offline = false;
             }
+            Msg::SyncError(error) => self.fail(error),
+            Msg::RemoteDiff { id, result } => match result {
+                Err(error) => self.fail(error),
+                Ok(value) => {
+                    if self.sel == Some(Key::P(id)) {
+                        self.open_reader();
+                        if let Some(reader) = self.reader.as_mut() {
+                            let diff = value["diff"].as_str().unwrap_or("");
+                            let head = value["head_sha"].as_str().unwrap_or("unknown");
+                            reader.parts.push(Part::Text(format!("## Diff at {head}\n\n```diff\n{diff}\n```")));
+                            if value["truncated"] == true { reader.parts.push(Part::Text("Diff truncated by destination; open the PR for the complete diff.".into())); }
+                        }
+                        self.rebuild_reader();
+                    }
+                }
+            },
             Msg::Offline => {
                 self.connected = false;
                 self.offline = true;
@@ -1112,7 +1156,7 @@ impl App {
                 s.remote = Remote::Pending;
             }
             self.spawn(move |tx| {
-                let result = Client::for_user(Duration::from_secs(120))
+                let result = Client::for_tui(Duration::from_secs(120))
                     .get::<Value>(&format!("/v1/search?q={}", urlencode(&q)))
                     .map(|v| {
                         let via = v["via"].as_str().unwrap_or("").to_string();
@@ -1246,7 +1290,7 @@ impl App {
     }
 
     fn reload_schedules(&mut self) {
-        match Client::for_user(Duration::from_secs(5)).get::<Value>("/v1/schedules") {
+        match Client::for_tui(Duration::from_secs(5)).get::<Value>("/v1/schedules") {
             Ok(value) => {
                 self.schedules = value["schedules"].as_array().cloned().unwrap_or_default();
                 self.schedule_idx = self.schedule_idx.min(self.schedules.len().saturating_sub(1));
@@ -1268,13 +1312,13 @@ impl App {
                 let id = value["id"].as_str().unwrap_or("").to_owned();
                 let enabled = value["enabled"].as_bool().unwrap_or(false);
                 value["enabled"] = json!(!enabled);
-                match Client::for_user(Duration::from_secs(15)).put(&format!("/v1/schedules/{}", urlencode(&id)), &value) {
+                match Client::for_tui(Duration::from_secs(15)).put(&format!("/v1/schedules/{}", urlencode(&id)), &value) {
                     Ok(_) => self.reload_schedules(), Err(e) => self.fail(e.to_string()),
                 }
             },
             KeyCode::Enter => if let Some(value) = selected {
                 let id = value["id"].as_str().unwrap_or("");
-                match Client::for_user(Duration::from_secs(15)).post(&format!("/v1/schedules/{}/run", urlencode(id)), &json!({})) {
+                match Client::for_tui(Duration::from_secs(15)).post(&format!("/v1/schedules/{}/run", urlencode(id)), &json!({})) {
                     Ok(_) => { self.flash(tr!("Task created", "Tarea creada")); self.reload_schedules(); },
                     Err(e) => { self.fail(e.to_string()); self.reload_schedules(); },
                 }
@@ -1284,7 +1328,7 @@ impl App {
                 let now = now_millis();
                 if self.schedule_delete.as_ref().is_some_and(|(pending, until)| pending == id && now < *until) {
                     self.schedule_delete = None;
-                    match Client::for_user(Duration::from_secs(15)).delete(&format!("/v1/schedules/{}", urlencode(id))) {
+                    match Client::for_tui(Duration::from_secs(15)).delete(&format!("/v1/schedules/{}", urlencode(id))) {
                         Ok(()) => self.reload_schedules(), Err(e) => self.fail(e.to_string()),
                     }
                 } else {
@@ -1384,7 +1428,7 @@ impl App {
     fn load_issues(&self, refresh: bool) {
         self.spawn(move |tx| {
             let path = if refresh { "/v1/issues?refresh=1" } else { "/v1/issues" };
-            let result = Client::for_user(Duration::from_secs(40)).get::<Value>(path).map_err(|e| e.to_string()).and_then(|v| {
+            let result = Client::for_tui(Duration::from_secs(40)).get::<Value>(path).map_err(|e| e.to_string()).and_then(|v| {
                 let issues = serde_json::from_value(v["issues"].clone()).map_err(|e| e.to_string())?;
                 Ok((issues, v["error"].as_str().map(str::to_string)))
             });
@@ -1395,7 +1439,7 @@ impl App {
     /// Fetches the options for "New" once, when it opens or its project changes.
     fn load_options(&self, project: Option<String>) {
         self.spawn(move |tx| {
-            let client = Client::for_user(Duration::from_secs(10));
+            let client = Client::for_tui(Duration::from_secs(10));
             let query = project.as_deref().map(|p| format!("?project={}", urlencode(p))).unwrap_or_default();
             let result = client
                 .get::<Value>(&format!("/v1/options{query}"))
@@ -1514,7 +1558,11 @@ impl App {
                 if shown_elsewhere.is_empty() {
                     self.fail(tr!("No image or file to open here", "Aquí no hay imagen ni fichero que abrir"));
                 } else {
-                    shown_elsewhere.iter().for_each(|p| open_with_mac(p));
+                    if crate::service_client::target().is_some() {
+                        for path in shown_elsewhere {
+                            if let Err(error) = open_remote_file(&path) { self.fail(error.to_string()); return Flow::Go; }
+                        }
+                    } else { shown_elsewhere.iter().for_each(|p| open_with_mac(p)); }
                     self.flash(tr!("Opened with its app", "Abierto con su aplicación"));
                 }
             }
@@ -1535,6 +1583,18 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
+                if crate::service_client::target().is_some() {
+                    if let Some(pr) = self.selected_pr() {
+                        let id = pr.pr.id;
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            let result = Client::for_tui(Duration::from_secs(90)).get::<Value>(&format!("/v1/prs/{id}/diff-snapshot")).map_err(|e| e.to_string());
+                            let _ = tx.send(Msg::RemoteDiff { id, result });
+                        });
+                        self.flash(tr!("Loading the destination's PR diff…", "Cargando el diff del PR desde el destino…"));
+                    }
+                    return Flow::Go;
+                }
                 if let Some(p) = self.selected_pr() {
                     let cwd = self.node(&p.pr.session_id).and_then(|n| n.cwd.clone());
                     match clone_of(cwd.as_deref(), &p.pr.repo) {
@@ -1634,7 +1694,7 @@ impl App {
         let name = name.to_string();
         self.flash(trf!("Closing {name}…", "Cerrando {name}…"));
         self.spawn(move |tx| {
-            let result = Client::for_user(Duration::from_secs(90)).post(&path, &json!({ "force": force })).map_err(|e| e.to_string()).map(|v| {
+            let result = Client::for_tui(Duration::from_secs(90)).post(&path, &json!({ "force": force })).map_err(|e| e.to_string()).map(|v| {
                 if v.get("interactive").and_then(Value::as_bool) == Some(true) { Closed::LeftFleet } else { Closed::Removed }
             });
             let _ = tx.send(Msg::Closed { name, result });
@@ -1715,7 +1775,7 @@ impl App {
             }
             let result = std::fs::read(&path)
                 .map_err(|e| e.to_string())
-                .and_then(|bytes| Client::for_user(Duration::from_secs(120)).upload(&name, &bytes).map_err(|e| e.to_string()))
+                .and_then(|bytes| Client::for_tui(Duration::from_secs(120)).upload(&name, &bytes).map_err(|e| e.to_string()))
                 .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "no id".to_string()));
             let _ = tx.send(Msg::Uploaded { seq, result });
         });

@@ -1,0 +1,18 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "alondra_e2e",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_e2e",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "alondra_e2e_test",
+    crate = ":alondra_e2e",
+    edition = "2024",
+)

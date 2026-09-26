@@ -30,8 +30,13 @@ fn check(name: &'static str, status: Status, detail: impl Into<String>, fix: imp
 }
 
 fn output(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
-    let child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    command_output(command, timeout)
+}
+
+fn command_output(mut command: Command, timeout: Duration) -> Option<(bool, String)> {
+    let child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -214,6 +219,22 @@ pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -
     }
 }
 
+fn notification_checks(home: &Path, up: bool, legacy_probe: impl FnOnce() -> Result<Value, String>) -> Vec<Check> {
+    // A present but invalid service configuration must never select legacy APNs.
+    if home.join("service.toml").symlink_metadata().is_ok() {
+        return vec![check("service push", Status::Warn,
+            tr!("Service configuration present; encrypted push delivery needs a paired-device test",
+                "Configuración de servicio presente; la entrega cifrada requiere probar un dispositivo vinculado"),
+            "alondrad --test-service-push <device-id>")];
+    }
+    let text = std::fs::read_to_string(home.join("apns.json")).ok();
+    let apns = apns_file_check(text.as_deref(), |p| p.is_file());
+    let ready = apns.status == Status::Pass;
+    let mut checks = vec![apns];
+    if ready && up { checks.push(push_round_trip(legacy_probe())); }
+    checks
+}
+
 /// `/v1/push/check` sends to a made-up token: Apple answering BadDeviceToken proves the key,
 /// team and topic are accepted; 403 means the key or team is wrong.
 pub fn push_round_trip(result: Result<Value, String>) -> Check {
@@ -238,6 +259,14 @@ pub fn claude_version_check(out: Option<&str>) -> Check {
     match out.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => check("claude", Status::Pass, v.to_string(), ""),
         None => check("claude", Status::Fail, tr!("Claude Code (`claude`) is not on PATH", "Claude Code (`claude`) no está en el PATH"), "https://docs.claude.com/claude-code"),
+    }
+}
+
+fn claude_auth_check(result: Result<bool>) -> Check {
+    match result {
+        Ok(true) => check("claude auth", Status::Pass, "Claude Code is signed in for the daemon environment", ""),
+        Ok(false) => check("claude auth", Status::Fail, "Claude Code is not signed in", "alondra setup"),
+        Err(error) => check("claude auth", Status::Fail, error.to_string(), "alondra setup"),
     }
 }
 
@@ -294,23 +323,31 @@ pub fn run(json_out: bool) -> Result<()> {
     let print = output("launchctl", &["print", &format!("gui/{uid}/{}", local.service_label)], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(service_check(print.as_deref(), &local.service_label));
 
-    let claude = output("claude", &["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t);
+    let user_home = config::home_dir(&env);
+    let plist = user_home.join("Library/LaunchAgents").join(format!("{}.plist", local.service_label));
+    let context = setup::read_plist(&plist).and_then(|v| {
+        let vars = v.get("EnvironmentVariables").cloned().unwrap_or(Value::Null);
+        let vars = serde_json::from_value(vars)?;
+        crate::claude_auth::ContextEnv::from_environment(&user_home, &vars)
+    });
+    let claude = context.as_ref().ok().and_then(|c| c.command().ok())
+        .and_then(|mut cmd| { cmd.arg("--version"); command_output(cmd, Duration::from_secs(10)) })
+        .filter(|(ok, _)| *ok).map(|(_, text)| text);
     checks.push(claude_version_check(claude.as_deref()));
+    checks.push(claude_auth_check(context.as_ref().map_err(|e| anyhow::anyhow!("{e}")).and_then(|c| c.status())));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
-    checks.push(plugin_check(setup::plugin_list().as_ref(), setup::has_marketplace(), repo.as_deref()));
+    let plugins = context.as_ref().ok().and_then(setup::plugin_list);
+    let marketplace = context.as_ref().is_ok_and(setup::has_marketplace);
+    checks.push(plugin_check(plugins.as_ref(), marketplace, repo.as_deref()));
 
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
     let tuicr = output("tuicr", &["--version"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tuicr_check(tuicr.as_deref()));
 
-    let apns_text = std::fs::read_to_string(home.join("apns.json")).ok();
-    let apns = apns_file_check(apns_text.as_deref(), |p| p.is_file());
-    let apns_ok = apns.status == Status::Pass;
-    checks.push(apns);
-    if apns_ok && up {
-        checks.push(push_round_trip(client.post("/v1/push/check", &json!({})).map_err(|e| e.to_string())));
-    }
+    checks.extend(notification_checks(&home, up, || {
+        client.post("/v1/push/check", &json!({})).map_err(|e| e.to_string())
+    }));
     if up {
         let devices = client.get::<Value>("/v1/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
         checks.push(if devices > 0 {
@@ -349,6 +386,45 @@ pub fn run(json_out: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_notifications_never_probe_legacy_even_with_invalid_config() {
+        let home = std::env::temp_dir().join(format!("alondra-doctor-service-{}-{}", std::process::id(), alondra_core::now_millis()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("service.toml"), "invalid configuration").unwrap();
+        let key = home.join("test-key.p8");
+        std::fs::write(&key, "test fixture, not a real key").unwrap();
+        std::fs::write(home.join("apns.json"), serde_json::to_vec(&json!({
+            "key_path": key, "key_id": "test", "team_id": "test", "topic": "test"
+        })).unwrap()).unwrap();
+        let checks = notification_checks(&home, true, || panic!("service mode must never send a legacy APNs probe"));
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "service push");
+        assert_eq!(checks[0].status, Status::Warn, "configuration presence cannot prove delivery");
+        std::fs::remove_file(home.join("service.toml")).unwrap();
+        let mut called = false;
+        let checks = notification_checks(&home, true, || {
+            called = true;
+            Ok(json!({"status":400,"body":"BadDeviceToken"}))
+        });
+        assert!(called, "legacy-only mode retains its explicit diagnostic");
+        assert_eq!(checks[0].name, "apns");
+        assert_eq!(checks[0].status, Status::Pass);
+        assert_eq!(checks.len(), 2);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn configured_command_preserves_environment_and_times_out() {
+        let mut command = Command::new("/bin/sh");
+        command.env_clear().env("ALONDRA_DOCTOR_TEST", "configured").args(["-c", "printf '%s' \"$ALONDRA_DOCTOR_TEST\""]);
+        assert_eq!(command_output(command, Duration::from_secs(2)), Some((true, "configured".into())));
+        let mut blocked = Command::new("/bin/sleep");
+        blocked.arg("10");
+        let started = std::time::Instant::now();
+        assert!(command_output(blocked, Duration::from_millis(100)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn tuicr_is_checked_for_presence_and_version() {

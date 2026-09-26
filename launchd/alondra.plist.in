@@ -11,7 +11,10 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>@BIN@:@HOME@/.claude/local:@HOME@/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>@PATH@</string>
+        <key>HOME</key>
+        <string>@HOME@</string>
+        @CLAUDE_CONFIG_ENV@
         <key>ALONDRA_HOME</key>
         <string>@ALONDRA_HOME@</string>
     </dict>
