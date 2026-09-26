@@ -909,7 +909,7 @@ impl AccountLock {
         if unsafe { libc::flock(file.as_raw_fd(), flags) } != 0 {
             let error = std::io::Error::last_os_error();
             if nonblocking && error.kind() == std::io::ErrorKind::WouldBlock {
-                bail!("account login or refresh is busy; retry when it finishes");
+                return Err(AccountBusy.into());
             }
             return Err(error.into());
         }
@@ -934,13 +934,26 @@ fn cached_for_session(cache: Option<&CachedAccount>, session: &Session) -> Resul
         .map(|(_, token, _)| token.clone()))
 }
 
+/// Contention is temporary and does not indicate expired credentials.
+#[derive(Debug)]
+pub(crate) struct AccountBusy;
+impl std::fmt::Display for AccountBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("account login or refresh is busy; retry when it finishes")
+    }
+}
+impl std::error::Error for AccountBusy {}
+
 /// A short-lived access-token cache avoids a refresh for every encrypted file chunk.
 /// Inspect persisted session under the process lock, so logout/account changes invalidate it.
 pub fn token_for_service() -> Result<AccountToken> {
     static CACHE: std::sync::Mutex<Option<CachedAccount>> = std::sync::Mutex::new(None);
     let mut cache = CACHE
         .try_lock()
-        .map_err(|_| anyhow!("account login or refresh is busy; retry when it finishes"))?;
+        .map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => anyhow::Error::new(AccountBusy),
+            std::sync::TryLockError::Poisoned(_) => anyhow!("account token cache lock poisoned"),
+        })?;
     let _lock = AccountLock::for_service()?;
     let session = stored().context("sign in with alondra login before connecting to a remote Mac")?;
     if let Some(token) = cached_for_session(cache.as_ref(), &session)? {
@@ -992,6 +1005,7 @@ mod account_lock_tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("busy"));
+        assert!(error.is::<AccountBusy>());
         assert!(
             began.elapsed() < Duration::from_secs(1),
             "service login never waits behind browser login"

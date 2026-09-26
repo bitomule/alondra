@@ -445,6 +445,11 @@ pub fn run() -> Result<()> {
     res
 }
 
+fn background_sync_error(error: &anyhow::Error, prefix: &str) -> Msg {
+    if error.is::<crate::account::AccountBusy>() { Msg::Offline }
+    else { Msg::SyncError(format!("{prefix}{error}")) }
+}
+
 fn sync_loop(tx: SyncSender<Msg>) {
     let quick = if crate::service_client::target().is_some() { Client::for_tui(Duration::from_secs(15)) } else { Client::new(Duration::from_secs(5)) };
     let waiter = if crate::service_client::target().is_some() { Client::for_tui(Duration::from_secs(70)) } else { Client::new(Duration::from_secs(70)) };
@@ -460,7 +465,7 @@ fn sync_loop(tx: SyncSender<Msg>) {
                 tick
             }
             Err(error) => {
-                if was_online && crate::service_client::target().is_some() { let _ = tx.send(Msg::SyncError(error.to_string())); }
+                if was_online && crate::service_client::target().is_some() { let _ = tx.send(background_sync_error(&error, "")); }
                 if was_online && tx.send(Msg::Offline).is_err() {
                     return;
                 }
@@ -470,7 +475,7 @@ fn sync_loop(tx: SyncSender<Msg>) {
             }
         };
         if let Err(error) = waiter.get::<Value>(&format!("/v1/changes?after={tick}&wait=50")) {
-            if crate::service_client::target().is_some() { let _ = tx.send(Msg::SyncError(format!("Remote change wait failed: {error}"))); }
+            if crate::service_client::target().is_some() { let _ = tx.send(background_sync_error(&error, "Remote change wait failed: ")); }
             std::thread::sleep(Duration::from_secs(1));
         }
     }
@@ -2289,6 +2294,15 @@ fn new_reader(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn background_contention_retries_but_real_errors_remain_visible() {
+        let busy = anyhow::Error::new(crate::account::AccountBusy).context("request submission uncertain");
+        assert!(matches!(super::background_sync_error(&busy, "wait: "), super::Msg::Offline));
+        let denied = anyhow::anyhow!("relay authentication failed (HTTP 401)");
+        assert!(matches!(super::background_sync_error(&denied, "wait: "),
+            super::Msg::SyncError(text) if text.contains("HTTP 401")));
+    }
+
     use super::*;
     use alondra_core::{QuestionOption, QuestionStatus, ReportKind};
 
