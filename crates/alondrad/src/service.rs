@@ -551,33 +551,56 @@ impl Service {
                 continue;
             }
             let Some(binding) = self.journal.push_binding(id)? else { continue };
-            let (payload, with_sound) = self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes());
-            let body = match self.encode_push(id, device, &binding, &payload, with_sound) {
-                Ok(body) => body,
-                Err(error) => {
-                    log!("service push for {id} skipped: {error:#}");
-                    continue;
-                }
-            };
-            let epoch = match epoch {
-                Some(epoch) => epoch,
-                None => {
-                    let fresh = self.bootstrap().await?;
-                    epoch = Some(fresh);
-                    fresh
-                }
-            };
-            // Bootstrap can block on a disconnected relay. Recheck after that
-            // await so a local revocation or rotation cannot use a stale binding.
-            if !self.auth.approved_key_matches(id, &device.signing)
-                || !self.journal.enrollment_active(id)?
-                || self.journal.push_binding(id)?.as_deref() != Some(binding.as_str()) {
-                continue;
-            }
-            if let Err(error) = self.signed(Method::POST, "/v1/mac/push", body, &epoch)
-                .await.and_then(|response| response.error_for_status().map_err(Into::into)) {
+            if let Err(error) = self.send_device_push(id, device, &binding, payload, with_sound, &mut epoch).await {
                 log!("service push for {id} failed: {error:#}");
             }
+        }
+        Ok(())
+    }
+
+    /// An explicit local diagnostic: no Hub, task, report or legacy APNs sender.
+    pub async fn test_push(&self, id: &str) -> Result<()> {
+        let device = self.devices.get(id).context("device is not configured for the service")?;
+        self.require_push_approval(id, device)?;
+        let binding = self.journal.push_binding(id)?.context("device has no active push binding")?;
+        let payload = json!({"aps":{"alert":{
+            "title":"Prueba cifrada de Alondra",
+            "body":"Diagnóstico enviado desde tu Mac. Si lees este texto, tu dispositivo ha descifrado la notificación."
+        }}});
+        self.send_device_push(id, device, &binding, &payload, true, &mut None).await
+    }
+
+    fn require_push_approval(&self, id: &str, device: &Device) -> Result<()> {
+        // The diagnostic is a separate process: re-read persisted approval so
+        // revocation by the running daemon is observed after bootstrap too.
+        if !self.auth.approved_key_matches(id, &device.signing)
+            || !Auth::open(&self.home)?.approved_key_matches(id, &device.signing)
+            || !self.journal.enrollment_active(id)? {
+            bail!("device is not actively enrolled and locally approved");
+        }
+        Ok(())
+    }
+
+    async fn send_device_push(&self, id: &str, device: &Device, binding: &str, payload: &Value,
+        with_sound: bool, epoch: &mut Option<[u8; 16]>) -> Result<()> {
+        self.require_push_approval(id, device)?;
+        let (payload, with_sound) = self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes());
+        let body = self.encode_push(id, device, binding, &payload, with_sound)?;
+        let current_epoch = match *epoch {
+            Some(epoch) => epoch,
+            None => {
+                let fresh = self.bootstrap().await?;
+                *epoch = Some(fresh);
+                fresh
+            }
+        };
+        self.require_push_approval(id, device)?;
+        if self.journal.push_binding(id)?.as_deref() != Some(binding) {
+            bail!("device push binding changed while preparing delivery");
+        }
+        let response = self.signed(Method::POST, "/v1/mac/push", body, &current_epoch).await?;
+        if response.status() != reqwest::StatusCode::ACCEPTED {
+            bail!("relay did not accept encrypted push (HTTP {})", response.status());
         }
         Ok(())
     }
@@ -1077,10 +1100,9 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[tokio::test]
-    async fn service_push_contains_only_ciphertext_outside_and_enforces_budget() {
+    fn push_fixture() -> (Service, SecretKey) {
         let home = std::env::temp_dir().join(format!(
-            "alondra-encrypted-push-{}-{}", std::process::id(), now_ms()
+            "alondra-encrypted-push-{}-{}", std::process::id(), crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
@@ -1112,6 +1134,13 @@ agreement_key = "{}"
             URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_bytes()));
         std::fs::write(home.join("service.toml"), config).unwrap();
         let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+        (service, phone_agreement)
+    }
+
+    #[tokio::test]
+    async fn service_push_contains_only_ciphertext_outside_and_enforces_budget() {
+        let (service, phone_agreement) = push_fixture();
+        let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let device = service.devices.get("phone-1").unwrap();
         assert!(service.auth.approved_key_matches("phone-1", &device.signing));
         let binding = URL_SAFE_NO_PAD.encode([4u8; 32]);
@@ -1171,6 +1200,110 @@ agreement_key = "{}"
         let huge = json!({"aps":{"alert":{"body":"x".repeat(MAX_PUSH_PLAINTEXT)}}});
         assert!(service.encode_push("phone-1", &device, &binding, &huge, true).is_err());
     }
+    fn activate_push(service: &Service) {
+        let key = service.devices["phone-1"].signing.to_sec1_bytes();
+        service.journal.reserve_enrollment("phone-1", &key).unwrap();
+        service.journal.activate_enrollment("phone-1").unwrap();
+        service.journal.set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([4u8;32]), None).unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostic_push_refuses_wrong_unenrolled_unbound_and_revoked_devices() {
+        let (service, _) = push_fixture();
+        assert!(service.test_push("wrong").await.unwrap_err().to_string().contains("not configured"));
+        assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("not actively enrolled"));
+        let key = service.devices["phone-1"].signing.to_sec1_bytes();
+        service.journal.reserve_enrollment("phone-1", &key).unwrap();
+        service.journal.activate_enrollment("phone-1").unwrap();
+        assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("no active push binding"));
+        service.journal.set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([4u8;32]), None).unwrap();
+        // Another process revokes the local pairing; this Service's Auth is stale.
+        Auth::open(&service.home).unwrap().revoke("phone-1").unwrap();
+        assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("not actively enrolled"));
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostic_push_uses_encrypted_route_and_requires_exact_acceptance() {
+        use axum::{Router, routing::{get, post}, Json};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (mut service, phone_agreement) = push_fixture();
+        activate_push(&service);
+        let now = local_minutes();
+        let time = |m: u32| format!("{:02}:{:02}", m / 60, m % 60);
+        service.journal.set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([4u8;32]),
+            Some(QuietHours { start: Some(time((now + 1380) % 1440)), end: Some(time((now + 60) % 1440)) })).unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let seen = requests.clone();
+        let status = Arc::new(AtomicUsize::new(502));
+        let answer = status.clone();
+        let router = Router::new().route("/v1/bootstrap", get(|| async {
+            Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])}))
+        })).route("/v1/mac/push", post(move |Json(body): Json<Value>| {
+            let seen = seen.clone(); let answer = answer.clone();
+            async move {
+                seen.lock().unwrap().push(body);
+                axum::http::StatusCode::from_u16(answer.load(Ordering::SeqCst) as u16).unwrap()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("502"));
+        status.store(200, Ordering::SeqCst);
+        assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("200"));
+        status.store(202, Ordering::SeqCst);
+        service.test_push("phone-1").await.unwrap();
+        let sent = requests.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        for body in sent.iter() {
+            assert_eq!(body["device_id"], "phone-1");
+            assert!(!body.to_string().contains("Prueba cifrada"));
+            let envelope: EnvelopeV1 = serde_json::from_value(body["envelope"].clone()).unwrap();
+            let plaintext = envelope.open(service.signing.verifying_key(), &phone_agreement,
+                "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+            let content: Value = serde_json::from_slice(&plaintext).unwrap();
+            assert_eq!(content["payload"]["aps"]["alert"]["title"], "Prueba cifrada de Alondra");
+            assert!(content["payload"].get("alondra").is_none(), "no invented report target");
+            assert_eq!(content["payload"]["aps"]["interruption-level"], "passive");
+            assert_eq!(content["with_sound"], false);
+            assert_eq!(content["push_binding"], URL_SAFE_NO_PAD.encode([4u8;32]));
+        }
+        server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostic_push_rechecks_binding_and_revocation_after_bootstrap() {
+        use axum::{Router, routing::{get, post}, Json};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for revoke in [false, true] {
+            let (mut service, _) = push_fixture();
+            activate_push(&service);
+            let home = service.home.clone();
+            let sent = Arc::new(AtomicUsize::new(0)); let observed = sent.clone();
+            let router = Router::new().route("/v1/bootstrap", get(move || {
+                let home = home.clone();
+                async move {
+                    if revoke { Auth::open(&home).unwrap().revoke("phone-1").unwrap(); }
+                    else { Journal::open(home.join("service-receipts.sqlite")).unwrap()
+                        .set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([9u8;32]), None).unwrap(); }
+                    Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])}))
+                }
+            })).route("/v1/mac/push", post(move || { let observed = observed.clone(); async move {
+                observed.fetch_add(1, Ordering::SeqCst); axum::http::StatusCode::ACCEPTED
+            }}));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let error = service.test_push("phone-1").await.unwrap_err().to_string();
+            assert!(error.contains(if revoke { "not actively enrolled" } else { "binding changed" }));
+            assert_eq!(sent.load(Ordering::SeqCst), 0);
+            server.abort();
+            std::fs::remove_dir_all(&service.home).unwrap();
+        }
+    }
+
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
         let accepts = |method: &str, path: &str, body: Option<Value>| approved_method(&LocalRequest {
