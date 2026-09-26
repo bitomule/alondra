@@ -456,7 +456,7 @@ private actor DeadlineHTTPGate {
     init(returnsLate: Bool) { self.returnsLate = returnsLate }
     func wait() async throws {
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if didCancel { continuation.resume(throwing: CancellationError()); return }
                 response = continuation
                 didStart = true
