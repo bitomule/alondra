@@ -51,8 +51,38 @@ struct Counters {
     expected_denials: u64,
     errors: u64,
     holds: Vec<(u64, u64)>,
+    failure_categories: BTreeMap<String, u64>,
+    failure_buckets_30s: BTreeMap<u64, BTreeMap<String, u64>>,
 }
 impl Counters {
+    fn record_response(
+        &mut self,
+        account: usize,
+        response: &Result<(u16, Value)>,
+        start: Instant,
+        origin: Instant,
+        held: bool,
+        revoked: bool,
+    ) {
+        self.record(
+            account,
+            response.as_ref().ok().map(|r| r.0),
+            start,
+            origin,
+            held,
+            overload(response),
+            revoked,
+        );
+        if let Some(category) = failure_category(response) {
+            *self.failure_categories.entry(category.clone()).or_default() += 1;
+            *self
+                .failure_buckets_30s
+                .entry(origin.elapsed().as_secs() / 30)
+                .or_default()
+                .entry(category)
+                .or_default() += 1;
+        }
+    }
     fn record(
         &mut self,
         account: usize,
@@ -158,7 +188,42 @@ impl Counters {
             "accepted_responses":self.statuses.get(&200).unwrap_or(&0)+self.statuses.get(&204).unwrap_or(&0),"latency_cohorts":summaries,"account_fairness":fairness,"requests":self.count,"statuses":self.statuses,"unexpected_errors":self.errors,
             "p50_ms":percentile(50),"p95_ms":percentile(95),"p99_ms":percentile(99),
             "mean_ms":self.total_ms/self.count.max(1) as f64,"accounts":self.accounts,"account_columns":["accepted","expected_overload","unexpected_error","expected_revoked"],"expected_revocation_denials":self.expected_denials,
+            "failure_categories":self.failure_categories,"failure_buckets_30s":self.failure_buckets_30s,
             "completed_idle_holds_19s":self.holds.len(),"overlapping_successful_idle_holds":peak})
+    }
+}
+// Only public protocol codes and transport classes enter diagnostic artifacts.
+// Never copy a provider body, URL, bearer token or error Display implementation.
+fn failure_category(result: &Result<(u16, Value)>) -> Option<String> {
+    match result {
+        Ok((status, _)) if *status < 400 => None,
+        Ok((status, value)) => {
+            let code = match value["error"].as_str() {
+                Some(
+                    code @ ("too_many_polls"
+                    | "queue_full"
+                    | "server_busy"
+                    | "account_access_unavailable"
+                    | "account_access_denied"
+                    | "unauthorized"
+                    | "relay_epoch_changed"
+                    | "stale_cursor"
+                    | "not_found"),
+                ) => code,
+                _ => "unrecognized_code",
+            };
+            Some(format!("http_{status}_{code}"))
+        }
+        Err(error) => {
+            let category = match error.downcast_ref::<reqwest::Error>() {
+                Some(error) if error.is_timeout() => "transport_timeout",
+                Some(error) if error.is_connect() => "transport_connect",
+                Some(error) if error.is_body() => "transport_body",
+                Some(error) if error.is_decode() => "transport_decode",
+                _ => "transport_other",
+            };
+            Some(category.into())
+        }
     }
 }
 fn overload(result: &Result<(u16, Value)>) -> bool {
@@ -193,10 +258,12 @@ async fn reliable(
             tokio::time::sleep(Duration::from_millis(250 + (attempt % 7) * 19)).await;
             continue;
         }
-        let (status, value) = result?;
+        let category = failure_category(&result);
+        let (status, value) =
+            result.map_err(|_| anyhow::anyhow!("mixed operation {method} {path}: {category:?}"))?;
         ensure!(
             status == expected,
-            "mixed operation {method} {path}: status {status}, expected {expected}"
+            "mixed operation {method} {path}: status {status}, expected {expected}, category={category:?}"
         );
         return Ok(value);
     }
@@ -391,15 +458,10 @@ async fn burst(
                         vec![],
                     )
                     .await;
-                counters.lock().unwrap().record(
-                    link.owner,
-                    response.as_ref().ok().map(|r| r.0),
-                    start,
-                    origin,
-                    false,
-                    overload(&response),
-                    false,
-                );
+                counters
+                    .lock()
+                    .unwrap()
+                    .record_response(link.owner, &response, start, origin, false, false);
             }
         }));
     }
@@ -629,13 +691,12 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                 }
                 let idle_reply = matches!(&response, Ok((200, value))
                     if value["changes"].as_array().is_some_and(Vec::is_empty));
-                polls.lock().unwrap().record(
+                polls.lock().unwrap().record_response(
                     link.owner,
-                    code,
+                    &response,
                     start,
                     origin,
                     idle_reply,
-                    overload(&response),
                     lane % links.len() == 3 && revoked.load(Ordering::Relaxed),
                 );
                 tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
@@ -666,15 +727,10 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                     )
                     .await;
                 let code = response.as_ref().ok().map(|v| v.0);
-                work_polls.lock().unwrap().record(
-                    link.owner,
-                    code,
-                    start,
-                    origin,
-                    true,
-                    overload(&response),
-                    false,
-                );
+                work_polls
+                    .lock()
+                    .unwrap()
+                    .record_response(link.owner, &response, start, origin, true, false);
                 tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
                     400 + (lane % 13) as u64 * 17
                 } else {
@@ -934,6 +990,37 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostic_codes_are_allowlisted_and_bucketed_without_body_or_url() {
+        let response = Ok((
+            503,
+            json!({"error":"account_access_unavailable", "secret":"do-not-record"}),
+        ));
+        let mut counters = Counters::default();
+        let now = Instant::now();
+        counters.record_response(0, &response, now, now, false, false);
+        let report = counters.json();
+        assert_eq!(
+            report["failure_categories"]["http_503_account_access_unavailable"],
+            1
+        );
+        assert_eq!(
+            report["failure_buckets_30s"]["0"]["http_503_account_access_unavailable"],
+            1
+        );
+        assert!(!report.to_string().contains("do-not-record"));
+        assert_eq!(
+            failure_category(&Ok((503, json!({"error":"secret-provider-body"})))),
+            Some("http_503_unrecognized_code".into())
+        );
+        assert_eq!(
+            failure_category(&Err(anyhow::anyhow!(
+                "https://secret.example/?token=secret"
+            ))),
+            Some("transport_other".into())
+        );
+    }
+
     #[test]
     fn overload_histogram_cannot_hide_accepted_latency() {
         let mut counters = Counters::default();
