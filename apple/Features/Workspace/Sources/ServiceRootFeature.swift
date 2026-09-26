@@ -1,3 +1,4 @@
+import AlondraNewWorkFeature
 import AlondraPullRequestsFeature
 import AlondraShared
 import ComposableArchitecture
@@ -8,10 +9,12 @@ public struct ServiceRootFeature {
     @ObservableState
     public struct State {
         public init() {}
-        public enum Tab: Hashable { case inbox, tasks, account }
+        public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
         public var tab = Tab.inbox
         public var triage = ServiceTriageFeature.State()
         public var tasks = ServiceTasksFeature.State()
+        public var fleet = ServiceFleetFeature.State()
+        public var newRequest = NewRequestFeature.State()
         @Presents public var pullRequest: ServicePullRequestFeature.State?
         public var pendingInboxID: String?
     }
@@ -20,11 +23,15 @@ public struct ServiceRootFeature {
         case focusInbox(String)
         case triage(ServiceTriageFeature.Action)
         case tasks(ServiceTasksFeature.Action)
+        case fleet(ServiceFleetFeature.Action)
+        case newRequest(NewRequestFeature.Action)
         case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
     }
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
+        Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
+        Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
             switch action {
             case .tabSelected(let tab): state.tab = tab; return .none
@@ -33,7 +40,8 @@ public struct ServiceRootFeature {
                 state.pendingInboxID = id
                 return routePending(&state)
             case .triage(.triage(.inboxUpdated)):
-                let routing = routePending(&state)
+                let routing: Effect<Action> = .merge(routePending(&state),
+                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
                 guard let detail = state.pullRequest else { return routing }
                 guard state.triage.triage.hasSnapshot else {
                     return .merge(routing, .send(.pullRequest(.presented(.snapshotUnavailable))))
@@ -53,7 +61,10 @@ public struct ServiceRootFeature {
                     state.pullRequest = nil
                 }
                 return .none
-            case .triage, .tasks, .pullRequest: return .none
+            case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(true)))
+            case .triage:
+                return .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs)))
+            case .tasks, .pullRequest, .fleet, .newRequest: return .none
             }
         }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
     }

@@ -1,4 +1,6 @@
 import AlondraWorkspaceFeature
+import AlondraFleetFeature
+import AlondraNewWorkFeature
 import AlondraAppComposition
 import AlondraCloudPairingFeature
 import AlondraPullRequestsFeature
@@ -32,6 +34,8 @@ private final class ServiceSceneContext {
         let tasks = await services.taskOperations()
         let schedules = await services.scheduleOperations()
         let prs = await services.pullRequestOperations()
+        let nodes = await services.nodeOperations()
+        let newWork = await services.newWorkOperations()
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
             $0.triageService = triage
@@ -39,6 +43,8 @@ private final class ServiceSceneContext {
             $0.taskOperations = tasks
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
+            $0.nodeOperations = nodes
+            $0.newWorkOperations = newWork
             $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
         }
     }
@@ -67,6 +73,12 @@ private struct ServiceRootView: View {
             }.badge(store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
                 ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) })
+            }
+            Tab("Fleet", systemImage: "circle.hexagongrid", value: ServiceRootFeature.State.Tab.fleet) {
+                ServiceFleetView(store: store.scope(state: \.fleet, action: \.fleet))
+            }
+            Tab("New", systemImage: "plus.bubble", value: ServiceRootFeature.State.Tab.newRequest) {
+                NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }
             }
             Tab("Account", systemImage: "person.crop.circle", value: ServiceRootFeature.State.Tab.account) {
                 NavigationStack { CloudPairingScreen(store: pairing) }
