@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -31,6 +31,31 @@ const MAX_RELAY_RESPONSE: usize = 256 * 1024;
 // generic aps fields, binding, JSON escaping, and future metadata.
 const MAX_PUSH_BODY: usize = 3_000;
 const MAX_PUSH_PLAINTEXT: usize = 1_500;
+const MAX_CHANGES_PER_DEVICE: usize = 2;
+const MAX_CHANGES_TOTAL: usize = 16;
+
+type WorkKey = (String, String);
+type InFlight = Arc<Mutex<HashMap<WorkKey, ([u8; 32], bool)>>>;
+
+/// A live executor owns the receipt until response upload finishes. A lease
+/// redelivery must not mistake its durable `executing` row for a crashed process.
+struct WorkGuard {
+    inflight: InFlight,
+    key: WorkKey,
+    changes: bool,
+    saturated: bool,
+}
+impl Drop for WorkGuard {
+    fn drop(&mut self) {
+        self.inflight.lock().expect("inflight lock poisoned").remove(&self.key);
+    }
+}
+
+struct PreparedWork {
+    request: LocalRequest,
+    digest: [u8; 32],
+    guard: WorkGuard,
+}
 
 /// Device preferences are stored on the executor and travel only inside E2E
 /// envelopes. Clock semantics deliberately match legacy: executor local time.
@@ -99,6 +124,7 @@ pub struct Service {
     local_port: u16,
     home: PathBuf,
     transfers: Arc<crate::service_files::Transfers>,
+    inflight: InFlight,
 }
 
 #[derive(Deserialize)]
@@ -217,6 +243,7 @@ impl Service {
             local_port,
             home: home.to_path_buf(),
             transfers: Arc::default(),
+            inflight: Arc::default(),
         }))
     }
 
@@ -339,9 +366,17 @@ impl Service {
     }
 
     pub async fn run(self: Arc<Self>) {
+        let mut changes = tokio::task::JoinSet::new();
         let mut enrolled_epoch: Option<[u8; 16]> = None;
         let mut revoked_this_epoch = HashSet::new();
         loop {
+            while let Some(result) = changes.try_join_next() {
+                match result {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => log!("service changes: {error:#}"),
+                    Err(error) => log!("service changes task: {error}"),
+                }
+            }
             let result = async {
                 let epoch = self.bootstrap().await?;
                 if enrolled_epoch != Some(epoch) {
@@ -362,7 +397,7 @@ impl Service {
                     return Ok::<_, anyhow::Error>(());
                 }
                 let work: Work = response.json().await?;
-                self.handle(work, &epoch).await
+                self.schedule_work(work, epoch, &mut changes).await
             }
             .await;
             if let Err(e) = result {
@@ -373,7 +408,27 @@ impl Service {
         }
     }
 
+    /// Only validated changes reads leave the serial work loop. The guard is
+    /// acquired synchronously before spawning, including for lease redelivery.
+    async fn schedule_work(self: &Arc<Self>, work: Work, epoch: [u8; 16],
+        changes: &mut tokio::task::JoinSet<Result<()>>) -> Result<()> {
+        let Some(prepared) = self.prepare_work(&work)? else { return Ok(()) };
+        if prepared.guard.changes {
+            let service = self.clone();
+            changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });
+            Ok(())
+        } else {
+            self.handle_prepared(work, &epoch, prepared).await
+        }
+    }
+
+    #[cfg(test)]
     async fn handle(&self, work: Work, epoch: &[u8; 16]) -> Result<()> {
+        let Some(prepared) = self.prepare_work(&work)? else { return Ok(()) };
+        self.handle_prepared(work, epoch, prepared).await
+    }
+
+    fn prepare_work(&self, work: &Work) -> Result<Option<PreparedWork>> {
         let e = &work.envelope;
         if e.request_id != work.request_id
             || e.kind != "request"
@@ -405,6 +460,27 @@ impl Service {
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         let body = serde_json::to_vec(e)?;
         let digest: [u8; 32] = Sha256::digest(&body).into();
+        let is_changes = request.path.split('?').next() == Some("/v1/changes")
+            && approved_method(&request).is_ok();
+        let key = (e.sender.clone(), e.request_id.clone());
+        let mut inflight = self.inflight.lock().expect("inflight lock poisoned");
+        if let Some((prior, _)) = inflight.get(&key) {
+            anyhow::ensure!(*prior == digest, "request ID reused with different encrypted bytes");
+            return Ok(None);
+        }
+        let saturated = is_changes && (inflight.values().filter(|(_, changes)| *changes).count() >= MAX_CHANGES_TOTAL
+            || inflight.iter().filter(|((sender, _), (_, changes))| sender == &e.sender && *changes).count() >= MAX_CHANGES_PER_DEVICE);
+        let changes = is_changes && !saturated;
+        inflight.insert(key.clone(), (digest, changes));
+        drop(inflight);
+        Ok(Some(PreparedWork { request, digest,
+            guard: WorkGuard { inflight: self.inflight.clone(), key, changes, saturated } }))
+    }
+
+    async fn handle_prepared(&self, work: Work, epoch: &[u8; 16], prepared: PreparedWork) -> Result<()> {
+        let PreparedWork { request, digest, guard } = prepared;
+        let e = &work.envelope;
+        let device = self.devices.get(&e.sender).context("work from unapproved device")?;
         let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
         let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
         self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
@@ -418,20 +494,24 @@ impl Service {
                 bytes
             }
             Disposition::Accepted => {
-                if !self.auth.approved_key_matches(&e.sender, &device.signing) {
-                    bail!("device was revoked before execution");
-                }
+                // Receipt upload can wait on the relay; re-read durable local
+                // approval and enrollment immediately before loopback dispatch.
+                self.require_device_approval(&e.sender, device)?;
                 self.journal.executing(&e.sender, &e.request_id, &digest)?;
-                let result = match self.dispatch(&e.sender, &request).await {
-                    Ok(value) => value,
-                    Err(error) if error.is::<ResponseTooLarge>() => {
-                        json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
-                    }
-                    Err(error) if request.method == "GET" => {
-                        json!({"status":502,"error":"read_failed","detail":error.to_string()})
-                    }
-                    Err(error) => {
-                        json!({"status":503,"error":"uncertain","detail":error.to_string()})
+                let result = if guard.saturated {
+                    json!({"status":429,"error":"changes_busy"})
+                } else {
+                    match self.dispatch(&e.sender, &request).await {
+                        Ok(value) => value,
+                        Err(error) if error.is::<ResponseTooLarge>() => {
+                            json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
+                        }
+                        Err(error) if request.method == "GET" => {
+                            json!({"status":502,"error":"read_failed","detail":error.to_string()})
+                        }
+                        Err(error) => {
+                            json!({"status":503,"error":"uncertain","detail":error.to_string()})
+                        }
                     }
                 };
                 let bytes = self.encode_response(e, device, &result, &request)?;
@@ -485,6 +565,9 @@ impl Service {
     }
 
     async fn dispatch(&self, sender: &str, request: &LocalRequest) -> Result<Value> {
+        if request.path.split('?').next() == Some("/v1/changes") && approved_method(request).is_err() {
+            return Ok(json!({"status":400,"error":"invalid_changes_query"}));
+        }
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
             let body = request.body.as_ref().context("push binding body required")?;
             let map = body.as_object().context("invalid push binding body")?;
@@ -561,7 +644,7 @@ impl Service {
     /// An explicit local diagnostic: no Hub, task, report or legacy APNs sender.
     pub async fn test_push(&self, id: &str) -> Result<()> {
         let device = self.devices.get(id).context("device is not configured for the service")?;
-        self.require_push_approval(id, device)?;
+        self.require_device_approval(id, device)?;
         let binding = self.journal.push_binding(id)?.context("device has no active push binding")?;
         let payload = json!({"aps":{"alert":{
             "title":"Prueba cifrada de Alondra",
@@ -570,7 +653,7 @@ impl Service {
         self.send_device_push(id, device, &binding, &payload, true, &mut None).await
     }
 
-    fn require_push_approval(&self, id: &str, device: &Device) -> Result<()> {
+    fn require_device_approval(&self, id: &str, device: &Device) -> Result<()> {
         // The diagnostic is a separate process: re-read persisted approval so
         // revocation by the running daemon is observed after bootstrap too.
         if !self.auth.approved_key_matches(id, &device.signing)
@@ -583,7 +666,7 @@ impl Service {
 
     async fn send_device_push(&self, id: &str, device: &Device, binding: &str, payload: &Value,
         with_sound: bool, epoch: &mut Option<[u8; 16]>) -> Result<()> {
-        self.require_push_approval(id, device)?;
+        self.require_device_approval(id, device)?;
         let (payload, with_sound) = self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes());
         let body = self.encode_push(id, device, binding, &payload, with_sound)?;
         let current_epoch = match *epoch {
@@ -594,7 +677,7 @@ impl Service {
                 fresh
             }
         };
-        self.require_push_approval(id, device)?;
+        self.require_device_approval(id, device)?;
         if self.journal.push_binding(id)?.as_deref() != Some(binding) {
             bail!("device push binding changed while preparing delivery");
         }
@@ -695,6 +778,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
         bail!("local operation is not approved for service access");
     }
     let query_ok = match (path, query) {
+        ("/v1/changes", Some(q)) => changes_query(q),
         (_, None) => true,
         ("/v1/options", Some(q)) => single_query(q, "project", 2048),
         ("/v1/issues", Some(q)) => single_query_value(q, "refresh", &["1"]),
@@ -708,7 +792,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     let allowed = match request.method.as_str() {
         "GET" if request.body.is_none() => {
-            matches!(path, "/v1/overview" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
+            matches!(path, "/v1/changes" | "/v1/overview" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
                 || one_id_path(path, "/v1/tasks/").is_some()
                 || one_id_path(path, "/v1/nodes/").is_some()
                 || id_action(path, "/v1/nodes/", "/activity", false)
@@ -741,6 +825,23 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
         bail!("local operation is not approved for service access");
     }
     Ok(Method::from_bytes(request.method.as_bytes())?)
+}
+
+/// Raw decimal parameters only: no duplicate, unknown or percent-encoded
+/// spellings that could be interpreted differently by the loopback handler.
+fn changes_query(query: &str) -> bool {
+    let mut after = false;
+    let mut wait = false;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else { return false };
+        if !number(value) { return false; }
+        match key {
+            "after" if !after => after = true,
+            "wait" if !wait && value.parse::<u64>().is_ok_and(|seconds| seconds <= 50) => wait = true,
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn single_query(query: &str, key: &str, max_value_bytes: usize) -> bool {
@@ -1304,6 +1405,192 @@ agreement_key = "{}"
         }
     }
 
+    fn changes_work(service: &Service, request_id: &str, request: Value) -> Work {
+        let envelope = EnvelopeV1::seal_random(
+            EnvelopeContext { route: "mac-1", sender: "phone-1", recipient: "mac-1",
+                request_id, kind: "request", expires_at_ms: now_ms() + 600_000 },
+            &serde_json::to_vec(&request).unwrap(), &SigningKey::from_slice(&[33u8; 32]).unwrap(),
+            &service.agreement.public_key(),
+        ).unwrap();
+        Work { request_id: request_id.into(), envelope }
+    }
+
+    fn repeat_work(work: &Work) -> Work {
+        Work { request_id: work.request_id.clone(), envelope: work.envelope.clone() }
+    }
+
+    fn opened_results(service: &Service, phone: &SecretKey, responses: &Mutex<Vec<Vec<u8>>>) -> Vec<Value> {
+        responses.lock().unwrap().iter().map(|bytes| {
+            let envelope: EnvelopeV1 = serde_json::from_slice(bytes).unwrap();
+            let bytes = envelope.open(service.signing.verifying_key(), phone,
+                "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }).collect()
+    }
+
+    #[test]
+    fn changes_queries_are_bounded_and_unambiguous() {
+        for path in ["/v1/changes", "/v1/changes?after=0", "/v1/changes?wait=0",
+            "/v1/changes?after=18446744073709551615&wait=50", "/v1/changes?wait=1&after=2"] {
+            assert!(approved_method(&LocalRequest { method: "GET".into(), path: path.into(), body: None }).is_ok(), "{path}");
+        }
+        for query in ["", "after=-1", "after=18446744073709551616", "after=1.0", "after=+1",
+            "after=%31", "%61fter=1", "wait=51", "wait=-1", "wait=", "wait=1&wait=2",
+            "after=1&after=2", "after=0&other=1", "after=0&", "after=1;wait=2"] {
+            assert!(approved_method(&LocalRequest { method: "GET".into(),
+                path: format!("/v1/changes?{query}"), body: None }).is_err(), "{query}");
+        }
+        for method in ["POST", "DELETE"] {
+            assert!(approved_method(&LocalRequest { method: method.into(), path: "/v1/changes".into(), body: None }).is_err());
+        }
+        assert!(approved_method(&LocalRequest { method: "GET".into(), path: "/v1/changes".into(), body: Some(json!({})) }).is_err());
+    }
+
+    #[tokio::test]
+    async fn changes_wait_does_not_block_mutation_or_misclassify_live_redelivery() {
+        let (mut service, phone) = push_fixture();
+        activate_push(&service);
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let local = Router::new().route("/v1/changes", get({
+            let entered = entered.clone(); let release = release.clone(); let reads = reads.clone();
+            move || { let entered = entered.clone(); let release = release.clone(); let reads = reads.clone(); async move {
+                reads.fetch_add(1, Ordering::SeqCst);
+                entered.add_permits(1);
+                release.acquire().await.unwrap().forget();
+                axum::Json(json!({"tick":42}))
+            }}
+        })).route("/v1/questions/1/answer", post({
+            let writes = writes.clone(); move || { let writes = writes.clone(); async move {
+                writes.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"saved":true}))
+            }}
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.local_port = listener.local_addr().unwrap().port();
+        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let relay = Router::new()
+            .route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post({ let responses = responses.clone(); move |body: Bytes| {
+                let responses = responses.clone(); async move {
+                    responses.lock().unwrap().push(body.to_vec()); StatusCode::ACCEPTED
+                }
+            }}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+        let service = Arc::new(service);
+        let mut tasks = tokio::task::JoinSet::new();
+        let epoch = [7;16];
+        let request = json!({"method":"GET","path":"/v1/changes?after=0&wait=50"});
+        let first = changes_work(&service, "wait-1", request.clone());
+        service.schedule_work(repeat_work(&first), epoch, &mut tasks).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire()).await.unwrap().unwrap().forget();
+        // This is exactly the relay's same-envelope lease retry, while the local
+        // HTTP read is suspended. It must neither execute again nor write 409.
+        service.schedule_work(repeat_work(&first), epoch, &mut tasks).await.unwrap();
+        assert!(responses.lock().unwrap().is_empty());
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let digest = Sha256::digest(serde_json::to_vec(&first.envelope).unwrap()).into();
+        assert!(matches!(service.journal.accept("phone-1", "wait-1", &digest).unwrap(), Disposition::Executing));
+        let altered = changes_work(&service, "wait-1", request.clone());
+        assert!(service.schedule_work(altered, epoch, &mut tasks).await.is_err());
+        service.schedule_work(changes_work(&service, "wait-2", request.clone()), epoch, &mut tasks).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire()).await.unwrap().unwrap().forget();
+        tokio::time::timeout(Duration::from_secs(2), service.schedule_work(
+            changes_work(&service, "wait-full", request.clone()), epoch, &mut tasks)).await.unwrap().unwrap();
+        assert_eq!(opened_results(&service, &phone, &responses)[0], json!({"status":429,"error":"changes_busy"}));
+        tokio::time::timeout(Duration::from_secs(2), service.schedule_work(changes_work(&service, "write-1",
+            json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"yes"}})), epoch, &mut tasks)).await.unwrap().unwrap();
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "both occupied read slots leave mutations available");
+        service.schedule_work(changes_work(&service, "bad-query", json!({"method":"GET","path":"/v1/changes?wait=51"})), epoch, &mut tasks).await.unwrap();
+        assert!(opened_results(&service, &phone, &responses).contains(&json!({"status":400,"error":"invalid_changes_query"})));
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        release.add_permits(2);
+        while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+        assert!(service.inflight.lock().unwrap().is_empty());
+        let results = opened_results(&service, &phone, &responses);
+        assert_eq!(results.iter().filter(|value| value["body"]["tick"] == 42).count(), 2);
+        assert!(!results.iter().any(|value| value["error"] == "uncertain"));
+
+        let interrupted = changes_work(&service, "interrupted", request);
+        service.schedule_work(repeat_work(&interrupted), epoch, &mut tasks).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.acquire()).await.unwrap().unwrap().forget();
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert!(service.inflight.lock().unwrap().is_empty(), "cancellation releases the admission guard");
+        let mut restarted = Service::open(&service.home, service.local_port,
+            Arc::new(Auth::open(&service.home).unwrap())).unwrap().unwrap();
+        restarted.relay = service.relay.clone();
+        restarted.handle(interrupted, &epoch).await.unwrap();
+        assert_eq!(opened_results(&service, &phone, &responses).last().unwrap()["error"], "uncertain");
+        assert_eq!(reads.load(Ordering::SeqCst), 3, "restart preserves durable uncertainty without dispatch");
+        local_server.abort(); relay_server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn changes_global_limit_releases_on_drop_and_does_not_limit_mutations() {
+        let (service, _) = push_fixture();
+        activate_push(&service);
+        for n in 0..MAX_CHANGES_TOTAL {
+            service.inflight.lock().unwrap().insert((format!("other-{n}"), "read".into()), ([0;32], true));
+        }
+        let read = changes_work(&service, "bounded", json!({"method":"GET","path":"/v1/changes"}));
+        let prepared = service.prepare_work(&read).unwrap().unwrap();
+        assert!(prepared.guard.saturated);
+        assert!(!prepared.guard.changes);
+        drop(prepared);
+        assert_eq!(service.inflight.lock().unwrap().len(), MAX_CHANGES_TOTAL);
+        let mutation = changes_work(&service, "write", json!({"method":"POST","path":"/v1/questions/1/answer","body":{}}));
+        let prepared = service.prepare_work(&mutation).unwrap().unwrap();
+        assert!(!prepared.guard.saturated);
+        drop(prepared);
+        service.inflight.lock().unwrap().clear();
+        assert!(service.prepare_work(&read).unwrap().unwrap().guard.changes);
+        assert!(service.inflight.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn changes_rechecks_persisted_revocation_after_receipt_before_dispatch() {
+        let (mut service, _) = push_fixture();
+        activate_push(&service);
+        let received = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let local_calls = Arc::new(AtomicUsize::new(0));
+        let local = Router::new().route("/v1/changes", get({ let calls = local_calls.clone(); move || {
+            let calls = calls.clone(); async move { calls.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"tick":1})) }
+        }}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.local_port = listener.local_addr().unwrap().port();
+        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+        let relay = Router::new().route("/v1/work/{id}/receipt", post({
+            let received = received.clone(); let release = release.clone(); move || {
+                let received = received.clone(); let release = release.clone(); async move {
+                    received.add_permits(1); release.acquire().await.unwrap().forget(); StatusCode::ACCEPTED
+                }
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+        let service = Arc::new(service);
+        let mut tasks = tokio::task::JoinSet::new();
+        service.schedule_work(changes_work(&service, "revoke", json!({"method":"GET","path":"/v1/changes?wait=0"})), [7;16], &mut tasks).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), received.acquire()).await.unwrap().unwrap().forget();
+        Auth::open(&service.home).unwrap().revoke("phone-1").unwrap();
+        release.add_permits(1);
+        let result = tokio::time::timeout(Duration::from_secs(2), tasks.join_next()).await.unwrap().unwrap().unwrap();
+        assert!(result.is_err());
+        assert_eq!(local_calls.load(Ordering::SeqCst), 0);
+        assert!(service.inflight.lock().unwrap().is_empty());
+        local_server.abort(); relay_server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
     #[test]
     fn local_dispatch_allowlist_rejects_path_tricks() {
         let accepts = |method: &str, path: &str, body: Option<Value>| approved_method(&LocalRequest {
@@ -1374,7 +1661,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -1512,7 +1799,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -1667,7 +1954,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -1696,7 +1983,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -1852,7 +2139,7 @@ agreement_key = "{}"
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(),
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,
