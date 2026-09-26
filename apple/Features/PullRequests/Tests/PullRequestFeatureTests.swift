@@ -1,3 +1,5 @@
+import AlondraDomain
+import AlondraAttachmentsFeature
 import AlondraPullRequestsFeature
 import AlondraShared
 import AlondraCommands
@@ -128,6 +130,125 @@ struct PullRequestFeatureTests {
         #expect(store.state.mutationOutcome == .unknown(command))
         await store.send(.commandReconciled(command)) { $0.mutationOutcome = nil }
         await store.finish()
+    }
+
+    @Test(arguments: [false, true])
+    func uploadRetryStillRequiresCurrentHeadBeforeOneFinalReview(headChanged: Bool) async {
+        let file = AttachmentDraft(name: "review.txt", data: Data([3, 2, 1]))
+        let original = PRDiffSnapshot(diff: "original diff", headSHA: String(repeating: "a", count: 40))
+        let latest = headChanged ? PRDiffSnapshot(diff: "new diff", headSHA: String(repeating: "b", count: 40)) : original
+        var state = DiffReviewFeature.State(prID: 4)
+        state.files = []
+        state.loadedDiffText = original.diff
+        state.loadedHeadSHA = original.headSHA
+        state.note = "Please clarify"
+        state.attachmentPicker.entries = [.init(draft: file, status: .failed("Offline"))]
+        state.attachments = [.init(id: file.id, name: file.name, data: file.data, storedID: nil)]
+        let events = LockIsolated<[String]>([])
+        let clock = TestClock()
+        let command = UUID()
+        let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
+            $0.attachmentUpload = .init(upload: { draft in
+                #expect(draft == file)
+                events.withValue { $0.append("upload") }
+                return "receipt"
+            })
+            $0.pullRequestOperations = .init(diff: { _ in
+                events.withValue { $0.append("preflight") }
+                try await clock.sleep(for: .seconds(1))
+                return latest
+            }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
+            review: { _, _, attachments, _, head in
+                #expect(attachments.map(\.storedID) == ["receipt"])
+                #expect(head == original.headSHA)
+                events.withValue { $0.append("review") }
+                return .unknown(command)
+            })
+        }
+        await store.send(.requestChangesTapped) {
+            $0.pendingSubmission = .awaitingReceipts
+            $0.pendingReviewKind = .requestChanges
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission) { $0.attachmentPicker.entries[0].status = .queued }
+        await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("receipt")
+            $0.attachments[0] = .init(id: file.id, name: file.name, data: file.data, storedID: "receipt")
+            $0.pendingSubmission = nil
+            $0.pendingReviewKind = nil
+            $0.isSending = true
+            $0.submittedComments = [:]
+            $0.submittedNote = "Please clarify"
+            $0.submittedAttachments = $0.attachments
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await clock.advance(by: .seconds(1))
+        if headChanged {
+            await store.receive(\.reviewDiffChanged) {
+                $0.isSending = false
+                $0.loadGeneration = 1
+                $0.files = UnifiedDiff.parse(latest.diff)
+                $0.loadedDiffText = latest.diff
+                $0.loadedHeadSHA = latest.headSHA
+                $0.highlightGeneration = 1
+                $0.validationError = "The PR changed; review the new diff before sending"
+                $0.submittedComments = nil
+                $0.submittedNote = nil
+                $0.submittedAttachments = nil
+            }
+            #expect(events.value == ["upload", "preflight"])
+        } else {
+            await store.receive(\.reviewFinished) { $0.isSending = false; $0.mutationOutcome = .unknown(command) }
+            await store.send(.requestChangesTapped)
+            #expect(events.value == ["upload", "preflight", "review"])
+        }
+        await store.finish()
+        #expect(store.state.note == "Please clarify")
+    }
+
+    @Test
+    func closingDiffWhileUploadRetriesDoesNotSendWhenReceiptArrives() async {
+        let file = AttachmentDraft(name: "review.txt", data: Data([8]))
+        var state = DiffReviewFeature.State(prID: 4)
+        state.files = []
+        state.loadedDiffText = "diff"
+        state.loadedHeadSHA = "head"
+        state.note = "Review this"
+        state.attachmentPicker.entries = [.init(draft: file, status: .failed("Offline"))]
+        state.attachments = [.init(id: file.id, name: file.name, data: file.data)]
+        let clock = TestClock()
+        let store = TestStore(initialState: state) { DiffReviewFeature() } withDependencies: {
+            $0.attachmentUpload = .init(upload: { _ in
+                try await clock.sleep(for: .seconds(1))
+                return "receipt"
+            })
+            $0.pullRequestOperations = .init(diff: { _ in
+                Issue.record("Closed review must not start a preflight")
+                return .init(diff: "diff", headSHA: "head")
+            }, merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
+            review: { _, _, _, _, _ in Issue.record("Closed review must not submit"); return .confirmed })
+        }
+        await store.send(.askTapped) {
+            $0.pendingSubmission = .awaitingReceipts
+            $0.pendingReviewKind = .ask
+        }
+        await store.receive(\.attachmentPicker.prepareForSubmission) { $0.attachmentPicker.entries[0].status = .queued }
+        await store.receive(\.attachmentPicker.uploadNext) { $0.attachmentPicker.entries[0].status = .uploading }
+        await store.send(.disappeared) {
+            $0.pendingSubmission = nil
+            $0.pendingReviewKind = nil
+            $0.highlightGeneration = 1
+            $0.loadGeneration = 1
+        }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.attachmentPicker.uploaded) {
+            $0.attachmentPicker.entries[0].status = .uploaded("receipt")
+            $0.attachments[0] = .init(id: file.id, name: file.name, data: file.data, storedID: "receipt")
+        }
+        await store.receive(\.attachmentPicker.uploadNext)
+        await store.finish()
+        #expect(store.state.note == "Review this")
+        #expect(!store.state.isSending)
     }
 
     @Test
