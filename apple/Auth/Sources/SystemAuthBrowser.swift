@@ -3,15 +3,17 @@ import AuthenticationServices
 import Foundation
 
 @MainActor
-public final class SystemAuthBrowser: NSObject, AuthBrowser, ASWebAuthenticationPresentationContextProviding {
-    private let anchor: @MainActor () -> ASPresentationAnchor
+public final class SystemAuthBrowser: NSObject, AuthBrowser {
+    private let anchor: @MainActor () -> ASPresentationAnchor?
     private let gate = BrowserSessionGate()
 
-    public init(anchor: @escaping @MainActor () -> ASPresentationAnchor) { self.anchor = anchor }
+    public init(anchor: @escaping @MainActor () -> ASPresentationAnchor?) { self.anchor = anchor }
 
     public func authenticate(url: URL, callbackScheme: String, generation: Int) async throws -> URL {
         guard !gate.isSuperseded(generation) else { throw CancellationError() }
         guard !gate.isBusy else { throw AuthError.invalidRedirect }
+        guard let window = anchor() else { throw AuthError.invalidRedirect }
+        let context = PresentationContext(window: window)
         let id = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -19,10 +21,12 @@ public final class SystemAuthBrowser: NSObject, AuthBrowser, ASWebAuthentication
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { [weak self] callback, error in
-                    self?.gate.finish(id: id, callback: callback, error: error)
+                let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { [weak self, context] callback, error in
+                    withExtendedLifetime(context) {
+                        self?.gate.finish(id: id, callback: callback, error: error)
+                    }
                 }
-                session.presentationContextProvider = self
+                session.presentationContextProvider = context
                 guard gate.begin(id: id, generation: generation, cancel: { session.cancel() }, continuation: continuation) else {
                     return
                 }
@@ -42,6 +46,10 @@ public final class SystemAuthBrowser: NSObject, AuthBrowser, ASWebAuthentication
         gate.invalidate(generation: generation)
     }
 
-    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { anchor() }
+    private final class PresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
+        let window: ASPresentationAnchor
+        init(window: ASPresentationAnchor) { self.window = window }
+        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor { window }
+    }
 }
 #endif
