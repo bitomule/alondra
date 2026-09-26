@@ -52,7 +52,10 @@ public struct TriageCardFeature {
                 || document?.isSubmitting == true || document?.needsReconciliation == true
                 || pullRequest?.diff.isSending == true || pullRequest?.pr.isSending == true
         }
-        public var notice: String? { question?.notice ?? question?.conflict ?? document?.notice ?? document?.conflict ?? pullRequest?.diff.validationError }
+        public var notice: String? {
+            let questionNotice = question?.noticeIsSubmissionFailure == true ? nil : (question?.notice ?? question?.conflict)
+            return questionNotice ?? document?.notice ?? document?.conflict ?? pullRequest?.diff.validationError
+        }
     }
     public enum Action {
         case question(QuestionFeature.Action)

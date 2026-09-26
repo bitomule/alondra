@@ -507,6 +507,7 @@ struct ServiceTriageCard: View {
                     store.send(.choose(option))
                 }
                 replyField(placeholder: pickedOption?.displayDescription ?? String(localized: "Answer in your own words…")) {
+                    replyFocused = false
                     store.send(.send)
                 }
                 Button {

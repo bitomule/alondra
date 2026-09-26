@@ -76,6 +76,7 @@ struct AttachedQuestionIntegrationTests {
         await store.receive(\.pullRequest.attachedQuestion) {
             $0.pullRequest?.questionFeatures[id: 1]?.question.isSubmitting = false
             $0.pullRequest?.questionFeatures[id: 1]?.question.notice = "Offline"
+            $0.pullRequest?.questionFeatures[id: 1]?.question.noticeIsSubmissionFailure = true
         }
         #expect(store.state.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep this draft")
         await store.send(.pullRequest(.contextUpdated(reports: [], questions: []))) {

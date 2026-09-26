@@ -199,10 +199,12 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .triage(.cards(.element(let cardID, .question(let action)))):
+            return state.triage.cards[id: cardID]?.question.flatMap { questionNotice($0, action: action) }
         case .pullRequest(.presented(.attachedQuestion(.element(let id, .question(let action))))):
-            return state.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
+            return state.pullRequest?.questionFeatures[id: id].flatMap { questionNotice($0.question, action: action) }
         case .triage(.cards(.element(let cardID, .pullRequest(.attachedQuestion(.element(let id, .question(let action))))))):
-            return state.triage.cards[id: cardID]?.pullRequest?.questionFeatures[id: id].flatMap { attachedQuestionNotice($0.question, action: action) }
+            return state.triage.cards[id: cardID]?.pullRequest?.questionFeatures[id: id].flatMap { questionNotice($0.question, action: action) }
         case .delivery(.acknowledgementFinished(let scope, let error)):
             guard state.delivery.status?.scope == scope, let error else { return nil }
             return .failure(error)
@@ -228,7 +230,7 @@ public struct ServiceRootFeature {
         }
     }
 
-    private func attachedQuestionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
+    private func questionNotice(_ question: QuestionFeature.State, action: QuestionFeature.Action) -> WorkspaceNotice.Event? {
         switch action {
         case .submissionFinished(let revision, let outcome):
             guard question.isSubmitting, question.revision == revision else { return nil }

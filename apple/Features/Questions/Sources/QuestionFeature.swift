@@ -18,6 +18,8 @@ public struct QuestionFeature {
         public var pendingMoreContext = false
         public var keyboardReady = false
         public var notice: String?
+        /// Terminal command rejections use the original workspace toast; validation and recovery stay inline.
+        public var noticeIsSubmissionFailure = false
         public var conflict: String?
         public var completed = false
         public var uncertainCommandID: UUID?
@@ -92,6 +94,7 @@ public struct QuestionFeature {
                     let attached = state.pendingAttachedAnswer != nil
                     clearPending(&state)
                     if attached { return .send(.attachedSubmissionFailed(error.message)) }
+                    state.noticeIsSubmissionFailure = false
                     state.notice = error.message
                     return .none
                 }
@@ -130,6 +133,7 @@ public struct QuestionFeature {
                 state.draft = QuestionDraft()
                 clearPending(&state)
                 state.isSubmitting = false
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 state.conflict = nil
                 state.completed = false
@@ -143,6 +147,7 @@ public struct QuestionFeature {
                 state.draft.text = text
                 return .none
             case .attachedSubmissionFailed(let message):
+                state.noticeIsSubmissionFailure = false
                 state.notice = message
                 return .none
             case .attachedOptionTapped(let label):
@@ -176,6 +181,7 @@ public struct QuestionFeature {
                     state.replyFocusRequest &+= 1
                     return .none
                 } catch {
+                    state.noticeIsSubmissionFailure = false
                     state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
                     return .none
                 }
@@ -210,13 +216,17 @@ public struct QuestionFeature {
                     state.attachmentPicker = AttachmentFeature.State()
                 case .conflict(let reason):
                     state.conflict = reason
+                    state.noticeIsSubmissionFailure = true
                 case .forbidden(let reason), .failed(let reason):
                     state.notice = reason
+                    state.noticeIsSubmissionFailure = true
                 case .uncertainCommand(let id):
                     state.uncertainCommandID = id
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Checking its status…"
                     state.needsReconciliation = true
                 case .uncertain:
+                    state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true
                 case .obsolete:
@@ -228,6 +238,7 @@ public struct QuestionFeature {
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.notice = rejection
+                state.noticeIsSubmissionFailure = rejection != nil
                 if rejection == nil {
                     state.completed = true
                     state.draft = QuestionDraft()
@@ -239,10 +250,12 @@ public struct QuestionFeature {
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 if !cardStillOpen { state.draft = QuestionDraft() }
                 return .none
             case .dismissNotice:
+                state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 state.conflict = nil
                 return .none
@@ -262,6 +275,7 @@ public struct QuestionFeature {
                 ? useCase.checkedMoreContext(state.question, draft: state.draft)
                 : useCase.answer(state.question, draft: state.draft)
             state.isSubmitting = true
+            state.noticeIsSubmissionFailure = false
             state.notice = nil
             state.conflict = nil
             let revision = state.revision
@@ -269,6 +283,7 @@ public struct QuestionFeature {
                 await send(.submissionFinished(revision, await service.submit(operation)))
             }.cancellable(id: CancelID.submit)
         } catch {
+            state.noticeIsSubmissionFailure = false
             state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
             return .none
         }
@@ -289,6 +304,7 @@ public struct QuestionFeature {
         do {
             let operation = try useCase.answer(state.question, draft: draft)
             state.isSubmitting = true
+            state.noticeIsSubmissionFailure = false
             state.notice = nil
             state.conflict = nil
             let revision = state.revision

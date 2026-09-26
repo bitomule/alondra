@@ -94,6 +94,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.notice = "Offline"
+            $0.noticeIsSubmissionFailure = true
         }
         #expect(store.state.draft.text == text)
         #expect(store.state.draft.selectedOption == nil)
@@ -312,6 +313,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.conflict = "Already answered on Mac"
+            $0.noticeIsSubmissionFailure = true
         }
         #expect(store.state.draft.text == "A reason")
         #expect(!store.state.completed)
