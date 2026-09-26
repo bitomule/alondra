@@ -79,64 +79,163 @@ struct ServiceTaskDetailView: View {
     let openTask: (String) -> Void
     let focusInbox: (String) -> Void
     var body: some View {
-        List {
-            if let task = store.task {
-                Section {
-                    Text(task.title).font(.title2.bold())
-                    Text(task.state.label)
-                    if let node = context.nodeName { Text(node).foregroundStyle(.secondary) }
-                }
+        if let task = store.task {
+            ServiceTaskPage {
+                ServiceTaskHeader(task: task, context: context)
                 if !context.pending.isEmpty {
-                    Section("Waiting for You") {
-                        ForEach(context.pending) { item in Button(item.title) { focusInbox(item.id) } }
+                    ServiceTaskSection(String(localized: "Waiting for You")) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(context.pending) { item in
+                                Button { focusInbox(item.id) } label: {
+                                    HStack {
+                                        InboxRow(item: item)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                                    }.padding(.horizontal, 10).padding(.vertical, 4).contentShape(.rect)
+                                }.buttonStyle(.plain)
+                            }
+                        }.background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                     }
                 }
-                if let text = context.request?.text { Section("Request") { Text(text).textSelection(.enabled) } }
-                ServiceTaskDependencies(title: "Depends on", tasks: context.dependencies, open: openTask)
-                ServiceTaskDependencies(title: "Waiting on it", tasks: context.dependents, open: openTask)
-                Section("PRs in merge order") {
-                    ForEach(context.pullRequests) { pr in Button(pr.title) { focusInbox(InboxItem.pullRequest(pr).id) } }
+                if let text = context.request?.text, !text.isEmpty {
+                    ServiceTaskSection(String(localized: "Request")) { MarkdownText(text: text) }
                 }
-                Section("Documents") {
-                    ForEach(store.detail?.documents ?? context.reports) { report in
-                        NavigationLink(report.title) { ScrollView { Text(report.body ?? "").textSelection(.enabled).padding() }.navigationTitle(report.title) }
+                if !context.pullRequests.isEmpty {
+                    ServiceTaskSection(String(localized: "Pull requests in merge order")) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(context.pullRequests.enumerated()), id: \.element.id) { index, pr in
+                                if index > 0 { Divider().padding(.horizontal, 12) }
+                                Button { focusInbox(InboxItem.pullRequest(pr).id) } label: {
+                                    HStack(spacing: 10) {
+                                        Text("\(index + 1)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                                        InboxRow(item: .pullRequest(pr))
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                                    }.padding(.horizontal, 12).padding(.vertical, 8).contentShape(.rect)
+                                }.buttonStyle(.plain)
+                            }
+                        }.background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                     }
                 }
-                Section("Options") {
-                    LabeledContent("PR handling", value: OptionSpec.prHandling(autoMerge: task.options?.mergesAlone ?? false))
-                    if let effort = task.options?.effort { LabeledContent("Effort", value: effort) }
+                ServiceTaskSection(String(localized: "Dependencies")) {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Depends on").foregroundStyle(.secondary)
+                            ServiceTaskLinks(tasks: context.dependencies, open: openTask)
+                        }
+                        GridRow {
+                            Text("Waiting on it").foregroundStyle(.secondary)
+                            ServiceTaskLinks(tasks: context.dependents, open: openTask)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                 }
-                Section("History") {
-                    ForEach(Array((store.detail?.task.history ?? []).enumerated()), id: \.offset) { _, step in
-                        VStack(alignment: .leading) {
-                            Text(step.to.label).font(.headline)
-                            Text(step.summary)
-                            Text(Date(timeIntervalSince1970: Double(step.at) / 1000), format: .dateTime).font(.caption)
+                let reports = store.detail?.documents ?? context.reports
+                if !reports.isEmpty {
+                    ServiceTaskSection(String(localized: "Documents")) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(reports.enumerated()), id: \.element.id) { index, report in
+                                if index > 0 { Divider().padding(.horizontal, 12) }
+                                HStack(spacing: 10) {
+                                    Image(systemName: "doc.text").foregroundStyle(.blue)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(report.title).fontWeight(.medium)
+                                        Text("\(report.kindLabel) · \(ago(report.createdAt)) ago").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if context.pending.contains(where: { $0.id == "r\(report.id)" }) {
+                                        Button("Read") { focusInbox("r\(report.id)") }.controlSize(.small)
+                                    }
+                                }.padding(.horizontal, 12).padding(.vertical, 8)
+                            }
+                        }.background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
+                    }
+                }
+                ServiceTaskSection(String(localized: "Options")) {
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                        GridRow {
+                            Text("PR handling").foregroundStyle(.secondary)
+                            Text(OptionSpec.prHandling(autoMerge: task.options?.mergesAlone ?? false))
+                        }
+                        if let effort = task.options?.effort {
+                            GridRow { Text("Effort").foregroundStyle(.secondary); Text(effort.capitalizedFirst) }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
+                }
+                if let history = store.detail?.task.history, !history.isEmpty {
+                    ServiceTaskSection(String(localized: "History")) {
+                        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 6) {
+                            ForEach(Array(history.enumerated()), id: \.offset) { _, step in
+                                GridRow {
+                                    Text(Date(timeIntervalSince1970: TimeInterval(step.at) / 1000), format: .dateTime.hour().minute())
+                                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
+                                    StatusDot(color: step.to.color)
+                                    (Text(step.to.label).fontWeight(.semibold) + Text(verbatim: " · \(step.summary)").foregroundStyle(.secondary))
+                                }
+                            }
                         }
                     }
                 }
-                Section {
-                    Button("Cancel Task", role: .destructive) { store.send(.cancelTapped) }.disabled(task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
-                    Button("Reopen") { store.send(.reopenTapped) }.disabled(!task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
-                    ServiceTaskOutcome(outcome: store.mutationOutcome)
+                ServiceTaskOutcome(outcome: store.mutationOutcome)
+            }
+            .toolbar {
+                ToolbarItemGroup {
+                    Button { store.send(.reopenTapped) } label: { Label("Reopen", systemImage: "arrow.clockwise") }
+                        .disabled(!task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
+                        .help("Reopen a finished or cancelled task")
+                    Button(role: .destructive) { store.send(.cancelTapped) } label: { Label("Cancel Task…", systemImage: "xmark.circle") }
+                        .disabled(task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
+                        .help("Its node stops working on it")
                 }
-            } else { ContentUnavailableView("This task is gone", systemImage: "questionmark.circle") }
-        }
-        .navigationTitle("Task")
-        .confirmationDialog("Cancel this task?", isPresented: Binding(get: { store.confirmation == .cancel }, set: { if !$0 { store.send(.cancelConfirmationDismissed) } })) {
-            Button("Cancel Task", role: .destructive) { store.send(.cancelConfirmed) }
-        }
-        .onDisappear { store.send(.disappeared) }
+            }
+            .confirmationDialog("Cancel “\(task.title)”?", isPresented: Binding(get: { store.confirmation == .cancel }, set: { if !$0 { store.send(.cancelConfirmationDismissed) } })) {
+                Button("Cancel Task", role: .destructive) { store.send(.cancelConfirmed) }
+            } message: { Text("Its node stops working on it. You can reopen it later.") }
+            .onDisappear { store.send(.disappeared) }
+        } else { ContentUnavailableView("This task is gone", systemImage: "questionmark.circle") }
     }
 }
-private struct ServiceTaskDependencies: View {
-    let title: LocalizedStringKey
+
+private struct ServiceTaskHeader: View {
+    let task: WorkTask
+    let context: ServiceTaskContext
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                if let project = context.request?.options?.project { Label(project, systemImage: "folder") }
+                if let request = context.request { Label(request.title ?? request.headline ?? "Request", systemImage: "text.quote").lineLimit(1) }
+            }.font(.callout).foregroundStyle(.secondary)
+            Text(task.title).font(.title.weight(.semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                StatusDot(color: task.color, size: 9)
+                Text(task.state.label.capitalizedFirst)
+                Text("· for \(ago(task.stateSince))").foregroundStyle(.secondary)
+                if let node = context.nodeName { Text("· \(node)").foregroundStyle(.secondary) }
+            }.font(.callout)
+        }
+    }
+}
+
+private struct ServiceTaskLinks: View {
     let tasks: [WorkTask]
     let open: (String) -> Void
     var body: some View {
-        Section(title) {
-            if tasks.isEmpty { Text("None").foregroundStyle(.secondary) }
-            ForEach(tasks) { task in Button(task.title) { open(task.id) } }
+        if tasks.isEmpty { Text("none").foregroundStyle(.secondary) }
+        else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(tasks) { task in
+                    Button { open(task.id) } label: {
+                        HStack(spacing: 6) {
+                            StatusDot(color: task.color)
+                            Text(task.title)
+                            Text(verbatim: "· \(task.state.label)").foregroundStyle(.secondary)
+                        }.contentShape(.rect)
+                    }.buttonStyle(.plain)
+                }
+            }
         }
     }
 }
