@@ -143,9 +143,10 @@ private struct MacServiceSidebar: View {
             }
         }
         .animation(.snappy, value: store.triage.triage.queue.map(\.id))
-        .confirmationDialog("Close this node?", isPresented: Binding(get: { store.fleet.fleet.closeConfirmationID != nil }, set: { if !$0 { store.send(.fleet(.fleet(.closeCancelled))) } })) {
-            Button("Close Node", role: .destructive) { store.send(.fleet(.fleet(.closeConfirmed))) }
+        .closeConfirmation(Binding(get: { store.fleet.fleet.closeRequest }, set: { if $0 == nil { store.send(.fleet(.fleet(.closeCancelled))) } })) { _ in
+            store.send(.fleet(.fleet(.closeConfirmed)))
         }
+        .closeRefusalAlert(Binding(get: { store.fleet.fleet.closeRefusal }, set: { if $0 == nil { store.send(.fleet(.fleet(.dismissCloseRefusal))) } }))
     }
 }
 
@@ -209,10 +210,8 @@ private struct MacServiceDetail: View {
             }
         case .request(let id):
             if let request = store.tasks.taskBoard.request(id) {
-                ServiceTaskPage {
-                    Text(request.title ?? request.headline ?? "Request").font(.title.weight(.semibold))
-                    if let text = request.text { MarkdownText(text: text) }
-                }
+                ServiceRequestDetail(request: request, store: store.scope(state: \.tasks, action: \.tasks),
+                    selectTask: { presentation.send(.select(.task($0))) })
             }
         case .schedules: ServiceSchedulesView(store: store.scope(state: \.tasks, action: \.tasks))
         case nil: MacServiceHome(store: store, presentation: presentation)
