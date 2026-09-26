@@ -3,7 +3,12 @@ import ComposableArchitecture
 
 public struct ServiceCommandRecoveryClient: Sendable {
     public var observe: @Sendable () async -> AsyncStream<CommandResolution>
-    public init(observe: @escaping @Sendable () async -> AsyncStream<CommandResolution>) { self.observe = observe }
+    public var observeFeedback: @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]>
+    public init(observe: @escaping @Sendable () async -> AsyncStream<CommandResolution>,
+                observeFeedback: @escaping @Sendable () async -> AsyncStream<[ReportFeedbackRecoveryEvent]> = { AsyncStream { $0.finish() } }) {
+        self.observe = observe
+        self.observeFeedback = observeFeedback
+    }
 }
 private enum ServiceCommandRecoveryKey: DependencyKey {
     static let liveValue = ServiceCommandRecoveryClient(observe: { AsyncStream { $0.finish() } })
@@ -55,5 +60,24 @@ extension ServiceRootFeature {
             effects.append(.send(.pullRequest(.presented(.diff(.commandResolved(id, rejection: rejection))))))
         }
         return .merge(effects)
+    }
+}
+
+
+extension ServiceRootFeature {
+    func feedbackResolutionEffects(_ events: [ReportFeedbackRecoveryEvent], state: State) -> Effect<Action> {
+        guard let id = state.triage.document?.uncertainCommandID,
+              let event = events.first(where: { $0.operationID == id }) else { return .none }
+        switch event.outcome {
+        case .confirmed:
+            return .send(.triage(.document(.presented(.commandResolved(id, rejection: nil)))))
+        case .messageRejected(let status):
+            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was rejected (HTTP \(status)). Your draft has been kept.")))))
+        case .awaitingDraft:
+            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was not sent. Your draft has been kept; you can submit it again.")))))
+        case .readRejected(let status):
+            return .send(.triage(.document(.presented(.feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")))))
+        case .unknown: return .none
+        }
     }
 }

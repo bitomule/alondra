@@ -59,6 +59,8 @@ public struct DocumentReviewFeature {
         public var isSubmitting = false
         public var completed = false
         public var uncertainCommandID: UUID?
+        public var feedbackReadRetryAvailable = false
+        public var isRetryingFeedbackRead = false
         public var needsReconciliation = false
         public var conflict: String?
         public var notice: String?
@@ -84,6 +86,9 @@ public struct DocumentReviewFeature {
         case sendFeedbackTapped(author: String)
         case reviewTapped(ReviewVerdict)
         /// H sends this only after journal and snapshot reconciliation, never merely on refresh.
+        case feedbackReadRejected(UUID, String)
+        case retryFeedbackRead
+        case feedbackReadRetryFinished(UUID)
         case commandResolved(UUID, rejection: String?)
         case reconciled(cardStillOpen: Bool)
         case submissionFinished(UInt64, QuestionOperation, QuestionWorkOutcome)
@@ -94,7 +99,7 @@ public struct DocumentReviewFeature {
     @Dependency(\.questionWorkService) var service
     private let answerUseCase = AnswerQuestionUseCase()
     private let reviewUseCase = ReviewDocumentUseCase()
-    private enum CancelID { case load, submit }
+    private enum CancelID { case load, submit, retryRead }
 
     public init() {}
 
@@ -133,13 +138,15 @@ public struct DocumentReviewFeature {
                 state.loadError = nil
                 state.isSubmitting = false
                 state.completed = false
+                state.feedbackReadRetryAvailable = false
+                state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.conflict = nil
                 state.notice = nil
                 state.revision &+= 1
                 state.loadRevision &+= 1
-                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit))
+                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit), .cancel(id: CancelID.retryRead))
             case .loaded(let revision, let result):
                 guard state.loadRevision == revision else { return .none }
                 state.isLoading = false
@@ -213,8 +220,27 @@ public struct DocumentReviewFeature {
                 guard case .report(let report) = state.subject else { return .none }
                 do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
                 catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
+            case .feedbackReadRejected(let id, let message):
+                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.notice = message
+                state.feedbackReadRetryAvailable = true
+                return .none
+            case .retryFeedbackRead:
+                guard let id = state.uncertainCommandID, state.needsReconciliation,
+                      state.feedbackReadRetryAvailable, !state.isRetryingFeedbackRead else { return .none }
+                state.isRetryingFeedbackRead = true
+                return .run { send in
+                    await service.retryReportRead(id)
+                    await send(.feedbackReadRetryFinished(id))
+                }.cancellable(id: CancelID.retryRead, cancelInFlight: true)
+            case .feedbackReadRetryFinished(let id):
+                guard state.uncertainCommandID == id else { return .none }
+                state.isRetryingFeedbackRead = false
+                return .none
             case .commandResolved(let id, let rejection):
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.feedbackReadRetryAvailable = false
+                state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.notice = rejection
@@ -225,6 +251,8 @@ public struct DocumentReviewFeature {
                 return .none
             case .reconciled(let cardStillOpen):
                 guard state.needsReconciliation else { return .none }
+                state.feedbackReadRetryAvailable = false
+                state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen

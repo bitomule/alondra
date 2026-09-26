@@ -61,15 +61,18 @@ public struct QuestionWorkService: Sendable {
     /// Must own one durable send-then-read transaction per identity/report. See INTEGRATION.md.
     public var submitReportFeedback: @Sendable (ReportFeedbackRequest, QuestionWorkIdentity) async -> QuestionWorkOutcome
     public var document: @Sendable (String) async throws -> String
+    public var retryReportRead: @Sendable (UUID) async -> Void
 
     public init(
         submit: @escaping @Sendable (QuestionOperation) async -> QuestionWorkOutcome,
         submitReportFeedback: @escaping @Sendable (ReportFeedbackRequest, QuestionWorkIdentity) async -> QuestionWorkOutcome = { _, _ in .failed("Durable report feedback is unavailable") },
-        document: @escaping @Sendable (String) async throws -> String
+        document: @escaping @Sendable (String) async throws -> String,
+        retryReportRead: @escaping @Sendable (UUID) async -> Void = { _ in }
     ) {
         self.submit = submit
         self.submitReportFeedback = submitReportFeedback
         self.document = document
+        self.retryReportRead = retryReportRead
     }
 }
 

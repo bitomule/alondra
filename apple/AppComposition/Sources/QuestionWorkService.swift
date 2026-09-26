@@ -36,6 +36,8 @@ extension CloudAppServices {
             await self.submitReportFeedback(request, identity: identity)
         }, document: { path in
             try await self.documentText(path)
+        }, retryReportRead: { id in
+            await self.retryReportFeedbackRead(id)
         })
     }
 }

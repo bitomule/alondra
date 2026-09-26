@@ -162,6 +162,13 @@ struct ServiceDocumentView: View {
                     if let markRead { Button("Mark read", action: markRead) }
                 }
             }.disabled(store.isLoading || store.loadError != nil || store.isSubmitting || store.needsReconciliation || store.completed)
+            if store.feedbackReadRetryAvailable {
+                Section {
+                    Button(store.isRetryingFeedbackRead ? "Checking…" : "Retry marking report read") { store.send(.retryFeedbackRead) }
+                        .disabled(store.isRetryingFeedbackRead)
+                    Text("Your feedback has already been delivered. This only marks the report read.").font(.caption)
+                }
+            }
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
         .navigationTitle("Document")

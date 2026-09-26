@@ -18,10 +18,12 @@ public struct ServiceRootFeature {
         public var newRequest = NewRequestFeature.State()
         @Presents public var pullRequest: ServicePullRequestFeature.State?
         public var pendingInboxID: String?
+        public var feedbackResolutions: [ReportFeedbackRecoveryEvent] = []
     }
     public enum Action {
         case appeared, disappeared
         case commandResolved(CommandResolution)
+        case feedbackRecovered([ReportFeedbackRecoveryEvent])
         case tabSelected(State.Tab)
         case focusInbox(String)
         case triage(ServiceTriageFeature.Action)
@@ -41,10 +43,23 @@ public struct ServiceRootFeature {
             switch action {
             case .appeared:
                 return .run { send in
-                    for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask {
+                            for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
+                        }
+                        group.addTask {
+                            for await events in await recovery.observeFeedback() { await send(.feedbackRecovered(events)) }
+                        }
+                    }
                 }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true)
             case .disappeared: return .cancel(id: RecoveryCancelID.observation)
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
+            case .feedbackRecovered(let events):
+                state.feedbackResolutions = events
+                return feedbackResolutionEffects(events, state: state)
+            case .triage(.document(.presented(.reportFeedbackFinished))):
+                return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
+                    .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tabSelected(let tab): state.tab = tab; return .none
             case .focusInbox(let id):
                 state.tab = .inbox

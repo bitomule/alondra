@@ -49,7 +49,8 @@ private final class ServiceSceneContext {
             $0.taskOperations = tasks
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
-            $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() })
+            $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
+                observeFeedback: { await services.reportFeedbackRecoveryEvents() })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
             $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
