@@ -39,7 +39,7 @@ def require(value, message):
 
 def run(*args):
     # No shell, credential arguments or raw error bodies in output.
-    result = subprocess.run([str(a) for a in args], capture_output=True)
+    result = subprocess.run([str(a) for a in args], capture_output=True, env={**os.environ, "LC_ALL": "C"})
     if result.returncode:
         directory = Path(tempfile.mkdtemp(prefix="alondra-apple-validation-"))
         log = directory / "failure.log"
@@ -95,17 +95,16 @@ def local_identity(fingerprint, installer=False):
     name = names[0]
     required = "3rd Party Mac Developer Installer:" if installer else "Apple Distribution:"
     require(name.startswith(required) and name.endswith("(" + TEAM + ")"), "Wrong distribution identity type/team")
-    if installer:
-        # productbuild(1) documents a Common Name, not a certificate fingerprint.
-        # Check all identities, including invalid ones that might share that CN.
-        all_output = run("security", "find-identity", "-p", "basic").decode()
-        require_installer_unique(all_output, fingerprint, name)
-    return name
+    # The installed productbuild accepts the exact SHA-1 selector, verified with
+    # a real signed empty package while an expired same-name identity coexists.
+    # Still verify the resulting package leaf: selector support is not trust proof.
+    return fingerprint if installer else name
 
 
-def require_installer_unique(output, fingerprint, name):
-    matching = {value for value, candidate in re.findall(r'([0-9A-F]{40}) "([^"]+)"', output) if candidate == name}
-    require(matching == {fingerprint}, "Installer Common Name is ambiguous or changed; select an isolated reviewed keychain before packaging")
+def verify_pkg_trust(output):
+    status = re.search(r"^\s*Status:\s*(.+)$", output.decode(errors="replace"), re.MULTILINE)
+    require(status and status.group(1).startswith("signed by a developer certificate issued by Apple"),
+            "Installer package trust not established; pkgutil exit status alone is insufficient")
 
 
 def verify_pkg_leaf(toc, fingerprint):
@@ -255,10 +254,10 @@ def main():
             shutil.copyfile(snapshot, artifact)
         else:
             artifact = output / "Alondra.pkg"
-            # Recheck name uniqueness immediately before invoking the CN-only API.
+            # Recheck the exact valid identity immediately before signing.
             local_identity(args.installer_identity.upper(), installer=True)
             run("productbuild", "--component", unpacked / app, "/Applications", "--sign", installer, artifact)
-            run("pkgutil", "--check-signature", artifact)
+            verify_pkg_trust(run("pkgutil", "--check-signature", artifact))
             verify_pkg_leaf(run("xar", "--dump-toc=-", "-f", artifact), args.installer_identity.upper())
     manifest = {"source": source_commit,
                 "destination": args.destination, "version": args.version, "build": args.build_number,

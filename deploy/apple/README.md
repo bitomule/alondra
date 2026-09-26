@@ -101,9 +101,13 @@ nested code-signature verification runs before packaging. The Mac package's
 Installer signature is checked after `productbuild`, followed by an exact SHA-1
 comparison of the package signature's leaf DER certificate against the requested
 Installer fingerprint. An issuer/root matching the requested fingerprint does not
-satisfy this check. `productbuild(1)` documents Common Name selection, not SHA-1;
-the lane therefore refuses a name shared by different local identities (including
-invalid identities), rechecks before signing, and validates the resulting leaf.
+satisfy this check. The installed `productbuild` also accepts an exact SHA-1
+selector: this was verified with a real empty package while an expired certificate
+with the same Common Name remained in the login keychain. The lane passes that
+fingerprint, rechecks its validity before signing, and verifies the resulting leaf.
+If another host cannot select by fingerprint, signing fails without approving an
+artifact. `pkgutil` must explicitly report an Apple-issued trusted developer
+signature; exit zero alone is insufficient (an untrusted status can also exit zero).
 
 The Bazel ZIP/IPA is copied into a unique private staging directory before any
 archive validation. That read-only snapshot is the only archive subsequently
@@ -154,3 +158,19 @@ Installer fingerprint was accepted, a different fingerprint rejected. That
 historical PKG returns an untrusted-certificate failure from pkgutil on this host;
 it is not accepted by this lane and is not evidence of a successful new release.
 No Apple build, package signing, ASC mutation or upload was performed for this fix.
+
+## Real local signing probe, 26 Sep
+
+Created the three missing App Store profiles with the existing distribution
+certificate, and kept downloads in ignored signing paths. iOS preflight passed.
+The initial Mac preflight correctly detected an expired same-name Installer
+identity. A local empty package signed with the exact requested SHA-1 proved
+selection of the current certificate without changing/exporting any key. Its XAR
+leaf matches `15028A74350CC881DF8CF8956D0AC9D7DC9D02E9`.
+
+The same package reports untrusted inside the restricted sandbox and an Apple-issued
+chain outside it. Both invocations exit zero. The gate now checks the explicit
+trust status as well as the exact leaf, using C locale. Six packaging tests pass,
+including the observed misleading-success status. Probe evidence is private under
+`/private/tmp/alondra-installer-identity-probe`; it is not an Alondra app build,
+installation, upload or release approval.

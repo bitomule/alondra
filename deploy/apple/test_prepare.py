@@ -10,7 +10,7 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, require_installer_unique
+from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust
 
 
 class DistributionInputTests(unittest.TestCase):
@@ -108,11 +108,6 @@ class DistributionInputTests(unittest.TestCase):
         requested = b"first Installer public DER fixture"
         wrong = b"other Installer public DER fixture with identical common name"
         fingerprint = hashlib.sha1(requested).hexdigest().upper()
-        other = hashlib.sha1(wrong).hexdigest().upper()
-        name = "3rd Party Mac Developer Installer: Fixture (658YBSK6MG)"
-        with self.assertRaisesRegex(GateError, "ambiguous"):
-            require_installer_unique(f'1) {fingerprint} "{name}"\n2) {other} "{name}"', fingerprint, name)
-        require_installer_unique(f'1) {fingerprint} "{name}"', fingerprint, name)
         def toc(certificates):
             values = "".join("<X509Certificate>" + base64.b64encode(cert).decode() + "</X509Certificate>" for cert in certificates)
             return '<xar><toc><signature><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data>' + values + '</X509Data></KeyInfo></signature></toc></xar>'
@@ -121,6 +116,15 @@ class DistributionInputTests(unittest.TestCase):
             verify_pkg_leaf(toc([wrong, requested]), fingerprint)
         with self.assertRaisesRegex(GateError, "Missing Installer leaf"):
             verify_pkg_leaf(toc([]), fingerprint)
+
+    def test_pkgutil_success_exit_does_not_imply_certificate_trust(self):
+        # Observed from the same real signed package inside the restricted sandbox:
+        # pkgutil returned zero while printing this untrusted status.
+        with self.assertRaisesRegex(GateError, "trust not established"):
+            verify_pkg_trust(b'Package "signed.pkg":\n   Status: signed by untrusted certificate\n')
+        verify_pkg_trust(b'Package "signed.pkg":\n   Status: signed by a developer certificate issued by Apple (Development)\n')
+        with self.assertRaises(GateError):
+            verify_pkg_trust(b'No status available')
 
     def test_archive_rejects_symlink_escape_before_ditto(self):
         with tempfile.TemporaryDirectory() as directory:
