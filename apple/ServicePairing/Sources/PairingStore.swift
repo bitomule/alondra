@@ -1,19 +1,65 @@
 import Foundation
 import Security
+import Synchronization
 
 public protocol ApprovedPairingStore: Sendable {
     func load() throws -> ApprovedServicePairing?
     func save(_ pairing: ApprovedServicePairing) throws
+    /// Explicit logout removes every locally retained pairing, not only selection.
     func delete() throws
 }
 
-/// One Keychain item keeps the approved identity and both private keys atomic. It never syncs to iCloud.
+/// Synchronous storage avoids adding a suspension between approval and persistence.
+/// This item is owned by the app process; the notification extension does not write it.
 public struct KeychainApprovedPairingStore: ApprovedPairingStore {
-    private let service: String
+    // Shared by all instances, including independently constructed clients. SecItemUpdate
+    // is atomic, but read/modify/write needs this process-local critical section too.
+    // This is not a cross-process lock; new writers must use a coordinated design.
+    private static let transaction = Mutex(())
+    private let item: any PairingItemStorage
 
     public init(service: String = "com.bitomule.alondra.service-pairing.v1") {
-        self.service = service
+        item = KeychainPairingItem(service: service)
     }
+
+    init(item: any PairingItemStorage) { self.item = item }
+
+    public func loadCollection() throws -> ApprovedPairingCollection {
+        try Self.transaction.withLock { _ in try readCollection() }
+    }
+
+    public func load() throws -> ApprovedServicePairing? {
+        try loadCollection().selected
+    }
+
+    public func save(_ pairing: ApprovedServicePairing) throws {
+        try Self.transaction.withLock { _ in
+            var collection = try readCollection()
+            try collection.upsert(pairing)
+            try item.write(JSONEncoder().encode(collection))
+        }
+    }
+
+    public func delete() throws {
+        try Self.transaction.withLock { _ in try item.delete() }
+    }
+
+    private func readCollection() throws -> ApprovedPairingCollection {
+        guard let data = try item.read() else { return ApprovedPairingCollection() }
+        return try JSONDecoder().decode(ApprovedPairingCollection.self, from: data)
+    }
+}
+
+/// Narrow I/O seam lets migration/failure tests exercise the real transaction without
+/// accessing a user's Keychain. Only item-not-found is represented by nil.
+protocol PairingItemStorage: Sendable {
+    func read() throws -> Data?
+    func write(_ data: Data) throws
+    func delete() throws
+}
+
+private struct KeychainPairingItem: PairingItemStorage {
+    let service: String
 
     private var key: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -21,7 +67,7 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
          kSecAttrAccount as String: "approved-phone"]
     }
 
-    public func load() throws -> ApprovedServicePairing? {
+    func read() throws -> Data? {
         var query = key
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -29,25 +75,23 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw PairingStoreError.keychain(status) }
-        return try JSONDecoder().decode(ApprovedServicePairing.self, from: data)
+        return data
     }
 
-    public func save(_ pairing: ApprovedServicePairing) throws {
-        let data = try JSONEncoder().encode(pairing)
+    func write(_ data: Data) throws {
+        // Update existing bytes in place; never delete-and-add or dual-write legacy data.
+        let updated = SecItemUpdate(key as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else { throw PairingStoreError.keychain(updated) }
         var query = key
         query[kSecValueData as String] = data
         query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            let updated = SecItemUpdate(key as CFDictionary,
-                [kSecValueData as String: data] as CFDictionary)
-            guard updated == errSecSuccess else { throw PairingStoreError.keychain(updated) }
-        } else if status != errSecSuccess {
-            throw PairingStoreError.keychain(status)
-        }
+        guard status == errSecSuccess else { throw PairingStoreError.keychain(status) }
     }
 
-    public func delete() throws {
+    func delete() throws {
         let status = SecItemDelete(key as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw PairingStoreError.keychain(status)
@@ -55,6 +99,9 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
     }
 }
 
-public enum PairingStoreError: Error, Sendable {
+public enum PairingStoreError: Error, Equatable, Sendable {
     case keychain(OSStatus)
+    case unsupportedVersion
+    case invalidCollection
+    case identityConflict
 }
