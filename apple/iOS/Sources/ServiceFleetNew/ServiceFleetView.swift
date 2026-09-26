@@ -78,6 +78,9 @@ struct ServiceFleetView: View {
                     ServiceNodeView(store: node, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
                 } else {
                     ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
+                        .background(DawnBackground(glow: Palette.dawn))
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar(.hidden, for: .tabBar)
                 }
             case .task(let task):
                 ServiceTaskDetailView(store: task, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
