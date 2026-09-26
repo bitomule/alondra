@@ -262,6 +262,18 @@ pub fn claude_version_check(out: Option<&str>) -> Check {
     }
 }
 
+/// Inspect capabilities rather than assuming a version string has the required flags.
+pub fn orchestrator_capability_check(help: Option<&str>) -> Check {
+    let supported = help.is_some_and(|text| {
+        ["--print", "--resume", "--output-format", "stream-json", "--permission-mode", "auto", "--permission-prompts"].iter().all(|flag| text.contains(flag))
+    });
+    if supported {
+        check("orchestrator", Status::Pass, tr!("Claude supports on-demand orchestration", "Claude admite la orquestación bajo demanda"), "")
+    } else {
+        check("orchestrator", Status::Fail, tr!("Claude is missing required on-demand runtime capabilities", "A Claude le faltan capacidades necesarias para la ejecución bajo demanda"), "claude update")
+    }
+}
+
 fn claude_auth_check(result: Result<bool>) -> Check {
     match result {
         Ok(true) => check("claude auth", Status::Pass, "Claude Code is signed in for the daemon environment", ""),
@@ -334,6 +346,10 @@ pub fn run(json_out: bool) -> Result<()> {
         .and_then(|mut cmd| { cmd.arg("--version"); command_output(cmd, Duration::from_secs(10)) })
         .filter(|(ok, _)| *ok).map(|(_, text)| text);
     checks.push(claude_version_check(claude.as_deref()));
+    let help = context.as_ref().ok().and_then(|c| c.command().ok())
+        .and_then(|mut cmd| { cmd.arg("--help"); command_output(cmd, Duration::from_secs(10)) })
+        .filter(|(ok, _)| *ok).map(|(_, text)| text);
+    checks.push(orchestrator_capability_check(help.as_deref()));
     checks.push(claude_auth_check(context.as_ref().map_err(|e| anyhow::anyhow!("{e}")).and_then(|c| c.status())));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
     let plugins = context.as_ref().ok().and_then(setup::plugin_list);
@@ -491,5 +507,17 @@ mod tests {
         assert_eq!(apns_file_check(Some(apns), |_| false).status, Status::Fail);
         assert_eq!(apns_file_check(Some("{}"), |_| true).status, Status::Fail);
         assert_eq!(apns_file_check(None, |_| true).status, Status::Warn);
+    }
+}
+
+#[cfg(test)]
+mod orchestrator_tests {
+    use super::*;
+    #[test]
+    fn missing_auto_or_streaming_support_is_actionable() {
+        let help = "--print --resume --output-format stream-json --permission-mode auto --permission-prompts";
+        assert_eq!(orchestrator_capability_check(Some(help)).status, Status::Pass);
+        assert_eq!(orchestrator_capability_check(Some(&help.replace("auto", "default"))).status, Status::Fail);
+        assert_eq!(orchestrator_capability_check(None).status, Status::Fail);
     }
 }

@@ -6,7 +6,20 @@ description: How the orchestrator works when it is connected to Alondra. Use it 
 # Orchestrator with Alondra
 
 The user is the person who supervises the fleet; the Alondra MCP instructions give their name
-and the language to write to them in. Their answers are typed into your session.
+and the language to write to them in. Their answers arrive through Alondra's durable inbox.
+
+Alondra runs you with `claude -p --permission-mode auto`, resuming the same conversation for
+subsequent batches. Finish once the current batch is handled. Do not poll, sleep, keep a
+background loop alive, or wait in this invocation for the user or workers. Alondra resumes you
+when there is more work. Always use Alondra `ask` for questions, then finish the batch; terminal
+questions and permission prompts are unavailable. Auto mode may deny an operation: report the
+blocker through Alondra instead of attempting to bypass it. Use `report` for user-visible results.
+
+On a new conversation, consult `fleet` before deciding what remains to do. Tasks, reports,
+questions and requests are durable; a new conversation does not imply they need to be repeated.
+The daemon may compact this conversation between batches. Keep material decisions, constraints
+and next steps in task briefs, reports or questions so they remain inspectable outside the
+conversation. The daemon owns compaction, retries and scheduling; do not start or stop yourself.
 
 Alondra gives you:
 - eyes: `fleet` (the nodes that are running, dormant or owe the user something, and the open

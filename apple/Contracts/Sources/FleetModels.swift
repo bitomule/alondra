@@ -30,6 +30,25 @@ public enum OrchestratorState: String, Codable, Sendable {
     }
 }
 
+/// Public lifecycle of the managed orchestrator, independent of a running Claude process.
+public struct OrchestratorRuntime: Codable, Hashable, Sendable {
+    public enum Phase: String, Codable, Sendable {
+        case idle, starting, running, compacting, failed, unknown
+        public init(from decoder: Decoder) throws {
+            self = Phase(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+        }
+    }
+    public let phase: Phase
+    public let canRetry: Bool?
+    public let canCancel: Bool?
+    public let cancelRequested: Bool?
+    public let activeRunId: String?
+    public let queueDepth: Int?
+    public let lastError: String?
+    public let retryAt: Int64?
+    public let updatedAt: Int64?
+}
+
 public struct ToolInFlight: Codable, Hashable, Sendable {
     public let name: String
     public let summary: String?
@@ -46,6 +65,7 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let hasPlugin: Bool
     public let state: NodeState
     public let orchestratorState: OrchestratorState?
+    public let orchestratorRuntime: OrchestratorRuntime?
     /// When the node first appeared; fixed for its lifetime. The fleet list sorts by this, not
     /// by state, so a node keeps its place as its state changes.
     public let createdAt: Int64
@@ -63,7 +83,7 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     public let activity: [NodeActivity]?
 
     private enum CodingKeys: String, CodingKey {
-        case sessionId, shortId, name, cwd, isOrchestrator, hasPlugin, state, orchestratorState, createdAt, stateSince, stateSource, tool,
+        case sessionId, shortId, name, cwd, isOrchestrator, hasPlugin, state, orchestratorState, orchestratorRuntime, createdAt, stateSince, stateSource, tool,
             lastMessage, lastMessageAt, daemonDetail, daemonNeeds, project, background, activity
     }
 
@@ -77,6 +97,7 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
         hasPlugin = try c.decode(Bool.self, forKey: .hasPlugin)
         state = try c.decode(NodeState.self, forKey: .state)
         orchestratorState = try c.decodeIfPresent(OrchestratorState.self, forKey: .orchestratorState)
+        orchestratorRuntime = try c.decodeIfPresent(OrchestratorRuntime.self, forKey: .orchestratorRuntime)
         stateSince = try c.decode(Int64.self, forKey: .stateSince)
         // A node from a server older than this field falls back to `stateSince`, the closest
         // thing it has to a creation time — the same backfill the daemon runs on its own store.
@@ -232,6 +253,7 @@ public struct Overview: Codable, Sendable {
     public let openQuestions: [Question]
     public let news: [Report]
     public let orchestratorMessages: [SentMessage]
+    public let orchestrator: OrchestratorRuntime?
     public let machine: Machine
     public let usage: Usage?
     public let prs: [PullRequest]?

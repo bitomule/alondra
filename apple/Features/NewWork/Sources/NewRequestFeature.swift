@@ -113,7 +113,7 @@ public struct NewRequestFeature {
                 state.hasSnapshot = overview != nil
                 state.orchestratorName = overview?.nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince }?.displayName
                 state.sentMessages = (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
-                state.canSubmit = state.orchestratorName != nil
+                state.canSubmit = overview?.orchestrator != nil || state.orchestratorName != nil
                 if !state.canSubmit { state.pendingSubmission = nil }
                 return .none
             case .appeared:

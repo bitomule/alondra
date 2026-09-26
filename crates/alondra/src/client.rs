@@ -18,10 +18,47 @@ pub fn config() -> &'static Config {
 
 #[derive(Deserialize, Clone)]
 pub struct FleetNode {
+    #[serde(default)]
+    pub orchestrator_runtime: Option<OrchestratorRuntime>,
     #[serde(flatten)]
     pub node: Node,
     #[serde(default)]
     pub project: Option<String>,
+}
+
+/// Public status only; Claude conversation and execution identities stay internal.
+#[derive(Deserialize, Clone, Default)]
+pub struct OrchestratorRuntime {
+    pub phase: String,
+    #[serde(default)]
+    pub can_retry: bool,
+    #[serde(default)]
+    pub can_cancel: bool,
+    #[serde(default)]
+    pub cancel_requested: bool,
+    pub active_run_id: Option<String>,
+    #[serde(default)]
+    pub queue_depth: usize,
+    pub last_error: Option<String>,
+    pub retry_at: Option<i64>,
+}
+
+impl FleetNode {
+    pub fn status_label(&self) -> &'static str {
+        match self.orchestrator_runtime.as_ref() {
+            Some(runtime) if runtime.cancel_requested => tr!("stopping", "deteniendo"),
+            Some(runtime) => match runtime.phase.as_str() {
+                "idle" => tr!("available", "disponible"),
+                "starting" => tr!("starting", "iniciando"),
+                "running" => tr!("handling a request", "atendiendo una petición"),
+                "compacting" => tr!("compacting context", "compactando contexto"),
+                "failed" if runtime.retry_at.is_some() => tr!("retrying", "reintentando"),
+                "failed" => tr!("needs attention", "requiere atención"),
+                _ => tr!("unknown", "desconocido"),
+            },
+            None => crate::i18n::fleet_state(&self.node),
+        }
+    }
 }
 
 /// One thread of a node, the main one (no `agent_id`) or a subagent, and what it does now.
@@ -124,6 +161,8 @@ impl std::ops::Deref for FleetNode {
 
 #[derive(Deserialize, Clone, Default)]
 pub struct Overview {
+    #[serde(default)]
+    pub orchestrator: Option<OrchestratorRuntime>,
     pub tick: u64,
     pub nodes: Vec<FleetNode>,
     pub open_questions: Vec<OpenQuestion>,
@@ -391,6 +430,9 @@ impl Client {
     }
 
     fn signed(&self, req: ureq::RequestBuilder<ureq::typestate::WithoutBody>, method: &str, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        let mut req = req;
+        if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
+        if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         match &self.signer {
             Some(s) => s.sign(method, path, b"").into_iter().fold(req, |r, (k, v)| r.header(k, v)),
             None => req,
@@ -468,6 +510,8 @@ impl Client {
         if self.service.is_some() { return self.service_result("POST", path, Some(body)).map(|(_, v)| v); }
         let bytes = serde_json::to_vec(body)?;
         let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/json");
+        if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
+        if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         if let Some(s) = &self.signer {
             for (k, v) in s.sign("POST", path, &bytes) {
                 req = req.header(k, v);
@@ -529,5 +573,22 @@ mod tests {
         assert_eq!(said(404, r#"{"error":"task t-9 does not exist"}"#), "Alondra ya no lo tiene");
         assert!(Client::failure(404, String::new()).downcast_ref::<NotFound>().is_some(), "a bare 404 is a route this alondrad lacks");
         assert_eq!(said(409, r#"{"error":"something new"}"#), "alondrad respondió: something new");
+    }
+}
+
+#[cfg(test)]
+mod orchestrator_contract_tests {
+    use super::*;
+
+    #[test]
+    fn idle_runtime_decodes_without_a_claude_session_and_is_not_offline() {
+        let mut value = serde_json::to_value(Node::new("alondra-orchestrator", 1)).unwrap();
+        value["is_orchestrator"] = serde_json::json!(true);
+        value["alive"] = serde_json::json!(false);
+        value["orchestrator_runtime"] = serde_json::json!({"phase": "idle", "queue_depth": 2});
+        let node: FleetNode = serde_json::from_value(value).unwrap();
+        assert!(!node.alive);
+        assert_eq!(node.orchestrator_runtime.as_ref().unwrap().queue_depth, 2);
+        assert_eq!(node.status_label(), tr!("available", "disponible"));
     }
 }

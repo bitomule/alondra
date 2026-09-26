@@ -97,6 +97,21 @@ final class APIClientWireTests: XCTestCase {
         XCTAssertEqual(requests[2].path, "/v1/search?q=a%20b%26c%3F%23%C3%A9")
     }
 
+    func testOrchestratorRecoveryCommandsKeepRunAndOperationIdentity() async throws {
+        let operations = WireOperations()
+        let api = client(operations)
+        _ = try await api.send(AlondraEndpoints.cancelOrchestrator("run-1"), operationID: "stop-1")
+        _ = try await api.send(AlondraEndpoints.retryOrchestrator("run-2"), operationID: "retry-2")
+        _ = try await api.send(AlondraEndpoints.acknowledgeOrchestrator("run-3"), operationID: "ack-3")
+        let requests = await operations.recorded()
+        XCTAssertEqual(requests.map(\.path), ["/v1/orchestrator/cancel", "/v1/orchestrator/retry", "/v1/orchestrator/acknowledge"])
+        XCTAssertEqual(requests.map(\.operationID), ["stop-1", "retry-2", "ack-3"])
+        for (index, request) in requests.enumerated() {
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
+            XCTAssertEqual(body, ["run_id": "run-\(index + 1)"])
+        }
+    }
+
     func testCloseRefusalKeepsStructuredReasonsAndNeverRepeatsMutation() async throws {
         let body = Data(#"{"reasons":[{"kind":"worktree","detail":"uncommitted files"},{"kind":"busy"}]}"#.utf8)
         let operations = WireOperations(status: 409, body: body)

@@ -907,7 +907,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || id_action(path, "/v1/prs/", "/diff-snapshot", true)
         }
         "POST" if request.body.is_some() && query.is_none() => {
-            matches!(path, "/v1/requests" | "/v1/tasks/archive" | "/v1/activity" | "/v1/schedules")
+            matches!(path, "/v1/orchestrator/acknowledge" | "/v1/orchestrator/cancel" | "/v1/orchestrator/retry" | "/v1/requests" | "/v1/tasks/archive" | "/v1/activity" | "/v1/schedules")
                 || id_action(path, "/v1/questions/", "/answer", true)
                 || id_action(path, "/v1/questions/", "/more-context", true)
                 || id_action(path, "/v1/prs/", "/merge", true)

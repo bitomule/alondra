@@ -41,17 +41,26 @@ public struct NodeMessage: Equatable, Sendable {
 /// The adapter must reserve the send command before uploading files or dispatching transport.
 public struct NodeOperations: Sendable {
     public var send: @Sendable (String, NodeMessage) async -> NodeMutationOutcome
+    public var acknowledgeOrchestrator: @Sendable (String) async -> NodeMutationOutcome
+    public var cancelOrchestrator: @Sendable (String) async -> NodeMutationOutcome
+    public var retryOrchestrator: @Sendable (String) async -> NodeMutationOutcome
     public var close: @Sendable (String) async -> NodeMutationOutcome
     public var threads: @Sendable (String) async throws -> [NodeActivity]?
 
     public init(
         send: @escaping @Sendable (String, NodeMessage) async -> NodeMutationOutcome,
         close: @escaping @Sendable (String) async -> NodeMutationOutcome,
-        threads: @escaping @Sendable (String) async throws -> [NodeActivity]?
+        threads: @escaping @Sendable (String) async throws -> [NodeActivity]?,
+        retryOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete },
+        cancelOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete },
+        acknowledgeOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete }
     ) {
         self.send = send
         self.close = close
         self.threads = threads
+        self.retryOrchestrator = retryOrchestrator
+        self.cancelOrchestrator = cancelOrchestrator
+        self.acknowledgeOrchestrator = acknowledgeOrchestrator
     }
 }
 

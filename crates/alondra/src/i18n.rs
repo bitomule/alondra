@@ -214,7 +214,7 @@ pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
             )
             .to_string()
         }
-        "orchestrator" => tr!("it is the orchestrator, which Alondra keeps alive", "es el orquestador, que Alondra mantiene vivo").to_string(),
+        "orchestrator" => tr!("it is the orchestrator, which Alondra manages automatically", "es el orquestador, que Alondra gestiona automáticamente").to_string(),
         "worktree" => {
             let detail = detail.unwrap_or_default();
             trf!(

@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Continue without repeating…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir…"}}}},
+    "Continue without repeating?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Continuar sin repetir?"}}}},
+    "The interrupted batch will not run again. Inspect any partial effects first. Later messages remain queued and can continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El lote interrumpido no volverá a ejecutarse. Revisa primero los efectos parciales. Los mensajes posteriores siguen en cola y pueden continuar."}}}},
+
+    "Stop": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener"}}}},
+
+    "Stop Orchestrator…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener orquestador…"}}}},
+    "Stop the current intervention?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Detener la intervención actual?"}}}},
+    "Completed actions cannot be undone. Alondra keeps the conversation and pending messages; interrupted work may need review before retrying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las acciones completadas no se deshacen. Alondra conserva la conversación y los mensajes pendientes; puede ser necesario revisar el trabajo interrumpido antes de reintentar."}}}},
+
+    "Retry Orchestrator…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar orquestador…"}}}},
+    "Retry the interrupted work?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Reintentar el trabajo interrumpido?"}}}},
+    "Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que algunas acciones ya se hayan completado. Revisa la actividad y las tareas antes de reintentar para evitar repetir trabajo."}}}},
+
+    "Alondra starts the orchestrator when your request is ready.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra inicia el orquestador cuando tu petición está lista."}}}},
+
     "%lld feedback messages were not sent; review your drafts": {
       "localizations": {
         "es": {

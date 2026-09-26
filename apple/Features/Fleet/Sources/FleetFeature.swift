@@ -82,7 +82,7 @@ public struct FleetFeature {
                 state.closeRefusal = nil
                 return .none
             case .closeRequested(let id):
-                guard !state.isStale, state.snapshot?.node(id) != nil,
+                guard !state.isStale, state.snapshot?.node(id)?.node.isOrchestrator == false,
                       !state.closingIDs.contains(id), state.closeOutcomeByID[id]?.uncertainID == nil,
                       state.closeOutcomeByID[id] != .confirmed else { return .none }
                 state.closeConfirmationID = id
@@ -92,7 +92,7 @@ public struct FleetFeature {
                 return .none
             case .closeConfirmed:
                 guard let id = state.closeConfirmationID, !state.isStale,
-                      state.snapshot?.node(id) != nil, !state.closingIDs.contains(id),
+                      state.snapshot?.node(id)?.node.isOrchestrator == false, !state.closingIDs.contains(id),
                       state.closeOutcomeByID[id]?.uncertainID == nil,
                       state.closeOutcomeByID[id] != .confirmed else { return .none }
                 state.closeConfirmationID = nil

@@ -16,6 +16,24 @@ struct ServiceNodeView: View {
             DetailScaffold {
                 VStack(alignment: .leading, spacing: 22) {
                     ServiceNodeHeader(node: node)
+                    if let runtime = node.orchestratorRuntime {
+                        Text(runtime.availabilityDescription).foregroundStyle(.secondary)
+                        if runtime.queueDepth != nil { Text(runtime.queueLabel).font(.callout) }
+                        if let error = runtime.lastError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                        if runtime.canRetry == true {
+                            Button("Retry Orchestrator…") { store.send(.retryRequested) }
+                                .disabled(!store.canRetryOrchestrator)
+                            Button("Continue without repeating…") { store.send(.acknowledgeRequested) }
+                                .disabled(!store.canAcknowledgeOrchestrator)
+                        }
+                        ServiceNodeOutcome(outcome: store.retryOutcome)
+                        ServiceNodeOutcome(outcome: store.acknowledgeOutcome)
+                        if runtime.canCancel == true {
+                            Button("Stop Orchestrator…", role: .destructive) { store.send(.cancelRequested) }
+                                .disabled(!store.canCancelOrchestrator)
+                        }
+                        ServiceNodeOutcome(outcome: store.cancelOutcome)
+                    }
                     if !pending.isEmpty {
                         ServiceTaskSection(String(localized: "Waiting for You")) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -75,7 +93,7 @@ struct ServiceNodeView: View {
                             MarkdownText(text: last)
                         }
                     }
-                    if let cwd = node.cwd {
+                    if !node.isOrchestrator, let cwd = node.cwd {
                         Label(cwd, systemImage: "folder").font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
                     }
                 }
@@ -86,11 +104,31 @@ struct ServiceNodeView: View {
                     ServiceNodeOutcome(outcome: store.closeOutcome)
                 }
             }
+            .alert("Continue without repeating?", isPresented: Binding(get: { store.acknowledgeConfirmationRunID != nil }, set: { if !$0 { store.send(.acknowledgeCancelled) } })) {
+                Button("Continue") { store.send(.acknowledgeConfirmed) }
+                Button("Cancel", role: .cancel) { store.send(.acknowledgeCancelled) }
+            } message: {
+                Text("The interrupted batch will not run again. Inspect any partial effects first. Later messages remain queued and can continue.")
+            }
+            .alert("Stop the current intervention?", isPresented: Binding(get: { store.cancelConfirmationRunID != nil }, set: { if !$0 { store.send(.cancelCancelled) } })) {
+                Button("Stop", role: .destructive) { store.send(.cancelConfirmed) }
+                Button("Cancel", role: .cancel) { store.send(.cancelCancelled) }
+            } message: {
+                Text("Completed actions cannot be undone. Alondra keeps the conversation and pending messages; interrupted work may need review before retrying.")
+            }
+            .alert("Retry the interrupted work?", isPresented: Binding(get: { store.retryConfirmationRunID != nil }, set: { if !$0 { store.send(.retryCancelled) } })) {
+                Button("Retry") { store.send(.retryConfirmed) }
+                Button("Cancel", role: .cancel) { store.send(.retryCancelled) }
+            } message: {
+                Text("Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.")
+            }
             .toolbar {
-                ToolbarItem {
-                    Button(role: .destructive) { store.send(.closeRequested) } label: { Label("Close Node…", systemImage: "xmark.bin") }
-                        .disabled(store.isStale || store.isClosing || store.isSendInFlight || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
-                        .help("Close this node with claude rm")
+                if !node.isOrchestrator {
+                    ToolbarItem {
+                        Button(role: .destructive) { store.send(.closeRequested) } label: { Label("Close Node…", systemImage: "xmark.bin") }
+                            .disabled(store.isStale || store.isClosing || store.isSendInFlight || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
+                            .help("Close this node with claude rm")
+                    }
                 }
             }
             .alert("Close \(node.displayName)?", isPresented: Binding(get: { store.showCloseConfirmation }, set: { if !$0 { store.send(.closeCancelled) } })) {
