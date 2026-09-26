@@ -1,4 +1,5 @@
 import AlondraDomain
+import AlondraAttachmentsFeature
 import AlondraFleetFeature
 import AlondraNewWorkFeature
 import AlondraShared
@@ -9,6 +10,58 @@ import Testing
 
 @MainActor
 struct NewFleetNoticeIntegrationTests {
+    @Test
+    func failedUploadDuringNewSendRetainsFileAndNeverDispatchesRequest() async throws {
+        let draft = AttachmentDraft(name: "proof.txt", data: Data("proof".utf8))
+        var initial = ServiceRootFeature.State()
+        initial.newRequest.text = "Keep this request"
+        initial.newRequest.canSubmit = true
+        initial.newRequest.catalogIsCurrent = true
+        initial.newRequest.attachmentPicker.entries = [.init(draft: draft, status: .failed("Offline"))]
+        let uploads = LockIsolated(0)
+        let creates = LockIsolated(0)
+        let reduced = AsyncStream<Void>.makeStream()
+        let clock = TestClock()
+        let store = Store(initialState: initial) {
+            CombineReducers {
+                ServiceRootFeature()
+                Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { _, action in
+                    if case .newRequest(.attachmentPicker(.uploaded)) = action { reduced.continuation.yield(()) }
+                    return .none
+                }
+            }
+        } withDependencies: {
+            $0.continuousClock = clock
+            $0.attachmentUpload = .init(upload: { _ in
+                uploads.withValue { $0 += 1 }
+                throw AttachmentFailure(message: "Still offline")
+            })
+            $0.newWorkOperations = .init(
+                projects: { [] }, options: { _ in fatalError("Unexpected catalogue read") },
+                issues: { _ in fatalError("Unexpected issue read") },
+                captureSubmissionScope: {
+                    creates.withValue { $0 += 1 }
+                    return nil
+                })
+        }
+        let submission = store.send(.newRequest(.submitTapped))
+        var iterator = reduced.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(uploads.value == 1)
+        #expect(creates.value == 0)
+        #expect(store.newRequest.pendingSubmission == nil)
+        #expect(store.newRequest.attachmentPicker.entries.first?.draft == draft)
+        #expect(store.newRequest.attachmentPicker.entries.first?.status == .failed("Still offline"))
+        #expect(store.newRequest.text == "Keep this request")
+        #expect(store.newRequest.inlineSubmissionError == nil)
+        #expect(store.notice?.event == .failure(couldNotSendMessage("Still offline")))
+        await clock.advance(by: .seconds(6))
+        await submission.finish()
+        #expect(store.notice == nil)
+        #expect(store.newRequest.inlineSubmissionError == nil)
+        reduced.continuation.finish()
+    }
+
     @Test
     func rejectedNewRequestKeepsDraftAndShowsOnlyTransientWorkspaceFailure() async throws {
         var initial = ServiceRootFeature.State()

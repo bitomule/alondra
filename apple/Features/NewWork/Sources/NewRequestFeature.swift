@@ -96,7 +96,7 @@ public struct NewRequestFeature {
                    let failure = state.attachmentPicker.failedUploadMessage {
                     state.pendingSubmission = nil
                     state.submissionError = failure
-                    state.submissionErrorIsTerminal = false
+                    state.submissionErrorIsTerminal = true
                 }
                 if event.invalidatesPendingSubmission { state.pendingSubmission = nil }
                 guard state.pendingSubmission != nil, state.attachmentPicker.allReady else { return .none }

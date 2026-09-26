@@ -250,6 +250,10 @@ public struct ServiceRootFeature {
         case .delivery(.updated(let status)):
             guard let error = status.persistenceError, error != state.delivery.status?.persistenceError else { return nil }
             return .failure(error)
+        case .newRequest(.attachmentPicker(.uploaded(let id, .failure(let error)))):
+            guard state.newRequest.pendingSubmission != nil,
+                  state.newRequest.attachmentPicker.entries.first(where: { $0.id == id })?.status == .uploading else { return nil }
+            return .failure(couldNotSendMessage(error.message))
         case .newRequest(.submitFinished(let result, let epoch)):
             guard state.newRequest.isSubmitting, epoch == state.newRequest.presentationEpoch else { return nil }
             switch result {
