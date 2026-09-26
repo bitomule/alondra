@@ -325,6 +325,14 @@ impl Queue {
         Ok(j.phone_id.clone())
     }
 
+    pub fn purge_owner(&self,owner:&str) {
+        let mut inner=self.inner.lock().unwrap();
+        inner.jobs.retain(|_,job|job.owner_sub!=owner);
+        inner.tombstones.retain(|_,job|job.owner_sub!=owner);
+        inner.revision+=1;
+        drop(inner);self.changed.notify_waiters();
+    }
+
     /// Drop pending and completed ciphertext for a revoked phone immediately.
     pub fn purge_phone(&self, phone_id: &str) -> usize {
         let mut inner = self.inner.lock().unwrap();
