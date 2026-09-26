@@ -479,6 +479,77 @@ fn abandon_expired(
     Ok(())
 }
 
+// Keep comparison, explicit approval and pending persistence in one boundary.
+// Inject only terminal I/O so adversarial candidates can exercise this actual flow.
+#[allow(clippy::too_many_arguments)]
+fn confirm_and_persist_candidate(
+    home: &Path, owner_sub: &str, public: &PublicMac, agreement: &SecretKey,
+    session_id: &str, expires: u64, candidate: Candidate,
+    input: &mut impl io::BufRead, output: &mut impl Write,
+) -> Result<Pending> {
+    let phone_signing =
+        VerifyingKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&candidate.signing_key)?)?;
+    let plaintext = candidate
+        .envelope
+        .open(
+            &phone_signing,
+            &agreement,
+            &candidate.device_id,
+            &public.mac_id,
+            &public.mac_id,
+            now_ms()?,
+        )
+        .map_err(|e| anyhow!("invalid encrypted pairing candidate: {e}"))?;
+    let phone: CandidatePlain = serde_json::from_slice(&plaintext)?;
+    if phone.device_id != candidate.device_id
+        || phone.signing_key != candidate.signing_key
+        || phone.owner_sub != owner_sub
+        || phone.session_id != session_id
+        || !(phone.device_id.starts_with("client-") || phone.device_id.starts_with("phone-"))
+        || phone.device_id.len() > 128
+        || !phone
+            .device_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || phone.display_name.len() > 80
+        || phone.display_name.chars().any(char::is_control)
+    {
+        bail!("pairing candidate mismatch");
+    }
+    p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&phone.agreement_key)?)?;
+    let fingerprint =
+        URL_SAFE_NO_PAD.encode(&Sha256::digest(URL_SAFE_NO_PAD.decode(&phone.signing_key)?)[..6]);
+    writeln!(output, "Pairing request from {}.", phone.display_name)?;
+    write!(output, "Enter the 8-character code shown on that client: ")?;
+    output.flush()?;
+    let mut comparison = String::new();
+    input.read_line(&mut comparison)?;
+    if !bool::from(comparison.trim().as_bytes().ct_eq(fingerprint.as_bytes())) {
+        bail!("Client comparison code does not match; pairing declined");
+    }
+    write!(output, "Approve this device on this Mac? [y/N] ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    if !matches!(
+        answer.trim(),
+        "y" | "Y" | "yes" | "YES" | "s" | "S" | "sí" | "Sí"
+    ) {
+        bail!("pairing declined");
+    }
+    let pending = Pending {
+        session_id: session_id.to_owned(),
+        mac_id: public.mac_id.clone(),
+        expires_at_ms: expires,
+        phone,
+    };
+    atomic_write(
+        &home.join("service-pairing-pending.json"),
+        &serde_json::to_vec_pretty(&pending)?,
+    )?;
+    Ok(pending)
+}
+
 pub fn run(home: &Path) -> Result<()> {
     let path = home.join("service.toml");
     let mut config: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
@@ -607,65 +678,9 @@ pub fn run(home: &Path) -> Result<()> {
             _ => bail!("pairing poll failed ({status})"),
         }
     };
-    let phone_signing =
-        VerifyingKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&candidate.signing_key)?)?;
-    let plaintext = candidate
-        .envelope
-        .open(
-            &phone_signing,
-            &agreement,
-            &candidate.device_id,
-            &public.mac_id,
-            &public.mac_id,
-            now_ms()?,
-        )
-        .map_err(|e| anyhow!("invalid encrypted pairing candidate: {e}"))?;
-    let phone: CandidatePlain = serde_json::from_slice(&plaintext)?;
-    if phone.device_id != candidate.device_id
-        || phone.signing_key != candidate.signing_key
-        || phone.owner_sub != config.owner_sub
-        || phone.session_id != session_id
-        || !(phone.device_id.starts_with("client-") || phone.device_id.starts_with("phone-"))
-        || phone.device_id.len() > 128
-        || !phone
-            .device_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        || phone.display_name.len() > 80
-        || phone.display_name.chars().any(char::is_control)
-    {
-        bail!("pairing candidate mismatch");
-    }
-    p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&phone.agreement_key)?)?;
-    let fingerprint =
-        URL_SAFE_NO_PAD.encode(&Sha256::digest(URL_SAFE_NO_PAD.decode(&phone.signing_key)?)[..6]);
-    println!("Pairing request from {}.", phone.display_name);
-    print!("Enter the 8-character code shown on that client: ");
-    io::stdout().flush()?;
-    let mut comparison = String::new();
-    io::stdin().read_line(&mut comparison)?;
-    if !bool::from(comparison.trim().as_bytes().ct_eq(fingerprint.as_bytes())) {
-        bail!("Client comparison code does not match; pairing declined");
-    }
-    print!("Approve this device on this Mac? [y/N] ");
-    io::stdout().flush()?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if !matches!(
-        answer.trim(),
-        "y" | "Y" | "yes" | "YES" | "s" | "S" | "sí" | "Sí"
-    ) {
-        bail!("pairing declined");
-    }
-    let pending = Pending {
-        session_id,
-        mac_id: public.mac_id.clone(),
-        expires_at_ms: expires,
-        phone,
-    };
-    atomic_write(
-        &home.join("service-pairing-pending.json"),
-        &serde_json::to_vec_pretty(&pending)?,
+    let pending = confirm_and_persist_candidate(
+        home, &config.owner_sub, &public, &agreement, &session_id, expires,
+        candidate, &mut io::stdin().lock(), &mut io::stdout().lock(),
     )?;
     complete_pending(
         home,
@@ -681,6 +696,44 @@ pub fn run(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn substituted_candidate_cannot_persist_approval_with_original_client_code() {
+        let home=std::env::temp_dir().join(format!("alondra-pairing-substitution-{}",URL_SAFE_NO_PAD.encode(random::<8>().unwrap())));
+        fs::create_dir(&home).unwrap();
+        let mac=SigningKey::from_slice(&[21;32]).unwrap();
+        let agreement=SecretKey::from_slice(&[22;32]).unwrap();
+        let original=SigningKey::from_slice(&[23;32]).unwrap();
+        let impostor=SigningKey::from_slice(&[24;32]).unwrap();
+        let public=PublicMac {mac_id:"mac-test".into(),signing_key:URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes()),
+            agreement_key:URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes())};
+        let expires=now_ms().unwrap()+60_000;
+        let candidate=|signing: &SigningKey, agreement_byte: u8| {
+            let key=URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes());
+            let plain=CandidatePlain {device_id:"phone-test".into(),signing_key:key.clone(),
+                agreement_key:URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[agreement_byte;32]).unwrap().public_key().to_sec1_bytes()),
+                display_name:"My iPhone".into(),owner_sub:"owner".into(),session_id:"pair-test".into()};
+            Candidate {device_id:plain.device_id.clone(),signing_key:key,
+                envelope:EnvelopeV1::seal_random(alondra_e2e::Context {route:"mac-test",sender:"phone-test",recipient:"mac-test",
+                    request_id:"pair-test",kind:"pairing",expires_at_ms:expires},
+                    &serde_json::to_vec(&plain).unwrap(),signing,&agreement.public_key()).unwrap()}
+        };
+        let code=URL_SAFE_NO_PAD.encode(&Sha256::digest(original.verifying_key().to_sec1_bytes())[..6]);
+        let answers=format!("{code}\ny\n");
+        // Same displayed name, owner, session and device ID, freshly valid
+        // ciphertext/signature, but attacker-controlled signing AND agreement keys.
+        let error=confirm_and_persist_candidate(&home,"owner",&public,&agreement,"pair-test",expires,
+            candidate(&impostor,25),&mut io::Cursor::new(answers.as_bytes()),&mut Vec::new()).err().unwrap();
+        assert!(error.to_string().contains("comparison code does not match"));
+        assert_eq!(fs::read_dir(&home).unwrap().count(),0,"no pending or local approval may be written");
+        // Positive control follows exactly the same crypto, prompt and durable
+        // persistence path with the legitimate client's code and keys.
+        confirm_and_persist_candidate(&home,"owner",&public,&agreement,"pair-test",expires,
+            candidate(&original,26),&mut io::Cursor::new(answers.as_bytes()),&mut Vec::new()).unwrap();
+        let pending: Pending=serde_json::from_slice(&fs::read(home.join("service-pairing-pending.json")).unwrap()).unwrap();
+        assert_eq!(pending.phone.signing_key,URL_SAFE_NO_PAD.encode(original.verifying_key().to_sec1_bytes()));
+        fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn expired_cleanup_can_send_signed_delete() {

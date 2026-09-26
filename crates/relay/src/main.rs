@@ -2147,6 +2147,46 @@ mod http_tests {
         handle.abort();
     }
     #[tokio::test]
+    async fn recovered_account_token_cannot_replace_device_key_or_read_its_content() {
+        let mac = SigningKey::from_slice(&[81;32]).unwrap();
+        let approved = SigningKey::from_slice(&[82;32]).unwrap();
+        let attacker = SigningKey::from_slice(&[83;32]).unwrap();
+        let (url, server, handle) = test_server(&mac).await;
+        let epoch = server.auth.server_epoch();
+        server.auth.enroll(&auth::Identity {device_id:"mac-1".into(),owner_sub:"owner".into()},
+            PhoneDevice {device_id:"phone-approved".into(),owner_sub:"owner".into(),signing_key:key_bytes(&approved)}).unwrap();
+        let now=now_ms();
+        // Model account recovery's security consequence: a genuinely valid JWT
+        // for the original subject, but none of the previously approved keys.
+        let recovered=jwt("owner",now);
+        assert_eq!(server.auth.verify_jwt(&recovered,now).await.unwrap(),"owner");
+        server.queue.submit("owner","phone-approved","mac-1","prior-content",[4;32],
+            json!({"ciphertext":"opaque request"}),now+60_000,now).unwrap();
+        server.queue.next_work("mac-1",now).unwrap();
+        server.queue.mark_received("mac-1","prior-content",now).unwrap();
+        server.queue.respond("mac-1","phone-approved","prior-content",json!({"ciphertext":"opaque response"}),now).unwrap();
+        let client=reqwest::Client::new();
+        let path="/v1/requests/prior-content";
+        // Positive control: the content exists and remains retrievable with the
+        // original device key plus the very same recovered account credential.
+        let response=sign(&epoch,client.get(format!("{url}{path}")).bearer_auth(&recovered),
+            &approved,"phone-approved","GET",path,&[],1).send().await.unwrap();
+        assert_eq!(response.status(),StatusCode::OK);
+        for (id,nonce) in [("phone-approved",2),("phone-attacker",3)] {
+            let denied=sign(&epoch,client.get(format!("{url}{path}")).bearer_auth(&recovered),
+                &attacker,id,"GET",path,&[],nonce).send().await.unwrap();
+            assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+            assert!(!denied.text().await.unwrap().contains("opaque response"));
+        }
+        let body=serde_json::to_vec(&json!({"device_id":"phone-approved","owner_sub":"owner","signing_key":key_bytes(&attacker)})).unwrap();
+        let denied=sign(&epoch,client.post(format!("{url}/v1/devices")).bearer_auth(&recovered).body(body.clone()),
+            &attacker,"mac-1","POST","/v1/devices",&body,4).send().await.unwrap();
+        assert_eq!(denied.status(),StatusCode::UNAUTHORIZED);
+        assert_eq!(server.auth.phone_key("phone-approved").unwrap().to_sec1_point(false),approved.verifying_key().to_sec1_point(false));
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn mac_enrollment_is_owner_bound_create_only_and_durable() {
         let pilot_key = SigningKey::from_slice(&[61u8; 32]).unwrap();
         let mac_key = SigningKey::from_slice(&[62u8; 32]).unwrap();
