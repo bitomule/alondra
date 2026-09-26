@@ -106,6 +106,7 @@ public struct DocumentReviewFeature {
         public var previousTextForComparison: String?
         public var isLoading = false
         public var loadError: String?
+        public var feedbackAuthor = ""
         public var draft = DocumentDraft()
         public var composingAnchor: String?
         public var composingText = ""
@@ -144,7 +145,8 @@ public struct DocumentReviewFeature {
             pendingReview = nil
         }
 
-        public init(subject: DocumentSubject, identity: QuestionWorkIdentity? = nil) {
+        public init(subject: DocumentSubject, identity: QuestionWorkIdentity? = nil, feedbackAuthor: String = "") {
+            self.feedbackAuthor = feedbackAuthor
             self.subject = subject
             self.identity = identity
         }
@@ -259,6 +261,7 @@ public struct DocumentReviewFeature {
                 clearPending(&state)
                 state.attachmentPicker = AttachmentFeature.State()
                 state.identity = identity
+                state.feedbackAuthor = ""
                 state.draft = DocumentDraft()
                 state.sourceText = nil
                 state.sections = []

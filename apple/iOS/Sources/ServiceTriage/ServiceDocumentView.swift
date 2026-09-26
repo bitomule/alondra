@@ -58,7 +58,7 @@ struct ServiceDocumentView: View {
                 content
                 if case .question(let question) = item, question.origin != "plan", !question.options.isEmpty {
                     ServiceOptionGrid(options: question.options, picked: nil) { option in
-                        store.send(.chooseReviewOption(option, author: "David"))
+                        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
                     }
                     .padding(.top, 28)
                 }
@@ -194,7 +194,7 @@ struct ServiceDocumentView: View {
                     switch item {
                     case .question(let question):
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label(store.changeOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
                                 .frame(maxWidth: .infinity)
@@ -215,7 +215,7 @@ struct ServiceDocumentView: View {
                         }
                     case .pullRequest:
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label("Request Changes", systemImage: "arrow.uturn.backward")
                                 .frame(maxWidth: .infinity)
@@ -225,7 +225,7 @@ struct ServiceDocumentView: View {
                         .disabled(!hasFeedback || sending)
                     case .report:
                         Button {
-                            store.send(.submitFeedback(author: "David"))
+                            store.send(.submitFeedback(author: store.feedbackAuthor))
                         } label: {
                             Label("Send", systemImage: "paperplane")
                                 .frame(maxWidth: .infinity)

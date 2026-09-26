@@ -16,6 +16,7 @@ public struct ServiceTriageFeature {
             question?.cancelPendingSubmission()
             document?.cancelPendingSubmission()
         }
+        public var feedbackAuthor = ""
         public var triage = TriageFeature.State()
         public var cardStack = CardStackFeature.State()
         public var keyboardVisible = false
@@ -92,9 +93,9 @@ public struct ServiceTriageFeature {
                     guard let item = state.triage.routeTarget(for: id) else { return .none }
                     switch item {
                     case .question(let question):
-                        state.document = DocumentReviewFeature.State(subject: .question(question), identity: workIdentity(state))
+                        state.document = DocumentReviewFeature.State(subject: .question(question), identity: workIdentity(state), feedbackAuthor: state.feedbackAuthor)
                     case .report(let report):
-                        state.document = DocumentReviewFeature.State(subject: .report(report), identity: workIdentity(state))
+                        state.document = DocumentReviewFeature.State(subject: .report(report), identity: workIdentity(state), feedbackAuthor: state.feedbackAuthor)
                     case .pullRequest(let pr): return .send(.delegate(.pullRequest(pr)))
                     }
                     return .none
@@ -102,6 +103,7 @@ public struct ServiceTriageFeature {
                     guard state.cardIdentity != identity else { return .none }
                     state.cardIdentity = identity
                     state.cards = []
+                    state.feedbackAuthor = ""
                     state.machine = nil; state.usage = nil; state.nodes = []; state.tasks = []
                     state.question = nil
                     state.document = nil
@@ -109,6 +111,7 @@ public struct ServiceTriageFeature {
                 case .triage(.inboxUpdated(let update)):
                     guard update.identity == state.triage.identity else { return .none }
                     state.cardIdentity = update.identity
+                    state.feedbackAuthor = update.overview?.user ?? ""
                     var effects: [Effect<Action>] = []
                     if update.identity == state.triage.identity, let overview = update.overview {
                         state.machine = overview.machine; state.usage = overview.usage
@@ -128,6 +131,8 @@ public struct ServiceTriageFeature {
                             }
                         }
                     }
+                    for id in state.cards.ids { state.cards[id: id]?.document?.feedbackAuthor = state.feedbackAuthor }
+                    state.document?.feedbackAuthor = state.feedbackAuthor
                     if let question = state.question {
                         if let item = state.triage.items.first(where: { $0.id == "q\(question.question.id)" }),
                            case .question(let fresh) = item {

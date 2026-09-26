@@ -107,7 +107,7 @@ public struct TriageCardFeature {
             case .send:
                 guard !state.busy else { return .none }
                 if let question = state.question { state.pendingStamp = .answer(question.draft.selectedOption); return .send(.question(.answerTapped)) }
-                if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: "David"))) }
+                if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: state.document?.feedbackAuthor ?? ""))) }
                 state.pendingStamp = .changesRequested
                 state.requestingChanges = true
                 return .send(.pullRequest(.diff(.requestChangesTapped)))
