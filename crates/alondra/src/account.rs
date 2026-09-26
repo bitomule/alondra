@@ -22,6 +22,7 @@ const ISSUER: &str = "https://alondra-auth.davidcollado.dev/realms/alondra";
 const CLIENT_ID: &str = "alondra-cli";
 const KEYCHAIN_SERVICE: &str = "dev.davidcollado.alondra.service-login";
 const CALLBACK_PATH: &str = "/oauth2redirect/alondra-cli";
+const LOGIN_SCOPE: &str = "openid profile offline_access";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
@@ -319,19 +320,33 @@ fn respond(stream: &mut TcpStream, success: bool) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn stored() -> Result<Session> {
-    let bytes = get_generic_password(KEYCHAIN_SERVICE, ISSUER)
-        .context("no Alondra service login in Keychain; run `alondra login`")?;
-    let session: Session = serde_json::from_slice(&bytes)?;
+// Only errSecItemNotFound means the user has no saved login. In particular,
+// a locked Keychain or a denied ACL must never launch a replacement browser login.
+fn decode_stored(bytes: Result<Vec<u8>, security_framework::base::Error>) -> Result<Option<Session>> {
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(error) if error.code() == -25300 => return Ok(None), // errSecItemNotFound
+        Err(error) => return Err(error).context("Alondra login is saved in Keychain but cannot be accessed; unlock the login Keychain or restore access for the signed Alondra CLI"),
+    };
+    let session: Session = serde_json::from_slice(&bytes)
+        .context("saved Alondra login is invalid; repair or remove its Keychain item before running `alondra login`")?;
     if session.issuer != ISSUER || session.client_id != CLIENT_ID || session.sub.is_empty() {
         bail!("Keychain login belongs to another issuer or client");
     }
-    Ok(session)
+    Ok(Some(session))
+}
+
+fn stored_optional() -> Result<Option<Session>> {
+    decode_stored(get_generic_password(KEYCHAIN_SERVICE, ISSUER))
+}
+
+fn stored() -> Result<Session> {
+    stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")
 }
 
 pub fn login() -> Result<()> {
     let _lock = AccountLock::acquire()?;
-    let previous = stored().ok();
+    let previous = stored_optional()?;
     let http = agent();
     let d = discovery(&http)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -347,7 +362,7 @@ pub fn login() -> Result<()> {
         .append_pair("client_id", CLIENT_ID)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", &redirect)
-        .append_pair("scope", "openid profile")
+        .append_pair("scope", LOGIN_SCOPE)
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
@@ -407,6 +422,7 @@ fn refreshed() -> Result<(AccountToken, Option<String>)> {
 }
 
 fn refreshed_locked() -> Result<(AccountToken, Option<String>)> {
+    let started = Instant::now();
     let session = stored()?;
     let http = agent();
     let d = discovery(&http)?;
@@ -419,29 +435,54 @@ fn refreshed_locked() -> Result<(AccountToken, Option<String>)> {
             ("refresh_token", &session.refresh_token),
         ],
     )?;
-    if matches!(status, 400 | 401) {
+    check_refresh_status(status, &body)?;
+    let token: TokenResponse = serde_json::from_str(&body)?;
+    complete_refresh(
+        session, token, started,
+        |updated| set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(updated)?)
+            .context("could not save renewed Alondra login in Keychain"),
+        |access| userinfo(&http, &d, access),
+    )
+}
+
+fn check_refresh_status(status: u16, body: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct OAuthError { error: String }
+    if matches!(status, 400 | 401)
+        && serde_json::from_str::<OAuthError>(body)
+            .is_ok_and(|error| error.error == "invalid_grant") {
         return Err(SessionExpired.into());
     }
     if status != 200 {
-        bail!("OIDC token refresh failed ({status})");
+        // Never echo response bodies, which can contain credentials or proxy diagnostics.
+        bail!("OIDC token refresh failed ({status}); saved login retained");
     }
-    let token: TokenResponse = serde_json::from_str(&body)?;
-    let user = userinfo(&http, &d, &token.access_token)?;
+    Ok(())
+}
+
+fn complete_refresh(
+    session: Session,
+    token: TokenResponse,
+    started: Instant,
+    persist: impl FnOnce(&Session) -> Result<()>,
+    identify: impl FnOnce(&str) -> Result<Userinfo>,
+) -> Result<(AccountToken, Option<String>)> {
+    // Commit rotation before any further network operation. A failed userinfo call
+    // must not strand a one-use refresh token. No access token leaves this function
+    // until the account binding has been checked.
+    if let Some(refresh) = token.refresh_token {
+        persist(&Session { refresh_token: refresh, ..session.clone() })?;
+    }
+    let user = identify(&token.access_token)?;
     if user.sub != session.sub {
         bail!("account subject changed; run `alondra logout` and sign in again");
     }
-    if let Some(refresh) = token.refresh_token {
-        let updated = Session {
-            refresh_token: refresh,
-            ..session.clone()
-        };
-        set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&updated)?)?;
-    }
+    let lifetime = Duration::from_secs(token.expires_in.unwrap_or(0).saturating_sub(30));
     Ok((
         AccountToken {
             sub: user.sub,
             access_token: token.access_token,
-            valid_for: Duration::from_secs(token.expires_in.unwrap_or(0).saturating_sub(5).min(20)),
+            valid_for: lifetime.saturating_sub(started.elapsed()),
         },
         user.preferred_username,
     ))
@@ -452,7 +493,7 @@ pub fn token_for_enrollment() -> Result<AccountToken> {
 }
 
 pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
-    if stored().is_err() {
+    if stored_optional()?.is_none() {
         login()?;
     }
     match token_for_enrollment() {
@@ -489,6 +530,84 @@ pub fn logout() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod persistent_session_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn session() -> Session {
+        Session { issuer: ISSUER.into(), client_id: CLIENT_ID.into(),
+            sub: "owner".into(), refresh_token: "old-refresh".into() }
+    }
+    fn token() -> TokenResponse {
+        TokenResponse { access_token: "access".into(), refresh_token: Some("new-refresh".into()), expires_in: Some(300) }
+    }
+    fn owner() -> Userinfo {
+        Userinfo { sub: "owner".into(), preferred_username: None }
+    }
+
+    #[test]
+    fn only_missing_keychain_item_allows_new_login() {
+        assert!(decode_stored(Err(security_framework::base::Error::from_code(-25300))).unwrap().is_none());
+        for code in [-25308, -25293, -128] { // interaction forbidden, authentication failed, cancelled
+            assert!(decode_stored(Err(security_framework::base::Error::from_code(code))).is_err());
+        }
+        assert!(decode_stored(Ok(b"corrupt".to_vec())).is_err());
+        let mut wrong = session();
+        wrong.client_id = "other-client".into();
+        assert!(decode_stored(Ok(serde_json::to_vec(&wrong).unwrap())).is_err());
+        assert_eq!(decode_stored(Ok(serde_json::to_vec(&session()).unwrap())).unwrap().unwrap().sub, "owner");
+    }
+
+    #[test]
+    fn only_explicit_invalid_grant_requires_reauthentication() {
+        for status in [400, 401] {
+            assert!(check_refresh_status(status, r#"{"error":"invalid_grant"}"#).unwrap_err().is::<SessionExpired>());
+            for body in [r#"{"error":"invalid_client"}"#, r#"{"error":"invalid_request"}"#, "proxy error", "{}"] {
+                assert!(!check_refresh_status(status, body).unwrap_err().is::<SessionExpired>());
+            }
+        }
+        assert!(!check_refresh_status(503, r#"{"error":"invalid_grant"}"#).unwrap_err().is::<SessionExpired>());
+        assert!(check_refresh_status(200, "{}").is_ok());
+    }
+
+    #[test]
+    fn rotated_refresh_survives_userinfo_failure_and_next_attempt() {
+        let saved = RefCell::new(session());
+        let result = complete_refresh(session(), token(), Instant::now(),
+            |updated| { *saved.borrow_mut() = updated.clone(); Ok(()) },
+            |_| { assert_eq!(saved.borrow().refresh_token, "new-refresh"); bail!("userinfo unavailable") });
+        assert!(result.is_err());
+        let recovered = saved.borrow().clone();
+        assert_eq!(recovered.refresh_token, "new-refresh");
+        let result = complete_refresh(recovered, token(), Instant::now(), |_| Ok(()), |_| Ok(owner())).unwrap();
+        assert_eq!(result.0.sub, "owner");
+    }
+
+    #[test]
+    fn persistence_failure_stops_before_userinfo_and_subject_change_stays_closed() {
+        let called = Cell::new(false);
+        assert!(complete_refresh(session(), token(), Instant::now(),
+            |_| bail!("Keychain unavailable"), |_| { called.set(true); Ok(owner()) }).is_err());
+        assert!(!called.get());
+        assert!(complete_refresh(session(), token(), Instant::now(), |_| Ok(()),
+            |_| Ok(Userinfo { sub: "other".into(), preferred_username: None })).is_err());
+    }
+
+    #[test]
+    fn access_cache_uses_expiry_margin_and_elapsed_time() {
+        let (access, _) = complete_refresh(session(), token(), Instant::now() - Duration::from_secs(10), |_| Ok(()), |_| Ok(owner())).unwrap();
+        assert!(access.valid_for > Duration::from_secs(250));
+        assert!(access.valid_for <= Duration::from_secs(260));
+        let mut short = token();
+        short.expires_in = Some(20);
+        assert_eq!(complete_refresh(session(), short, Instant::now(), |_| Ok(()), |_| Ok(owner())).unwrap().0.valid_for, Duration::ZERO);
+        let mut unrotated = token();
+        unrotated.refresh_token = None;
+        assert!(complete_refresh(session(), unrotated, Instant::now(), |_| panic!("no replacement to save"), |_| Ok(owner())).is_ok());
+    }
 }
 
 #[cfg(test)]
