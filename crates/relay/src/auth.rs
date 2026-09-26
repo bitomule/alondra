@@ -942,6 +942,7 @@ impl Auth {
     }
     pub async fn require_live_phone(&self,who:&Identity)->Result<()> {
         let mac=self.paired_mac_for_phone(&who.device_id,&who.owner_sub)?;
+        self.mac_for_owner(&mac,&who.owner_sub)?;
         self.require_live_route(&who.owner_sub,&mac,Some(&who.device_id)).await
     }
     pub async fn require_active_owner(&self,subject:&str)->Result<()> {
