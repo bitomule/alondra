@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import AlondraRelayClient
+import AlondraAPIClient
 
 public enum ServicePairingError: Error, Equatable, Sendable {
     case invalidInvitation
