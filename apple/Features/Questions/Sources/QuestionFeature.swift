@@ -135,6 +135,9 @@ public struct QuestionFeature {
                 }
                 var draft = state.draft
                 draft.selectedOption = label
+                // Original choose() sends the option label when no text was entered,
+                // including when the answer also carries attachments.
+                if draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft.text = label }
                 return prepareAttached(draft, state: &state)
             case .attachedAnswerTapped:
                 guard !state.isSubmitting, state.pendingAttachedAnswer == nil,
