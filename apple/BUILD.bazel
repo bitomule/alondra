@@ -183,7 +183,7 @@ swift_library(
 
 ios_extension(
     name = "AlondraNotificationService",
-    entitlements = "iOSNotificationService/AlondraNotificationService.entitlements",
+    entitlements = select({":distribution": "iOSNotificationService/AppStore.entitlements", "//conditions:default": "iOSNotificationService/AlondraNotificationService.entitlements"}),
     bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
     bundle_name = "AlondraNotificationService",
     families = ["iphone"],
