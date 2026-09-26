@@ -584,11 +584,7 @@ async fn changes(
         ));
     }
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .change_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
@@ -615,6 +611,12 @@ async fn changes(
                 Json(json!({"epoch":server.epoch,"revision":revision,"changes":events})),
             )
                 .into_response());
+        }
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.change_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
         drop(gate);
         // On notification or timeout, reacquire the gate and recheck both the
@@ -643,11 +645,7 @@ async fn work(
         .map_err(authentication_error)?;
     drop(gate);
     let wait_s = query.wait_s.min(25);
-    let permit = server
-        .work_waiters
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?;
+    let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
         let notified = server.queue.changed.notified();
@@ -667,6 +665,12 @@ async fn work(
         if wait_s == 0 || tokio::time::Instant::now() >= deadline {
             drop(permit);
             return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        // The waiter budget limits idle connections, not authenticated
+        // snapshots that can already return. The global request limit remains.
+        if permit.is_none() {
+            permit = Some(server.work_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
         }
         drop(gate);
         let _ = tokio::time::timeout_at(deadline, notified).await;
@@ -947,6 +951,88 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    // Saturate actual idle HTTP polls from owner A; owner B has either an
+    // immediate empty snapshot or already-queued work, so never needs to wait.
+    async fn saturated_idle_polls_allow_immediate_case(work: bool, ready: bool) {
+        let mac_key = SigningKey::from_slice(&[113; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[114; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "idle-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        server.auth.enroll_mac(auth::MacDevice { mac_id: "target-mac".into(), owner_sub: "target-owner".into(),
+            signing_key: key_bytes(&mac_key), agreement_key: key_bytes(&phone_key) }).unwrap();
+        server.auth.enroll(&auth::Identity { device_id: "target-mac".into(), owner_sub: "target-owner".into() },
+            PhoneDevice { device_id: "target-phone".into(), owner_sub: "target-owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        if ready {
+            server.queue.submit("target-owner", "target-phone", "target-mac", "ready-request", [17; 32],
+                json!({"ciphertext":"opaque-fixture"}), now_ms()+60_000, now_ms()).unwrap();
+        }
+        let client = reqwest::Client::new();
+        let epoch = server.auth.server_epoch();
+        let idle_path = if work { "/v1/work?wait_s=25" } else { "/v1/changes?since=0&wait_s=25" };
+        let permits = if work { &server.work_waiters } else { &server.change_waiters };
+        let capacity = permits.available_permits();
+        let mut polls = tokio::task::JoinSet::new();
+        for nonce in 1..=capacity {
+            let request = client.get(format!("{url}{idle_path}"));
+            let request = if work { request } else { request.bearer_auth(jwt("owner", now_ms())) };
+            polls.spawn(sign(&epoch, request, if work { &mac_key } else { &phone_key },
+                if work { "mac-1" } else { "idle-phone" }, "GET", idle_path, &[], nonce as u8).send());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while permits.available_permits()!=0 { tokio::task::yield_now().await; }
+        }).await.expect("all real idle requests must hold their waiter slots");
+        assert!(polls.try_join_next().is_none(), "idle controls must still be pending");
+        // A genuinely new empty wait still overloads instead of exceeding the
+        // fixed waiter budget; only nonwaiting snapshots may bypass that budget.
+        let overflow = client.get(format!("{url}{idle_path}"));
+        let overflow = if work { overflow } else { overflow.bearer_auth(jwt("owner", now_ms())) };
+        let overflow = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, overflow,
+            if work { &mac_key } else { &phone_key }, if work { "mac-1" } else { "idle-phone" },
+            "GET", idle_path, &[], 201).send()).await.unwrap().unwrap();
+        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(overflow.json::<serde_json::Value>().await.unwrap()["error"], "too_many_polls");
+        assert_eq!(permits.available_permits(), 0, "waiter capacity remains exhausted, never expanded");
+        let path = match (work, ready) {
+            (true, false) => "/v1/work?wait_s=0",
+            (true, true) => "/v1/work?wait_s=25",
+            (false, false) => "/v1/changes?since=0&wait_s=0",
+            (false, true) => "/v1/changes?since=0&wait_s=25",
+        };
+        let request = client.get(format!("{url}{path}"));
+        let request = if work { request } else { request.bearer_auth(jwt("target-owner", now_ms())) };
+        let result = tokio::time::timeout(Duration::from_secs(3), sign(&epoch, request,
+            if work { &mac_key } else { &phone_key }, if work { "target-mac" } else { "target-phone" },
+            "GET", path, &[], 200).send()).await;
+        polls.abort_all();
+        serving.abort();
+        let response = result.expect("immediate snapshot must not queue behind idle polls").unwrap();
+        let expected = if work && !ready { StatusCode::NO_CONTENT } else { StatusCode::OK };
+        assert_eq!(response.status(), expected, "a request that does not wait must not consume a waiter slot");
+        if ready {
+            let body: serde_json::Value = response.json().await.unwrap();
+            if work { assert_eq!(body["request_id"], "ready-request"); }
+            else { assert_eq!(body["changes"][0]["request_id"], "ready-request"); }
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_work_waiters_allow_empty_immediate_poll() {
+        saturated_idle_polls_allow_immediate_case(true, false).await;
+    }
+    #[tokio::test]
+    async fn saturated_changes_waiters_allow_empty_immediate_poll() {
+        saturated_idle_polls_allow_immediate_case(false, false).await;
+    }
+    #[tokio::test]
+    async fn saturated_work_waiters_allow_already_ready_work() {
+        saturated_idle_polls_allow_immediate_case(true, true).await;
+    }
+    #[tokio::test]
+    async fn saturated_changes_waiters_allow_already_ready_snapshot() {
+        saturated_idle_polls_allow_immediate_case(false, true).await;
     }
 
     async fn idle_poll_revocation_case(work_poll: bool) {

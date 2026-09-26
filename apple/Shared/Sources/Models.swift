@@ -110,7 +110,7 @@ extension OrchestratorRuntime {
         case .idle: String(localized: "available", table: "AlondraShared", bundle: #bundle)
         case .starting: String(localized: "starting", table: "AlondraShared", bundle: #bundle)
         case .running: String(localized: "handling a request", table: "AlondraShared", bundle: #bundle)
-        case .compacting: String(localized: "compacting context", table: "AlondraShared", bundle: #bundle)
+        case .compacting: String(localized: "working", table: "AlondraShared", bundle: #bundle)
         case .failed where retryAt != nil: String(localized: "retrying", table: "AlondraShared", bundle: #bundle)
         case .failed: String(localized: "needs attention", table: "AlondraShared", bundle: #bundle)
         case .unknown: String(localized: "unknown", table: "AlondraShared", bundle: #bundle)
@@ -120,7 +120,14 @@ extension OrchestratorRuntime {
     public var queueLabel: String {
         String(localized: "Queued messages: \(queueDepth ?? 0)", table: "AlondraShared", bundle: #bundle)
     }
-    public var availabilityDescription: String {
-        String(localized: "Starts when needed and keeps the conversation between requests.", table: "AlondraShared", bundle: #bundle)
+    /// Presentation follows the runtime even when the last worker hook says done.
+    public var activityState: NodeState {
+        if cancelRequested == true { return .waitingMachine }
+        return switch phase {
+        case .idle: .done
+        case .starting, .running, .compacting: .working
+        case .failed: retryAt == nil ? .stalled : .waitingMachine
+        case .unknown: .unclear
+        }
     }
 }
