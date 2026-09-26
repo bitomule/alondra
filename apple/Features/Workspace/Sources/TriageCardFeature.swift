@@ -33,6 +33,11 @@ public struct TriageCardFeature {
             case .pullRequest(let value): pullRequest = ServicePullRequestFeature.State(pr: value)
             }
         }
+        public mutating func cancelPendingSubmission() {
+            question?.cancelPendingSubmission()
+            document?.cancelPendingSubmission()
+            pullRequest?.cancelPendingSubmission()
+        }
         public var reply: String { question?.draft.text ?? document?.draft.general ?? pullRequest?.diff.note ?? "" }
         public var selectedOption: QuestionOption? {
             guard let question else { return nil }

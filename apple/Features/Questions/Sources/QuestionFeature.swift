@@ -25,6 +25,13 @@ public struct QuestionFeature {
         public var revision: UInt64 = 0
         public var replyFocusRequest: UInt64 = 0
 
+        /// Drops only an upload-waiting gesture; drafts, receipts and dispatched commands remain intact.
+        public mutating func cancelPendingSubmission() {
+            pendingSubmission = nil
+            pendingAttachedAnswer = nil
+            pendingMoreContext = false
+        }
+
         public init(question: Question) { self.question = question }
     }
 
@@ -247,11 +254,7 @@ public struct QuestionFeature {
         }
     }
 
-    private func clearPending(_ state: inout State) {
-        state.pendingSubmission = nil
-        state.pendingAttachedAnswer = nil
-        state.pendingMoreContext = false
-    }
+    private func clearPending(_ state: inout State) { state.cancelPendingSubmission() }
 
     private func submitNormal(_ state: inout State, moreContext: Bool) -> Effect<Action> {
         do {

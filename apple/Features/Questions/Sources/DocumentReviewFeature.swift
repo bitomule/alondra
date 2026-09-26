@@ -136,6 +136,12 @@ public struct DocumentReviewFeature {
         public var revision: UInt64 = 0
         public var loadRevision: UInt64 = 0
 
+        /// Drops only an upload-waiting gesture; drafts, receipts and dispatched commands remain intact.
+        public mutating func cancelPendingSubmission() {
+            pendingSubmission = nil
+            pendingReview = nil
+        }
+
         public init(subject: DocumentSubject, identity: QuestionWorkIdentity? = nil) {
             self.subject = subject
             self.identity = identity
@@ -488,10 +494,7 @@ public struct DocumentReviewFeature {
         }.cancellable(id: CancelID.load, cancelInFlight: true)
     }
 
-    private func clearPending(_ state: inout State) {
-        state.pendingSubmission = nil
-        state.pendingReview = nil
-    }
+    private func clearPending(_ state: inout State) { state.cancelPendingSubmission() }
 
     private func prepare(_ review: PendingReview, state: inout State) -> Effect<Action> {
         guard canReview(state), state.attachmentPicker.canPrepareSubmission else { return .none }

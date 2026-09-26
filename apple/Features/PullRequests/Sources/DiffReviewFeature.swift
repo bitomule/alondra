@@ -46,6 +46,12 @@ public struct DiffReviewFeature {
         public let loadID = UUID()
         public let mutationID = UUID()
 
+        /// Drops only an upload-waiting gesture; drafts, receipts and dispatched commands remain intact.
+        public mutating func cancelPendingSubmission() {
+            pendingSubmission = nil
+            pendingReviewKind = nil
+        }
+
         public init(prID: UInt64) { self.prID = prID }
 
         public var canReview: Bool {
@@ -359,10 +365,7 @@ public struct DiffReviewFeature {
         }.cancellable(id: state.highlightID, cancelInFlight: true)
     }
 
-    private func clearPending(_ state: inout State) {
-        state.pendingSubmission = nil
-        state.pendingReviewKind = nil
-    }
+    private func clearPending(_ state: inout State) { state.cancelPendingSubmission() }
 
     private func sendReview(_ state: inout State, kind: PRReviewKind) -> Effect<Action> {
         guard state.canReview else { return .none }

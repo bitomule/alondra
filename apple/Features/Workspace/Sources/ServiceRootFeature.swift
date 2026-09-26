@@ -119,7 +119,10 @@ public struct ServiceRootFeature {
                         }
                     }
                 }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true))
-            case .disappeared: return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)))
+            case .disappeared:
+                state.triage.cancelPendingSubmissions()
+                state.pullRequest?.cancelPendingSubmission()
+                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
@@ -127,7 +130,13 @@ public struct ServiceRootFeature {
             case .triage(.document(.presented(.reportFeedbackFinished))):
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .tabSelected(let tab): state.tab = tab; return .none
+            case .tabSelected(let tab):
+                if state.tab != tab {
+                    state.triage.cancelPendingSubmissions()
+                    state.pullRequest?.cancelPendingSubmission()
+                }
+                state.tab = tab
+                return .none
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
                 state.tab = .inbox
@@ -262,6 +271,12 @@ public struct ServicePullRequestFeature {
         public var questions: [Question] = []
         public var questionFeatures: IdentifiedArrayOf<AttachedPRQuestionFeature.State> = []
         public var descriptionExpanded: Bool?
+        public mutating func cancelPendingSubmission() {
+            diff.cancelPendingSubmission()
+            for id in questionFeatures.ids {
+                questionFeatures[id: id]?.question.cancelPendingSubmission()
+            }
+        }
         public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
             self.reports = reports
             self.questions = questions
@@ -304,6 +319,9 @@ public struct ServicePullRequestFeature {
                 state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
                 return .none
             case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
+            case .diff(.disappeared):
+                state.cancelPendingSubmission()
+                return .none
             case .snapshotUnavailable: return .merge(.send(.pr(.snapshotUnavailable)), .send(.diff(.snapshotUnavailable)))
             case .pr, .diff, .downloads, .attachedQuestion: return .none
             }
