@@ -112,6 +112,23 @@ impl<F> Drop for Observed<F> {
     }
 }
 
+fn read_challenge(directory: &std::path::Path, name: &str) -> std::io::Result<Option<String>> {
+    let path = directory.join(name);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !metadata.is_file() || metadata.len() != 32 {
+        return Err(std::io::Error::other("invalid lab challenge"));
+    }
+    let nonce = std::fs::read_to_string(path)?;
+    if nonce.len() != 32 || !nonce.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(std::io::Error::other("invalid lab challenge"));
+    }
+    Ok(Some(nonce))
+}
+
 #[derive(Default)]
 pub(crate) struct Metrics {
     pub changes: Arc<Gauge>,
@@ -139,14 +156,21 @@ impl Metrics {
             let mut sequence = 0u64;
             loop {
                 sequence += 1;
-                let changes = metrics.changes.snapshot(started);
-                let work = metrics.work.snapshot(started);
-                let value = json!({"schema":1,"scope":"lab_pending_futures","epoch":epoch,"sequence":sequence,
-                    "uptime_ms":changes["observed_uptime_ms"],"changes":changes,"work":work});
-                // Dedicated owned mount only; replace a complete file atomically.
-                // Blocking I/O is offloaded and does not hold a request/auth lock.
-                let temporary = format!("/system-metrics/waiters-{epoch}.tmp");
+                // Read challenges before counters: an old captured snapshot can
+                // never acknowledge an observation request issued later.
+                let metrics = metrics.clone();
+                let epoch = epoch.clone();
                 let write = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                    let challenge=read_challenge(directory,"challenge")?;
+                    let sampler_challenge=read_challenge(directory,"sampler-challenge")?;
+                    let changes=metrics.changes.snapshot(started);let work=metrics.work.snapshot(started);
+                    #[allow(unused_mut)]
+                    let mut value=json!({"schema":1,"scope":"lab_pending_futures","epoch":epoch,"sequence":sequence,
+                        "challenge":challenge,"sampler_challenge":sampler_challenge,
+                        "uptime_ms":changes["observed_uptime_ms"],"changes":changes,"work":work});
+                    #[cfg(feature="lab-waiter-metrics")]
+                    {value["sql_errors"]=crate::management::lab_metrics::snapshot();}
+                    let temporary=format!("/system-metrics/waiters-{epoch}.tmp");
                     use std::io::Write;
                     let mut file = std::fs::OpenOptions::new()
                         .write(true)

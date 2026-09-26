@@ -345,12 +345,20 @@ async fn encrypted_roundtrip_with_envelope(
     encrypted_roundtrip_on_work(driver, link, id, existing, None).await
 }
 type ParkedWork = tokio::task::JoinHandle<Result<(u16, Value, Instant)>>;
+async fn wakeup_bound<T, F>(deadline: Instant, operation: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    tokio::time::timeout_at(deadline.into(), operation)
+        .await
+        .context("parked delivery missed wakeup bound")?
+}
 async fn encrypted_roundtrip_on_work(
     driver: &Driver,
     link: &Link,
     id: &str,
     existing: Option<Vec<u8>>,
-    parked: Option<(ParkedWork, Arc<Mutex<Latency>>)>,
+    parked: Option<(ParkedWork, Arc<Mutex<Latency>>, Instant)>,
 ) -> Result<()> {
     let plain = serde_json::to_vec(&json!({"synthetic":true,"owner":link.owner,"request":id}))?;
     let envelope = EnvelopeV1::seal_random(
@@ -368,59 +376,79 @@ async fn encrypted_roundtrip_on_work(
     )?;
     let bytes = existing.unwrap_or(serde_json::to_vec(&envelope)?);
     let published = Instant::now();
-    reliable(
-        driver,
-        link.phone_key,
-        &link.phone,
-        Some(link.owner),
-        "POST",
-        "/v1/requests",
-        bytes.clone(),
-        202,
-    )
-    .await?;
-    reliable(
-        driver,
-        link.phone_key,
-        &link.phone,
-        Some(link.owner),
-        "POST",
-        "/v1/requests",
-        bytes.clone(),
-        202,
-    )
-    .await?;
-    let work = if let Some((parked, delivery_latency)) = parked {
-        // Consume the SAME request proven Pending before the POST. Never hide a
-        // missed wakeup by sending another GET or a retry after its timeout.
-        let (status, work, received) =
-            tokio::time::timeout(Duration::from_secs(30), parked).await???;
+    let delivery_deadline = parked.as_ref().map(|(_, _, opened)| {
+        std::cmp::min(
+            published + Duration::from_secs(3),
+            *opened + Duration::from_secs(20),
+        )
+    });
+    if let Some((_, _, opened)) = &parked {
         ensure!(
-            status == 200,
-            "already parked Mac did not receive encrypted work"
+            published.duration_since(*opened) < Duration::from_secs(10),
+            "parked barrier consumed wakeup test budget"
         );
-        ensure!(
-            work["request_id"] == id,
-            "parked delivery crossed request identity"
-        );
-        delivery_latency.lock().unwrap().record(
-            received
-                .checked_duration_since(published)
-                .context("delivery preceded publication")?,
-        );
-        work
-    } else {
+    }
+    let submit_and_receive = async {
         reliable(
             driver,
-            link.mac_key,
-            &link.mac,
-            None,
-            "GET",
-            "/v1/work?wait_s=0",
-            vec![],
-            200,
+            link.phone_key,
+            &link.phone,
+            Some(link.owner),
+            "POST",
+            "/v1/requests",
+            bytes.clone(),
+            202,
         )
-        .await?
+        .await?;
+        reliable(
+            driver,
+            link.phone_key,
+            &link.phone,
+            Some(link.owner),
+            "POST",
+            "/v1/requests",
+            bytes.clone(),
+            202,
+        )
+        .await?;
+        let work = if let Some((parked, delivery_latency, _)) = parked {
+            // Consume the SAME request proven Pending before the POST. Never hide a
+            // missed wakeup by sending another GET or a retry after its timeout.
+            let (status, work, received) =
+                tokio::time::timeout(Duration::from_secs(30), parked).await???;
+            ensure!(
+                status == 200,
+                "already parked Mac did not receive encrypted work"
+            );
+            ensure!(
+                work["request_id"] == id,
+                "parked delivery crossed request identity"
+            );
+            delivery_latency.lock().unwrap().record(
+                received
+                    .checked_duration_since(published)
+                    .context("delivery preceded publication")?,
+            );
+            work
+        } else {
+            reliable(
+                driver,
+                link.mac_key,
+                &link.mac,
+                None,
+                "GET",
+                "/v1/work?wait_s=0",
+                vec![],
+                200,
+            )
+            .await?
+        };
+        Ok::<_, anyhow::Error>(work)
+    };
+    let work = if let Some(deadline) = delivery_deadline {
+        wakeup_bound(deadline, submit_and_receive).await?
+    } else {
+        submit_and_receive.await?
     };
     ensure!(
         work["request_id"] == id,
@@ -509,22 +537,49 @@ async fn encrypted_roundtrip_on_work(
     .await?;
     Ok(())
 }
+async fn bounded_pressure<T, F>(deadline: Instant, operation: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    tokio::time::timeout_at(deadline.into(), operation)
+        .await
+        .context("pressure budget exhausted; recovery reserved")?
+}
+async fn join_pressure(jobs: &mut tokio::task::JoinSet<()>, deadline: Instant) -> Result<()> {
+    let result = tokio::time::timeout_at(deadline.into(), async {
+        while let Some(result) = jobs.join_next().await {
+            result?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    if !matches!(&result, Ok(Ok(()))) {
+        jobs.abort_all();
+        while jobs.join_next().await.is_some() {} // join every cancelled lane
+    }
+    result.context("burst pressure budget exhausted; lanes cancelled and joined")?
+}
+
 async fn burst(
     current: Current,
     links: Arc<Vec<Link>>,
     count: usize,
     counters: Arc<Mutex<Counters>>,
     origin: Instant,
+    deadline: Instant,
+    started: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<()> {
-    let mut jobs = vec![];
+    let mut jobs = tokio::task::JoinSet::new();
     for lane in 0..64 {
         let (current, links, counters) = (current.clone(), links.clone(), counters.clone());
-        jobs.push(tokio::spawn(async move {
+        let started = started.clone();
+        jobs.spawn(async move {
             for index in (lane..count).step_by(64) {
                 let slot = index % links.len();
                 let link = &links[if slot == 3 { 2 } else { slot }];
                 let d = get(&current).await;
                 let start = Instant::now();
+                started.fetch_add(1, Ordering::Relaxed);
                 let response = d
                     .call_epoch(
                         &d.epoch,
@@ -541,12 +596,9 @@ async fn burst(
                     .unwrap()
                     .record_response(link.owner, &response, start, origin, false, false);
             }
-        }));
+        });
     }
-    for job in jobs {
-        job.await?;
-    }
-    Ok(())
+    join_pressure(&mut jobs, deadline).await
 }
 async fn restart_probe(driver: Arc<Driver>, links: &[Link]) -> Result<Value> {
     let pending = &links[4];
@@ -687,12 +739,6 @@ async fn restart_probe(driver: Arc<Driver>, links: &[Link]) -> Result<Value> {
         "revocations_persisted":true,"volatile_pending_missing_explicit":true,"identical_ciphertext_resubmitted_and_decrypted":true}),
     )
 }
-fn read_waiters(epoch: &[u8; 16]) -> Result<Value> {
-    validate_waiters(
-        epoch,
-        &std::fs::read("/system/waiter-metrics/waiters.json")?,
-    )
-}
 fn validate_waiters(epoch: &[u8; 16], bytes: &[u8]) -> Result<Value> {
     ensure!(bytes.len() <= 4096, "waiter sample too large");
     let value: Value = serde_json::from_slice(&bytes)?;
@@ -728,24 +774,58 @@ fn validate_waiters(epoch: &[u8; 16], bytes: &[u8]) -> Result<Value> {
     Ok(value)
 }
 async fn fresh_waiters(epoch: &[u8; 16]) -> Result<Value> {
-    let first = read_waiters(epoch)?;
-    let sequence = first["sequence"].as_u64().unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    fresh_waiters_at(
+        epoch,
+        Path::new("/system/waiter-metrics"),
+        Duration::from_secs(3),
+    )
+    .await
+}
+async fn fresh_waiters_at(epoch: &[u8; 16], directory: &Path, budget: Duration) -> Result<Value> {
+    let mut bytes = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("lab challenge RNG"))?;
+    let nonce: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    tokio::time::timeout(budget, async {
+        let first = validate_waiters(
+            epoch,
+            &tokio::fs::read(directory.join("waiters.json")).await?,
+        )?;
+        let path = directory.to_path_buf();
+        let request = nonce.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let temporary = path.join(format!("challenge-{request}.tmp"));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(request.as_bytes())?;
+            std::fs::rename(temporary, path.join("challenge"))?;
+            Ok(())
+        })
+        .await??;
         loop {
-            tokio::time::sleep(Duration::from_millis(40)).await;
-            let sample = read_waiters(epoch)?;
-            ensure!(
-                sample["sequence"].as_u64().unwrap() >= sequence
-                    && sample["uptime_ms"].as_u64() >= first["uptime_ms"].as_u64(),
-                "waiter sample clock regressed"
-            );
-            if sample["sequence"].as_u64().unwrap() > sequence {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let path = directory.join("waiters.json");
+            let bytes = tokio::fs::read(path).await?;
+            let sample = validate_waiters(epoch, &bytes)?;
+            if sample["challenge"] == nonce {
+                ensure!(
+                    sample["sequence"].as_u64() > first["sequence"].as_u64()
+                        && sample["uptime_ms"].as_u64() >= first["uptime_ms"].as_u64(),
+                    "fresh waiter counters reset"
+                );
                 return Ok::<_, anyhow::Error>(sample);
             }
         }
     })
     .await?
 }
+
 async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -> Result<Value> {
     let before = fresh_waiters(&driver.epoch).await?;
     ensure!(
@@ -756,26 +836,30 @@ async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -
     for account in 0..accounts {
         let d = driver.clone();
         let link = links[account * 4].clone();
-        consumers.push(tokio::spawn(async move {
-            let (status, body) = d
-                .call_epoch(
-                    &d.epoch,
-                    link.mac_key,
-                    &link.mac,
-                    None,
-                    "GET",
-                    "/v1/work?wait_s=25",
-                    vec![],
-                )
-                .await?;
-            Ok::<_, anyhow::Error>((status, body, Instant::now()))
-        }));
+        let opened = Instant::now();
+        consumers.push((
+            opened,
+            tokio::spawn(async move {
+                let (status, body) = d
+                    .call_epoch(
+                        &d.epoch,
+                        link.mac_key,
+                        &link.mac,
+                        None,
+                        "GET",
+                        "/v1/work?wait_s=25",
+                        vec![],
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>((status, body, Instant::now()))
+            }),
+        ));
     }
     let barrier = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let sample = fresh_waiters(&driver.epoch).await?;
             ensure!(
-                consumers.iter().all(|job| !job.is_finished()),
+                consumers.iter().all(|(_, job)| !job.is_finished()),
                 "consumer returned before encrypted publication"
             );
             if sample["work"]["current"].as_u64() == Some(accounts as u64) {
@@ -787,7 +871,7 @@ async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -
     let barrier = match barrier {
         Ok(Ok(value)) => value,
         other => {
-            for job in consumers {
+            for (_, job) in consumers {
                 job.abort();
                 let _ = job.await;
             }
@@ -804,7 +888,7 @@ async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -
     let start = Instant::now();
     let delivery_latency = Arc::new(Mutex::new(Latency::default()));
     let mut transfers = Vec::new();
-    for (account, consumer) in consumers.into_iter().enumerate() {
+    for (account, (opened, consumer)) in consumers.into_iter().enumerate() {
         let delivery_latency = delivery_latency.clone();
         let d = driver.clone();
         let link = links[account * 4].clone();
@@ -814,7 +898,7 @@ async fn parked_delivery(driver: Arc<Driver>, links: &[Link], accounts: usize) -
                 &link,
                 &format!("system-load-parked-{account}"),
                 None,
-                Some((consumer, delivery_latency)),
+                Some((consumer, delivery_latency, opened)),
             )
             .await
         }));
@@ -909,11 +993,19 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     setup(&driver, &links).await?;
     let parked_delivery = parked_delivery(driver.clone(), &links, accounts).await?;
     let current = Arc::new(RwLock::new(driver));
+    let steady_start = fresh_waiters(&get(&current).await.epoch).await?;
+    ensure!(
+        steady_start["changes"]["above_ms"] == 0,
+        "prelude crossed steady-only threshold"
+    );
+    let origin = Instant::now();
+    let deadline = origin + Duration::from_secs(seconds);
+    let pressure_deadline = deadline + Duration::from_secs(35);
     let stop = Arc::new(AtomicBool::new(false));
     let refresh = {
         let current = current.clone();
         let stop = stop.clone();
-        tokio::spawn(async move {
+        tokio::spawn(bounded_pressure(pressure_deadline, async move {
             let mut renewals = 0;
             while !stop.load(Ordering::Relaxed) {
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -925,15 +1017,8 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                 renewals += 1;
             }
             Ok::<_, anyhow::Error>(renewals)
-        })
+        }))
     };
-    let steady_start = fresh_waiters(&get(&current).await.epoch).await?;
-    ensure!(
-        steady_start["changes"]["above_ms"] == 0,
-        "prelude crossed steady-only threshold"
-    );
-    let origin = Instant::now();
-    let deadline = origin + Duration::from_secs(seconds);
     let steady_end = {
         let epoch = get(&current).await.epoch;
         tokio::spawn(async move {
@@ -943,88 +1028,97 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     };
     let polls = Arc::new(Mutex::new(Counters::default()));
     let bursts = Arc::new(Mutex::new(Counters::default()));
+    let burst_started = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let work_polls = Arc::new(Mutex::new(Counters::default()));
     let revoked_during_load = Arc::new(AtomicBool::new(false));
     let mut workers = vec![];
     for lane in 0..concurrency {
         let (current, links, polls) = (current.clone(), links.clone(), polls.clone());
         let revoked = revoked_during_load.clone();
-        workers.push(tokio::spawn(async move {
-            let link = &links[lane % links.len()];
-            let mut cursor = 0;
-            // Rotate re-admission with bounded stagger instead of a tight retry storm.
-            tokio::time::sleep(Duration::from_millis((lane % 31) as u64 * 3)).await;
-            while Instant::now() < deadline {
-                if lane % links.len() == 3 && revoked.load(Ordering::Relaxed) {
-                    break;
-                }
-                let d = get(&current).await;
-                let start = Instant::now();
-                let response = d
-                    .call_epoch(
-                        &d.epoch,
-                        link.phone_key,
-                        &link.phone,
-                        Some(link.owner),
-                        "GET",
-                        &format!("/v1/changes?since={cursor}&wait_s=20"),
-                        vec![],
-                    )
-                    .await;
-                let code = response.as_ref().ok().map(|v| v.0);
-                if let Ok((200, value)) = &response {
-                    cursor = value["revision"].as_u64().unwrap_or(cursor);
-                }
-                let idle_reply = matches!(&response, Ok((200, value))
+        workers.push(tokio::spawn(bounded_pressure(
+            pressure_deadline,
+            async move {
+                let link = &links[lane % links.len()];
+                let mut cursor = 0;
+                // Rotate re-admission with bounded stagger instead of a tight retry storm.
+                tokio::time::sleep(Duration::from_millis((lane % 31) as u64 * 3)).await;
+                while Instant::now() < deadline {
+                    if lane % links.len() == 3 && revoked.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let d = get(&current).await;
+                    let start = Instant::now();
+                    let response = d
+                        .call_epoch(
+                            &d.epoch,
+                            link.phone_key,
+                            &link.phone,
+                            Some(link.owner),
+                            "GET",
+                            &format!("/v1/changes?since={cursor}&wait_s=20"),
+                            vec![],
+                        )
+                        .await;
+                    let code = response.as_ref().ok().map(|v| v.0);
+                    if let Ok((200, value)) = &response {
+                        cursor = value["revision"].as_u64().unwrap_or(cursor);
+                    }
+                    let idle_reply = matches!(&response, Ok((200, value))
                     if value["changes"].as_array().is_some_and(Vec::is_empty));
-                polls.lock().unwrap().record_response(
-                    link.owner,
-                    &response,
-                    start,
-                    origin,
-                    idle_reply,
-                    lane % links.len() == 3 && revoked.load(Ordering::Relaxed),
-                );
-                tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
-                    250 + (lane % 17) as u64 * 13
-                } else {
-                    50 + (lane % 11) as u64 * 5
-                }))
-                .await;
-            }
-        }));
+                    polls.lock().unwrap().record_response(
+                        link.owner,
+                        &response,
+                        start,
+                        origin,
+                        idle_reply,
+                        lane % links.len() == 3 && revoked.load(Ordering::Relaxed),
+                    );
+                    tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
+                        250 + (lane % 17) as u64 * 13
+                    } else {
+                        50 + (lane % 11) as u64 * 5
+                    }))
+                    .await;
+                }
+                Ok::<_, anyhow::Error>(())
+            },
+        )));
     }
     for lane in 0..accounts * 2 {
         let (current, links, work_polls) = (current.clone(), links.clone(), work_polls.clone());
-        workers.push(tokio::spawn(async move {
-            let link = &links[(lane / 2) * 4 + 2];
-            while Instant::now() < deadline {
-                let d = get(&current).await;
-                let start = Instant::now();
-                let response = d
-                    .call_epoch(
-                        &d.epoch,
-                        link.mac_key,
-                        &link.mac,
-                        None,
-                        "GET",
-                        "/v1/work?wait_s=20",
-                        vec![],
-                    )
+        workers.push(tokio::spawn(bounded_pressure(
+            pressure_deadline,
+            async move {
+                let link = &links[(lane / 2) * 4 + 2];
+                while Instant::now() < deadline {
+                    let d = get(&current).await;
+                    let start = Instant::now();
+                    let response = d
+                        .call_epoch(
+                            &d.epoch,
+                            link.mac_key,
+                            &link.mac,
+                            None,
+                            "GET",
+                            "/v1/work?wait_s=20",
+                            vec![],
+                        )
+                        .await;
+                    let code = response.as_ref().ok().map(|v| v.0);
+                    work_polls
+                        .lock()
+                        .unwrap()
+                        .record_response(link.owner, &response, start, origin, true, false);
+                    tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
+                        400 + (lane % 13) as u64 * 17
+                    } else {
+                        200 + (lane % 7) as u64 * 13
+                    }))
                     .await;
-                let code = response.as_ref().ok().map(|v| v.0);
-                work_polls
-                    .lock()
-                    .unwrap()
-                    .record_response(link.owner, &response, start, origin, true, false);
-                tokio::time::sleep(Duration::from_millis(if matches!(code, Some(429 | 503)) {
-                    400 + (lane % 13) as u64 * 17
-                } else {
-                    200 + (lane % 7) as u64 * 13
-                }))
-                .await;
-            }
-        }));
+                }
+                Ok::<_, anyhow::Error>(())
+            },
+        )));
     }
     let mut crypto_jobs = vec![];
     let mixed_counts = Arc::new(Mutex::new(vec![[0u64; 2]; accounts]));
@@ -1033,42 +1127,45 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
         let (current, links) = (current.clone(), links.clone());
         let mixed_counts = mixed_counts.clone();
         let mixed_latency = mixed_latency.clone();
-        crypto_jobs.push(tokio::spawn(async move {
-            let mut completed = 0;
-            for iteration in 0..20 {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                let d = get(&current).await;
-                mixed_counts.lock().unwrap()[account][0] += 1;
-                let began = Instant::now();
-                let (result, retries) = LOCAL_CRYPTO_RETRIES
-                    .scope(std::cell::Cell::new(0), async {
-                        let result = encrypted_roundtrip(
-                            &d,
-                            &links[account * 4],
-                            &format!("system-load-mixed-{account}-{iteration}"),
-                        )
+        crypto_jobs.push(tokio::spawn(bounded_pressure(
+            pressure_deadline,
+            async move {
+                let mut completed = 0;
+                for iteration in 0..20 {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    let d = get(&current).await;
+                    mixed_counts.lock().unwrap()[account][0] += 1;
+                    let began = Instant::now();
+                    let (result, retries) = LOCAL_CRYPTO_RETRIES
+                        .scope(std::cell::Cell::new(0), async {
+                            let result = encrypted_roundtrip(
+                                &d,
+                                &links[account * 4],
+                                &format!("system-load-mixed-{account}-{iteration}"),
+                            )
+                            .await;
+                            (result, LOCAL_CRYPTO_RETRIES.with(|count| count.get()))
+                        })
                         .await;
-                        (result, LOCAL_CRYPTO_RETRIES.with(|count| count.get()))
-                    })
-                    .await;
-                mixed_latency
-                    .lock()
-                    .unwrap()
-                    .record(result.is_ok(), retries, began.elapsed());
-                result?;
-                completed += 1;
-                mixed_counts.lock().unwrap()[account][1] += 1;
-                tokio::time::sleep(Duration::from_secs((seconds / 20).max(1))).await;
-            }
-            Ok::<_, anyhow::Error>(completed)
-        }));
+                    mixed_latency
+                        .lock()
+                        .unwrap()
+                        .record(result.is_ok(), retries, began.elapsed());
+                    result?;
+                    completed += 1;
+                    mixed_counts.lock().unwrap()[account][1] += 1;
+                    tokio::time::sleep(Duration::from_secs((seconds / 20).max(1))).await;
+                }
+                Ok::<_, anyhow::Error>(completed)
+            },
+        )));
     }
     let revoke_job = {
         let (current, links, revoked) =
             (current.clone(), links.clone(), revoked_during_load.clone());
-        tokio::spawn(async move {
+        tokio::spawn(bounded_pressure(pressure_deadline, async move {
             tokio::time::sleep(Duration::from_secs(seconds / 2)).await;
             revoked.store(true, Ordering::Relaxed);
             let d = get(&current).await;
@@ -1109,27 +1206,42 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
             )
             .await?;
             Ok::<_, anyhow::Error>(began.elapsed().as_secs_f64())
-        })
+        }))
     };
     let burst_job = {
+        let burst_started = burst_started.clone();
         let (current, links, bursts) = (current.clone(), links.clone(), bursts.clone());
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs((seconds / 4).min(30))).await;
-            burst(
-                current.clone(),
-                links.clone(),
-                count,
-                bursts.clone(),
-                origin,
-            )
-            .await?;
-            tokio::time::sleep(Duration::from_secs(seconds / 2)).await;
-            burst(current, links, count, bursts, origin).await
-        })
+        tokio::spawn(bounded_pressure(
+            pressure_deadline + Duration::from_secs(3),
+            async move {
+                tokio::time::sleep(Duration::from_secs((seconds / 4).min(30))).await;
+                burst(
+                    current.clone(),
+                    links.clone(),
+                    count,
+                    bursts.clone(),
+                    origin,
+                    pressure_deadline,
+                    burst_started.clone(),
+                )
+                .await?;
+                tokio::time::sleep(Duration::from_secs(seconds / 2)).await;
+                burst(
+                    current,
+                    links,
+                    count,
+                    bursts,
+                    origin,
+                    pressure_deadline,
+                    burst_started,
+                )
+                .await
+            },
+        ))
     };
     let mut failures = Vec::<String>::new();
     for worker in workers {
-        if worker.await.is_err() {
+        if !matches!(worker.await, Ok(Ok(()))) {
             failures.push("poll worker failed to join".into());
         }
     }
@@ -1179,11 +1291,27 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
         Err(_) => Err(anyhow::anyhow!("steady server sample unavailable")),
     };
     let mixed_by_account = mixed_counts.lock().unwrap().clone();
-    let mixed_roundtrip_latency = mixed_latency.lock().unwrap().json();
+    let mut mixed_roundtrip_latency = mixed_latency.lock().unwrap().json();
+    mixed_roundtrip_latency["cancelled_roundtrips"] = json!(
+        mixed_by_account
+            .iter()
+            .map(|counts| counts[0] - counts[1])
+            .sum::<u64>()
+            .saturating_sub(
+                mixed_roundtrip_latency["failed_roundtrips"]["count"]
+                    .as_u64()
+                    .unwrap()
+            )
+    );
     let mixed_roundtrips: u64 = mixed_by_account.iter().map(|counts| counts[1]).sum();
     let mixed_attempts: u64 = mixed_by_account.iter().map(|counts| counts[0]).sum();
     let poll_json = polls.lock().unwrap().json();
-    let burst_json = bursts.lock().unwrap().json();
+    let mut burst_json = bursts.lock().unwrap().json();
+    let started = burst_started.load(Ordering::Relaxed);
+    burst_json["nominal_requests"] = json!(count * 2);
+    burst_json["started_requests"] = json!(started);
+    burst_json["cancelled_requests"] = json!(started.saturating_sub(bursts.lock().unwrap().count));
+    burst_json["not_started_requests"] = json!((count as u64 * 2).saturating_sub(started));
     let work_json = work_polls.lock().unwrap().json();
     save(
         "load-progress.json",
@@ -1357,6 +1485,149 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct TestDirectory(std::path::PathBuf);
+    impl TestDirectory {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("alondra-waiter-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn write(&self, value: &Value) {
+            let path = self.0.join("sample.tmp");
+            std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+            std::fs::rename(path, self.0.join("waiters.json")).unwrap();
+        }
+    }
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn sample(epoch: [u8; 16]) -> Value {
+        json!({"schema":1,"scope":"lab_pending_futures","epoch":B64.encode(epoch),"sequence":1,"uptime_ms":1,
+            "changes":{"threshold":200,"current":0,"peak":0,"entered":0,"exited":0,"above_ms":0,"longest_above_ms":0},
+            "work":{"threshold":200,"current":0,"peak":0,"entered":0,"exited":0,"above_ms":0,"longest_above_ms":0}})
+    }
+    #[tokio::test]
+    async fn delayed_old_publication_cannot_satisfy_observation_challenge() {
+        let directory = Arc::new(TestDirectory::new());
+        let epoch = [9u8; 16];
+        let old = sample(epoch);
+        directory.write(&old);
+        let publisher = directory.clone();
+        let late = tokio::spawn(async move {
+            while !publisher.0.join("challenge").exists() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            let mut captured_before_request = old;
+            captured_before_request["sequence"] = json!(2);
+            captured_before_request["uptime_ms"] = json!(2);
+            publisher.write(&captured_before_request);
+        });
+        let error = fresh_waiters_at(&epoch, &directory.0, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        late.await.unwrap();
+        assert!(
+            error
+                .downcast_ref::<tokio::time::error::Elapsed>()
+                .is_some(),
+            "an advancing old publication must time out"
+        );
+        let previous = std::fs::read_to_string(directory.0.join("challenge")).unwrap();
+        let publisher = directory.clone();
+        let fresh = tokio::spawn(async move {
+            loop {
+                let nonce = std::fs::read_to_string(publisher.0.join("challenge")).unwrap();
+                if nonce != previous {
+                    let mut captured = sample(epoch);
+                    captured["sequence"] = json!(3);
+                    captured["uptime_ms"] = json!(3);
+                    captured["challenge"] = json!(nonce);
+                    publisher.write(&captured);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        });
+        assert_eq!(
+            fresh_waiters_at(&epoch, &directory.0, Duration::from_secs(1))
+                .await
+                .unwrap()["sequence"],
+            3
+        );
+        fresh.await.unwrap();
+    }
+    #[tokio::test]
+    async fn suppressed_notification_timer_recheck_fails_wakeup_bound() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let n = notify.clone();
+        // The same waiting future eventually returns queued work after its timer,
+        // exactly the false positive the old wait25/collect30 contract allowed.
+        let mut original = tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_millis(180), n.notified()).await;
+            true
+        });
+        let result = wakeup_bound(Instant::now() + Duration::from_millis(40), async {
+            Ok((&mut original).await?)
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(
+            original.await.unwrap(),
+            "timer fallback would have passed the old check"
+        );
+        let n = notify.clone();
+        let mut prompt = tokio::spawn(async move {
+            n.notified().await;
+            true
+        });
+        notify.notify_one();
+        assert!(
+            wakeup_bound(Instant::now() + Duration::from_secs(1), async {
+                Ok((&mut prompt).await?)
+            })
+            .await
+            .unwrap()
+        );
+    }
+    #[tokio::test]
+    async fn stalled_burst_lanes_are_cancelled_joined_and_recovery_runs() {
+        struct Running(Arc<std::sync::atomic::AtomicU64>);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let active = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut jobs = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let active = active.clone();
+            jobs.spawn(async move {
+                active.fetch_add(1, Ordering::SeqCst);
+                let _guard = Running(active);
+                std::future::pending::<()>().await;
+            });
+        }
+        while active.load(Ordering::SeqCst) != 8 {
+            tokio::task::yield_now().await;
+        }
+        let steady = tokio::time::timeout(
+            Duration::from_secs(1),
+            join_pressure(&mut jobs, Instant::now() + Duration::from_millis(40)),
+        )
+        .await
+        .unwrap();
+        assert!(steady.is_err());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(jobs.is_empty());
+        let (steady, recovery) =
+            recover_after_pressure(steady, async { Ok(json!({"probe":"after_cancel"})) }).await;
+        assert!(steady.is_err());
+        assert_eq!(recovery.unwrap()["probe"], "after_cancel");
+    }
     #[tokio::test]
     async fn sustained_failure_still_executes_recovery_and_remains_failure() {
         let completed = Arc::new(AtomicBool::new(false));
