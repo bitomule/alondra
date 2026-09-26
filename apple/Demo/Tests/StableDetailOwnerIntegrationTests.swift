@@ -216,4 +216,52 @@ struct StableDetailOwnerIntegrationTests {
         #expect(store.nodes[id: "sending"]?.isSending == true)
     }
 
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func identityRemovalCancelsActualOwnerEffect(nodeOwner: Bool) async throws {
+        let old = TriageIdentity(server: URL(string: "https://service.example")!, deviceID: "old", credentialRevision: "one", generation: 1)
+        let next = TriageIdentity(server: old.server, deviceID: "new", credentialRevision: "two", generation: 2)
+        var initial = ServiceRootFeature.State()
+        initial.triage.triage.identity = old
+        initial.triage.cardIdentity = old
+        initial.fleet.identity = old
+        var document = DocumentReviewFeature.State(subject: .question(try question(1)))
+        document.sourceText = "Body"
+        document.draft.general = "Send document"
+        initial.triage.document = document
+        let node = try JSONDecoder().decode(Node.self, from: Data(#"{"sessionId":"a","shortId":"a","name":"A","project":"Alondra","state":"working","stateSince":1,"isOrchestrator":false,"hasPlugin":true,"stateSource":"hook"}"#.utf8))
+        var detail = NodeDetailFeature.State(sessionID: "a")
+        detail.entry = FleetNode(node: node, tasks: [], pendingCount: 0)
+        detail.message = "Send node"
+        initial.fleet.detail = detail
+        let started = AsyncStream<Void>.makeStream()
+        let cancelled = AsyncStream<Void>.makeStream()
+        let gate = AsyncStream<Void>.makeStream()
+        let suspend: @Sendable () async -> Void = {
+            await withTaskCancellationHandler {
+                started.continuation.yield(())
+                for await _ in gate.stream { break }
+            } onCancel: {
+                cancelled.continuation.yield(())
+            }
+        }
+        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
+            $0.nodeOperations = .init(send: { _, _ in await suspend(); return .obsolete }, close: { _ in .obsolete }, threads: { _ in [] })
+            $0.questionWorkService = .init(submit: { _ in await suspend(); return .obsolete }, document: { _ in "" })
+        }
+        let action: ServiceRootFeature.Action = nodeOwner
+            ? .fleet(.nodes(.element(id: "a", action: .sendTapped)))
+            : .triage(.documents(.element(id: "q1", action: .submitFeedback(author: ""))))
+        let operation = store.send(action)
+        var begins = started.stream.makeAsyncIterator()
+        _ = await begins.next()
+        await store.send(.triage(.triage(.identityChanged(next)))).finish()
+        #expect(store.fleet.nodes.isEmpty && store.triage.documents.isEmpty)
+        var cancellations = cancelled.stream.makeAsyncIterator()
+        _ = await cancellations.next()
+        await operation.finish()
+        #expect(store.notice == nil)
+        #expect(store.fleet.nodes.isEmpty && store.triage.documents.isEmpty)
+        started.continuation.finish(); cancelled.continuation.finish(); gate.continuation.finish()
+    }
+
 }

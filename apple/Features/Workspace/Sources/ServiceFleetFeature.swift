@@ -48,6 +48,7 @@ public struct ServiceFleetFeature {
     }
     public enum Action {
         case appeared, disappeared, refresh
+        case identityChanged(TriageIdentity)
         case openTask(String), focusInbox(String), inboxFocusHandled
         case taskDetail(PresentationAction<TaskDetailFeature.Action>)
         case snapshot(Overview?)
@@ -66,6 +67,9 @@ public struct ServiceFleetFeature {
         Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Reduce { state, action in
             switch action {
+            case .identityChanged(let identity):
+                state.resetIdentity(identity)
+                return .none
             case .pushTask(let id):
                 guard let task = state.presentation.board.task(id) else { return .none }
                 state.path.append(.task(TaskDetailFeature.State(taskID: id)))

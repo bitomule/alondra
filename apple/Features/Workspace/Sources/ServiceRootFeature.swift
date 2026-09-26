@@ -164,8 +164,11 @@ public struct ServiceRootFeature {
                 state.pendingInboxID = id
                 return routePending(&state)
             case .triage(.triage(.identityChanged(let identity))):
-                state.fleet.resetIdentity(identity)
-                return .none
+                // Run removal through the owning reducer so forEach observes the removed
+                // IDs and cancels their scoped effects in this same identity transition.
+                // A key-path Scope uses this same navigation cancellation namespace.
+                return ServiceFleetFeature().reduce(into: &state.fleet, action: .identityChanged(identity))
+                    .map(Action.fleet)
             case .triage(.triage(.inboxUpdated(let update))):
                 let routing: Effect<Action> = .merge(routePending(&state),
                     update.identity == state.triage.triage.identity ? .send(.newRequest(.workspaceUpdated(update.overview))) : .none,
