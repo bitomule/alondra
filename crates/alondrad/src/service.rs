@@ -1685,6 +1685,85 @@ agreement_key = "{}"
         std::fs::remove_dir_all(&service.home).unwrap();
     }
 
+    // The transport is deliberately dishonest: its device registry and HTTP
+    // authorization cannot be trusted as the Mac's content authorization.
+    #[tokio::test]
+    async fn malicious_relay_key_substitution_and_false_revocation_ack_cannot_dispatch() {
+        let (mut service, _) = push_fixture();
+        activate_push(&service);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let local = Router::new().route("/v1/overview", get({
+            let calls = calls.clone(); move || { let calls = calls.clone(); async move {
+                calls.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"private":"content"}))
+            }}
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        service.local_port = port;
+        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+        let attacker = SigningKey::from_slice(&[71;32]).unwrap();
+        let trusted = SigningKey::from_slice(&[33;32]).unwrap();
+        let seal = |key: &SigningKey, id: &str| EnvelopeV1::seal_random(EnvelopeContext {
+            route:"mac-1", sender:"phone-1", recipient:"mac-1", request_id:id,
+            kind:"request", expires_at_ms:now_ms()+60_000,
+        }, br#"{"method":"GET","path":"/v1/overview"}"#, key, &service.agreement.public_key()).unwrap();
+        let substituted = seal(&attacker, "substituted-key");
+        let previously_trusted = seal(&trusted, "after-revocation");
+        let delivered = Arc::new(Mutex::new(json!({
+            "request_id":"positive-control", "envelope":seal(&trusted, "positive-control")
+        })));
+        let work_reads = Arc::new(AtomicUsize::new(0));
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let receipts = Arc::new(AtomicUsize::new(0));
+        let relay = Router::new()
+            .route("/v1/work/{id}/response", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }))
+            .route("/v1/work", get({ let data=delivered.clone(); let reads=work_reads.clone(); move || {
+                let data=data.clone(); let reads=reads.clone(); async move {
+                    reads.fetch_add(1, Ordering::SeqCst); axum::Json(data.lock().unwrap().clone())
+                }
+            }}))
+            // Lie about deletion: retain and redeliver the revoked device's work.
+            .route("/v1/devices/{id}", delete({ let deletes=deletes.clone(); move || {
+                let deletes=deletes.clone(); async move { deletes.fetch_add(1,Ordering::SeqCst); StatusCode::NO_CONTENT }
+            }}))
+            .route("/v1/work/{id}/receipt", post({ let receipts=receipts.clone(); move || {
+                let receipts=receipts.clone(); async move { receipts.fetch_add(1,Ordering::SeqCst); StatusCode::ACCEPTED }
+            }}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap());
+        service.relay = Url::parse(&origin).unwrap();
+        let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+        let home=service.home.clone();
+        let service=Arc::new(service);
+        let mut tasks=tokio::task::JoinSet::new();
+        service.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst),1,"same relay and local endpoint accept an approved signed request");
+        assert_eq!(receipts.load(Ordering::SeqCst),1);
+        *delivered.lock().unwrap()=json!({"request_id":"substituted-key","envelope":substituted});
+        let error=service.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.unwrap_err();
+        assert!(error.to_string().contains("invalid encrypted work"));
+        assert_eq!(work_reads.load(Ordering::SeqCst),2);
+        assert_eq!(calls.load(Ordering::SeqCst),1);
+        assert_eq!(receipts.load(Ordering::SeqCst),1);
+        // Persist revocation, then construct a fresh daemon from disk. The
+        // service TOML still contains the old device, just as a stale registry can.
+        Auth::open(&home).unwrap().revoke("phone-1").unwrap();
+        drop(service);
+        *delivered.lock().unwrap()=json!({"request_id":"after-revocation","envelope":previously_trusted});
+        let mut restarted=Service::open(&home,port,Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+        restarted.relay=Url::parse(&origin).unwrap();
+        let restarted=Arc::new(restarted);
+        assert!(restarted.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.is_err());
+        assert_eq!(deletes.load(Ordering::SeqCst),1,"dishonest relay acknowledged deletion");
+        assert_eq!(work_reads.load(Ordering::SeqCst),3,"revoked work actually redelivered after restart");
+        assert_eq!(calls.load(Ordering::SeqCst),1);
+        assert_eq!(receipts.load(Ordering::SeqCst),1);
+        assert!(restarted.journal.enrollment_revoked("phone-1").unwrap());
+        local_server.abort(); relay_server.abort();
+        drop(restarted); std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[tokio::test]
     async fn changes_rechecks_persisted_revocation_after_receipt_before_dispatch() {
         let (mut service, _) = push_fixture();
