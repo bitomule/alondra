@@ -245,7 +245,7 @@ impl Service {
                 &request.method, &request.path, request.body.as_ref())?
         } else {
             crate::http::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
-                &request.path, request.body.as_ref()).await?
+                &request.path, request.body.as_ref(), || self.require_device_approval(&envelope.sender, device)).await?
         };
         let bytes = self.encode_response(envelope, device, &result, request)?;
         self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
@@ -1500,6 +1500,51 @@ agreement_key = "{}"
         assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
         drop(bytes); relay_task.abort(); drop(service); drop(hub);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_composed_message_rechecks_revocation_after_waiting_for_start_lock() {
+        for revoke in ["none", "approval", "enrollment"] {
+            let (mut service, _) = push_fixture(); activate_push(&service);
+            let home=service.home.clone();
+            let config=alondra_core::config::Config::resolve(home.clone(),&Default::default(),|_|None,||Some("David".into()));
+            let hub=Arc::new(crate::hub::Hub::open(config,false).unwrap());
+            hub.append(alondra_core::Event::Hook(alondra_core::HookEvent { session_id:"s".into(),event:"UserPromptSubmit".into(),..Default::default() })).unwrap();
+            hub.append(alondra_core::Event::TaskCreated(alondra_core::tasks::NewTask {
+                id:"t-1".into(),request:"r-1".into(),title:"Task".into(),brief:None,depends_on:vec![],options:Default::default(),
+                session_id:None,launched:false,launched_as:None,start:None,
+            })).unwrap();
+            service=service.with_hub(hub.clone());
+            let request=LocalRequest { method:"POST".into(),path:"/v1/nodes/s/messages".into(),body:Some(json!({"text":"Do this","task":"t-1"})) };
+            let work=changes_work(&service,"waiting-message",json!({"method":request.method,"path":request.path,"body":request.body}));
+            service.journal.accept("phone-1","waiting-message",&[1;32]).unwrap();
+            service.journal.executing_local("phone-1","waiting-message",&[1;32]).unwrap();
+            let seq=hub.read(|v|v.seq);
+            let held=hub.starts.lock().await;
+            let mut pending=Box::pin(service.execute_atomic_local(&work.envelope,&service.devices["phone-1"],&request,&[1;32]));
+            // Poll exactly to the mutex wait: authorization already passed, mutation has not run.
+            let waker=std::task::Waker::noop();
+            assert!(std::future::Future::poll(pending.as_mut(),&mut std::task::Context::from_waker(waker)).is_pending());
+            assert_eq!(hub.read(|v|v.seq),seq);
+            match revoke {
+                "approval" => { Auth::open(&home).unwrap().revoke("phone-1").unwrap(); },
+                "enrollment" => service.journal.revoke_enrollment("phone-1").unwrap(),
+                _ => (),
+            }
+            drop(held);
+            let result=tokio::time::timeout(Duration::from_secs(2),pending).await.unwrap();
+            if revoke=="none" {
+                assert!(result.is_ok(),"positive control: {result:?}");
+                assert_eq!(hub.read(|v|v.messages.len()),1);
+                assert!(hub.read(|v|v.board.tasks["t-1"].is_assigned_to("s")));
+            } else {
+                assert!(result.is_err(),"revoked {revoke} must not execute after the wait");
+                assert_eq!(hub.read(|v|v.seq),seq);
+                assert!(hub.read(|v|v.messages.is_empty()));
+                assert!(hub.read(|v|v.board.tasks["t-1"].assignee.is_none()));
+            }
+            drop(service);drop(hub);std::fs::remove_dir_all(home).unwrap();
+        }
     }
 
     #[tokio::test]

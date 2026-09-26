@@ -1782,10 +1782,12 @@ fn local_refusal(kind: &str, message: impl Into<String>) -> Value {
 }
 
 /// Task assignment serializes with starts and closes before taking the Hub writer lock.
-async fn serialized_local_mutation(hub: &Hub, identity: Option<(&str, &str, &[u8;32])>, command: LocalMutation) -> anyhow::Result<Value> {
+async fn serialized_local_mutation(hub: &Hub, identity: Option<(&str, &str, &[u8;32])>, command: LocalMutation, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> anyhow::Result<Value> {
     let requires_start_lock = matches!(&command, LocalMutation::SendMessage(_, body)
         if body.task.as_deref().is_some_and(|task| !task.trim().is_empty()));
     let _start = if requires_start_lock { Some(hub.starts.lock().await) } else { None };
+    // A service device can be revoked while this request waits for starts.
+    authorize()?;
     local_mutation(hub, identity, command)
 }
 
@@ -1837,6 +1839,7 @@ pub(crate) async fn atomic_local_request(
     digest: &[u8; 32],
     path: &str,
     body: Option<&Value>,
+    authorize: impl FnOnce() -> anyhow::Result<()> + Send,
 ) -> anyhow::Result<Value> {
     let parsed = (|| -> anyhow::Result<LocalMutation> {
         Ok(if path == "/v1/tasks/archive" {
@@ -1870,12 +1873,15 @@ pub(crate) async fn atomic_local_request(
         })
     })();
     match parsed {
-        Ok(command) => serialized_local_mutation(hub, Some((sender, request_id, digest)), command).await,
-        Err(_) => hub.local_command(
+        Ok(command) => serialized_local_mutation(hub, Some((sender, request_id, digest)), command, authorize).await,
+        Err(_) => {
+            authorize()?;
+            hub.local_command(
             Some((sender, request_id, digest)),
             |_| Err(json!({"status":422,"body":{"error":"invalid local command body"}})),
             |_, _| unreachable!(),
-        ),
+        )
+        },
     }
 }
 
@@ -3100,7 +3106,7 @@ fn held_for_turn_end_note(name: &str) -> String {
 }
 
 pub(crate) async fn send_message(State(hub): State<AppState>, Path(key): Path<String>, Json(b): Json<MessageBody>) -> Response {
-    local_mutation_response(serialized_local_mutation(&hub, None, LocalMutation::SendMessage(key, b)).await)
+    local_mutation_response(serialized_local_mutation(&hub, None, LocalMutation::SendMessage(key, b), || Ok(())).await)
 }
 
 /// Real risks a close must not paper over: the node still doing something (busy or a live
@@ -6138,7 +6144,7 @@ mod tests {
             let before = hub.read(|v|v.seq);
             let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
             db.execute_batch("CREATE TRIGGER fail_result BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'receipt failure'); END;").unwrap();
-            assert!(atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body)).await.is_err());
+            assert!(atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body),|| Ok(())).await.is_err());
             assert_eq!(hub.read(|v|v.seq), before, "{path}: no partially published events");
             let restarted = hub_at_home_of(&hub);
             assert_eq!(restarted.read(|v|v.seq), before, "{path}: no durable partial events");
@@ -6147,7 +6153,7 @@ mod tests {
             assert!(restarted.read(|v|v.board.requests["r-close"].closed.is_none()));
             assert!(restarted.read(|v|v.board.tasks["t-assign"].assignee.is_none()));
             db.execute_batch("DROP TRIGGER fail_result;").unwrap();
-            let result = atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body)).await.unwrap();
+            let result = atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body),|| Ok(())).await.unwrap();
             assert_eq!(result["status"],200,"{path}: {result}");
             assert_eq!(restarted.read(|v|v.messages.len()),1,"one durable delivery intent");
             let home=hub.home.clone(); drop(db); drop(hub); drop(restarted); std::fs::remove_dir_all(home).unwrap();
@@ -6162,16 +6168,16 @@ mod tests {
                 let (id, _) = uploads::store(&hub.home,"note.txt",b"an attachment").unwrap();
                 body["attachments"]=json!([id]);
             }
-            let result = atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body)).await.unwrap();
+            let result = atomic_local_request(&hub,"phone","command",&[1;32],path,Some(&body),|| Ok(())).await.unwrap();
             assert_eq!(result["status"],200,"{path}: {result}");
             let seq=hub.read(|v|v.seq);
             assert_eq!(hub.read(|v|v.messages.len()),1);
             if index==2 { std::fs::remove_dir_all(uploads::uploads_dir(&hub.home)).unwrap(); }
             let restarted=hub_at_home_of(&hub);
-            assert_eq!(atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body)).await.unwrap(),result);
+            assert_eq!(atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body),|| Ok(())).await.unwrap(),result);
             assert_eq!(restarted.read(|v|v.seq),seq,"{path}: replay does not generate events");
             assert_eq!(restarted.read(|v|v.messages.len()),1);
-            assert!(atomic_local_request(&restarted,"phone","command",&[2;32],path,Some(&body)).await.is_err());
+            assert!(atomic_local_request(&restarted,"phone","command",&[2;32],path,Some(&body),|| Ok(())).await.is_err());
             assert_eq!(restarted.read(|v|v.seq),seq);
             if index==0 { assert!(restarted.read(|v|v.reports[&1].read)); }
             if index==1 { assert_eq!(restarted.read(|v|v.board.requests["r-close"].title.clone()),Some("Withdrawn title".into())); }
