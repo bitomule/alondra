@@ -188,6 +188,11 @@ public struct ServiceRootFeature {
                 state.pendingInboxID = id
                 return routePending(&state)
             case .triage(.triage(.identityChanged(let identity))):
+                if state.pullRequestIdentity != identity {
+                    state.pullRequestIdentity = identity
+                    state.pullRequestID = nil
+                    state.pullRequests = []
+                }
                 // Run removal through the owning reducer so forEach observes the removed
                 // IDs and cancels their scoped effects in this same identity transition.
                 // A key-path Scope uses this same navigation cancellation namespace.
@@ -229,12 +234,6 @@ public struct ServiceRootFeature {
                         questions: state.triage.triage.questions(forPullRequest: id))))))
                 }
                 return .merge(updates)
-            case .triage(.triage(.identityChanged(let identity))):
-                guard state.pullRequestIdentity != identity else { return .none }
-                state.pullRequestIdentity = identity
-                state.pullRequestID = nil
-                state.pullRequests = []
-                return .none
             case .triage(.delegate(.pullRequest(let pr))):
                 state.pullRequestIdentity = state.triage.triage.identity
                 state.pullRequest?.cancelPendingSubmission()

@@ -64,7 +64,7 @@ struct ReviewUploadNoticeIntegrationTests {
             switch child {
             case .question(let value): return .triage(.question(.presented(value)))
             case .document(let value): return .triage(.documents(.element(id: cardID, action: value)))
-            case .pullRequest(let value): return .pullRequest(.presented(value))
+            case .pullRequest(let value): return .pullRequests(.element(id: 5, action: value))
             default: preconditionFailure("Expected feature action")
             }
         }
