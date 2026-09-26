@@ -347,12 +347,13 @@ pub fn login() -> Result<()> {
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
     println!("Opening Alondra login in your browser…");
-    let status = Command::new("open")
+    println!("If the browser does not appear, open this link within five minutes:\n{url}");
+    if !Command::new("open")
         .arg(url.as_str())
         .status()
-        .context("opening browser")?;
-    if !status.success() {
-        bail!("could not open browser; login was not started");
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("Could not open the browser automatically; use the link above.");
     }
     let code = receive_callback(listener, &state)?;
     let (status, body) = post_form(
