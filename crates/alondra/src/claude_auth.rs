@@ -28,6 +28,7 @@ pub fn daemon_path(home: &Path, bin: &Path) -> String {
 impl ContextEnv {
     pub fn for_setup(home: &Path, bin: &Path) -> Self {
         let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
+            .or_else(|_| std::env::var("CLAUDE_HOME"))
             .ok()
             .filter(|p| !p.is_empty())
             .map(|p| {
@@ -49,6 +50,13 @@ impl ContextEnv {
     }
 
     pub fn from_environment(home: &Path, vars: &BTreeMap<String, String>) -> Result<Self> {
+        if let (Some(config), Some(watcher)) =
+            (vars.get("CLAUDE_CONFIG_DIR"), vars.get("CLAUDE_HOME"))
+        {
+            if config != watcher {
+                bail!("Claude profile variables disagree; rerun alondra setup with one profile");
+            }
+        }
         Ok(Self {
             home: vars
                 .get("HOME")
@@ -58,11 +66,14 @@ impl ContextEnv {
                 .get("PATH")
                 .context("daemon plist has no PATH; rerun alondra setup")?
                 .clone(),
-            config_dir: vars.get("CLAUDE_CONFIG_DIR").cloned(),
+            config_dir: vars
+                .get("CLAUDE_CONFIG_DIR")
+                .or_else(|| vars.get("CLAUDE_HOME"))
+                .cloned(),
         })
     }
 
-    fn command(&self) -> Result<Command> {
+    pub(crate) fn command(&self) -> Result<Command> {
         // Resolve using exactly the daemon PATH, not the interactive shell's executable.
         let executable = std::env::split_paths(&self.path).map(|p| p.join("claude")).find(|p| {
             use std::os::unix::fs::PermissionsExt;
@@ -74,9 +85,13 @@ impl ContextEnv {
             .env("HOME", &self.home)
             .env("PATH", &self.path)
             .current_dir(&self.home);
-        if let Some(dir) = &self.config_dir {
-            command.env("CLAUDE_CONFIG_DIR", dir);
-        }
+        let dir = self
+            .config_dir
+            .clone()
+            .unwrap_or_else(|| self.home.join(".claude").to_string_lossy().into_owned());
+        command
+            .env("CLAUDE_CONFIG_DIR", &dir)
+            .env("CLAUDE_HOME", &dir);
         Ok(command)
     }
 
@@ -248,7 +263,7 @@ mod tests {
         let dir = dir.canonicalize().unwrap();
         let script = dir.join("claude");
         std::fs::write(&script, r#"#!/bin/sh
-if [ "$1 $2 $3" = "auth status --json" ] && [ "$HOME" = "$PWD" ] && [ "$CLAUDE_CONFIG_DIR" = "$HOME/profile" ]; then
+if [ "$1 $2 $3" = "auth status --json" ] && [ "$HOME" = "$PWD" ] && [ "$CLAUDE_CONFIG_DIR" = "$HOME/profile" ] && [ "$CLAUDE_HOME" = "$CLAUDE_CONFIG_DIR" ]; then
   printf '{"loggedIn":true}'
 else
   printf '{"loggedIn":false}'

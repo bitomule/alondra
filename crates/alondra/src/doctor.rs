@@ -302,18 +302,22 @@ pub fn run(json_out: bool) -> Result<()> {
     let print = output("launchctl", &["print", &format!("gui/{uid}/{}", local.service_label)], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(service_check(print.as_deref(), &local.service_label));
 
-    let claude = output("claude", &["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t);
-    checks.push(claude_version_check(claude.as_deref()));
     let user_home = config::home_dir(&env);
     let plist = user_home.join("Library/LaunchAgents").join(format!("{}.plist", local.service_label));
-    let auth = setup::read_plist(&plist).and_then(|v| {
+    let context = setup::read_plist(&plist).and_then(|v| {
         let vars = v.get("EnvironmentVariables").cloned().unwrap_or(Value::Null);
         let vars = serde_json::from_value(vars)?;
-        crate::claude_auth::ContextEnv::from_environment(&user_home, &vars)?.status()
+        crate::claude_auth::ContextEnv::from_environment(&user_home, &vars)
     });
-    checks.push(claude_auth_check(auth));
+    let claude = context.as_ref().ok().and_then(|c| c.command().ok())
+        .and_then(|mut cmd| cmd.arg("--version").output().ok())
+        .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+    checks.push(claude_version_check(claude.as_deref()));
+    checks.push(claude_auth_check(context.as_ref().map_err(|e| anyhow::anyhow!("{e}")).and_then(|c| c.status())));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
-    checks.push(plugin_check(setup::plugin_list().as_ref(), setup::has_marketplace(), repo.as_deref()));
+    let plugins = context.as_ref().ok().and_then(setup::plugin_list);
+    let marketplace = context.as_ref().is_ok_and(setup::has_marketplace);
+    checks.push(plugin_check(plugins.as_ref(), marketplace, repo.as_deref()));
 
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
