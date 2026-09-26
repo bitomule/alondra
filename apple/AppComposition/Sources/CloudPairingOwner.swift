@@ -66,9 +66,12 @@ public final class CloudPairingOwner {
         let expectedSession = services
         var service = CloudPairingService(restore: { throw CancellationError() }, login: { throw CancellationError() },
             begin: { [self] payload in
-                guard let expectedSession, await services === expectedSession else { throw CancellationError() }
-                return try await begin(payload, scope: scope)
-            }, approve: { [self] in try await approve(scope: scope) },
+                guard let expectedSession else { throw CancellationError() }
+                return try await begin(payload, scope: scope, expectedSession: expectedSession)
+            }, approve: { [self] in
+                guard let expectedSession else { throw CancellationError() }
+                try await approve(scope: scope, expectedSession: expectedSession)
+            },
             cancel: { [self] in await cancel(scope: scope) }, logout: { throw CancellationError() })
         service.prepareCamera = prepareCamera
         return service
@@ -123,7 +126,8 @@ public final class CloudPairingOwner {
         try await auth.login()
         _ = try await auth.verifiedSubject()
     }
-    private func begin(_ payload: String, scope: UUID? = nil) async throws -> String {
+    private func begin(_ payload: String, scope: UUID? = nil, expectedSession: CloudAppServices? = nil) async throws -> String {
+        if let expectedSession { guard services === expectedSession else { throw CancellationError() } }
         let ticket = try attempts.acquire(scope: scope)
         var retained = false
         defer { if !retained { attempts.release(ticket) } }
@@ -134,7 +138,8 @@ public final class CloudPairingOwner {
         let token = try await auth.bearerToken()
         let pending = try await pairing.begin(qrPayload: payload,
             authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName)
-        guard current == generation, attempts.contains(ticket), !Task.isCancelled else {
+        guard current == generation, attempts.contains(ticket), !Task.isCancelled,
+              expectedSession == nil || services === expectedSession else {
             await pairing.discard(pending.attemptID)
             throw CancellationError()
         }
@@ -142,7 +147,8 @@ public final class CloudPairingOwner {
         retained = true
         return pending.comparisonCode
     }
-    private func approve(scope: UUID? = nil) async throws {
+    private func approve(scope: UUID? = nil, expectedSession: CloudAppServices? = nil) async throws {
+        if let expectedSession { guard services === expectedSession else { throw CancellationError() } }
         guard let ticket = attempts.current(scope: scope), let attempt else { throw ServicePairingError.missingAttempt }
         defer { attempts.release(ticket) }
         let current = generation
@@ -153,11 +159,13 @@ public final class CloudPairingOwner {
             if self.attempt == attempt { self.attempt = nil }
             throw error
         }
-        guard current == generation, attempts.contains(ticket), !Task.isCancelled else { throw CancellationError() }
+        guard current == generation, attempts.contains(ticket), !Task.isCancelled,
+              expectedSession == nil || services === expectedSession else { throw CancellationError() }
         self.attempt = nil
         let subject = try await auth.verifiedSubject()
         guard current == generation, subject == approved.ownerSub else { throw CancellationError() }
         let collection = try await pairing.approvedPairings()
+        guard expectedSession == nil || services === expectedSession else { throw CancellationError() }
         try await reconcile(collection, subject: subject, preferred: ApprovedPairingID(approved), generation: current)
     }
     private func cancel(scope: UUID? = nil) async {
@@ -166,12 +174,15 @@ public final class CloudPairingOwner {
         generation += 1
         if let attempt { self.attempt = nil; await pairing.discard(attempt) }
     }
-    public func selectMac(choice id: UUID) async throws {
-        guard let pairingID = choiceIDs.first(where: { $0.value == id })?.key else { throw CancellationError() }
-        try await selectMac(pairingID)
+    public func selectMac(choice id: UUID, expectedSession: CloudAppServices) async throws {
+        try await SessionBoundAction.run(expected: expectedSession, current: { self.services }) { expected in
+            guard let pairingID = self.choiceIDs.first(where: { $0.value == id })?.key else { throw CancellationError() }
+            try await self.selectMac(pairingID, expectedSession: expected)
+        }
     }
 
-    public func selectMac(_ id: ApprovedPairingID) async throws {
+    public func selectMac(_ id: ApprovedPairingID, expectedSession: CloudAppServices? = nil) async throws {
+        if let expectedSession { guard services === expectedSession else { throw CancellationError() } }
         guard selection == nil else { throw CancellationError() }
         let operation = UUID()
         selection = operation
@@ -191,7 +202,8 @@ public final class CloudPairingOwner {
         // A saved pairing is not proof that access has not been revoked remotely.
         // Select only after a signed round trip through this exact Mac's session.
         try await entry.session.checkSettingsConnection()
-        guard current == generation, !Task.isCancelled else { throw CancellationError() }
+        guard current == generation, !Task.isCancelled,
+              expectedSession == nil || services === expectedSession else { throw CancellationError() }
         try await pairing.selectApprovedPairing(id)
         guard current == generation else { throw CancellationError() }
         try await registry.select(id, verifiedSubject: subject)

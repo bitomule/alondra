@@ -37,8 +37,7 @@ extension ServiceNotificationRuntime {
             }
         })
         client.selectMac = { id in
-            guard await owner.services === services else { throw CancellationError() }
-            try await owner.selectMac(choice: id)
+            try await owner.selectMac(choice: id, expectedSession: services)
         }
         return client
     }

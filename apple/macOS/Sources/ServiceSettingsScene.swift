@@ -32,8 +32,7 @@ struct MacServiceSettingsScene: View {
                 _ = owner.store.send(.logout)
             } })
         client.selectMac = { id in
-            guard await owner.services === services else { throw CancellationError() }
-            try await owner.selectMac(choice: id)
+            try await owner.selectMac(choice: id, expectedSession: services)
         }
         guard !Task.isCancelled else { return }
         var state = ServiceSettingsFeature.State(service: api.base.host() ?? api.base.absoluteString,
