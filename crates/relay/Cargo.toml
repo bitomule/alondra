@@ -26,3 +26,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 axum = { workspace = true, features = ["http2"] }
+
+[[example]]
+name = "system-client"
+path = "../../tests/system/client.rs"
+
+[[example]]
+name = "system-kc-proxy"
+path = "../../tests/system/kc_proxy.rs"
