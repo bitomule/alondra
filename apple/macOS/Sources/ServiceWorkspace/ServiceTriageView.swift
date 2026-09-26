@@ -264,13 +264,13 @@ struct ServiceDocumentView: View {
     }
     private func choose(_ option: QuestionOption) {
         let focusRequest = store.generalFocusRequest
-        store.send(.chooseReviewOption(option, author: "David"))
+        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
         focus = store.generalFocusRequest == focusRequest ? .pane : .reply
     }
 
     private func submit() {
         focus = .pane
-        store.send(.submitFeedback(author: "David"))
+        store.send(.submitFeedback(author: store.feedbackAuthor))
     }
 
     @ViewBuilder private var header: some View {
@@ -344,7 +344,7 @@ struct ServiceDocumentView: View {
             }.animation(.snappy(duration: 0.18), value: store.hasFeedback)
         } else if case .question(let q) = store.subject {
             CardActions {
-                Button { focus = .pane; store.send(.moreContextTapped(author: "David")) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                Button { focus = .pane; store.send(.moreContextTapped(author: store.feedbackAuthor)) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
                     .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
             } trailing: {
                 if store.hasFeedback, store.draft.selectedOption != nil || !q.isPlan {
