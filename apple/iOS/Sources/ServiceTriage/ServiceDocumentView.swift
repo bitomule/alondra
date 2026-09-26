@@ -44,7 +44,7 @@ struct ServiceDocumentView: View {
         } message: { Text(store.conflict ?? store.notice ?? "") }
         .sensoryFeedback(.selection, trigger: composing?.id)
         .sensoryFeedback(.success, trigger: comments.count) { old, new in new > old }
-        .task { await store.send(.appeared).finish() }
+        .task { await store.send(.phoneAppeared).finish() }
         .onDisappear { _ = store.send(.disappeared) }
         .onChange(of: store.generalFocusRequest) { _, _ in generalFocused = true }
         .onChange(of: store.completed) { _, completed in if completed { dismiss() } }
@@ -105,7 +105,7 @@ struct ServiceDocumentView: View {
             } description: {
                 Text(loadError)
             } actions: {
-                Button("Try Again") { _ = store.send(.appeared) }
+                Button("Try Again") { _ = store.send(.phoneAppeared) }
                     .buttonStyle(.glass)
             }
             .frame(maxWidth: .infinity)

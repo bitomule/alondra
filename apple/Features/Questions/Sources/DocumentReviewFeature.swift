@@ -40,6 +40,30 @@ public enum DocumentSubject: Equatable, Sendable {
     }
 }
 
+public enum DocumentSourcePolicy: Equatable, Sendable {
+    case allSections
+    case phone
+}
+
+extension DocumentSubject {
+    public func sources(for policy: DocumentSourcePolicy) -> [DocumentSource] {
+        guard policy == .phone else { return sources }
+        switch self {
+        case .question(let question):
+            if question.origin == "plan", let detail = question.detail { return [.inline(detail)] }
+            if let attachment = question.attachments.first(where: { $0.storedPath != nil }), let path = attachment.storedPath {
+                return [.stored(name: attachment.name, path: path)]
+            }
+            return [.inline(question.readableDetail ?? "")]
+        case .report(let report):
+            if let attachment = report.attachments.first(where: { $0.storedPath != nil }), let path = attachment.storedPath {
+                return [.stored(name: attachment.name, path: path)]
+            }
+            return [.inline(report.body ?? "")]
+        }
+    }
+}
+
 public enum DocumentSource: Equatable, Sendable {
     case inline(String)
     case stored(name: String, path: String)
@@ -73,6 +97,7 @@ public struct DocumentReviewFeature {
         public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject
+        public var sourcePolicy: DocumentSourcePolicy = .allSections
         public var identity: QuestionWorkIdentity?
         public var sourceText: String?
         public var sections: [DocumentSection] = []
@@ -118,6 +143,7 @@ public struct DocumentReviewFeature {
         case downloads(AttachmentDownloadFeature.Action)
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
+        case phoneAppeared
         case disappeared
         case refreshed(DocumentSubject)
         case identityChanged(QuestionWorkIdentity?)
@@ -176,6 +202,9 @@ public struct DocumentReviewFeature {
             case .attachmentPicker:
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
                 return .none
+            case .phoneAppeared:
+                state.sourcePolicy = .phone
+                return load(&state)
             case .appeared:
                 return load(&state)
             case .disappeared:
@@ -184,16 +213,18 @@ public struct DocumentReviewFeature {
                 guard state.subject.id == subject.id else {
                     let revision = state.revision &+ 1
                     let loadRevision = state.loadRevision &+ 1
+                    let sourcePolicy = state.sourcePolicy
                     state = State(subject: subject, identity: state.identity)
+                    state.sourcePolicy = sourcePolicy
                     state.revision = revision
                     state.loadRevision = loadRevision
                     // load() replaces the prior load through cancelInFlight. Cancel submission
                     // first so an old card's acknowledgement cannot race this card's new load.
                     return .concatenate(.cancel(id: CancelID.submit), load(&state))
                 }
-                let oldSource = state.subject.sources
+                let oldSource = state.subject.sources(for: state.sourcePolicy)
                 state.subject = subject
-                if oldSource != subject.sources {
+                if oldSource != subject.sources(for: state.sourcePolicy) {
                     state.draft.comments = []
                     state.notice = "The document changed. Review it again before sending comments."
                     return load(&state)
@@ -420,7 +451,7 @@ public struct DocumentReviewFeature {
         // comparison baseline for the next retry. Otherwise V2 could retain V1 anchors.
         state.previousTextForComparison = state.sourceText ?? state.previousTextForComparison
         state.sourceText = nil
-        state.sections = state.subject.sources.map { source in
+        state.sections = state.subject.sources(for: state.sourcePolicy).map { source in
             switch source {
             case .inline(let text): DocumentSection(source: source, text: text)
             case .stored: DocumentSection(source: source, text: "", isLoading: true)
@@ -429,7 +460,8 @@ public struct DocumentReviewFeature {
         state.loadError = nil
         state.loadRevision &+= 1
         let revision = state.loadRevision
-        let sources = state.subject.sources
+        let sources = state.subject.sources(for: state.sourcePolicy)
+        let sourcePolicy = state.sourcePolicy
         return .run { send in
             do {
                 var documents: [String] = []
@@ -445,7 +477,7 @@ public struct DocumentReviewFeature {
                         do {
                             let text = try await service.document(path)
                             try Task.checkCancellation()
-                            documents.append("# \(name)\n\n" + text)
+                            documents.append(sourcePolicy == .phone ? text : "# \(name)\n\n" + text)
                             sections.append(DocumentSection(source: source, text: text))
                             await send(.sectionLoaded(revision, source: source, .success(text)))
                         } catch is CancellationError { throw CancellationError() }

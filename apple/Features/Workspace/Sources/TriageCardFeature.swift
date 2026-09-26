@@ -82,7 +82,7 @@ public struct TriageCardFeature {
                 case .pullRequest(let value): return .send(.pullRequest(.updated(value)))
                 }
             case .appeared:
-                if state.document != nil { return .send(.document(.appeared)) }
+                if state.document != nil { return .send(.document(.phoneAppeared)) }
                 if state.pullRequest != nil { return .send(.pullRequest(.diff(.appeared))) }
                 return .none
             case .replyChanged(let text):

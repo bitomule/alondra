@@ -193,6 +193,66 @@ struct QuestionsFeatureTests {
     }
 
     @Test
+    func phoneDocumentLoadsOnlyOriginalStoredSourceAndKeepsAnchorsWhenHiddenBodyChanges() async throws {
+        let attachments = #"[{"name":"local.md","sourcePath":"/local"},{"name":"first.md","sourcePath":"/a","storedPath":"a"},{"name":"second.md","sourcePath":"/b","storedPath":"b"}]"#
+        let original = try report(attachments: attachments, body: "Report summary")
+        let text = "## Original heading\n\nThe paragraph to review."
+        let source = DocumentSource.stored(name: "first.md", path: "a")
+        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .report(original))) { DocumentReviewFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { path in
+                #expect(path == "a")
+                return text
+            })
+        }
+        await store.send(.phoneAppeared) {
+            $0.sourcePolicy = .phone
+            $0.isLoading = true
+            $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: source, text: "", isLoading: true)]
+        }
+        await store.receive(\.sectionLoaded) {
+            $0.sections[0].isLoading = false
+            $0.sections[0].text = text
+        }
+        await store.receive(\.loaded) {
+            $0.isLoading = false
+            $0.sourceText = text
+        }
+        let anchor = try #require(MarkdownParser.blocks(from: text).last)
+        await store.send(.commentChanged(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")) {
+            $0.draft.comments = [ReviewComment(anchor: anchor.draftKey, quote: anchor.plainText, text: "Please revise")]
+        }
+        let refreshed = try report(attachments: attachments, body: "Updated summary")
+        await store.send(.refreshed(.report(refreshed))) { $0.subject = .report(refreshed) }
+        #expect(store.state.sourceText == text)
+        #expect(store.state.draft.comments.first?.anchor == MarkdownParser.blocks(from: text).last?.draftKey)
+        await store.finish()
+    }
+
+    @Test
+    func phonePlanUsesDetailVerbatimEvenWithStoredAttachments() async throws {
+        let json = ###"{"id":1,"sessionId":"s","title":"Plan","detail":"## Plan","options":[],"links":[],"attachments":[{"name":"other.md","sourcePath":"/a","storedPath":"a"}],"origin":"plan","status":"open","askedAt":1}"###
+        let plan = try JSONDecoder().decode(Question.self, from: Data(json.utf8))
+        let store = TestStore(initialState: DocumentReviewFeature.State(subject: .question(plan))) { DocumentReviewFeature() } withDependencies: {
+            $0.questionWorkService = QuestionWorkService(submit: { _ in .confirmed }, document: { _ in
+                Issue.record("Phone plan review must not fetch attachments when detail is present")
+                return "Unexpected"
+            })
+        }
+        await store.send(.phoneAppeared) {
+            $0.sourcePolicy = .phone
+            $0.isLoading = true
+            $0.loadRevision = 1
+            $0.sections = [DocumentSection(source: .inline("## Plan"), text: "## Plan")]
+        }
+        await store.receive(\.loaded) {
+            $0.isLoading = false
+            $0.sourceText = "## Plan"
+        }
+        await store.finish()
+    }
+
+    @Test
     func failedReloadThenChangedContentClearsOldAnchoredComments() async throws {
         let report = try report(attachments: #"[{"name":"draft.md","sourcePath":"/a","storedPath":"a"}]"#)
         let reader = ChangingDocument()
