@@ -226,7 +226,11 @@ async fn revoke_owned(
         )
         .await
         .map_err(failure)?;
-    server.queue.changed.notify_waiters();
+    if kind == "mac" {
+        server.queue.notify_mac_revoked(&id);
+    } else {
+        server.queue.notify_phone_revoked(&id);
+    }
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"status":"revoked","reconciliation":"pending"})),
@@ -263,11 +267,13 @@ async fn delete_self(
     }
     let actor = actor(&server, &headers).await?;
     let key = request(&headers, "self_delete", json!({"confirm":true}), false)?;
-    let account = db(&server)?
-        .delete_self_request(actor.id, &key)
+    let (account, subjects) = db(&server)?
+        .delete_self_request_with_subjects(actor.id, &key)
         .await
         .map_err(failure)?;
-    server.queue.changed.notify_waiters();
+    for subject in subjects {
+        server.queue.notify_owner_revoked(&subject);
+    }
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"account":account,"reconciliation":"pending"})),
@@ -394,11 +400,13 @@ async fn lifecycle(server: Arc<Server>, headers: HeaderMap, id: Uuid, delete: bo
         json!({"id":id}),
         false,
     )?;
-    let account = db(&server)?
+    let (account, subjects) = db(&server)?
         .disable_account_request(actor.id, id, delete, Some(&key))
         .await
         .map_err(failure)?;
-    server.queue.changed.notify_waiters();
+    for subject in subjects {
+        server.queue.notify_owner_revoked(&subject);
+    }
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"account":account,"reconciliation":"pending"})),

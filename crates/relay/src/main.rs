@@ -576,6 +576,9 @@ async fn changes(
         .authenticate_phone(&headers, &method, &uri, &[], now_ms())
         .await
         .map_err(authentication_error)?;
+    let mac = server.auth.paired_mac_for_phone(&who.device_id, &who.owner_sub)
+        .map_err(authentication_error)?;
+    let subscription = server.queue.subscribe_changes(&who.owner_sub, &who.device_id, &mac);
     drop(gate);
     if query.epoch.as_deref().is_some_and(|e| e != server.epoch) {
         return Err((
@@ -587,7 +590,7 @@ async fn changes(
     let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
-        let notified = server.queue.changed.notified();
+        let notified = subscription.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let gate = server.device_gate.read().await;
@@ -643,12 +646,13 @@ async fn work(
         .auth
         .authenticate_mac(&headers, &method, &uri, &[], now_ms()).await
         .map_err(authentication_error)?;
+    let subscription = server.queue.subscribe_work(&who.owner_sub, &who.device_id);
     drop(gate);
     let wait_s = query.wait_s.min(25);
     let mut permit = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
     loop {
-        let notified = server.queue.changed.notified();
+        let notified = subscription.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let gate = server.device_gate.read().await;
@@ -1035,7 +1039,7 @@ mod http_tests {
         saturated_idle_polls_allow_immediate_case(false, true).await;
     }
 
-    async fn idle_poll_revocation_case(work_poll: bool) {
+    async fn idle_poll_revocation_case(work_poll: bool, revoke_mac: bool) {
             let mac_key = SigningKey::from_slice(&[111; 32]).unwrap();
             let phone_key = SigningKey::from_slice(&[112; 32]).unwrap();
             let (url, server, serving) = test_server(&mac_key).await;
@@ -1060,7 +1064,7 @@ mod http_tests {
                 }
             }).await.expect("poll must actually be admitted before revocation");
             assert!(!pending.is_finished(), "control: idle poll must still be waiting");
-            let revoke_path = if work_poll { "/v1/macs/mac-1" } else { "/v1/devices/idle-phone" };
+            let revoke_path = if revoke_mac { "/v1/macs/mac-1" } else { "/v1/devices/idle-phone" };
             let revoked = tokio::time::timeout(Duration::from_secs(3), sign(&epoch,
                 client.delete(format!("{url}{revoke_path}")), &mac_key, "mac-1", "DELETE", revoke_path, &[], 2).send())
                 .await.expect("idle long poll must not hold the global revocation gate").unwrap();
@@ -1078,12 +1082,17 @@ mod http_tests {
 
     #[tokio::test]
     async fn idle_changes_do_not_block_revocation_or_other_accounts() {
-        idle_poll_revocation_case(false).await;
+        idle_poll_revocation_case(false, false).await;
     }
 
     #[tokio::test]
     async fn idle_work_does_not_block_revocation_or_other_accounts() {
-        idle_poll_revocation_case(true).await;
+        idle_poll_revocation_case(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn idle_changes_wake_when_their_mac_is_revoked_without_queued_jobs() {
+        idle_poll_revocation_case(false, true).await;
     }
 
     #[tokio::test]
@@ -1182,6 +1191,8 @@ mod http_tests {
         let owner=db.reserve_acceptance(&invitation.token,"Owner").await?.complete("owner").await?;
         let key=SigningKey::from_slice(&[21u8;32]).unwrap();
         let (url,server,join)=test_server_with_management(&key,None,Some(db.clone())).await;
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "waiting-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(&key) })?;
         let client=reqwest::Client::new();
         let response=client.get(format!("{url}/v1/macs")).bearer_auth(jwt("uninvited",now_ms())).send().await?;
         assert_eq!(response.status(),StatusCode::FORBIDDEN);
@@ -1190,13 +1201,21 @@ mod http_tests {
         let path="/v1/work?wait_s=25";
         let pending=sign(&server.auth.server_epoch(),client.get(format!("{url}{path}")),&key,"mac-1","GET",path,&[],211).send();
         let pending=tokio::spawn(pending);
+        let phone_path = "/v1/changes?since=0&wait_s=25";
+        let pending_phone = tokio::spawn(sign(&server.auth.server_epoch(),
+            client.get(format!("{url}{phone_path}")).bearer_auth(jwt("owner", now_ms())),
+            &key, "waiting-phone", "GET", phone_path, &[], 213).send());
         tokio::time::timeout(std::time::Duration::from_secs(3),async {
-            while server.work_waiters.available_permits()==16 {tokio::task::yield_now().await;}
+            while server.work_waiters.available_permits()==16 || server.change_waiters.available_permits()==64 {tokio::task::yield_now().await;}
         }).await?;
-        db.disable_account(admin.id,owner.id,false).await?;
-        server.queue.changed.notify_waiters();
+        let disabled = client.post(format!("{url}/v1/admin/accounts/{}/disable", owner.id))
+            .bearer_auth(jwt("stable-admin-sub", now_ms()))
+            .header("Idempotency-Key", "disable-waiting-account-0001").send().await?;
+        assert_eq!(disabled.status(), StatusCode::ACCEPTED);
         let response=tokio::time::timeout(std::time::Duration::from_secs(3),pending).await???;
         assert_eq!(response.status(),StatusCode::FORBIDDEN,"already authenticated long poll must revalidate after wake");
+        let response = tokio::time::timeout(Duration::from_secs(3), pending_phone).await???;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "account disable must wake phone polls too");
         let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&key,"mac-1","GET","/v1/work?wait_s=0",&[],212).send().await?;
         assert_eq!(response.status(),StatusCode::FORBIDDEN,"signed Mac cannot bypass product suspension");
         db.pool.close().await;
