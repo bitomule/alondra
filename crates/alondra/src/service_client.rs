@@ -407,7 +407,7 @@ impl Profile {
             &self.signing()?,
             &PublicKey::from_sec1_bytes(&B64.decode(&self.mac_agreement_key)?)?,
         )?;
-        let (status, _) = call(
+        let (status, receipt) = call(
             "POST",
             "/v1/requests",
             &serde_json::to_vec(&envelope)?,
@@ -422,7 +422,14 @@ impl Profile {
                 "relay refused request ({status}); for a revoked terminal use alondra connect <mac-id> --repair"
             );
         }
-        let mut revision = 0u64;
+        let receipt_status = receipt["status"].as_str();
+        if receipt["request_id"].as_str() != Some(&request_id)
+            || !matches!((status, receipt_status),
+                (202, Some("queued" | "dispatched" | "received")) | (200, Some("completed"))) {
+            bail!("invalid relay submission receipt; inspect destination before repeating an action");
+        }
+        let mut revision = receipt["revision"].as_u64().filter(|n| *n > 0)
+            .context("invalid relay submission revision; inspect destination before repeating an action")?;
         let mut epoch: Option<String> = None;
         loop {
             remaining(deadline)?;
@@ -431,6 +438,9 @@ impl Profile {
             if status != 200 || job["request_id"].as_str() != Some(&request_id) {
                 bail!("invalid relay request status ({status})");
             }
+            let observed_revision = job["revision"].as_u64().filter(|n| *n > 0)
+                .context("invalid relay request revision")?;
+            revision = revision.max(observed_revision);
             if let Some(value) = job.get("response").filter(|v| !v.is_null()) {
                 return self.open_response(value.clone(), &request_id, now_ms()?);
             }
@@ -865,6 +875,9 @@ mod tests {
         let (profile, mac, mac_agreement) = fixture();
         let mut stage = 0;
         let mut request_id = String::new();
+        let mut retained: Vec<Value> = (490..=1000).map(|revision|
+            json!({"request_id":format!("historical-{revision}"),"status":"completed","revision":revision}))
+            .collect();
         let deadline = Instant::now() + Duration::from_secs(5);
         let result = profile.request_via("POST", "/v1/questions/7/answer", Some(&json!({"text":"yes"})), deadline, |method, path, bytes, budget| {
             assert_eq!(budget, deadline, "every stage shares one absolute deadline");
@@ -877,20 +890,80 @@ mod tests {
                     let plain = envelope.open(profile.signing()?.verifying_key(), &mac_agreement, "client-a", "mac-a", "mac-a", now_ms()?)?;
                     assert_eq!(serde_json::from_slice::<Value>(&plain)?, json!({"method":"POST","path":"/v1/questions/7/answer","body":{"text":"yes"}}));
                     request_id = envelope.request_id;
-                    Ok((202,json!({"request_id":request_id})))
+                    retained.push(json!({"request_id":request_id,"status":"queued","revision":1001}));
+                    Ok((202,json!({"request_id":request_id,"status":"queued","revision":1001})))
                 }
-                2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","response":null}))) }
-                3 => { assert!(path.starts_with("/v1/changes?since=0&wait_s=")); Ok((200,json!({"epoch":B64.encode([9;16]),"revision":2,"changes":[]}))) }
+                2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","revision":1001,"response":null}))) }
+                3 => {
+                    assert_eq!(method,"GET");
+                    let since = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+                        .find(|(key,_)| key == "since").unwrap().1.parse::<u64>().unwrap();
+                    assert_eq!(since,1001,"the receipt and observed state are already known");
+                    retained.push(json!({"request_id":request_id,"status":"completed","revision":1002}));
+                    let changes: Vec<_> = retained.iter().filter(|event| event["revision"].as_u64().unwrap()>since).cloned().collect();
+                    assert_eq!(changes.len(),1,"historical jobs and our own queued event must not trigger another GET");
+                    assert_eq!(changes[0]["request_id"],request_id);
+                    Ok((200,json!({"epoch":B64.encode([9;16]),"revision":1002,"changes":changes})))
+                }
                 4 => {
                     assert_eq!(path, format!("/v1/requests/{request_id}"));
                     let envelope = EnvelopeV1::seal_random(EnvelopeContext { route:"mac-a",sender:"mac-a",recipient:"client-a",request_id:&request_id,kind:"response",expires_at_ms:now_ms()?+5000 }, br#"{"status":200,"body":{"ok":true}}"#, &mac, &profile.agreement()?.public_key())?;
-                    Ok((200,json!({"request_id":request_id,"status":"completed","response":envelope})))
+                    Ok((200,json!({"request_id":request_id,"status":"completed","revision":1002,"response":envelope})))
                 }
                 _ => panic!("operation unexpectedly resubmitted"),
             }
         }).unwrap();
         assert_eq!(result, (200, json!({"ok":true})));
         assert_eq!(stage, 4);
+    }
+
+    #[test]
+    fn invalid_receipts_fail_closed_without_retrying_submission() {
+        for invalid in ["missing-id","wrong-id","missing-status","wrong-status","missing-revision","fractional-revision","negative-revision","zero-revision"] {
+            let mut calls=0;
+            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
+                |method,_,bytes,_| {
+                    calls+=1;
+                    assert_eq!(method,"POST");
+                    let envelope: EnvelopeV1=serde_json::from_slice(bytes)?;
+                    let mut receipt=json!({"request_id":envelope.request_id,"status":"queued","revision":1001});
+                    match invalid {
+                        "missing-id" => { receipt.as_object_mut().unwrap().remove("request_id"); },
+                        "wrong-id" => receipt["request_id"]=json!("other-request"),
+                        "missing-status" => { receipt.as_object_mut().unwrap().remove("status"); },
+                        "wrong-status" => receipt["status"]=json!("completed"),
+                        "missing-revision" => { receipt.as_object_mut().unwrap().remove("revision"); },
+                        "fractional-revision" => receipt["revision"]=json!(1.5),
+                        "negative-revision" => receipt["revision"]=json!(-1),
+                        "zero-revision" => receipt["revision"]=json!(0),
+                        _ => unreachable!(),
+                    }
+                    Ok((202,receipt))
+                });
+            assert!(result.is_err(),"accepted invalid receipt: {invalid}");
+            assert_eq!(calls,1,"invalid receipt must not repeat a possibly accepted mutation");
+        }
+    }
+
+    #[test]
+    fn observed_job_revision_advances_cursor_and_missing_revision_stops_polling() {
+        for revision in [Some(1003),None] {
+            let mut calls=0;
+            let mut id=String::new();
+            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
+                |_,path,bytes,_| {
+                    calls+=1;
+                    match calls {
+                        1 => { id=serde_json::from_slice::<EnvelopeV1>(bytes)?.request_id;
+                            Ok((202,json!({"request_id":id,"status":"queued","revision":1001}))) },
+                        2 => Ok((200,json!({"request_id":id,"status":"received","revision":revision,"response":null}))),
+                        3 => { assert!(path.starts_with("/v1/changes?since=1003&")); bail!("stop after verified poll") },
+                        _ => panic!("unexpected replay"),
+                    }
+                });
+            assert!(result.is_err());
+            assert_eq!(calls,if revision.is_some() {3} else {2});
+        }
     }
 
     #[test]
