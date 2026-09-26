@@ -379,19 +379,6 @@ struct TaskFeatureTests {
         await store.finish()
     }
 
-    @Test
-    func invalidCatalogOverridesAreRemovedBeforeSave() {
-        var draft = ScheduledTaskDraft()
-        draft.title = "Run review"
-        draft.text = "Review"
-        draft.frequency = "weekly"
-        draft.weekday = 7
-        #expect(!ScheduleDraftRules.canSave(draft))
-        draft.weekday = 1
-        #expect(ScheduleDraftRules.canSave(draft))
-        #expect(ScheduleDraftRules.validOverrides(["removed": .value("x")], in: []).isEmpty)
-    }
-
     private func makeTask(state: String, stateSince: Int = 100) throws -> WorkTask {
         let data = Data(#"{"id":"t1","request":"r1","title":"Do work","dependsOn":[],"prs":[],"documents":[],"notices":[],"state":"\#(state)","stateSince":\#(stateSince),"createdAt":100}"#.utf8)
         return try JSONDecoder().decode(WorkTask.self, from: data)

@@ -1,4 +1,4 @@
-import AlondraShared
+import AlondraContracts
 import Foundation
 
 /// Client-side checks protect a useful editor; the server still decides whether a draft is valid.

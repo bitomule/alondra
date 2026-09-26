@@ -1,5 +1,4 @@
-import AlondraShared
-import ComposableArchitecture
+import AlondraContracts
 import Foundation
 
 /// The app composition root binds these operations to one credential-scoped service.
@@ -54,23 +53,6 @@ public struct NewWorkSubmissionScope: Sendable {
     public func create(_ body: NewRequestBody) async -> CreateRequestResult {
         guard !Task.isCancelled, await identityIsCurrent(), !Task.isCancelled else { return .cancelled }
         return await createOperation(body)
-    }
-}
-
-private enum NewWorkOperationsKey: DependencyKey {
-    static let liveValue = NewWorkOperations(
-        projects: { preconditionFailure("Install NewWorkOperations at the app composition root") },
-        options: { _ in preconditionFailure("Install NewWorkOperations at the app composition root") },
-        issues: { _ in preconditionFailure("Install NewWorkOperations at the app composition root") },
-        captureSubmissionScope: { preconditionFailure("Install NewWorkOperations at the app composition root") }
-    )
-    static let testValue = liveValue
-}
-
-public extension DependencyValues {
-    var newWorkOperations: NewWorkOperations {
-        get { self[NewWorkOperationsKey.self] }
-        set { self[NewWorkOperationsKey.self] = newValue }
     }
 }
 
