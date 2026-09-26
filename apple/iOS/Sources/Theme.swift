@@ -183,9 +183,9 @@ extension NodeOccupancy {
 
 extension Node {
     /// The orchestrator keeps its node state; every other node shows whether it is busy.
-    var glyphTint: Color { isOrchestrator ? state.tint : occupancy.tint }
-    var glyphSymbol: String { isOrchestrator ? state.symbol : occupancy.symbol }
-    var glyphPulses: Bool { isOrchestrator ? state == .working : occupancy == .busy }
+    var glyphTint: Color { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).tint : occupancy.tint }
+    var glyphSymbol: String { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).symbol : occupancy.symbol }
+    var glyphPulses: Bool { isOrchestrator ? (orchestratorRuntime?.activityState ?? state) == .working : occupancy == .busy }
 }
 
 /// A state's symbol in a tinted circle, at the sizes the lists and cards use.
