@@ -660,6 +660,45 @@ mod tests {
         )
     }
 
+    // Socket timeouts are stop-polling opportunities, not request boundaries.
+    // Accumulate bytes explicitly: read_line/read_exact can consume a prefix
+    // before returning WouldBlock, losing that prefix if their buffers are reset.
+    fn read_fixture_request(reader: &mut impl std::io::Read, pending: &mut Vec<u8>,
+        stop: &std::sync::atomic::AtomicBool) -> std::io::Result<Option<(String, Vec<u8>)>> {
+        use std::io::{Error, ErrorKind};
+        loop {
+            if stop.load(std::sync::atomic::Ordering::SeqCst) { return Ok(None); }
+            if let Some(end) = pending.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&pending[..end+2])
+                    .map_err(|_| Error::new(ErrorKind::InvalidData,"invalid fixture HTTP headers"))?;
+                let mut length=0usize;
+                for line in headers.lines() {
+                    if let Some(value)=line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length=value.trim().parse().map_err(|_| Error::new(ErrorKind::InvalidData,"invalid fixture content length"))?;
+                    }
+                }
+                let total=(end+4).checked_add(length)
+                    .filter(|total| *total <= 512*1024)
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidData,"fixture request too large"))?;
+                if pending.len() >= total {
+                    let headers=headers.to_owned();
+                    let body=pending[end+4..total].to_vec();
+                    pending.drain(..total);
+                    return Ok(Some((headers,body)));
+                }
+            }
+            if pending.len() >= 512*1024 { return Err(Error::new(ErrorKind::InvalidData,"fixture request too large")); }
+            let mut bytes=[0u8;8192];
+            match reader.read(&mut bytes) {
+                Ok(0) if pending.is_empty() => return Ok(None),
+                Ok(0) => return Err(Error::new(ErrorKind::UnexpectedEof,"truncated fixture request")),
+                Ok(count) => pending.extend_from_slice(&bytes[..count]),
+                Err(error) if matches!(error.kind(),ErrorKind::WouldBlock|ErrorKind::TimedOut|ErrorKind::Interrupted) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     struct HttpFixture {
         origin: String,
         requests: Arc<std::sync::Mutex<Vec<String>>>,
@@ -669,7 +708,6 @@ mod tests {
     }
     impl HttpFixture {
         fn start(replies: Vec<(u16, Value, Duration)>) -> Self {
-            use std::io::{BufRead, BufReader, Read};
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -690,29 +728,10 @@ mod tests {
                     };
                     accepted.fetch_add(1, Ordering::SeqCst);
                     stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut pending = Vec::new();
                     loop {
-                        if stopping.load(Ordering::SeqCst) { return; }
-                        let mut line = String::new();
-                        match reader.read_line(&mut line) {
-                            Ok(0) => break,
-                            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
-                            Err(_) => break,
-                            Ok(_) => (),
-                        }
-                        let mut headers = line;
-                        let mut length = 0;
-                        loop {
-                            let mut line = String::new();
-                            reader.read_line(&mut line).unwrap();
-                            if line == "\r\n" { break; }
-                            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                                length = value.trim().parse::<usize>().unwrap();
-                            }
-                            headers.push_str(&line);
-                        }
-                        let mut body = vec![0; length];
-                        reader.read_exact(&mut body).unwrap();
+                        let Some((headers, _body)) = read_fixture_request(&mut stream, &mut pending, &stopping)
+                            .expect("read fixture request") else { break; };
                         seen.lock().unwrap().push(headers);
                         let Some((status, body, delay)) = replies.next() else { panic!("unexpected replay"); };
                         std::thread::sleep(delay);
@@ -729,9 +748,69 @@ mod tests {
     impl Drop for HttpFixture {
         fn drop(&mut self) {
             self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-            self.thread.take().unwrap().join().unwrap();
+            if let Some(thread) = self.thread.take() {
+                if let Err(panic) = thread.join() {
+                    // Preserve a fixture failure on normal teardown, but never
+                    // abort the entire suite with a second panic during unwind.
+                    if !std::thread::panicking() { std::panic::resume_unwind(panic); }
+                }
+            }
         }
     }
+    #[test]
+    fn fixture_retains_fragmented_headers_and_body_across_socket_timeouts() {
+        use std::collections::VecDeque;
+        use std::io::{Error,ErrorKind,Read};
+        struct Reads(VecDeque<std::result::Result<Vec<u8>,ErrorKind>>);
+        impl Read for Reads {
+            fn read(&mut self, out:&mut [u8]) -> std::io::Result<usize> {
+                match self.0.pop_front() {
+                    Some(Ok(bytes)) => { assert!(bytes.len()<=out.len()); out[..bytes.len()].copy_from_slice(&bytes); Ok(bytes.len()) },
+                    Some(Err(kind)) => Err(Error::from(kind)),
+                    None => Ok(0),
+                }
+            }
+        }
+        let mut reader=Reads(VecDeque::from([
+            Ok(b"POST /v1/req".to_vec()), Err(ErrorKind::WouldBlock),
+            Ok(b"uests HTTP/1.1\r\nContent-L".to_vec()), Err(ErrorKind::TimedOut),
+            Ok(b"ength: 4\r\n\r".to_vec()), Err(ErrorKind::Interrupted),
+            Ok(b"\n\0".to_vec()), Err(ErrorKind::WouldBlock), Err(ErrorKind::TimedOut),
+            Ok(b"\xff{}GET /next HTTP/1.1\r\n\r\n".to_vec()),
+        ]));
+        let stop=std::sync::atomic::AtomicBool::new(false);
+        let mut pending=Vec::new();
+        let (headers,body)=read_fixture_request(&mut reader,&mut pending,&stop).unwrap().unwrap();
+        assert_eq!(headers,"POST /v1/requests HTTP/1.1\r\nContent-Length: 4\r\n");
+        assert_eq!(body,b"\0\xff{}");
+        assert!(!pending.is_empty(),"next request bytes must remain on the same connection");
+        let (headers,body)=read_fixture_request(&mut reader,&mut pending,&stop).unwrap().unwrap();
+        assert_eq!(headers,"GET /next HTTP/1.1\r\n");
+        assert!(body.is_empty());
+        assert!(read_fixture_request(&mut reader,&mut pending,&stop).unwrap().is_none());
+        let mut truncated=std::io::Cursor::new(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n{}".to_vec());
+        assert_eq!(read_fixture_request(&mut truncated,&mut pending,&stop).unwrap_err().kind(),ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn fixture_drop_preserves_server_failure_without_double_panic_during_unwind() {
+        fn failed_fixture() -> HttpFixture {
+            HttpFixture {
+                origin:String::new(),requests:Arc::new(std::sync::Mutex::new(Vec::new())),
+                connections:Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                stop:Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                thread:Some(std::thread::spawn(|| panic!("server failure"))),
+            }
+        }
+        let normal=std::panic::catch_unwind(|| drop(failed_fixture())).unwrap_err();
+        assert_eq!(normal.downcast_ref::<&str>(),Some(&"server failure"));
+        let unwinding=std::panic::catch_unwind(|| {
+            let _fixture=failed_fixture();
+            panic!("original assertion failure");
+        }).unwrap_err();
+        assert_eq!(unwinding.downcast_ref::<&str>(),Some(&"original assertion failure"));
+    }
+
     fn boot(epoch: u8) -> (u16, Value, Duration) {
         (200, json!({"protocol":1,"epoch":B64.encode([epoch;16])}), Duration::ZERO)
     }
