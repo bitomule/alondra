@@ -82,10 +82,14 @@ struct ServiceNewRequestView: View {
                         ServiceNewWorkOption(store: store, spec: spec)
                     }
                 }
+                if let error = store.optionsError {
+                    GridRow {
+                        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    }
+                }
             }.opacity(store.isLoadingOptions ? 0.4 : 1).animation(.default, value: store.isLoadingOptions)
-            if let error = store.optionsError {
-                HStack { Text(error).font(.callout).foregroundStyle(.red); Button("Retry") { store.send(.appeared) } }
-            }
             if let error = store.submissionError { Text(error).foregroundStyle(store.submissionUncertain ? .orange : .red) }
             HStack {
                 ServiceAttachFilesButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))

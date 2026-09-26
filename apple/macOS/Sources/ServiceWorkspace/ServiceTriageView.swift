@@ -187,6 +187,8 @@ struct ServiceDocumentView: View {
                         if !section.text.isEmpty {
                             if isReviewable {
                                 ServiceReviewableDocument(text: section.text, anchorPrefix: bodyPrefix, store: store, focus: $focus)
+                            } else if case .question(let question) = store.subject, question.origin == "permission" {
+                                MarkdownText(text: "```\n\(section.text)\n```")
                             } else { MarkdownText(text: section.text) }
                         }
                     case .stored(let name, let path):
@@ -302,7 +304,7 @@ struct ServiceDocumentView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 } label: { Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary) }
             }
-            if let text = q.nodeContext, !text.isEmpty {
+            if let text = q.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                 DisclosureGroup("What the node said last") { MarkdownText(text: text).font(.callout).foregroundStyle(.secondary).padding(.top, 6) }.foregroundStyle(.secondary)
             }
         case .report(let r):
