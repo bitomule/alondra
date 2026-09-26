@@ -10,6 +10,7 @@ swift_library(
 
 swift_test(
     name = "AlondraAttachmentStorageTests",
+    visibility = ["//apple/Data/Attachments:__pkg__"],
     srcs = glob(["Tests/*.swift"]),
     deps = [":AlondraAttachmentStorage"],
 )
