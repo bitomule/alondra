@@ -7,3 +7,6 @@ signing/signing.bzl
 
 /.build/
 .DS_Store
+
+# Python release tooling
+__pycache__/
