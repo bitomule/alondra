@@ -1,3 +1,4 @@
+import AlondraAttachmentsFeature
 import AlondraCommands
 import AlondraNewWorkFeature
 import AlondraPullRequestsFeature
@@ -111,6 +112,7 @@ public struct ServicePullRequestFeature {
     public init() {}
     @ObservableState
     public struct State: Equatable {
+        public var downloads = AttachmentDownloadFeature.State()
         public var pr: PullRequestFeature.State
         public var diff: DiffReviewFeature.State
         public init(pr: PullRequest) {
@@ -119,19 +121,21 @@ public struct ServicePullRequestFeature {
         }
     }
     public enum Action {
+        case downloads(AttachmentDownloadFeature.Action)
         case pr(PullRequestFeature.Action)
         case diff(DiffReviewFeature.Action)
         case updated(PullRequest?)
         case snapshotUnavailable
     }
     public var body: some ReducerOf<Self> {
+        Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
         Scope(state: \.pr, action: \.pr) { PullRequestFeature() }
         Scope(state: \.diff, action: \.diff) { DiffReviewFeature() }
         Reduce { _, action in
             switch action {
             case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
             case .snapshotUnavailable: return .merge(.send(.pr(.snapshotUnavailable)), .send(.diff(.snapshotUnavailable)))
-            case .pr, .diff: return .none
+            case .pr, .diff, .downloads: return .none
             }
         }
     }

@@ -14,6 +14,13 @@ public enum DocumentSubject: Equatable, Sendable {
         }
     }
 
+    public var attachments: [Attachment] {
+        switch self {
+        case .question(let question): question.attachments
+        case .report(let report): report.attachments
+        }
+    }
+
     public var sources: [DocumentSource] {
         switch self {
         case .question(let question):
@@ -50,6 +57,7 @@ public struct DocumentDraft: Equatable, Sendable {
 public struct DocumentReviewFeature {
     @ObservableState
     public struct State: Equatable {
+        public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject
         public var identity: QuestionWorkIdentity?
@@ -76,6 +84,7 @@ public struct DocumentReviewFeature {
     }
 
     public enum Action {
+        case downloads(AttachmentDownloadFeature.Action)
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case disappeared
@@ -107,9 +116,11 @@ public struct DocumentReviewFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .downloads: return .none
             case .attachmentPicker:
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
                 return .none

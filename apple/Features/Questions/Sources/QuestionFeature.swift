@@ -7,6 +7,7 @@ import Foundation
 public struct QuestionFeature {
     @ObservableState
     public struct State: Equatable {
+        public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var question: Question
         public var draft = QuestionDraft()
@@ -22,6 +23,7 @@ public struct QuestionFeature {
     }
 
     public enum Action {
+        case downloads(AttachmentDownloadFeature.Action)
         case attachmentPicker(AttachmentFeature.Action)
         case refreshed(Question)
         case identityChanged
@@ -43,9 +45,11 @@ public struct QuestionFeature {
     public init() {}
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
+            case .downloads: return .none
             case .attachmentPicker:
                 state.draft.attachmentIDs = state.attachmentPicker.storedIDs
                 return .none
