@@ -85,7 +85,7 @@ public struct TriageCardFeature {
                 return .send(.pullRequest(.diff(.noteChanged(text))))
             case .choose(let option):
                 guard !state.busy else { return .none }
-                return .concatenate(.send(.question(.optionSelected(option.label))), needsText(option) ? .none : .send(.question(.answerTapped)))
+                return .send(.question(.optionTapped(option.label)))
             case .clearOption: return .send(.question(.optionSelected(nil)))
             case .send:
                 guard !state.busy else { return .none }

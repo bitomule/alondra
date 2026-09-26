@@ -128,7 +128,7 @@ private struct ServiceCardStack: View {
     @ViewBuilder
     private func card(_ item: InboxItem, isFront: Bool) -> some View {
         if let child = store.scope(state: \.cards, action: \.cards).first(where: { $0.id == item.id }) {
-            ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.tasks.first { $0.assignee?.sessionId == item.sessionId && !$0.isArchived },
+            ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: store.task(for: item),
                 isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
                 onHide: { store.send(.triage(.hide(item.id))) },
                 questions: { if case .pullRequest(let pr) = item { return store.triage.questionsByPullRequest[pr.id] ?? [] }; return [] }(),

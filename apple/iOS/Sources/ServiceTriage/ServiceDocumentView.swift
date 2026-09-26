@@ -18,7 +18,7 @@ struct ServiceDocumentView: View {
     private var comments: [String: String] { Dictionary(uniqueKeysWithValues: store.draft.comments.map { ($0.anchor, $0.text) }) }
     private var commentedBlocks: [MarkdownBlock] { blocks.filter { comments[$0.draftKey] != nil } }
     private var composing: MarkdownBlock? { blocks.first { $0.draftKey == store.composingAnchor } }
-    private var hasFeedback: Bool { !store.draft.comments.isEmpty || !store.draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !store.attachmentPicker.entries.isEmpty }
+    private var hasFeedback: Bool { store.hasFeedback }
     private var sending: Bool { store.isSubmitting || store.needsReconciliation || store.completed || !store.attachmentPicker.allReady }
     private func number(of block: MarkdownBlock) -> Int {
         (commentedBlocks.firstIndex(of: block) ?? 0) + 1
@@ -32,7 +32,7 @@ struct ServiceDocumentView: View {
                 content
                 if case .question(let question) = item, question.origin != "plan", !question.options.isEmpty {
                     ServiceOptionGrid(options: question.options, picked: nil) { option in
-                        store.send(.optionSelected(option.label)); store.send(.sendFeedbackTapped(author: "David"))
+                        store.send(.chooseReviewOption(option, author: "David"))
                     }
                     .padding(.top, 28)
                 }
@@ -64,6 +64,7 @@ struct ServiceDocumentView: View {
         .sensoryFeedback(.success, trigger: comments.count) { old, new in new > old }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
+        .onChange(of: store.generalFocusRequest) { _, _ in generalFocused = true }
         .onChange(of: store.completed) { _, completed in if completed { dismiss() } }
     }
 
@@ -189,17 +190,17 @@ struct ServiceDocumentView: View {
                     switch item {
                     case .question(let question):
                         Button {
-                            store.send(.sendFeedbackTapped(author: "David"))
+                            store.send(.submitFeedback(author: "David"))
                         } label: {
-                            Label(changeOption(question).map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
+                            Label(store.changeOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
                                 .frame(maxWidth: .infinity)
                         }
                         .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
                         .tint(Palette.dawn)
                         .disabled(!hasFeedback || sending)
-                        if let approve = approveOption(question) {
+                        if let approve = store.approveOption {
                             Button {
-                                store.send(.optionSelected(approve)); store.send(.sendFeedbackTapped(author: "David"))
+                                store.send(.approveQuestion)
                             } label: {
                                 Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
                                     .frame(maxWidth: .infinity)
@@ -210,7 +211,7 @@ struct ServiceDocumentView: View {
                         }
                     case .pullRequest:
                         Button {
-                            store.send(.sendFeedbackTapped(author: "David"))
+                            store.send(.submitFeedback(author: "David"))
                         } label: {
                             Label("Request Changes", systemImage: "arrow.uturn.backward")
                                 .frame(maxWidth: .infinity)
@@ -220,7 +221,7 @@ struct ServiceDocumentView: View {
                         .disabled(!hasFeedback || sending)
                     case .report(let report):
                         Button {
-                            store.send(.sendFeedbackTapped(author: "David"))
+                            store.send(.submitFeedback(author: "David"))
                         } label: {
                             Label("Send", systemImage: "paperplane")
                                 .frame(maxWidth: .infinity)
@@ -250,15 +251,6 @@ struct ServiceDocumentView: View {
         .padding(.vertical, 8)
     }
 
-    private func approveOption(_ question: Question) -> String? {
-        if question.origin == "plan" { return AnswerOption.approve }
-        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.approve) || $0.hasPrefix("Aprobar") || $0 == AnswerOption.allow }
-    }
-
-    private func changeOption(_ question: Question) -> String? {
-        if question.origin == "plan" { return AnswerOption.requestChanges }
-        return question.options.map(\.label).first { $0.hasPrefix(AnswerOption.requestChanges) || $0.hasPrefix("Pedir cambios") || $0.hasPrefix("Cambiar") || $0 == AnswerOption.deny }
-    }
 
 }
 

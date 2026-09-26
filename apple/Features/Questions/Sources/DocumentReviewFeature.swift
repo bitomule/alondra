@@ -68,6 +68,18 @@ public struct DocumentReviewFeature {
         public var draft = DocumentDraft()
         public var composingAnchor: String?
         public var composingText = ""
+        public var generalFocusRequest: UInt64 = 0
+        public var hasFeedback: Bool {
+            !draft.comments.isEmpty || !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentPicker.entries.isEmpty
+        }
+        public var approveOption: String? {
+            guard case .question(let question) = subject else { return nil }
+            return DocumentReviewChoices().approveOption(question)
+        }
+        public var changeOption: String? {
+            guard case .question(let question) = subject else { return nil }
+            return DocumentReviewChoices().changeOption(question)
+        }
         public var isSubmitting = false
         public var completed = false
         public var uncertainCommandID: UUID?
@@ -93,6 +105,9 @@ public struct DocumentReviewFeature {
         case refreshed(DocumentSubject)
         case identityChanged(QuestionWorkIdentity?)
         case loaded(UInt64, Result<String, DocumentLoadFailure>)
+        case chooseReviewOption(QuestionOption, author: String)
+        case submitFeedback(author: String)
+        case approveQuestion
         case composeComment(String?)
         case composingTextChanged(String)
         case generalChanged(String)
@@ -186,6 +201,24 @@ public struct DocumentReviewFeature {
                     state.loadError = error.message
                 }
                 return .none
+            case .chooseReviewOption(let option, let author):
+                guard canReview(state) else { return .none }
+                if DocumentReviewChoices().requiresText(option), !state.hasFeedback {
+                    state.generalFocusRequest &+= 1
+                    return .none
+                }
+                state.draft.selectedOption = option.label
+                return .send(.sendFeedbackTapped(author: author))
+            case .submitFeedback(let author):
+                guard canReview(state), state.hasFeedback else { return .none }
+                state.draft.selectedOption = state.changeOption
+                return .send(.sendFeedbackTapped(author: author))
+            case .approveQuestion:
+                guard canReview(state), case .question(let question) = state.subject, let option = state.approveOption else { return .none }
+                var draft = QuestionDraft()
+                draft.selectedOption = option
+                do { return submit(try answerUseCase.answer(question, draft: draft), state: &state) }
+                catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .composeComment(let anchor):
                 state.composingAnchor = anchor
                 state.composingText = state.draft.comments.first { $0.anchor == anchor }?.text ?? ""

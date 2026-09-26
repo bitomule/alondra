@@ -17,6 +17,7 @@ public struct ServiceTriageFeature {
         public var usage: Usage?
         public var nodes: [Node] = []
         public var tasks: [WorkTask] = []
+        public func task(for item: InboxItem) -> WorkTask? { TaskBoard(requests: [], tasks: tasks).task(for: item) }
         @Presents public var question: QuestionFeature.State?
         @Presents public var document: DocumentReviewFeature.State?
     }

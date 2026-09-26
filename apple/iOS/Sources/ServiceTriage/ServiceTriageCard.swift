@@ -55,6 +55,7 @@ struct ServiceTriageCard: View {
             } message: {
                 Text("The node will explain and ask again.")
             }
+            .onChange(of: store.question?.replyFocusRequest) { _, _ in replyFocused = true }
             .accessibilityAction(named: "Leave for Later", onSkip)
             .task { await store.send(.appeared).finish() }
 
