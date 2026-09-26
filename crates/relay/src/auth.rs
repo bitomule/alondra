@@ -568,6 +568,23 @@ impl Auth {
         Ok(())
     }
 
+    /// Account metadata only: knowing a Mac ID grants no device or content access.
+    pub async fn account_owner(&self, headers: &HeaderMap, now_ms: u64) -> Result<String> {
+        let token = header(headers, "authorization")?
+            .strip_prefix("Bearer ").context("expected Bearer token")?;
+        self.verify_jwt(token, now_ms).await
+    }
+
+    pub fn mac_ids_for_owner(&self, owner_sub: &str) -> Result<Vec<String>> {
+        self.ensure_registry_ready()?;
+        let registry = self.devices.lock().unwrap();
+        let mut ids: Vec<String> = registry.macs.values()
+            .filter(|mac| mac.owner_sub == owner_sub && !registry.revoked_mac_ids.contains(&mac.mac_id))
+            .map(|mac| mac.mac_id.clone()).collect();
+        ids.sort();
+        Ok(ids)
+    }
+
     pub fn mac_for_owner(&self, mac_id: &str, owner_sub: &str) -> Result<VerifyingKey> {
         self.ensure_registry_ready()?;
         let registry = self.devices.lock().unwrap();

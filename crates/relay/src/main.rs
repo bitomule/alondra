@@ -45,7 +45,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/pairings/{id}", get(pairing_pending))
         .route("/v1/pairings/{id}/candidates", post(pairing_candidate))
         .route("/v1/pairings/{id}/approval", post(pairing_approve).get(pairing_approval))
-        .route("/v1/macs", post(enroll_mac))
+        .route("/v1/macs", post(enroll_mac).get(list_macs))
         .route("/v1/macs/{id}", axum::routing::delete(revoke_mac))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
@@ -201,6 +201,16 @@ async fn enroll_mac(
         Json(json!({"ok":true})),
     )
         .into_response())
+}
+
+/// OIDC authenticates ownership for discovery, never authorizes content access.
+async fn list_macs(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiResult {
+    let owner = server.auth.account_owner(&headers, now_ms()).await.map_err(|_| unauthorized())?;
+    let _gate = server.device_gate.read().await;
+    let ids = server.auth.mac_ids_for_owner(&owner)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "mac_directory_unavailable"))?;
+    let macs: Vec<Value> = ids.into_iter().map(|id| json!({"mac_id":id})).collect();
+    Ok(Json(json!({"macs":macs})).into_response())
 }
 
 async fn revoke_mac(
@@ -892,6 +902,49 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    async fn mac_directory_requires_oidc_and_isolates_owners_without_granting_content_access() {
+        let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
+        let (url, server, task) = test_server(&key).await;
+        let client = reqwest::Client::new();
+        for auth in [None, Some("Bearer invalid".to_string()), Some(format!("Bearer {}", jwt("owner", 0)))] {
+            let mut request = client.get(format!("{url}/v1/macs"));
+            if let Some(auth) = auth { request = request.header("authorization", auth); }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(response.json::<Value>().await.unwrap(), json!({"error":"unauthorized"}));
+        }
+        for (id, owner) in [("mac-1", "owner"), ("mac-z", "owner"), ("mac-other", "other")] {
+            server.auth.enroll_mac(auth::MacDevice {
+                mac_id: id.into(), owner_sub: owner.into(), signing_key: key_bytes(&key), agreement_key: key_bytes(&key),
+            }).unwrap();
+        }
+        for (owner, expected) in [
+            ("owner", json!({"macs":[{"mac_id":"mac-1"},{"mac_id":"mac-z"}]})),
+            ("other", json!({"macs":[{"mac_id":"mac-other"}]})),
+            ("empty", json!({"macs":[]})),
+        ] {
+            // Query parameters cannot select another owner's registry.
+            let response = client.get(format!("{url}/v1/macs?owner_sub=other&owner=other"))
+                .bearer_auth(jwt(owner, now_ms())).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.json::<Value>().await.unwrap(), expected, "only IDs; no keys or content");
+        }
+        let response = client.get(format!("{url}/v1/work"))
+            .bearer_auth(jwt("owner", now_ms())).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "OIDC alone cannot read Mac work");
+        let epoch = server.auth.server_epoch();
+        let response = sign(&epoch, client.delete(format!("{url}/v1/macs/mac-z")), &key,
+            "mac-z", "DELETE", "/v1/macs/mac-z", &[], 91).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = client.get(format!("{url}/v1/macs"))
+            .bearer_auth(jwt("owner", now_ms())).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"macs":[{"mac_id":"mac-1"}]}));
+        task.abort();
     }
 
     #[tokio::test]
