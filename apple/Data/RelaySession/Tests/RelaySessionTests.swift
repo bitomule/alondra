@@ -1,5 +1,4 @@
 import AlondraAPIClient
-import AlondraRelayClient
 import AlondraRelayOutbox
 import AlondraRelaySession
 import CryptoKit
@@ -7,6 +6,20 @@ import Foundation
 import XCTest
 
 final class RelaySessionTests: XCTestCase {
+    func testInvalidEnvelopeTimeIsRejectedBeforeDispatchAndJournalReservation() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        do {
+            _ = try await fixture.session(now: { UInt64.max }).execute(
+                requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
+            XCTFail("Invalid envelope time must remain a definite rejection")
+        } catch RelaySessionError.invalidRequest { }
+        let posts = await fixture.http.mutations
+        XCTAssertTrue(posts.isEmpty)
+        let restored = try await fixture.session().recoveryStatus(requestID: "operation-1")
+        XCTAssertEqual(restored, .notDispatched)
+    }
+
     func testRecoveryDistinguishesProvenAbsenceFromExecutedOrUncertainMutations() async throws {
         for mode in [FakeHTTP.Mode.success, .oversized, .rejected] {
             let fixture = try Fixture(mode: mode)
@@ -216,15 +229,15 @@ private struct Fixture {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         http = FakeHTTP(macSigning: macSigning, phoneAgreement: phoneAgreement.publicKey, mode: mode)
     }
-    func session(sleep: @escaping @Sendable () async throws -> Void = {}) -> RelaySession {
+    func session(now: @escaping @Sendable () -> UInt64 = { 1000 }, sleep: @escaping @Sendable () async throws -> Void = {}) -> RelaySession {
         return try! RelaySession(journalFile: directory.appendingPathComponent("outbox.json"), scope: scope,
             bearer: { "token" }, transport: http,
             signing: phoneSigning, agreement: phoneAgreement, macSigning: macSigning.publicKey,
-            macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: sleep)
+            macAgreement: macAgreement.publicKey, now: now, sleep: sleep)
     }
 }
 
-private actor FakeHTTP: RelayHTTPTransport {
+private actor FakeHTTP: ServiceHTTPTransport {
     enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange }
     let macSigning: P256.Signing.PrivateKey
     let phoneAgreement: P256.KeyAgreement.PublicKey
@@ -235,10 +248,10 @@ private actor FakeHTTP: RelayHTTPTransport {
     init(macSigning: P256.Signing.PrivateKey, phoneAgreement: P256.KeyAgreement.PublicKey, mode: Mode) {
         self.macSigning = macSigning; self.phoneAgreement = phoneAgreement; self.mode = mode
     }
-    func send(_ request: URLRequest) async throws -> RelayHTTPResponse {
+    func send(_ request: URLRequest) async throws -> ServiceHTTPResponse {
         if request.url?.path == "/v1/bootstrap" {
             let epoch = restarted ? "AQEBAQEBAQEBAQEBAQEBAQ" : "AAAAAAAAAAAAAAAAAAAAAA"
-            return RelayHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["protocol": 1, "epoch": epoch]))
+            return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["protocol": 1, "epoch": epoch]))
         }
         if request.httpMethod == "POST" {
             mutations.append(try XCTUnwrap(request.httpBody))
@@ -247,11 +260,11 @@ private actor FakeHTTP: RelayHTTPTransport {
         statusEpochs.append(request.value(forHTTPHeaderField: "x-relay-epoch") ?? "")
         if mode == .restart && !restarted {
             restarted = true
-            return RelayHTTPResponse(status: 401, body: Data())
+            return ServiceHTTPResponse(status: 401, body: Data())
         }
         let requestID = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(mutations.last)).requestID
         if mode == .pendingChange && mutations.count > 1 {
-            return RelayHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["request_id": requestID, "status": "pending", "revision": 1]))
+            return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["request_id": requestID, "status": "pending", "revision": 1]))
         }
         let payload = mode == .overview || mode == .pendingChange ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
         let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender ? "mac-other" : "mac-test",
@@ -261,7 +274,7 @@ private actor FakeHTTP: RelayHTTPTransport {
         var json = [String: Any]()
         json["request_id"] = requestID; json["status"] = "completed"; json["revision"] = 4
         json["response"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope))
-        return RelayHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: json))
+        return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: json))
     }
 }
 

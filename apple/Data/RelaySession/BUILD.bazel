@@ -4,10 +4,10 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraRelaySession",
     visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/RelayClient:AlondraRelayClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
+    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
 )
 swift_test(
     name = "AlondraRelaySessionTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = ["//apple/APIClient:AlondraAPIClient", ":AlondraRelaySession", "//apple/RelayClient:AlondraRelayClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox"],
+    deps = ["//apple/APIClient:AlondraAPIClient", ":AlondraRelaySession", "//apple/Data/RelayOutbox:AlondraRelayOutbox"],
 )

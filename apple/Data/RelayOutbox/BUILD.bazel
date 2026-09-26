@@ -5,11 +5,11 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraRelayOutbox",
     visibility = ["//visibility:public"],
-    deps = ["//apple/RelayClient:AlondraRelayClient"],
+    deps = ["//apple/APIClient:AlondraAPIClient"],
 )
 
 swift_test(
     name = "AlondraRelayOutboxTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraRelayOutbox", "//apple/RelayClient:AlondraRelayClient"],
+    deps = [":AlondraRelayOutbox", "//apple/APIClient:AlondraAPIClient"],
 )

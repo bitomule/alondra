@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import AlondraRelayClient
+import AlondraAPIClient
 
 /// Implements the iPhone half of the Mac-owned, encrypted service pairing handshake.
 /// The caller supplies identity only after OIDC has verified the bearer and subject.
@@ -15,17 +15,17 @@ public actor ServicePairingClient {
         let agreementPublicKey: String
     }
 
-    private let transport: any PairingTransport
+    private let transport: any ServiceHTTPTransport
     private let store: any ApprovedPairingStore
     private let now: @Sendable () -> Date
     private var attempts: [UUID: Attempt] = [:]
 
     public init(
-        transport: any PairingTransport = URLSessionPairingTransport(),
+        transport: (any ServiceHTTPTransport)? = nil,
         store: any ApprovedPairingStore = KeychainApprovedPairingStore(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
-        self.transport = transport
+        self.transport = transport ?? AlondraAPIClient.makeServiceHTTPTransport()
         self.store = store
         self.now = now
     }
@@ -72,13 +72,11 @@ public actor ServicePairingClient {
         let candidate = PairingCandidate(secret: invitation.secret, deviceID: deviceID,
             signingKey: signingPublic, envelope: envelope)
         let body = try JSONEncoder().encode(candidate)
-        let epoch = try await bootstrap(at: invitation.url)
+        let connection = try connection(at: invitation.url, deviceID: deviceID, signing: signing, authorization: authorization)
         let route = "/v1/pairings/\(invitation.sessionID)/candidates"
-        let response = try await request(at: invitation.url, method: "POST", route: route,
-            body: body, epoch: epoch, deviceID: deviceID, signer: signing,
-            bearer: authorization.bearerToken)
+        let response = try await connection.pairingRequest(method: "POST", target: route, body: body)
         try Task.checkCancellation()
-        guard response.statusCode == 202 else { throw ServicePairingError.unexpectedStatus(response.statusCode) }
+        guard response.status == 202 else { throw ServicePairingError.unexpectedStatus(response.status) }
         let id = UUID()
         attempts[id] = Attempt(invitation: invitation, authorization: authorization,
             deviceID: deviceID, signingPrivateKey: signing.rawRepresentation,
@@ -93,18 +91,18 @@ public actor ServicePairingClient {
         guard let attempt = attempts[id] else { throw ServicePairingError.missingAttempt }
         let signing = try P256.Signing.PrivateKey(rawRepresentation: attempt.signingPrivateKey)
         let route = "/v1/pairings/\(attempt.invitation.sessionID)/approval"
+        let connection = try connection(at: attempt.invitation.url, deviceID: attempt.deviceID,
+            signing: signing, authorization: attempt.authorization)
         while true {
             try Task.checkCancellation()
             guard currentMs() < attempt.invitation.expiresAtMs else {
                 attempts.removeValue(forKey: id)
                 throw ServicePairingError.expired
             }
-            let epoch = try await bootstrap(at: attempt.invitation.url)
-            let (body, response) = try await requestBody(at: attempt.invitation.url,
-                method: "GET", route: route, body: Data(), epoch: epoch,
-                deviceID: attempt.deviceID, signer: signing,
-                bearer: attempt.authorization.bearerToken)
-            switch response.statusCode {
+            _ = try await connection.bootstrap()
+            let response = try await connection.pairingRequest(method: "GET", target: route, body: Data())
+            let body = response.body
+            switch response.status {
             case 204:
                 try await Task.sleep(for: .seconds(2))
             case 200:
@@ -130,7 +128,7 @@ public actor ServicePairingClient {
                 attempts.removeValue(forKey: id)
                 throw ServicePairingError.expired
             default:
-                throw ServicePairingError.unexpectedStatus(response.statusCode)
+                throw ServicePairingError.unexpectedStatus(response.status)
             }
         }
     }
@@ -139,56 +137,11 @@ public actor ServicePairingClient {
 
     private func currentMs() -> UInt64 { UInt64(max(0, now().timeIntervalSince1970 * 1_000)) }
 
-    private func bootstrap(at base: URL) async throws -> Data {
-        var request = URLRequest(url: base.appending(path: "v1/bootstrap"))
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
-        let (data, response) = try await transport.send(request)
-        guard response.statusCode == 200 else { throw ServicePairingError.unexpectedStatus(response.statusCode) }
-        struct Bootstrap: Decodable { let epoch: String }
-        let epoch = try JSONDecoder().decode(Bootstrap.self, from: data)
-        guard let bytes = PairingWire.decode(epoch.epoch), bytes.count == 16 else {
-            throw ServicePairingError.invalidResponse
-        }
-        return bytes
-    }
-
-    private func request(
-        at base: URL, method: String, route: String, body: Data, epoch: Data,
-        deviceID: String, signer: P256.Signing.PrivateKey, bearer: String
-    ) async throws -> HTTPURLResponse {
-        let (_, response) = try await requestBody(at: base, method: method, route: route,
-            body: body, epoch: epoch, deviceID: deviceID, signer: signer, bearer: bearer)
-        return response
-    }
-
-    private func requestBody(
-        at base: URL, method: String, route: String, body: Data, epoch: Data,
-        deviceID: String, signer: P256.Signing.PrivateKey, bearer: String
-    ) async throws -> (Data, HTTPURLResponse) {
-        guard let url = URL(string: route, relativeTo: base)?.absoluteURL,
-              url.host() == base.host(), url.scheme == base.scheme else {
-            throw ServicePairingError.invalidInvitation
-        }
-        let timestamp = currentMs()
-        let nonce = try PairingWire.random(16)
-        let challenge = try RelayHTTPChallenge.message(deviceID: deviceID, method: method,
-            target: route, epoch: epoch, body: body,
-            timestampMilliseconds: timestamp, nonce: nonce)
-        let signature = try signer.signature(for: challenge).rawRepresentation
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = 15
-        if method == "POST" {
-            request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
-        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-        request.setValue(deviceID, forHTTPHeaderField: "X-Device-ID")
-        request.setValue(String(timestamp), forHTTPHeaderField: "X-Device-Timestamp-Ms")
-        request.setValue(PairingWire.encode(nonce), forHTTPHeaderField: "X-Device-Nonce")
-        request.setValue(PairingWire.encode(signature), forHTTPHeaderField: "X-Device-Signature")
-        request.setValue(PairingWire.encode(epoch), forHTTPHeaderField: "X-Relay-Epoch")
-        return try await transport.send(request)
+    private func connection(at base: URL, deviceID: String, signing: P256.Signing.PrivateKey,
+                            authorization: PairingAuthorization) throws -> any ServiceTransport {
+        let now = self.now
+        return try AlondraAPIClient.makeServiceTransport(base: base, deviceID: deviceID, signing: signing,
+            bearer: { authorization.bearerToken }, transport: transport,
+            now: { UInt64(max(0, now().timeIntervalSince1970 * 1_000)) })
     }
 }

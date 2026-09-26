@@ -1,5 +1,5 @@
 import AlondraNotificationPayload
-import AlondraRelayClient
+import AlondraAPIClient
 import CryptoKit
 import Foundation
 import Security
