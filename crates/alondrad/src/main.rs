@@ -34,9 +34,24 @@ use std::sync::Arc;
 use alondra_core::config::Config;
 use anyhow::{Context, Result, anyhow};
 
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [flag] if flag == "--help" || flag == "-h" => {
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n\nWithout options, starts the local daemon and configured service connector.");
+            return Ok(());
+        }
+        [flag] if flag == "--version" || flag == "-V" => {
+            println!("alondrad {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => (),
+    }
+    run(diagnostic_device(args)?)
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
-    let diagnostic = diagnostic_device(std::env::args().skip(1).collect())?;
+async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     if let Some(device) = diagnostic {
         let auth = Arc::new(auth::Auth::open(&config.home)?);
@@ -105,7 +120,7 @@ fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
     match args.as_slice() {
         [] => Ok(None),
         [flag, device] if flag == "--test-service-push" && !device.is_empty() && !device.starts_with('-') => Ok(Some(device.clone())),
-        _ => anyhow::bail!("usage: alondrad [--test-service-push <device-id>]"),
+        _ => anyhow::bail!("usage: alondrad [--help | --version | --test-service-push <device-id>]"),
     }
 }
 
