@@ -141,6 +141,16 @@ public actor SyncSession {
         publish(SyncState(identity: identity, generation: generation, connection: .invalidConfiguration(reason), snapshot: nil))
     }
 
+    /// Requests a fresh snapshot without discarding the visible workspace or its identity.
+    public func refresh() {
+        guard !subscribers.isEmpty else { return }
+        if case .invalidConfiguration = state.connection { return }
+        generation &+= 1
+        loop?.cancel()
+        loop = nil
+        startIfNeeded()
+    }
+
     /// Ends all subscriptions and cancels the active long poll.
     public func stop() {
         generation &+= 1

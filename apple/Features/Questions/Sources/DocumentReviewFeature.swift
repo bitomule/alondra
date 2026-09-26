@@ -322,7 +322,7 @@ public struct DocumentReviewFeature {
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
             Reduce { _, _ in
-                AttachmentFeature.cancelEffects(instanceID: oldID).map(Action.attachmentPicker)
+                AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) }
             }
         }
     }

@@ -17,7 +17,7 @@ struct ServiceAppScene: View {
     let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
-    @State private var restoringWorkspace = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
+    @State private var restoringWorkspace = StoreOf<ServiceRootFeature>(initialState: ServiceRootFeature.State()) { EmptyReducer() }
     var body: some View {
         Group {
         if demo.sessionID != nil {
@@ -59,6 +59,7 @@ private final class ServiceSceneContext {
         let prs = await services.pullRequestOperations()
         let nodes = await services.nodeOperations()
         let newWork = await services.newWorkOperations()
+        let downloads = await services.attachmentDownloadClient()
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
             $0.triageService = triage
@@ -68,13 +69,14 @@ private final class ServiceSceneContext {
             $0.pullRequestOperations = prs
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
                 observeFeedback: { await services.reportFeedbackRecoveryEvents() })
+            $0.attachmentDownload = downloads
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
             })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
-            $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
+            $0.serviceTasksClient = ServiceTasksClient(refresh: { await services.sync.refresh() }, observe: { await services.taskSnapshots() })
         }
     }
 }
@@ -121,10 +123,10 @@ private struct ServiceRootView<AccountContent: View>: View {
                 }
             }.badge(store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
-                ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) })
+                ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) }, showSettings: { store.send(.settingsPresented(true)) })
             }
             Tab("Fleet", systemImage: "circle.hexagongrid", value: ServiceRootFeature.State.Tab.fleet) {
-                ServiceFleetView(store: store.scope(state: \.fleet, action: \.fleet))
+                ServiceFleetView(store: store.scope(state: \.fleet, action: \.fleet), focusInbox: { store.send(.focusInbox($0)) })
             }
             Tab("New", systemImage: "plus.bubble", value: ServiceRootFeature.State.Tab.newRequest) {
                 NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }

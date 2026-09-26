@@ -83,7 +83,7 @@ public struct ServiceRootFeature {
                 }.first
                 return .merge(routing, .send(.pullRequest(.presented(.updated(pr)))))
             case .triage(.delegate(.pullRequest(let pr))):
-                state.pullRequest = ServicePullRequestFeature.State(pr: pr)
+                state.pullRequest = ServicePullRequestFeature.State(pr: pr, reports: state.triage.triage.reports(forPullRequest: pr.id), questions: state.triage.triage.questions(forPullRequest: pr.id))
                 return .none
             case .pullRequest(.presented(.pr(.mutationFinished))), .pullRequest(.presented(.diff(.reviewFinished))):
                 if let detail = state.pullRequest, detail.pr.shouldDismiss || detail.diff.shouldDismiss {
@@ -117,7 +117,9 @@ public struct ServicePullRequestFeature {
         public var diff: DiffReviewFeature.State
         public var reports: [Report] = []
         public var questions: [Question] = []
-        public init(pr: PullRequest) {
+        public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
+            self.reports = reports
+            self.questions = questions
             self.pr = PullRequestFeature.State(pr: pr)
             diff = DiffReviewFeature.State(prID: pr.id)
         }

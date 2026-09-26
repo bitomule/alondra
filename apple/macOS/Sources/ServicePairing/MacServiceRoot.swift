@@ -54,6 +54,7 @@ private final class MacServiceWindowContext {
         let prs = await services.pullRequestOperations()
         let nodes = await services.nodeOperations()
         let newWork = await services.newWorkOperations()
+        let downloads = await services.attachmentDownloadClient()
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
             $0.triageService = triage
@@ -63,13 +64,14 @@ private final class MacServiceWindowContext {
             $0.pullRequestOperations = prs
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
                 observeFeedback: { await services.reportFeedbackRecoveryEvents() })
+            $0.attachmentDownload = downloads
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
-            $0.attachmentUpload = AttachmentUploadClient(upload: { draft in
-                try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id)
+            $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
+                try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
             })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
-            $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
+            $0.serviceTasksClient = ServiceTasksClient(refresh: { await services.sync.refresh() }, observe: { await services.taskSnapshots() })
         }
     }
 }

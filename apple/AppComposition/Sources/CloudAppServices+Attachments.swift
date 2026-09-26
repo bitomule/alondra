@@ -9,8 +9,9 @@ extension CloudAppServices {
         AttachmentImportClient(file: { try AttachmentImporter.file($0) }, photo: { try await AttachmentImporter.photo($0) }, camera: { try AttachmentImporter.camera($0) })
     }
 
-    public func attachmentDownloadClient(storage: AttachmentDownloadStorage) -> AttachmentDownloadClient {
-        AttachmentDownloadClient(
+    public func attachmentDownloadClient() -> AttachmentDownloadClient {
+        let storage = attachmentStorage
+        return AttachmentDownloadClient(
             download: { [self] path, name, id in
                 try await downloadAttachment(path: path, name: name, downloadID: id, storage: storage)
             },

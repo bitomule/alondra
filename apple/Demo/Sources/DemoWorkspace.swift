@@ -131,6 +131,12 @@ public actor DemoWorkspace {
         guard path == "demo://welcome.md" else { throw DemoError.missingItem }
         return DemoFixture.document
     }
+    private func withdraw(_ id: String) -> TaskMutationOutcome {
+        guard active else { return .obsolete }
+        root["requests"] = records("requests").filter { $0["id"] as? String != id }
+        do { try publish(); return .confirmed }
+        catch { return .rejected(error.localizedDescription) }
+    }
     private func task(_ id: String, state: String) -> TaskMutationOutcome {
         guard active else { return .obsolete }
         guard records("tasks").contains(where: { $0["id"] as? String == id }) else { return .rejected("Demo task not found") }
@@ -231,10 +237,10 @@ public actor DemoWorkspace {
             try await self.storeAttachment(id: $0.id, name: $0.name, data: $0.data)
         })
         values.triageService = TriageService(observe: { await self.inboxUpdates() }, mutate: { kind, _, identity in await self.mutate(kind, identity: identity) })
-        values.serviceTasksClient = ServiceTasksClient(observe: { await self.snapshots() })
+        values.serviceTasksClient = ServiceTasksClient(refresh: { try? await self.publish() }, observe: { await self.snapshots() })
         values.questionWorkService = QuestionWorkService(submit: { await self.question($0) },
             submitReportFeedback: { await self.feedback($0, identity: $1) }, document: { try await self.document($0) })
-        values.taskOperations = TaskOperations(cancel: { await self.task($0.id, state: "cancelled") },
+        values.taskOperations = TaskOperations(withdraw: { await self.withdraw($0.id) }, cancel: { await self.task($0.id, state: "cancelled") },
             reopen: { await self.task($0.id, state: "running") }, archiveCompleted: { await self.archive() }, details: { await self.details($0) })
         values.scheduleOperations = ScheduleOperations(list: { try await self.scheduleList() }, save: { await self.saveSchedule($0, id: $1) },
             run: { await self.runSchedule($0) }, delete: { await self.deleteSchedule($0) }, projects: { ["Demo Garden"] }, options: { _ in [] })

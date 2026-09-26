@@ -1,4 +1,5 @@
 import AlondraAPIClient
+import AlondraAttachmentsData
 import AlondraAuth
 import AlondraQuestionsFeature
 import AlondraCommands
@@ -20,6 +21,7 @@ public actor CloudAppServices {
     private let commandRecovery: CommandRecovery
     private let reportFeedback: ReportFeedbackCoordinator
     private let scope: CommandScope
+    let attachmentStorage = AttachmentDownloadStorage()
     private var active = true
     private var feedbackRecoveryTask: Task<Void, Never>?
 
@@ -57,6 +59,7 @@ public actor CloudAppServices {
 
     public func deactivate() async {
         active = false
+        await attachmentStorage.deactivate()
         feedbackRecoveryTask?.cancel()
         feedbackRecoveryTask = nil
         await commandRecovery.stop()
