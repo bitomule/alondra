@@ -113,9 +113,9 @@ public struct ServiceFleetFeature {
                 if let id = state.detailID { state.nodes[id: id]?.pendingSubmission = nil }
                 state.detailID = nil
                 return .none
-            case .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .sendFinished)), .nodes(.element(let id, .commandResolved)):
+            case .nodes(.element(let id, .acknowledgeFinished)), .nodes(.element(let id, .cancelFinished)), .nodes(.element(let id, .retryFinished)), .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .sendFinished)), .nodes(.element(let id, .commandResolved)):
                 if let node = state.nodes[id: id], node.shouldDismiss || (
-                    node.acceptedSequence != nil && node.entry == nil && !node.isSending && !node.isClosing
+                    node.acceptedSequence != nil && node.entry == nil && !node.isSending && !node.isClosing && !node.hasOutstandingOrchestratorControl
                         && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil
                 ) {
                     state.nodes.remove(id: id)
@@ -156,7 +156,7 @@ public struct ServiceFleetFeature {
         state.sequence &+= 1
         let ids = Set(ObserveInboxUseCase().execute(overview).items.map(\.id)).subtracting(state.hiddenInboxIDs)
         let snapshot = ProjectFleetUseCase().execute(overview, visibleInboxIDs: ids, sequence: state.sequence)
-        for node in state.nodes where snapshot.node(node.id) == nil && !node.isSending && !node.isClosing
+        for node in state.nodes where snapshot.node(node.id) == nil && !node.isSending && !node.isClosing && !node.hasOutstandingOrchestratorControl
             && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil {
             state.nodes.remove(id: node.id)
             if state.detailID == node.id { state.detailID = nil }

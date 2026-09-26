@@ -11,6 +11,9 @@ public enum CommandKind: Hashable, Sendable, Codable {
     case replyToReport(UInt64)
     case newRequest
     case closeNode(String)
+    case retryOrchestrator(String)
+    case cancelOrchestrator(String)
+    case acknowledgeOrchestrator(String)
     case cancelTask(String)
     case reopenTask(String)
     case withdrawRequest(String)

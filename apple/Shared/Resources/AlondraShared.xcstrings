@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
+
+    "Stop orchestrator": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener orquestador"}}}},
+    "stopping": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "deteniendo"}}}},
+
+    "Retry orchestrator": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar orquestador"}}}},
+
+    "available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "disponible"}}}},
+    "starting": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "iniciando"}}}},
+    "compacting context": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "compactando contexto"}}}},
+    "retrying": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "reintentando"}}}},
+    "needs attention": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "requiere atención"}}}},
+    "Queued messages: %lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mensajes en cola: %lld"}}}},
+    "Starts when needed and keeps the conversation between requests.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Se inicia cuando hace falta y conserva la conversación entre peticiones."}}}},
+    "it is the orchestrator, which Alondra manages automatically": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "es el orquestador, que Alondra gestiona automáticamente"}}}},
+
     "Details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detalles"}}}},
     "Close Inspector": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cerrar inspector"}}}},
     "Inspector": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Inspector"}}}},

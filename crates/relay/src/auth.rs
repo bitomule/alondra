@@ -956,6 +956,11 @@ impl Auth {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_verification_time(&self, now_ms: u64) {
+        *self.verification_time.lock().unwrap() = Some(now_ms);
+    }
+
     #[allow(clippy::too_many_arguments)] // The signed HTTP request and bound identity are intentionally explicit.
     fn verify_device(
         &self,

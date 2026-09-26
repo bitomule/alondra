@@ -11,7 +11,7 @@ func closeReasonMessage(kind: String, detail: String?) -> String {
     case "permission":
         return String(localized: "it has a permission pending on a tool call that is running; answer it and close again", table: "AlondraShared", bundle: #bundle)
     case "orchestrator":
-        return String(localized: "it is the orchestrator, which Alondra keeps alive", table: "AlondraShared", bundle: #bundle)
+        return String(localized: "it is the orchestrator, which Alondra manages automatically", table: "AlondraShared", bundle: #bundle)
     case "worktree":
         return String(localized: "its worktree has work that is not pushed (\(detail ?? "")); commit and push it, or discard it, and close again", table: "AlondraShared", bundle: #bundle)
     default:
