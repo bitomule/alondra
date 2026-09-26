@@ -271,6 +271,29 @@ pub(super) fn interactive(
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<()> {
+    interactive_with(
+        home,
+        stop,
+        input,
+        output,
+        || {
+            let account = crate::account::ensure_token_for_enrollment()?;
+            Ok((account.sub, account.access_token))
+        },
+        &mut |identity, signing, token| register(identity, signing, token),
+    )
+}
+
+// Production passes its fixed account provider and registrar above. Tests inject
+// these two boundaries to exercise confirmation/stop/resume without Keychain.
+fn interactive_with(
+    home: &Path,
+    stop: impl FnOnce() -> Result<()>,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    account: impl FnOnce() -> Result<(String, String)>,
+    registrar: &mut impl FnMut(&PublicMac, &SigningKey, &str) -> Result<()>,
+) -> Result<()> {
     let existing = read_operation(home)?;
     if let Some(op) = &existing {
         if op.phase == "committed" {
@@ -309,21 +332,20 @@ pub(super) fn interactive(
         writeln!(output, "No service identity or approval changed.")?;
         return Ok(());
     }
-    let account = crate::account::ensure_token_for_enrollment()?;
-    let before: ServiceConfig = if let Some(op) = &existing {
-        toml::from_str(if op.phase == "committed" {
-            &op.new_config
-        } else {
-            &op.old_config
-        })?
-    } else {
-        toml::from_str(
-            &read_optional(&home.join(SERVICE_FILE))?
-                .context("service configuration disappeared")?,
-        )?
-    };
+    let (owner, token) = account()?;
+    let before_text =
+        read_optional(&home.join(SERVICE_FILE))?.context("service configuration disappeared")?;
+    if let Some(op) = &existing {
+        if op.phase != "committed" {
+            anyhow::ensure!(
+                before_text == op.old_config || before_text == op.new_config,
+                "service configuration is outside the recorded recovery; retry after inspecting it"
+            );
+        }
+    }
+    let before: ServiceConfig = toml::from_str(&before_text)?;
     anyhow::ensure!(
-        before.owner_sub == account.sub,
+        before.owner_sub == owner,
         "sign in with this Mac's existing account before recovery; account transfer is not allowed"
     );
     stop()?;
@@ -339,12 +361,11 @@ pub(super) fn interactive(
         serde_json::to_value(&current)? == serde_json::to_value(&existing)?,
         "recovery changed while awaiting confirmation; retry"
     );
-    let after: ServiceConfig = toml::from_str(
-        &read_optional(&home.join(SERVICE_FILE))?.context("service configuration disappeared")?,
-    )?;
+    let after_text =
+        read_optional(&home.join(SERVICE_FILE))?.context("service configuration disappeared")?;
     anyhow::ensure!(
-        after.mac_id == before.mac_id && after.owner_sub == before.owner_sub,
-        "service identity changed while awaiting confirmation; retry"
+        after_text == before_text,
+        "service configuration changed while stopping the daemon; retry"
     );
     let op = match current {
         Some(op) if op.phase != "committed" => op,
@@ -352,9 +373,9 @@ pub(super) fn interactive(
     };
     let op = execute(
         home,
-        &account.sub,
+        &owner,
         op,
-        &mut |identity, signing| register(identity, signing, &account.access_token),
+        &mut |identity, signing| registrar(identity, signing, &token),
         &mut |_| Ok(()),
     )?;
     writeln!(
@@ -497,6 +518,68 @@ mod tests {
             assert_preserved(home);
         }
     }
+    #[test]
+    fn interactive_resumes_after_new_config_was_published() {
+        let fixture = fixture();
+        let home = &fixture.0;
+        let op = {
+            let _lock = HomeLock::recovery(home).unwrap();
+            let op = prepare(home, false).unwrap();
+            assert!(
+                execute(
+                    home,
+                    "owner",
+                    op.clone(),
+                    &mut |_, _| Ok(()),
+                    &mut |phase| {
+                        if phase == "config_published" {
+                            bail!("injected crash after new config")
+                        }
+                        Ok(())
+                    }
+                )
+                .is_err()
+            );
+            op
+        };
+        assert_eq!(read_operation(home).unwrap().unwrap().phase, "enrolled");
+        assert_eq!(
+            read_optional(&home.join(SERVICE_FILE)).unwrap().unwrap(),
+            op.new_config
+        );
+        let mut output = Vec::new();
+        let mut stopped = false;
+        interactive_with(
+            home,
+            || {
+                stopped = true;
+                Ok(())
+            },
+            &mut &b"RECOVER\n"[..],
+            &mut output,
+            || Ok(("owner".into(), "synthetic-token".into())),
+            &mut |_, _, _| panic!("enrolled recovery must not register again"),
+        )
+        .unwrap();
+        assert!(stopped);
+        let completed = read_operation(home).unwrap().unwrap();
+        assert_eq!(completed.id, op.id);
+        assert_eq!(completed.phase, "committed");
+        alondra_core::home_lock::ensure_ready(home).unwrap();
+        // Declining a different operation is side-effect free, including login/stop.
+        interactive_with(
+            home,
+            || panic!("cancel must not stop daemon"),
+            &mut &b"\n"[..],
+            &mut output,
+            || panic!("cancel must not read credentials"),
+            &mut |_, _, _| panic!("cancel must not register"),
+        )
+        .unwrap();
+        assert_eq!(read_operation(home).unwrap().unwrap().id, op.id);
+        assert_preserved(home);
+    }
+
     #[test]
     fn duplicate_prepare_keeps_operation_and_generation() {
         let fixture = fixture();

@@ -1,6 +1,6 @@
-mod recovery;
 //! Source-free Mac enrollment. User OIDC authorizes only a new route; phone pairing still
 //! requires the Mac-local key and cannot be granted by an account administrator.
+mod recovery;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
