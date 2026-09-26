@@ -117,6 +117,7 @@ public struct ServicePullRequestFeature {
         public var diff: DiffReviewFeature.State
         public var reports: [Report] = []
         public var questions: [Question] = []
+        public var descriptionExpanded: Bool?
         public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
             self.reports = reports
             self.questions = questions
@@ -130,13 +131,17 @@ public struct ServicePullRequestFeature {
         case diff(DiffReviewFeature.Action)
         case updated(PullRequest?)
         case snapshotUnavailable
+        case toggleDescription
     }
     public var body: some ReducerOf<Self> {
         Scope(state: \.downloads, action: \.downloads) { AttachmentDownloadFeature() }
         Scope(state: \.pr, action: \.pr) { PullRequestFeature() }
         Scope(state: \.diff, action: \.diff) { DiffReviewFeature() }
-        Reduce { _, action in
+        Reduce { state, action in
             switch action {
+            case .toggleDescription:
+                state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
+                return .none
             case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
             case .snapshotUnavailable: return .merge(.send(.pr(.snapshotUnavailable)), .send(.diff(.snapshotUnavailable)))
             case .pr, .diff, .downloads: return .none

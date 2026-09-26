@@ -46,7 +46,7 @@ struct ServicePullRequestView: View {
                     PRStatus(pr: pr)
                     ForEach(store.reports) { AttachedReport(report: $0, showsBody: true) }
                     ForEach(store.questions) { AttachedQuestion(question: $0, showsDetail: true) }
-                    if let body = pr.body, !body.isEmpty { ServicePRDescription(markdown: body) }
+                    if let body = pr.body, !body.isEmpty { ServicePRDescription(markdown: body, expanded: store.descriptionExpanded ?? (body.count <= 600)) { store.send(.toggleDescription) } }
                 }
                 if let files = store.diff.files {
                     Text("Tap a line to comment on it").font(.caption).foregroundStyle(.secondary)
@@ -128,12 +128,14 @@ struct ServicePRDescription: View {
 
     let segments: [MarkdownSegment]
     let isLong: Bool
-    @State private var expanded: Bool
+    let expanded: Bool
+    let toggle: () -> Void
 
-    init(markdown: String) {
+    init(markdown: String, expanded: Bool, toggle: @escaping () -> Void) {
         segments = MarkdownParser.segments(from: markdown)
         isLong = markdown.count > Self.foldedLength
-        _expanded = State(initialValue: markdown.count <= Self.foldedLength)
+        self.expanded = expanded
+        self.toggle = toggle
     }
 
     var body: some View {
@@ -156,7 +158,7 @@ struct ServicePRDescription: View {
             }
             if isLong {
                 Button {
-                    withAnimation(.snappy) { expanded.toggle() }
+                    withAnimation(.snappy) { toggle() }
                 } label: {
                     Label(expanded ? String(localized: "Show Less") : String(localized: "Show More"),
                           systemImage: expanded ? "chevron.up" : "chevron.down")

@@ -8,6 +8,9 @@ import Foundation
 @Reducer
 public struct TriageCardFeature {
     public init() {}
+    public enum Resolution: Equatable {
+        case answer(String?), sent, contextRequested, commentsSent, approved, changesRequested, merged, conflictsSent, setAside
+    }
     @ObservableState
     public struct State: Equatable, Identifiable {
         public var id: String { item.id }
@@ -18,7 +21,8 @@ public struct TriageCardFeature {
         public var askingContext = false
         public var contextNote = ""
         public var showNodeContext = false
-        public var stamp: String?
+        public var stamp: Resolution?
+        public var pendingStamp: Resolution?
         public var requestingChanges = false
         public init(item: InboxItem, identity: QuestionWorkIdentity?) {
             self.item = item
@@ -85,12 +89,14 @@ public struct TriageCardFeature {
                 return .send(.pullRequest(.diff(.noteChanged(text))))
             case .choose(let option):
                 guard !state.busy else { return .none }
+                state.pendingStamp = .answer(option.label)
                 return .send(.question(.optionTapped(option.label)))
             case .clearOption: return .send(.question(.optionSelected(nil)))
             case .send:
                 guard !state.busy else { return .none }
-                if state.question != nil { return .send(.question(.answerTapped)) }
-                if state.document != nil { return .send(.document(.sendFeedbackTapped(author: "David"))) }
+                if let question = state.question { state.pendingStamp = .answer(question.draft.selectedOption); return .send(.question(.answerTapped)) }
+                if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: "David"))) }
+                state.pendingStamp = .changesRequested
                 state.requestingChanges = true
                 return .send(.pullRequest(.diff(.requestChangesTapped)))
             case .ask: state.requestingChanges = false; return .send(.pullRequest(.diff(.askTapped)))
@@ -98,22 +104,34 @@ public struct TriageCardFeature {
             case .contextChanged(let text): state.contextNote = text; return .none
             case .requestContext:
                 state.askingContext = false
+                state.pendingStamp = .contextRequested
                 return .concatenate(.send(.question(.textChanged(state.contextNote))), .send(.question(.moreContextTapped)))
             case .toggleNodeContext: state.showNodeContext.toggle(); return .none
             case .markRead: return .send(.delegate(.hide(state.id)))
             case .stampFinished: return .send(.delegate(.resolved(state.id)))
+            case .document(.reviewTapped(let verdict)):
+                state.pendingStamp = verdict == .approved ? .approved : .commentsSent
+                return .none
+            case .pullRequest(.pr(.confirmMerge)):
+                state.pendingStamp = .merged
+                return .none
+            case .pullRequest(.pr(.resolveConflictsTapped)):
+                state.pendingStamp = .conflictsSent
+                return .none
+            case .pullRequest(.pr(.setAsideTapped)):
+                state.pendingStamp = .setAside
+                return .none
             case .question, .document, .pullRequest:
+                // Asking keeps this card open. A confirmed ask must allow the next draft.
+                if !state.requestingChanges, state.pullRequest?.diff.mutationOutcome == .confirmed {
+                    state.pullRequest?.diff.mutationOutcome = nil
+                    state.pullRequest?.diff.shouldDismiss = false
+                }
                 let completed = state.question?.completed == true || state.document?.completed == true
                     || state.pullRequest?.pr.mutationOutcome == .confirmed
                     || (state.pullRequest?.diff.mutationOutcome == .confirmed && state.requestingChanges)
                 guard completed, state.stamp == nil else { return .none }
-                if let question = state.question {
-                    state.stamp = question.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Answered")
-                } else if state.document != nil {
-                    state.stamp = String(localized: "Sent")
-                } else {
-                    state.stamp = state.requestingChanges ? String(localized: "Changes requested") : String(localized: "Done")
-                }
+                state.stamp = state.pendingStamp ?? .sent
                 return .run { send in
                     try await clock.sleep(for: .milliseconds(520))
                     await send(.stampFinished)

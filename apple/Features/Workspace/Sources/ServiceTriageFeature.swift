@@ -14,6 +14,7 @@ public struct ServiceTriageFeature {
         public var cards: IdentifiedArrayOf<TriageCardFeature.State> = []
         public var cardIdentity: TriageIdentity?
         public var machine: Machine?
+        public var machinePresented = false
         public var usage: Usage?
         public var nodes: [Node] = []
         public var tasks: [WorkTask] = []
@@ -28,6 +29,7 @@ public struct ServiceTriageFeature {
         case question(PresentationAction<QuestionFeature.Action>)
         case document(PresentationAction<DocumentReviewFeature.Action>)
         case open(String)
+        case machinePresented(Bool)
         case delegate(Delegate)
         public enum Delegate { case pullRequest(PullRequest) }
     }
@@ -36,6 +38,9 @@ public struct ServiceTriageFeature {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Reduce { state, action in
             switch action {
+            case .machinePresented(let value):
+                state.machinePresented = value
+                return .none
             case .open(let id):
                 guard let item = state.triage.routeTarget(for: id) else { return .none }
                 switch item {

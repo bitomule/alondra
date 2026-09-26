@@ -22,7 +22,26 @@ struct ServiceTriageCard: View {
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
     private var pickedOption: QuestionOption? { store.selectedOption }
-    private var stamp: Stamp? { store.stamp.map { Stamp(label: $0, symbol: "checkmark", tint: Palette.sage) } }
+    private var stamp: Stamp? {
+        guard let resolution = store.stamp else { return nil }
+        switch resolution {
+        case .answer(let option):
+            guard let option else { return Stamp(label: String(localized: "Answered"), symbol: "paperplane.fill", tint: Palette.sky) }
+            switch ServiceOptionTone(option) {
+            case .positive: return Stamp(label: AnswerOption.displayLabel(option), symbol: "checkmark", tint: Palette.sage)
+            case .negative: return Stamp(label: AnswerOption.displayLabel(option), symbol: "xmark", tint: Palette.rose)
+            case .neutral: return Stamp(label: AnswerOption.displayLabel(option), symbol: "paperplane.fill", tint: kind.tint)
+            }
+        case .sent: return Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)
+        case .contextRequested: return Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate)
+        case .commentsSent: return Stamp(label: String(localized: "Comments sent"), symbol: "text.bubble.fill", tint: Palette.sky)
+        case .approved: return Stamp(label: String(localized: "Approved"), symbol: "checkmark.seal.fill", tint: actionTint)
+        case .changesRequested: return Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)
+        case .merged: return Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)
+        case .conflictsSent: return Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)
+        case .setAside: return Stamp(label: String(localized: "Set aside"), symbol: "tray.and.arrow.down", tint: Palette.slate)
+        }
+    }
     private var showNodeContext: Bool { store.showNodeContext }
 
     private var kind: Kind { Kind(item) }

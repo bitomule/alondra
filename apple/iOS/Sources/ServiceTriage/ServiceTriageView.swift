@@ -9,7 +9,6 @@ import SwiftUI
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
     @Namespace private var zoom
-    @State private var showMachine = false
     @State private var keyboardVisible = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,8 +28,8 @@ struct ServiceTriageView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { showMachine = true } label: { ServiceMachineBadge(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot) }
-                    .popover(isPresented: $showMachine) { ServiceMachineDetail(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot).presentationCompactAdaptation(.popover) }
+                Button { store.send(.machinePresented(true)) } label: { ServiceMachineBadge(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot) }
+                    .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) { ServiceMachineDetail(machine: store.machine, usage: store.usage, online: store.triage.hasSnapshot).presentationCompactAdaptation(.popover) }
                     .accessibilityLabel("Mac Status")
             }
         }
