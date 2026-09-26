@@ -1661,11 +1661,137 @@ async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
     }
 }
 
-async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    match hub.append(Event::PrDismissed { id }) {
-        Ok(_) => Json(json!({"id": id})).into_response(),
-        Err(e) => internal(e),
+/// Mutations wholly represented by events. Local HTTP and the encrypted service
+/// share this implementation; the latter additionally supplies a durable request identity.
+enum LocalMutation {
+    DismissPr(u64),
+    ReadReport(u64),
+    Archive(Option<Vec<String>>),
+    MoveTask(String, alondra_core::tasks::TaskEvent),
+}
+
+fn local_mutation(
+    hub: &Hub,
+    identity: Option<(&str, &str, &[u8; 32])>,
+    command: LocalMutation,
+) -> anyhow::Result<Value> {
+    hub.local_command(identity, |v| {
+        Ok(match &command {
+            LocalMutation::DismissPr(id) => vec![Event::PrDismissed { id: *id }],
+            LocalMutation::ReadReport(id) => vec![Event::ReportRead { id: *id }],
+            LocalMutation::Archive(ids) => {
+                let what = v.board.archivable(ids.as_deref());
+                if what.is_empty() { vec![] } else { vec![Event::TasksArchived(what)] }
+            }
+            LocalMutation::MoveTask(id, event) => {
+                if !v.board.tasks.contains_key(id) {
+                    return Err(json!({"status":404,"body":{"error":format!("task {id} does not exist")}}));
+                }
+                if let Some(r) = v.task_refusal(id, event) {
+                    return Err(json!({"status":409,"body":{"error":r.reason,"kind":"task_refused"}}));
+                }
+                vec![Event::TaskMoved { task: id.clone(), event: event.clone() }]
+            }
+        })
+    }, |v, recorded| {
+        let body = match &command {
+            LocalMutation::DismissPr(id) | LocalMutation::ReadReport(id) => json!({"id":id}),
+            LocalMutation::Archive(_) => match recorded.first() {
+                Some((_, Event::TasksArchived(what))) => json!({"tasks":what.tasks,"requests":what.requests}),
+                _ => json!({"tasks":[],"requests":[]}),
+            },
+            LocalMutation::MoveTask(id, _) => json!({"id":id,"state":v.board.tasks.get(id).map(|t|t.state)}),
+        };
+        json!({"status":200,"body":body})
+    })
+}
+
+fn local_mutation_response(result: anyhow::Result<Value>) -> Response {
+    match result {
+        Ok(result) => (
+            StatusCode::from_u16(result["status"].as_u64().unwrap_or(500) as u16)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(result["body"].clone()),
+        )
+            .into_response(),
+        Err(error) => internal(error),
     }
+}
+
+pub(crate) fn atomic_local_path(method: &str, path: &str) -> bool {
+    if method != "POST" {
+        return false;
+    }
+    path == "/v1/tasks/archive" || atomic_local_target(path).is_some()
+}
+
+fn atomic_local_target(path: &str) -> Option<(&str, &str)> {
+    for (prefix, suffix) in [
+        ("/v1/prs/", "/dismiss"),
+        ("/v1/reports/", "/read"),
+        ("/v1/tasks/", "/cancel"),
+        ("/v1/tasks/", "/reopen"),
+    ] {
+        if let Some(id) = path
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix(suffix))
+        {
+            if !id.is_empty() && !id.contains('/') {
+                return Some((suffix, id));
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn atomic_local_request(
+    hub: &Hub,
+    sender: &str,
+    request_id: &str,
+    digest: &[u8; 32],
+    path: &str,
+    body: Option<&Value>,
+) -> anyhow::Result<Value> {
+    let parsed = (|| -> anyhow::Result<LocalMutation> {
+        Ok(if path == "/v1/tasks/archive" {
+            let body: ArchiveBody = serde_json::from_value(body.cloned().unwrap_or(json!({})))?;
+            LocalMutation::Archive(body.ids)
+        } else {
+            let (action, id) = atomic_local_target(path)
+                .ok_or_else(|| anyhow::anyhow!("unsupported atomic local route"))?;
+            match action {
+                "/dismiss" => LocalMutation::DismissPr(id.parse()?),
+                "/read" => LocalMutation::ReadReport(id.parse()?),
+                "/reopen" => {
+                    LocalMutation::MoveTask(id.into(), alondra_core::tasks::TaskEvent::Reopen)
+                }
+                "/cancel" => {
+                    let b: CancelBody = serde_json::from_value(body.cloned().unwrap_or(json!({})))?;
+                    let reason = b
+                        .reason
+                        .map(|r| r.trim().to_string())
+                        .filter(|r| !r.is_empty());
+                    LocalMutation::MoveTask(
+                        id.into(),
+                        alondra_core::tasks::TaskEvent::Cancel { reason },
+                    )
+                }
+                _ => unreachable!(),
+            }
+        })
+    })();
+    match parsed {
+        Ok(command) => local_mutation(hub, Some((sender, request_id, digest)), command),
+        Err(_) => hub.local_command(
+            Some((sender, request_id, digest)),
+            |_| Err(json!({"status":422,"body":{"error":"invalid local command body"}})),
+            |_, _| unreachable!(),
+        ),
+    }
+}
+
+async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::DismissPr(id)))
 }
 
 #[derive(Deserialize)]
@@ -2820,10 +2946,7 @@ async fn waiting_machine(State(hub): State<AppState>, Json(b): Json<WaitingMachi
 }
 
 async fn report_read(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    match hub.append(Event::ReportRead { id }) {
-        Ok(_) => Json(json!({"id": id})).into_response(),
-        Err(e) => internal(e),
-    }
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::ReadReport(id)))
 }
 
 #[derive(Deserialize)]
@@ -3573,33 +3696,11 @@ struct ArchiveBody {
 /// David archives what is finished: every done or cancelled task, and request that finished
 /// without tasks, or those of them `ids` names. Nothing unfinished is archived.
 async fn archive_tasks(State(hub): State<AppState>, body: Option<Json<ArchiveBody>>) -> Response {
-    let ids = body.and_then(|Json(b)| b.ids);
-    let recorded = hub.append_with(|v| {
-        let what = v.board.archivable(ids.as_deref());
-        (!what.is_empty()).then_some(Event::TasksArchived(what))
-    });
-    match recorded {
-        Ok(Some((_, Event::TasksArchived(what)))) => Json(json!({"tasks": what.tasks, "requests": what.requests})).into_response(),
-        Ok(_) => Json(json!({"tasks": [], "requests": []})).into_response(),
-        Err(e) => internal(e),
-    }
+    local_mutation_response(local_mutation(&hub, None, LocalMutation::Archive(body.and_then(|Json(b)|b.ids))))
 }
 
 fn move_task(hub: &Hub, id: &str, event: alondra_core::tasks::TaskEvent) -> Response {
-    let recorded = hub.append_all(|v| {
-        if !v.board.tasks.contains_key(id) {
-            return Err(err(StatusCode::NOT_FOUND, format!("task {id} does not exist")));
-        }
-        match v.task_refusal(id, &event) {
-            Some(r) => Err(refused(StatusCode::CONFLICT, "task_refused", r.reason)),
-            None => Ok(vec![Event::TaskMoved { task: id.to_string(), event: event.clone() }]),
-        }
-    });
-    match recorded {
-        Ok(Ok(_)) => Json(json!({"id": id, "state": hub.read(|v| v.board.tasks.get(id).map(|t| t.state))})).into_response(),
-        Ok(Err(refusal)) => refusal,
-        Err(e) => internal(e),
-    }
+    local_mutation_response(local_mutation(hub, None, LocalMutation::MoveTask(id.into(), event)))
 }
 
 #[derive(Deserialize)]
