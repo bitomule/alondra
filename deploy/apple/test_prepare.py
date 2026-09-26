@@ -10,10 +10,27 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust
+from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust, validate_store_metadata
 
 
 class DistributionInputTests(unittest.TestCase):
+    def test_store_metadata_rejects_observed_asc_failures_in_app_and_extension(self):
+        # ASC rejected the real first IPA with 90183 (missing APPL) and
+        # 90502 (missing arm64 in both app and extension).
+        for bundle, kind in [(IOS, "APPL"), (EXT, "XPC!")]:
+            valid = {"CFBundlePackageType": kind, "UIRequiredDeviceCapabilities": ["arm64"]}
+            validate_store_metadata(plistlib.loads(plistlib.dumps(valid)), bundle, "ios")
+            for key in valid:
+                broken = {k: v for k, v in valid.items() if k != key}
+                with self.subTest(bundle=bundle, missing=key), self.assertRaises(GateError):
+                    validate_store_metadata(broken, bundle, "ios")
+            with self.assertRaises(GateError):
+                validate_store_metadata({"CFBundlePackageType": kind,
+                                         "UIRequiredDeviceCapabilities": {"arm64": False}}, bundle, "ios")
+        validate_store_metadata({"CFBundlePackageType": "APPL"}, MAC, "macos")
+        with self.assertRaises(GateError):
+            validate_store_metadata({}, MAC, "macos")
+
     def profile(self, bundle=IOS, platform="iOS"):
         return {
             "ExpirationDate": dt.datetime(2030, 1, 1),

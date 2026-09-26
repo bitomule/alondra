@@ -156,9 +156,20 @@ def validate_archive(path, destination):
         return app
 
 
+def validate_store_metadata(info, bundle_id, destination):
+    expected_type = "XPC!" if bundle_id == EXT else "APPL"
+    require(info.get("CFBundlePackageType") == expected_type, "App Store bundle package type mismatch")
+    if destination == "ios":
+        capabilities = info.get("UIRequiredDeviceCapabilities", [])
+        has_arm64 = (isinstance(capabilities, list) and "arm64" in capabilities
+                     or isinstance(capabilities, dict) and capabilities.get("arm64") is True)
+        require(has_arm64, "App Store arm64 device capability missing")
+
+
 def verify_bundle(bundle, bundle_id, destination, version, build, identity, profile_path):
     content = bundle if destination == "ios" else bundle / "Contents"
     info = read_plist(content / "Info.plist")
+    validate_store_metadata(info, bundle_id, destination)
     require(info.get("CFBundleIdentifier") == bundle_id, "Built bundle ID mismatch")
     require(info.get("CFBundleShortVersionString") == version and info.get("CFBundleVersion") == build, "Built version mismatch")
     require(info.get("DTPlatformName") == ("iphoneos" if destination == "ios" else "macosx"), "Built platform mismatch")
