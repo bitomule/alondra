@@ -10,6 +10,18 @@ public enum ReportFeedbackStatus: Sendable {
     case notDispatched, confirmed, rejected(Int), unknown
 }
 
+public struct ReportFeedbackRecoveryEvent: Sendable, Equatable {
+    public enum Outcome: Sendable, Equatable {
+        case confirmed, messageRejected(Int), readRejected(Int), awaitingDraft, unknown
+    }
+    public let reportID: UInt64
+    public let operationID: UUID
+    public let scope: CommandScope
+    /// Keyed semantic binding, never the draft itself. Nil means no checkpoint was saved.
+    public let binding: Data?
+    public let outcome: Outcome
+}
+
 public actor ReportFeedbackTransaction {
     private enum Stage: String, Codable {
         case prepared, messageSentAwaitingRead, readStarted, complete, messageRejected, readRejected
@@ -29,9 +41,109 @@ public actor ReportFeedbackTransaction {
     private let gate: CommandGate
     private let scope: CommandScope
     private var running: Set<UInt64> = []
+    private var recovered: [UInt64: ReportFeedbackRecoveryEvent] = [:]
+    private var observers: [UUID: AsyncStream<[ReportFeedbackRecoveryEvent]>.Continuation] = [:]
 
     public init(directory: URL, gate: CommandGate, scope: CommandScope) {
         self.directory = directory; self.gate = gate; self.scope = scope
+    }
+
+    /// Replays the latest recovery snapshot to newly opened scenes. Recovery never carries
+    /// an executable message or asks a view to reconstruct a previously submitted draft.
+    public func recoveryEvents() -> AsyncStream<[ReportFeedbackRecoveryEvent]> {
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            observers[id] = continuation
+            continuation.yield(recoverySnapshot)
+            continuation.onTermination = { _ in Task { await self.removeObserver(id) } }
+        }
+    }
+
+    /// Restore headlessly. The only mutation permitted here is acknowledging a report
+    /// whose feedback message is already confirmed. Unknown messages are status-only.
+    public func recover(retryingReadFor operationID: UUID? = nil,
+        markRead: @escaping @Sendable (UInt64, String) async throws -> Void,
+        reconcile: @escaping @Sendable (String) async throws -> ReportFeedbackStatus
+    ) async throws -> [ReportFeedbackRecoveryEvent] {
+        try await ensureActive()
+        let reservations = try await gate.restore().filter {
+            if case .replyToReport = $0.kind { return true }; return false
+        }
+        let files: [URL]
+        do { files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { files = [] }
+        var ids = Set(files.filter { $0.pathExtension == "json" }.compactMap { UInt64($0.deletingPathExtension().lastPathComponent) })
+        for command in reservations { if case .replyToReport(let id) = command.kind { ids.insert(id) } }
+        for reportID in ids.sorted() {
+            try await ensureActive()
+            guard !running.contains(reportID) else { continue }
+            running.insert(reportID)
+            defer { running.remove(reportID) }
+            let lease: Int32
+            do { lease = try acquireLease(reportID) }
+            catch FeedbackError.busy { continue }
+            defer { _ = feedbackFileLock(lease, LOCK_UN); _ = Darwin.close(lease) }
+            guard var checkpoint = try load(reportID) else {
+                guard let command = reservations.first(where: { $0.kind == .replyToReport(reportID) }) else { continue }
+                guard operationID == nil || operationID == command.id else { continue }
+                let status = try await reconcile(command.id.uuidString + "-message")
+                let absent: Bool
+                if case .notDispatched = status { absent = await gate.confirmReconciled(command.id, in: scope) }
+                else { absent = false }
+                publish(.init(reportID: reportID, operationID: command.id, scope: scope,
+                    binding: nil, outcome: absent ? .awaitingDraft : .unknown))
+                continue
+            }
+            guard checkpoint.scope.sameIdentity(as: scope),
+                  operationID == nil || operationID == checkpoint.operationID else { continue }
+            if checkpoint.stage == .prepared {
+                let status = try await reconcile(checkpoint.messageID)
+                switch status {
+                case .notDispatched:
+                    // No payload is available, and recovery never invents one. Free the
+                    // pre-dispatch reservation so an explicit new draft can be submitted.
+                    guard await gate.confirmReconciled(checkpoint.operationID, in: scope) else { continue }
+                    try FileManager.default.removeItem(at: directory.appendingPathComponent("\(reportID).json"))
+                    publish(event(checkpoint, .awaitingDraft))
+                    continue
+                case .confirmed: checkpoint.stage = .messageSentAwaitingRead; try save(checkpoint)
+                case .rejected(let status): checkpoint.stage = .messageRejected; checkpoint.rejectionStatus = status; try save(checkpoint)
+                case .unknown: publish(event(checkpoint, .unknown)); continue
+                }
+            }
+            if checkpoint.stage == .readRejected, operationID == checkpoint.operationID {
+                checkpoint.readAttempt += 1
+                checkpoint.stage = .messageSentAwaitingRead
+                checkpoint.rejectionStatus = nil
+                try save(checkpoint)
+            }
+            // Prepared was handled above, so this closure cannot be called. Keeping
+            // message dispatch absent from the public recovery API is the safety boundary.
+            try await drive(checkpoint, sendMessage: { _ in throw FeedbackError.unresolved },
+                            markRead: { id in try await markRead(reportID, id) }, reconcile: reconcile)
+            guard let latest = try load(reportID) else { throw FeedbackError.unresolved }
+            let result = await outcome(reportID)
+            switch result {
+            case .confirmed: publish(event(latest, .confirmed))
+            case .rejected:
+                if latest.stage == .messageRejected { publish(event(latest, .messageRejected(latest.rejectionStatus ?? 0))) }
+                else if latest.stage == .readRejected { publish(event(latest, .readRejected(latest.rejectionStatus ?? 0))) }
+                else { publish(event(latest, .unknown)) }
+            case .unknown, .obsolete: publish(event(latest, .unknown))
+            }
+        }
+        return recoverySnapshot
+    }
+
+    private var recoverySnapshot: [ReportFeedbackRecoveryEvent] { recovered.values.sorted { $0.reportID < $1.reportID } }
+    private func removeObserver(_ id: UUID) { observers[id] = nil }
+    private func publish(_ event: ReportFeedbackRecoveryEvent) {
+        recovered[event.reportID] = event
+        for observer in observers.values { observer.yield(recoverySnapshot) }
+    }
+    private func event(_ checkpoint: Checkpoint, _ outcome: ReportFeedbackRecoveryEvent.Outcome) -> ReportFeedbackRecoveryEvent {
+        .init(reportID: checkpoint.reportID, operationID: checkpoint.operationID,
+              scope: scope, binding: checkpoint.binding, outcome: outcome)
     }
 
     public func submit(reportID: UInt64, binding: Data,

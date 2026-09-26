@@ -21,6 +21,22 @@ public struct ReportFeedbackCoordinator: Sendable {
             salt: Data(), info: Data("alondra-feedback-binding-v1".utf8), outputByteCount: 32)
     }
 
+    public func recoveryEvents() async -> AsyncStream<[ReportFeedbackRecoveryEvent]> {
+        await transaction.recoveryEvents()
+    }
+
+    public func recover(retryingReadFor operationID: UUID? = nil) async throws -> [ReportFeedbackRecoveryEvent] {
+        try await transaction.recover(retryingReadFor: operationID,
+            markRead: { report, id in try await api.markRead(report, operationID: id) },
+            reconcile: { id in
+                switch try await operations.recoveryStatus(requestID: id) {
+                case .notDispatched: return .notDispatched
+                case .unknown: return .unknown
+                case .completed(let status, _): return (200..<300).contains(status) ? .confirmed : .rejected(status)
+                }
+            })
+    }
+
     public func submit(_ request: ReportFeedbackRequest, identity: QuestionWorkIdentity) async -> QuestionWorkOutcome {
         guard identity.server == scope.server, identity.deviceID == scope.deviceID,
               identity.credentialRevision == scope.credentialRevision, identity.generation == scope.generation
