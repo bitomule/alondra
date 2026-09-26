@@ -2,6 +2,7 @@ import AlondraQuestionsFeature
 import AlondraShared
 import AlondraTriageFeature
 import ComposableArchitecture
+import SwiftUI
 
 /// Scene-owned navigation. Child drafts survive accepted snapshots of the same card.
 @Reducer
@@ -11,6 +12,8 @@ public struct ServiceTriageFeature {
     public struct State: Equatable {
         public init() {}
         public var triage = TriageFeature.State()
+        public var cardStack = CardStackFeature.State()
+        public var keyboardVisible = false
         public var cards: IdentifiedArrayOf<TriageCardFeature.State> = []
         public var cardIdentity: TriageIdentity?
         public var machine: Machine?
@@ -25,6 +28,8 @@ public struct ServiceTriageFeature {
 
     public enum Action {
         case triage(TriageFeature.Action)
+        case cardStack(CardStackFeature.Action)
+        case keyboardVisibilityChanged(Bool)
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case question(PresentationAction<QuestionFeature.Action>)
         case document(PresentationAction<DocumentReviewFeature.Action>)
@@ -36,8 +41,24 @@ public struct ServiceTriageFeature {
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
+        Reduce { state, _ in
+            if state.cardStack.identity != state.triage.identity {
+                state.cardStack = CardStackFeature.State()
+            }
+            state.cardStack.frontID = state.triage.queue.first?.id
+            state.cardStack.count = state.triage.queue.count
+            state.cardStack.identity = state.triage.identity
+            return .none
+        }
+        Scope(state: \.cardStack, action: \.cardStack) { CardStackFeature() }
         Reduce { state, action in
             switch action {
+            case .keyboardVisibilityChanged(let visible):
+                state.keyboardVisible = visible
+                return .none
+            case .cardStack(.delegate(let departure)):
+                return .send(.triage(.skipIfCurrent(departure.itemID, departure.identity)), animation: .spring(duration: 0.5, bounce: 0.2))
+            case .cardStack: return .none
             case .machinePresented(let value):
                 state.machinePresented = value
                 return .none

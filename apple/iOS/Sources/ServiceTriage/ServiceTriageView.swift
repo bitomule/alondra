@@ -9,10 +9,9 @@ import SwiftUI
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
     @Namespace private var zoom
-    @State private var keyboardVisible = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !keyboardVisible { header.padding(.horizontal, 20).transition(.move(edge: .top).combined(with: .opacity)) }
+            if !store.keyboardVisible { header.padding(.horizontal, 20).transition(.move(edge: .top).combined(with: .opacity)) }
             if !store.triage.hasSnapshot && store.triage.queue.isEmpty {
                 VStack(spacing: 16) { ProgressView().controlSize(.large).tint(Palette.dawn); Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary) }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,8 +42,8 @@ struct ServiceTriageView: View {
             ServiceDocumentView(store: child, markRead: { _ = store.send(.triage(.hide(child.subject.id))); store.send(.document(.dismiss)) })
                 .navigationTransition(.zoom(sourceID: child.subject.id, in: zoom))
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { keyboardVisible = true } }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { keyboardVisible = false } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { store.send(.keyboardVisibilityChanged(true)) } }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in withAnimation(.smooth(duration: 0.3)) { store.send(.keyboardVisibilityChanged(false)) } }
         .sensoryFeedback(.success, trigger: store.triage.resolvedCount)
         .sensoryFeedback(.impact(weight: .light), trigger: store.triage.skippedCount)
         .task { await store.send(.triage(.appeared)).finish() }
@@ -89,7 +88,8 @@ private struct ServiceCardStack: View {
     let onReview: (InboxItem) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drag: CGFloat = 0
+    private var drag: CGFloat { CGFloat(store.cardStack.drag) }
+    // A measured layout value, not feature or business state.
     @State private var frontHeight: CGFloat?
 
     private let depthLimit = 3
@@ -118,7 +118,10 @@ private struct ServiceCardStack: View {
                 }
             }
             .padding(.top, CGFloat(min(visible.count, depthLimit) - 1) * 11)
-            .simultaneousGesture(swipe(visible.first, count: queue.count))
+            .simultaneousGesture(swipe)
+            .onChange(of: store.cardStack.departure) { _, departure in
+                if let departure { animate(departure) }
+            }
             .animation(.spring(duration: 0.5, bounce: 0.22), value: visible.map(\.id))
 
         }
@@ -148,41 +151,33 @@ private struct ServiceCardStack: View {
         return .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: removal)
     }
 
-    private func swipe(_ front: InboxItem?, count: Int) -> some Gesture {
+    private var swipe: some Gesture {
         DragGesture(minimumDistance: 24)
             .onChanged { value in
-                guard front != nil, count > 1, abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
-                drag = value.translation.width
+                store.send(.cardStack(.dragged(width: Double(value.translation.width), height: Double(value.translation.height))))
             }
             .onEnded { value in
-                guard let front, count > 1 else { return }
-                let projected = value.predictedEndTranslation.width
-                let committed = abs(drag) > 90 || (abs(projected) > 240 && abs(drag) > 30)
-                guard committed else {
-                    withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
-                    return
+                withAnimation(.spring(duration: 0.4, bounce: 0.35)) {
+                    store.send(.cardStack(.dragEnded(projectedWidth: Double(value.predictedEndTranslation.width))))
                 }
-                next(front)
             }
     }
 
-    /// Swiping either way moves on to the next card; the card leaves in the direction it was pushed.
-    private func next(_ item: InboxItem) {
-        let away: CGFloat = drag > 0 ? 420 : -420
-        let identity = store.triage.identity
-        withAnimation(.easeIn(duration: 0.16)) { drag = away }
+    /// SwiftUI owns animation transactions; the feature owns eligibility and the captured identity.
+    private func animate(_ departure: CardStackFeature.Departure) {
         withAnimation(.easeIn(duration: 0.16), completionCriteria: .logicallyComplete) {
-            drag = away
+            store.send(.cardStack(.animateDeparture(departure)))
         } completion: {
             var instant = Transaction(); instant.disablesAnimations = true
-            withTransaction(instant) { drag = 0 }
-            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { _ = store.send(.triage(.skipIfCurrent(item.id, identity))) }
+            withTransaction(instant) { store.send(.cardStack(.resetDrag(departure))) }
+            withAnimation(.spring(duration: 0.5, bounce: 0.2)) { store.send(.cardStack(.animationCompleted(departure))) }
         }
     }
 
     private func skip(_ item: InboxItem) {
-        next(item)
+        store.send(.cardStack(.skipTapped(item.id)))
     }
+
 }
 
 private struct FileAway: Transition {
