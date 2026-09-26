@@ -88,6 +88,8 @@ swift_library(
     module_name = "AlondraiOS",
     deps = [
         ":AlondraShared",
+        "//apple/Auth:AlondraAuth",
+        "//apple/ServicePairing:AlondraServicePairing",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",

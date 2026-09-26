@@ -14,7 +14,8 @@ struct AlondraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(serverURL: serverURL, services: delegate.sync)
+            CloudRootView(serverURL: serverURL, delegate: delegate)
+                .environment(delegate.cloudPairing)
                 .environment(delegate.fleet)
                 .environment(delegate.pairing)
                 .environment(delegate.push)
@@ -24,6 +25,7 @@ struct AlondraApp: App {
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    let cloudPairing = CloudPairingOwner()
     let pairing = DevicePairing()
     lazy var fleet: FleetStore = {
         let address = UserDefaults.standard.string(forKey: ServerSetting.key) ?? ServerSetting.defaultURL
@@ -54,6 +56,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
         push.didFailToRegister(error)
+    }
+}
+
+private struct CloudRootView: View {
+    let serverURL: String
+    let delegate: AppDelegate
+    var body: some View {
+        NavigationStack { CloudPairingScreen(store: delegate.cloudPairing.store) }
     }
 }
 
