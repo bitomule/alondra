@@ -90,8 +90,8 @@ struct StableDetailOwnerIntegrationTests {
         #expect(store.documents.isEmpty)
         #expect(store.documentID == nil)
     }
-    @Test(.timeLimit(.minutes(1)))
-    func nodeFinalAndLateRecoveryRemainWithOriginalNode() async throws {
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    func nodeFinalAndLateRecoveryRemainWithOriginalNode(stackNavigation: Bool) async throws {
         func node(_ id: String) throws -> Node {
             try JSONDecoder().decode(Node.self, from: Data("""
             {"sessionId":"\(id)","shortId":"\(id)","name":"\(id)","project":"Alondra","state":"working","stateSince":1,"isOrchestrator":false,"hasPlugin":true,"stateSource":"hook"}
@@ -114,24 +114,37 @@ struct StableDetailOwnerIntegrationTests {
                 return .unknown(commandID)
             }, close: { _ in .rejected("Unexpected close") }, threads: { _ in [] })
         }
-        await store.send(.fleet(.openNode("a"))).finish()
+        var nextPathID = 0
+        func open(_ id: String) async {
+            if stackNavigation {
+                if let first = store.fleet.path.ids.first {
+                    await store.send(.fleet(.path(.popFrom(id: first)))).finish()
+                }
+                let elementID = StackElementID(integerLiteral: nextPathID)
+                nextPathID += 1
+                await store.send(.fleet(.path(.push(id: elementID, state: .node(.init(sessionID: id)))))).finish()
+            } else {
+                await store.send(.fleet(.openNode(id))).finish()
+            }
+        }
+        await open("a")
         await store.send(.fleet(.nodes(.element(id: "a", action: .messageChanged("A message"))))).finish()
-        await store.send(.fleet(.openNode("b"))).finish()
+        await open("b")
         await store.send(.fleet(.nodes(.element(id: "b", action: .messageChanged("B message"))))).finish()
-        await store.send(.fleet(.openNode("a"))).finish()
+        await open("a")
         #expect(store.fleet.detail?.message == "A message")
         let submission = store.send(.fleet(.nodes(.element(id: "a", action: .sendTapped))))
         var iterator = started.stream.makeAsyncIterator()
         _ = await iterator.next()
-        await store.send(.fleet(.openNode("b"))).finish()
+        await open("b")
         release.continuation.yield(())
         await submission.finish()
         #expect(store.fleet.nodes[id: "a"]?.sendOutcome == .unknown(commandID))
         #expect(store.fleet.detail?.message == "B message")
-        await store.send(.fleet(.openNode("a"))).finish()
+        await open("a")
         await store.send(.fleet(.nodes(.element(id: "a", action: .sendTapped)))).finish()
         #expect(sent.value == ["a"])
-        await store.send(.fleet(.openNode("b"))).finish()
+        await open("b")
         let scope = CommandScope(server: URL(string: "https://service.example")!, deviceID: "phone", credentialRevision: "one", generation: 1)
         let resolution = CommandResolution(command: .init(id: commandID, scope: scope, kind: .send("a"), itemID: nil), status: 200)
         await store.send(.commandResolved(resolution)).finish()
@@ -172,6 +185,31 @@ struct StableDetailOwnerIntegrationTests {
         #expect(store.triage.triage.hiddenIDs.contains("q1"))
         #expect(store.triage.documentID == "q2")
         #expect(store.triage.document?.draft.general == "B draft")
+    }
+
+    @Test
+    func authoritativeNodeRemovalPrunesOnlyOwnersWithoutOutstandingCommands() async throws {
+        var editable = NodeDetailFeature.State(sessionID: "editable")
+        editable.message = "Draft on removed node"
+        var uncertain = NodeDetailFeature.State(sessionID: "uncertain")
+        uncertain.message = "Keep recovery"
+        uncertain.sendOutcome = .unknown(UUID())
+        var sending = NodeDetailFeature.State(sessionID: "sending")
+        sending.isSending = true
+        var initial = ServiceFleetFeature.State()
+        initial.nodes = [editable, uncertain, sending]
+        initial.detailID = "editable"
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":2,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
+        let store = Store(initialState: initial) { ServiceFleetFeature() }
+        await store.send(.snapshot(nil)).finish()
+        #expect(store.nodes.count == 3)
+        await store.send(.snapshot(overview)).finish()
+        #expect(store.nodes[id: "editable"] == nil)
+        #expect(store.detailID == nil)
+        #expect(store.nodes[id: "uncertain"]?.message == "Keep recovery")
+        #expect(store.nodes[id: "sending"]?.isSending == true)
     }
 
 }

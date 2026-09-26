@@ -9,7 +9,7 @@ public struct ServiceFleetFeature {
     public init() {}
     @Reducer
     public enum Path {
-        case node(NodeDetailFeature)
+        case node(NodeDetailRouteFeature)
         case task(TaskDetailFeature)
     }
     @ObservableState
@@ -28,6 +28,8 @@ public struct ServiceFleetFeature {
             self.identity = identity
             nodes = []
             detailID = nil
+            nodePath = []
+            path = StackState<Path.State>()
         }
         public var detailID: String?
         public var detail: NodeDetailFeature.State? {
@@ -70,13 +72,8 @@ public struct ServiceFleetFeature {
                 guard let pathID = state.path.ids.last else { return .none }
                 return .send(.path(.element(id: pathID, action: .task(.taskChanged(task)))))
             case .path(.push(let id, _)):
-                guard case .node = state.path[id: id], let snapshot = state.fleet.snapshot else { return .none }
-                return .send(.path(.element(id: id, action: .node(.snapshotChanged(snapshot)))))
-            case .path(.element(let id, .node(.closeFinished))):
-                if case .node(let node) = state.path[id: id], node.shouldDismiss {
-                    state.path.pop(from: id)
-                }
-                return .none
+                guard case .node(let route) = state.path[id: id] else { return .none }
+                return .send(.openNode(route.sessionID))
             case .refresh: return .run { _ in await snapshots.refresh() }
             case .openTask(let id):
                 guard let task = state.presentation.board.task(id) else { return .none }
@@ -112,9 +109,16 @@ public struct ServiceFleetFeature {
                 if let id = state.detailID { state.nodes[id: id]?.pendingSubmission = nil }
                 state.detailID = nil
                 return .none
-            case .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .commandResolved)):
-                if state.nodes[id: id]?.shouldDismiss == true {
+            case .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .sendFinished)), .nodes(.element(let id, .commandResolved)):
+                if let node = state.nodes[id: id], node.shouldDismiss || (
+                    node.acceptedSequence != nil && node.entry == nil && !node.isSending && !node.isClosing
+                        && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil
+                ) {
                     state.nodes.remove(id: id)
+                    if let pathID = state.path.ids.first(where: { pathID in
+                        if case .node(let route) = state.path[id: pathID] { return route.sessionID == id }
+                        return false
+                    }) { state.path.pop(from: pathID) }
                     if state.detailID == id { state.detailID = nil; state.nodePath = [] }
                 }
                 return .none
@@ -123,6 +127,12 @@ public struct ServiceFleetFeature {
         }.forEach(\.nodes, action: \.nodes) { NodeDetailFeature() }
             .ifLet(\.$taskDetail, action: \.taskDetail) { TaskDetailFeature() }
             .forEach(\.path, action: \.path)
+            .onChange(of: \.path.ids) { _, _ in
+                Reduce { state, _ in
+                    state.cancelPendingSubmissions()
+                    return .none
+                }
+            }
     }
 
     private func project(_ state: inout State) -> Effect<Action> {
@@ -133,7 +143,7 @@ public struct ServiceFleetFeature {
         guard let overview = state.overview else {
             let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
                 switch state.path[id: id]! {
-                case .node: return .send(.path(.element(id: id, action: .node(.snapshotUnavailable))))
+                case .node: return .none
                 case .task: return .send(.path(.element(id: id, action: .task(.taskChanged(nil)))))
                 }
             })
@@ -142,12 +152,30 @@ public struct ServiceFleetFeature {
         state.sequence &+= 1
         let ids = Set(ObserveInboxUseCase().execute(overview).items.map(\.id)).subtracting(state.hiddenInboxIDs)
         let snapshot = ProjectFleetUseCase().execute(overview, visibleInboxIDs: ids, sequence: state.sequence)
+        for node in state.nodes where snapshot.node(node.id) == nil && !node.isSending && !node.isClosing
+            && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil {
+            state.nodes.remove(id: node.id)
+            if state.detailID == node.id { state.detailID = nil }
+        }
         let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
             switch state.path[id: id]! {
-            case .node: return .send(.path(.element(id: id, action: .node(.snapshotChanged(snapshot)))))
+            case .node: return .none
             case .task(let task): return .send(.path(.element(id: id, action: .task(.taskChanged(state.presentation.board.task(task.taskID))))))
             }
         })
         return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), .merge(state.nodes.ids.map { .send(.nodes(.element(id: $0, action: .snapshotChanged(snapshot)))) }))
     }
+}
+
+/// Navigation carries identity only. The workspace's nodes collection owns drafts and effects.
+@Reducer
+public struct NodeDetailRouteFeature {
+    @ObservableState
+    public struct State: Equatable {
+        public let sessionID: String
+        public init(sessionID: String) { self.sessionID = sessionID }
+    }
+    public enum Action {}
+    public init() {}
+    public var body: some ReducerOf<Self> { EmptyReducer() }
 }

@@ -298,9 +298,6 @@ public struct ServiceRootFeature {
             return rejection.map(WorkspaceNotice.Event.closeRefused) ?? .closed(fleet.snapshot?.node(id)?.node.displayName ?? id)
         case .fleet(.nodes(.element(let id, let action))):
             return state.fleet.nodes[id: id].flatMap { nodeNotice($0, action: action) }
-        case .fleet(.path(.element(let id, .node(let action)))):
-            guard case .node(let node) = state.fleet.path[id: id] else { return nil }
-            return nodeNotice(node, action: action)
         default: return nil
         }
     }
