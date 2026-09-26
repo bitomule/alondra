@@ -166,3 +166,61 @@ func malformedCollectionFailsClosedWithoutOverwriting(kind: String) throws {
     #expect(try store.load() == nil)
     #expect(try store.loadCollection().pairings.isEmpty)
 }
+
+@Test func selectingStoredMacPersistsWithoutLosingAnotherAccountsKeys() throws {
+    let item = MemoryPairingItem(legacyBytes)
+    let store = KeychainApprovedPairingStore(item: item)
+    let a = try #require(try store.load())
+    let b = binding()
+    let other = binding(mac: "other", owner: "owner-b")
+    try store.save(b)
+    try store.save(other)
+    try store.select(ApprovedPairingID(a))
+    let restarted = KeychainApprovedPairingStore(item: item)
+    #expect(try restarted.load()?.macID == a.macID)
+    #expect(try restarted.loadCollection().pairings.count == 3)
+    #expect(try restarted.loadCollection().pairings.first { $0.ownerSub == "owner-b" }?.signingPrivateKey == other.signingPrivateKey)
+    let before = item.bytes
+    #expect(throws: PairingStoreError.invalidCollection) { try store.select(ApprovedPairingID(binding(mac: "unknown"))) }
+    #expect(item.bytes == before)
+}
+
+
+@Test func failedSelectionCompensationPreservesNewApprovalsAndNeverRecreatesLogoutKeys() throws {
+    let item = MemoryPairingItem(legacyBytes), store = KeychainApprovedPairingStore(item: item)
+    let original = try #require(try store.load())
+    let second = binding(), third = binding(mac: "mac-c", device: "phone-c", signing: "pin-c")
+    try store.save(second)
+    try store.select(ApprovedPairingID(original))
+    try store.select(ApprovedPairingID(second))
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(try store.load()?.macID == original.macID)
+    #expect(try store.loadCollection().pairings.count == 2)
+    try store.select(ApprovedPairingID(second))
+    try store.save(third) // A newer approved Mac wins while the old action is suspended.
+    let newer = item.bytes
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(item.bytes == newer)
+    #expect(try store.load()?.macID == third.macID)
+    try store.delete()
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(item.bytes == nil)
+}
+
+
+@Test func compensationUsesPublishedMacWhenItsApprovalWasPersistedBeforeFailedSelection() throws {
+    let item = MemoryPairingItem(legacyBytes), store = KeychainApprovedPairingStore(item: item)
+    let original = try #require(try store.load())
+    let attempted = binding(), published = binding(mac: "mac-d", device: "phone-d", signing: "pin-d")
+    try store.save(attempted)
+    try store.select(ApprovedPairingID(original))
+    try store.save(published) // D approval persists before the suspended C selection.
+    try store.select(ApprovedPairingID(attempted))
+    // D has now been published by the registry. The owner supplies this live ID,
+    // not A captured before its await. Compensation retains all three credentials.
+    try store.restoreSelection(ApprovedPairingID(published), ifSelected: ApprovedPairingID(attempted))
+    let restarted = KeychainApprovedPairingStore(item: item)
+    #expect(try restarted.load()?.macID == published.macID)
+    #expect(try restarted.loadCollection().pairings.count == 3)
+    #expect(try restarted.loadCollection().pairings.first { $0.macID == original.macID }?.signingPrivateKey == original.signingPrivateKey)
+}

@@ -524,7 +524,7 @@ pub fn stale_wait_messages(view: &View, node: &Node, user: &str, now: Millis) ->
         return vec![];
     }
     let told = |url: &str, since: Millis| view.messages.values().any(|m| m.session_id == node.session_id && m.from == MessageFrom::Alondra && m.created_at >= since && m.text.contains(url));
-    let mut next_id = view.messages.keys().next_back().copied().unwrap_or(0);
+    let mut next_id = view.next_message_id() - 1;
     let mut said = vec![];
     for named in view.named_prs(node) {
         let (text, about) = match named {
@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     fn alondra_says(v: &mut View, session: &str, text: String, seq: u64) {
-        let id = v.messages.keys().next_back().copied().unwrap_or(0) + 1;
+        let id = v.next_message_id();
         let m = Message { id, session_id: session.into(), from: MessageFrom::Alondra, text, answers_question: None, created_at: T0 + seq as Millis * 1000, handed_at: None, delivered_at: None, about: None, attachments: vec![] };
         v.apply(seq, T0 + seq as Millis * 1000, &Event::MessageQueued(m));
     }

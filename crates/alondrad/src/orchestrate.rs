@@ -201,7 +201,7 @@ pub(crate) fn hand_events(hub: &Hub, v: &View, id: &str, session_id: &str,
         events.push(Event::Compaction { session_id: session_id.to_string(), step: CompactionStep::Requested });
     }
     events.push(Event::MessageQueued(Message {
-        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_message_id(),
         session_id: session_id.to_string(),
         from,
         text: text.to_string(),
@@ -546,7 +546,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
 pub(crate) fn orchestrator_message(v: &View, text: String) -> Option<Event> {
     let o = v.nodes.values().find(|n| n.is_orchestrator && live(v, &n.session_id))?;
     Some(Event::MessageQueued(Message {
-        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_message_id(),
         session_id: o.session_id.clone(),
         from: MessageFrom::Alondra,
         text,

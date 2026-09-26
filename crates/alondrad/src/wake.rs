@@ -4,7 +4,6 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alondra_core::event::CompactionStep;
 use alondra_core::{Event, now_millis, upkeep};
 
 use crate::hub::Hub;
@@ -68,87 +67,66 @@ pub async fn run(hub: Arc<Hub>) {
     loop {
         hub.wait_event(Duration::from_secs(10)).await;
         compact_waiting(&hub).await;
-        let due: Vec<(String, String, Pending)> = hub.read(|v| {
-            v.nodes
-                .values()
-                .filter(|n| n.in_daemon)
-                .filter_map(|n| {
-                    let msgs: Pending = v
-                        .deliverable_messages(&n.session_id)
-                        .map(|m| (m.id, m.text.clone(), m.answers_question))
-                        .collect();
-                    (!msgs.is_empty()).then(|| (n.session_id.clone(), n.short_id.clone(), msgs))
-                })
-                .collect()
-        });
-        for (session_id, short, msgs) in due {
-            if !backoff.ready(&session_id) {
-                continue;
-            }
-            let text = match turn_for(&hub.home, &msgs) {
-                Ok(t) => t,
-                Err(e) => {
-                    log!("could not store the long message for {short}: {e}");
-                    backoff.outcome(&session_id, false);
-                    continue;
+        let due: Vec<(String, String)> = hub.read(|v| v.nodes.values().filter(|n|n.in_daemon)
+            .map(|n|(n.session_id.clone(),n.short_id.clone())).collect());
+        for (session_id, short) in due {
+            if !backoff.ready(&session_id) { continue; }
+            let attempt=match crate::delivery::claim(&hub,&session_id,alondra_core::delivery::Channel::Terminal) {
+                Ok(Some(a))=>a, Ok(None)=>continue, Err(e)=>{log!("delivery claim failed: {e}");continue;}
+            };
+            let msgs:Pending=hub.read(|v|attempt.message_ids.iter().filter_map(|id|v.messages.get(id))
+                .map(|m|(m.id,m.text.clone(),m.answers_question)).collect());
+            let outcome=match turn_for(&hub.home,&msgs) {
+                Err(e)=>{log!("could not prepare message: {e}");crate::delivery::Outcome::NotStarted("prepare_failed")}
+                Ok(text)=>{
+                    let own=hub.own_attach(&short);
+                    let result=tokio::task::spawn_blocking(move||type_into(&short,&text)).await;
+                    drop(own);
+                    match result {
+                        Ok(Ok(()))=>crate::delivery::Outcome::Handed,
+                        Ok(Err(WriteFailure::NotStarted))=>crate::delivery::Outcome::NotStarted("terminal_not_ready"),
+                        Ok(Err(WriteFailure::Uncertain))=>crate::delivery::Outcome::Uncertain("terminal_write_uncertain"),
+                        Err(_)=>crate::delivery::Outcome::Uncertain("delivery_worker_failed"),
+                    }
                 }
             };
-            let short_for_task = short.clone();
-            let own = hub.own_attach(&short);
-            let outcome = tokio::task::spawn_blocking(move || type_into(&short_for_task, &text)).await;
-            drop(own);
-            backoff.outcome(&session_id, matches!(outcome, Ok(Ok(()))));
-            match outcome {
-                Ok(Ok(())) => {
-                    for (id, _, question) in msgs {
-                        let _ = hub.append(Event::MessageHanded { id });
-                        if let Some(q) = question {
-                            let _ = hub.append(Event::QuestionDelivered { id: q });
-                        }
-                    }
-                    log!("message delivered to {short} through its terminal");
-                }
-                Ok(Err(e)) => log!("could not deliver to {short}: {e}"),
-                Err(e) => log!("delivery task broken for {short}: {e}"),
+            backoff.outcome(&session_id,matches!(outcome,crate::delivery::Outcome::Handed));
+            if let Err(e)=crate::delivery::finish(&hub,attempt.id,outcome) {
+                log!("delivery outcome not committed; attempt {} remains blocked: {e}",attempt.id);
             }
         }
     }
 }
 
-/// Types `/compact` into the nodes that wait for one before their next task, and gives up on a
-/// compaction that never ended, so what waits behind it goes in.
+/// Claims `/compact` before writing. A missing completion remains uncertain and blocks the queue.
 async fn compact_waiting(hub: &Hub) {
-    let now = now_millis();
-    let (to_type, overdue): (Vec<(String, String)>, Vec<(String, String)>) = hub.read(|v| {
-        let waiting = v.nodes.values().filter(|n| n.in_daemon && n.compaction.is_some());
-        let (overdue, rest): (Vec<_>, Vec<_>) = waiting.partition(|n| upkeep::compaction_overdue(n, now));
-        let ids = |n: &&alondra_core::Node| (n.session_id.clone(), n.short_id.clone());
-        (rest.iter().filter(|n| n.compaction.is_some_and(|c| c.typed_at.is_none())).map(ids).collect(), overdue.iter().map(ids).collect())
+    let now=now_millis();
+    let (to_type,overdue):(Vec<(String,String)>,Vec<(String,String)>)=hub.read(|v| {
+        let waiting=v.nodes.values().filter(|n|n.in_daemon && n.compaction.is_some() && !v.delivery_blocked(&n.session_id));
+        let (overdue,rest):(Vec<_>,Vec<_>)=waiting.partition(|n|upkeep::compaction_overdue(n,now) && n.compaction.is_some_and(|c|c.typed_at.is_some()));
+        let ids=|n:&&alondra_core::Node|(n.session_id.clone(),n.short_id.clone());
+        (rest.iter().filter(|n|n.compaction.is_some_and(|c|c.typed_at.is_none())).map(ids).collect(),overdue.iter().map(ids).collect())
     });
-    for (session_id, short) in overdue {
-        log!("{short} did not finish compacting in time; typing its messages anyway");
-        let _ = hub.append(Event::Compaction { session_id, step: CompactionStep::GaveUp });
+    // A confirmed local handoff without PostCompact is still ambiguous. Never release its queue.
+    for (sid,_) in overdue {
+        if let Err(error)=crate::delivery::mark_compaction_overdue(hub,&sid,now) {
+            log!("could not persist compaction uncertainty: {error}");
+        }
     }
-    for (session_id, short) in to_type {
-        let own = hub.own_attach(&short);
-        let typing = short.clone();
-        let outcome = tokio::task::spawn_blocking(move || type_into(&typing, upkeep::COMPACT_COMMAND)).await;
-        drop(own);
-        let step = match outcome {
-            Ok(Ok(())) => {
-                log!("compacting {short} before its next task");
-                CompactionStep::Typed
-            }
-            Ok(Err(e)) => {
-                log!("could not compact {short}, typing its messages anyway: {e}");
-                CompactionStep::GaveUp
-            }
-            Err(e) => {
-                log!("compaction task broken for {short}: {e}");
-                CompactionStep::GaveUp
-            }
+    for (sid,short) in to_type {
+        let attempt=match crate::delivery::claim(hub,&sid,alondra_core::delivery::Channel::Compact) {
+            Ok(Some(a))=>a, Ok(None)=>continue, Err(e)=>{log!("compaction claim failed: {e}");continue;}
         };
-        let _ = hub.append(Event::Compaction { session_id, step });
+        let own=hub.own_attach(&short);
+        let result=tokio::task::spawn_blocking(move||type_into(&short,upkeep::COMPACT_COMMAND)).await;
+        drop(own);
+        let outcome=match result {
+            Ok(Ok(()))=>crate::delivery::Outcome::Handed,
+            Ok(Err(WriteFailure::NotStarted))=>crate::delivery::Outcome::NotStarted("terminal_not_ready"),
+            Ok(Err(WriteFailure::Uncertain))=>crate::delivery::Outcome::Uncertain("compaction_write_uncertain"),
+            Err(_)=>crate::delivery::Outcome::Uncertain("compaction_worker_failed"),
+        };
+        if let Err(e)=crate::delivery::finish(hub,attempt.id,outcome) {log!("compaction outcome not committed: {e}");}
     }
 }
 
@@ -327,21 +305,25 @@ fn folded_into_a_paste(screen: &str) -> bool {
     lines[from..].iter().any(|l| PASTE_MARKERS.iter().any(|m| l.contains(m)))
 }
 
-fn type_into(short: &str, text: &str) -> Result<(), String> {
-    let session = attach(short)?;
-    std::thread::sleep(Duration::from_secs(2));
-    let screen = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
-    if let Some((marker, line)) = menu_on_screen(&screen) {
-        return Err(format!("the node is in a menu ({marker:?} in {line:?}); not typing over it"));
-    }
-    tmux(&["send-keys", "-t", &session.0, "-l", text])?;
-    std::thread::sleep(Duration::from_millis(600));
-    let typed = tmux(&["capture-pane", "-p", "-t", &session.0]).unwrap_or_default();
-    if folded_into_a_paste(&typed) {
-        return Err("the terminal folded the text into a paste, which would reach the node cut; not submitting it".into());
-    }
-    tmux(&["send-keys", "-t", &session.0, "Enter"])?;
-    std::thread::sleep(Duration::from_secs(2));
+#[derive(Debug)]
+enum WriteFailure { NotStarted, Uncertain }
+
+fn type_into(short: &str, text: &str) -> Result<(), WriteFailure> {
+    let session=attach(short).map_err(|_|WriteFailure::NotStarted)?;
+    write_terminal(&session.0,text,tmux,std::thread::sleep)
+}
+
+fn write_terminal(session:&str,text:&str,mut command:impl FnMut(&[&str])->Result<String,String>,mut wait:impl FnMut(Duration))->Result<(),WriteFailure> {
+    wait(Duration::from_secs(2));
+    let screen=command(&["capture-pane","-p","-t",session]).map_err(|_|WriteFailure::NotStarted)?;
+    if menu_on_screen(&screen).is_some() { return Err(WriteFailure::NotStarted); }
+    // Even a failing send-keys may have written a prefix. No error beyond this point is safe to retry.
+    command(&["send-keys","-t",session,"-l",text]).map_err(|_|WriteFailure::Uncertain)?;
+    wait(Duration::from_millis(600));
+    let typed=command(&["capture-pane","-p","-t",session]).map_err(|_|WriteFailure::Uncertain)?;
+    if folded_into_a_paste(&typed) { return Err(WriteFailure::Uncertain); }
+    command(&["send-keys","-t",session,"Enter"]).map_err(|_|WriteFailure::Uncertain)?;
+    wait(Duration::from_secs(2));
     Ok(())
 }
 
@@ -350,6 +332,24 @@ mod menu_tests {
     use super::*;
 
     const RULE: &str = "────────────────────────────────────────────────────────────";
+
+    #[test]
+    fn delivery_transport_classifies_prewrite_and_partial_failures_without_resubmitting() {
+        for failure in 0..=4 {
+            let mut calls=vec![];
+            let result=write_terminal("fake","secret text",|args| {
+                let index=calls.len(); calls.push(args.iter().map(|s|s.to_string()).collect::<Vec<_>>());
+                if index==failure { Err("injected I/O failure".into()) } else { Ok("normal prompt".into()) }
+            },|_|());
+            if failure==0 { assert!(matches!(result,Err(WriteFailure::NotStarted))); }
+            else if failure<4 { assert!(matches!(result,Err(WriteFailure::Uncertain))); }
+            else { assert!(result.is_ok()); }
+            assert_eq!(calls.iter().filter(|c|c.first().is_some_and(|s|s=="send-keys") && c.last().is_some_and(|s|s=="secret text")).count(),usize::from(failure!=0));
+        }
+        let mut step=0;let mut submitted=false;
+        let result=write_terminal("fake","text",|args| {step+=1;if args.last()==Some(&"Enter") {submitted=true;} Ok(if step==3 {"❯ [Pasted text #1]"} else {"normal prompt"}.into())},|_|());
+        assert!(matches!(result,Err(WriteFailure::Uncertain)));assert!(!submitted);
+    }
 
     #[test]
     fn only_the_bottom_of_the_screen_can_hold_a_menu() {

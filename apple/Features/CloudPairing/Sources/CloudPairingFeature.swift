@@ -35,6 +35,7 @@ public struct CloudPairingFeature {
     @ObservableState
     public struct State: Equatable {
         public enum Configuration: Equatable { case unknown, missing, saved }
+        public let additionalMac: Bool
         public var configuration: Configuration = .unknown
         public var restorationInFlight = false
         public var reauthenticationRequired = false
@@ -45,14 +46,18 @@ public struct CloudPairingFeature {
         public var payload = ""
         public var error: String?
         public var generation = 0
-        public init() {}
+        public init(additionalMac: Bool = false) {
+            self.additionalMac = additionalMac
+            if additionalMac { configuration = .saved; phase = .scanning }
+        }
     }
-    public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, pending(String), approved }
+    public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, cancelling, pending(String), approved }
     public enum Action: BindableAction {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
         case configurationLoaded(Int, Bool), retryRestore, reauthenticate
         case restorationFailed(Int, String, reauthenticationRequired: Bool)
         case revocationRequired(Int, String)
+        case cancelled(Int)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String)
     }
     @Dependency(\.cloudPairing) var service
@@ -192,7 +197,22 @@ public struct CloudPairingFeature {
                 default: state.phase = .signedOut
                 }
                 return .none
+            case .cancelled(let generation):
+                guard generation == state.generation, state.additionalMac, state.phase == .cancelling else { return .none }
+                state.phase = .scanning
+                return .none
             case .cancel, .logout:
+                if state.additionalMac {
+                    guard state.phase != .cancelling else { return .none }
+                    // Closing/retrying a pairing sheet never signs out the account or
+                    // destroys the existing Mac's session and notification contexts.
+                    state.generation += 1; state.phase = .cancelling; state.payload = ""; state.error = nil
+                    let generation = state.generation
+                    return .concatenate(.cancel(id: CancelID.operation), .run { send in
+                        await service.cancel()
+                        await send(.cancelled(generation))
+                    })
+                }
                 guard state.phase != .signingOut else { return .none }
                 state.restorationInFlight = false
                 state.generation += 1; state.phase = .signingOut; state.payload = ""; state.error = nil

@@ -17,6 +17,14 @@ pub struct View {
     pub questions: BTreeMap<u64, Question>,
     pub reports: BTreeMap<u64, Report>,
     pub messages: BTreeMap<u64, Message>,
+    #[serde(default)]
+    pub message_id_high_water: u64,
+    #[serde(default)]
+    pub question_id_high_water: u64,
+    #[serde(default)]
+    pub delivery_protocol: bool,
+    #[serde(default)]
+    pub delivery_attempts: BTreeMap<u64, crate::delivery::Attempt>,
     /// Nodes closed, with when: their late events are ignored until the retention window drops them.
     #[serde(default, deserialize_with = "removed_nodes")]
     pub removed: BTreeMap<String, Millis>,
@@ -170,12 +178,46 @@ impl View {
         }
     }
 
+    /// Snapshot counters outlive retention. Fallbacks also cover older snapshots and
+    /// historical attempts whose payload was already removed.
+    pub fn next_message_id(&self) -> u64 {
+        self.message_id_high_water.max(self.messages.keys().next_back().copied().unwrap_or(0))
+            .max(self.delivery_attempts.values().flat_map(|a| a.message_ids.iter()).copied().max().unwrap_or(0)) + 1
+    }
+
+    pub fn next_question_id(&self) -> u64 {
+        self.question_id_high_water.max(self.questions.keys().next_back().copied().unwrap_or(0))
+            .max(self.messages.values().filter_map(|m| m.answers_question).max().unwrap_or(0)) + 1
+    }
+
+    pub fn backfill_delivery_ids(&mut self) {
+        self.message_id_high_water = self.next_message_id() - 1;
+        self.question_id_high_water = self.next_question_id() - 1;
+    }
+
+    fn delivery_needs_resolution(&self, a: &crate::delivery::Attempt) -> bool {
+        a.blocks() || (a.state == crate::delivery::State::Retryable &&
+            if a.channel == crate::delivery::Channel::Compact {
+                self.delivery_attempts.values().rev().find(|other| other.session_id == a.session_id && other.channel == a.channel)
+                    .is_some_and(|other| other.id == a.id)
+            } else {
+                a.message_ids.iter().any(|id| self.message_attempt(*id).is_some_and(|latest| latest.id == a.id))
+            })
+    }
+
     /// Forgets what nobody can act on any more: anything older than the retention window except
     /// the inbox (open questions, unread reports) and nodes Alondra can still watch. A node that
     /// only speaks through hooks has no process to watch, so once it has been silent for the whole
     /// window and leaves nothing in the inbox it is gone. An answer still undelivered after the
     /// window never will be: only nodes in the daemon can be woken to receive one.
     pub fn prune(&mut self, before: Millis) {
+        self.backfill_delivery_ids();
+        let delivery_sessions:std::collections::HashSet<String>=self.delivery_attempts.values()
+            .filter(|a| self.delivery_needs_resolution(a)).map(|a|a.session_id.clone()).collect();
+        let delivery_messages:std::collections::HashSet<u64>=self.delivery_attempts.values()
+            .filter(|a| self.delivery_needs_resolution(a)).flat_map(|a|a.message_ids.iter().copied()).collect();
+        let delivery_questions: std::collections::HashSet<u64> = delivery_messages.iter()
+            .filter_map(|id| self.messages.get(id).and_then(|m| m.answers_question)).collect();
         let mut heard: std::collections::HashMap<&str, Millis> = std::collections::HashMap::new();
         let activity = self.questions.values().map(|q| (q.session_id.as_str(), q.asked_at))
             .chain(self.reports.values().map(|r| (r.session_id.as_str(), r.created_at)))
@@ -192,17 +234,23 @@ impl View {
             .filter(|n| {
                 let watched = n.in_daemon || n.is_orchestrator || (n.alive && n.pid.is_some());
                 let last = heard.get(n.session_id.as_str()).map_or(n.last_seen, |t| (*t).max(n.last_seen));
-                !watched && last < before && !in_inbox.contains(n.session_id.as_str())
+                !watched && last < before && !in_inbox.contains(n.session_id.as_str()) && !delivery_sessions.contains(&n.session_id)
             })
             .map(|n| n.session_id.clone())
             .collect();
         for sid in &gone {
             self.nodes.remove(sid);
         }
-        self.questions.retain(|_, q| q.status.is_open() || q.asked_at >= before);
+        self.questions.retain(|id, q| q.status.is_open() || q.asked_at >= before || delivery_questions.contains(id));
         self.reports.retain(|_, r| !(r.read && r.created_at < before));
-        self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before);
-        self.messages.retain(|_, m| m.created_at >= before);
+        self.nodes.retain(|_, n| n.alive || n.in_daemon || n.last_seen >= before || delivery_sessions.contains(&n.session_id));
+        self.messages.retain(|id, m| m.created_at >= before || delivery_messages.contains(id));
+        // Keep pending resolution indefinitely; completed metadata follows the ordinary
+        // retention window, and remains while a retained payload still refers to it.
+        let keep_attempts: std::collections::HashSet<u64> = self.delivery_attempts.values()
+            .filter(|a| self.delivery_needs_resolution(a) || a.updated_at >= before || a.message_ids.iter().any(|id| self.messages.contains_key(id)))
+            .map(|a| a.id).collect();
+        self.delivery_attempts.retain(|id, _| keep_attempts.contains(id));
         self.approved_artifacts.retain(|_, at| *at >= before);
         self.removed.retain(|_, at| *at >= before);
         self.launched_sessions.retain(|_, at| *at >= before);
@@ -215,8 +263,18 @@ impl View {
 
     pub fn apply(&mut self, seq: u64, at: Millis, event: &Event) {
         self.seq = seq;
+        match event {
+            Event::MessageQueued(m) => {
+                self.message_id_high_water = self.message_id_high_water.max(m.id);
+                self.question_id_high_water = self.question_id_high_water.max(m.answers_question.unwrap_or(0));
+            }
+            Event::QuestionAsked(q) => self.question_id_high_water = self.question_id_high_water.max(q.id),
+            Event::DeliveryAttemptRecorded(a) => self.message_id_high_water = self.message_id_high_water.max(a.message_ids.iter().copied().max().unwrap_or(0)),
+            _ => {}
+        }
         if let Some(sid) = event.session_id()
             && self.removed.contains_key(sid)
+            && !matches!(event, Event::DeliveryAttemptRecorded(_))
         {
             return;
         }
@@ -353,6 +411,10 @@ impl View {
             Event::MessageQueued(m) => {
                 self.messages.insert(m.id, m.clone());
                 Some((m.session_id.clone(), Trigger::Message))
+            }
+            Event::DeliveryProtocolActivated => { self.delivery_protocol = true; None }
+            Event::DeliveryAttemptRecorded(attempt) => {
+                self.delivery_attempts.insert(attempt.id, attempt.clone()); None
             }
             Event::MessageHanded { id } => {
                 let reopens = self.messages.get(id).is_some_and(|m| m.from != MessageFrom::Alondra || self.is_merge_notice(m));
@@ -1079,7 +1141,7 @@ impl View {
     pub fn alondra_message(&self, session_id: &str, text: String, at: Millis) -> Option<Message> {
         let node = self.nodes.get(session_id)?;
         self.may_alondra_write(node).then(|| Message {
-            id: self.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            id: self.next_message_id(),
             session_id: session_id.to_string(),
             from: MessageFrom::Alondra,
             text,
@@ -1094,10 +1156,20 @@ impl View {
 
     /// What may be typed into the session now: everything from David or the orchestrator, and
     /// what Alondra queued only while the node may take it and was not done since.
+    pub fn delivery_blocked(&self, session_id: &str) -> bool {
+        self.delivery_attempts.values().any(|a| a.session_id == session_id && a.blocks())
+    }
+
+    pub fn message_attempt(&self, id: u64) -> Option<&crate::delivery::Attempt> {
+        self.delivery_attempts.values().rev().find(|a| a.message_ids.contains(&id))
+    }
+
     pub fn deliverable_messages(&self, session_id: &str) -> impl Iterator<Item = &Message> {
         let node = self.nodes.get(session_id);
-        let compacting = node.is_some_and(|n| n.compaction.is_some());
-        self.pending_messages(session_id).filter(move |_| !compacting).filter(move |m| {
+        let compacting = node.is_some_and(|n| n.compaction.is_some()) || self.delivery_blocked(session_id);
+        self.pending_messages(session_id).filter(move |_| !compacting)
+            .filter(|m| self.message_attempt(m.id).is_none_or(|a| a.state == crate::delivery::State::Retryable))
+            .filter(move |m| {
             m.from != MessageFrom::Alondra || node.is_some_and(|n| self.may_alondra_write(n) && n.done_at.is_none_or(|done| m.created_at > done))
         })
     }
@@ -1138,8 +1210,12 @@ impl View {
         if pending.is_empty() {
             return None;
         }
-        let said = pending
-            .iter()
+        let ids=pending.iter().map(|m|m.id).collect::<Vec<_>>();
+        Some((pending.iter().map(|m|(m.id,m.answers_question)).collect(),self.message_batch_text(&ids,user)))
+    }
+
+    pub fn message_batch_text(&self, ids:&[u64], user:&str) -> String {
+        let said = ids.iter().filter_map(|id|self.messages.get(id))
             .map(|m| {
                 let from = match m.from {
                     crate::model::MessageFrom::User => user,
@@ -1151,7 +1227,7 @@ impl View {
             .collect::<Vec<_>>()
             .join("\n\n");
         let text = format!("Messages sent to you through Alondra while you worked. Act on them before you stop:\n\n{said}");
-        Some((pending.iter().map(|m| (m.id, m.answers_question)).collect(), text))
+        text
     }
 
     pub fn resolve_node(&self, key: &str) -> Option<&Node> {
@@ -1176,6 +1252,23 @@ impl View {
 mod tests {
     use super::*;
     use crate::model::{Answer, NodeState, OrchestratorState, QuestionOrigin};
+
+    #[test]
+    fn delivery_legacy_snapshot_seeds_counters_from_retained_references() {
+        let mut v=View::default();
+        v.messages.insert(12, Message {id:12,session_id:"s".into(),from:MessageFrom::User,text:"answer".into(),
+            answers_question:Some(27),created_at:1,handed_at:None,delivered_at:None,attachments:vec![],about:None});
+        v.delivery_attempts.insert(40,crate::delivery::Attempt {id:40,session_id:"s".into(),channel:crate::delivery::Channel::Terminal,
+            message_ids:vec![33],state:crate::delivery::State::Handed,version:2,reason:None,created_at:1,updated_at:1,resolved_from_version:None});
+        let mut old=serde_json::to_value(&v).unwrap();
+        old.as_object_mut().unwrap().remove("message_id_high_water");
+        old.as_object_mut().unwrap().remove("question_id_high_water");
+        let mut restored:View=serde_json::from_value(old).unwrap();restored.backfill_delivery_ids();
+        restored.prune(10);
+        let restored:View=serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
+        assert_eq!(restored.next_message_id(),34);
+        assert_eq!(restored.next_question_id(),28);
+    }
 
     #[test]
     fn integrity_audit_rejects_corrupt_task_holding_fields() {

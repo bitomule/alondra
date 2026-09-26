@@ -899,7 +899,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     let allowed = match request.method.as_str() {
         "GET" if request.body.is_none() => {
-            matches!(path, "/v1/changes" | "/v1/overview" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
+            matches!(path, "/v1/changes" | "/v1/overview" | "/v1/delivery-attempts" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
                 || one_id_path(path, "/v1/tasks/").is_some()
                 || one_id_path(path, "/v1/nodes/").is_some()
                 || id_action(path, "/v1/nodes/", "/activity", false)
@@ -920,6 +920,8 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || id_action(path, "/v1/requests/", "/close", false)
                 || id_action(path, "/v1/reports/", "/read", true)
                 || id_action(path, "/v1/reports/", "/review", true)
+                || id_action(path,"/v1/delivery-attempts/","/retry",true)
+                || id_action(path,"/v1/delivery-attempts/","/discard",true)
                 || id_action(path, "/v1/nodes/", "/close", false)
                 || id_action(path, "/v1/nodes/", "/messages", false)
                 || id_action(path, "/v1/schedules/", "/run", false)

@@ -1,13 +1,16 @@
+import AlondraCloudPairingFeature
 import ComposableArchitecture
 import SwiftUI
 
-public struct ServiceSettingsView: View {
+public struct ServiceSettingsView<PairingContent: View>: View {
     @Environment(\.scenePhase) private var phase
     @Bindable var store: StoreOf<ServiceSettingsFeature>
     private let ink: Color
     private let success: Color
     private let failure: Color
-    public init(store: StoreOf<ServiceSettingsFeature>, ink: Color = .primary, success: Color = .green, failure: Color = .red) {
+    private let pairingContent: (StoreOf<CloudPairingFeature>) -> PairingContent
+    public init(store: StoreOf<ServiceSettingsFeature>, ink: Color = .primary, success: Color = .green, failure: Color = .red, @ViewBuilder pairingContent: @escaping (StoreOf<CloudPairingFeature>) -> PairingContent) {
+        self.pairingContent = pairingContent
         self.store = store; self.ink = ink; self.success = success; self.failure = failure
     }
     public var body: some View {
@@ -25,6 +28,24 @@ public struct ServiceSettingsView: View {
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 }
+                ForEach(store.macs) { mac in
+                    Button { store.send(.selectMac(mac.id)) } label: {
+                        HStack {
+                            Label("Mac \(mac.macID.prefix(8))", systemImage: "desktopcomputer")
+                            Spacer()
+                            if store.selectingMacID == mac.id { ProgressView() }
+                            else if store.selectedMacID == mac.id {
+                                Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
+                            }
+                        }
+                    }
+                    .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
+                    .accessibilityLabel("Mac \(mac.macID)")
+                    .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
+                }
+                if let error = store.macError { Text(error).foregroundStyle(failure) }
+                Button("Link another Mac", systemImage: "plus") { store.send(.linkMac) }
+                    .disabled(store.selectingMacID != nil || store.pairingCleanup)
                 Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
             } header: {
                 Text("Account")
@@ -48,6 +69,16 @@ public struct ServiceSettingsView: View {
             }
             if let error = store.error {
                 Section { Text(error).foregroundStyle(failure).textSelection(.enabled) }
+            }
+        }
+        .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairing in
+            NavigationStack {
+                pairingContent(pairing)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { store.send(.pairing(.dismiss)) }
+                        }
+                    }
             }
         }
         .formStyle(.grouped)

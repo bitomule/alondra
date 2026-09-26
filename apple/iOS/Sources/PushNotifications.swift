@@ -84,10 +84,10 @@ final class PushCenter {
     }
 
     private var client: ServiceNotificationClient?
-    private let decryptionStore: NotificationDecryptionStore?
-    private let preferences: PushPreferencesLedger
-    @ObservationIgnored private var lastRegistered: String?
-    @ObservationIgnored private var syncTask: Task<Void, Never>?
+    private let routing = NotificationRoutingCoordinator()
+    var selectBinding: (@MainActor (NotificationPayload.Binding) async throws -> Void)?
+    private var clients: [ServiceNotificationClient] = []
+    private let registrations: PushRegistrationCoordinator
 
     private enum Keys {
         static let quietEnabled = "quietHoursEnabled"
@@ -97,16 +97,23 @@ final class PushCenter {
 
     private static let staleNotificationAge: TimeInterval = 10
 
-    init(decryptionStore: NotificationDecryptionStore? = nil) {
-        self.decryptionStore = decryptionStore
-        preferences = PushPreferencesLedger(file: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
-            .appendingPathComponent("push-preferences.json"))
+    init() {
+        registrations = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
+            .appendingPathComponent("push-preferences.json")))
         let defaults = UserDefaults.standard
         quietHours = QuietHours(
             enabled: defaults.bool(forKey: Keys.quietEnabled),
             start: defaults.object(forKey: Keys.quietStart) as? Int ?? 23 * 60,
             end: defaults.object(forKey: Keys.quietEnd) as? Int ?? 8 * 60
         )
+        registrations.onChange = { [weak self] state in
+            self?.registration = switch state {
+            case .idle: .idle
+            case .sending: .sending
+            case .registered: .registered
+            case .failed(let message): .failed(message)
+            }
+        }
     }
 
     private var center: UNUserNotificationCenter { .current() }
@@ -141,55 +148,28 @@ final class PushCenter {
         registration = .failed(error.localizedDescription)
     }
 
-    func install(_ client: ServiceNotificationClient?) {
-        self.client = client
+    func install(_ entries: [NotificationRoutingCoordinator.Entry], selected: NotificationPayload.Binding?) throws {
+        try routing.install(entries, selected: selected)
+        let clients = entries.map(\.client)
+        self.clients = clients
+        self.client = clients.first { $0.binding == selected }
         route = nil
-        lastRegistered = nil
         scheduleSync()
     }
 
-    func scheduleSync() {
-        let previous = syncTask
-        previous?.cancel()
-        // Serialize idempotent APNs upserts so an older token cannot finish last.
-        syncTask = Task {
-            await previous?.value
-            guard !Task.isCancelled else { return }
-            await sync()
-        }
+    func clear() {
+        clients = []; client = nil; route = nil
+        routing.clear(); selectBinding = nil
+        registrations.clear()
     }
 
-    private func sync() async {
-        guard let token, let client else { registration = .idle; return }
+    func scheduleSync() {
         let quietStart = quietHours.enabled ? QuietHours.clock(quietHours.start) : nil
         let quietEnd = quietHours.enabled ? QuietHours.clock(quietHours.end) : nil
-        let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(Self.environment.rawValue)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
-        guard fingerprint != lastRegistered else { return }
-        registration = .sending
         do {
-            let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                                                         quietStart: quietStart, quietEnd: quietEnd)
-            try Task.checkCancellation()
-            do {
-                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, revision)
-            } catch ServicePushPreferencesError.stale(let currentRevision) {
-                // A restored Keychain identity can outlive its app container. Advance only
-                // after the authenticated executor tells us its accepted revision.
-                try Task.checkCancellation()
-                let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                    quietStart: quietStart, quietEnd: quietEnd, newerThan: currentRevision)
-                try Task.checkCancellation()
-                try await client.register(token, Self.environment.rawValue, quietStart, quietEnd, newer)
-            }
-            guard self.client?.identity == client.identity, self.client?.binding == client.binding,
-                  self.token == token, !Task.isCancelled else { return }
-            lastRegistered = fingerprint
-            registration = .registered
-        } catch {
-            guard self.client?.identity == client.identity, self.client?.binding == client.binding,
-                  !Task.isCancelled else { return }
-            registration = .failed(error.localizedDescription)
-        }
+            try registrations.update(clients: clients, token: token, environment: Self.environment.rawValue,
+                quietStart: quietStart, quietEnd: quietEnd)
+        } catch { registration = .failed(error.localizedDescription) }
     }
 
     private func currentBinding() -> NotificationPayload.Binding? { client?.binding }
@@ -233,34 +213,34 @@ final class PushCenter {
 
     func respond(to response: NotificationResponse) async {
         guard let raw = response.encryptedPayload,
-              let context = try? decryptionStore?.load(), context.binding == currentBinding()?.value,
-              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context,
-                  nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)),
-              let payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [AnyHashable: Any],
-              let boundItem = NotificationPayload.BoundItem(userInfo: payload),
-              boundItem.matches(currentBinding()) else { return }
-        let item = boundItem.item
-        let binding = boundItem.binding
+              let authorized = try? routing.authorize(raw, nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)) else { return }
+        let item = authorized.item
+        let binding = authorized.binding
         switch response.action {
         case UNNotificationDefaultActionIdentifier:
+            guard await activate(authorized) else { return }
             route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question, binding: binding)
         case NotificationCategory.review:
+            guard await activate(authorized) else { return }
             route = NotificationRoute(itemID: item.inboxID, opensDetail: true, binding: binding)
         default:
-            guard let command = NotificationAction(item: item, action: response.action, text: response.text) else { return }
-            await send(response, itemID: item.inboxID, binding: binding, command: command)
+            await send(response, authorized: authorized)
         }
     }
 
-    private func send(_ response: NotificationResponse, itemID: String, binding: NotificationPayload.Binding, command: NotificationAction) async {
-        guard let client, client.binding == binding else { return }
-        let submission = Task { await client.submit(command, itemID) }
+    private func activate(_ authorized: NotificationRoutingCoordinator.Authorized) async -> Bool {
+        guard let selectBinding else { return false }
+        do { try await routing.activate(authorized, select: selectBinding); return true }
+        catch { return false }
+    }
+
+    private func send(_ response: NotificationResponse, authorized: NotificationRoutingCoordinator.Authorized) async {
+        let submission = Task { await routing.submit(authorized, actionID: response.action, text: response.text) }
         let background = UIApplication.shared.beginBackgroundTask(withName: "alondra.notification-action") {
             submission.cancel()
         }
         defer { UIApplication.shared.endBackgroundTask(background) }
-        let result = await submission.value
-        guard currentBinding() == binding else { return }
+        guard let result = await submission.value else { return }
         switch result {
         case .confirmed:
             break

@@ -5,62 +5,45 @@ import Foundation
 import Security
 
 /// The extension needs only decryption material, never the client's signing key or bearer.
-public struct NotificationDecryptionContext: Codable, Sendable {
+public struct NotificationDecryptionContext: Codable, Equatable, Sendable {
     public let macID: String
     public let deviceID: String
     public let binding: String
     public let macSigningKey: Data
     public let agreementPrivateKey: Data
+    public let scope: NotificationBindingScope?
 
     public init(macID: String, deviceID: String, binding: String,
-                macSigningKey: Data, agreementPrivateKey: Data) {
+                macSigningKey: Data, agreementPrivateKey: Data, scope: NotificationBindingScope? = nil) {
         self.macID = macID; self.deviceID = deviceID; self.binding = binding
         self.macSigningKey = macSigningKey; self.agreementPrivateKey = agreementPrivateKey
+        self.scope = scope
     }
 }
 
-public struct NotificationDecryptionStore: Sendable {
-    private let accessGroup: String
-    public init(accessGroup: String) { self.accessGroup = accessGroup }
-    private var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.bitomule.alondra.notification-decryption.v1",
-         kSecAttrAccount as String: "approved-client", kSecAttrAccessGroup as String: accessGroup]
-    }
-    public func load() throws -> NotificationDecryptionContext? {
-        var q = query
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { throw NotificationDecryptionError.keychain(status) }
-        return try JSONDecoder().decode(NotificationDecryptionContext.self, from: data)
-    }
-    public func save(_ context: NotificationDecryptionContext) throws {
-        let data = try JSONEncoder().encode(context)
-        var q = query
-        q[kSecValueData as String] = data
-        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(q as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-            guard updated == errSecSuccess else { throw NotificationDecryptionError.keychain(updated) }
-        } else if status != errSecSuccess { throw NotificationDecryptionError.keychain(status) }
-    }
-    public func clear() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw NotificationDecryptionError.keychain(status) }
-    }
+public enum NotificationDecryptionError: Error, Equatable, Sendable {
+    case keychain(OSStatus), invalidPayload, invalidCollection, unsupportedVersion, identityConflict
 }
-
-public enum NotificationDecryptionError: Error { case keychain(OSStatus), invalidPayload }
 
 public enum ServiceNotificationDecoder {
+    /// An untrusted lookup hint only. No plaintext or action is accepted until decrypt verifies it.
+    public static func bindingHint(_ outerJSON: Data) throws -> NotificationPayload.Binding {
+        let outer = try JSONDecoder().decode(Outer.self, from: outerJSON)
+        guard let binding = NotificationPayload.Binding(outer.alondra.pushBinding) else {
+            throw NotificationDecryptionError.invalidPayload
+        }
+        return binding
+    }
+
     /// Never trust routing or buttons supplied outside the authenticated encrypted payload.
     public static func decrypt(_ outerJSON: Data, context: NotificationDecryptionContext,
                                nowMilliseconds: UInt64) throws -> Data {
         let outer = try JSONDecoder().decode(Outer.self, from: outerJSON)
+        if let scope = context.scope {
+            guard scope.isValid, scope.macID == context.macID, scope.deviceID == context.deviceID else {
+                throw NotificationDecryptionError.invalidPayload
+            }
+        }
         guard outer.alondra.pushBinding == context.binding,
               NotificationPayload.Binding(context.binding) != nil,
               outer.alondra.envelope.kind == "push" else { throw NotificationDecryptionError.invalidPayload }

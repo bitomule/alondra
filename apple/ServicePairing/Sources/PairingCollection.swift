@@ -59,6 +59,13 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         selectedID = id
     }
 
+    public mutating func select(_ id: ApprovedPairingID) throws {
+        guard pairings.contains(where: { ApprovedPairingID($0) == id }) else {
+            throw PairingStoreError.invalidCollection
+        }
+        selectedID = id
+    }
+
     private enum CodingKeys: String, CodingKey { case version, pairings, selectedID }
 
     public init(from decoder: any Decoder) throws {
