@@ -97,14 +97,16 @@ extension ServiceRootFeature {
                 effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(action))))))
             }
         }
-        for child in state.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
-            effects.append(.send(.pullRequest(.presented(.attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
-        }
-        if state.pullRequest?.pr.mutationOutcome?.uncertainID == id {
-            effects.append(.send(.pullRequest(.presented(.pr(.commandResolved(id, rejection: rejection))))))
-        }
-        if state.pullRequest?.diff.mutationOutcome?.uncertainID == id {
-            effects.append(.send(.pullRequest(.presented(.diff(.commandResolved(id, rejection: rejection))))))
+        for detail in state.pullRequests {
+            for child in detail.questionFeatures where child.question.uncertainCommandID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
+            }
+            if detail.pr.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .pr(.commandResolved(id, rejection: rejection))))))
+            }
+            if detail.diff.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .diff(.commandResolved(id, rejection: rejection))))))
+            }
         }
         return .merge(effects)
     }

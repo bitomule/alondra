@@ -169,15 +169,15 @@ struct CardRejectionIntegrationTests {
         func detailAction(_ action: TriageCardFeature.Action) -> ServiceRootFeature.Action {
             switch action {
             case .document(let action): return .triage(.documents(.element(id: id, action: action)))
-            case .pullRequest(let action): return .pullRequest(.presented(action))
+            case .pullRequest(let action): return .pullRequests(.element(id: 5, action: action))
             default: preconditionFailure("Detail test must use its real leaf action")
             }
         }
         let submit: ServiceRootFeature.Action
         switch route {
         case .feedback: submit = .triage(.documents(.element(id: id, action: .sendFeedbackTapped(author: "Reviewer"))))
-        case .changes: submit = .pullRequest(.presented(.diff(.requestChangesTapped)))
-        case .ask: submit = .pullRequest(.presented(.diff(.askTapped)))
+        case .changes: submit = .pullRequests(.element(id: 5, action: .diff(.requestChangesTapped)))
+        case .ask: submit = .pullRequests(.element(id: 5, action: .diff(.askTapped)))
         default: submit = detailAction(action(route))
         }
         let clock = TestClock()
@@ -192,8 +192,8 @@ struct CardRejectionIntegrationTests {
                     switch action {
                     case .triage(.documents(.element(_, .submissionFinished))),
                          .triage(.documents(.element(_, .reportFeedbackFinished))),
-                         .pullRequest(.presented(.diff(.reviewFinished))),
-                         .pullRequest(.presented(.pr(.mutationFinished))):
+                         .pullRequests(.element(_, .diff(.reviewFinished))),
+                         .pullRequests(.element(_, .pr(.mutationFinished))):
                         if state.notice != nil { notices.withValue { $0 += 1 } }
                         observed.continuation.yield(())
                     default: break

@@ -36,7 +36,7 @@ struct AttachedQuestionIntegrationTests {
         case .attachmentImport: failure = .attachedSubmissionFailed("Rejected")
         }
         let action = ServicePullRequestFeature.Action.attachedQuestion(.element(id: 1, action: .question(failure)))
-        let task = store.send(inCard ? .triage(.cards(.element(id: "p5", action: .pullRequest(action)))) : .pullRequest(.presented(action)))
+        let task = store.send(inCard ? .triage(.cards(.element(id: "p5", action: .pullRequest(action)))) : .pullRequests(.element(id: 5, action: action)))
         #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
         let draft = inCard ? store.triage.cards[id: "p5"]?.pullRequest?.questionFeatures[id: 1]?.question.draft : store.pullRequest?.questionFeatures[id: 1]?.question.draft
         #expect(draft?.text == "Keep the answer")

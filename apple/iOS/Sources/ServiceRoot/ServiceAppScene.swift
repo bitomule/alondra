@@ -122,9 +122,12 @@ private struct ServiceRootView<AccountContent: View>: View {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
                     ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) }, zoom: triageZoom)
-                        .navigationDestination(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
-                            ServicePullRequestView(store: child)
-                                .navigationTransition(.zoom(sourceID: "p\(child.pr.id)", in: triageZoom))
+                        .navigationDestination(isPresented: Binding(get: { store.pullRequestID != nil }, set: { if !$0 { store.send(.pullRequestDismissed) } })) {
+                            if let id = store.pullRequestID,
+                               let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == id }) {
+                                ServicePullRequestView(store: child)
+                                    .navigationTransition(.zoom(sourceID: "p\(child.pr.id)", in: triageZoom))
+                            }
                         }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
