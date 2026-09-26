@@ -241,6 +241,14 @@ pub fn claude_version_check(out: Option<&str>) -> Check {
     }
 }
 
+fn claude_auth_check(result: Result<bool>) -> Check {
+    match result {
+        Ok(true) => check("claude auth", Status::Pass, "Claude Code is signed in for the daemon environment", ""),
+        Ok(false) => check("claude auth", Status::Fail, "Claude Code is not signed in", "alondra setup"),
+        Err(error) => check("claude auth", Status::Fail, error.to_string(), "alondra setup"),
+    }
+}
+
 pub fn tmux_check(out: Option<&str>, wake: bool) -> Check {
     match out.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => check("tmux", Status::Pass, v.to_string(), ""),
@@ -296,6 +304,14 @@ pub fn run(json_out: bool) -> Result<()> {
 
     let claude = output("claude", &["--version"], Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(claude_version_check(claude.as_deref()));
+    let user_home = config::home_dir(&env);
+    let plist = user_home.join("Library/LaunchAgents").join(format!("{}.plist", local.service_label));
+    let auth = setup::read_plist(&plist).and_then(|v| {
+        let vars = v.get("EnvironmentVariables").cloned().unwrap_or(Value::Null);
+        let vars = serde_json::from_value(vars)?;
+        crate::claude_auth::ContextEnv::from_environment(&user_home, &vars)?.status()
+    });
+    checks.push(claude_auth_check(auth));
     let repo = std::env::current_dir().ok().and_then(|d| setup::find_repo(&d));
     checks.push(plugin_check(setup::plugin_list().as_ref(), setup::has_marketplace(), repo.as_deref()));
 

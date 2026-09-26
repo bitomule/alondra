@@ -3,6 +3,7 @@ mod i18n;
 mod attach;
 mod account;
 mod client;
+mod claude_auth;
 mod doctor;
 mod mcp;
 mod service_setup;

@@ -122,12 +122,30 @@ pub struct Plan {
     pub conflicts: Vec<String>,
 }
 
+fn xml_escape(value: &str) -> String {
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv {
+    let mut context = crate::claude_auth::ContextEnv::for_setup(&paths.home, &paths.bin);
+    // A setup retry from another shell must not silently switch an installed Claude profile.
+    if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+        context.config_dir = read_plist(&paths.plist(label)).ok()
+            .and_then(|v| v.get("EnvironmentVariables")?.get("CLAUDE_CONFIG_DIR")?.as_str().map(str::to_owned));
+    }
+    context
+}
+
 pub fn render_plist(label: &str, paths: &Paths) -> String {
+    let context = claude_context(paths, label);
+    let config = context.config_dir.as_ref().map(|p| format!("<key>CLAUDE_CONFIG_DIR</key><string>{}</string>", xml_escape(p))).unwrap_or_default();
     TEMPLATE
+        .replace("@CLAUDE_CONFIG_ENV@", &config)
+        .replace("@PATH@", &xml_escape(&context.path))
         .replace("@LABEL@", label)
-        .replace("@BIN@", &paths.bin.display().to_string())
-        .replace("@HOME@", &paths.home.display().to_string())
-        .replace("@ALONDRA_HOME@", &paths.alondra_home.display().to_string())
+        .replace("@BIN@", &xml_escape(&paths.bin.display().to_string()))
+        .replace("@HOME@", &xml_escape(&paths.home.display().to_string()))
+        .replace("@ALONDRA_HOME@", &xml_escape(&paths.alondra_home.display().to_string()))
 }
 
 /// Keys the user already has keep their value unless `force`; missing keys are filled in.
@@ -296,7 +314,7 @@ pub fn migrate_env(label: Option<&str>, env: &BTreeMap<String, String>) -> FileC
     }
 }
 
-fn read_plist(path: &Path) -> Result<Value> {
+pub(crate) fn read_plist(path: &Path) -> Result<Value> {
     let out = Command::new("/usr/bin/plutil").args(["-convert", "json", "-o", "-"]).arg(path).output().context("plutil")?;
     if !out.status.success() {
         bail!("{}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim());
@@ -503,6 +521,11 @@ pub fn run(args: Args) -> Result<()> {
     }
     if !args.dry_run && !args.skip_service && !seen.binaries {
         bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
+    }
+    if args.dry_run {
+        println!("would verify Claude Code authentication in the daemon environment (no login during dry run)");
+    } else {
+        claude_context(&paths, &label).ensure(args.no_input)?;
     }
     let service_created = if !args.dry_run {
         crate::service_setup::enroll(&paths.alondra_home)?
