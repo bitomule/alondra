@@ -5,6 +5,7 @@ import PhotosUI
 import SwiftUI
 
 public typealias AttachmentDraft = AlondraDomain.AttachmentDraft
+public typealias AttachmentBudget = AlondraDomain.AttachmentBudget
 
 public struct AttachmentUploadClient: Sendable {
     public var upload: @Sendable (AttachmentDraft) async throws -> String
@@ -64,36 +65,58 @@ public struct AttachmentFeature {
         case remove(UUID)
         case retry(UUID)
     }
+    @Dependency(\.uuid) var uuid
+    @Dependency(\.attachmentBudget) var budget
     @Dependency(\.attachmentUpload) var upload
     @Dependency(\.attachmentImport) var importer
-    private enum CancelID: Hashable, Sendable { case importFiles(UUID), upload(UUID) }
+    private enum CancelID: Hashable, Sendable { case importFiles(UUID), upload(UUID), ownerUploads(UUID) }
+    public static func cancelEffects(instanceID: UUID) -> Effect<Action> {
+        .merge(.cancel(id: CancelID.importFiles(instanceID)), .cancel(id: CancelID.ownerUploads(instanceID)))
+    }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .showFiles(let show): state.filesPresented = show; return .none
             case .filesSelected(let urls):
                 let ownerID = state.instanceID
-                let batchID = UUID(); state.importID = batchID
+                let batchID = uuid(); state.importID = batchID
                 state.isImporting = true; state.importError = nil
                 return .run { send in
                     do {
-                        for url in urls { await send(.imported(try await importer.file(url), batchID)) }
+                        for url in urls {
+                            try Task.checkCancellation()
+                            let draft = try await importer.file(url)
+                            try Task.checkCancellation()
+                            await send(.imported(draft, batchID))
+                        }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
                 }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
             case .photosSelected(let photos):
                 guard !photos.isEmpty else { state.photos = []; return .none }
                 let ownerID = state.instanceID
-                let batchID = UUID(); state.importID = batchID
+                let batchID = uuid(); state.importID = batchID
                 state.photos = photos; state.isImporting = true; state.importError = nil
                 return .run { send in
                     do {
-                        for item in photos { await send(.imported(try await importer.photo(item), batchID)) }
+                        for item in photos {
+                            try Task.checkCancellation()
+                            let draft = try await importer.photo(item)
+                            try Task.checkCancellation()
+                            await send(.imported(draft, batchID))
+                        }
                         await send(.importFinished(batchID))
                     } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
                 }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
             case .imported(let draft, let batchID):
                 guard state.importID == batchID else { return .none }
+                guard budget.accepts(draft, retained: state.entries.map(\.draft)) else {
+                    state.importID = nil
+                    state.isImporting = false
+                    state.photos = []
+                    state.importError = "Attachment limit exceeded. Remove files or continue with only the selected attachments."
+                    return .cancel(id: CancelID.importFiles(state.instanceID))
+                }
                 state.entries.append(Entry(draft: draft)); return .send(.uploadNext)
             case .importFinished(let batchID):
                 guard state.importID == batchID else { return .none }
@@ -107,20 +130,21 @@ public struct AttachmentFeature {
                 state.isImporting = false; state.photos = []; state.importError = message; return .none
             case .reset:
                 let ownerID = state.instanceID
-                let ids = state.entries.map(\.id)
                 state = State()
-                return .merge([.cancel(id: CancelID.importFiles(ownerID))] + ids.map { .cancel(id: CancelID.upload($0)) })
+                return Self.cancelEffects(instanceID: ownerID)
             case .dismissError: state.importError = nil; return .none
             case .uploadNext:
                 guard !state.entries.contains(where: { $0.status == .uploading }),
                       let index = state.entries.firstIndex(where: { $0.status == .queued }) else { return .none }
                 let draft = state.entries[index].draft
+                let ownerID = state.instanceID
                 state.entries[index].status = .uploading
                 return .run { send in
                     do { await send(.uploaded(draft.id, .success(try await upload.upload(draft)))) }
                     catch is CancellationError { }
                     catch { await send(.uploaded(draft.id, .failure(AttachmentFailure(message: error.localizedDescription)))) }
                 }.cancellable(id: CancelID.upload(draft.id))
+                    .cancellable(id: CancelID.ownerUploads(ownerID))
             case .uploaded(let id, let result):
                 guard let index = state.entries.firstIndex(where: { $0.id == id }) else { return .none }
                 switch result {
@@ -161,5 +185,15 @@ public extension DependencyValues {
     var attachmentImport: AttachmentImportClient {
         get { self[AttachmentImportKey.self] }
         set { self[AttachmentImportKey.self] = newValue }
+    }
+}
+
+private enum AttachmentBudgetKey: DependencyKey {
+    static let liveValue = AttachmentBudget()
+}
+public extension DependencyValues {
+    var attachmentBudget: AttachmentBudget {
+        get { self[AttachmentBudgetKey.self] }
+        set { self[AttachmentBudgetKey.self] = newValue }
     }
 }

@@ -153,6 +153,10 @@ public struct QuestionFeature {
                 state.notice = nil
                 return .none
             }
+        }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
+            Reduce { _, _ in
+                AttachmentFeature.cancelEffects(instanceID: oldID).map(Action.attachmentPicker)
+            }
         }
     }
 
