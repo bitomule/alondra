@@ -9,7 +9,15 @@ public typealias AttachmentBudget = AlondraDomain.AttachmentBudget
 
 public struct AttachmentUploadClient: Sendable {
     public var upload: @Sendable (AttachmentDraft) async throws -> String
-    public init(upload: @escaping @Sendable (AttachmentDraft) async throws -> String) { self.upload = upload }
+    public var uploadWithProgress: @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> String
+    public init(upload: @escaping @Sendable (AttachmentDraft) async throws -> String) {
+        self.upload = upload
+        self.uploadWithProgress = { draft, _ in try await upload(draft) }
+    }
+    public init(uploadWithProgress: @escaping @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> String) {
+        self.uploadWithProgress = uploadWithProgress
+        self.upload = { draft in try await uploadWithProgress(draft, { _ in }) }
+    }
 }
 private enum AttachmentUploadKey: DependencyKey {
     static let liveValue = AttachmentUploadClient(upload: { _ in throw AttachmentFailure(message: "Attachment upload is unavailable") })
@@ -29,6 +37,7 @@ public struct AttachmentFeature {
         public var storedID: String? { if case .uploaded(let id) = status { id } else { nil } }
         public let draft: AttachmentDraft
         public var status: Status = .queued
+        public var progress: Double = 0
         public init(draft: AttachmentDraft, status: Status = .queued) { self.draft = draft; self.status = status }
     }
     @ObservableState
@@ -39,6 +48,8 @@ public struct AttachmentFeature {
         public var importID: UUID?
         public var importError: String?
         public var filesPresented = false
+        public var photosPresented = false
+        public var cameraPresented = false
         public var photos: [PhotosPickerItem] = []
         public var allReady: Bool {
             !isImporting && importError == nil && entries.allSatisfy { if case .uploaded = $0.status { true } else { false } }
@@ -47,11 +58,15 @@ public struct AttachmentFeature {
         public init() {}
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.entries == rhs.entries && lhs.isImporting == rhs.isImporting && lhs.importID == rhs.importID
+                && lhs.photosPresented == rhs.photosPresented && lhs.cameraPresented == rhs.cameraPresented
                 && lhs.importError == rhs.importError && lhs.filesPresented == rhs.filesPresented && lhs.photos == rhs.photos
         }
     }
     public enum Action: Sendable {
         case showFiles(Bool)
+        case showPhotos(Bool)
+        case showCamera(Bool)
+        case cameraCaptured(Data)
         case filesSelected([URL])
         case photosSelected([PhotosPickerItem])
         case imported(AttachmentDraft, UUID)
@@ -61,6 +76,7 @@ public struct AttachmentFeature {
         case dismissError
         case reset
         case uploadNext
+        case uploadProgress(UUID, Double)
         case uploaded(UUID, Result<String, AttachmentFailure>)
         case remove(UUID)
         case retry(UUID)
@@ -76,6 +92,21 @@ public struct AttachmentFeature {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .showPhotos(let show): state.photosPresented = show; return .none
+            case .showCamera(let show): state.cameraPresented = show; return .none
+            case .cameraCaptured(let data):
+                state.cameraPresented = false
+                let ownerID = state.instanceID
+                let batchID = uuid(); state.importID = batchID
+                state.isImporting = true; state.importError = nil
+                return .run { send in
+                    do {
+                        let draft = try await importer.camera(data)
+                        try Task.checkCancellation()
+                        await send(.imported(draft, batchID))
+                        await send(.importFinished(batchID))
+                    } catch { await send(.batchFailed(error.localizedDescription, batchID)) }
+                }.cancellable(id: CancelID.importFiles(ownerID), cancelInFlight: true)
             case .showFiles(let show): state.filesPresented = show; return .none
             case .filesSelected(let urls):
                 let ownerID = state.instanceID
@@ -140,11 +171,28 @@ public struct AttachmentFeature {
                 let ownerID = state.instanceID
                 state.entries[index].status = .uploading
                 return .run { send in
-                    do { await send(.uploaded(draft.id, .success(try await upload.upload(draft)))) }
-                    catch is CancellationError { }
-                    catch { await send(.uploaded(draft.id, .failure(AttachmentFailure(message: error.localizedDescription)))) }
+                    let events = AsyncStream<Action>.makeStream()
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask {
+                            defer { events.continuation.finish() }
+                            do {
+                                let stored = try await upload.uploadWithProgress(draft) { fraction in
+                                    events.continuation.yield(.uploadProgress(draft.id, fraction))
+                                }
+                                events.continuation.yield(.uploaded(draft.id, .success(stored)))
+                            } catch is CancellationError { }
+                            catch { events.continuation.yield(.uploaded(draft.id, .failure(AttachmentFailure(message: error.localizedDescription)))) }
+                        }
+                        for await event in events.stream { await send(event) }
+                        group.cancelAll()
+                    }
                 }.cancellable(id: CancelID.upload(draft.id))
                     .cancellable(id: CancelID.ownerUploads(ownerID))
+            case .uploadProgress(let id, let fraction):
+                guard let index = state.entries.firstIndex(where: { $0.id == id }),
+                      state.entries[index].status == .uploading else { return .none }
+                state.entries[index].progress = min(1, max(0, fraction))
+                return .none
             case .uploaded(let id, let result):
                 guard let index = state.entries.firstIndex(where: { $0.id == id }) else { return .none }
                 switch result {
@@ -156,6 +204,7 @@ public struct AttachmentFeature {
                 guard let index = state.entries.firstIndex(where: { $0.id == id }),
                       case .failed = state.entries[index].status else { return .none }
                 state.entries[index].status = .queued
+                state.entries[index].progress = 0
                 return .send(.uploadNext)
             case .remove(let id):
                 state.entries.removeAll { $0.id == id }
@@ -172,9 +221,11 @@ public struct AttachmentFailure: Error, Equatable, Sendable {
 public struct AttachmentImportClient: Sendable {
     public var file: @Sendable (URL) async throws -> AttachmentDraft
     public var photo: @Sendable (PhotosPickerItem) async throws -> AttachmentDraft
+    public var camera: @Sendable (Data) async throws -> AttachmentDraft
     public init(file: @escaping @Sendable (URL) async throws -> AttachmentDraft,
-                photo: @escaping @Sendable (PhotosPickerItem) async throws -> AttachmentDraft) {
-        self.file = file; self.photo = photo
+                photo: @escaping @Sendable (PhotosPickerItem) async throws -> AttachmentDraft,
+                camera: @escaping @Sendable (Data) async throws -> AttachmentDraft = { _ in throw AttachmentFailure(message: "Camera import is unavailable") }) {
+        self.file = file; self.photo = photo; self.camera = camera
     }
 }
 private enum AttachmentImportKey: DependencyKey {

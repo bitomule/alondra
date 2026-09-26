@@ -29,6 +29,13 @@ public enum AttachmentImporter {
         guard prepared.data.count <= 20 * 1024 * 1024 else { throw AttachmentImportError.invalidSize }
         return AttachmentDraft(name: prepared.name, data: prepared.data)
     }
+    public static func camera(_ data: Data) throws -> AttachmentDraft {
+        guard (1...20 * 1024 * 1024).contains(data.count) else { throw AttachmentImportError.invalidSize }
+        let name = String(localized: "Photo \(Date.now.formatted(date: .numeric, time: .standard))").replacing("/", with: "-") + ".jpg"
+        let prepared = AttachmentFile.prepare(data, name: name)
+        guard (1...20 * 1024 * 1024).contains(prepared.data.count) else { throw AttachmentImportError.invalidSize }
+        return AttachmentDraft(name: prepared.name, data: prepared.data)
+    }
     public static func photo(_ item: PhotosPickerItem) async throws -> AttachmentDraft {
         guard let photo = try await item.loadTransferable(type: ImportedPhoto.self) else { throw AttachmentImportError.unavailable }
         return photo.draft

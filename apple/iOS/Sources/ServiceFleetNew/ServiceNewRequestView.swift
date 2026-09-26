@@ -94,7 +94,8 @@ struct ServiceNewRequestView: View {
                     .focused($focused)
                     .frame(minHeight: 240)
                 HStack(alignment: .center, spacing: 8) {
-                    AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                    ServiceAttachButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                    ServiceAttachmentStrip(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 }
             }
         }

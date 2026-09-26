@@ -69,8 +69,8 @@ private final class ServiceSceneContext {
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
                 observeFeedback: { await services.reportFeedbackRecoveryEvents() })
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
-            $0.attachmentUpload = AttachmentUploadClient(upload: { draft in
-                try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id)
+            $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
+                try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
             })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
