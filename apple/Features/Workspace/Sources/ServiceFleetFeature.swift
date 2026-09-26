@@ -7,11 +7,17 @@ import ComposableArchitecture
 @Reducer
 public struct ServiceFleetFeature {
     public init() {}
+    @Reducer
+    public enum Path {
+        case node(NodeDetailFeature)
+        case task(TaskDetailFeature)
+    }
     @ObservableState
     public struct State {
         public init() {}
         public var fleet = FleetFeature.State()
         public var nodePath: [String] = []
+        public var path = StackState<Path.State>()
         public var presentation = ServiceTaskPresentation(overview: nil)
         @Presents public var taskDetail: TaskDetailFeature.State?
         public var focusedInboxID: String?
@@ -30,6 +36,8 @@ public struct ServiceFleetFeature {
         case detail(PresentationAction<NodeDetailFeature.Action>)
         case openNode(String)
         case nodePathChanged([String])
+        case path(StackActionOf<Path>)
+        case pushTask(String)
     }
     @Dependency(\.serviceTasksClient) var snapshots
     private enum CancelID { case observation }
@@ -37,6 +45,19 @@ public struct ServiceFleetFeature {
         Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Reduce { state, action in
             switch action {
+            case .pushTask(let id):
+                guard let task = state.presentation.board.task(id) else { return .none }
+                state.path.append(.task(TaskDetailFeature.State(taskID: id)))
+                guard let pathID = state.path.ids.last else { return .none }
+                return .send(.path(.element(id: pathID, action: .task(.taskChanged(task)))))
+            case .path(.push(let id, _)):
+                guard case .node = state.path[id: id], let snapshot = state.fleet.snapshot else { return .none }
+                return .send(.path(.element(id: id, action: .node(.snapshotChanged(snapshot)))))
+            case .path(.element(let id, .node(.closeFinished))):
+                if case .node(let node) = state.path[id: id], node.shouldDismiss {
+                    state.path.pop(from: id)
+                }
+                return .none
             case .refresh: return .run { _ in await snapshots.refresh() }
             case .openTask(let id):
                 guard let task = state.presentation.board.task(id) else { return .none }
@@ -67,10 +88,11 @@ public struct ServiceFleetFeature {
             case .detail(.presented(.closeFinished)):
                 if state.detail?.shouldDismiss == true { state.detail = nil; state.nodePath = [] }
                 return .none
-            case .fleet, .detail, .taskDetail: return .none
+            case .fleet, .detail, .taskDetail, .path: return .none
             }
         }.ifLet(\.$detail, action: \.detail) { NodeDetailFeature() }
             .ifLet(\.$taskDetail, action: \.taskDetail) { TaskDetailFeature() }
+            .forEach(\.path, action: \.path) { Path() }
     }
 
     private func project(_ state: inout State) -> Effect<Action> {
@@ -79,11 +101,23 @@ public struct ServiceFleetFeature {
             .send(.taskDetail(.presented(.taskChanged(state.presentation.board.task(detail.taskID)))))
         } ?? .none
         guard let overview = state.overview else {
-            return .merge(taskUpdate, .send(.fleet(.snapshotUnavailable)), state.detail == nil ? .none : .send(.detail(.presented(.snapshotUnavailable))))
+            let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
+                switch state.path[id: id]! {
+                case .node: return .send(.path(.element(id: id, action: .node(.snapshotUnavailable))))
+                case .task: return .send(.path(.element(id: id, action: .task(.taskChanged(nil)))))
+                }
+            })
+            return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotUnavailable)), state.detail == nil ? .none : .send(.detail(.presented(.snapshotUnavailable))))
         }
         state.sequence &+= 1
         let ids = Set(ObserveInboxUseCase().execute(overview).items.map(\.id)).subtracting(state.hiddenInboxIDs)
         let snapshot = ProjectFleetUseCase().execute(overview, visibleInboxIDs: ids, sequence: state.sequence)
-        return .merge(taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), state.detail == nil ? .none : .send(.detail(.presented(.snapshotChanged(snapshot)))))
+        let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
+            switch state.path[id: id]! {
+            case .node: return .send(.path(.element(id: id, action: .node(.snapshotChanged(snapshot)))))
+            case .task(let task): return .send(.path(.element(id: id, action: .task(.taskChanged(state.presentation.board.task(task.taskID))))))
+            }
+        })
+        return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), state.detail == nil ? .none : .send(.detail(.presented(.snapshotChanged(snapshot)))))
     }
 }

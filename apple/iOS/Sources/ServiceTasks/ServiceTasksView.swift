@@ -11,7 +11,7 @@ struct ServiceTasksView: View {
     private var fleet: ServiceTaskPresentation { store.presentation }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $store.scope(state: \.taskPath, action: \.taskPath)) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     header
@@ -74,11 +74,10 @@ struct ServiceTasksView: View {
                     Button("Settings", systemImage: "gearshape") { showSettings() }
                 }
             }
-            .navigationDestination(item: $store.scope(state: \.detail, action: \.detail)) { child in
-                ServiceTaskDetailView(store: child, presentation: store.presentation, openTask: { store.send(.openTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
-            }
             .navigationDestination(isPresented: Binding(get: { store.showingSchedules }, set: { store.send(.showSchedules($0)) })) { ServiceSchedulesView(store: store) }
             .refreshable { await store.send(.refresh).finish() }
+        } destination: { child in
+            ServiceTaskDetailView(store: child, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
@@ -236,7 +235,7 @@ private struct TaskTreeRowView: View {
         let task = row.task
         let pending = fleet.items(forTask: task).count
         let now = fleet.now(for: task)
-        Button { store.send(.openTask(task.id)) } label: {
+        Button { store.send(.pushTask(task.id)) } label: {
             HStack(spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
                     Glyph(task: task)
@@ -343,7 +342,7 @@ private struct DoneRequestRow: View {
         let last = tree.tasks.max { $0.stateSince < $1.stateSince }
         Group {
             if let last {
-                Button { store.send(.openTask(last.id)) } label: { content(since: last.stateSince) }
+                Button { store.send(.pushTask(last.id)) } label: { content(since: last.stateSince) }
                     .buttonStyle(PressStyle())
             } else {
                 content(since: tree.request.createdAt)

@@ -26,6 +26,7 @@ public struct ServiceTasksFeature {
     public struct State {
         public init() {}
         public var board = TaskBoardFeature.State()
+        public var taskPath = StackState<TaskDetailFeature.State>()
         public var schedules = ScheduleFeature.State()
         public var presentation = ServiceTaskPresentation(overview: nil)
         public var withdrawingRequestID: String?
@@ -53,6 +54,8 @@ public struct ServiceTasksFeature {
         case schedules(ScheduleFeature.Action)
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case openTask(String)
+        case pushTask(String)
+        case taskPath(StackActionOf<TaskDetailFeature>)
         case showSchedules(Bool)
         case deleteSchedule(String?)
         case confirmDeleteSchedule
@@ -104,12 +107,20 @@ public struct ServiceTasksFeature {
                 state.openTrees = state.taskBoard.openTrees
                 state.doneTrees = state.taskBoard.doneTrees
                 state.archivedTrees = state.taskBoard.archivedTrees
+                let pathUpdates: Effect<Action> = .merge(state.taskPath.ids.map { id in
+                    .send(.taskPath(.element(id: id, action: .taskChanged(state.taskBoard.task(state.taskPath[id: id]!.taskID)))))
+                })
                 let projection = TaskBoardProjection(board: state.taskBoard, canArchive: state.taskBoard.hasArchivable, hasSnapshot: overview != nil)
                 if let detail = state.detail {
                     state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: overview, taskID: detail.taskID)
-                    return .merge(.send(.board(.boardChanged(projection))), .send(.detail(.presented(.taskChanged(state.taskBoard.task(detail.taskID))))))
+                    return .merge(pathUpdates, .send(.board(.boardChanged(projection))), .send(.detail(.presented(.taskChanged(state.taskBoard.task(detail.taskID))))))
                 }
-                return .send(.board(.boardChanged(projection)))
+                return .merge(pathUpdates, .send(.board(.boardChanged(projection))))
+            case .pushTask(let id):
+                guard let task = state.taskBoard.task(id) else { return .none }
+                state.taskPath.append(TaskDetailFeature.State(taskID: id))
+                guard let pathID = state.taskPath.ids.last else { return .none }
+                return .send(.taskPath(.element(id: pathID, action: .taskChanged(task))))
             case .openTask(let id):
                 state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: state.overview, taskID: id)
                 state.detail = TaskDetailFeature.State(taskID: id)
@@ -122,8 +133,9 @@ public struct ServiceTasksFeature {
                 return .send(.schedules(.deleteConfirmed(id)))
             case .focusInbox(let id): state.focusedInboxID = id; return .none
             case .inboxFocusHandled: state.focusedInboxID = nil; return .none
-            case .board, .schedules, .detail: return .none
+            case .board, .schedules, .detail, .taskPath: return .none
             }
         }.ifLet(\.$detail, action: \.detail) { TaskDetailFeature() }
+            .forEach(\.taskPath, action: \.taskPath) { TaskDetailFeature() }
     }
 }

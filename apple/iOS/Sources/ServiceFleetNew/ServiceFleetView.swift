@@ -11,7 +11,7 @@ struct ServiceFleetView: View {
     var focusInbox: (String) -> Void = { _ in }
     private var sections: [FleetSection] { store.fleet.filteredSections }
     var body: some View {
-        NavigationStack(path: Binding(get: { store.nodePath }, set: { store.send(.nodePathChanged($0)) })) {
+        NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
             List {
                 if store.fleet.isStale { Text("Connection interrupted. Actions are paused until the fleet refreshes.").foregroundStyle(Palette.ember) }
                 ForEach(Array(store.fleet.closeOutcomeByID.keys.sorted()), id: \.self) { id in
@@ -19,7 +19,7 @@ struct ServiceFleetView: View {
                 }
                 if store.fleet.query.trimmingCharacters(in: .whitespaces).isEmpty, let orchestrator = store.fleet.snapshot?.orchestrator {
                     Section {
-                        NavigationLink(value: orchestrator.id) {
+                        NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailFeature.State(sessionID: orchestrator.id))) {
                             ServiceNodeRow(entry: orchestrator)
                         }
                         .listRowBackground(Palette.ember.opacity(0.12))
@@ -29,7 +29,7 @@ struct ServiceFleetView: View {
                 ForEach(sections, id: \.name) { section in
                     Section {
                         ForEach(section.nodes) { node in
-                            NavigationLink(value: node.id) {
+                            NavigationLink(state: ServiceFleetFeature.Path.State.node(NodeDetailFeature.State(sessionID: node.id))) {
                                 ServiceNodeRow(entry: node)
                             }
                             .listRowBackground(Palette.card.opacity(0.85))
@@ -64,20 +64,19 @@ struct ServiceFleetView: View {
             .animation(.smooth, value: sections.map(\.name))
             .navigationTitle("Fleet")
             .searchable(text: Binding(get: { store.fleet.query }, set: { store.send(.fleet(.searchChanged($0))) }), prompt: "Node, project or what it’s doing")
-            .navigationDestination(for: String.self) { _ in
-                if let child = store.scope(state: \.detail, action: \.detail.presented) {
-                    ServiceNodeView(store: child, presentation: store.presentation, openTask: { store.send(.openTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
-                }
-            }
-            .navigationDestination(item: $store.scope(state: \.taskDetail, action: \.taskDetail)) { child in
-                ServiceTaskDetailView(store: child, presentation: store.presentation, openTask: { store.send(.openTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
-            }
             .refreshable { await store.send(.refresh).finish() }
             .closeConfirmation(Binding(get: {
                 guard let id = store.fleet.closeConfirmationID, let node = store.fleet.snapshot?.node(id)?.node else { return nil }
                 return CloseRequest(session: id, name: node.displayName)
             }, set: { if $0 == nil { store.send(.fleet(.closeCancelled)) } })) { _ in
                 store.send(.fleet(.closeConfirmed))
+            }
+        } destination: { child in
+            switch child.case {
+            case .node(let node):
+                ServiceNodeView(store: node, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
+            case .task(let task):
+                ServiceTaskDetailView(store: task, presentation: store.presentation, openTask: { store.send(.pushTask($0)) }, focusInbox: { store.send(.focusInbox($0)) })
             }
         }
         .task { await store.send(.appeared).finish() }

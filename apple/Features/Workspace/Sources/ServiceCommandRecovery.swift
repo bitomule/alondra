@@ -38,6 +38,18 @@ extension ServiceRootFeature {
         if state.newRequest.uncertainCommandID == id {
             effects.append(.send(.newRequest(.commandResolved(id, rejection: rejection))))
         }
+        for pathID in state.fleet.path.ids {
+            switch state.fleet.path[id: pathID]! {
+            case .task(let task) where task.mutationOutcome?.uncertainID == id:
+                effects.append(.send(.fleet(.path(.element(id: pathID, action: .task(.commandResolved(id, rejection: rejection)))))))
+            case .node(let node) where node.sendOutcome?.uncertainID == id || node.closeOutcome?.uncertainID == id:
+                effects.append(.send(.fleet(.path(.element(id: pathID, action: .node(.commandResolved(id, rejection: rejection)))))))
+            default: break
+            }
+        }
+        for pathID in state.tasks.taskPath.ids where state.tasks.taskPath[id: pathID]?.mutationOutcome?.uncertainID == id {
+            effects.append(.send(.tasks(.taskPath(.element(id: pathID, action: .commandResolved(id, rejection: rejection))))))
+        }
         if state.tasks.withdrawOutcome?.uncertainID == id {
             effects.append(.send(.tasks(.withdrawalResolved(id, rejection: rejection))))
         }
