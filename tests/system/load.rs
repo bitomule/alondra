@@ -618,12 +618,14 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                 if let Ok((200, value)) = &response {
                     cursor = value["revision"].as_u64().unwrap_or(cursor);
                 }
+                let idle_reply = matches!(&response, Ok((200, value))
+                    if value["changes"].as_array().is_some_and(Vec::is_empty));
                 polls.lock().unwrap().record(
                     link.owner,
                     code,
                     start,
                     origin,
-                    true,
+                    idle_reply,
                     overload(&response),
                     lane % links.len() == 3 && revoked.load(Ordering::Relaxed),
                 );
