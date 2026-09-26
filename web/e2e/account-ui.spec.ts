@@ -175,3 +175,92 @@ test('ambiguous self deletion never presents a later auth failure as proof of de
  await expect(page.getByRole('heading', { name: 'Has solicitado la baja.' })).toHaveCount(0);
  expect(new URL(page.url()).pathname).not.toContain('account-closed');
 });
+test('ambiguous invitation can resume after reopening its private link', async ({ page }) => {
+ let attempts = 0;
+ await page.route('**/v1/invitations/status', route => route.fulfill({ json: { status: attempts ? 'provisioning' : 'pending' } }));
+ await page.route('**/v1/invitations/accept', route => {
+  expect(route.request().postDataJSON().token).toBe(token);
+  attempts++;
+  if (attempts === 1) return route.abort('connectionreset');
+  return route.fulfill({ status: 201, json: { status: 'active', credential_already_created: true } });
+ });
+ await page.goto(`/invite#${token}`);
+ await page.getByLabel('Cómo te llamas').fill('Amiga de prueba');
+ await page.getByLabel('Elige una contraseña').fill('synthetic first password');
+ await page.getByRole('button', { name: 'Crear mi cuenta' }).click();
+ await expect(page.getByRole('alert')).toContainText('No podemos confirmar');
+ await page.goto('/');
+ await page.goto(`/invite#${token}`);
+ await expect(page.getByRole('heading', { name: 'Estamos terminando el alta.' })).toBeVisible();
+ expect(attempts).toBe(1);
+ await page.getByRole('button', { name: 'Reanudar alta' }).click();
+ await expect(page.getByRole('status')).toContainText('escribir otra aquí no la sustituye');
+ await page.getByLabel('Cómo te llamas').fill('Amiga de prueba');
+ await page.getByLabel('Elige una contraseña').fill('synthetic retry password');
+ await page.getByRole('button', { name: 'Crear mi cuenta' }).click();
+ await expect(page.getByRole('heading', { name: 'Tu cuenta está preparada.' })).toBeVisible();
+ await expect(page.getByText(/la del último intento no la sustituye/)).toBeVisible();
+ expect(attempts).toBe(2);
+ expect(new URL(page.url()).hash).toBe('');
+});
+test('admin can cancel a provisioning invitation after explicit confirmation', async ({ page }) => {
+ await session(page);
+ await page.route('**/v1/admin/accounts', route => route.fulfill({ json: { accounts: [owner], next_cursor: null } }));
+ let canceled = false;
+ await page.route('**/v1/admin/invitations', route => route.fulfill({ json: { invitations: [{ id: 'pending-create', email: 'friend@example.test', status: canceled ? 'canceled' : 'provisioning', expires_at_ms: 1791000000000 }], next_cursor: null } }));
+ await page.route('**/v1/admin/invitations/pending-create/cancel', route => {
+  expect(route.request().method()).toBe('POST');
+  expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf');
+  expect(route.request().headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/);
+  canceled = true; return route.fulfill({ json: { status: 'canceled' } });
+ });
+ await page.goto('/admin');
+ await expect(page.getByRole('button', { name: 'Nuevo enlace' })).toBeVisible();
+ await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+ expect(canceled).toBe(false);
+ await page.getByRole('button', { name: 'Cancelar invitación', exact: true }).click();
+ await expect(page.getByRole('status')).toContainText('Invitación cancelada');
+ expect(canceled).toBe(true);
+});
+test('fragment replacement invalidates delayed status and never delivers the old invitation', async ({ page }) => {
+ const replacement = 'B'.repeat(43);
+ let releaseFirst!: () => void;
+ const delayed = new Promise<void>(resolve => { releaseFirst = resolve; });
+ let firstSeen!: () => void;
+ const firstRequest = new Promise<void>(resolve => { firstSeen = resolve; });
+ await page.route('**/v1/invitations/status', async route => {
+  const value = route.request().postDataJSON().token;
+  if (value === token) {
+   firstSeen(); await delayed;
+   await route.fulfill({ json: { status: 'unavailable' } }).catch(() => {});
+  } else { expect(value).toBe(replacement); await route.fulfill({ json: { status: 'pending' } }); }
+ });
+ const delivered: string[] = [];
+ await page.route('**/v1/invitations/accept', route => {
+  delivered.push(route.request().postDataJSON().token);
+  return route.fulfill({ json: { status: 'active' } });
+ });
+ await page.goto(`/invite#${token}`);
+ await firstRequest;
+ await page.evaluate(value => { window.location.hash = value; }, replacement);
+ await expect(page.getByLabel('Cómo te llamas')).toBeVisible();
+ releaseFirst();
+ await expect(page.getByRole('heading', { name: 'Necesitas una invitación válida.' })).toHaveCount(0);
+ expect(new URL(page.url()).hash).toBe('');
+ await page.getByLabel('Cómo te llamas').fill('Second recipient');
+ await page.getByLabel('Elige una contraseña').fill('synthetic replacement password');
+ await page.getByRole('button', { name: 'Crear mi cuenta' }).click();
+ await expect(page.getByRole('heading', { name: 'Tu cuenta está preparada.' })).toBeVisible();
+ expect(delivered).toEqual([replacement]);
+ expect(await page.evaluate(() => [localStorage.length, sessionStorage.length])).toEqual([0, 0]);
+});
+test('replacing a ready invitation clears its entered name and password', async ({ page }) => {
+ await page.route('**/v1/invitations/status', route => route.fulfill({ json: { status: 'pending' } }));
+ await page.goto(`/invite#${token}`);
+ await page.getByLabel('Cómo te llamas').fill('Old recipient');
+ await page.getByLabel('Elige una contraseña').fill('synthetic old password');
+ await page.evaluate(value => { window.location.hash = value; }, 'B'.repeat(43));
+ await expect(page.getByLabel('Cómo te llamas')).toHaveValue('');
+ await expect(page.getByLabel('Elige una contraseña')).toHaveValue('');
+ expect(new URL(page.url()).hash).toBe('');
+});
