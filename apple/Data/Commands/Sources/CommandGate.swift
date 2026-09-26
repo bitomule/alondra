@@ -142,6 +142,28 @@ public actor CommandGate {
         mutationVersion &+= 1
     }
 
+    /// Completes an authoritative status reconciliation, never an in-flight submission.
+    /// The owner must have verified every step of its semantic operation first.
+    public func confirmReconciled(_ id: UUID, in expectedScope: CommandScope) async -> Bool {
+        guard expectedScope == scope, !dismissalInFlight else { return false }
+        if !loaded { do { try await restore() } catch { return false } }
+        guard expectedScope == scope, !dismissalInFlight,
+              !pending.contains(where: { $0.id == id }) else { return false }
+        guard let command = uncertain.first(where: { $0.id == id }) else { return true }
+        dismissalInFlight = true
+        defer {
+            dismissalInFlight = false
+            let waiters = dismissalWaiters
+            dismissalWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
+        do { try await journal?.save(.init(command: command, state: .confirmed)) }
+        catch { return false }
+        uncertain.removeAll { $0.id == id }
+        mutationVersion &+= 1
+        return true
+    }
+
     public func submit(
         _ kind: CommandKind,
         itemID: String? = nil,
