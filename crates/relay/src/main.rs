@@ -992,11 +992,14 @@ mod http_tests {
         assert!(server.auth.phone_key("client-first").is_err());assert!(server.auth.phone_key("client-other").is_ok());
         let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&auth).send().await?.json().await?;
         assert_eq!(listing["macs"][0]["clients"][0]["reconciliation"],"completed");
+        server.auth.enroll(&auth::Identity{device_id:"mac-1".into(),owner_sub:"owner".into()},PhoneDevice{device_id:"client-descendant".into(),owner_sub:"owner".into(),signing_key:key_bytes(&phone_key)})?;
         let response=client.delete(format!("{url}/v1/account/devices/macs/mac-1")).bearer_auth(&auth).header("Idempotency-Key","device-revoke-mac-00001").send().await?;
         assert_eq!(response.status(),StatusCode::ACCEPTED);
         let response=sign(&server.auth.server_epoch(),client.get(format!("{url}/v1/work?wait_s=0")),&mac_key,"mac-1","GET","/v1/work?wait_s=0",&[],183).send().await?;
         assert_eq!(response.status(),StatusCode::FORBIDDEN);
-        assert!(management::worker::step(&server).await?);assert!(!server.auth.is_mac_registered("mac-1"));assert!(server.auth.is_mac_registered("mac-other"));
+        assert!(db.require_live_device("owner","fresh-mac",Some("client-descendant")).await.is_err(),"Mac revocation persists child IDs independently from the old route");
+        while management::worker::step(&server).await? {}
+        assert!(!server.auth.is_mac_registered("mac-1"));assert!(server.auth.is_mac_registered("mac-other"));
         let response=client.delete(format!("{url}/v1/account")).bearer_auth(&auth).header("Idempotency-Key","self-delete-confirm-0001").json(&json!({"confirm":false})).send().await?;
         assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
         assert!(db.active_identity("https://id.example/realms/alondra","owner").await.is_ok());

@@ -50,6 +50,7 @@ impl Management {
         kind: &str,
         device_id: &str,
         mac_id: &str,
+        clients: &[String],
         request: &AdminRequest,
     ) -> Result<()> {
         ensure!(
@@ -75,6 +76,18 @@ impl Management {
             sqlx::query("INSERT INTO management_device_revocations(account_id,kind,device_id,mac_id) VALUES($1,$2,$3,$4)")
                 .bind(actor).bind(kind).bind(device_id).bind(mac_id).execute(&mut *tx).await?;
             audit(&mut tx, Some(actor), "device_revoke", actor).await?;
+        }
+        if kind == "mac" {
+            for client in clients {
+                ensure!(
+                    !client.is_empty() && client.len() <= 128,
+                    DomainError::InvalidInput
+                );
+                sqlx::query("INSERT INTO management_device_revocations(account_id,kind,device_id,mac_id) VALUES($1,'client',$2,$3) ON CONFLICT(kind,device_id) DO NOTHING")
+                    .bind(actor).bind(client).bind(mac_id).execute(&mut *tx).await?;
+                let owner:Uuid=sqlx::query_scalar("SELECT account_id FROM management_device_revocations WHERE kind='client' AND device_id=$1").bind(client).fetch_one(&mut *tx).await?;
+                ensure!(owner == actor, DomainError::NotFound);
+            }
         }
         tx.commit().await?;
         Ok(())

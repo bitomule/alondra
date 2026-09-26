@@ -213,7 +213,17 @@ async fn revoke_owned(
         false,
     )?;
     db(&server)?
-        .revoke_device_request(actor.id, kind, &id, &mac.mac_id, &key)
+        .revoke_device_request(
+            actor.id,
+            kind,
+            &id,
+            &mac.mac_id,
+            &mac.clients
+                .iter()
+                .map(|c| c.device_id.clone())
+                .collect::<Vec<_>>(),
+            &key,
+        )
         .await
         .map_err(failure)?;
     server.queue.changed.notify_waiters();
