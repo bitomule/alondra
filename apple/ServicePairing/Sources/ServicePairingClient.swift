@@ -32,6 +32,11 @@ public actor ServicePairingClient {
 
     public func approvedPairings() throws -> ApprovedPairingCollection { try store.loadCollection() }
     public func selectApprovedPairing(_ id: ApprovedPairingID) throws { try store.select(id) }
+    /// Synchronous compensation lets a MainActor owner check its generation and
+    /// restore the preference without an actor hop after logout validation.
+    public nonisolated func restoreApprovedSelection(_ previous: ApprovedPairingID, ifSelected attempted: ApprovedPairingID) throws {
+        try store.restoreSelection(previous, ifSelected: attempted)
+    }
     public func discardAllAttempts() { attempts.removeAll() }
 
     public func approvedPairing() throws -> ApprovedServicePairing? { try store.load() }
@@ -43,7 +48,8 @@ public actor ServicePairingClient {
 
     /// Submit a candidate. The returned code must remain visible until the Mac owner types it.
     public func begin(
-        qrPayload: String, authorization: PairingAuthorization, displayName: String
+        qrPayload: String, authorization: PairingAuthorization, displayName: String,
+        rejectExistingMac: Bool = false
     ) async throws -> PairingPending {
         let invitation = try ServicePairingInvitation(qrPayload: qrPayload)
         let start = currentMs()
@@ -53,6 +59,10 @@ public actor ServicePairingClient {
               !displayName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw ServicePairingError.invalidInvitation
         }
+        if rejectExistingMac, try store.loadCollection().pairings.contains(where: {
+            $0.ownerSub == authorization.ownerSub && $0.macID == invitation.macID &&
+                Self.sameRelay($0.relayURL, invitation.url)
+        }) { throw ServicePairingError.alreadyLinked }
         let signing = P256.Signing.PrivateKey()
         let agreement = P256.KeyAgreement.PrivateKey()
         let signingBytes = signing.publicKey.x963Representation
@@ -88,6 +98,17 @@ public actor ServicePairingClient {
             signingPublicKey: signingPublic, agreementPublicKey: agreementPublic)
         return PairingPending(attemptID: id, comparisonCode: comparisonCode,
             expiresAtMs: invitation.expiresAtMs)
+    }
+
+    private static func sameRelay(_ lhs: URL, _ rhs: URL) -> Bool {
+        func normalized(_ url: URL) -> URLComponents? {
+            guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+            parts.scheme = parts.scheme?.lowercased(); parts.host = parts.host?.lowercased()
+            if parts.scheme == "https", parts.port == 443 { parts.port = nil }
+            while parts.path.hasSuffix("/") { parts.path.removeLast() }
+            return parts
+        }
+        return normalized(lhs) == normalized(rhs)
     }
 
     /// Polls until the Mac approves or the QR expires. Cancellation stops the poll without saving keys.

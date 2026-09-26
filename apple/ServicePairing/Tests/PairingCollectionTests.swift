@@ -184,3 +184,25 @@ func malformedCollectionFailsClosedWithoutOverwriting(kind: String) throws {
     #expect(throws: PairingStoreError.invalidCollection) { try store.select(ApprovedPairingID(binding(mac: "unknown"))) }
     #expect(item.bytes == before)
 }
+
+
+@Test func failedSelectionCompensationPreservesNewApprovalsAndNeverRecreatesLogoutKeys() throws {
+    let item = MemoryPairingItem(legacyBytes), store = KeychainApprovedPairingStore(item: item)
+    let original = try #require(try store.load())
+    let second = binding(), third = binding(mac: "mac-c", device: "phone-c", signing: "pin-c")
+    try store.save(second)
+    try store.select(ApprovedPairingID(original))
+    try store.select(ApprovedPairingID(second))
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(try store.load()?.macID == original.macID)
+    #expect(try store.loadCollection().pairings.count == 2)
+    try store.select(ApprovedPairingID(second))
+    try store.save(third) // A newer approved Mac wins while the old action is suspended.
+    let newer = item.bytes
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(item.bytes == newer)
+    #expect(try store.load()?.macID == third.macID)
+    try store.delete()
+    try store.restoreSelection(ApprovedPairingID(original), ifSelected: ApprovedPairingID(second))
+    #expect(item.bytes == nil)
+}

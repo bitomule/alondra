@@ -137,7 +137,8 @@ public final class CloudPairingOwner {
         let subject = try await auth.verifiedSubject()
         let token = try await auth.bearerToken()
         let pending = try await pairing.begin(qrPayload: payload,
-            authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName)
+            authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName,
+            rejectExistingMac: scope != nil)
         guard current == generation, attempts.contains(ticket), !Task.isCancelled,
               expectedSession == nil || services === expectedSession else {
             await pairing.discard(pending.attemptID)
@@ -204,11 +205,25 @@ public final class CloudPairingOwner {
         try await entry.session.checkSettingsConnection()
         guard current == generation, !Task.isCancelled,
               expectedSession == nil || services === expectedSession else { throw CancellationError() }
-        try await pairing.selectApprovedPairing(id)
-        guard current == generation else { throw CancellationError() }
-        try await registry.select(id, verifiedSubject: subject)
-        guard current == generation else { throw CancellationError() }
-        publishChoices()
+        let previous = registry.snapshot.selectedID
+        do {
+            try await pairing.selectApprovedPairing(id)
+            guard current == generation, !Task.isCancelled,
+                  expectedSession == nil || services === expectedSession else { throw CancellationError() }
+            try await registry.select(id, verifiedSubject: subject)
+            guard current == generation, registry.snapshot.selectedID == id else { throw CancellationError() }
+            // The registry's synchronous commit is the acceptance point. Cancellation
+            // after it must not roll back only the preference and leave the vault on B.
+            publishChoices()
+        } catch {
+            // No suspension between the owner-generation check and the store CAS:
+            // logout cannot interleave and resurrect a preference from this action.
+            if current == generation, let previous {
+                do { try pairing.restoreApprovedSelection(previous, ifSelected: id) }
+                catch { throw CleanupFailure(details: "Could not restore the previous Mac selection: " + error.localizedDescription) }
+            }
+            throw error
+        }
     }
 
     private func reconcile(_ collection: ApprovedPairingCollection, subject: String,

@@ -22,10 +22,21 @@ private func invitation(expiry: UInt64 = fixedNow + 600_000) throws -> String {
 
 private final class MemoryStore: ApprovedPairingStore {
     private let value = Mutex(ApprovedPairingCollection())
+    private let writes = Mutex(0)
+    var writeCount: Int { writes.withLock { $0 } }
     func loadCollection() throws -> ApprovedPairingCollection { value.withLock { $0 } }
     func load() throws -> ApprovedServicePairing? { value.withLock { $0.selected } }
-    func save(_ pairing: ApprovedServicePairing) throws { try value.withLock { try $0.upsert(pairing) } }
+    func save(_ pairing: ApprovedServicePairing) throws {
+        try value.withLock { try $0.upsert(pairing) }
+        writes.withLock { $0 += 1 }
+    }
     func select(_ id: ApprovedPairingID) throws { try value.withLock { try $0.select(id) } }
+    func restoreSelection(_ previous: ApprovedPairingID, ifSelected attempted: ApprovedPairingID) throws {
+        try value.withLock {
+            guard $0.selectedID == attempted, $0.pairings.contains(where: { ApprovedPairingID($0) == previous }) else { return }
+            try $0.select(previous)
+        }
+    }
     func delete() throws { value.withLock { $0 = ApprovedPairingCollection() } }
 }
 
@@ -194,4 +205,59 @@ private func rejectsForgedOrOtherAccountApproval(mode: FakeRelay.ApprovalMode) a
     #expect(await relay.requests.map { $0.url?.path } == ["/v1/bootstrap"])
     #expect(await relay.candidate == nil)
     #expect(try store.load() == nil)
+}
+
+@Test func additionalMacRejectsExistingBindingBeforeNetworkOrStorageWrite() async throws {
+    let store = MemoryStore(), relay = FakeRelay()
+    let existing = try storedMac("mac-1", relay: "https://relay.example:443/")
+    try store.save(existing)
+    let client = ServicePairingClient(transport: relay, store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    await #expect(throws: ServicePairingError.alreadyLinked) {
+        try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "Phone", rejectExistingMac: true)
+    }
+    #expect(await relay.requests.isEmpty) // No candidate, push registration or other HTTP.
+    #expect(await relay.candidate == nil)
+    #expect(store.writeCount == 1)
+    #expect(try store.loadCollection().pairings.count == 1)
+    #expect(try store.load()?.signingPrivateKey == existing.signingPrivateKey)
+}
+
+@Test func additionalDifferentMacPreservesExistingKeysThroughRealApprovalCodec() async throws {
+    let store = MemoryStore(), relay = FakeRelay()
+    let existing = try storedMac("mac-2")
+    try store.save(existing)
+    let client = ServicePairingClient(transport: relay, store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    let pending = try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "Phone", rejectExistingMac: true)
+    let approved = try await client.waitForApproval(pending.attemptID)
+    let collection = try store.loadCollection()
+    #expect(Set(collection.pairings.map(\.macID)) == ["mac-1", "mac-2"])
+    #expect(collection.pairings.first { $0.macID == "mac-2" }?.signingPrivateKey == existing.signingPrivateKey)
+    #expect(collection.selectedID == ApprovedPairingID(approved))
+}
+
+private func storedMac(_ mac: String, relay: String = "https://relay.example", owner: String = "owner-1") throws -> ApprovedServicePairing {
+    ApprovedServicePairing(relayURL: URL(string: relay)!, macID: mac, deviceID: "existing-phone", ownerSub: owner,
+        macSigningKey: PairingWire.encode(macSigning.publicKey.x963Representation),
+        macAgreementKey: PairingWire.encode(macAgreement.publicKey.x963Representation),
+        signingPrivateKey: P256.Signing.PrivateKey().rawRepresentation,
+        agreementPrivateKey: P256.KeyAgreement.PrivateKey().rawRepresentation, approvedAtMs: fixedNow - 1000)
+}
+
+@Test(arguments: ["other-owner", "other-relay"])
+func additionalMacDuplicateCheckUsesAccountAndRelay(_ differingScope: String) async throws {
+    let store = MemoryStore(), relay = FakeRelay()
+    try store.save(storedMac("mac-1", relay: differingScope == "other-relay" ? "https://other.example" : "https://relay.example",
+        owner: differingScope == "other-owner" ? "owner-2" : "owner-1"))
+    let client = ServicePairingClient(transport: relay, store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let pending = try await client.begin(qrPayload: invitation(),
+        authorization: PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1"),
+        displayName: "Phone", rejectExistingMac: true)
+    #expect(await relay.candidate != nil)
+    #expect(store.writeCount == 1)
+    await client.discard(pending.attemptID)
 }
