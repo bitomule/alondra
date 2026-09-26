@@ -175,17 +175,17 @@ struct CardPendingLifecycleTests {
         }
         let transition = store.send(action)
         // Inspect before awaiting the queued focus/open effects or a SwiftUI callback.
-        #expect((store.pullRequest?.diff.pendingSubmission != nil) == (navigation == .unchanged))
-        #expect((store.pullRequest?.questionFeatures[id: 1]?.question.pendingAttachedAnswer != nil) == (navigation == .unchanged))
+        #expect((store.pullRequests[id: 5]?.diff.pendingSubmission != nil) == (navigation == .unchanged))
+        #expect((store.pullRequests[id: 5]?.questionFeatures[id: 1]?.question.pendingAttachedAnswer != nil) == (navigation == .unchanged))
         let receipt = AttachmentFeature.Action.uploaded(attachment.id, .success("stored-proof"))
         await store.send(.pullRequests(.element(id: 5, action: .diff(.attachmentPicker(receipt))))).finish()
         await store.send(.pullRequests(.element(id: 5, action: .attachedQuestion(.element(id: 1, action: .question(.attachmentPicker(receipt))))))).finish()
         await transition.finish()
         #expect(await sent.count == (navigation == .unchanged ? 2 : 0))
-        #expect(store.pullRequest?.diff.note == "Keep review")
-        #expect(store.pullRequest?.diff.attachmentPicker.storedIDs == ["stored-proof"])
-        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep answer")
-        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.attachmentPicker.storedIDs == ["stored-proof"])
+        #expect(store.pullRequests[id: 5]?.diff.note == "Keep review")
+        #expect(store.pullRequests[id: 5]?.diff.attachmentPicker.storedIDs == ["stored-proof"])
+        #expect(store.pullRequests[id: 5]?.questionFeatures[id: 1]?.question.draft.text == "Keep answer")
+        #expect(store.pullRequests[id: 5]?.questionFeatures[id: 1]?.question.attachmentPicker.storedIDs == ["stored-proof"])
         if navigation == .question || navigation == .report {
             #expect(store.triage.document?.subject.id == (openReport ? "r99" : "q1"))
         }

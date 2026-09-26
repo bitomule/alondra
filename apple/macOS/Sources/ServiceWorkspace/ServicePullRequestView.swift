@@ -10,7 +10,7 @@ struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
     var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
-    private var pr: PullRequest? { store.pr.pr }
+    private var pr: PullRequest? { store.displayedPR }
     private var comments: [ReviewComment] {
         (store.diff.files ?? []).flatMap(\.lines).compactMap { line in
             guard let anchor = line.anchor, let text = store.diff.comments[anchor] else { return nil }

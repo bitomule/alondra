@@ -6,14 +6,13 @@ import SwiftUI
 
 struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     private var commenting: DiffLine? {
         store.diff.files?.flatMap(\.lines).first { $0.anchor != nil && $0.anchor == store.diff.editingAnchor }
     }
     var body: some View {
         reviewContent
-        .navigationTitle("PR #\(store.pr.pr?.number ?? 0)")
+        .navigationTitle("PR #\(store.displayedPR?.number ?? 0)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 0) { bar }
@@ -34,12 +33,11 @@ struct ServicePullRequestView: View {
         }
         .task { await store.send(.diff(.appeared)).finish() }
         .onDisappear { _ = store.send(.diff(.disappeared)) }
-        .onChange(of: store.pr.shouldDismiss || store.diff.shouldDismiss) { _, close in if close { dismiss() } }
     }
     private var reviewContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let pr = store.pr.pr {
+                if let pr = store.displayedPR {
                     Text(pr.title).font(.title3.weight(.bold))
                     Text(pr.summary).font(.footnote.monospaced()).foregroundStyle(.secondary)
                     PRStatus(pr: pr)
@@ -95,7 +93,7 @@ struct ServicePullRequestView: View {
             }
             Group {
                 ServicePRMainAction(store: store.scope(state: \.pr, action: \.pr), placement: .bar(prominent: !store.diff.hasDraft))
-                if let pr = store.pr.pr {
+                if let pr = store.displayedPR {
                     PRFooter(pr: pr) { _ = store.send(.pr(.setAsideTapped)) }.padding(.horizontal, 4)
                 }
             }.disabled(store.diff.isSending || !store.pr.canAct)

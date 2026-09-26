@@ -85,7 +85,7 @@ public struct ServiceRootFeature {
         case fleet(ServiceFleetFeature.Action)
         case newRequest(NewRequestFeature.Action)
         case pullRequests(IdentifiedActionOf<ServicePullRequestFeature>)
-        case pullRequestDismissed
+        case pullRequestDismissed(UInt64)
     }
     @Dependency(\.continuousClock) var noticeClock
     private enum NoticeCancelID { case timeout, macTimeout }
@@ -123,6 +123,9 @@ public struct ServiceRootFeature {
                     state.triage.cancelPendingSubmissions()
                     state.fleet.cancelPendingSubmissions()
                     state.pullRequest?.cancelPendingSubmission()
+                    if let id = state.pullRequestID, state.macPresentation.selection != .item("p\(id)") {
+                        state.pullRequestID = nil
+                    }
                     return .none
                 }
             }
@@ -132,6 +135,9 @@ public struct ServiceRootFeature {
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
+            // Remove unavailable background owners only inside the forEach lifetime boundary.
+            let selectedPRID = state.pullRequestID
+            state.pullRequests.removeAll { $0.id != selectedPRID && $0.pr.pr == nil && !$0.hasOutstandingCommand }
             // Triage owns the scoped sync connection; snapshots alone cannot express offline.
             state.tasks.connection = state.triage.triage.connection
             switch action {
@@ -173,6 +179,12 @@ public struct ServiceRootFeature {
                 state.fleet.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
                 state.tab = .inbox
+                if let current = state.pullRequestID, id != "p\(current)" {
+                    state.pullRequestID = nil
+                    if let detail = state.pullRequests[id: current], detail.pr.pr == nil, !detail.hasOutstandingCommand {
+                        state.pullRequests.remove(id: current)
+                    }
+                }
                 state.pendingInboxID = id
                 return routePending(&state)
             case .triage(.triage(.identityChanged(let identity))):
@@ -197,7 +209,7 @@ public struct ServiceRootFeature {
                         if case .pullRequest(let pr) = item, pr.id == id { return pr }
                         return nil
                     }.first
-                    if pr == nil, !detail.hasOutstandingCommand {
+                    if pr == nil, state.pullRequestID != id, !detail.hasOutstandingCommand {
                         state.pullRequests.remove(id: id)
                         if state.pullRequestID == id { state.pullRequestID = nil }
                         continue
@@ -235,9 +247,13 @@ public struct ServiceRootFeature {
                     }
                 }
                 return .send(.pullRequests(.element(id: pr.id, action: .updated(pr))))
-            case .pullRequestDismissed:
+            case .pullRequestDismissed(let id):
+                guard state.pullRequestID == id else { return .none }
                 state.pullRequest?.cancelPendingSubmission()
                 state.pullRequestID = nil
+                if let detail = state.pullRequests[id: id], detail.pr.pr == nil, !detail.hasOutstandingCommand {
+                    state.pullRequests.remove(id: id)
+                }
                 return .none
             case .pullRequests(.element(let id, .pr(.mutationFinished))), .pullRequests(.element(let id, .diff(.reviewFinished))):
                 if let detail = state.pullRequests[id: id], detail.pr.shouldDismiss || detail.diff.shouldDismiss,
@@ -466,6 +482,8 @@ public struct ServicePullRequestFeature {
     @ObservableState
     public struct State: Equatable, Identifiable {
         public var id: UInt64 { pr.id }
+        public var lastKnownPR: PullRequest
+        public var displayedPR: PullRequest? { pr.pr ?? lastKnownPR }
         public var hasOutstandingCommand: Bool {
             pr.isSending || pr.mutationOutcome?.uncertainID != nil || diff.isSending || diff.mutationOutcome?.uncertainID != nil
                 || questionFeatures.contains { $0.question.isSubmitting || $0.question.needsReconciliation }
@@ -485,6 +503,7 @@ public struct ServicePullRequestFeature {
             }
         }
         public init(pr: PullRequest, reports: [Report] = [], questions: [Question] = []) {
+            self.lastKnownPR = pr
             self.reports = reports
             self.questions = questions
             questionFeatures = IdentifiedArray(uniqueElements: questions.map(AttachedPRQuestionFeature.State.init))
@@ -537,7 +556,9 @@ public struct ServicePullRequestFeature {
             case .toggleDescription:
                 state.descriptionExpanded = !(state.descriptionExpanded ?? ((state.pr.pr?.body?.count ?? 0) <= 600))
                 return .none
-            case .updated(let pr): return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
+            case .updated(let pr):
+                if let pr { state.lastKnownPR = pr }
+                return .merge(.send(.pr(.pullRequestChanged(pr))), .send(.diff(.pullRequestChanged(pr))))
             case .diff(.disappeared):
                 state.cancelPendingSubmission()
                 return .none

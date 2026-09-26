@@ -118,11 +118,12 @@ private struct ServiceRootView<AccountContent: View>: View {
     let accountContent: AccountContent
     @Namespace private var triageZoom
     var body: some View {
+        let presentedPRID = store.pullRequestID
         TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
                     ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) }, zoom: triageZoom)
-                        .navigationDestination(isPresented: Binding(get: { store.pullRequestID != nil }, set: { if !$0 { store.send(.pullRequestDismissed) } })) {
+                        .navigationDestination(isPresented: Binding(get: { store.pullRequestID != nil }, set: { if !$0, let presentedPRID { store.send(.pullRequestDismissed(presentedPRID)) } })) {
                             if let id = store.pullRequestID,
                                let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == id }) {
                                 ServicePullRequestView(store: child)
