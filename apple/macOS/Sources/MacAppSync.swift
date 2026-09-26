@@ -4,6 +4,7 @@ import AlondraDeviceIdentity
 import AlondraMacFeature
 import AlondraShared
 import AlondraSync
+import AlondraTriageFeature
 import AppKit
 import ComposableArchitecture
 import Foundation
@@ -31,7 +32,11 @@ final class MacAppSync {
         init(_ value: MacLegacyProjection) { self.value = value }
     }
 
-    init(client: AlondraClient) {
+    init(
+        client: AlondraClient,
+        commandJournal: (any CommandJournaling)? = FileCommandJournal(directory: CommandJournalLocation.applicationSupport(
+            bundleID: Bundle.main.bundleIdentifier ?? "com.bitomule.alondra.mac"))
+    ) {
         let identity = Self.identity(for: client)
         let transport = URLSessionTransport()
         self.identity = identity
@@ -44,11 +49,7 @@ final class MacAppSync {
             generation: 0
         )
         commandScope = scope
-        commandGate = CommandGate(
-            scope: scope,
-            journal: FileCommandJournal(directory: CommandJournalLocation.applicationSupport(
-                bundleID: Bundle.main.bundleIdentifier ?? "com.bitomule.alondra.mac"))
-        )
+        commandGate = CommandGate(scope: scope, journal: commandJournal)
         session = SyncSession(
             client: AlondraAPIClient(base: client.base, device: client.device, signer: client.signer, transport: transport),
             credentialRevision: identity.credentialRevision
@@ -69,6 +70,31 @@ final class MacAppSync {
         windows.removeAll { $0.value == nil }
         windows.append(WeakWindowBridge(bridge))
         Task { await bridge.fleet.restoreUncertainSends() }
+    }
+
+    /// The Mac's existing CommandGate owns triage mutations. No window creates a client or a poll.
+    func mutateTriage(_ kind: CommandKind, itemID: String, identity: TriageIdentity) async -> TriageMutationOutcome {
+        let scope = commandScope
+        guard scope.server == identity.server,
+              scope.deviceID == identity.deviceID,
+              scope.credentialRevision == identity.credentialRevision,
+              scope.generation == identity.generation else { return .obsolete }
+        let client = self.client
+        let result = await commandGate.submit(kind, itemID: itemID, in: scope,
+            isUnknown: { $0.isTransient || $0.isCancellation }) {
+            switch kind {
+            case .markRead(let id): try await client.markRead(id)
+            case .dismissPullRequest(let id): try await client.dismissPullRequest(id)
+            default: throw MacTriageMutationError.unsupported
+            }
+        }
+        guard commandScope == scope else { return .obsolete }
+        switch result {
+        case .confirmed: return .confirmed
+        case .unknown: return .unknown
+        case .obsolete: return .obsolete
+        case .rejected(let error): return .rejected(error.localizedDescription)
+        }
     }
 
     /// Capture the command scope at the user gesture, before Swift schedules an async task.
@@ -174,6 +200,7 @@ final class MacLegacyProjection {
     let fleet: FleetStore
     let drafts: Drafts
     weak var feature: StoreOf<MacWindowFeature>?
+    weak var triage: StoreOf<TriageFeature>?
     private var gate: MacProjectionGate
     private var commandScope: CommandScope
     private var lastSnapshotBody: Data?
@@ -190,6 +217,7 @@ final class MacLegacyProjection {
         let previous = gate.expected
         guard next != previous || commandScope != self.commandScope else { return }
         feature?.send(.identityWillChange(next))
+        triage?.send(.identityChanged(Self.triageIdentity(commandScope)))
         gate.use(next)
         self.commandScope = commandScope
         drafts.discardAll()
@@ -234,20 +262,30 @@ final class MacLegacyProjection {
             lastSnapshotBody = body
         }
         fleet.setConnection(legacyConnection)
+        triage?.send(.inboxUpdated(TriageInboxUpdate(
+            identity: Self.triageIdentity(commandScope), overview: overview)))
         return MacWindowUpdate(
             identity: incoming,
             generation: state.generation,
             connection: connection,
             hasSnapshot: fleet.overview != nil,
-            inboxIDs: overview == nil ? nil : fleet.inbox.map(\.id)
+            inboxIDs: overview == nil ? nil : triage?.queue.map(\.id)
         )
     }
+
+    private static func triageIdentity(_ scope: CommandScope) -> TriageIdentity {
+        TriageIdentity(server: scope.server, deviceID: scope.deviceID,
+                       credentialRevision: scope.credentialRevision, generation: scope.generation)
+    }
 }
+
+private enum MacTriageMutationError: Error { case unsupported }
 
 @MainActor
 final class MacWindowContext {
     let bridge: MacLegacyProjection
     let feature: StoreOf<MacWindowFeature>
+    let triage: StoreOf<TriageFeature>
 
     var legacy: FleetStore { bridge.fleet }
     var drafts: Drafts { bridge.drafts }
@@ -261,6 +299,16 @@ final class MacWindowContext {
             drafts: drafts
         )
         self.bridge = bridge
+        triage = Store(initialState: TriageFeature.State()) {
+            TriageFeature()
+        } withDependencies: {
+            $0.triageService = TriageService(
+                observe: { AsyncStream { $0.finish() } },
+                mutate: { kind, itemID, identity in
+                    await services.mutateTriage(kind, itemID: itemID, identity: identity)
+                }
+            )
+        }
         services.register(bridge)
         feature = Store(initialState: MacWindowFeature.State()) {
             MacWindowFeature()
@@ -280,6 +328,7 @@ final class MacWindowContext {
             })
         }
         bridge.feature = feature
+        bridge.triage = triage
     }
 }
 
@@ -316,14 +365,14 @@ struct MacWindowScene: View {
     }
 
     var body: some View {
-        FleetView(store: context.legacy, feature: context.feature, services: services, drafts: context.drafts)
+        FleetView(store: context.legacy, feature: context.feature, triage: context.triage, services: services, drafts: context.drafts)
             .id(context.feature.identity)
             .environment(services)
             .frame(minWidth: 860, minHeight: 540)
             .environment(device)
             .task { context.feature.send(.appeared) }
             .task { services.startActivityMonitoring() }
-            .onChange(of: context.legacy.inbox.map(\.id)) { _, ids in
+            .onChange(of: context.triage.queue.map(\.id)) { _, ids in
                 context.feature.send(.localInboxChanged(ids))
             }
             .onChange(of: services.pairingError, initial: true) { _, error in

@@ -321,12 +321,12 @@
         }
       }
     },
-    "Ask for new work (⌘N)": {
+    "Ask for new work (⇧⌘N)": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pedir trabajo nuevo (⌘N)"
+            "value": "Pedir trabajo nuevo (⇧⌘N)"
           }
         }
       }
@@ -2524,9 +2524,9 @@
     "Time": {
       "localizations": {
         "es": {
-         "stringUnit": {
-           "state": "translated",
-           "value": "Hora"
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hora"
           }
         }
       }
@@ -2547,6 +2547,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "¿Qué debe hacer el orquestador?"
+          }
+        }
+      }
+    },
+    "Skip for Now": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saltar por ahora"
+          }
+        }
+      }
+    },
+    "Dismiss Pull Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descartar pull request"
           }
         }
       }

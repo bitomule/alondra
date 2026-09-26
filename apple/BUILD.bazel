@@ -40,6 +40,25 @@ swift_library(
         "//apple/Data/Sync:AlondraSync",
         "//apple/DeviceIdentity:AlondraDeviceIdentity",
         "//apple/macOS/Feature:AlondraMacFeature",
+        "//apple/Features/Triage:AlondraTriageFeature",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraMacTriageIntegrationTests",
+    srcs = glob(
+        ["macOS/Sources/**/*.swift", "macOS/Tests/*.swift"],
+        exclude = ["macOS/Sources/AlondraMacApp.swift"],
+    ),
+    deps = [
+        ":AlondraShared",
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Data/Commands:AlondraCommands",
+        "//apple/Data/Sync:AlondraSync",
+        "//apple/DeviceIdentity:AlondraDeviceIdentity",
+        "//apple/macOS/Feature:AlondraMacFeature",
+        "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

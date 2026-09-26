@@ -18,12 +18,11 @@ struct AlondraMacApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Alondra") {
+        WindowGroup("Alondra", id: "main") {
             MacWindowScene(device: device, services: sync)
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
-            CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appSettings) {
                 PairingCommand()
             }

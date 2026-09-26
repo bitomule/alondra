@@ -1,5 +1,6 @@
 import AlondraShared
 import AlondraMacFeature
+import AlondraTriageFeature
 import ComposableArchitecture
 import SwiftUI
 
@@ -11,6 +12,7 @@ struct FleetView: View {
     @Environment(LocalDevice.self) private var device
     let store: FleetStore
     @Bindable var feature: StoreOf<MacWindowFeature>
+    @Bindable var triage: StoreOf<TriageFeature>
     let services: MacAppSync
     let drafts: Drafts
     @State private var smartMatches: Set<String>?
@@ -42,11 +44,23 @@ struct FleetView: View {
             }
             .animation(.smooth(duration: 0.22), value: selection)
             .overlay(alignment: .top) {
-                ErrorBanner(
-                    store: store,
-                    pairingError: feature.pairingError,
-                    dismissPairingError: { feature.send(.dismissPairingError) }
-                )
+                VStack(spacing: 4) {
+                    if let notice = triage.notice {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            Text(notice).lineLimit(2)
+                            Button("Close") { triage.send(.dismissNotice) }
+                                .buttonStyle(.borderless)
+                        }
+                        .padding(10)
+                        .background(.regularMaterial, in: .capsule)
+                    }
+                    ErrorBanner(
+                        store: store,
+                        pairingError: feature.pairingError,
+                        dismissPairingError: { feature.send(.dismissPairingError) }
+                    )
+                }
             }
         }
         .environment(\.searchActive, searchFocused)
@@ -65,8 +79,8 @@ struct FleetView: View {
                 } label: {
                     Label("New", systemImage: "square.and.pencil")
                 }
-                .keyboardShortcut("n")
-                .help("Ask for new work (⌘N)")
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .help("Ask for new work (⇧⌘N)")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -96,14 +110,17 @@ struct FleetView: View {
             services.runMutation { await store.close(node) }
         }
         .closeRefusalAlert(store)
+        .onChange(of: selection) { _, next in
+            if case .item(let id)? = next { triage.send(.focus(id)) }
+        }
         .task(id: store.connection) { await services.pairIfNeeded(device: device, connection: store.connection) }
     }
 
-    private var inboxIDs: [String] { store.inbox.map(\.id) }
+    private var inboxIDs: [String] { triage.queue.map(\.id) }
 
     private var subtitle: String {
         guard store.connected, store.overview != nil else { return String(localized: "No connection to alondrad") }
-        let count = store.inbox.count
+        let count = triage.queue.count
         let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
         return [pending, String(localized: "\(store.nodes.count) nodes")].joined(separator: " · ")
     }
@@ -125,27 +142,9 @@ struct FleetView: View {
                     SidebarCountHeader(title: String(localized: "Orchestrator"), count: 0, tint: .orange)
                 }
             }
-            Section {
-                if waiting.isEmpty {
-                    Label(query.isEmpty ? String(localized: "All caught up") : String(localized: "Nothing matches"), systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(waiting) { item in
-                    InboxRow(item: item)
-                        .tag(Selection.item(item.id))
-                }
-            } header: {
-                SidebarCountHeader(title: String(localized: "Waiting for You"), count: store.inbox.count(where: { !$0.isPullRequest }), tint: .orange)
-            }
+            waitingSection
             if !pullRequests.isEmpty {
-                Section {
-                    ForEach(pullRequests) { item in
-                        InboxRow(item: item, asks: !store.questions(for: item).isEmpty)
-                            .tag(Selection.item(item.id))
-                    }
-                } header: {
-                    SidebarCountHeader(title: String(localized: "Pull Requests"), count: store.inbox.count(where: \.isPullRequest), tint: .purple)
-                }
+                pullRequestSection
             }
             Section(isExpanded: $tasksExpanded) {
                 Label("Scheduled Tasks", systemImage: "calendar.badge.clock")
@@ -192,16 +191,53 @@ struct FleetView: View {
         .task(id: query) { await runSmartSearch() }
     }
 
+    private var waitingSection: some View {
+        Section {
+            if waiting.isEmpty {
+                Label(query.isEmpty ? String(localized: "All caught up") : String(localized: "Nothing matches"),
+                      systemImage: query.isEmpty ? "checkmark.circle" : "magnifyingglass")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(waiting) { item in
+                InboxRow(item: item)
+                    .tag(Selection.item(item.id))
+                    .contextMenu { triageActions(for: item) }
+            }
+        } header: {
+            SidebarCountHeader(title: String(localized: "Waiting for You"),
+                               count: triage.queue.count(where: { !$0.isPullRequest }), tint: .orange)
+        }
+    }
+
+    private var pullRequestSection: some View {
+        Section {
+            ForEach(pullRequests) { item in
+                InboxRow(item: item, asks: asksOnPullRequest(item))
+                    .tag(Selection.item(item.id))
+                    .contextMenu { triageActions(for: item) }
+            }
+        } header: {
+            SidebarCountHeader(title: String(localized: "Pull Requests"),
+                               count: triage.queue.count(where: \.isPullRequest), tint: .purple)
+        }
+    }
+
+    private func asksOnPullRequest(_ item: InboxItem) -> Bool {
+        guard case .pullRequest(let pr) = item else { return false }
+        return !(triage.questionsByPullRequest[pr.id] ?? []).isEmpty
+    }
+
     @ViewBuilder
     private var detail: some View {
         switch selection {
         case .schedules:
             ScheduledTasksView(client: store.client)
         case .item(let id):
-            if let item = store.item(id: id) {
+            if let item = triage.items.first(where: { $0.id == id }) {
                 ItemDetail(item: item, store: store, drafts: drafts)
             } else {
-                HomeView(store: store, start: startTriage, newRequest: { feature.send(.showNewRequest) })
+                HomeView(store: store, inboxCount: triage.queue.count, hasInboxSnapshot: triage.hasSnapshot,
+                         start: startTriage, newRequest: { feature.send(.showNewRequest) })
             }
         case .node(let id):
             if let node = store.node(id) {
@@ -222,11 +258,32 @@ struct FleetView: View {
                 ContentUnavailableView("This request is gone", systemImage: "questionmark.circle")
             }
         case nil:
-            HomeView(store: store, start: startTriage, newRequest: { feature.send(.showNewRequest) })
+            HomeView(store: store, inboxCount: triage.queue.count, hasInboxSnapshot: triage.hasSnapshot,
+                     start: startTriage, newRequest: { feature.send(.showNewRequest) })
         }
     }
 
     private func startTriage() {
+        feature.send(.startTriage)
+    }
+
+    @ViewBuilder
+    private func triageActions(for item: InboxItem) -> some View {
+        if triage.queue.count > 1 {
+            Button("Skip for Now") { skip(item.id) }
+        }
+        switch item {
+        case .question: EmptyView()
+        case .report:
+            Button("Mark as Read") { triage.send(.hide(item.id)) }
+        case .pullRequest:
+            Button("Dismiss Pull Request") { triage.send(.hide(item.id)) }
+        }
+    }
+
+    private func skip(_ id: String) {
+        triage.send(.skip(id))
+        feature.send(.localInboxChanged(triage.queue.map(\.id)))
         feature.send(.startTriage)
     }
 
@@ -280,8 +337,8 @@ struct FleetView: View {
     private var pullRequests: [InboxItem] { visibleInbox.filter(\.isPullRequest) }
 
     private var visibleInbox: [InboxItem] {
-        guard !terms.isEmpty else { return store.inbox }
-        return store.inbox.filter { item in
+        guard !terms.isEmpty else { return triage.queue }
+        return triage.queue.filter { item in
             let haystack = "\(item.title) \(item.nodeName ?? "")".lowercased()
             return terms.allSatisfy { haystack.contains($0) }
         }
@@ -333,11 +390,13 @@ extension FleetStore {
 
 struct HomeView: View {
     let store: FleetStore
+    let inboxCount: Int
+    let hasInboxSnapshot: Bool
     let start: () -> Void
     let newRequest: () -> Void
 
     var body: some View {
-        if store.overview == nil {
+        if !hasInboxSnapshot {
             if store.connected {
                 ProgressView()
             } else {
@@ -349,7 +408,7 @@ struct HomeView: View {
                     ProgressView().controlSize(.small)
                 }
             }
-        } else if store.inbox.isEmpty {
+        } else if inboxCount == 0 {
             ContentUnavailableView {
                 Label("All caught up", systemImage: "checkmark.circle")
             } description: {
@@ -359,7 +418,7 @@ struct HomeView: View {
             }
         } else {
             ContentUnavailableView {
-                Label("\(store.inbox.count) things waiting for you", systemImage: "tray.full")
+                Label("\(inboxCount) things waiting for you", systemImage: "tray.full")
             } description: {
                 Text("Answer, and it moves on to the next one by itself.")
             } actions: {
