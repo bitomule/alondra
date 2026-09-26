@@ -224,6 +224,7 @@ private struct ServiceProjectPicker: View {
         .overlay { if shown.isEmpty && !store.projectQuery.isEmpty { ContentUnavailableView.search(text: store.projectQuery) } }
         .searchable(text: Binding(get: { store.projectQuery }, set: { store.send(.projectQueryChanged($0)) }), prompt: Text("Filter projects"))
         .navigationTitle("Project")
+        .onAppear { store.send(.projectPickerOpened) }
     }
     private func row(_ project: String?, title: String) -> some View {
         Button { store.send(.projectSelected(project)); dismiss() } label: {

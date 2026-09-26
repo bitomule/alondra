@@ -151,26 +151,43 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(headers, ["AAAAAAAAAAAAAAAAAAAAAA", "AQEBAQEBAQEBAQEBAQEBAQ"])
     }
 
-    func testIdleRefreshWaitsForTimerAndLogoutSuppressesNextFetch() async throws {
+    func testContentLongPollUsesEncryptedDaemonCursorAndNoMutationJournal() async throws {
         let fixture = try Fixture(mode: .overview)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let session = fixture.session()
+        try await session.waitForChange(afterSnapshotTick: UInt64.max, seconds: 50)
+        let posts = await fixture.http.mutations
+        XCTAssertEqual(posts.count, 1)
+        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
+        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
+            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(request["method"] as? String, "GET")
+        XCTAssertEqual(request["path"] as? String, "/v1/changes?after=18446744073709551615&wait=50")
+        XCTAssertNil(request["body"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
+    }
+
+    func testContentLongPollWaitsForRemoteResultAndLogoutSuppressesNextFetch() async throws {
+        let fixture = try Fixture(mode: .pendingChange)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let timer = TimerGate()
-        let session = fixture.session(wait: { try await timer.wait($0) })
+        let session = fixture.session(sleep: { try await timer.wait(.seconds(1)) })
         _ = try await session.fetchOverview()
         let nextRefresh = Task {
             try await session.waitForChange(afterSnapshotTick: 999, seconds: 10)
             return try await session.fetchOverview()
         }
         let duration = await timer.started()
-        XCTAssertEqual(duration, .seconds(10))
+        XCTAssertEqual(duration, .seconds(1))
         let beforeRelease = await fixture.http.mutations
-        XCTAssertEqual(beforeRelease.count, 1, "Own overview completion must not trigger another fetch")
+        XCTAssertEqual(beforeRelease.count, 2, "One overview and one content poll; no next overview before its response")
         await session.deactivate()
         await timer.release()
         do { _ = try await nextRefresh.value; XCTFail("Logged-out session fetched again") }
         catch is CancellationError { }
         let afterRelease = await fixture.http.mutations
-        XCTAssertEqual(afterRelease.count, 1)
+        XCTAssertEqual(afterRelease.count, 2)
     }
 
     func testUncertainMacExecutionAndForgedIdentityCannotBecomeSuccess() async throws {
@@ -199,16 +216,16 @@ private struct Fixture {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         http = FakeHTTP(macSigning: macSigning, phoneAgreement: phoneAgreement.publicKey, mode: mode)
     }
-    func session(wait: @escaping @Sendable (Duration) async throws -> Void = { _ in }) -> RelaySession {
+    func session(sleep: @escaping @Sendable () async throws -> Void = {}) -> RelaySession {
         return try! RelaySession(journalFile: directory.appendingPathComponent("outbox.json"), scope: scope,
             bearer: { "token" }, transport: http,
             signing: phoneSigning, agreement: phoneAgreement, macSigning: macSigning.publicKey,
-            macAgreement: macAgreement.publicKey, now: { 1000 }, wait: wait, sleep: {})
+            macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: sleep)
     }
 }
 
 private actor FakeHTTP: RelayHTTPTransport {
-    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview }
+    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview, pendingChange }
     let macSigning: P256.Signing.PrivateKey
     let phoneAgreement: P256.KeyAgreement.PublicKey
     let mode: Mode
@@ -233,7 +250,10 @@ private actor FakeHTTP: RelayHTTPTransport {
             return RelayHTTPResponse(status: 401, body: Data())
         }
         let requestID = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(mutations.last)).requestID
-        let payload = mode == .overview ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
+        if mode == .pendingChange && mutations.count > 1 {
+            return RelayHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["request_id": requestID, "status": "pending", "revision": 1]))
+        }
+        let payload = mode == .overview || mode == .pendingChange ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
         let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender ? "mac-other" : "mac-test",
             recipient: "phone-test", requestID: mode == .wrongRequest ? "operation-other" : requestID, kind: "response",
             expiresAtMilliseconds: mode == .expired ? 999 : 5000, plaintext: Data(payload.utf8),

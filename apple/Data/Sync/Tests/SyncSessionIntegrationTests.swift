@@ -143,6 +143,29 @@ final class SyncSessionIntegrationTests: XCTestCase {
         await session.stop()
     }
 
+    func testExplicitRefreshPreservesVisibleSnapshotAndUpdatesBothWindows() async throws {
+        let transport = AlternateSyncTransport(body: Data(try overview(9).utf8))
+        let identity = SyncIdentity(server: base, deviceID: "phone", credentialRevision: "approved")
+        let session = SyncSession(transport: transport, identity: identity)
+        var first = await session.subscribe().makeAsyncIterator()
+        var second = await session.subscribe().makeAsyncIterator()
+        let initial = await nextSnapshot(from: &first)
+        _ = await nextSnapshot(from: &second)
+        await transport.waitForPoll()
+        await session.refresh()
+        let visible = await session.state
+        XCTAssertEqual(visible.snapshot, initial?.snapshot)
+        let refreshed = await nextSnapshot(from: &first)
+        let otherWindow = await nextSnapshot(from: &second)
+        XCTAssertEqual(refreshed?.snapshot, initial?.snapshot)
+        XCTAssertEqual(refreshed?.identity, identity)
+        XCTAssertEqual(refreshed?.publicationRevision, otherWindow?.publicationRevision)
+        XCTAssertGreaterThan(try XCTUnwrap(refreshed?.publicationRevision), try XCTUnwrap(initial?.publicationRevision))
+        let counts = await transport.counts()
+        XCTAssertEqual(counts.0, 2)
+        await session.stop()
+    }
+
     func testTwoWindowsShareOneLongPollAndStopCancelsIt() async throws {
         let transport = ControlledTransport()
         let client = AlondraAPIClient(base: base, transport: transport)

@@ -49,6 +49,7 @@ public struct NewRequestFeature {
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
         case optionsPresented(Bool)
+        case projectPickerOpened
         case projectQueryChanged(String)
         case workspaceUpdated(Overview?)
         case identityChanged
@@ -87,6 +88,7 @@ public struct NewRequestFeature {
                 state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
                 return .none
             case .optionsPresented(let shown): state.optionsPresented = shown; return .none
+            case .projectPickerOpened: state.projectQuery = ""; return .none
             case .projectQueryChanged(let query): state.projectQuery = query; return .none
             case .workspaceUpdated(let overview):
                 state.hasSnapshot = overview != nil
@@ -158,6 +160,7 @@ public struct NewRequestFeature {
                 state.issueQuery = query
                 return .none
             case .issuesOpened:
+                state.issueQuery = ""
                 guard !state.issuesLoaded, !state.isLoadingIssues else { return .none }
                 return loadIssues(state: &state, refresh: false)
             case .issuesRefreshRequested:

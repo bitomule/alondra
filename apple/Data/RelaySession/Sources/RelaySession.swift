@@ -31,7 +31,6 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
     private let now: @Sendable () -> UInt64
     private let sleep: @Sendable () async throws -> Void
     private var active = true
-    private let wait: @Sendable (Duration) async throws -> Void
 
     public init(journalFile: URL, scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
@@ -39,7 +38,6 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
-                wait: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
         let client = try AlondraRelayClient(base: scope.relay, deviceID: scope.deviceID,
             signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, transport: transport)
@@ -47,7 +45,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         outbox = RelayOutbox(file: journalFile, scope: scope, transport: client)
         self.signing = signing; self.agreement = agreement
         self.macSigning = macSigning; self.macAgreement = macAgreement
-        self.now = now; self.sleep = sleep; self.wait = wait
+        self.now = now; self.sleep = sleep
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {
@@ -243,11 +241,18 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
 
     public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
         guard active else { throw CancellationError() }
-        // /v1/changes reports relay job lifecycle, including our own overview request.
-        // It is not a daemon-data invalidation feed. Poll at a bounded cadence instead
-        // of feeding our own completion back into another immediate overview.
-        try await wait(.seconds(max(1, min(seconds, 25))))
+        let duration = max(0, min(seconds, 50))
+        // Wait on daemon content changes inside the encrypted service request. Relay job
+        // lifecycle events include our own reads and cannot be used as content invalidation.
+        let result = try await read(requestID: "read-" + UUID().uuidString,
+            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", body: nil,
+            statusPolls: duration + 5)
         try Task.checkCancellation()
         guard active else { throw CancellationError() }
+        switch result {
+        case .completed(let status, _) where (200..<300).contains(status): return
+        case .completed(let status, _): throw RelaySessionError.localStatus(status)
+        case .unknown: throw RelaySessionError.outcomeUnknown
+        }
     }
 }
