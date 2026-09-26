@@ -136,13 +136,13 @@ struct ServiceQuestionView: View {
                     }
                 }
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
-            }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.canPrepareSubmission || store.pendingSubmission != nil || store.isSubmitting || store.needsReconciliation || store.completed)
         }
         .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
         .onAppear { if !searchActive { focus = store.question.options.isEmpty ? .reply : .pane } }
         .onChange(of: store.replyFocusRequest) { _, _ in focus = .reply }
         .onAppear { store.send(.keyboardAppeared) }
-        .onDisappear { store.send(.keyboardDisappeared) }
+        .onDisappear { store.send(.disappeared); store.send(.keyboardDisappeared) }
         .triageKeys(focus: $focus) { character in
             guard store.keyboardReady else { return false }
             if character == "r" { focus = .reply; return true }
@@ -225,7 +225,7 @@ struct ServiceDocumentView: View {
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
                 if let error = store.downloads.error { Text(error).foregroundStyle(.red) }
             }
-            .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
+            .disabled(store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed)
             .animation(.snappy(duration: 0.2), value: store.draft.comments.count)
         }
         .task { await store.send(.appeared).finish() }

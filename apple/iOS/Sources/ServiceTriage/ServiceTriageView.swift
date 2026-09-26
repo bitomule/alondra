@@ -435,11 +435,12 @@ struct ServiceQuestionView: View {
                 if !store.question.isTerminalMenu {
                     Button("Ask for more context") { _ = store.send(.moreContextTapped) }
                 }
-            }.disabled(!store.attachmentPicker.allReady || store.isSubmitting || store.needsReconciliation || store.completed)
+            }.disabled(!store.attachmentPicker.canPrepareSubmission || store.pendingSubmission != nil || store.isSubmitting || store.needsReconciliation || store.completed)
             AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
+        .onDisappear { store.send(.disappeared) }
         .navigationTitle(store.question.isAction ? "Action" : "Question")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }

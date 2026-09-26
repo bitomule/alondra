@@ -11,7 +11,7 @@ struct ServiceAttachedQuestion: View {
 
     @FocusState private var replyFocused: Bool
     private var picked: QuestionOption? { question.options.first { $0.label == store.draft.selectedOption } }
-    private var sending: Bool { store.isSubmitting || store.pendingAttachedAnswer != nil || store.needsReconciliation || store.completed }
+    private var sending: Bool { store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed }
     private var text: String { store.draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var attachmentsEmpty: Bool { store.attachmentPicker.entries.isEmpty }
 
@@ -51,6 +51,7 @@ struct ServiceAttachedQuestion: View {
         .disabled(sending)
         .opacity(sending ? 0.5 : 1)
         .animation(.spring(duration: 0.3), value: picked)
+        .onDisappear { store.send(.disappeared) }
         .onChange(of: store.replyFocusRequest) { _, _ in replyFocused = true }
         .onChange(of: sending) { _, sending in if sending { replyFocused = false } }
 
