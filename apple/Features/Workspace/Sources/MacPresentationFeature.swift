@@ -38,19 +38,20 @@ public struct MacPresentationFeature {
             }
         }
 
+        private var terms: [Substring] { query.lowercased().split(separator: " ") }
         public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
         public func groupExpanded(_ group: TaskStateGroup) -> Bool {
-            !query.isEmpty || (!group.isFinished != toggledTaskGroups.contains(String(describing: group.kind)))
+            !terms.isEmpty || (!group.isFinished != toggledTaskGroups.contains(String(describing: group.kind)))
         }
         public func matches(_ text: String) -> Bool {
             let haystack = text.lowercased()
-            return query.lowercased().split(separator: " ").allSatisfy { haystack.contains($0) }
+            return terms.allSatisfy { haystack.contains($0) }
         }
         public func groups(in board: TaskBoard) -> [TaskStateGroup] {
             board.groups.compactMap { group in
                 let filtered = TaskStateGroup(kind: group.kind,
                     tasks: group.tasks.filter { matches($0.title) },
-                    requests: group.requests.filter { matches($0.title ?? $0.headline ?? "") })
+                    requests: group.requests.filter { matches(ServiceTaskPresentation.title(of: $0, in: board)) })
                 return filtered.count == 0 ? nil : filtered
             }
         }

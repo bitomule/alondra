@@ -91,6 +91,10 @@ public struct ServiceTaskPresentation {
     /// The title the orchestrator gave it, else its only task's, else the first line of what the
     /// user asked (all a request being defined has), else its first task's.
     public func title(of request: WorkRequest) -> String {
+        Self.title(of: request, in: board)
+    }
+
+    public static func title(of request: WorkRequest, in board: TaskBoard) -> String {
         let tasks = board.tree(for: request.id)?.tasks ?? []
         if let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         if tasks.count == 1 { return tasks[0].title }

@@ -30,6 +30,26 @@ struct MacServiceNavigationTests {
     }
 
     @Test
+    func sidebarSearchUsesDisplayedRequestFallbackAndWhitespaceDoesNotExpandGroups() async throws {
+        let suite = "MacSidebarParity-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let requests = try decoder.decode([WorkRequest].self, from: Data(#"[{"id":"r1","title":"   ","text":"Release checklist\nDetails","created_at":1,"state":"defining","tasks":[]},{"id":"r2","text":"Finished work","created_at":1,"state":"done","tasks":[]}]"#.utf8))
+        let board = TaskBoard(requests: requests, tasks: [])
+        let store = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.defaultAppStorage = defaults
+        }
+        await store.send(.queryChanged("release checklist")).finish()
+        #expect(store.groups(in: board).flatMap(\.requests).map(\.id) == ["r1"])
+        await store.send(.queryChanged("   ")).finish()
+        let finished = try #require(board.groups.first(where: \.isFinished))
+        #expect(!store.groupExpanded(finished))
+        #expect(store.groups(in: board).flatMap(\.requests).count == 2)
+    }
+
+    @Test
     func resolvingMiddleCardFollowsItsNeighbourWithoutStealingAnotherWindowsSelection() {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
         let second = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
