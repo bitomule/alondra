@@ -14,7 +14,7 @@ public final class CloudPairingOwner {
     private let displayName: String
     private let storageDirectory: URL
     private let prepareCamera: @Sendable () async -> Bool
-    private let didReconcile: @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () -> Void)
+    private let didReconcile: @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () throws -> Void)
     private let willDeactivate: @MainActor () async throws -> Void
     @ObservationIgnored private lazy var registry = ApprovedSessionRegistry<CloudAppServices>(
         make: { [auth, storageDirectory] in try CloudAppServices(approved: $0, auth: auth, storageDirectory: storageDirectory) },
@@ -41,7 +41,7 @@ public final class CloudPairingOwner {
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false },
-                didReconcile: @escaping @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () -> Void) = { _ in {} },
+                didReconcile: @escaping @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () throws -> Void) = { _ in {} },
                 willDeactivate: @escaping @MainActor () async throws -> Void = {}) {
         self.auth = auth
         self.displayName = displayName

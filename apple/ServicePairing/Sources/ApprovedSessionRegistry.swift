@@ -18,7 +18,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
     private let stop: @MainActor (Session) async -> Void
     // Preparation may suspend, but registry and platform publication share one
     // synchronous MainActor commit after the generation/cancellation guards.
-    private let publish: @MainActor (Snapshot) async throws -> (@MainActor () -> Void)
+    private let publish: @MainActor (Snapshot) async throws -> (@MainActor () throws -> Void)
     private let clearPlatform: @MainActor () async throws -> Void
     private var generation = 0
     private var transition: UUID?
@@ -30,7 +30,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
 
     public init(make: @escaping @MainActor (ApprovedServicePairing) throws -> Session,
                 stop: @escaping @MainActor (Session) async -> Void,
-                publish: @escaping @MainActor (Snapshot) async throws -> (@MainActor () -> Void),
+                publish: @escaping @MainActor (Snapshot) async throws -> (@MainActor () throws -> Void),
                 clearPlatform: @escaping @MainActor () async throws -> Void) {
         self.make = make; self.stop = stop; self.publish = publish; self.clearPlatform = clearPlatform
     }
@@ -81,7 +81,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
             let commit = try await publish(Snapshot(entries: authorized.compactMap { next[ApprovedPairingID($0)] }, selectedID: selection))
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             let removed = entries.filter { next[$0.key] == nil }.map(\.value)
-            commit()
+            try commit()
             entries = next; pending = [:]; selectedID = selection; owner = verifiedSubject
             for entry in removed { await stop(entry.session) }
         } catch {
@@ -107,7 +107,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
         let current = generation
         let commit = try await publish(Snapshot(entries: Array(entries.values), selectedID: id))
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
-        commit()
+        try commit()
         selectedID = id
     }
 

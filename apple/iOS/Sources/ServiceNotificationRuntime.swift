@@ -13,7 +13,7 @@ import UserNotifications
 final class ServiceNotificationRuntime {
     let push: PushCenter
     private let bindings = PushBindingStore()
-    private let vault: NotificationCredentialVault
+    private let vault: NotificationDecryptionStore?
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
@@ -32,7 +32,7 @@ final class ServiceNotificationRuntime {
     init() {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String
         let store = group.flatMap { $0.isEmpty || $0.contains("$(") ? nil : NotificationDecryptionStore(accessGroup: $0) }
-        vault = NotificationCredentialVault(store: store)
+        vault = store
         push = PushCenter(decryptionStore: store)
     }
 
@@ -40,7 +40,7 @@ final class ServiceNotificationRuntime {
 
     func installDelegate() { UNUserNotificationCenter.current().delegate = responder }
 
-    func prepare(_ snapshot: ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () -> Void) {
+    func prepare(_ snapshot: ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () throws -> Void) {
         generation += 1
         let current = generation
         var contexts: [NotificationDecryptionContext] = []
@@ -70,9 +70,12 @@ final class ServiceNotificationRuntime {
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             if push.authorization == .notDetermined { await push.activate() }
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
-            try await vault.replace(contexts)
-            guard current == generation, !Task.isCancelled else { throw CancellationError() }
-            return { [self, clients, selected] in
+            guard let vault else { throw ProvisioningError.missingKeychainGroup }
+            return { [self, clients, selected, contexts] in
+                guard current == generation, !Task.isCancelled else { throw CancellationError() }
+                // Keychain mutation and platform/session publication are one synchronous
+                // MainActor commit. A stale preparation cannot repopulate keys after logout.
+                try vault.replaceAuthorizedContexts(contexts)
                 identity = snapshot.selected.map { ObjectIdentifier($0.session) }
                 push.install(clients, selected: selected)
                 error = nil
@@ -93,7 +96,8 @@ final class ServiceNotificationRuntime {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         do {
-            try await vault.clear()
+            guard let vault else { throw ProvisioningError.missingKeychainGroup }
+            try vault.clear()
             if current == generation { error = nil }
         } catch {
             if current == generation { self.error = error.localizedDescription }
@@ -109,24 +113,12 @@ final class ServiceNotificationRuntime {
     }
 
     private enum ProvisioningError: LocalizedError {
-        case binding
-        var errorDescription: String? { "Could not create the notification identity binding" }
-    }
-}
-
-private actor NotificationCredentialVault {
-    let store: NotificationDecryptionStore?
-    init(store: NotificationDecryptionStore?) { self.store = store }
-    func replace(_ contexts: [NotificationDecryptionContext]) throws {
-        guard let store else { throw ConfigurationError.missingKeychainGroup }
-        try store.replaceAuthorizedContexts(contexts)
-    }
-    func clear() throws {
-        guard let store else { throw ConfigurationError.missingKeychainGroup }
-        try store.clear()
-    }
-    private enum ConfigurationError: LocalizedError {
-        case missingKeychainGroup
-        var errorDescription: String? { "The notification shared Keychain group is not configured" }
+        case binding, missingKeychainGroup
+        var errorDescription: String? {
+            switch self {
+            case .binding: "Could not create the notification identity binding"
+            case .missingKeychainGroup: "The notification shared Keychain group is not configured"
+            }
+        }
     }
 }

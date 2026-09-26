@@ -90,8 +90,10 @@ new collection format.
 Runtime restoration now prepares contexts and immutable notification clients for
 every approved pairing belonging to the verified subject. It publishes an exact
 authorized context snapshot with one Keychain update, pruning another account's
-contexts. The registry commits its session selection and PushCenter's clients in
-one synchronous MainActor step after preparation succeeds. Selecting a Mac retains
+contexts. Preparation performs no private-key writes. The registry commits the
+Keychain replacement, its session selection and PushCenter's clients in one
+synchronous, throwing MainActor step after preparation succeeds. Keychain failure
+aborts publication; logout cannot be overtaken by an actor-queued stale write. Selecting a Mac retains
 other clients, bindings and contexts; logout/account replacement still cancels all
 registrations and clears both stores plus delivered/pending notifications.
 
