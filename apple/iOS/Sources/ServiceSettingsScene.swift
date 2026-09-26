@@ -11,7 +11,7 @@ struct ServiceSettingsScene: View {
     @State private var context = ServiceSettingsContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceSettingsView(store: store) }
+            if let store = context.store { ServiceSettingsView(store: store, ink: Palette.ink, success: Palette.sage, failure: Palette.rose) }
             else { ProgressView("Loading settings…") }
         }.task { await context.connect(services: services, owner: owner, notifications: notifications) }
     }

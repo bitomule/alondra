@@ -67,6 +67,7 @@ public extension DependencyValues {
         public var saving = false
         public var checking = false
         public var connected = false
+        public var connectionError: String?
         public var error: String?
         public var confirmLogout = false
         public var generation: UInt64 = 0
@@ -82,7 +83,7 @@ public extension DependencyValues {
         case quietEnabled(Bool), quietStart(Int), quietEnd(Int)
         case useCurrent, save, saved(UInt64), failed(String, UInt64)
         case refreshPermission, requestPermission, openSystemSettings
-        case checkConnection, checked(UInt64)
+        case checkConnection, checked(UInt64), checkFailed(String, UInt64)
         case logoutTapped, cancelLogout, confirmLogout
     }
     @Dependency(\.serviceSettings) var client
@@ -139,15 +140,19 @@ public extension DependencyValues {
             case .openSystemSettings: return .run { _ in await client.openSystemSettings() }
             case .checkConnection:
                 guard !state.checking else { return .none }
-                state.checking = true; state.connected = false; state.error = nil
+                state.checking = true; state.connected = false; state.connectionError = nil
                 let generation = state.generation
                 return .run { send in
                     do { try await client.checkConnection(); await send(.checked(generation)) }
-                    catch { await send(.failed(error.localizedDescription, generation)) }
+                    catch { await send(.checkFailed(error.localizedDescription, generation)) }
                 }.cancellable(id: state.cancellation)
             case .checked(let generation):
                 guard generation == state.generation else { return .none }
                 state.checking = false; state.connected = true; return .none
+            case .checkFailed(let message, let generation):
+                guard generation == state.generation else { return .none }
+                state.checking = false; state.connectionError = message
+                return .none
             case .logoutTapped: state.confirmLogout = true; return .none
             case .cancelLogout: state.confirmLogout = false; return .none
             case .confirmLogout:

@@ -4,67 +4,136 @@ import SwiftUI
 public struct ServiceSettingsView: View {
     @Environment(\.scenePhase) private var phase
     @Bindable var store: StoreOf<ServiceSettingsFeature>
-    public init(store: StoreOf<ServiceSettingsFeature>) { self.store = store }
+    private let ink: Color
+    private let success: Color
+    private let failure: Color
+    public init(store: StoreOf<ServiceSettingsFeature>, ink: Color = .primary, success: Color = .green, failure: Color = .red) {
+        self.store = store; self.ink = ink; self.success = success; self.failure = failure
+    }
     public var body: some View {
         Form {
-            Section("Account") {
-                LabeledContent("Service", value: store.service)
-                LabeledContent("Device", value: store.device).textSelection(.enabled)
-                Label("Encrypted between your devices", systemImage: "lock.shield")
-                Button("Test Connection") { store.send(.checkConnection) }.disabled(store.checking)
-                if store.checking { ProgressView("Checking connection…") }
-                if store.connected { Label("Connected", systemImage: "checkmark.circle") }
+            Section {
+                LabeledContent("Service") {
+                    Text(store.service)
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(ink)
+                }
+                LabeledContent("Device") {
+                    Text(store.device)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+            } header: {
+                Text("Account")
+            } footer: {
+                Text("Encrypted between your devices")
             }
             if store.supportsNotifications {
-                Section {
-                    if let notification = store.notifications {
-                        switch notification.permission {
-                        case .unknown: ProgressView()
-                        case .authorized: Label("Notifications enabled", systemImage: "bell.badge")
-                        case .notDetermined: Button("Turn On") { store.send(.requestPermission) }
-                        case .denied: Button("Open Notification Settings") { store.send(.openSystemSettings) }
-                        }
-                        switch notification.delivery {
-                        case .idle: Text("Waiting for token")
-                        case .registering: ProgressView("Registering notifications…")
-                        case .registered: Label("Registered", systemImage: "checkmark.circle")
-                        case .failed(let message): Text(message).foregroundStyle(.red)
-                        }
-                        Toggle("Quiet Hours", isOn: Binding(get: { store.draft.enabled }, set: { store.send(.quietEnabled($0)) }))
-                            .disabled(store.saving)
-                        if store.draft.enabled {
-                            DatePicker("From", selection: time(store.draft.start, action: ServiceSettingsFeature.Action.quietStart), displayedComponents: .hourAndMinute).disabled(store.saving)
-                            DatePicker("To", selection: time(store.draft.end, action: ServiceSettingsFeature.Action.quietEnd), displayedComponents: .hourAndMinute).disabled(store.saving)
-                        }
-                        if store.conflict {
-                            Text("Notification settings changed in another window. Your draft has been kept.")
-                            Button("Use Current Settings") { store.send(.useCurrent) }.disabled(store.saving)
-                        }
-                        Button("Save Notification Settings") { store.send(.save) }.disabled(!store.canSave)
-                    } else { ProgressView("Loading settings…") }
-                } header: {
-                    Text("Notifications")
-                } footer: {
-                    Text("Quiet hours use the time zone of the Mac running your agents. Changes sync through the encrypted service.")
-                }
+                notifications
             }
-            if let error = store.error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
             Section {
-                Button("Sign out", role: .destructive) { store.send(.logoutTapped) }
-            } footer: {
-                Text("Signing out removes this device’s saved connection and notification keys.")
+                Button { store.send(.checkConnection) } label: {
+                    HStack {
+                        Text("Test Connection")
+                        Spacer()
+                        checkBadge
+                    }
+                }
+                .disabled(store.checking)
+            } header: {
+                Text("Server")
+            }
+            if let error = store.error {
+                Section { Text(error).foregroundStyle(failure).textSelection(.enabled) }
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .confirmationDialog("Sign out of Alondra?", isPresented: Binding(get: { store.confirmLogout }, set: { if !$0 { store.send(.cancelLogout) } })) {
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save", systemImage: "checkmark") { store.send(.save) }
+                    .disabled(!store.canSave)
+            }
+        }
+        .sensoryFeedback(trigger: store.connected) { _, connected in connected ? .success : nil }
+        .sensoryFeedback(trigger: store.connectionError) { _, error in error == nil ? nil : .error }
+        #endif
+        .confirmationDialog("Sign out of Alondra?", isPresented: Binding(get: { store.confirmLogout }, set: { if !$0 { store.send(.cancelLogout) } }), titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { store.send(.confirmLogout) }
             Button("Cancel", role: .cancel) { store.send(.cancelLogout) }
+        } message: {
+            Text("Signing out removes this device’s saved connection and notification keys.")
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
     }
+
+    private var notifications: some View {
+        Section {
+            if let notification = store.notifications {
+                LabeledContent("Alerts") {
+                    switch notification.permission {
+                    case .unknown: ProgressView()
+                    case .authorized:
+                        Text("\(Image(systemName: "bell.badge.fill")) On").foregroundStyle(success)
+                    case .notDetermined:
+                        Button("Turn On") { store.send(.requestPermission) }
+                    case .denied:
+                        Button("Off · Open Settings") { store.send(.openSystemSettings) }
+                            .foregroundStyle(failure)
+                    }
+                }
+                if notification.permission == .authorized {
+                    LabeledContent("On the Mac") { registration(notification.delivery) }
+                }
+                Toggle("Quiet Hours", isOn: Binding(get: { store.draft.enabled }, set: { store.send(.quietEnabled($0), animation: .default) }))
+                    .disabled(store.saving)
+                if store.draft.enabled {
+                    DatePicker("From", selection: time(store.draft.start, action: ServiceSettingsFeature.Action.quietStart), displayedComponents: .hourAndMinute).disabled(store.saving)
+                    DatePicker("To", selection: time(store.draft.end, action: ServiceSettingsFeature.Action.quietEnd), displayedComponents: .hourAndMinute).disabled(store.saving)
+                }
+                if store.conflict {
+                    Text("Notification settings changed in another window. Your draft has been kept.")
+                    Button("Use Current Settings") { store.send(.useCurrent) }.disabled(store.saving)
+                }
+                #if os(macOS)
+                Button("Save Notification Settings") { store.send(.save) }.disabled(!store.canSave)
+                #endif
+            } else { ProgressView() }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text(store.draft.enabled
+                 ? String(localized: "Between \(clock(store.draft.start)) and \(clock(store.draft.end)), alerts arrive without sound and without waking the screen.")
+                 : String(localized: "You can reply, allow or approve from the Lock Screen."))
+        }
+    }
+
+    @ViewBuilder private var checkBadge: some View {
+        if store.checking { ProgressView() }
+        else if store.connected { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(success) }
+        else if let error = store.connectionError { Text(error).foregroundStyle(failure).lineLimit(1) }
+    }
+
+    @ViewBuilder private func registration(_ delivery: ServiceNotificationSettings.Delivery) -> some View {
+        switch delivery {
+        case .idle: Text("Waiting for token").foregroundStyle(.secondary)
+        case .registering: ProgressView()
+        case .registered: Text("\(Image(systemName: "checkmark.circle.fill")) Registered").foregroundStyle(success)
+        case .failed(let message): Text(message).foregroundStyle(failure).lineLimit(2)
+        }
+    }
+
+    private func clock(_ minutes: Int) -> String {
+        String(format: "%02d:%02d", minutes / 60, minutes % 60)
+    }
+
     private func time(_ minutes: Int, action: @escaping (Int) -> ServiceSettingsFeature.Action) -> Binding<Date> {
         Binding(get: {
             Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: .now) ?? .now
