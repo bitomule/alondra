@@ -22,5 +22,5 @@ swift_library(
 swift_test(
     name = "AlondraDemoWorkspaceTests",
     srcs = glob(["Tests/*.swift"]),
-    deps = [":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+    deps = [":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )

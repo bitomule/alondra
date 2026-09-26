@@ -160,6 +160,69 @@ struct FleetFeatureTests {
         await store.send(.disappeared) { $0.isVisible = false }
         await store.finish()
     }
+    @Test func openThreadsFollowSnapshotTicksAndPeriodicToolChanges() async throws {
+        func snapshot(_ tick: UInt64, _ sequence: UInt64, _ summary: String) throws -> FleetSnapshot {
+            ProjectFleetUseCase().execute(try overview(tick: tick, nodes: "[\(node().replacingOccurrences(of: "bazel test", with: summary))]"), visibleInboxIDs: [], sequence: sequence)
+        }
+        let first = try snapshot(1, 1, "make test")
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = first.node("s1"); initial.acceptedTick = first.tick; initial.acceptedSequence = first.sequence
+        let clock = TestClock()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = operations(threads: { _ in nil })
+            $0.continuousClock = clock
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = first.node("s1")!.node.toolThread }
+        let opened = store.state.acceptedTick
+        let toolChange = try snapshot(1, 2, "make lint")
+        await store.send(.snapshotChanged(toolChange)) { $0.acceptedSequence = 2; $0.entry = toolChange.node("s1") }
+        #expect(store.state.acceptedTick == opened, "a tool call alone does not move the content tick")
+        let tickChange = try snapshot(2, 3, "make lint")
+        await store.send(.snapshotChanged(tickChange)) { $0.acceptedSequence = 3; $0.acceptedTick = 2; $0.entry = tickChange.node("s1") }
+        #expect(store.state.acceptedTick != opened)
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = tickChange.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash make lint")
+        let later = try snapshot(2, 4, "cargo test")
+        await store.send(.snapshotChanged(later)) { $0.acceptedSequence = 4; $0.entry = later.node("s1") }
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = later.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash cargo test", "tool changes reach the visible detail without a content tick")
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+    }
+
+    @Test func aFailedThreadReadKeepsTheLastLedgerAndOnlyFallsBackBeforeItsFirstSuccess() async throws {
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let tester = NodeActivity(agentId: "a1", agentType: "tester", task: nil, tool: "mav", summary: "tap Save", since: 6)
+        let replies = ThreadReplies(tester: tester)
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = snapshot.node("s1")
+        let clock = TestClock()
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = operations(threads: { _ in try await replies.read() })
+            $0.continuousClock = clock
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsFailed) { $0.isLoadingThreads = false; $0.threadsError = "Offline"; $0.threads = snapshot.node("s1")!.node.toolThread }
+        #expect(store.state.threads.first?.doing == "Bash bazel test", "the overview is the fallback before the route answers")
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threadsError = nil; $0.threads = [tester] }
+        #expect(store.state.threads.map(\.thread) == ["tester"])
+        await clock.advance(by: .seconds(10))
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsFailed) { $0.isLoadingThreads = false; $0.threadsError = "Offline" }
+        #expect(store.state.threads.map(\.thread) == ["tester"], "a failed ask keeps what the route last said")
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+    }
+
 }
 
 private actor SendGate {
@@ -175,4 +238,16 @@ private actor SendGate {
         if let continuation { self.continuation = nil; continuation.resume(returning: result) }
         else { queued = result }
     }
+}
+
+private actor ThreadReplies {
+    let tester: NodeActivity
+    var calls = 0
+    init(tester: NodeActivity) { self.tester = tester }
+    func read() throws -> [NodeActivity]? {
+        calls += 1
+        guard calls == 2 else { throw Offline() }
+        return [tester]
+    }
+    private struct Offline: LocalizedError { var errorDescription: String? { "Offline" } }
 }
