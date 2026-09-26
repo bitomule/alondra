@@ -9,7 +9,7 @@ import Foundation
 public struct TriageCardFeature {
     public init() {}
     public enum Resolution: Equatable {
-        case answer(String?), sent, contextRequested, commentsSent, approved, changesRequested, merged, conflictsSent, setAside
+        case answer(String?), read, sent, contextRequested, commentsSent, approved, changesRequested, merged, conflictsSent, setAside
     }
     @ObservableState
     public struct State: Equatable, Identifiable {
@@ -23,6 +23,7 @@ public struct TriageCardFeature {
         public var showNodeContext = false
         public var stamp: Resolution?
         public var pendingStamp: Resolution?
+        public var readPending = false
         public var requestingChanges = false
         public init(item: InboxItem, identity: QuestionWorkIdentity?) {
             self.item = item
@@ -42,7 +43,7 @@ public struct TriageCardFeature {
             return !busy && (!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments)
         }
         public var busy: Bool {
-            stamp != nil || question?.isSubmitting == true || question?.needsReconciliation == true
+            stamp != nil || readPending || question?.isSubmitting == true || question?.needsReconciliation == true
                 || document?.isSubmitting == true || document?.needsReconciliation == true
                 || pullRequest?.diff.isSending == true || pullRequest?.pr.isSending == true
         }
@@ -64,9 +65,10 @@ public struct TriageCardFeature {
         case requestContext
         case toggleNodeContext
         case markRead
+        case readAcknowledged(Bool)
         case stampFinished
         case delegate(Delegate)
-        public enum Delegate { case resolved(String), hide(String) }
+        public enum Delegate { case resolved(String), hide(String), read(String), readPresentationFinished(String) }
     }
     @Dependency(\.continuousClock) var clock
     public var body: some ReducerOf<Self> {
@@ -107,8 +109,22 @@ public struct TriageCardFeature {
                 state.pendingStamp = .contextRequested
                 return .concatenate(.send(.question(.textChanged(state.contextNote))), .send(.question(.moreContextTapped)))
             case .toggleNodeContext: state.showNodeContext.toggle(); return .none
-            case .markRead: return .send(.delegate(.hide(state.id)))
-            case .stampFinished: return .send(.delegate(.resolved(state.id)))
+            case .markRead:
+                guard !state.busy, case .report = state.item else { return .none }
+                state.readPending = true
+                return .send(.delegate(.read(state.id)))
+            case .readAcknowledged(let confirmed):
+                guard state.readPending else { return .none }
+                state.readPending = false
+                guard confirmed else { return .none }
+                state.stamp = .read
+                return .run { send in
+                    try await clock.sleep(for: .milliseconds(520))
+                    await send(.stampFinished)
+                }
+            case .stampFinished:
+                guard state.stamp != nil else { return .none }
+                return .send(state.stamp == .read ? .delegate(.readPresentationFinished(state.id)) : .delegate(.resolved(state.id)))
             case .document(.reviewTapped(let verdict)):
                 state.pendingStamp = verdict == .approved ? .approved : .commentsSent
                 return .none

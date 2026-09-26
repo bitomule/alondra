@@ -14,6 +14,7 @@ public struct ServiceTriageFeature {
         public var triage = TriageFeature.State()
         public var cardStack = CardStackFeature.State()
         public var keyboardVisible = false
+        public func isLeaving(_ id: String) -> Bool { cards[id: id]?.stamp != nil || triage.hiddenIDs.contains(id) }
         public var cards: IdentifiedArrayOf<TriageCardFeature.State> = []
         public var cardIdentity: TriageIdentity?
         public var machine: Machine?
@@ -57,7 +58,7 @@ public struct ServiceTriageFeature {
                 state.keyboardVisible = visible
                 return .none
             case .cardStack(.delegate(let departure)):
-                return .send(.triage(.skipIfCurrent(departure.itemID, departure.identity)), animation: .spring(duration: 0.5, bounce: 0.2))
+                return .send(.triage(.skipIfCurrent(departure.itemID, departure.identity)), animation: .spring(duration: 0.5, bounce: 0.25))
             case .cardStack: return .none
             case .machinePresented(let value):
                 state.machinePresented = value
@@ -125,6 +126,13 @@ public struct ServiceTriageFeature {
                     state.document = nil
                 }
                 return .none
+            case .triage(.readAcknowledged(let id, let confirmed)):
+                guard state.cards[id: id] != nil else { return .none }
+                return .send(.cards(.element(id: id, action: .readAcknowledged(confirmed))))
+            case .cards(.element(_, .delegate(.read(let id)))):
+                return .send(.triage(.readWithPresentation(id)))
+            case .cards(.element(_, .delegate(.readPresentationFinished(let id)))):
+                return .send(.triage(.readPresentationFinished(id)), animation: .spring(duration: 0.55, bounce: 0.2))
             case .cards(.element(_, .delegate(.resolved(let id)))):
                 state.triage.hiddenIDs.insert(id)
                 state.triage.resolvedCount += 1

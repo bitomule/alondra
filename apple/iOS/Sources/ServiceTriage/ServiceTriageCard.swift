@@ -32,6 +32,7 @@ struct ServiceTriageCard: View {
             case .negative: return Stamp(label: AnswerOption.displayLabel(option), symbol: "xmark", tint: Palette.rose)
             case .neutral: return Stamp(label: AnswerOption.displayLabel(option), symbol: "paperplane.fill", tint: kind.tint)
             }
+        case .read: return Stamp(label: String(localized: "Read"), symbol: "checkmark", tint: actionTint)
         case .sent: return Stamp(label: String(localized: "Sent"), symbol: "paperplane.fill", tint: Palette.sky)
         case .contextRequested: return Stamp(label: String(localized: "Context requested"), symbol: "questionmark", tint: Palette.slate)
         case .commentsSent: return Stamp(label: String(localized: "Comments sent"), symbol: "text.bubble.fill", tint: Palette.sky)
@@ -67,6 +68,7 @@ struct ServiceTriageCard: View {
             .overlay { stampOverlay }
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
+            .animation(stamp == nil ? .spring(duration: 0.3) : .spring(duration: 0.35, bounce: 0.4), value: store.stamp)
             .alert("What do you need to decide?", isPresented: Binding(get: { store.askingContext }, set: { _ = store.send(.contextPresented($0)) })) {
                 TextField("Optional", text: Binding(get: { store.contextNote }, set: { _ = store.send(.contextChanged($0)) }))
                 Button("Cancel", role: .cancel) {}

@@ -58,6 +58,36 @@ struct TriageFeatureTests {
     }
 
     @Test
+    func readConfirmationSurvivesSnapshotUntilStampFinishes() async throws {
+        let snapshot = try overview("", reports: report(4))
+        var initial = TriageFeature.State()
+        initial.identity = a
+        initial.items = ObserveInboxUseCase().execute(snapshot).items
+        let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
+            $0.triageService = TriageService(observe: { AsyncStream { $0.finish() } }, mutate: { _, _, _ in .confirmed })
+        }
+        await store.send(.readWithPresentation("r4")) {
+            $0.pendingIDs = ["r4"]
+            $0.deferredReadIDs = ["r4"]
+        }
+        await store.receive(\.mutationFinished) { $0.pendingIDs = [] }
+        await store.receive(\.readAcknowledged)
+        // The daemon already removed the report. Preserve its card for the confirmation animation.
+        await store.send(.inboxUpdated(TriageInboxUpdate(identity: a, overview: try overview("")))) {
+            $0.hasSnapshot = true
+            $0.snapshotRevision = 1
+        }
+        #expect(store.state.queue.map(\.id) == ["r4"])
+        await store.send(.readPresentationFinished("r4")) {
+            $0.deferredReadIDs = []
+            $0.hiddenIDs = ["r4"]
+            $0.resolvedCount = 1
+        }
+        #expect(store.state.queue.isEmpty)
+        await store.send(.readPresentationFinished("r4"))
+    }
+
+    @Test
     func oneCardPerIDAndAttachedQuestionStaysInsidePR() throws {
         let pr = #"{"id":9,"url":"https://example.test/p/9","repo":"a/b","number":9,"sessionId":"s","title":"PR","state":"open","openedAt":3}"#
         let snapshot = try overview(

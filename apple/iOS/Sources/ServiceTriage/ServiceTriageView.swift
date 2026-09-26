@@ -132,7 +132,7 @@ private struct ServiceCardStack: View {
                         .brightness(depth == 0 ? 0 : -0.04 * Double(depth))
                         .offset(x: depth == 0 ? drag : 0)
                         .opacity(depth == 0 ? 1 - Double(min(abs(drag) / 900, 0.35)) : 1)
-                        .zIndex(store.triage.hiddenIDs.contains(item.id) ? 10 : Double(depthLimit - depth))
+                        .zIndex(store.withState { $0.isLeaving(item.id) } ? 10 : Double(depthLimit - depth))
                         .allowsHitTesting(depth == 0)
                         .accessibilityHidden(depth != 0)
                         .transition(transition(for: item))
@@ -168,7 +168,7 @@ private struct ServiceCardStack: View {
 
     private func transition(for item: InboxItem) -> AnyTransition {
         if reduceMotion { return .opacity }
-        let removal: AnyTransition = store.triage.hiddenIDs.contains(item.id) ? AnyTransition(FileAway()) : .opacity
+        let removal: AnyTransition = store.withState { $0.isLeaving(item.id) } ? AnyTransition(FileAway()) : .opacity
         return .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: removal)
     }
 
