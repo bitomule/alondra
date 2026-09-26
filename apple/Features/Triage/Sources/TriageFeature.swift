@@ -177,7 +177,7 @@ public struct TriageFeature {
                 // Preserve an acknowledged card until its confirmation stamp finishes.
                 let incomingIDs = Set(inbox.items.map(\.id))
                 let retained = state.items.filter { state.deferredReadIDs.contains($0.id) && !incomingIDs.contains($0.id) }
-                state.items = inbox.items + retained
+                state.items = InboxRing.ordered(inbox.items + retained)
                 state.questionsByPullRequest = inbox.questionsByPullRequest
                 state.reportsByPullRequest = inbox.reportsByPullRequest
                 state.hasSnapshot = true
