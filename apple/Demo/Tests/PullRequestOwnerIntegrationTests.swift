@@ -34,7 +34,8 @@ struct PullRequestOwnerIntegrationTests {
         let receipt = AsyncStream<String>.makeStream()
         let imported = AsyncStream<Void>.makeStream()
         let sent = LockIsolated<[UInt64]>([])
-        let store = Store(initialState: try initial()) {
+        let initialState = try initial()
+        let store = Store(initialState: initialState) {
             CombineReducers {
                 ServiceRootFeature()
                 Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { _, action in
@@ -100,7 +101,8 @@ struct PullRequestOwnerIntegrationTests {
         let calls = LockIsolated(0)
         let commandID = UUID()
         let scope = CommandScope(server: URL(string: "https://service.example")!, deviceID: "phone", credentialRevision: "one", generation: 1)
-        let store = Store(initialState: try initial()) { ServiceRootFeature() } withDependencies: {
+        let initialState = try initial()
+        let store = Store(initialState: initialState) { ServiceRootFeature() } withDependencies: {
             $0.continuousClock = ImmediateClock()
             $0.pullRequestOperations = .init(diff: { _ in .init(diff: "", headSHA: "head") },
                 merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
@@ -154,7 +156,8 @@ struct PullRequestOwnerIntegrationTests {
         let result = AsyncStream<PRMutationOutcome>.makeStream()
         let terminations = LockIsolated(0)
         result.continuation.onTermination = { _ in terminations.withValue { $0 += 1 } }
-        let store = Store(initialState: try initial()) { ServiceRootFeature() } withDependencies: {
+        let initialState = try initial()
+        let store = Store(initialState: initialState) { ServiceRootFeature() } withDependencies: {
             $0.pullRequestOperations = .init(diff: { _ in .init(diff: "", headSHA: "head") },
                 merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
                 review: { _, _, _, _, _ in
