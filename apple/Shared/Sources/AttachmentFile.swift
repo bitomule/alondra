@@ -52,10 +52,4 @@ public enum AttachmentFile {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    /// Reads a file the user picked or dropped, inside its security scope, right away.
-    public static func read(_ url: URL) throws -> Data {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        return try Data(contentsOf: url)
-    }
 }
