@@ -136,14 +136,49 @@ def sign(binary, identifier):
         raise RuntimeError('Unexpected signing identity/team or missing secure timestamp')
 
 
+
+def rust_toolchain():
+    """Resolve Rust once, before HOME isolation; never mix Homebrew and rustup."""
+    active = run('rustup', 'show', 'active-toolchain', capture=True).split()
+    if not active:
+        raise RuntimeError('No active rustup toolchain; configure one before release')
+    name = active[0]
+    tools = {}
+    for tool in ('cargo', 'rustc', 'rustdoc'):
+        selected = pathlib.Path(run('rustup', 'which', '--toolchain', name, tool, capture=True).strip())
+        if not selected.is_absolute() or not selected.is_file() or not os.access(selected, os.X_OK):
+            raise RuntimeError(f'The selected rustup toolchain has no executable {tool}')
+        tools[tool] = str(selected.resolve())
+    if len({pathlib.Path(path).parent for path in tools.values()}) != 1:
+        raise RuntimeError('The selected cargo, rustc and rustdoc must belong to the same toolchain')
+    for target in release.TARGETS:
+        library = pathlib.Path(run(tools['rustc'], '--print', 'target-libdir', '--target', target, capture=True).strip())
+        if not library.is_absolute() or not all(any(library.glob(f'lib{crate}-*.rlib')) for crate in ('core', 'std')):
+            raise RuntimeError(f'Missing target libraries for {target} in {name}; run rustup target add --toolchain {name} {target}')
+    print(f'Using Rust toolchain: {name}')
+    print(run(tools['rustc'], '--version', capture=True).strip())
+    return name, tools
+
+
+def cargo_environment(target_dir, name, tools):
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(('ALONDRA_', 'CLAUDE_'))}
+    environment.update(CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0',
+                       CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0', CARGO_PROFILE_RELEASE_DEBUG='0',
+                       MACOSX_DEPLOYMENT_TARGET='14.0', RUSTC=tools['rustc'], RUSTDOC=tools['rustdoc'],
+                       CARGO=tools['cargo'], RUSTUP_TOOLCHAIN=name, RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+                       CARGO_HOME=str(pathlib.Path(os.environ.get('CARGO_HOME', pathlib.Path.home() / '.cargo')).expanduser().resolve()),
+                       RUSTUP_HOME=str(pathlib.Path(os.environ.get('RUSTUP_HOME', pathlib.Path.home() / '.rustup')).expanduser().resolve()))
+    environment['PATH'] = str(pathlib.Path(tools['cargo']).parent) + os.pathsep + environment.get('PATH', '')
+    return environment
+
+
 def prepare(ver, source, output, target_dir):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('Preparation requires this Apple Silicon Mac with Rosetta')
     if run('/usr/bin/arch', '-x86_64', 'uname', '-m', capture=True).strip() != 'x86_64':
         raise RuntimeError('Rosetta must be installed before preparing the Intel package')
-    installed = run('rustup', 'target', 'list', '--installed', capture=True).splitlines()
-    if not set(release.TARGETS).issubset(installed):
-        raise RuntimeError('Install both Rust Apple targets before release: rustup target add aarch64-apple-darwin x86_64-apple-darwin')
+    toolchain_name, tools = rust_toolchain()
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
         raise RuntimeError('The approved Developer ID identity is not available in the local keychain')
@@ -152,22 +187,16 @@ def prepare(ver, source, output, target_dir):
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('ALONDRA_', 'CLAUDE_'))}
-    env.update(CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0',
-               CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0', CARGO_PROFILE_RELEASE_DEBUG='0',
-               MACOSX_DEPLOYMENT_TARGET='14.0')
+    env = cargo_environment(target_dir, toolchain_name, tools)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
     for target in release.TARGETS:
         disk_guard(target_dir)
         with tempfile.TemporaryDirectory(prefix='alondra-release-test-home-') as home:
-            test_env = dict(env, HOME=home,
-                            CARGO_HOME=os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo')),
-                            RUSTUP_HOME=os.environ.get('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup')))
-            run('cargo', 'test', '--locked', '--target', target, '--jobs', '1',
+            test_env = dict(env, HOME=home)
+            run(tools['cargo'], 'test', '--locked', '--target', target, '--jobs', '1',
                 '-p', 'alondra', '-p', 'alondrad', '-p', 'alondra-e2e', env=test_env)
         disk_guard(target_dir)
-        run('cargo', 'build', '--locked', '--release', '--target', target, '--jobs', '1',
+        run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
             '-p', 'alondra', '-p', 'alondrad', env=env)
         with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
             payload = pathlib.Path(temp)
