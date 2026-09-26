@@ -97,7 +97,7 @@ def verify_prepared(ver, source, output):
 def smoke(ver, target, archive):
     release.validate_archive(archive)
     with tempfile.TemporaryDirectory(prefix='alondra-local-install-') as temp:
-        prefix = pathlib.Path(temp)
+        prefix = pathlib.Path(temp).resolve()
         unpack = prefix / 'unpack'
         unpack.mkdir()
         with tarfile.open(archive) as tar:
