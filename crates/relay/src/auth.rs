@@ -927,11 +927,6 @@ impl Auth {
         Ok(c.sub)
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_verification_time(&self, now_ms: u64) {
-        *self.verification_time.lock().unwrap() = Some(now_ms);
-    }
-
     pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
         if let Some(db)=&self.management {
             db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
