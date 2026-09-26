@@ -49,10 +49,12 @@ fn save(name: &str, value: Value) -> Result<()> {
     )?;
     Ok(())
 }
+#[derive(Clone)]
 struct Driver {
     http: reqwest::Client,
     fixture: Value,
     tokens: Vec<String>,
+    refresh_tokens: Vec<String>,
     epoch: [u8; 16],
 }
 impl Driver {
@@ -72,6 +74,7 @@ impl Driver {
             .timeout(Duration::from_secs(30))
             .build()?;
         let mut tokens = vec![];
+        let mut refresh_tokens = vec![];
         for user in fixture["owners"].as_array().context("owners")? {
             ensure!(
                 user["username"]
@@ -94,6 +97,12 @@ impl Driver {
                 .error_for_status()?
                 .json::<Value>()
                 .await?;
+            refresh_tokens.push(
+                response["refresh_token"]
+                    .as_str()
+                    .context("refresh token")?
+                    .to_owned(),
+            );
             tokens.push(
                 response["access_token"]
                     .as_str()
@@ -116,8 +125,39 @@ impl Driver {
             http,
             fixture,
             tokens,
+            refresh_tokens,
             epoch,
         })
+    }
+    async fn refresh(&self) -> Result<Self> {
+        let mut refreshed = self.clone();
+        let realm = self.fixture["realm"].as_str().context("realm")?;
+        for (who, token) in self.refresh_tokens.iter().enumerate() {
+            let reply = self
+                .http
+                .post(format!(
+                    "http://keycloak:8080/realms/{realm}/protocol/openid-connect/token"
+                ))
+                .form(&[
+                    ("grant_type", "refresh_token"),
+                    ("client_id", "system-client"),
+                    ("refresh_token", token),
+                ])
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await?;
+            refreshed.tokens[who] = reply["access_token"]
+                .as_str()
+                .context("access token")?
+                .into();
+            refreshed.refresh_tokens[who] = reply["refresh_token"]
+                .as_str()
+                .context("refresh token")?
+                .into();
+        }
+        Ok(refreshed)
     }
     async fn call_epoch(
         &self,
@@ -531,13 +571,15 @@ impl Driver {
         )
     }
 }
+mod load;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let phase = std::env::args()
         .nth(1)
         .context("phase initial|restart|perf required")?;
     ensure!(
-        ["initial", "restart", "perf"].contains(&phase.as_str()),
+        ["initial", "restart", "perf", "load"].contains(&phase.as_str()),
         "invalid phase"
     );
     let driver = Arc::new(Driver::open().await?);
@@ -545,6 +587,7 @@ async fn main() -> Result<()> {
         "initial" => driver.initial().await,
         "restart" => driver.restart().await,
         "perf" => driver.perf().await,
+        "load" => load::run(driver).await,
         _ => unreachable!(),
     }
 }
