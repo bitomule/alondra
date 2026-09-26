@@ -10,17 +10,17 @@ import UIKit
 extension ServiceNotificationRuntime {
     func settingsClient(services: CloudAppServices, owner: CloudPairingOwner) -> ServiceSettingsClient {
         ServiceSettingsClient(observe: { [weak self] in
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self else { return AsyncStream { $0.finish() } }
                 return SettingsObservation.stream(push: self.push)
             }
         }, save: { [weak self] next, expected in
-            try await MainActor.run {
+            try await MainActor.run { [weak self] in
                 guard let self, self.owns(services) else { throw CancellationError() }
                 guard next.valid else { throw SettingsError.invalidTime }
-                let current = ServiceQuietHours(enabled: push.quietHours.enabled, start: push.quietHours.start, end: push.quietHours.end)
+                let current = ServiceQuietHours(enabled: self.push.quietHours.enabled, start: self.push.quietHours.start, end: self.push.quietHours.end)
                 guard current == expected else { throw SettingsError.conflict }
-                push.quietHours = QuietHours(enabled: next.enabled, start: next.start, end: next.end)
+                self.push.quietHours = QuietHours(enabled: next.enabled, start: next.start, end: next.end)
             }
         }, refreshPermission: { [weak self] in await self?.push.refreshAuthorization() }, requestPermission: { [weak self] in await self?.push.activate() },
         openSystemSettings: {
@@ -31,7 +31,7 @@ extension ServiceNotificationRuntime {
         }, checkConnection: {
             try await services.checkSettingsConnection()
         }, logout: { [weak self] in
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, self.owns(services) else { return }
                 _ = owner.store.send(.logout)
             }
@@ -70,7 +70,7 @@ extension ServiceNotificationRuntime {
             case .failed(let message): .failed(message)
             }
             return ServiceNotificationSettings(permission: permission, delivery: delivery,
-                quietHours: ServiceQuietHours(enabled: push.quietHours.enabled, start: push.quietHours.start, end: push.quietHours.end))
+                quietHours: ServiceQuietHours(enabled: self.push.quietHours.enabled, start: self.push.quietHours.start, end: self.push.quietHours.end))
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.track() }
         }

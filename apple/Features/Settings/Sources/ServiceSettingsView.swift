@@ -16,7 +16,7 @@ public struct ServiceSettingsView: View {
                 if store.connected { Label("Connected", systemImage: "checkmark.circle") }
             }
             if store.supportsNotifications {
-                Section("Notifications") {
+                Section {
                     if let notification = store.notifications {
                         switch notification.permission {
                         case .unknown: ProgressView()
@@ -42,6 +42,8 @@ public struct ServiceSettingsView: View {
                         }
                         Button("Save Notification Settings") { store.send(.save) }.disabled(!store.canSave)
                     } else { ProgressView("Loading settings…") }
+                } header: {
+                    Text("Notifications")
                 } footer: {
                     Text("Quiet hours use the time zone of the Mac running your agents. Changes sync through the encrypted service.")
                 }

@@ -59,7 +59,7 @@ private struct MacServiceWindow: View {
     var body: some View {
         Group {
             if let store = context.store {
-                MacServiceWorkspace(store: store, account: account)
+                MacServiceWorkspace(store: store, account: account, services: services)
             } else {
                 ProgressView("Opening workspace…")
             }
@@ -70,6 +70,7 @@ private struct MacServiceWindow: View {
 private struct MacServiceWorkspace: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let account: CloudPairingOwner
+    let services: CloudAppServices
     var body: some View {
         NavigationSplitView {
             List(selection: Binding<ServiceRootFeature.State.Tab?>(get: { store.tab }, set: {
@@ -95,7 +96,7 @@ private struct MacServiceWorkspace: View {
             case .newRequest:
                 ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
             case .account:
-                MacServicePairingScreen(store: account.store)
+                MacServiceSettingsScene(services: services, owner: account)
             }
         }
         .navigationTitle("Alondra")

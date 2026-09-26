@@ -16,7 +16,7 @@ struct ServiceAppScene: View {
     let notifications: ServiceNotificationRuntime
     var body: some View {
         if let services = owner.services {
-            ApprovedServiceScene(services: services, pairing: owner.store, notifications: notifications)
+            ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
                 .id(ObjectIdentifier(services))
         } else {
             NavigationStack { CloudPairingScreen(store: owner.store) }
@@ -60,14 +60,14 @@ private final class ServiceSceneContext {
 
 private struct ApprovedServiceScene: View {
     let services: CloudAppServices
-    let pairing: StoreOf<CloudPairingFeature>
+    let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
     @Environment(\.scenePhase) private var phase
     // This scene's context is discarded whenever the approved service identity changes.
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceRootView(store: store, pairing: pairing) }
+            if let store = context.store { ServiceRootView(store: store, services: services, notifications: notifications, owner: owner) }
             else { ProgressView("Opening workspace…") }
         }
         .safeAreaInset(edge: .bottom) {
@@ -88,7 +88,9 @@ private struct ApprovedServiceScene: View {
 
 private struct ServiceRootView: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
-    let pairing: StoreOf<CloudPairingFeature>
+    let services: CloudAppServices
+    let notifications: ServiceNotificationRuntime
+    let owner: CloudPairingOwner
     var body: some View {
         TabView(selection: Binding(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
@@ -104,7 +106,7 @@ private struct ServiceRootView: View {
                 NavigationStack { ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest)) }
             }
             Tab("Account", systemImage: "person.crop.circle", value: ServiceRootFeature.State.Tab.account) {
-                NavigationStack { CloudPairingScreen(store: pairing) }
+                NavigationStack { ServiceSettingsScene(services: services, owner: owner, notifications: notifications) }
             }
         }
         .task { await store.send(.appeared).finish() }
