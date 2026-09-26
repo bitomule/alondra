@@ -68,8 +68,9 @@ public struct ServiceRootFeature {
                 state.tab = .inbox
                 state.pendingInboxID = id
                 return routePending(&state)
-            case .triage(.triage(.inboxUpdated)):
+            case .triage(.triage(.inboxUpdated(let update))):
                 let routing: Effect<Action> = .merge(routePending(&state),
+                    update.identity == state.triage.triage.identity ? .send(.newRequest(.workspaceUpdated(update.overview))) : .none,
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
                 guard let detail = state.pullRequest else { return routing }
                 guard state.triage.triage.hasSnapshot else {
@@ -90,7 +91,7 @@ public struct ServiceRootFeature {
                     state.pullRequest = nil
                 }
                 return .none
-            case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(true)))
+            case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
                 return .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs)))
             case .tasks, .pullRequest, .fleet, .newRequest: return .none

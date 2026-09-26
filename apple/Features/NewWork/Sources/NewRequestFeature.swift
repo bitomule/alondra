@@ -10,6 +10,11 @@ public struct NewRequestFeature {
     public struct State: Equatable {
         public var attachmentPicker = AttachmentFeature.State()
         public var text = ""
+        public var optionsPresented = false
+        public var projectQuery = ""
+        public var orchestratorName: String?
+        public var hasSnapshot = false
+        public var sentMessages: [SentMessage] = []
         public var attachments: [NewRequestAttachment] = []
         public var selection = NewWorkSelection()
         public var projects: [String] = []
@@ -43,6 +48,9 @@ public struct NewRequestFeature {
     public enum Action: Sendable {
         case attachmentPicker(AttachmentFeature.Action)
         case appeared
+        case optionsPresented(Bool)
+        case projectQueryChanged(String)
+        case workspaceUpdated(Overview?)
         case identityChanged
         case availabilityChanged(Bool)
         case textChanged(String)
@@ -77,6 +85,14 @@ public struct NewRequestFeature {
             switch action {
             case .attachmentPicker:
                 state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                return .none
+            case .optionsPresented(let shown): state.optionsPresented = shown; return .none
+            case .projectQueryChanged(let query): state.projectQuery = query; return .none
+            case .workspaceUpdated(let overview):
+                state.hasSnapshot = overview != nil
+                state.orchestratorName = overview?.nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince }?.displayName
+                state.sentMessages = (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
+                state.canSubmit = state.orchestratorName != nil
                 return .none
             case .appeared:
                 let epoch = state.presentationEpoch
