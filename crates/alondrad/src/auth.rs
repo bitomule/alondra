@@ -119,7 +119,7 @@ impl Auth {
     /// The service CLI calls this only after a human accepts the encrypted candidate on
     /// this Mac. Reuse the daemon's registry lock, avoiding concurrent file rewrites.
     pub fn approve_service(&self, id: &str, name: &str, signing_key: &str) -> Result<(), String> {
-        if !id.starts_with("phone-") || id.len() > 128
+        if !(id.starts_with("phone-") || id.starts_with("client-")) || id.len() > 128
             || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || name.len() > 80 || name.chars().any(char::is_control)
         { return Err("invalid service device".into()); }
@@ -339,10 +339,14 @@ mod tests {
         let second = SigningKey::from_slice(&[8u8; 32]).unwrap();
         let first_key = URL_SAFE_NO_PAD.encode(first.verifying_key().to_sec1_bytes());
         let second_key = URL_SAFE_NO_PAD.encode(second.verifying_key().to_sec1_bytes());
+        auth.approve_service("client-test", "Terminal", &first_key).unwrap();
+        assert!(auth.approve_service("client-test", "Other terminal", &second_key).is_err());
+        assert!(auth.approve_service("mac-test", "Executor", &first_key).is_err());
+        assert!(auth.approve_service("client-bad/id", "Terminal", &first_key).is_err());
         auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
         auth.approve_service("phone-test", "iPhone", &first_key).unwrap();
         assert!(auth.approve_service("phone-test", "other", &second_key).is_err());
-        assert_eq!(Auth::open(&dir).unwrap().list().len(), 1);
+        assert_eq!(Auth::open(&dir).unwrap().list().len(), 2);
     }
 
     #[test]
