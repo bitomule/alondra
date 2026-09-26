@@ -426,6 +426,19 @@ pub async fn run(hub: Arc<Hub>) {
 mod tests {
     use super::*;
 
+    /// Scheduling validates and later launches inside projects_root. Keep that
+    /// directory in the fixture rather than relying on the runner's ~/Projects.
+    fn fixture_projects(hub: &Hub) {
+        let projects = hub.home.join("projects");
+        std::fs::create_dir(&projects).unwrap();
+        let options = alondra_core::options::OptionsFile {
+            projects_root: Some(projects.to_str().unwrap().to_owned()),
+            ..Default::default()
+        };
+        std::fs::write(alondra_core::options::path_in(&hub.home), toml::to_string(&options).unwrap()).unwrap();
+        assert_eq!(crate::options::load(hub).file.projects_root(std::path::Path::new("/unused-home")), projects);
+    }
+
     fn local_at(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> i64 {
         let mut local = unsafe { std::mem::zeroed::<libc::tm>() };
         local.tm_year = year - 1900;
@@ -511,6 +524,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("schedule-e2e-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config, false).unwrap());
+        fixture_projects(&hub);
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
@@ -558,6 +572,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("schedule-failure-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config.clone(), false).unwrap());
+        fixture_projects(&hub);
         let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 };
@@ -581,6 +596,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("schedule-retry-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config, false).unwrap());
+        fixture_projects(&hub);
         let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
             weekday: None, interval: None, start_at: None, enabled: true, revision: 0 };
