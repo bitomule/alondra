@@ -59,6 +59,9 @@ public extension DependencyValues {
         public let service: String
         public let device: String
         public let supportsNotifications: Bool
+        public let automaticallySavesQuietHours: Bool
+        public var autosaveRevision: UInt64 = 0
+        public var autosaveDraft: ServiceQuietHours?
         public var notifications: ServiceNotificationSettings?
         public var draft = ServiceQuietHours()
         public var baseline = ServiceQuietHours()
@@ -72,7 +75,8 @@ public extension DependencyValues {
         public var confirmLogout = false
         public var generation: UInt64 = 0
         public let cancellation = UUID()
-        public init(service: String, device: String, supportsNotifications: Bool) {
+        public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false) {
+            self.automaticallySavesQuietHours = automaticallySavesQuietHours
             self.service = service; self.device = device; self.supportsNotifications = supportsNotifications
         }
         public var canSave: Bool { editing && !saving && !conflict && draft.valid }
@@ -82,6 +86,7 @@ public extension DependencyValues {
         case updated(ServiceNotificationSettings)
         case quietEnabled(Bool), quietStart(Int), quietEnd(Int)
         case useCurrent, save, saved(UInt64), failed(String, UInt64)
+        case autosaveFinished(ServiceQuietHours, UInt64, String?)
         case refreshPermission, requestPermission, openSystemSettings
         case checkConnection, checked(UInt64), checkFailed(String, UInt64)
         case logoutTapped, cancelLogout, confirmLogout
@@ -98,34 +103,62 @@ public extension DependencyValues {
                 }.cancellable(id: state.cancellation, cancelInFlight: true)
             case .disappeared:
                 state.generation &+= 1
-                state.saving = false; state.checking = false
+                if !state.automaticallySavesQuietHours { state.saving = false }
+                state.checking = false
                 return .cancel(id: state.cancellation)
             case .updated(let snapshot):
                 state.notifications = snapshot
-                if !state.editing { state.baseline = snapshot.quietHours; state.draft = snapshot.quietHours }
+                if let submitted = state.autosaveDraft {
+                    // Own observation echoes are not a foreign writer; keep newer local edits.
+                    if snapshot.quietHours != state.baseline && snapshot.quietHours != submitted { state.conflict = true }
+                } else if !state.editing { state.baseline = snapshot.quietHours; state.draft = snapshot.quietHours }
                 else if snapshot.quietHours != state.baseline { state.conflict = snapshot.quietHours != state.draft }
                 return .none
             case .quietEnabled(let enabled):
-                guard !state.saving else { return .none }
-                state.draft.enabled = enabled; state.editing = state.draft != state.baseline; return .none
+                guard !state.saving || state.automaticallySavesQuietHours else { return .none }
+                state.draft.enabled = enabled; state.editing = state.draft != state.baseline
+                return state.automaticallySavesQuietHours ? .send(.save) : .none
             case .quietStart(let minutes):
-                guard !state.saving else { return .none }
-                state.draft.start = minutes; state.editing = state.draft != state.baseline; return .none
+                guard !state.saving || state.automaticallySavesQuietHours else { return .none }
+                state.draft.start = minutes; state.editing = state.draft != state.baseline
+                return state.automaticallySavesQuietHours ? .send(.save) : .none
             case .quietEnd(let minutes):
-                guard !state.saving else { return .none }
-                state.draft.end = minutes; state.editing = state.draft != state.baseline; return .none
+                guard !state.saving || state.automaticallySavesQuietHours else { return .none }
+                state.draft.end = minutes; state.editing = state.draft != state.baseline
+                return state.automaticallySavesQuietHours ? .send(.save) : .none
             case .useCurrent:
                 guard !state.saving, let snapshot = state.notifications else { return .none }
                 state.baseline = snapshot.quietHours; state.draft = snapshot.quietHours
                 state.editing = false; state.conflict = false; state.error = nil; return .none
             case .save:
                 guard state.canSave else { return .none }
+                if state.automaticallySavesQuietHours {
+                    state.saving = true; state.error = nil
+                    state.autosaveRevision &+= 1
+                    state.autosaveDraft = state.draft
+                    let submitted = state.draft, baseline = state.baseline, revision = state.autosaveRevision
+                    // The scene owns this store beyond Settings dismissal, so an accepted
+                    // edit and its queued successor are not lost when the sheet closes.
+                    return .run { send in
+                        do { try await client.save(submitted, baseline); await send(.autosaveFinished(submitted, revision, nil)) }
+                        catch { await send(.autosaveFinished(submitted, revision, error.localizedDescription)) }
+                    }
+                }
                 state.saving = true; state.error = nil
                 let draft = state.draft, baseline = state.baseline, generation = state.generation
                 return .run { send in
                     do { try await client.save(draft, baseline); await send(.saved(generation)) }
                     catch { await send(.failed(error.localizedDescription, generation)) }
                 }.cancellable(id: state.cancellation)
+            case .autosaveFinished(let submitted, let revision, let error):
+                guard state.autosaveRevision == revision, state.autosaveDraft == submitted else { return .none }
+                state.autosaveDraft = nil; state.saving = false
+                if let error { state.error = error; return .none }
+                state.baseline = submitted
+                state.editing = state.draft != submitted
+                // A foreign snapshot observed during save stays a conflict. Never rebase
+                // a queued edit onto another window's preferences without user action.
+                return state.editing && !state.conflict ? .send(.save) : .none
             case .saved(let generation):
                 guard generation == state.generation else { return .none }
                 state.saving = false

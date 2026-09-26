@@ -93,10 +93,10 @@ public struct ServiceSettingsView: View {
                     LabeledContent("On the Mac") { registration(notification.delivery) }
                 }
                 Toggle("Quiet Hours", isOn: Binding(get: { store.draft.enabled }, set: { store.send(.quietEnabled($0), animation: .default) }))
-                    .disabled(store.saving)
+                    .disabled(store.saving && !store.automaticallySavesQuietHours)
                 if store.draft.enabled {
-                    DatePicker("From", selection: time(store.draft.start, action: ServiceSettingsFeature.Action.quietStart), displayedComponents: .hourAndMinute).disabled(store.saving)
-                    DatePicker("To", selection: time(store.draft.end, action: ServiceSettingsFeature.Action.quietEnd), displayedComponents: .hourAndMinute).disabled(store.saving)
+                    DatePicker("From", selection: time(store.draft.start, action: ServiceSettingsFeature.Action.quietStart), displayedComponents: .hourAndMinute).disabled(store.saving && !store.automaticallySavesQuietHours)
+                    DatePicker("To", selection: time(store.draft.end, action: ServiceSettingsFeature.Action.quietEnd), displayedComponents: .hourAndMinute).disabled(store.saving && !store.automaticallySavesQuietHours)
                 }
                 if store.conflict {
                     Text("Notification settings changed in another window. Your draft has been kept.")

@@ -45,6 +45,7 @@ struct ServiceAppScene: View {
 /// Dependency assembly belongs to scene composition, outside rendering and reducers.
 @MainActor @Observable
 private final class ServiceSceneContext {
+    let settings = ServiceSettingsContext()
     private(set) var store: StoreOf<ServiceRootFeature>?
 
     func consumeNotification(_ notifications: ServiceNotificationRuntime, active: Bool) {
@@ -93,7 +94,7 @@ private struct ApprovedServiceScene: View {
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications)) }
+            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications, context: context.settings)) }
             else { ProgressView("Opening workspace…") }
         }
         .safeAreaInset(edge: .bottom) {
