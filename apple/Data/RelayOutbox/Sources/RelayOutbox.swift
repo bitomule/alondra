@@ -74,6 +74,8 @@ public struct RelayOutboxEntry: Codable, Sendable, Equatable {
     public var lastStatus: String?
     public var lastRevision: UInt64?
     public var lastResponse: EnvelopeV1?
+    /// Keyed request binding; contains no plaintext and survives retirement.
+    public var semanticTag: Data? = nil
 
 }
 
@@ -98,7 +100,7 @@ public actor RelayOutbox {
 
     /// The caller must seal a fresh envelope before this call. A record is durable before POST.
     /// Network errors and post-send disk errors are both uncertain; neither authorizes retry.
-    public func submitNew(_ envelope: EnvelopeV1) async throws -> RelaySubmission {
+    public func submitNew(_ envelope: EnvelopeV1, semanticTag: Data? = nil) async throws -> RelaySubmission {
         _ = try envelope.signedBytes()
         guard envelope.kind == "request" else { throw RelayOutboxError.invalidEnvelope }
         guard try JSONEncoder().encode(envelope).count <= 256 * 1024 else {
@@ -110,7 +112,7 @@ public actor RelayOutbox {
             var records = try readFile()
             guard records[envelope.requestID] == nil else { throw RelayOutboxError.duplicateRequestID }
             records[envelope.requestID] = RelayOutboxEntry(
-                requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved)
+                requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved, semanticTag: semanticTag)
             try writeFile(records)
         }
 
