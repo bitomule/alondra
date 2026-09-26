@@ -182,7 +182,7 @@ struct FleetFeatureTests {
         let tickChange = try snapshot(2, 3, "make lint")
         await store.send(.snapshotChanged(tickChange)) { $0.acceptedSequence = 3; $0.acceptedTick = 2; $0.entry = tickChange.node("s1") }
         #expect(store.state.acceptedTick != opened)
-        await clock.advance(by: .seconds(10))
+        // A content tick restarts the read immediately, before the periodic deadline.
         await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
         await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = tickChange.node("s1")!.node.toolThread }
         #expect(store.state.threads.first?.doing == "Bash make lint")
@@ -194,6 +194,43 @@ struct FleetFeatureTests {
         #expect(store.state.threads.first?.doing == "Bash cargo test", "tool changes reach the visible detail without a content tick")
         await store.send(.disappeared) { $0.isVisible = false }
         await store.finish()
+    }
+
+    @Test func aContentTickCancelsTheOldReadAndStartsTheLatestImmediately() async throws {
+        let first = ProjectFleetUseCase().execute(try overview(tick: 10, nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 1)
+        let next = ProjectFleetUseCase().execute(try overview(tick: 1, nodes: "[\(node())]"), visibleInboxIDs: [], sequence: 2)
+        let latest = NodeActivity(agentId: "a1", agentType: "tester", task: nil, tool: "mav", summary: "latest", since: 6)
+        let counts = ThreadReadCounts()
+        let clock = TestClock()
+        var initial = NodeDetailFeature.State(sessionID: "s1")
+        initial.entry = first.node("s1"); initial.acceptedTick = first.tick; initial.acceptedSequence = first.sequence
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.nodeOperations = operations(threads: { _ in
+                let attempt = await counts.started()
+                if attempt == 1 {
+                    do { try await clock.sleep(for: .seconds(100)) }
+                    catch { await counts.cancelled() }
+                    // A transport may finish despite cancellation. Its old response must be discarded.
+                    return []
+                }
+                return [latest]
+            })
+        }
+        await store.send(.appeared) { $0.isVisible = true }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await clock.advance(by: .seconds(1))
+        #expect(await counts.reads == 1)
+        await store.send(.snapshotChanged(next)) {
+            $0.acceptedTick = 1; $0.acceptedSequence = 2; $0.entry = next.node("s1"); $0.isLoadingThreads = false
+        }
+        await store.receive(\.threadsTick) { $0.isLoadingThreads = true }
+        await store.receive(\.threadsLoaded) { $0.isLoadingThreads = false; $0.threads = [latest] }
+        #expect(await counts.reads == 2)
+        await store.send(.disappeared) { $0.isVisible = false }
+        await store.finish()
+        #expect(await counts.cancellations == 1)
+        #expect(store.state.threads == [latest])
     }
 
     @Test func aFailedThreadReadKeepsTheLastLedgerAndOnlyFallsBackBeforeItsFirstSuccess() async throws {
@@ -250,4 +287,11 @@ private actor ThreadReplies {
         return [tester]
     }
     private struct Offline: LocalizedError { var errorDescription: String? { "Offline" } }
+}
+
+private actor ThreadReadCounts {
+    private(set) var reads = 0
+    private(set) var cancellations = 0
+    func started() -> Int { reads += 1; return reads }
+    func cancelled() { cancellations += 1 }
 }

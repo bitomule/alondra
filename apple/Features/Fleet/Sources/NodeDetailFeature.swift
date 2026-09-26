@@ -91,6 +91,7 @@ public struct NodeDetailFeature {
             case .snapshotChanged(let snapshot):
                 guard state.acceptedSequence == nil || snapshot.sequence > state.acceptedSequence! else { return .none }
                 let firstNode = state.entry == nil
+                let tickChanged = state.acceptedTick != snapshot.tick
                 state.acceptedSequence = snapshot.sequence
                 state.acceptedTick = snapshot.tick
                 state.isStale = false
@@ -101,7 +102,10 @@ public struct NodeDetailFeature {
                     state.showCloseConfirmation = false
                     return .cancel(id: state.pollingID)
                 }
-                if firstNode && state.isVisible { return pollThreads(state) }
+                if state.isVisible && (firstNode || tickChanged) {
+                    state.isLoadingThreads = false
+                    return pollThreads(state)
+                }
                 return .none
             case .snapshotUnavailable:
                 state.isStale = true
@@ -132,8 +136,13 @@ public struct NodeDetailFeature {
                 let session = state.sessionID
                 let epoch = state.presentationEpoch
                 return .run { send in
-                    do { await send(.threadsLoaded(try await operations.threads(session), epoch)) }
-                    catch where !error.isCancellation { await send(.threadsFailed(error.localizedDescription, epoch)) }
+                    do {
+                        let threads = try await operations.threads(session)
+                        try Task.checkCancellation()
+                        await send(.threadsLoaded(threads, epoch))
+                    } catch where !Task.isCancelled && !error.isCancellation {
+                        await send(.threadsFailed(error.localizedDescription, epoch))
+                    }
                 }.cancellable(id: state.pollingID)
             case .threadsLoaded(let asked, let epoch):
                 guard epoch == state.presentationEpoch, let node = state.node else { return .none }

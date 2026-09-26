@@ -32,6 +32,11 @@ Two obsolete behaviors are deliberately not recreated:
    an earlier revision is superseded by that existing guarantee, not silently treated
    as equivalent. DTO/history-key assertions remain in Domain.
 
-This change neither edits SyncSession tests nor changes production loading behavior.
-Whether a snapshot tick should also trigger an immediate node activity refresh is a
-separate behavior review; these transferred checks retain the periodic-update guarantee.
+The follow-up NodeDetailFeature fix restores the original immediate reload when the
+content tick changes (including a lower tick after reconnect). The original iOS and
+macOS detail used `.task(id: threadsKey)`; TaskLookups restarted followThreads at once.
+A same-tick tool change still arrives through the 10-second periodic read. An in-flight
+read is cancelled on tick changes and its late response is discarded. These guarantees
+are checked with TestClock, including a transport that returns after cancellation.
+
+SyncSession tests are unchanged.
