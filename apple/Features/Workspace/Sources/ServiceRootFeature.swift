@@ -137,7 +137,8 @@ public struct ServiceRootFeature {
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
                 return feedbackResolutionEffects(events, state: state)
-            case .triage(.document(.presented(.reportFeedbackFinished))):
+            case .triage(.document(.presented(.reportFeedbackFinished))),
+                 .triage(.cards(.element(_, .document(.reportFeedbackFinished)))):
                 return .merge(feedbackResolutionEffects(state.feedbackResolutions, state: state),
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .tabSelected(let tab):

@@ -1,4 +1,5 @@
 import AlondraCommands
+import AlondraQuestionsFeature
 import ComposableArchitecture
 import Foundation
 
@@ -80,6 +81,18 @@ extension ServiceRootFeature {
             effects.append(.send(.fleet(.detail(.presented(.commandResolved(id, rejection: rejection))))))
         }
         for card in state.triage.cards {
+            if card.question?.uncertainCommandID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .question(.commandResolved(id, rejection: rejection)))))))
+            }
+            if card.document?.uncertainCommandID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(.commandResolved(id, rejection: rejection)))))))
+            }
+            if card.pullRequest?.diff.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(.diff(.commandResolved(id, rejection: rejection))))))))
+            }
+            if card.pullRequest?.pr.mutationOutcome?.uncertainID == id {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(.pr(.commandResolved(id, rejection: rejection))))))))
+            }
             for child in card.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
                 let action = ServicePullRequestFeature.Action.attachedQuestion(.element(
                     id: child.id, action: .question(.commandResolved(id, rejection: rejection))))
@@ -102,18 +115,31 @@ extension ServiceRootFeature {
 
 extension ServiceRootFeature {
     func feedbackResolutionEffects(_ events: [ReportFeedbackRecoveryEvent], state: State) -> Effect<Action> {
-        guard let id = state.triage.document?.uncertainCommandID,
-              let event = events.first(where: { $0.operationID == id }) else { return .none }
+        var effects: [Effect<Action>] = []
+        if let action = feedbackAction(events, document: state.triage.document) {
+            effects.append(.send(.triage(.document(.presented(action)))))
+        }
+        for card in state.triage.cards {
+            if let action = feedbackAction(events, document: card.document) {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(action))))))
+            }
+        }
+        return .merge(effects)
+    }
+
+    private func feedbackAction(_ events: [ReportFeedbackRecoveryEvent], document: DocumentReviewFeature.State?) -> DocumentReviewFeature.Action? {
+        guard let document, document.needsReconciliation, let id = document.uncertainCommandID,
+              let event = events.first(where: { $0.operationID == id }) else { return nil }
         switch event.outcome {
         case .confirmed:
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: nil)))))
+            return .commandResolved(id, rejection: nil)
         case .messageRejected(let status):
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was rejected (HTTP \(status)). Your draft has been kept.")))))
+            return .commandResolved(id, rejection: "The feedback was rejected (HTTP \(status)). Your draft has been kept.")
         case .awaitingDraft:
-            return .send(.triage(.document(.presented(.commandResolved(id, rejection: "The feedback was not sent. Your draft has been kept; you can submit it again.")))))
+            return .commandResolved(id, rejection: "The feedback was not sent. Your draft has been kept; you can submit it again.")
         case .readRejected(let status):
-            return .send(.triage(.document(.presented(.feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")))))
-        case .unknown: return .none
+            return .feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")
+        case .unknown: return nil
         }
     }
 }
