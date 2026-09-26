@@ -78,6 +78,7 @@ public struct DocumentReviewFeature {
         public var draft = DocumentDraft()
         public var composingAnchor: String?
         public var composingText = ""
+        public var commentPositions: [String: String] = [:]
         public var generalFocusRequest: UInt64 = 0
         public var hasFeedback: Bool {
             !draft.comments.isEmpty || !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentPicker.entries.isEmpty
@@ -123,6 +124,7 @@ public struct DocumentReviewFeature {
         case moreContextTapped(author: String)
         case composeComment(String?)
         case composingTextChanged(String)
+        case saveComposedComment(anchor: String, quote: String, position: String)
         case generalChanged(String)
         case commentChanged(anchor: String, quote: String, text: String)
         case optionSelected(String?)
@@ -259,6 +261,13 @@ public struct DocumentReviewFeature {
                 state.composingAnchor = anchor
                 state.composingText = state.draft.comments.first { $0.anchor == anchor }?.text ?? ""
                 return .none
+            case .saveComposedComment(let anchor, let quote, let position):
+                guard !state.isSubmitting, !state.needsReconciliation, state.composingAnchor == anchor else { return .none }
+                state.commentPositions[anchor] = position
+                state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: state.composingText, positions: state.commentPositions)
+                state.composingAnchor = nil
+                state.composingText = ""
+                return .none
             case .composingTextChanged(let value):
                 state.composingText = value
                 return .none
@@ -268,13 +277,7 @@ public struct DocumentReviewFeature {
                 return .none
             case .commentChanged(let anchor, let quote, let text):
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if let index = state.draft.comments.firstIndex(where: { $0.anchor == anchor }) {
-                    if trimmed.isEmpty { state.draft.comments.remove(at: index) }
-                    else { state.draft.comments[index].text = trimmed }
-                } else if !trimmed.isEmpty {
-                    state.draft.comments.append(ReviewComment(anchor: anchor, quote: quote, text: trimmed))
-                }
+                state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: text, positions: state.commentPositions)
                 return .none
             case .optionSelected(let option):
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }

@@ -215,8 +215,7 @@ struct ServiceDocumentCommentEditor: View {
         .task { focus.wrappedValue = .comment }
     }
     private func save() {
-        store.send(.commentChanged(anchor: anchor, quote: quote, text: store.composingText))
-        store.send(.composeComment(nil))
+        store.send(.saveComposedComment(anchor: anchor, quote: quote, position: position ?? anchor))
         focus.wrappedValue = .pane
     }
     private func cancel() { store.send(.composeComment(nil)); focus.wrappedValue = .pane }
