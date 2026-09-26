@@ -46,7 +46,6 @@ struct ServiceTaskDetailView: View {
                 pullRequests(task)
                 dependencies(task)
                 documents(task)
-                AttachmentDownloadControls(store: store.scope(state: \.downloads, action: \.downloads))
                 options(task)
                 timeline
                 actions(task)
@@ -215,11 +214,7 @@ struct ServiceTaskDetailView: View {
             DetailSection(title: String(localized: "Documents"), symbol: "doc.text") {
                 VStack(spacing: 0) {
                     ForEach(Array(reports.enumerated()), id: \.element.id) { index, report in
-                        VStack(alignment: .leading, spacing: 8) {
-                            documentRow(report)
-                            AttachmentDownloads(store: store.scope(state: \.downloads, action: \.downloads), attachments: report.attachments)
-                                .padding(.horizontal, 16)
-                        }
+                        documentRow(report)
                             .overlay(alignment: .top) {
                                 if index > 0 { Palette.hairline.frame(height: 1).padding(.leading, 16) }
                             }
