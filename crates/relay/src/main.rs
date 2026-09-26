@@ -29,6 +29,7 @@ use tokio::sync::{RwLock, Semaphore};
 struct Server {
     auth: Auth,
     management_keycloak: Option<management::keycloak::Keycloak>,
+    web_session: Option<Arc<web_session::WebSession>>,
     apns: Option<push::Apns>,
     queue: Queue,
     pairing: pairing::Mailbox,
@@ -42,6 +43,7 @@ struct Server {
 fn router(server: Arc<Server>) -> Router {
     Router::new()
         .merge(management::http::routes())
+        .merge(web_session::routes())
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/v1/bootstrap", get(bootstrap))
@@ -62,6 +64,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/work/{id}/receipt", post(receipt))
         .route("/v1/work/{id}/response", post(respond))
         .layer(DefaultBodyLimit::max(state::MAX_RESPONSE_BYTES))
+        .layer(middleware::from_fn_with_state(server.clone(),web_session::middleware))
         .layer(middleware::from_fn_with_state(
             server.clone(),
             limit_and_headers,
@@ -775,8 +778,10 @@ async fn main() -> anyhow::Result<()> {
             std::fs::read_to_string(std::env::var("ALONDRA_MANAGEMENT_KC_SECRET_FILE")?)?.trim().into())?;
         keycloak.verify_realm().await?;Some(keycloak)
     } else {None};
+    let web_session = web_session::WebSession::from_env(&auth)?;
     let server = Arc::new(Server {
         auth,
+        web_session,
         management_keycloak,
         apns,
         queue: Queue::new(),
@@ -789,6 +794,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
+    if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
     let refreshing = server.clone();
     tokio::spawn(async move {
         loop {
@@ -917,6 +923,7 @@ mod http_tests {
         let server = Arc::new(Server {
             auth,
             management_keycloak: None,
+            web_session: None,
             apns: apns_endpoint.map(push::Apns::test),
             queue: Queue::new(),
             pairing: pairing::Mailbox::default(),
