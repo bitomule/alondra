@@ -25,7 +25,7 @@ public struct ServiceRootFeature {
         var lastMacErrorMessage: String?
         var macErrorMessage: String? {
             if let error = delivery.acknowledgementError ?? delivery.status?.persistenceError { return error }
-            if let error = triage.triage.notice { return error }
+            if let error = triage.triage.notice, !triage.triage.noticeIsMutationFailure { return error }
             if case .failure(let error) = notice?.event { return error }
             return nil
         }

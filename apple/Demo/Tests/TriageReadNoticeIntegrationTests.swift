@@ -35,18 +35,31 @@ struct TriageReadNoticeIntegrationTests {
                 return .rejected("Read rejected")
             })
         }
-        let operation = store.send(.triage(.triage(deferred ? .readWithPresentation(id) : .hide(id))))
         var iterator = observed.stream.makeAsyncIterator()
-        _ = await iterator.next()
-        #expect(calls.value == 1)
-        #expect(!store.triage.triage.hiddenIDs.contains(id))
-        #expect(store.triage.triage.queue.contains { $0.id == id })
-        #expect(store.triage.triage.noticeIsMutationFailure)
-        #expect(store.notice?.event == .failure(couldNotSendMessage("Read rejected")))
-        await clock.advance(by: .seconds(6))
-        await operation.finish()
+        var previousMacNotice: UUID?
+        for attempt in 1...2 {
+            let operation = store.send(.triage(.triage(deferred ? .readWithPresentation(id) : .hide(id))))
+            _ = await iterator.next()
+            #expect(calls.value == attempt)
+            #expect(!store.triage.triage.hiddenIDs.contains(id))
+            #expect(store.triage.triage.queue.contains { $0.id == id })
+            #expect(store.triage.triage.noticeIsMutationFailure)
+            let expected = WorkspaceNotice.Event.failure(couldNotSendMessage("Read rejected"))
+            #expect(store.notice?.event == expected)
+            #expect(store.macError?.event == expected)
+            let macNotice = try #require(store.macError?.id)
+            #expect(macNotice != previousMacNotice)
+            previousMacNotice = macNotice
+            await clock.advance(by: .seconds(6))
+            await operation.finish()
+            #expect(store.notice == nil && store.macError == nil)
+            // The retained leaf result is data, not an error that can resurrect
+            // a toast on an unrelated action after its normal timeout.
+            await store.send(.settingsPresented(false)).finish()
+            #expect(store.notice == nil && store.macError == nil)
+        }
         await store.send(.triage(.triage(.mutationFinished(id, identity, .rejected("Late"))))).finish()
-        #expect(store.notice == nil && calls.value == 1)
+        #expect(store.notice == nil && store.macError == nil && calls.value == 2)
         observed.continuation.finish()
     }
 }
