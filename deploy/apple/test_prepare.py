@@ -1,5 +1,7 @@
 """Exercise actual ZIP/plist gates without Xcode builds, signing or network."""
 import copy
+import base64
+import shutil
 import datetime as dt
 import hashlib
 from pathlib import Path
@@ -8,7 +10,7 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile
+from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, require_installer_unique
 
 
 class DistributionInputTests(unittest.TestCase):
@@ -78,6 +80,47 @@ class DistributionInputTests(unittest.TestCase):
                     self.archive(path, **options)
                     with self.assertRaises(GateError):
                         validate_archive(path, "ios")
+
+    def test_replaced_bazel_output_cannot_change_verified_snapshot_or_shipped_ipa(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            source = directory / "bazel.ipa"
+            private = directory / "private"
+            private.mkdir()
+            self.archive(source)
+            original_bytes = source.read_bytes()
+            snapshot, app = snapshot_archive(source, private, "ios")
+            self.assertEqual(app, "Payload/Alondra.app")
+            # A second Bazel build replaces the path after validation, before copy.
+            source.unlink()
+            self.archive(source, simulator=True)
+            with self.assertRaises(GateError):
+                validate_archive(source, "ios")
+            shipped = directory / "release.ipa"
+            shutil.copyfile(snapshot, shipped)
+            self.assertEqual(shipped.read_bytes(), original_bytes)
+            self.assertEqual(validate_archive(shipped, "ios"), app)
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o400)
+
+    def test_same_common_name_does_not_authorize_another_installer_leaf(self):
+        # The signature TOC's DER bytes decide identity, not a displayed CN or a
+        # requested certificate occurring later in the chain.
+        requested = b"first Installer public DER fixture"
+        wrong = b"other Installer public DER fixture with identical common name"
+        fingerprint = hashlib.sha1(requested).hexdigest().upper()
+        other = hashlib.sha1(wrong).hexdigest().upper()
+        name = "3rd Party Mac Developer Installer: Fixture (658YBSK6MG)"
+        with self.assertRaisesRegex(GateError, "ambiguous"):
+            require_installer_unique(f'1) {fingerprint} "{name}"\n2) {other} "{name}"', fingerprint, name)
+        require_installer_unique(f'1) {fingerprint} "{name}"', fingerprint, name)
+        def toc(certificates):
+            values = "".join("<X509Certificate>" + base64.b64encode(cert).decode() + "</X509Certificate>" for cert in certificates)
+            return '<xar><toc><signature><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data>' + values + '</X509Data></KeyInfo></signature></toc></xar>'
+        verify_pkg_leaf(toc([requested, wrong]), fingerprint)
+        with self.assertRaisesRegex(GateError, "Actual Installer leaf"):
+            verify_pkg_leaf(toc([wrong, requested]), fingerprint)
+        with self.assertRaisesRegex(GateError, "Missing Installer leaf"):
+            verify_pkg_leaf(toc([]), fingerprint)
 
     def test_archive_rejects_symlink_escape_before_ditto(self):
         with tempfile.TemporaryDirectory() as directory:

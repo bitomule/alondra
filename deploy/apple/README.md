@@ -98,7 +98,23 @@ profiles, matching signer, device Mach-O platform, production APNs on the app,
 and the shared Keychain group. The Mac artifact must have matching identity,
 profile, version and sandbox/network/user-selected-file entitlements. Strict
 nested code-signature verification runs before packaging. The Mac package's
-Installer signature is checked after `productbuild`.
+Installer signature is checked after `productbuild`, followed by an exact SHA-1
+comparison of the package signature's leaf DER certificate against the requested
+Installer fingerprint. An issuer/root matching the requested fingerprint does not
+satisfy this check. `productbuild(1)` documents Common Name selection, not SHA-1;
+the lane therefore refuses a name shared by different local identities (including
+invalid identities), rechecks before signing, and validates the resulting leaf.
+
+The Bazel ZIP/IPA is copied into a unique private staging directory before any
+archive validation. That read-only snapshot is the only archive subsequently
+validated, extracted and copied into the release output. A concurrent replacement
+of the Bazel output path cannot change the bytes shipped after validation.
+
+Failed commands leave a private diagnostic at the path reported in the error
+(mode 0700 directory / 0600 log). It contains the tool name, exit status and capped,
+filtered diagnostics. It never records environment variables, command arguments
+or `security cms` stdout (which could contain a profile). Treat the local log as
+private evidence; it is not included in the release manifest or uploaded.
 
 ## Verification and remaining release gates
 
@@ -119,3 +135,22 @@ extension. Then the orchestrator may use the existing ASC upload workflow with
 the verified artifact. ASC processing, export-compliance answers, Beta App Review,
 review access and external-group distribution are separate gates. A successful
 local manifest is not an App Store or TestFlight approval.
+
+## Independent-review corrections
+
+After the initial implementation, review found a mutable Bazel archive could be
+reread after verification, and that comparing only the Installer Common Name did
+not prove its identity. Both are addressed above. Two additional tests replace a
+Bazel IPA with a simulator IPA between validation and output copying, and reject
+ambiguous Installer names / a wrong leaf even when the requested certificate is
+later in the signature chain. These are packaging validation tests, not a claim
+of cryptographic validation of synthetic certificate fixtures.
+
+Local primary documentation checked for the fix: `man productbuild` (SIGNED
+PRODUCT ARCHIVES: --sign selects Common Name), `man xar` (--dump-toc=- emits the
+XML TOC) and `man pkgutil` (--check-signature checks validity/trust). The leaf parser
+was also checked read-only against an existing local signed Memoir PKG: its exact
+Installer fingerprint was accepted, a different fingerprint rejected. That
+historical PKG returns an untrusted-certificate failure from pkgutil on this host;
+it is not accepted by this lane and is not evidence of a successful new release.
+No Apple build, package signing, ASC mutation or upload was performed for this fix.

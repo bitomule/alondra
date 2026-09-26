@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and verify local Apple distribution artifacts; never upload or modify ASC."""
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 TEAM = "658YBSK6MG"
@@ -38,7 +40,18 @@ def require(value, message):
 def run(*args):
     # No shell, credential arguments or raw error bodies in output.
     result = subprocess.run([str(a) for a in args], capture_output=True)
-    require(result.returncode == 0, f"{args[0]} failed (exit {result.returncode}); artifact not approved")
+    if result.returncode:
+        directory = Path(tempfile.mkdtemp(prefix="alondra-apple-validation-"))
+        log = directory / "failure.log"
+        # security cms stdout can contain a complete profile; never log it.
+        text = result.stderr.decode(errors="replace")
+        if Path(str(args[0])).name in {"bazelisk", "codesign", "productbuild", "pkgutil", "xcrun"}:
+            text += result.stdout.decode(errors="replace")
+        text = re.sub(r"(?im)^.*(?:authorization|bearer |password|token|secret|api.?key|remote_header).*$", "[redacted]", text)
+        with log.open("x") as stream:
+            os.chmod(log, 0o600)
+            stream.write(f"{Path(str(args[0])).name}: exit {result.returncode}\n" + text[-65536:])
+        raise GateError(f"{args[0]} failed (exit {result.returncode}); artifact not approved. Private diagnostic: {log}")
     return result.stdout
 
 
@@ -82,7 +95,42 @@ def local_identity(fingerprint, installer=False):
     name = names[0]
     required = "3rd Party Mac Developer Installer:" if installer else "Apple Distribution:"
     require(name.startswith(required) and name.endswith("(" + TEAM + ")"), "Wrong distribution identity type/team")
+    if installer:
+        # productbuild(1) documents a Common Name, not a certificate fingerprint.
+        # Check all identities, including invalid ones that might share that CN.
+        all_output = run("security", "find-identity", "-p", "basic").decode()
+        require_installer_unique(all_output, fingerprint, name)
     return name
+
+
+def require_installer_unique(output, fingerprint, name):
+    matching = {value for value, candidate in re.findall(r'([0-9A-F]{40}) "([^"]+)"', output) if candidate == name}
+    require(matching == {fingerprint}, "Installer Common Name is ambiguous or changed; select an isolated reviewed keychain before packaging")
+
+
+def verify_pkg_leaf(toc, fingerprint):
+    root = ET.fromstring(toc)
+    def children(nodes, name):
+        return [child for node in nodes for child in node if child.tag.split("}")[-1] == name]
+    signatures = children(children([root], "toc"), "signature")
+    require(len(signatures) == 1, "Expected exactly one package signature")
+    certificates = children(children(children(signatures, "KeyInfo"), "X509Data"), "X509Certificate")
+    require(certificates and certificates[0].text, "Missing Installer leaf certificate")
+    leaf = base64.b64decode("".join(certificates[0].text.split()), validate=True)
+    require(hashlib.sha1(leaf).hexdigest().upper() == fingerprint, "Actual Installer leaf differs from requested identity")
+
+
+def snapshot_archive(source, directory, destination):
+    # Bazel outputs may be replaced by another invocation. All subsequent reads,
+    # validation and packaging must use this independent private copy.
+    snapshot = directory / ("input.ipa" if destination == "ios" else "input.zip")
+    with source.open("rb") as incoming, snapshot.open("xb") as outgoing:
+        os.chmod(snapshot, 0o600)
+        shutil.copyfileobj(incoming, outgoing)
+        outgoing.flush()
+        os.fsync(outgoing.fileno())
+    os.chmod(snapshot, 0o400)
+    return snapshot, validate_archive(snapshot, destination)
 
 
 def validate_archive(path, destination):
@@ -192,22 +240,26 @@ def main():
     require(all(digest(path) == profile_hashes[key] for key, path in profiles.items()), "Profile changed during build")
     require(run("git", "-C", ROOT, "rev-parse", "HEAD").decode().strip() == source_commit
             and not run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal").strip(), "Source changed during build")
-    app = validate_archive(source, args.destination)
     with tempfile.TemporaryDirectory(prefix="alondra-package-", dir=output) as directory:
-        unpacked = Path(directory)
-        run("ditto", "-x", "-k", source, unpacked)
+        private = Path(directory)
+        snapshot, app = snapshot_archive(source, private, args.destination)
+        unpacked = private / "unpacked"
+        unpacked.mkdir(mode=0o700)
+        run("ditto", "-x", "-k", snapshot, unpacked)
         verify_bundle(unpacked / app, IOS if args.destination == "ios" else MAC, args.destination,
                       args.version, args.build_number, args.identity, profiles[IOS if args.destination == "ios" else MAC])
         if args.destination == "ios":
             verify_bundle(unpacked / app / "PlugIns/AlondraNotificationService.appex", EXT, "ios",
                           args.version, args.build_number, args.identity, profiles[EXT])
             artifact = output / "Alondra.ipa"
-            shutil.copyfile(source, artifact)
+            shutil.copyfile(snapshot, artifact)
         else:
             artifact = output / "Alondra.pkg"
+            # Recheck name uniqueness immediately before invoking the CN-only API.
+            local_identity(args.installer_identity.upper(), installer=True)
             run("productbuild", "--component", unpacked / app, "/Applications", "--sign", installer, artifact)
-            signature = run("pkgutil", "--check-signature", artifact).decode()
-            require(installer in signature, "Installer signature mismatch")
+            run("pkgutil", "--check-signature", artifact)
+            verify_pkg_leaf(run("xar", "--dump-toc=-", "-f", artifact), args.installer_identity.upper())
     manifest = {"source": source_commit,
                 "destination": args.destination, "version": args.version, "build": args.build_number,
                 "artifact": artifact.name, "sha256": digest(artifact), "identity": args.identity,
@@ -220,7 +272,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (GateError, OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException) as error:
+    except (GateError, OSError, ValueError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException, ET.ParseError) as error:
         # Fixed diagnostics only; do not print plist bodies or command arguments.
         print("Apple distribution blocked: " + (str(error) if isinstance(error, GateError) else type(error).__name__), file=sys.stderr)
         sys.exit(1)
