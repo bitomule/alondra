@@ -26,6 +26,7 @@ public final class CloudPairingOwner {
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = self.prepareCamera
+        $0.cloudPairing.hasSavedConfiguration = { [self] in try await pairing.approvedPairing() != nil }
     }
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false },
@@ -61,8 +62,15 @@ public final class CloudPairingOwner {
         let current = generation
         guard let approved = try await pairing.approvedPairing() else { return false }
         try Self.validateRelay(approved.relayURL)
-        let subject = try await auth.verifiedSubject()
-        guard subject == approved.ownerSub else { throw ServicePairingError.invalidIdentity }
+        let subject: String
+        do { subject = try await auth.verifiedSubject() }
+        catch AuthError.noSession { throw CloudRestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
+        catch AuthError.httpStatus(let status) where [400, 401, 403].contains(status) {
+            throw CloudRestoreError.reauthenticationRequired("Your session has expired. Sign in again to reconnect your saved workspace.")
+        }
+        guard subject == approved.ownerSub else {
+            throw CloudRestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
+        }
         try Task.checkCancellation()
         guard current == generation else { throw CancellationError() }
         try await activate(approved, auth)

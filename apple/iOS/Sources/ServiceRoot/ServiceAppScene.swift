@@ -17,7 +17,9 @@ struct ServiceAppScene: View {
     let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
+    @State private var restoringWorkspace = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
     var body: some View {
+        Group {
         if demo.sessionID != nil {
             DemoWorkspaceScreen(mode: demo) { store in
                 ServiceRootView(store: store, accountContent: DemoAccountView())
@@ -25,12 +27,17 @@ struct ServiceAppScene: View {
         } else if let services = owner.services {
             ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
                 .id(ObjectIdentifier(services))
+        } else if owner.store.showsWorkspace {
+            ServiceRootView(store: restoringWorkspace, accountContent: WorkspaceRestorationView(store: owner.store))
+                .disabled(true)
+                .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: owner.store) }
         } else {
             NavigationStack { CloudPairingScreen(store: owner.store) }
                 .safeAreaInset(edge: .bottom) {
                     if owner.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
                 }
         }
+        }.task { await owner.store.send(.appeared).finish() }
     }
 }
 
