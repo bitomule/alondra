@@ -116,9 +116,9 @@ struct ReviewUploadNoticeIntegrationTests {
             $0.questionWorkService = .init(submit: { _ in finals.withValue { $0 += 1 }; return .failed("Unexpected") }, submitReportFeedback: { _, _ in finals.withValue { $0 += 1 }; return .failed("Unexpected") }, document: { _ in "Body" })
             $0.pullRequestOperations = .init(diff: { _ in finals.withValue { $0 += 1 }; return .init(diff: "", headSHA: "head") }, merge: { _, _ in finals.withValue { $0 += 1 }; return .rejected("Unexpected") }, resolveConflicts: { _ in finals.withValue { $0 += 1 }; return .rejected("Unexpected") }, setAside: { _ in finals.withValue { $0 += 1 }; return .rejected("Unexpected") }, review: { _, _, _, _, _ in finals.withValue { $0 += 1 }; return .rejected("Unexpected") })
         }
-        // A seeded @Presents question creates a lifetime effect on the first action.
-        // Keep it separate from the upload operation and close it after assertions.
-        let presentation = store.send(.settingsPresented(false))
+        // Enter the triage scope to mount the seeded @Presents lifetime separately.
+        // A root-only action does not run this scoped reducer.
+        let presentation = store.send(.triage(.machinePresented(false)))
         let operation = store.send(sending ? submit : uploadAction(.retry(file.id)))
         var iterator = observed.stream.makeAsyncIterator()
         _ = await iterator.next()

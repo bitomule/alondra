@@ -68,9 +68,9 @@ struct TaskRejectionNoticeIntegrationTests {
                 reopen: { value in #expect(value.id == "t-1"); calls.withValue { $0.append("reopen") }; return result },
                 archiveCompleted: { calls.withValue { $0.append("archive") }; return result }, details: { _ in nil })
         }
-        // The fixture contains both a sheet and a stack destination. Their first
-        // action mounts lifetime effects, which must be joined after dismiss/pop.
-        let presentation = store.send(.settingsPresented(false))
+        // Enter the tasks scope to mount the seeded sheet and stack lifetimes.
+        // A root-only action does not run this scoped reducer.
+        let presentation = store.send(.tasks(.showSchedules(false)))
         let submit: ServiceRootFeature.Action
         switch route {
         case .archive: submit = .tasks(.board(.archiveTapped))
