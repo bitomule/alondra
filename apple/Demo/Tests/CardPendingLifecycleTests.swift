@@ -125,8 +125,11 @@ struct CardPendingLifecycleTests {
         #expect(retainedPicker?.entries.first?.draft == attachment)
     }
 
-    @Test(arguments: [false, true])
-    func focusingAnotherInboxItemCancelsPresentedPRBeforeNavigationEffects(openReport: Bool) async throws {
+    enum Navigation: CaseIterable { case question, report, node, task, request, schedules, cleared, inboxChanged, unchanged }
+
+    @Test(arguments: Navigation.allCases)
+    func changingSelectionCancelsPresentedPRBeforeNavigationEffects(navigation: Navigation) async throws {
+        let openReport = navigation == .report
         let decoder = JSONDecoder()
         let question = try decoder.decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
         let report = try decoder.decode(Report.self, from: Data(#"{"id":99,"sessionId":"s","title":"Report","body":"Body","links":[],"attachments":[],"kind":"document","createdAt":100}"#.utf8))
@@ -148,6 +151,9 @@ struct CardPendingLifecycleTests {
         detail.questionFeatures[id: 1]?.question.pendingAttachedAnswer = detail.questionFeatures[id: 1]?.question.draft
         var initial = ServiceRootFeature.State()
         initial.pullRequest = detail
+        initial.macPresentation.selection = .item("p5")
+        initial.macPresentation.inboxIDs = ["p5", "q1", "r99"]
+        initial.macPresentation.didAutoSelect = true
         initial.triage.triage.items = [.question(question), .report(report)]
         let sent = SubmissionEvidence()
         let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
@@ -156,20 +162,33 @@ struct CardPendingLifecycleTests {
                 merge: { _, _ in .obsolete }, resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
                 review: { _, _, _, _, _ in await sent.record(); return .obsolete })
         }
-        let navigation = store.send(.focusInbox(openReport ? "r99" : "q1"))
+        let action: ServiceRootFeature.Action = switch navigation {
+        case .question, .report: .focusInbox(openReport ? "r99" : "q1")
+        case .node: .macPresentation(.select(.node("node")))
+        case .task: .macPresentation(.select(.task("task")))
+        case .request: .macPresentation(.select(.request("request")))
+        case .schedules: .macPresentation(.select(.schedules))
+        case .cleared: .macPresentation(.select(nil))
+        case .inboxChanged: .macPresentation(.inboxChanged(["q1", "r99"]))
+        case .unchanged: .macPresentation(.select(.item("p5")))
+        }
+        let transition = store.send(action)
         // Inspect before awaiting the queued focus/open effects or a SwiftUI callback.
-        #expect(store.pullRequest?.diff.pendingSubmission == nil)
-        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.pendingAttachedAnswer == nil)
+        #expect((store.pullRequest?.diff.pendingSubmission != nil) == (navigation == .unchanged))
+        #expect((store.pullRequest?.questionFeatures[id: 1]?.question.pendingAttachedAnswer != nil) == (navigation == .unchanged))
         let receipt = AttachmentFeature.Action.uploaded(attachment.id, .success("stored-proof"))
         await store.send(.pullRequest(.presented(.diff(.attachmentPicker(receipt))))).finish()
         await store.send(.pullRequest(.presented(.attachedQuestion(.element(id: 1, action: .question(.attachmentPicker(receipt))))))).finish()
-        await navigation.finish()
-        #expect(await sent.count == 0)
+        await transition.finish()
+        #expect(await sent.count == (navigation == .unchanged ? 2 : 0))
         #expect(store.pullRequest?.diff.note == "Keep review")
         #expect(store.pullRequest?.diff.attachmentPicker.storedIDs == ["stored-proof"])
         #expect(store.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep answer")
         #expect(store.pullRequest?.questionFeatures[id: 1]?.question.attachmentPicker.storedIDs == ["stored-proof"])
-        #expect(store.triage.document?.subject.id == (openReport ? "r99" : "q1"))
+        if navigation == .question || navigation == .report {
+            #expect(store.triage.document?.subject.id == (openReport ? "r99" : "q1"))
+        }
+        if navigation == .inboxChanged { #expect(store.macPresentation.selection == .item("q1")) }
     }
 
     @Test func closingRootDoesNotCancelAlreadyDispatchedCommandOrLoseReconciliation() async throws {

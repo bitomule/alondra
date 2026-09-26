@@ -8,17 +8,13 @@ struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
     var isActive = true
-    @State private var presentation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+    private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
-    init(store: StoreOf<ServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true,
-         search: MacConversationSearch = .unavailable) {
+    init(store: StoreOf<ServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
         self.isActive = isActive
-        _presentation = State(initialValue: Store(initialState: MacPresentationFeature.State()) {
-            MacPresentationFeature()
-        } withDependencies: { $0.macConversationSearch = search })
     }
 
     var body: some View {

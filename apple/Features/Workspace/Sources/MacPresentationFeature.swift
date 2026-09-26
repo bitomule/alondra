@@ -6,27 +6,29 @@ import ComposableArchitecture
 /// Per-window navigation and disclosure state. The service graph remains the sole
 /// owner of snapshots, drafts and mutations.
 @Reducer
-struct MacPresentationFeature {
-    enum Selection: Hashable {
+public struct MacPresentationFeature {
+    public init() {}
+    public enum Selection: Hashable {
         case item(String), node(String), task(String), request(String), schedules
     }
     @ObservableState
-    struct State: Equatable {
-        var selection: Selection?
-        var query = ""
-        @Shared(.appStorage("tasksExpanded")) var tasksExpanded = true
-        @Shared(.appStorage("collapsedProjects")) var collapsedProjectsRaw = ""
-        @Shared(.appStorage("toggledTaskGroups")) var toggledTaskGroupsRaw = ""
-        var collapsedProjects: Set<String> { Set(collapsedProjectsRaw.split(separator: "\n").map(String.init)) }
-        var toggledTaskGroups: Set<String> { Set(toggledTaskGroupsRaw.split(separator: "\n").map(String.init)) }
-        var newRequestPresented = false
-        var inboxIDs: [String] = []
-        var didAutoSelect = false
-        var smartMatches: Set<String>?
-        var smartStatus = ""
-        var searchRevision: UInt64 = 0
+    public struct State: Equatable {
+        public init() {}
+        public var selection: Selection?
+        public var query = ""
+        @Shared(.appStorage("tasksExpanded")) public var tasksExpanded = true
+        @Shared(.appStorage("collapsedProjects")) public var collapsedProjectsRaw = ""
+        @Shared(.appStorage("toggledTaskGroups")) public var toggledTaskGroupsRaw = ""
+        public var collapsedProjects: Set<String> { Set(collapsedProjectsRaw.split(separator: "\n").map(String.init)) }
+        public var toggledTaskGroups: Set<String> { Set(toggledTaskGroupsRaw.split(separator: "\n").map(String.init)) }
+        public var newRequestPresented = false
+        public var inboxIDs: [String] = []
+        public var didAutoSelect = false
+        public var smartMatches: Set<String>?
+        public var smartStatus = ""
+        public var searchRevision: UInt64 = 0
 
-        func projects(_ snapshot: FleetSnapshot?) -> [MacSidebarProject] {
+        public func projects(_ snapshot: FleetSnapshot?) -> [MacSidebarProject] {
             (snapshot?.sections ?? []).compactMap { section in
                 let nodes = section.nodes.filter { entry in
                     if let smartMatches { return smartMatches.contains(entry.id) }
@@ -36,15 +38,15 @@ struct MacPresentationFeature {
             }
         }
 
-        func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
-        func groupExpanded(_ group: TaskStateGroup) -> Bool {
+        public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
+        public func groupExpanded(_ group: TaskStateGroup) -> Bool {
             !query.isEmpty || (!group.isFinished != toggledTaskGroups.contains(String(describing: group.kind)))
         }
-        func matches(_ text: String) -> Bool {
+        public func matches(_ text: String) -> Bool {
             let haystack = text.lowercased()
             return query.lowercased().split(separator: " ").allSatisfy { haystack.contains($0) }
         }
-        func groups(in board: TaskBoard) -> [TaskStateGroup] {
+        public func groups(in board: TaskBoard) -> [TaskStateGroup] {
             board.groups.compactMap { group in
                 let filtered = TaskStateGroup(kind: group.kind,
                     tasks: group.tasks.filter { matches($0.title) },
@@ -52,11 +54,11 @@ struct MacPresentationFeature {
                 return filtered.count == 0 ? nil : filtered
             }
         }
-        func inbox(_ items: [InboxItem], pullRequests: Bool) -> [InboxItem] {
+        public func inbox(_ items: [InboxItem], pullRequests: Bool) -> [InboxItem] {
             items.filter { $0.isPullRequest == pullRequests && matches("\($0.title) \($0.nodeName ?? "")") }
         }
     }
-    enum Action {
+    public enum Action {
         case select(Selection?)
         case inboxChanged([String])
         case queryChanged(String)
@@ -72,7 +74,7 @@ struct MacPresentationFeature {
     @Dependency(\.macConversationSearch) var search
     @Dependency(\.continuousClock) var clock
     private enum CancelID { case search }
-    var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .select(let selection): state.selection = selection
@@ -139,21 +141,22 @@ struct MacPresentationFeature {
     }
 }
 
-struct MacSidebarProject: Identifiable {
-    var id: String { name }
-    let name: String
-    let nodes: [FleetNode]
+public struct MacSidebarProject: Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let nodes: [FleetNode]
 }
 
-struct MacConversationSearch: Sendable {
-    var run: @Sendable (String) async throws -> SearchResult?
-    static let unavailable = Self(run: { _ in nil })
+public struct MacConversationSearch: Sendable {
+    public var run: @Sendable (String) async throws -> SearchResult?
+    public init(run: @escaping @Sendable (String) async throws -> SearchResult?) { self.run = run }
+    public static let unavailable = Self(run: { _ in nil })
 }
 private enum MacConversationSearchKey: DependencyKey {
     static let liveValue = MacConversationSearch.unavailable
     static let testValue = liveValue
 }
-extension DependencyValues {
+public extension DependencyValues {
     var macConversationSearch: MacConversationSearch {
         get { self[MacConversationSearchKey.self] }
         set { self[MacConversationSearchKey.self] = newValue }

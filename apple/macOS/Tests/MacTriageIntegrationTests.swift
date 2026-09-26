@@ -22,8 +22,8 @@ struct MacTriageIntegrationTests {
     func sharedProjectionKeepsWindowCursorAndNavigationIndependentAndRejectsOldIdentity() async throws {
         let first = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
         let second = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
-        let firstNavigation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
-        let secondNavigation = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        let firstNavigation = first.scope(state: \.macPresentation, action: \.macPresentation)
+        let secondNavigation = second.scope(state: \.macPresentation, action: \.macPresentation)
         let server = try #require(URL(string: "https://service.example.test"))
         let old = TriageIdentity(server: server, deviceID: "mac", credentialRevision: "old", generation: 0)
         let replacement = TriageIdentity(server: server, deviceID: "mac", credentialRevision: "new", generation: 1)

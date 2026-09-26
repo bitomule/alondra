@@ -15,6 +15,7 @@ public struct ServiceRootFeature {
     public struct State {
         public init() {}
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
+        public var macPresentation = MacPresentationFeature.State()
         public var tab = Tab.inbox
         public var settingsPresented = false
         public var delivery = DeliveryNoticeFeature.State()
@@ -57,6 +58,7 @@ public struct ServiceRootFeature {
     }
     public enum Action {
         case appeared, disappeared
+        case macPresentation(MacPresentationFeature.Action)
         case delivery(DeliveryNoticeFeature.Action)
         case dismissMacError(UUID)
         case dismissNotice(UUID)
@@ -101,6 +103,14 @@ public struct ServiceRootFeature {
                 await send(.dismissNotice(notice.id))
             }.cancellable(id: NoticeCancelID.timeout, cancelInFlight: true)
         }
+        Scope(state: \.macPresentation, action: \.macPresentation) { MacPresentationFeature() }
+            .onChange(of: \.macPresentation.selection) { _, _ in
+                Reduce { state, _ in
+                    state.triage.cancelPendingSubmissions()
+                    state.pullRequest?.cancelPendingSubmission()
+                    return .none
+                }
+            }
         Scope(state: \.delivery, action: \.delivery) { DeliveryNoticeFeature() }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
@@ -170,7 +180,7 @@ public struct ServiceRootFeature {
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
             case .triage:
                 return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .dismissMacError, .delivery, .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
+            case .macPresentation, .dismissMacError, .delivery, .tasks, .pullRequest, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
             }
         }.ifLet(\.$pullRequest, action: \.pullRequest) { ServicePullRequestFeature() }
         Reduce { state, _ in

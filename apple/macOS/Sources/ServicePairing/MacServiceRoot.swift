@@ -57,6 +57,7 @@ private final class MacServiceWindowContext {
         let downloads = await services.attachmentDownloadClient()
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
+            $0.macConversationSearch = MacConversationSearch(run: { try await services.searchConversations($0) })
             $0.triageService = triage
             $0.questionWorkService = questions
             $0.taskOperations = tasks
@@ -85,8 +86,7 @@ private struct MacServiceWindow: View {
     var body: some View {
         Group {
             if let store = context.store {
-                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account),
-                search: MacConversationSearch(run: { try await services.searchConversations($0) }))
+                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
             } else {
                 ProgressView("Opening workspace…")
             }
