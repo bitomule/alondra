@@ -505,7 +505,11 @@ impl Management {
     }
     #[cfg(test)]
     pub async fn disable_account(&self, actor: Uuid, id: Uuid, delete: bool) -> Result<Account> {
-        self.disable_account_request(actor, id, delete, None).await
+        self.disable_account_request(actor, id, delete, None).await.map(|(account, _)| account)
+    }
+    #[cfg(test)]
+    pub async fn delete_self_request(&self, actor: Uuid, request: &AdminRequest) -> Result<Account> {
+        self.delete_self_request_with_subjects(actor, request).await.map(|(account, _)| account)
     }
     pub async fn disable_account_request(
         &self,
@@ -513,16 +517,16 @@ impl Management {
         id: Uuid,
         delete: bool,
         request: Option<&AdminRequest>,
-    ) -> Result<Account> {
+    ) -> Result<(Account, Vec<String>)> {
         self.change_account_access(actor, id, delete, false, request)
             .await
     }
     /// Called only after an explicitly confirmed self-service deletion request.
-    pub async fn delete_self_request(
+    pub async fn delete_self_request_with_subjects(
         &self,
         actor: Uuid,
         request: &AdminRequest,
-    ) -> Result<Account> {
+    ) -> Result<(Account, Vec<String>)> {
         self.change_account_access(actor, actor, true, true, Some(request))
             .await
     }
@@ -533,7 +537,7 @@ impl Management {
         delete: bool,
         self_delete: bool,
         request: Option<&AdminRequest>,
-    ) -> Result<Account> {
+    ) -> Result<(Account, Vec<String>)> {
         let mut tx = self.actor_tx(actor, !self_delete).await?;
         if let Some(request) = request {
             request.reserve(&mut tx, actor).await?;
@@ -542,6 +546,15 @@ impl Management {
         let row=sqlx::query("SELECT id,status,is_admin,display_name FROM management_accounts WHERE id=$1 FOR UPDATE")
             .bind(id).fetch_optional(&mut *tx).await?.ok_or(DomainError::NotFound)?;
         let mut account = Account::from_row(&row)?;
+        // Resolve wake targets under the account row lock, before committing the
+        // revocation. No fallible lookup may separate commit from notification.
+        let subjects: Vec<String> = sqlx::query_scalar(
+            "SELECT subject FROM management_identities WHERE account_id=$1 AND issuer=$2",
+        )
+        .bind(id)
+        .bind(&self.issuer)
+        .fetch_all(&mut *tx)
+        .await?;
         if account.is_admin && account.status == "active" {
             let admins: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM management_accounts WHERE is_admin AND status='active'",
@@ -552,7 +565,7 @@ impl Management {
         }
         if account.status == "deleted" || account.status == "deleting" && !delete {
             tx.commit().await?;
-            return Ok(account);
+            return Ok((account, subjects));
         }
         let next = if delete { "deleting" } else { "disabled" };
         if account.status != next {
@@ -580,7 +593,7 @@ impl Management {
             enqueue(&mut tx, id, "keycloak_delete").await?;
         }
         tx.commit().await?;
-        Ok(account)
+        Ok((account, subjects))
     }
 }
 

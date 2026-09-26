@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 pub const MAX_PENDING: usize = 128;
@@ -91,7 +91,71 @@ struct Inner {
 #[derive(Default)]
 pub struct Queue {
     inner: Mutex<Inner>,
-    pub changed: Notify,
+    waiters: Waiters,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PollRoute {
+    owner: String,
+    mac: String,
+    // None is a Mac work consumer; Some is a changes reader on that route.
+    phone: Option<String>,
+}
+
+#[derive(Default)]
+struct Waiters {
+    routes: Mutex<HashMap<PollRoute, (Arc<Notify>, usize)>>,
+}
+
+/// A request owns its registration until return or cancellation. No historical
+/// identifiers remain: the last subscriber removes the route synchronously.
+/// HTTP admission bounds active registrations; notifications never insert keys.
+pub struct QueueSubscription<'a> {
+    waiters: &'a Waiters,
+    route: PollRoute,
+    notify: Arc<Notify>,
+}
+
+impl QueueSubscription<'_> {
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
+    }
+}
+
+impl Drop for QueueSubscription<'_> {
+    fn drop(&mut self) {
+        let mut routes = self.waiters.routes.lock().unwrap();
+        let (_, subscribers) = routes.get_mut(&self.route).expect("registered poll route");
+        *subscribers -= 1;
+        if *subscribers == 0 {
+            routes.remove(&self.route);
+        }
+    }
+}
+
+impl Waiters {
+    fn subscribe(&self, owner: &str, mac: &str, phone: Option<&str>) -> QueueSubscription<'_> {
+        let route = PollRoute { owner: owner.into(), mac: mac.into(), phone: phone.map(str::to_owned) };
+        let mut routes = self.routes.lock().unwrap();
+        let (notify, subscribers) = routes.entry(route.clone()).or_default();
+        *subscribers += 1;
+        QueueSubscription { waiters: self, route, notify: notify.clone() }
+    }
+
+    fn notify(&self, owner: &str, mac: &str, phone: Option<&str>) {
+        let route = PollRoute { owner: owner.into(), mac: mac.into(), phone: phone.map(str::to_owned) };
+        if let Some((notify, _)) = self.routes.lock().unwrap().get(&route) {
+            notify.notify_waiters();
+        }
+    }
+
+    fn notify_matching(&self, matches: impl Fn(&PollRoute) -> bool) {
+        for (route, (notify, _)) in self.routes.lock().unwrap().iter() {
+            if matches(route) {
+                notify.notify_waiters();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -110,6 +174,29 @@ impl Queue {
         Self::default()
     }
 
+    /// Subscribe before the live authorization/snapshot check, then enable a
+    /// Notified future before each check. A wake between check and await is retained.
+    /// The authenticated binding is immutable for the lifetime of a device ID.
+    pub fn subscribe_changes(&self, owner: &str, phone: &str, mac: &str) -> QueueSubscription<'_> {
+        self.waiters.subscribe(owner, mac, Some(phone))
+    }
+
+    pub fn subscribe_work(&self, owner: &str, mac: &str) -> QueueSubscription<'_> {
+        self.waiters.subscribe(owner, mac, None)
+    }
+
+    pub fn notify_owner_revoked(&self, owner: &str) {
+        self.waiters.notify_matching(|route| route.owner == owner);
+    }
+
+    pub fn notify_mac_revoked(&self, mac: &str) {
+        self.waiters.notify_matching(|route| route.mac == mac);
+    }
+
+    pub fn notify_phone_revoked(&self, phone: &str) {
+        self.waiters.notify_matching(|route| route.phone.as_deref() == Some(phone));
+    }
+
     #[allow(clippy::too_many_arguments)] // Submission binds identity, route, idempotency hash, expiry and arrival time.
     pub fn submit(
         &self,
@@ -123,7 +210,7 @@ impl Queue {
         now_ms: u64,
     ) -> Result<JobView, QueueError> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         if let Some(previous) = inner.jobs.get(request_id) {
             return if previous.owner_sub == owner_sub
                 && previous.phone_id == phone_id
@@ -151,7 +238,7 @@ impl Queue {
             return Err(QueueError::Full);
         }
         if inner.jobs.len() >= MAX_STORED {
-            compact_oldest_terminal(&mut inner)?;
+            compact_oldest_terminal(&mut inner, &self.waiters)?;
         }
         inner.revision += 1;
         inner.sequence += 1;
@@ -173,13 +260,14 @@ impl Queue {
         let result = view(&job);
         inner.jobs.insert(request_id.into(), job);
         drop(inner);
-        self.changed.notify_waiters();
+        self.waiters.notify(owner_sub, mac_id, Some(phone_id));
+        self.waiters.notify(owner_sub, mac_id, None);
         Ok(result)
     }
 
     pub fn next_work(&self, mac_id: &str, now_ms: u64) -> Option<WorkItem> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         let id = inner
             .jobs
             .iter()
@@ -205,8 +293,7 @@ impl Queue {
             request_id: id,
             envelope: j.envelope.clone(),
         };
-        drop(inner);
-        self.changed.notify_waiters();
+        self.waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
         Some(item)
     }
 
@@ -217,7 +304,7 @@ impl Queue {
         now_ms: u64,
     ) -> Result<JobView, QueueError> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         if let Some(t) = inner.tombstones.get(id) {
             if t.mac_id != mac_id { return Err(QueueError::WrongDevice); }
             if t.status == JobStatus::Expired { return Err(QueueError::NotFound); }
@@ -236,7 +323,7 @@ impl Queue {
             let j = inner.jobs.get_mut(id).unwrap();
             j.status = JobStatus::Received;
             j.revision = revision;
-            self.changed.notify_waiters();
+            self.waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
         }
         Ok(view(inner.jobs.get(id).unwrap()))
     }
@@ -250,7 +337,7 @@ impl Queue {
         now_ms: u64,
     ) -> Result<JobView, QueueError> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         if let Some(t) = inner.tombstones.get(id) {
             if t.mac_id != mac_id || t.phone_id != phone_id { return Err(QueueError::WrongDevice); }
             if t.status == JobStatus::Expired { return Err(QueueError::Expired); }
@@ -286,8 +373,7 @@ impl Queue {
         j.revision = revision;
         j.tombstone_at_ms = Some(now_ms.saturating_add(TOMBSTONE_MS));
         let result = view(j);
-        drop(inner);
-        self.changed.notify_waiters();
+        self.waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
         Ok(result)
     }
 
@@ -299,7 +385,7 @@ impl Queue {
         now_ms: u64,
     ) -> Result<JobView, QueueError> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         if let Some(t) = inner.tombstones.get(id) {
             if t.owner_sub != owner_sub || t.phone_id != phone_id { return Err(QueueError::NotFound); }
             return t.client_result();
@@ -313,7 +399,7 @@ impl Queue {
 
     pub fn phone_for_mac(&self, mac_id: &str, id: &str, now_ms: u64) -> Result<String, QueueError> {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         if let Some(t) = inner.tombstones.get(id) {
             if t.mac_id != mac_id { return Err(QueueError::WrongDevice); }
             return Ok(t.phone_id.clone());
@@ -330,13 +416,13 @@ impl Queue {
         inner.jobs.retain(|_,job|job.owner_sub!=owner);
         inner.tombstones.retain(|_,job|job.owner_sub!=owner);
         inner.revision+=1;
-        drop(inner);self.changed.notify_waiters();
+        drop(inner);self.notify_owner_revoked(owner);
     }
 
     pub fn purge_mac(&self,mac_id:&str) {
         let mut inner=self.inner.lock().unwrap();
         inner.jobs.retain(|_,j|j.mac_id!=mac_id);inner.tombstones.retain(|_,t|t.mac_id!=mac_id);
-        inner.revision+=1;drop(inner);self.changed.notify_waiters();
+        inner.revision+=1;drop(inner);self.notify_mac_revoked(mac_id);
     }
 
     /// Drop pending and completed ciphertext for a revoked phone immediately.
@@ -351,7 +437,7 @@ impl Queue {
         }
         drop(inner);
         // Revocation must wake idle clients even when no ciphertext was queued.
-        self.changed.notify_waiters();
+        self.notify_phone_revoked(phone_id);
         removed
     }
 
@@ -371,7 +457,7 @@ impl Queue {
         now_ms: u64,
     ) -> (u64, Vec<JobView>) {
         let mut inner = self.inner.lock().unwrap();
-        expire(&mut inner, now_ms);
+        expire(&mut inner, &self.waiters, now_ms);
         let views = inner
             .jobs
             .iter()
@@ -404,7 +490,7 @@ fn response_hash(value: &serde_json::Value) -> [u8; 32] {
     Sha256::digest(serde_json::to_vec(&canonical(value)).expect("JSON Value serializes")).into()
 }
 
-fn compact_oldest_terminal(inner: &mut Inner) -> Result<(), QueueError> {
+fn compact_oldest_terminal(inner: &mut Inner, waiters: &Waiters) -> Result<(), QueueError> {
     if inner.tombstones.len() >= MAX_TOMBSTONES { return Err(QueueError::Full); }
     let id = inner.jobs.values().filter(|j| terminal(j.status))
         .min_by_key(|j| (j.tombstone_at_ms, j.sequence))
@@ -418,6 +504,7 @@ fn compact_oldest_terminal(inner: &mut Inner) -> Result<(), QueueError> {
         // Pressure or retries must never extend or shorten the original dedupe deadline.
         until_ms: job.tombstone_at_ms.expect("terminal job has retention deadline"),
     };
+    waiters.notify(&tombstone.owner_sub, &tombstone.mac_id, Some(&tombstone.phone_id));
     inner.tombstones.insert(id, tombstone);
     Ok(())
 }
@@ -442,7 +529,7 @@ fn view_without_response(j: &Job) -> JobView {
     }
 }
 
-fn expire(inner: &mut Inner, now_ms: u64) {
+fn expire(inner: &mut Inner, waiters: &Waiters, now_ms: u64) {
     let mut expired = Vec::new();
     for (id, j) in &inner.jobs {
         if !terminal(j.status) && j.expires_at_ms <= now_ms {
@@ -456,6 +543,7 @@ fn expire(inner: &mut Inner, now_ms: u64) {
         j.revision = inner.revision;
         j.tombstone_at_ms = Some(now_ms.saturating_add(TOMBSTONE_MS));
         j.envelope = serde_json::Value::Null;
+        waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
     }
     inner
         .jobs
@@ -467,6 +555,201 @@ fn expire(inner: &mut Inner, now_ms: u64) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Wake, Waker};
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Poll every future before the transition and count actual task wakes. An
+    /// unrelated future staying Pending alone would not detect a spurious wake.
+    fn assert_wakes(subscriptions: &[QueueSubscription<'_>], expected: &[usize], transition: impl FnOnce()) {
+        let counts: Vec<_> = subscriptions.iter().map(|_| Arc::new(WakeCount::default())).collect();
+        let wakers: Vec<_> = counts.iter().cloned().map(Waker::from).collect();
+        let mut futures: Vec<_> = subscriptions.iter().map(|s| Box::pin(s.notified())).collect();
+        for (future, waker) in futures.iter_mut().zip(&wakers) {
+            future.as_mut().enable();
+            assert!(future.as_mut().poll(&mut Context::from_waker(waker)).is_pending());
+        }
+        transition();
+        for (index, (future, waker)) in futures.iter_mut().zip(&wakers).enumerate() {
+            let affected = expected.contains(&index);
+            assert_eq!(counts[index].0.load(Ordering::SeqCst) > 0, affected, "task wake for route {index}");
+            assert_eq!(future.as_mut().poll(&mut Context::from_waker(waker)).is_ready(), affected,
+                "notification for route {index}");
+        }
+    }
+
+    #[test]
+    fn transitions_wake_only_the_affected_changes_readers_and_work_consumers() {
+        let q = Queue::new();
+        let subscriptions = [
+            q.subscribe_changes("user", "phone", "mac"),
+            q.subscribe_changes("user", "phone", "mac"), // concurrent readers must both wake
+            q.subscribe_work("user", "mac"),
+            q.subscribe_work("user", "mac"), // concurrent consumers compete for one item
+            q.subscribe_changes("user", "sibling", "mac"),
+            q.subscribe_changes("user", "other-phone", "other-mac"),
+            q.subscribe_work("user", "other-mac"),
+            q.subscribe_changes("foreign", "phone", "mac"),
+            q.subscribe_work("foreign", "mac"),
+        ];
+        assert_wakes(&subscriptions, &[0, 1, 2, 3], || { submit(&q, "a"); });
+        assert_wakes(&subscriptions, &[], || { submit(&q, "a"); }); // idempotent retry
+        let cursor = q.changes("user", "phone", 0, 0).0;
+        assert_wakes(&subscriptions, &[0, 1], || {
+            let item = q.next_work("mac", 1).unwrap();
+            assert_eq!(item.request_id, "a");
+            assert_eq!(item.envelope, env("a"));
+            assert!(q.next_work("mac", 1).is_none());
+        });
+        assert_wakes(&subscriptions, &[0, 1], || { q.mark_received("mac", "a", 2).unwrap(); });
+        assert_wakes(&subscriptions, &[], || { q.mark_received("mac", "a", 2).unwrap(); });
+        assert_wakes(&subscriptions, &[0, 1], || { q.respond("mac", "phone", "a", env("result"), 3).unwrap(); });
+        assert_wakes(&subscriptions, &[], || { q.respond("mac", "phone", "a", env("result"), 3).unwrap(); });
+        let (_, events) = q.changes("user", "phone", cursor, 3);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, JobStatus::Completed);
+        assert!(events[0].response.is_none(), "changes remain metadata-only");
+        assert_eq!(q.get("user", "phone", "a", 3).unwrap().response, Some(env("result")));
+    }
+
+    #[test]
+    fn transition_fanout_stays_targeted_with_256_changes_and_32_work_waiters() {
+        let q = Queue::new();
+        let mut subscriptions = Vec::new();
+        for account in 0..16 {
+            let owner = format!("owner-{account}");
+            for mac_index in 0..2 {
+                let mac = format!("mac-{account}-{mac_index}");
+                for phone_index in 0..8 {
+                    let phone = format!("phone-{account}-{mac_index}-{phone_index}");
+                    subscriptions.push(q.subscribe_changes(&owner, &phone, &mac));
+                }
+                subscriptions.push(q.subscribe_work(&owner, &mac));
+            }
+        }
+        // A deterministic fanout assertion, not an HTTP capacity/load measurement.
+        assert_eq!(subscriptions.len(), 288);
+        assert_wakes(&subscriptions, &[0, 8], || {
+            q.submit("owner-0", "phone-0-0-0", "mac-0-0", "a", [1; 32], env("a"), 100_000, 0).unwrap();
+        });
+        assert_wakes(&subscriptions, &[0], || { q.next_work("mac-0-0", 1).unwrap(); });
+        assert_wakes(&subscriptions, &[0], || { q.mark_received("mac-0-0", "a", 2).unwrap(); });
+        assert_wakes(&subscriptions, &[0], || { q.respond("mac-0-0", "phone-0-0-0", "a", env("result"), 3).unwrap(); });
+    }
+
+    #[test]
+    fn empty_queue_revocations_wake_only_affected_bindings() {
+        let q = Queue::new();
+        let subscriptions = [
+            q.subscribe_changes("user", "phone", "mac"),
+            q.subscribe_changes("user", "sibling", "mac"),
+            q.subscribe_work("user", "mac"),
+            q.subscribe_changes("user", "other-phone", "other-mac"),
+            q.subscribe_work("user", "other-mac"),
+            q.subscribe_changes("foreign", "foreign-phone", "foreign-mac"),
+            q.subscribe_work("foreign", "foreign-mac"),
+        ];
+        // SQL revocation notification and subsequent registry purge use the same scope.
+        assert_wakes(&subscriptions, &[0], || q.notify_phone_revoked("phone"));
+        assert_wakes(&subscriptions, &[0], || { assert_eq!(q.purge_phone("phone"), 0); });
+        assert_wakes(&subscriptions, &[0, 1, 2], || q.notify_mac_revoked("mac"));
+        assert_wakes(&subscriptions, &[0, 1, 2], || q.purge_mac("mac"));
+        assert_wakes(&subscriptions, &[0, 1, 2, 3, 4], || q.notify_owner_revoked("user"));
+        assert_wakes(&subscriptions, &[0, 1, 2, 3, 4], || q.purge_owner("user"));
+    }
+
+    #[test]
+    fn expiry_from_an_unrelated_failed_lookup_wakes_the_expired_jobs_reader() {
+        let q = Queue::new();
+        submit(&q, "a");
+        let cursor = q.changes("user", "phone", 0, 0).0;
+        let subscriptions = [
+            q.subscribe_changes("user", "phone", "mac"),
+            q.subscribe_work("user", "mac"),
+            q.subscribe_changes("other", "other-phone", "other-mac"),
+        ];
+        assert_wakes(&subscriptions, &[0], || {
+            assert_eq!(q.get("other", "other-phone", "missing", 100_000).unwrap_err(), QueueError::NotFound);
+        });
+        let (_, events) = q.changes("user", "phone", cursor, 100_000);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, JobStatus::Expired);
+    }
+
+    #[test]
+    fn notification_before_snapshot_or_between_snapshot_and_await_is_not_lost() {
+        for before_snapshot in [false, true] {
+            let q = Queue::new();
+            let changes = q.subscribe_changes("user", "phone", "mac");
+            let work = q.subscribe_work("user", "mac");
+            let mut changed = std::pin::pin!(changes.notified());
+            let mut available = std::pin::pin!(work.notified());
+            changed.as_mut().enable();
+            available.as_mut().enable();
+            if before_snapshot { submit(&q, "a"); }
+            assert_eq!(q.changes("user", "phone", 0, 0).1.is_empty(), !before_snapshot);
+            if !before_snapshot {
+                assert!(q.next_work("mac", 0).is_none());
+                submit(&q, "a");
+            }
+            // No executor poll occurred before the transition: enable must retain it.
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(changed.as_mut().poll(&mut cx).is_ready());
+            assert!(available.as_mut().poll(&mut cx).is_ready());
+            assert_eq!(q.next_work("mac", 1).unwrap().request_id, "a");
+            assert_eq!(q.changes("user", "phone", 0, 1).1.len(), 1);
+        }
+        // An event before subscription is recovered by the mandatory snapshot.
+        let q = Queue::new();
+        submit(&q, "early");
+        let subscriptions = [q.subscribe_changes("user", "phone", "mac"), q.subscribe_work("user", "mac")];
+        assert_wakes(&subscriptions, &[0], || {
+            assert_eq!(q.changes("user", "phone", 0, 0).1.len(), 1);
+            assert_eq!(q.next_work("mac", 1).unwrap().request_id, "early");
+        });
+    }
+
+    #[test]
+    fn canceled_subscriptions_remove_identifiers_without_detaching_surviving_waiters() {
+        let q = Queue::new();
+        let survivor = q.subscribe_work("user", "mac");
+        let canceled = q.subscribe_work("user", "mac");
+        assert_eq!(q.waiters.routes.lock().unwrap().len(), 1);
+        {
+            let mut pending = std::pin::pin!(canceled.notified());
+            pending.as_mut().enable();
+        }
+        drop(canceled);
+        assert_wakes(&[survivor], &[0], || { submit(&q, "a"); });
+        assert!(q.waiters.routes.lock().unwrap().is_empty());
+        for index in 0..1024 {
+            let id = format!("transient-{index}");
+            q.notify_owner_revoked(&id);
+            q.notify_mac_revoked(&id);
+            q.notify_phone_revoked(&id);
+            let subscription = q.subscribe_work("user", &id);
+            assert_eq!(q.waiters.routes.lock().unwrap().len(), 1);
+            drop(subscription);
+            assert!(q.waiters.routes.lock().unwrap().is_empty());
+        }
+        // Recreating a removed route still attaches to the notifier used by submit.
+        let subscription = q.subscribe_work("user", "mac");
+        assert_wakes(&[subscription], &[0], || { submit(&q, "b"); });
+        assert!(q.waiters.routes.lock().unwrap().is_empty());
+    }
+
     fn env(id: &str) -> serde_json::Value {
         json!({"request_id":id,"ciphertext":"opaque"})
     }
@@ -650,7 +933,16 @@ mod tests {
         let q = Queue::new();
         for index in 0..MAX_STORED { complete(&q, &format!("done-{index}"), "owner", "phone", "mac", 10); }
         let cursor = q.changes("owner", "phone", 0, 11).0;
-        q.submit("other", "other-phone", "other-mac", "new", [1; 32], env("new"), 100_000, 12).unwrap();
+        let subscriptions = [
+            q.subscribe_changes("owner", "phone", "mac"),
+            q.subscribe_work("owner", "mac"),
+            q.subscribe_changes("other", "other-phone", "other-mac"),
+            q.subscribe_work("other", "other-mac"),
+            q.subscribe_changes("unrelated", "idle-phone", "idle-mac"),
+        ];
+        assert_wakes(&subscriptions, &[0, 2, 3], || {
+            q.submit("other", "other-phone", "other-mac", "new", [1; 32], env("new"), 100_000, 12).unwrap();
+        });
         let (revision, events) = q.changes("owner", "phone", cursor, 12);
         assert!(events.is_empty(), "compaction must not invent a successful result");
         assert!(revision > cursor);
