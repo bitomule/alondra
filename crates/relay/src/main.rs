@@ -1427,6 +1427,150 @@ mod http_tests {
         apns_task.abort();
     }
 
+    /// Two physical clients each have independent identities approved by both Macs.
+    /// This exercises relay authorization, not physical hardware or client profile UI.
+    #[tokio::test]
+    async fn multi_mac_links_isolate_accounts_and_revoke_only_the_selected_link() {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let seen = captured.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let apns = tokio::spawn(async move {
+            let router = Router::new().route("/3/device/{token}", post(move |Json(body): Json<Value>| {
+                let seen = seen.clone();
+                async move { seen.lock().unwrap().push(body); StatusCode::OK }
+            }));
+            axum::serve(listener, router).await.unwrap();
+        });
+        let mac_ids = ["mac-1", "mac-a2", "mac-b1"];
+        let owners = ["owner", "owner", "owner-b"];
+        let mac_keys: Vec<_> = (71..74).map(|n| SigningKey::from_slice(&[n; 32]).unwrap()).collect();
+        let mac_agreements: Vec<_> = (74..77).map(|n| SecretKey::from_slice(&[n; 32]).unwrap()).collect();
+        let (url, server, relay) = test_server_with_apns(&mac_keys[0], Some(endpoint)).await;
+        let epoch = server.auth.server_epoch();
+        let http = reqwest::Client::new();
+        let nonce = std::cell::Cell::new(0u8);
+        let request = |key: &SigningKey, id: &str, owner: Option<&str>, method: &str, path: &str, body: Vec<u8>| {
+            nonce.set(nonce.get().checked_add(1).unwrap());
+            let mut builder = http.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), format!("{url}{path}"));
+            if let Some(owner) = owner { builder = builder.bearer_auth(jwt(owner, now_ms())); }
+            sign(&epoch, builder.body(body.clone()), key, id, method, path, &body, nonce.get())
+        };
+        for m in 1..3 {
+            let body = serde_json::to_vec(&json!({"mac_id":mac_ids[m], "signing_key":key_bytes(&mac_keys[m]),
+                "agreement_key":URL_SAFE_NO_PAD.encode(mac_agreements[m].public_key().to_sec1_point(false).as_bytes())})).unwrap();
+            assert_eq!(request(&mac_keys[m], mac_ids[m], Some(owners[m]), "POST", "/v1/macs", body)
+                .send().await.unwrap().status(), StatusCode::CREATED);
+        }
+        for (owner, expected) in [("owner", json!([{"mac_id":"mac-1"},{"mac_id":"mac-a2"}])),
+            ("owner-b", json!([{"mac_id":"mac-b1"}]))] {
+            let reply = http.get(format!("{url}/v1/macs?owner_sub=owner-b"))
+                .bearer_auth(jwt(owner, now_ms())).send().await.unwrap();
+            assert_eq!(reply.status(), StatusCode::OK);
+            assert_eq!(reply.json::<Value>().await.unwrap()["macs"], expected);
+        }
+        // client-one and client-two each own one link per Mac; owner-b has its own client.
+        let links = [("client-one-a1", 0), ("client-one-a2", 1),
+            ("client-two-a1", 0), ("client-two-a2", 1), ("client-other-b1", 2)];
+        let client_keys: Vec<_> = (81..86).map(|n| SigningKey::from_slice(&[n; 32]).unwrap()).collect();
+        let client_agreements: Vec<_> = (86..91).map(|n| SecretKey::from_slice(&[n; 32]).unwrap()).collect();
+        for (i, (id, m)) in links.iter().enumerate() {
+            let body = serde_json::to_vec(&PhoneDevice { device_id: (*id).into(), owner_sub: owners[*m].into(),
+                signing_key: key_bytes(&client_keys[i]) }).unwrap();
+            assert_eq!(request(&mac_keys[*m], mac_ids[*m], None, "POST", "/v1/devices", body)
+                .send().await.unwrap().status(), StatusCode::CREATED);
+            // The same physical client's APNs token can be used on both independent links.
+            let token = format!("{:02x}", 10 + i / 2).repeat(32);
+            let body = serde_json::to_vec(&json!({"token":token,"environment":"sandbox",
+                "push_binding":URL_SAFE_NO_PAD.encode([i as u8 + 1;32])})).unwrap();
+            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/push/register", body)
+                .send().await.unwrap().status(), StatusCode::NO_CONTENT);
+        }
+        let envelope = |i: usize, m: usize, rid: &str| {
+            let sealed = EnvelopeV1::seal_random(Context { route: mac_ids[m], sender: links[i].0,
+                recipient: mac_ids[m], request_id: rid, kind: "request", expires_at_ms: now_ms() + 120_000 },
+                br#"{"method":"GET","path":"/v1/tasks"}"#, &client_keys[i], &mac_agreements[m].public_key()).unwrap();
+            serde_json::to_vec(&sealed).unwrap()
+        };
+        for (i, (id, m)) in links.iter().enumerate() {
+            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/requests",
+                envelope(i, *m, &format!("matrix-{i}"))).send().await.unwrap().status(), StatusCode::ACCEPTED);
+        }
+        // Possessing valid account credentials and signing keys does not authorize another Mac.
+        for target in [1, 2] {
+            assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "POST", "/v1/requests",
+                envelope(0, target, &format!("reroute-{target}"))).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(request(&client_keys[0], links[0].0, Some("owner-b"), "POST", "/v1/requests",
+            envelope(0, 0, "wrong-account")).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let registration = serde_json::to_vec(&json!({"token":"ff".repeat(32),"environment":"sandbox",
+            "push_binding":URL_SAFE_NO_PAD.encode([99u8;32])})).unwrap();
+        assert_eq!(request(&client_keys[0], links[0].0, Some("owner-b"), "POST", "/v1/push/register", registration)
+            .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        for wrong_mac in [1, 2] {
+            assert!(!request(&mac_keys[wrong_mac], mac_ids[wrong_mac], None, "DELETE",
+                "/v1/devices/client-one-a1", vec![]).send().await.unwrap().status().is_success());
+        }
+        // Read isolation uses actual authorized HTTP polling, not registry shape alone.
+        let changes_path = "/v1/changes?since=0&wait_s=0";
+        for (i, (id, m)) in links.iter().enumerate() {
+            let reply = request(&client_keys[i], id, Some(owners[*m]), "GET", changes_path, vec![])
+                .send().await.unwrap();
+            assert_eq!(reply.status(), StatusCode::OK);
+            let events = reply.json::<Value>().await.unwrap();
+            assert_eq!(events["changes"].as_array().unwrap().len(), 1);
+            assert_eq!(events["changes"][0]["request_id"], format!("matrix-{i}"));
+        }
+        assert_eq!(request(&mac_keys[0], mac_ids[0], None, "DELETE", "/v1/devices/client-one-a1", vec![])
+            .send().await.unwrap().status(), StatusCode::NO_CONTENT);
+        assert!(server.auth.push_registration(links[0].0).is_none());
+        assert_eq!(server.queue.get("owner", links[0].0, "matrix-0", now_ms()).unwrap_err(), QueueError::NotFound);
+        assert_eq!(request(&client_keys[0], links[0].0, Some("owner"), "GET", changes_path, vec![])
+            .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        // A removed registration must not dispatch, even with the approving Mac's signature.
+        // Nor may another Mac use a surviving link's registration, even in the same account.
+        for (link, mac) in [(0, 0), (1, 0)] {
+            let id = links[link].0;
+            let push = EnvelopeV1::seal_random(Context { route: mac_ids[mac], sender: mac_ids[mac], recipient: id,
+                request_id: &format!("denied-push-{link}"), kind: "push", expires_at_ms: now_ms() + 120_000 },
+                br#"{"payload":{"aps":{"alert":"must not arrive"},"alondra":{}}}"#,
+                &mac_keys[mac], &client_agreements[link].public_key()).unwrap();
+            let body = serde_json::to_vec(&json!({"device_id":id,"envelope":push})).unwrap();
+            assert_eq!(request(&mac_keys[mac], mac_ids[mac], None, "POST", "/v1/mac/push", body)
+                .send().await.unwrap().status(), StatusCode::NOT_FOUND);
+            assert!(captured.lock().unwrap().is_empty(), "denied push reached APNs");
+        }
+        for (i, (id, m)) in links.iter().enumerate().skip(1) {
+            // Both the other link of client-one and all links of client-two remain usable.
+            assert_eq!(request(&client_keys[i], id, Some(owners[*m]), "POST", "/v1/requests",
+                envelope(i, *m, &format!("after-revoke-{i}"))).send().await.unwrap().status(), StatusCode::ACCEPTED);
+            let registration = server.auth.push_registration(id).unwrap();
+            assert_eq!(registration.push_binding, URL_SAFE_NO_PAD.encode([i as u8 + 1;32]));
+            let plaintext = serde_json::to_vec(&json!({"push_binding":registration.push_binding,
+                "payload":{"aps":{"alert":"private"},"alondra":{}},"with_sound":false})).unwrap();
+            let push = EnvelopeV1::seal_random(Context { route: mac_ids[*m], sender: mac_ids[*m], recipient: id,
+                request_id: &format!("push-{i}"), kind: "push", expires_at_ms: now_ms() + 120_000 },
+                &plaintext, &mac_keys[*m], &client_agreements[i].public_key()).unwrap();
+            let body = serde_json::to_vec(&json!({"device_id":id,"envelope":push})).unwrap();
+            assert_eq!(request(&mac_keys[*m], mac_ids[*m], None, "POST", "/v1/mac/push", body)
+                .send().await.unwrap().status(), StatusCode::ACCEPTED);
+        }
+        let delivered = captured.lock().unwrap();
+        assert_eq!(delivered.len(), links.len() - 1);
+        for (i, (body, (id, m))) in delivered.iter().zip(links.iter().skip(1)).enumerate() {
+            let link = i + 1;
+            let envelope: EnvelopeV1 = serde_json::from_value(body["alondra"]["envelope"].clone()).unwrap();
+            let plaintext = envelope.open(mac_keys[*m].verifying_key(), &client_agreements[link],
+                mac_ids[*m], id, mac_ids[*m], now_ms()).unwrap();
+            let content: Value = serde_json::from_slice(&plaintext).unwrap();
+            assert_eq!(content["push_binding"], URL_SAFE_NO_PAD.encode([link as u8 + 1;32]));
+            assert_eq!(body["alondra"]["push_binding"], content["push_binding"]);
+        }
+        drop(delivered);
+        relay.abort();
+        apns.abort();
+    }
+
     #[tokio::test]
     async fn signed_opaque_http_flow_rejects_wrong_identities_and_replay() {
         let mac_sign = SigningKey::from_slice(&[1u8; 32]).unwrap();
