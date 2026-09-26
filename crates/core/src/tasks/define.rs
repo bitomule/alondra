@@ -248,7 +248,7 @@ impl View {
         let asked_since = |at: crate::model::Millis| {
             self.questions.values().any(|q| q.session_id == o.session_id && q.asked_at >= at && (q.status.is_open() || q.status == crate::model::QuestionStatus::Answered))
         };
-        let mut next_id = self.messages.keys().next_back().copied().unwrap_or(0);
+        let mut next_id = self.next_message_id() - 1;
         self.board
             .requests
             .values()

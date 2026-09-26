@@ -112,6 +112,8 @@ pub enum Event {
     ArtifactReviewed { report: u64, verdict: ReviewVerdict },
     MessageQueued(Message),
     MessageHanded { id: u64 },
+    DeliveryProtocolActivated,
+    DeliveryAttemptRecorded(crate::delivery::Attempt),
     Classified { session_id: String, turn: u64, state: NodeState, confidence: Option<f64> },
     WaitingMachine { session_id: String, reason: String },
     Pruned { before: Millis },
@@ -263,6 +265,7 @@ impl Event {
             Event::QuestionAsked(q) => Some(&q.session_id),
             Event::ReportPosted(r) => Some(&r.session_id),
             Event::MessageQueued(m) => Some(&m.session_id),
+            Event::DeliveryAttemptRecorded(a) => Some(&a.session_id),
             _ => None,
         }
     }
@@ -284,6 +287,8 @@ impl Event {
             Event::ArtifactReviewed { .. } => "artifact_reviewed",
             Event::MessageQueued(_) => "message_queued",
             Event::MessageHanded { .. } => "message_handed",
+            Event::DeliveryProtocolActivated => "delivery_protocol_activated",
+            Event::DeliveryAttemptRecorded(_) => "delivery_attempt_recorded",
             Event::Classified { .. } => "classified",
             Event::WaitingMachine { .. } => "waiting_machine",
             Event::Pruned { .. } => "pruned",

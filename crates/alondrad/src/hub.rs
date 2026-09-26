@@ -80,6 +80,7 @@ impl Hub {
         let mut store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         view.backfill_created_at();
+        view.backfill_delivery_ids();
         view.backfill_tasks();
         let n = store.replay(after, |seq, at, ev| view.apply(seq, at, &ev))?;
         let issues = view.integrity_issues();
@@ -89,8 +90,9 @@ impl Hub {
         log!("{n} events replayed, {} nodes", view.nodes.len());
         let record_tasks = view.board.recorded_since.is_none();
         let launched_only = view.launched_only_since.is_none();
-        let bootstrap: Vec<Event> = [record_tasks.then_some(Event::TasksRecorded), launched_only.then_some(Event::LaunchedOnly)]
+        let mut bootstrap: Vec<Event> = [record_tasks.then_some(Event::TasksRecorded), launched_only.then_some(Event::LaunchedOnly)]
             .into_iter().flatten().collect();
+        bootstrap.extend(crate::delivery::recovery_events(&view));
         if !bootstrap.is_empty() {
             let at = now_millis();
             let mut next = view.clone();
@@ -568,7 +570,7 @@ mod tests {
         let before = hub.read(Clone::clone);
         let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
         let count: i64 = db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
-        db.execute_batch("CREATE TRIGGER reject_second_hook BEFORE INSERT ON events WHEN NEW.session = 'second' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
+        db.execute_batch("CREATE TRIGGER reject_second_hook BEFORE INSERT ON event_log WHEN NEW.session = 'second' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
         assert!(hub.append_all(|_| Ok::<_, ()>(vec![prompt("first"), prompt("second")])).is_err());
         assert_eq!(hub.read(Clone::clone), before);
         let after: i64 = db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();

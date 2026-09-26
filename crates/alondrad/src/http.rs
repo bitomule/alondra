@@ -41,6 +41,9 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
         .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
+        .route("/v1/delivery-attempts",get(delivery_attempts))
+        .route("/v1/delivery-attempts/{id}/retry",post(retry_delivery))
+        .route("/v1/delivery-attempts/{id}/discard",post(discard_delivery))
         .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
         .route("/v1/nodes/{key}/activity", get(node_activity))
         .route("/v1/nodes/{key}/close", post(close_node))
@@ -154,7 +157,7 @@ fn question_from_report(v: &View, report: &Report, at: i64) -> Question {
         v.report_pr(report).and_then(|id| v.prs.get(&id)).map(|p| p.number)
     } else { None };
     Question {
-        id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_question_id(),
         session_id: report.session_id.clone(),
         node_name: report.node_name.clone(),
         title,
@@ -437,7 +440,11 @@ fn hook_denial(v: &View, h: &HookEvent, input: &Value) -> Option<String> {
 
 /// A hook from a session Alondra does not follow ends at once with no effect: nothing is
 /// recorded and nothing is held, so Claude Code's own menus show.
-pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>) -> Response {
+pub(crate) async fn hook(state: State<AppState>, headers: axum::http::HeaderMap, body: Json<Value>) -> Response {
+    hook_with_ack(state,headers,body,false).await
+}
+
+pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(p): Json<Value>, has_ack:bool) -> Response {
     let Some(session_id) = str_field(&p, "session_id") else {
         return Json(json!({})).into_response();
     };
@@ -594,6 +601,13 @@ pub(crate) async fn hook(State(hub): State<AppState>, headers: axum::http::Heade
     if event == "Stop"
         && let Some(r) = hand_over_at_turn_end(&hub, &session_id)
     {
+        if !has_ack {
+            if let Some(id)=r.headers().get("x-alondra-delivery-attempt").and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok()) {
+                if let Err(e)=crate::delivery::finish(&hub,id,crate::delivery::Outcome::Uncertain("hook_transport_has_no_ack")) {
+                    log!("hook delivery remains blocked: {e}");
+                }
+            }
+        }
         return r;
     }
     if event == "Stop" {
@@ -667,18 +681,14 @@ fn hook_detail(event: &str, input: &Value) -> Option<String> {
 /// `additionalContext` keeps the turn going with the messages (code.claude.com/docs/en/hooks,
 /// "Stop decision control"). Background jobs get theirs typed in by `wake`.
 fn hand_over_at_turn_end(hub: &Hub, session_id: &str) -> Option<Response> {
-    let (ids, text) = hub.read(|v| v.turn_end_delivery(session_id, &hub.config.name))?;
-    for (id, question) in ids {
-        if let Err(e) = hub.append(Event::MessageHanded { id }) {
-            log!("could not hand a message to {session_id}: {e}");
-            return None;
-        }
-        if let Some(q) = question {
-            let _ = hub.append(Event::QuestionDelivered { id: q });
-        }
-    }
-    log!("message handed to interactive session {session_id} at the end of its turn");
-    Some(Json(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})).into_response())
+    let attempt=match crate::delivery::claim(hub,session_id,alondra_core::delivery::Channel::HookStop) {
+        Ok(Some(attempt))=>attempt, Ok(None)=>return None,
+        Err(e)=>{log!("could not claim hook delivery: {e}");return None;}
+    };
+    let text=hub.read(|v|v.message_batch_text(&attempt.message_ids,&hub.config.name));
+    let mut response=Json(json!({"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":text}})).into_response();
+    response.headers_mut().insert("x-alondra-delivery-attempt",attempt.id.to_string().parse().unwrap());
+    Some(response)
 }
 
 struct HoldGuard {
@@ -744,7 +754,7 @@ fn held_question(view: &View, p: &Value, h: &HookEvent, origin: QuestionOrigin) 
         ),
     };
     Question {
-        id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: view.next_question_id(),
         session_id: h.session_id.clone(),
         node_name: node.map(|n| n.name.clone().unwrap_or_else(|| n.short_id.clone())),
         title,
@@ -941,7 +951,7 @@ fn held_follow_up(origin: QuestionOrigin, answer: &Answer) -> Option<String> {
 
 fn follow_up_message(view: &View, session_id: &str, text: &str) -> Event {
     Event::MessageQueued(Message {
-        id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+        id: view.next_message_id(),
         session_id: session_id.to_string(),
         from: MessageFrom::User,
         text: text.to_string(),
@@ -1526,7 +1536,7 @@ fn tell_review_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text: Str
             return Err(err(StatusCode::CONFLICT, "neither the node nor an orchestrator is there to receive it"));
         };
         Ok(vec![Event::MessageQueued(Message {
-            id: view.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            id: view.next_message_id(),
             session_id: to.session_id.clone(),
             from: MessageFrom::User,
             text: text.clone(),
@@ -1552,7 +1562,7 @@ pub(crate) fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text:
         let node = v.nodes.get(&pr.session_id).filter(|n| (n.alive || n.in_daemon) && (from != MessageFrom::Alondra || v.may_alondra_write(n)));
         let to = node.or_else(|| v.nodes.values().find(|n| n.is_orchestrator && n.alive))?;
         Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            id: v.next_message_id(),
             session_id: to.session_id.clone(),
             from,
             text: text.clone(),
@@ -1689,7 +1699,7 @@ fn local_mutation(
                     return Err(local_refusal("node_gone", format!("the node that sent report #{id} is gone: nobody would read the verdict")));
                 }
                 vec![Event::MessageQueued(Message {
-                    id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+                    id: v.next_message_id(),
                     session_id: report.session_id.clone(), from: MessageFrom::User,
                     text: review_text(body.verdict, &artifacts, &hub.config.name), answers_question: None,
                     created_at: now_millis(), handed_at: None, delivered_at: None,
@@ -1728,7 +1738,7 @@ fn local_mutation(
                         .map_err(|(status, e)| local_error(status.as_u16(), e))?
                 } else {
                     vec![Event::MessageQueued(Message {
-                        id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+                        id: v.next_message_id(),
                         session_id: node.session_id.clone(), from: body.from.unwrap_or(MessageFrom::User), text,
                         answers_question:None, created_at:now_millis(), handed_at:None, delivered_at:None, about:None, attachments,
                     })]
@@ -1807,7 +1817,7 @@ pub(crate) fn atomic_local_path(method: &str, path: &str) -> bool {
     if method != "POST" {
         return false;
     }
-    path == "/v1/tasks/archive" || atomic_local_target(path).is_some()
+    path == "/v1/tasks/archive" || atomic_local_target(path).is_some() || delivery_target(path).is_some()
 }
 
 fn atomic_local_target(path: &str) -> Option<(&str, &str)> {
@@ -1841,6 +1851,14 @@ pub(crate) async fn atomic_local_request(
     body: Option<&Value>,
     authorize: impl FnOnce() -> anyhow::Result<()> + Send,
 ) -> anyhow::Result<Value> {
+    if let Some((retry,id))=delivery_target(path) {
+        authorize()?;
+        let parsed=id.parse::<u64>().ok().zip(serde_json::from_value::<crate::delivery::Resolution>(body.cloned().unwrap_or(Value::Null)).ok());
+        return match parsed {
+            Some((id,body))=>crate::delivery::resolve(hub,Some((sender,request_id,digest)),id,retry,body),
+            None=>hub.local_command(Some((sender,request_id,digest)),|_|Err(local_error(422,"invalid delivery resolution")),|_,_|unreachable!()),
+        };
+    }
     let parsed = (|| -> anyhow::Result<LocalMutation> {
         Ok(if path == "/v1/tasks/archive" {
             let body: ArchiveBody = serde_json::from_value(body.cloned().unwrap_or(json!({})))?;
@@ -1883,6 +1901,22 @@ pub(crate) async fn atomic_local_request(
         )
         },
     }
+}
+
+fn delivery_target(path:&str)->Option<(bool,&str)> {
+    let tail=path.strip_prefix("/v1/delivery-attempts/")?;
+    let (id,action)=tail.split_once('/')?;
+    if id.is_empty() || !id.bytes().all(|b|b.is_ascii_digit()) { return None; }
+    match action { "retry"=>Some((true,id)),"discard"=>Some((false,id)),_=>None }
+}
+async fn delivery_attempts(State(hub):State<AppState>)->Json<Value> {
+    Json(hub.read(|v|json!({"attempts":v.delivery_attempts.values().collect::<Vec<_>>()})))
+}
+async fn retry_delivery(State(hub):State<AppState>,Path(id):Path<u64>,Json(body):Json<crate::delivery::Resolution>)->Response {
+    local_mutation_response(crate::delivery::resolve(&hub,None,id,true,body))
+}
+async fn discard_delivery(State(hub):State<AppState>,Path(id):Path<u64>,Json(body):Json<crate::delivery::Resolution>)->Response {
+    local_mutation_response(crate::delivery::resolve(&hub,None,id,false,body))
 }
 
 async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
@@ -2005,11 +2039,11 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
                 value
             })
             .collect();
-        let orchestrator_messages: Vec<&Message> = v
+        let orchestrator_messages: Vec<Value> = v
             .nodes
             .values()
             .find(|n| n.is_orchestrator)
-            .map(|o| v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20).collect())
+            .map(|o| v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20).map(|m|crate::delivery::message_value(v,m)).collect())
             .unwrap_or_default();
         let nodes: Vec<Value> = nodes
             .into_iter()
@@ -2024,6 +2058,7 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
         json!({
             "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
             "orchestrator_messages": orchestrator_messages,
+            "delivery_attempts":v.delivery_attempts.values().collect::<Vec<_>>(),
             "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
             "prs": v.in_train_order(crate::prs::in_inbox(v)).into_iter().map(|p| pr_card(v, p)).collect::<Vec<Value>>(),
             "requests": v.board.requests.values().map(|r| client_request(v, r)).collect::<Vec<Value>>(),
@@ -2057,6 +2092,7 @@ pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
             (v.question_pr(q), v.question_reports(q)).hash(&mut h);
         }
     }
+    for attempt in v.delivery_attempts.values() { text(json!(attempt)).hash(&mut h); }
     for r in v.reports.values() {
         (r.id, r.read, r.looks_like_question, v.report_task(r).map(|t| &t.id)).hash(&mut h);
     }
@@ -2168,10 +2204,11 @@ async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query
         let sid = n.session_id.clone();
         let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
         let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
-        let messages: Vec<Message> = v.messages.values().filter(|m| m.session_id == sid).cloned().collect();
+        let messages: Vec<Value> = v.messages.values().filter(|m| m.session_id == sid).map(|m|crate::delivery::message_value(v,m)).collect();
         let mut node = client_node(&n);
         node["background"] = json!(states::background(&n, now_millis()));
         node["activity"] = json!(v.activity(&n, now_millis()));
+        node["delivery_attempts"]=json!(v.delivery_attempts.values().filter(|a|a.session_id==sid).collect::<Vec<_>>());
         Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
     });
     let Some((node, session_id, questions, reports, messages, held)) = found else {
@@ -2581,7 +2618,7 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
     let stamp = now_millis();
     let options: Vec<QuestionOption> = if action { answer_option::for_action() } else { std::mem::take(&mut b.options).into_iter().map(Into::into).collect() };
     let question = |v: &View, attachments: Vec<Attachment>| Question {
-        id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_question_id(),
         session_id: sid.clone(),
         node_name: name.clone(),
         title: b.title.clone(),
@@ -2722,7 +2759,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     log!("answer to #{id} from {user} {provenance}");
     let res = hub.append_with(|v| {
         Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            id: v.next_message_id(),
             session_id: q.session_id.clone(),
             from: MessageFrom::User,
             text: text.clone(),
@@ -3476,7 +3513,7 @@ pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl cr
     let res = hub.append_with(|v| {
         let o = v.nodes.values().find(|n| n.is_orchestrator)?;
         Some(Event::MessageQueued(Message {
-            id: v.messages.keys().next_back().copied().unwrap_or(0) + 1,
+            id: v.next_message_id(),
             session_id: o.session_id.clone(),
             from: MessageFrom::User,
             text: text.clone(),
