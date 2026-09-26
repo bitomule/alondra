@@ -2022,6 +2022,57 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn mac_auth_accepts_requests_verified_in_reverse_arrival_order() {
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let (url, server, join) = test_server(&key).await;
+        let client = reqwest::Client::new();
+        let path = "/v1/work?wait_s=0";
+        let uri: Uri = path.parse().unwrap();
+        let earlier_arrival = now_ms();
+        let later_arrival = earlier_arrival + 1;
+        let headers = |nonce| {
+            sign(
+                &server.auth.server_epoch(),
+                client.get(format!("{url}{path}")),
+                &key,
+                "mac-1",
+                "GET",
+                path,
+                &[],
+                nonce,
+            )
+            .build()
+            .unwrap()
+            .headers()
+            .clone()
+        };
+        let earlier = headers(1);
+        let later = headers(2);
+        // Deterministic interleaving: the newer arrival wins the verifier lock.
+        // A timestamp sampled at handler entry must not become a clock rollback.
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&later, &Method::GET, &uri, &[], later_arrival)
+                .is_ok()
+        );
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], earlier_arrival)
+                .is_ok()
+        );
+        assert!(
+            server
+                .auth
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], later_arrival)
+                .is_err(),
+            "accepting reordered requests must not permit nonce replay"
+        );
+        join.abort();
+    }
+
+    #[tokio::test]
     async fn mac_auth_rejects_replay_when_wall_clock_moves_back() {
         let mac_sign = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let (_url, server, join) = test_server(&mac_sign).await;
@@ -2057,6 +2108,7 @@ mod http_tests {
             headers.insert("x-device-signature", signature.parse().unwrap());
             headers
         };
+        server.auth.set_verification_time(1_000_000);
         let early = headers_at(1_000_000, 1);
         assert!(
             server
@@ -2064,6 +2116,7 @@ mod http_tests {
                 .authenticate_mac(&early, &Method::GET, &uri, &[], 1_000_000)
                 .is_ok()
         );
+        server.auth.set_verification_time(1_300_001);
         let later = headers_at(1_300_001, 2);
         assert!(
             server
@@ -2071,6 +2124,7 @@ mod http_tests {
                 .authenticate_mac(&later, &Method::GET, &uri, &[], 1_300_001)
                 .is_ok()
         );
+        server.auth.set_verification_time(1_000_000);
         assert!(
             server
                 .auth
