@@ -1,14 +1,14 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 swift_library(
     name = "AlondraAttachmentsData",
     module_name = "AlondraAttachmentsData",
     srcs = glob(["Sources/*.swift"]),
     visibility = ["//visibility:public"],
-    deps = ["//apple:AlondraShared", "//apple/Domain:AlondraDomain"],
+    deps = ["//apple:AlondraShared", "//apple/Data/AttachmentStorage:AlondraAttachmentStorage", "//apple/Domain:AlondraDomain"],
 )
 
-swift_test(
+# Keep the existing validation entry point while the suite belongs to headless storage.
+alias(
     name = "AlondraAttachmentsDataTests",
-    srcs = glob(["Tests/*.swift"]),
-    deps = [":AlondraAttachmentsData"],
+    actual = "//apple/Data/AttachmentStorage:AlondraAttachmentStorageTests",
 )

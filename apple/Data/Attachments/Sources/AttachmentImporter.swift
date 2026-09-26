@@ -1,3 +1,4 @@
+import AlondraAttachmentStorage
 import AlondraDomain
 import AlondraShared
 import CoreTransferable
@@ -7,15 +8,6 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-public enum AttachmentImportError: LocalizedError {
-    case invalidSize, unavailable
-    public var errorDescription: String? {
-        switch self {
-        case .invalidSize: "Choose a non-empty file no larger than 20 MiB."
-        case .unavailable: "The attachment could not be loaded."
-        }
-    }
-}
 public enum AttachmentImporter {
     /// Decode once off the main actor; keep the original 160px thumbnail and image orientation.
     @concurrent public static func thumbnail(_ draft: AttachmentDraft) async -> CGImage? {

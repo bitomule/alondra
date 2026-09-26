@@ -1,8 +1,7 @@
+import AlondraDomain
 import AlondraAPIClient
 import AlondraCommands
 import AlondraContracts
-import AlondraShared
-import AlondraTasksFeature
 import Foundation
 
 extension CloudAppServices {

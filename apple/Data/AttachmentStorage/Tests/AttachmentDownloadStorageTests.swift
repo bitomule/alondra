@@ -1,4 +1,4 @@
-import AlondraAttachmentsData
+import AlondraAttachmentStorage
 import Foundation
 import XCTest
 

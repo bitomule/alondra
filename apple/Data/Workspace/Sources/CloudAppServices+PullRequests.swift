@@ -1,6 +1,7 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraAPIClient
 import AlondraCommands
-import AlondraPullRequestsFeature
 import Foundation
 
 public extension CloudAppServices {

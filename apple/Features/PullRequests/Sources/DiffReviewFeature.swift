@@ -4,10 +4,6 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 
-public enum PRDiffLoadError: Error, Equatable, Sendable {
-    case responseTooLarge
-}
-
 @Reducer
 public struct DiffReviewFeature {
     @ObservableState
