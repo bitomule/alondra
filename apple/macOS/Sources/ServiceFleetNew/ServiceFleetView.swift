@@ -22,7 +22,7 @@ struct ServiceFleetView: View {
             .searchable(text: Binding(get: { store.fleet.query }, set: { store.send(.fleet(.searchChanged($0))) }), prompt: "Find a node or task")
             .navigationTitle("Fleet")
             .navigationDestination(item: $store.scope(state: \.detail, action: \.detail)) { child in
-                ServiceNodeView(store: child)
+                ServiceNodeView(store: child, presentation: store.presentation)
             }
         }
         .task { await store.send(.appeared).finish() }

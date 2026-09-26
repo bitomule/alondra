@@ -108,6 +108,9 @@ public struct ServiceTasksFeature {
                 guard state.hiddenInboxIDs != ids else { return .none }
                 state.hiddenInboxIDs = ids
                 state.presentation = ServiceTaskPresentation(overview: state.overview, hiddenIDs: ids)
+                if let detail = state.detail {
+                    state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: state.overview, taskID: detail.taskID, hiddenIDs: ids)
+                }
                 return .none
             case .snapshot(let overview):
                 state.overview = overview
@@ -121,7 +124,7 @@ public struct ServiceTasksFeature {
                 })
                 let projection = TaskBoardProjection(board: state.taskBoard, canArchive: state.taskBoard.hasArchivable, hasSnapshot: overview != nil)
                 if let detail = state.detail {
-                    state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: overview, taskID: detail.taskID)
+                    state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: overview, taskID: detail.taskID, hiddenIDs: state.hiddenInboxIDs)
                     return .merge(pathUpdates, .send(.board(.boardChanged(projection))), .send(.detail(.presented(.taskChanged(state.taskBoard.task(detail.taskID))))))
                 }
                 return .merge(pathUpdates, .send(.board(.boardChanged(projection))))
@@ -131,7 +134,7 @@ public struct ServiceTasksFeature {
                 guard let pathID = state.taskPath.ids.last else { return .none }
                 return .send(.taskPath(.element(id: pathID, action: .taskChanged(task))))
             case .openTask(let id):
-                state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: state.overview, taskID: id)
+                state.detailContext = ServiceTaskContext(board: state.taskBoard, overview: state.overview, taskID: id, hiddenIDs: state.hiddenInboxIDs)
                 state.detail = TaskDetailFeature.State(taskID: id)
                 return .send(.detail(.presented(.taskChanged(state.taskBoard.task(id)))))
             case .showSchedules(let show): state.showingSchedules = show; return .none

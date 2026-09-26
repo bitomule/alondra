@@ -184,21 +184,21 @@ private struct MacServiceDetail: View {
             } else { MacServiceHome(store: store, presentation: presentation) }
         case .node:
             if let child = store.scope(state: \.fleet.detail, action: \.fleet.detail.presented) {
-                ServiceNodeView(store: child,
+                ServiceNodeView(store: child, presentation: store.fleet.presentation,
                     pending: store.triage.triage.queue.filter { $0.sessionId == child.sessionID },
                     openInbox: { presentation.send(.select(.item($0))) },
                     openTask: { presentation.send(.select(.task($0))) })
-            }
+            } else { ContentUnavailableView("This node is gone", systemImage: "questionmark.circle") }
         case .task:
             if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail.presented) {
                 ServiceTaskDetailView(store: child, context: store.tasks.detailContext,
                     openTask: { presentation.send(.select(.task($0))) }, focusInbox: { presentation.send(.select(.item($0))) })
-            }
+            } else { ContentUnavailableView("This task is gone", systemImage: "questionmark.circle") }
         case .request(let id):
             if let request = store.tasks.taskBoard.request(id) {
                 ServiceRequestDetail(request: request, store: store.scope(state: \.tasks, action: \.tasks),
                     selectTask: { presentation.send(.select(.task($0))) })
-            }
+            } else { ContentUnavailableView("This request is gone", systemImage: "questionmark.circle") }
         case .schedules: ServiceSchedulesView(store: store.scope(state: \.tasks, action: \.tasks))
         case nil: MacServiceHome(store: store, presentation: presentation)
         }

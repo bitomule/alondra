@@ -1,11 +1,13 @@
 import AlondraAttachmentsFeature
 import AlondraFleetFeature
+import AlondraWorkspaceFeature
 import AlondraShared
 import ComposableArchitecture
 import SwiftUI
 
 struct ServiceNodeView: View {
     let store: StoreOf<NodeDetailFeature>
+    var presentation = ServiceTaskPresentation(overview: nil)
     var pending: [InboxItem] = []
     var openInbox: (String) -> Void = { _ in }
     var openTask: (String) -> Void = { _ in }
@@ -38,7 +40,7 @@ struct ServiceNodeView: View {
                                             StatusDot(color: task.color)
                                             VStack(alignment: .leading, spacing: 1) {
                                                 Text(task.title).fontWeight(.medium).strikethrough(task.state == .cancelled)
-                                                Text(task.state.label).font(.caption).foregroundStyle(.secondary)
+                                                Text(presentation.taskLine(task)).font(.caption).foregroundStyle(.secondary)
                                             }
                                             Spacer()
                                             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -88,16 +90,19 @@ struct ServiceNodeView: View {
                 ToolbarItem {
                     Button(role: .destructive) { store.send(.closeRequested) } label: { Label("Close Node…", systemImage: "xmark.bin") }
                         .disabled(store.isStale || store.isClosing || store.isSendInFlight || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
-                        .help("Close this node")
+                        .help("Close this node with claude rm")
                 }
             }
-            .confirmationDialog("Close this node?", isPresented: Binding(get: { store.showCloseConfirmation }, set: { if !$0 { store.send(.closeCancelled) } })) {
+            .alert("Close \(node.displayName)?", isPresented: Binding(get: { store.showCloseConfirmation }, set: { if !$0 { store.send(.closeCancelled) } })) {
                 Button("Close Node", role: .destructive) { store.send(.closeConfirmed) }
+                Button("Cancel", role: .cancel) { store.send(.closeCancelled) }
+            } message: {
+                Text("Runs claude rm. It never discards work: if the node has uncommitted or unpushed changes, or its worktree is still there, the server refuses and tells you why.")
             }
             .task { await store.send(.appeared).finish() }
             .onDisappear { store.send(.disappeared) }
         } else {
-            ContentUnavailableView("This node has stopped", systemImage: "desktopcomputer")
+            ContentUnavailableView("This node is gone", systemImage: "questionmark.circle")
         }
     }
 }

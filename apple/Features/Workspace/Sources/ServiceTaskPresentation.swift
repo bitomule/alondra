@@ -103,6 +103,11 @@ public struct ServiceTaskPresentation {
         task.documents.compactMap { id in details?.documents?.first { $0.id == id } ?? report(id) }
     }
 
+    public func taskLine(_ task: WorkTask) -> String {
+        guard let request = request(of: task) else { return task.state.label }
+        return "\(task.state.label) · \(String(localized: "from “\(title(of: request))”"))"
+    }
+
     public func request(of task: WorkTask) -> WorkRequest? {
         board.request(task.request)
     }
