@@ -3,7 +3,7 @@
 //! A device must also remain approved in the local pairing registry. Enrollment is a one-time
 //! durable attempt per device ID so a relay-side revocation survives reconnects and restarts.
 use crate::auth::Auth;
-use crate::push::valid_push_binding;
+use crate::push::{valid_push_binding, in_quiet_hours, local_minutes};
 use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -31,6 +31,35 @@ const MAX_RELAY_RESPONSE: usize = 256 * 1024;
 // generic aps fields, binding, JSON escaping, and future metadata.
 const MAX_PUSH_BODY: usize = 3_000;
 const MAX_PUSH_PLAINTEXT: usize = 1_500;
+
+/// Device preferences are stored on the executor and travel only inside E2E
+/// envelopes. Clock semantics deliberately match legacy: executor local time.
+#[derive(Default, Debug, PartialEq)]
+struct QuietHours { start: Option<String>, end: Option<String> }
+impl QuietHours {
+    fn parse_update(start: Option<&Value>, end: Option<&Value>) -> Result<Option<Self>> {
+        match (start, end) {
+            (None, None) => Ok(None),
+            (Some(Value::Null), Some(Value::Null)) => Ok(Some(Self::default())),
+            (Some(Value::String(start)), Some(Value::String(end))) if Self::valid_time(start) && Self::valid_time(end) =>
+                Ok(Some(Self { start: Some(start.clone()), end: Some(end.clone()) })),
+            _ => bail!("quiet_start and quiet_end must both be HH:mm or both null"),
+        }
+    }
+    fn valid_time(value: &str) -> bool {
+        let b = value.as_bytes();
+        b.len() == 5 && b[2] == b':' && [b[0], b[1], b[3], b[4]].iter().all(u8::is_ascii_digit)
+            && value[..2].parse::<u32>().is_ok_and(|h| h < 24)
+            && value[3..].parse::<u32>().is_ok_and(|m| m < 60)
+    }
+    fn apply(&self, payload: &Value, with_sound: bool, now: u32) -> (Value, bool) {
+        let quiet = in_quiet_hours(self.start.as_deref(), self.end.as_deref(), now);
+        let mut payload = payload.clone();
+        payload["aps"]["interruption-level"] = json!(if quiet { "passive" } else { "active" });
+        if (quiet || !with_sound) && let Some(aps) = payload["aps"].as_object_mut() { aps.remove("sound"); }
+        (payload, with_sound && !quiet)
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -454,13 +483,14 @@ impl Service {
     async fn dispatch(&self, sender: &str, request: &LocalRequest) -> Result<Value> {
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
             let body = request.body.as_ref().context("push binding body required")?;
-            let binding = body.as_object()
-                .filter(|map| map.len() == 1)
-                .and_then(|map| map.get("push_binding"))
-                .and_then(Value::as_str)
-                .filter(|value| valid_push_binding(value))
-                .context("invalid push binding")?;
-            self.journal.set_push_binding(sender, binding)?;
+            let map = body.as_object().context("invalid push binding body")?;
+            if map.keys().any(|key| !matches!(key.as_str(), "push_binding" | "quiet_start" | "quiet_end")) {
+                bail!("unknown push binding field");
+            }
+            let binding = map.get("push_binding").and_then(Value::as_str)
+                .filter(|value| valid_push_binding(value)).context("invalid push binding")?;
+            let quiet = QuietHours::parse_update(map.get("quiet_start"), map.get("quiet_end"))?;
+            self.journal.set_push_preferences(sender, binding, quiet)?;
             return Ok(json!({"status":204}));
         }
         let method = approved_method(request)?;
@@ -496,7 +526,8 @@ impl Service {
                 continue;
             }
             let Some(binding) = self.journal.push_binding(id)? else { continue };
-            let body = match self.encode_push(id, device, &binding, payload, with_sound) {
+            let (payload, with_sound) = self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes());
+            let body = match self.encode_push(id, device, &binding, &payload, with_sound) {
                 Ok(body) => body,
                 Err(error) => {
                     log!("service push for {id} skipped: {error:#}");
@@ -710,7 +741,9 @@ impl Journal {
               device_id TEXT PRIMARY KEY, signing_key BLOB NOT NULL, attempted_at_ms INTEGER NOT NULL,
               state TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS service_push_bindings (
-              device_id TEXT PRIMARY KEY, binding TEXT NOT NULL);",
+              device_id TEXT PRIMARY KEY, binding TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS service_push_preferences (
+              device_id TEXT PRIMARY KEY, quiet_start TEXT, quiet_end TEXT);",
         )?;
         Ok(Self { path })
     }
@@ -771,10 +804,15 @@ impl Journal {
             params![id],
         )?;
         tx.execute("DELETE FROM service_push_bindings WHERE device_id=?1", params![id])?;
+        tx.execute("DELETE FROM service_push_preferences WHERE device_id=?1", params![id])?;
         tx.commit()?;
         Ok(())
     }
+    #[cfg(test)]
     fn set_push_binding(&self, id: &str, binding: &str) -> Result<()> {
+        self.set_push_preferences(id, binding, None)
+    }
+    fn set_push_preferences(&self, id: &str, binding: &str, quiet: Option<QuietHours>) -> Result<()> {
         if !valid_push_binding(binding) { bail!("invalid push binding"); }
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -783,8 +821,17 @@ impl Journal {
             params![id, binding],
         )?;
         if updated != 1 { bail!("push device is not enrolled"); }
+        if let Some(quiet) = quiet {
+            tx.execute("INSERT INTO service_push_preferences(device_id,quiet_start,quiet_end) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET quiet_start=excluded.quiet_start,quiet_end=excluded.quiet_end", params![id, quiet.start, quiet.end])?;
+        }
         tx.commit()?;
         Ok(())
+    }
+    fn quiet_hours(&self, id: &str) -> Result<QuietHours> {
+        Ok(self.db()?.query_row(
+            "SELECT p.quiet_start,p.quiet_end FROM service_push_preferences p JOIN service_enrollments e USING(device_id) WHERE p.device_id=?1 AND e.state='active'",
+            params![id], |row| Ok(QuietHours { start: row.get(0)?, end: row.get(1)? }),
+        ).optional()?.unwrap_or_default())
     }
     fn push_binding(&self, id: &str) -> Result<Option<String>> {
         let c = self.db()?;
@@ -903,6 +950,54 @@ mod tests {
         assert!(journal.set_push_binding("phone", &first).is_err());
     }
 
+    #[test]
+    fn quiet_hours_validate_boundaries_and_preserve_payload() {
+        let parse = |start: Value, end: Value| QuietHours::parse_update(Some(&start), Some(&end));
+        for (start, end) in [(json!("24:00"), json!("08:00")), (json!("23:00"), json!("08:60")), (json!("1:00"), json!("08:00")), (json!("23:00"), Value::Null), (json!("é:00"), json!("08:00"))] {
+            assert!(parse(start, end).is_err());
+        }
+        assert!(QuietHours::parse_update(Some(&Value::Null), None).is_err());
+        assert_eq!(QuietHours::parse_update(None, None).unwrap(), None);
+        let quiet = parse(json!("23:00"), json!("08:00")).unwrap().unwrap();
+        let payload = json!({"aps":{"sound":"default", "alert":{"title":"private"}, "badge":3}, "alondra":{"id":9}});
+        for (minute, expected) in [(22*60+59,false), (23*60,true), (0,true), (8*60-1,true), (8*60,false)] {
+            let (body, sound) = quiet.apply(&payload, true, minute);
+            assert_eq!(sound, !expected);
+            assert_eq!(body["aps"]["interruption-level"], if expected { "passive" } else { "active" });
+            assert_eq!(body["aps"].get("sound").is_none(), expected);
+            assert_eq!(body["aps"]["alert"], payload["aps"]["alert"]);
+            assert_eq!(body["alondra"], payload["alondra"]);
+        }
+        assert!(!quiet.apply(&payload, false, 12*60).0["aps"].as_object().unwrap().contains_key("sound"));
+        let equal = parse(json!("08:00"), json!("08:00")).unwrap().unwrap();
+        assert!(equal.apply(&payload, true, 8*60).1, "equal bounds disable silence as in legacy");
+    }
+
+    #[test]
+    fn quiet_hours_persist_per_device_rotate_clear_and_revoke() {
+        let path = std::env::temp_dir().join(format!("alondra-quiet-{}-{}.sqlite", std::process::id(), now_ms()));
+        let journal = Journal::open(path.clone()).unwrap();
+        let binding = URL_SAFE_NO_PAD.encode([7u8;32]);
+        let quiet = || Some(QuietHours { start: Some("23:00".into()), end: Some("08:00".into()) });
+        assert!(journal.set_push_preferences("a", &binding, quiet()).is_err());
+        for id in ["a", "b"] {
+            journal.reserve_enrollment(id, &[1u8;33]).unwrap();
+            journal.activate_enrollment(id).unwrap();
+        }
+        journal.set_push_preferences("a", &binding, quiet()).unwrap();
+        assert_eq!(Journal::open(path.clone()).unwrap().quiet_hours("a").unwrap(), quiet().unwrap());
+        assert_eq!(journal.quiet_hours("b").unwrap(), QuietHours::default());
+        journal.set_push_preferences("a", &URL_SAFE_NO_PAD.encode([8u8;32]), None).unwrap();
+        assert_eq!(journal.quiet_hours("a").unwrap(), quiet().unwrap());
+        journal.set_push_preferences("a", &binding, Some(QuietHours::default())).unwrap();
+        assert_eq!(journal.quiet_hours("a").unwrap(), QuietHours::default());
+        journal.set_push_preferences("a", &binding, quiet()).unwrap();
+        journal.revoke_enrollment("a").unwrap();
+        assert_eq!(journal.quiet_hours("a").unwrap(), QuietHours::default());
+        let count: i64 = journal.db().unwrap().query_row("SELECT count(*) FROM service_push_preferences", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
     #[tokio::test]
     async fn service_push_contains_only_ciphertext_outside_and_enforces_budget() {
         let home = std::env::temp_dir().join(format!(
@@ -954,6 +1049,17 @@ agreement_key = "{}"
             body: Some(json!({"push_binding":binding,"unexpected":true})),
         };
         assert!(service.dispatch("phone-1", &bad_request).await.is_err());
+        let quiet_request = LocalRequest {
+            method: "POST".into(), path: "/v1/service/push-binding".into(),
+            body: Some(json!({"push_binding":binding,"quiet_start":"23:00","quiet_end":"08:00"})),
+        };
+        assert_eq!(service.dispatch("phone-1", &quiet_request).await.unwrap()["status"], 204);
+        let invalid_quiet = LocalRequest {
+            body: Some(json!({"push_binding":URL_SAFE_NO_PAD.encode([9u8;32]),"quiet_start":"24:00","quiet_end":"08:00"})),
+            ..quiet_request
+        };
+        assert!(service.dispatch("phone-1", &invalid_quiet).await.is_err());
+        assert_eq!(service.journal.push_binding("phone-1").unwrap().as_deref(), Some(binding.as_str()));
         let secret = "private question title for iPhone only";
         let payload = json!({"aps":{"alert":{"title":secret},"category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":7}});
         let body = service.encode_push("phone-1", &device, &binding, &payload, true).unwrap();
@@ -974,6 +1080,15 @@ agreement_key = "{}"
         assert_eq!(content["push_binding"], binding);
         assert_eq!(content["payload"], payload);
         assert_eq!(content["with_sound"], true);
+        let (quiet_payload, sound) = service.journal.quiet_hours("phone-1").unwrap().apply(&payload, true, 23*60);
+        let quiet_wire = service.encode_push("phone-1", &device, &binding, &quiet_payload, sound).unwrap();
+        let wire_text = String::from_utf8(quiet_wire.clone()).unwrap();
+        assert!(!wire_text.contains("passive") && !wire_text.contains("quiet_start"));
+        let envelope: EnvelopeV1 = serde_json::from_value(serde_json::from_slice::<Value>(&quiet_wire).unwrap()["envelope"].clone()).unwrap();
+        let opened = envelope.open(service.signing.verifying_key(), &phone_agreement, "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+        let opened: Value = serde_json::from_slice(&opened).unwrap();
+        assert_eq!(opened["payload"]["aps"]["interruption-level"], "passive");
+        assert_eq!(opened["with_sound"], false);
         let huge = json!({"aps":{"alert":{"body":"x".repeat(MAX_PUSH_PLAINTEXT)}}});
         assert!(service.encode_push("phone-1", &device, &binding, &huge, true).is_err());
     }

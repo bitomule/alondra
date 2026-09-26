@@ -181,7 +181,7 @@ impl Apns {
     }
 }
 
-fn local_minutes() -> u32 {
+pub(crate) fn local_minutes() -> u32 {
     let t: libc::time_t = unsafe { libc::time(std::ptr::null_mut()) };
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t, &mut tm) };
