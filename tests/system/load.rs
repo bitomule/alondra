@@ -177,11 +177,18 @@ async fn reliable(
     body: Vec<u8>,
     expected: u16,
 ) -> Result<Value> {
+    let mut last_overload = None;
     for attempt in 0..120 {
         let result = driver
             .call_epoch(&driver.epoch, code, id, who, method, path, body.clone())
             .await;
         if overload(&result) {
+            last_overload = result.as_ref().ok().map(|(status, value)| {
+                (
+                    *status,
+                    value["error"].as_str().unwrap_or("unknown").to_owned(),
+                )
+            });
             CRYPTO_RETRIES.fetch_add(1, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_millis(250 + (attempt % 7) * 19)).await;
             continue;
@@ -189,11 +196,13 @@ async fn reliable(
         let (status, value) = result?;
         ensure!(
             status == expected,
-            "mixed encrypted operation unexpected status {status}, expected {expected}"
+            "mixed operation {method} {path}: status {status}, expected {expected}"
         );
         return Ok(value);
     }
-    anyhow::bail!("mixed encrypted operation did not recover from bounded overload retries")
+    anyhow::bail!(
+        "mixed operation {method} {path}: 120 overload retries exhausted; last={last_overload:?}"
+    )
 }
 type Current = Arc<RwLock<Arc<Driver>>>;
 async fn get(current: &Current) -> Arc<Driver> {
@@ -676,8 +685,10 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
         }));
     }
     let mut crypto_jobs = vec![];
+    let mixed_counts = Arc::new(Mutex::new(vec![[0u64; 2]; accounts]));
     for account in 0..accounts {
         let (current, links) = (current.clone(), links.clone());
+        let mixed_counts = mixed_counts.clone();
         crypto_jobs.push(tokio::spawn(async move {
             let mut completed = 0;
             for iteration in 0..20 {
@@ -685,6 +696,7 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                     break;
                 }
                 let d = get(&current).await;
+                mixed_counts.lock().unwrap()[account][0] += 1;
                 encrypted_roundtrip(
                     &d,
                     &links[account * 4],
@@ -692,6 +704,7 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
                 )
                 .await?;
                 completed += 1;
+                mixed_counts.lock().unwrap()[account][1] += 1;
                 tokio::time::sleep(Duration::from_secs((seconds / 20).max(1))).await;
             }
             Ok::<_, anyhow::Error>(completed)
@@ -759,24 +772,69 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
             burst(current, links, count, bursts, origin).await
         })
     };
+    let mut failures = Vec::<String>::new();
     for worker in workers {
-        worker.await?;
+        if worker.await.is_err() {
+            failures.push("poll worker failed to join".into());
+        }
     }
-    let mut mixed_roundtrips = 0;
-    for job in crypto_jobs {
-        mixed_roundtrips += job.await??;
+    for (account, job) in crypto_jobs.into_iter().enumerate() {
+        match job.await {
+            Ok(Ok(_)) => (),
+            Ok(Err(error)) => failures.push(format!("synthetic account {account}: {error}")),
+            Err(_) => failures.push(format!(
+                "synthetic account {account}: crypto worker failed to join"
+            )),
+        }
     }
-    let revoke_seconds = revoke_job.await??;
-    burst_job.await??;
+    let revoke_seconds = match revoke_job.await {
+        Ok(Ok(seconds)) => Some(seconds),
+        Ok(Err(error)) => {
+            failures.push(format!("revocation: {error}"));
+            None
+        }
+        Err(_) => {
+            failures.push("revocation worker failed to join".into());
+            None
+        }
+    };
+    match burst_job.await {
+        Ok(Ok(())) => (),
+        Ok(Err(error)) => failures.push(format!("burst: {error}")),
+        Err(_) => failures.push("burst worker failed to join".into()),
+    }
     stop.store(true, Ordering::Relaxed);
-    let refreshes = refresh.await??;
+    let refreshes = match refresh.await {
+        Ok(Ok(count)) => Some(count),
+        Ok(Err(error)) => {
+            failures.push(format!("OIDC refresh: {error}"));
+            None
+        }
+        Err(_) => {
+            failures.push("OIDC refresh worker failed to join".into());
+            None
+        }
+    };
+    let mixed_by_account = mixed_counts.lock().unwrap().clone();
+    let mixed_roundtrips: u64 = mixed_by_account.iter().map(|counts| counts[1]).sum();
+    let mixed_attempts: u64 = mixed_by_account.iter().map(|counts| counts[0]).sum();
     let poll_json = polls.lock().unwrap().json();
     let burst_json = bursts.lock().unwrap().json();
     let work_json = work_polls.lock().unwrap().json();
     save(
         "load-progress.json",
-        json!({"phase":"steady_finished","polls":poll_json,"work_polls":work_json,"bursts":burst_json,"oidc_refresh_batches":refreshes}),
+        json!({"phase":"steady_finished","polls":poll_json,"work_polls":work_json,"bursts":burst_json,
+            "oidc_refresh_batches":refreshes,"mixed_roundtrips":mixed_roundtrips,
+            "mixed_attempts":mixed_attempts,"mixed_account_columns":["attempted","completed"],
+            "mixed_by_account":mixed_by_account,"revocation_under_load_seconds":revoke_seconds,
+            "mixed_overload_retries":CRYPTO_RETRIES.load(Ordering::Relaxed),"failures":failures}),
     )?;
+    ensure!(
+        failures.is_empty(),
+        "load workers failed; inspect load-progress.json"
+    );
+    let revoke_seconds = revoke_seconds.context("missing revocation observation")?;
+    let refreshes = refreshes.context("missing refresh observation")?;
     ensure!(
         polls.lock().unwrap().errors == 0
             && bursts.lock().unwrap().errors == 0
