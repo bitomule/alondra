@@ -17,7 +17,7 @@ public extension TaskMutationOutcome {
 }
 
 /// Application boundary. The composition root supplies operations backed by CommandGate and
-/// the current credential scope; features never hold a URLSession or AlondraClient.
+/// the current credential scope; features never hold a network clients.
 public struct TaskOperations: Sendable {
     public var withdraw: @Sendable (WorkRequest) async -> TaskMutationOutcome
     public var cancel: @Sendable (WorkTask) async -> TaskMutationOutcome
