@@ -2266,19 +2266,19 @@ mod http_tests {
         assert!(
             server
                 .auth
-                .authenticate_mac(&later, &Method::GET, &uri, &[], later_arrival)
+                .authenticate_mac(&later, &Method::GET, &uri, &[], later_arrival).await
                 .is_ok()
         );
         assert!(
             server
                 .auth
-                .authenticate_mac(&earlier, &Method::GET, &uri, &[], earlier_arrival)
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], earlier_arrival).await
                 .is_ok()
         );
         assert!(
             server
                 .auth
-                .authenticate_mac(&earlier, &Method::GET, &uri, &[], later_arrival)
+                .authenticate_mac(&earlier, &Method::GET, &uri, &[], later_arrival).await
                 .is_err(),
             "accepting reordered requests must not permit nonce replay"
         );
