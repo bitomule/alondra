@@ -1,0 +1,13 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+swift_library(
+    name = "AlondraRelaySession",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraRelaySession",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/RelayClient:AlondraRelayClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
+)
+swift_test(
+    name = "AlondraRelaySessionTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = ["//apple/APIClient:AlondraAPIClient", ":AlondraRelaySession", "//apple/RelayClient:AlondraRelayClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox"],
+)

@@ -11,3 +11,25 @@
 - No mutation retry is implemented. A caller must not add one until the backend has a reviewed idempotency contract.
 
 The `AlondraEndpoints` factories enumerate every route in the previous `AlondraClient.swift`; API response DTOs that still live in Shared are deliberately decoded by the adapter. `AlondraAPIClient` depends only on Contracts and system networking/crypto/logging libraries.
+
+## Service facade migration
+
+`AlondraAPIClient(serviceURL:deviceID:operations:)` is the product API for both apps.
+`ServiceOperationTransport` is an infrastructure capability implemented by Data's durable
+coordinator, not a second app-facing client. It receives logical executor paths and opaque
+operation identities; relay HTTP, encryption, status reconciliation, and journal retention
+remain below this boundary. Mutation callers supply the identity already recorded by their
+command use case. Unknown outcomes must be reconciled by that coordinator and never cause
+an automatic mutation retry. Reads may use ephemeral IDs and must not accumulate permanent
+mutation tombstones.
+
+This PR deliberately retains the deprecated direct-daemon initializer only to keep the
+unmigrated app roots compiling during the PR train. Before migration completion, remove
+that initializer, request signing/direct HTTP implementation, Shared AlondraClient, and
+SyncSession convenience overloads that infer identity from local signers. Wire the iOS and
+macOS roots to the same service initializer and explicit approved pairing identity. The
+service initializer cannot create a direct URLRequest or upload via the local daemon.
+
+The current Data RelaySession still seals envelopes. Move that wire responsibility behind
+APIClient's internal RelayTransport when consolidating RelayClient; Data must retain durable
+operation ordering, outbox persistence, and reconciliation. APIClient must never import Data.
