@@ -73,6 +73,119 @@ pub fn http(timeout: Duration) -> ureq::Agent {
         .build()
         .into()
 }
+#[derive(Default)]
+struct EpochCache {
+    generation: u64,
+    value: Option<[u8; 16]>,
+}
+
+/// One origin, one pool. No credentials are stored in the transport.
+struct RelayTransport {
+    origin: String,
+    agent: ureq::Agent,
+    epoch: std::sync::Mutex<EpochCache>,
+}
+impl RelayTransport {
+    fn new(origin: &str) -> Self {
+        Self { origin: origin.into(), agent: http(Duration::from_secs(35)),
+            epoch: std::sync::Mutex::new(EpochCache::default()) }
+    }
+    fn invalidate(&self, used: [u8; 16]) {
+        let mut cached = self.epoch.lock().unwrap();
+        if cached.value == Some(used) {
+            cached.value = None;
+            cached.generation += 1;
+        }
+    }
+    fn epoch(&self, deadline: Instant) -> Result<[u8; 16]> {
+        let generation = {
+            let cached = self.epoch.lock().unwrap();
+            if let Some(epoch) = cached.value { return Ok(epoch); }
+            cached.generation
+        };
+        // No lock is held across network I/O, including long polling.
+        let mut response = self.agent.get(format!("{}/v1/bootstrap", self.origin))
+            .config().timeout_global(Some(remaining(deadline)?.min(Duration::from_secs(35))))
+            .build().call()?;
+        if response.status().as_u16() != 200 { bail!("relay bootstrap unavailable"); }
+        let boot: Value = response.body_mut().with_config().limit(4096).read_json()?;
+        remaining(deadline)?;
+        if boot["protocol"].as_u64() != Some(1) { bail!("unsupported relay protocol"); }
+        let fetched: [u8; 16] = B64.decode(boot["epoch"].as_str().context("missing epoch")?)?
+            .try_into().map_err(|_| anyhow!("invalid relay epoch"))?;
+        let mut cached = self.epoch.lock().unwrap();
+        if cached.generation == generation && cached.value.is_none() {
+            cached.value = Some(fetched);
+        }
+        // An older bootstrap must not overwrite a concurrently refreshed epoch.
+        Ok(cached.value.unwrap_or(fetched))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn call(&self, profile: &Profile, owner: &str, access: &str,
+            method: &str, path: &str, body: &[u8], deadline: Instant) -> Result<(u16, Value)> {
+        remaining(deadline)?;
+        if owner != profile.owner_sub { bail!("terminal approval belongs to another account"); }
+        if !matches!(method, "GET" | "POST") { bail!("unsupported relay method"); }
+        let epoch = self.epoch(deadline)?;
+        let first = self.send(profile, access, method, path, body, epoch, deadline)?;
+        if first.0 == 401 {
+            self.invalidate(epoch);
+            // Only reads can be retried, and only after proving the relay restarted.
+            // POST responses, timeouts and disconnects never cause automatic replay.
+            if method == "GET" {
+                let current = self.epoch(deadline)?;
+                if current != epoch {
+                    let second = self.send(profile, access, method, path, body, current, deadline)?;
+                    self.observe(path, current, &second);
+                    return Ok(second);
+                }
+            }
+        } else { self.observe(path, epoch, &first); }
+        Ok(first)
+    }
+    fn observe(&self, path: &str, used: [u8; 16], result: &(u16, Value)) {
+        if result.0 == 401 || (result.0 == 409
+            && (path == "/v1/changes" || path.starts_with("/v1/changes?"))
+            && result.1["error"] == "relay_epoch_changed") {
+            self.invalidate(used);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn send(&self, profile: &Profile, access: &str, method: &str, path: &str,
+            body: &[u8], epoch: [u8; 16], deadline: Instant) -> Result<(u16, Value)> {
+        let timestamp = now_ms()?;
+        let nonce = random::<16>()?;
+        let signature = sign_http_challenge(&profile.signing()?, &profile.device_id,
+            method, path, &epoch, body, timestamp, &nonce)?;
+        let headers = [
+            ("authorization", format!("Bearer {access}")),
+            ("x-device-id", profile.device_id.clone()),
+            ("x-device-timestamp-ms", timestamp.to_string()),
+            ("x-device-nonce", B64.encode(nonce)),
+            ("x-device-signature", signature),
+            ("x-relay-epoch", B64.encode(epoch)),
+        ];
+        let endpoint = format!("{}{path}", self.origin);
+        let timeout = remaining(deadline)?.min(Duration::from_secs(35));
+        let mut response = if method == "POST" {
+            let mut request = self.agent.post(endpoint).config().timeout_global(Some(timeout)).build()
+                .header("content-type", "application/json");
+            for (key, value) in &headers { request = request.header(*key, value); }
+            request.send(body)?
+        } else {
+            let mut request = self.agent.get(endpoint).config().timeout_global(Some(timeout)).build();
+            for (key, value) in &headers { request = request.header(*key, value); }
+            request.call()?
+        };
+        let status = response.status().as_u16();
+        // Fully drain the bounded body so the connection can return to the pool.
+        let bytes = response.body_mut().with_config().limit(512 * 1024).read_to_vec()?;
+        let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes)? };
+        remaining(deadline)?;
+        Ok((status, value))
+    }
+}
+
 fn store_path() -> std::path::PathBuf {
     crate::client::config().home.join("terminal-service.json")
 }
@@ -245,74 +358,16 @@ impl Profile {
         deadline: Instant,
     ) -> Result<(u16, Value)> {
         remaining(deadline)?;
+        // Account lookup preserves cross-process logout and account changes. Its
+        // existing OIDC timeout is independent; never reset the operation deadline.
         let token = crate::account::token_for_service()?;
-        if token.sub != self.owner_sub {
-            bail!("terminal approval belongs to another account");
-        }
-        let mut response = http(remaining(deadline)?.min(Duration::from_secs(35)))
-            .get(format!("{RELAY}/v1/bootstrap"))
-            .call()?;
-        if response.status().as_u16() != 200 {
-            bail!("relay bootstrap unavailable");
-        }
-        let boot: Value = response.body_mut().with_config().limit(4096).read_json()?;
-        let epoch: [u8; 16] = B64
-            .decode(boot["epoch"].as_str().context("missing epoch")?)?
-            .try_into()
-            .map_err(|_| anyhow!("invalid relay epoch"))?;
-        let timestamp = now_ms()?;
-        let nonce = random::<16>()?;
-        let signature = sign_http_challenge(
-            &self.signing()?,
-            &self.device_id,
-            method,
-            path,
-            &epoch,
-            body,
-            timestamp,
-            &nonce,
-        )?;
-        let headers = [
-            ("authorization", format!("Bearer {}", token.access_token)),
-            ("x-device-id", self.device_id.clone()),
-            ("x-device-timestamp-ms", timestamp.to_string()),
-            ("x-device-nonce", B64.encode(nonce)),
-            ("x-device-signature", signature),
-            ("x-relay-epoch", B64.encode(epoch)),
-        ];
-        let agent = http(remaining(deadline)?.min(Duration::from_secs(35)));
-        let endpoint = format!("{RELAY}{path}");
-        let mut response = if method == "POST" {
-            let mut request = agent
-                .post(endpoint)
-                .header("content-type", "application/json");
-            for (key, value) in &headers {
-                request = request.header(*key, value);
-            }
-            request.send(body)?
-        } else if method == "GET" {
-            let mut request = agent.get(endpoint);
-            for (key, value) in &headers {
-                request = request.header(*key, value);
-            }
-            request.call()?
-        } else {
-            bail!("unsupported relay method");
-        };
-        let status = response.status().as_u16();
-        let bytes = response
-            .body_mut()
-            .with_config()
-            .limit(512 * 1024)
-            .read_to_vec()?;
-        let value = if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes)?
-        };
         remaining(deadline)?;
-        Ok((status, value))
+        static TRANSPORT: OnceLock<RelayTransport> = OnceLock::new();
+        TRANSPORT.get_or_init(|| RelayTransport::new(RELAY)).call(
+            self, &token.sub, &token.access_token, method, path, body, deadline,
+        )
     }
+
     pub fn request(
         &self,
         method: &str,
@@ -352,7 +407,7 @@ impl Profile {
             &self.signing()?,
             &PublicKey::from_sec1_bytes(&B64.decode(&self.mac_agreement_key)?)?,
         )?;
-        let (status, _) = call(
+        let (status, receipt) = call(
             "POST",
             "/v1/requests",
             &serde_json::to_vec(&envelope)?,
@@ -367,7 +422,14 @@ impl Profile {
                 "relay refused request ({status}); for a revoked terminal use alondra connect <mac-id> --repair"
             );
         }
-        let mut revision = 0u64;
+        let receipt_status = receipt["status"].as_str();
+        if receipt["request_id"].as_str() != Some(&request_id)
+            || !matches!((status, receipt_status),
+                (202, Some("queued" | "dispatched" | "received")) | (200, Some("completed"))) {
+            bail!("invalid relay submission receipt; inspect destination before repeating an action");
+        }
+        let mut revision = receipt["revision"].as_u64().filter(|n| *n > 0)
+            .context("invalid relay submission revision; inspect destination before repeating an action")?;
         let mut epoch: Option<String> = None;
         loop {
             remaining(deadline)?;
@@ -376,6 +438,9 @@ impl Profile {
             if status != 200 || job["request_id"].as_str() != Some(&request_id) {
                 bail!("invalid relay request status ({status})");
             }
+            let observed_revision = job["revision"].as_u64().filter(|n| *n > 0)
+                .context("invalid relay request revision")?;
+            revision = revision.max(observed_revision);
             if let Some(value) = job.get("response").filter(|v| !v.is_null()) {
                 return self.open_response(value.clone(), &request_id, now_ms()?);
             }
@@ -433,7 +498,18 @@ impl Profile {
     }
 
     pub fn upload(&self, name: &str, bytes: &[u8], timeout: Duration) -> Result<Value> {
-        let deadline = Instant::now() + timeout;
+        Self::upload_via(name, bytes, timeout, |suffix, body, deadline| {
+            let (status, value) = self.request(
+                "POST", &format!("/v1/service/uploads/{suffix}"), Some(&body), remaining(deadline)?,
+            )?;
+            if status >= 400 { bail!("attachment transfer failed ({status})"); }
+            Ok(value)
+        })
+    }
+    fn upload_via(name: &str, bytes: &[u8], timeout: Duration,
+        mut call: impl FnMut(&str, Value, Instant) -> Result<Value>) -> Result<Value> {
+        let started = Instant::now();
+        let deadline = started + timeout;
         if bytes.is_empty() || bytes.len() > 20 * 1024 * 1024 {
             bail!("attachment must contain 1 byte to 20 MB");
         }
@@ -451,33 +527,28 @@ impl Profile {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let call = |suffix: &str, body: Value| -> Result<Value> {
-            let (status, value) = self.request(
-                "POST",
-                &format!("/v1/service/uploads/{suffix}"),
-                Some(&body),
-                remaining(deadline)?,
-            )?;
-            if status >= 400 {
-                bail!("attachment transfer failed ({status}): {value}");
-            }
-            Ok(value)
-        };
-        call(
-            "start",
-            json!({"transfer_id":id,"name":name,"bytes":bytes.len(),"sha256":hash}),
-        )?;
+        let mut phase = "start";
+        let mut confirmed = 0usize;
+        let mut accepted = false;
         let result = (|| {
+            call("start", json!({"transfer_id":id,"name":name,"bytes":bytes.len(),"sha256":hash}), deadline)?;
+            accepted = true;
+            phase = "chunk";
             for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
-                call(
-                    "chunk",
-                    json!({"transfer_id":id,"offset":index * 64 * 1024,"data":B64.encode(chunk)}),
-                )?;
+                call("chunk", json!({"transfer_id":id,"offset":index * 64 * 1024,"data":B64.encode(chunk)}), deadline)?;
+                confirmed += chunk.len();
             }
-            call("finish", json!({"transfer_id":id}))
+            phase = "finish";
+            call("finish", json!({"transfer_id":id}), deadline)
         })();
-        if result.is_err() {
-            let _ = call("cancel", json!({"transfer_id":id}));
+        // Snapshot before best-effort cancellation: never expose the name, path,
+        // transfer ID, credentials or payload in the progress diagnostic.
+        let result = result.with_context(|| format!(
+            "attachment upload failed: phase={phase}, bytes_confirmed={confirmed}/{}, elapsed_ms={}",
+            bytes.len(), started.elapsed().as_millis(),
+        ));
+        if result.is_err() && accepted {
+            let _ = call("cancel", json!({"transfer_id":id}), deadline);
         }
         result
     }
@@ -564,6 +635,9 @@ impl Drop for ProfileLock {
 }
 
 #[cfg(test)]
+mod live_transfer_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> (Profile, SigningKey, SecretKey) {
@@ -586,11 +660,306 @@ mod tests {
         )
     }
 
+    // Socket timeouts are stop-polling opportunities, not request boundaries.
+    // Accumulate bytes explicitly: read_line/read_exact can consume a prefix
+    // before returning WouldBlock, losing that prefix if their buffers are reset.
+    fn read_fixture_request(reader: &mut impl std::io::Read, pending: &mut Vec<u8>,
+        stop: &std::sync::atomic::AtomicBool) -> std::io::Result<Option<(String, Vec<u8>)>> {
+        use std::io::{Error, ErrorKind};
+        loop {
+            if stop.load(std::sync::atomic::Ordering::SeqCst) { return Ok(None); }
+            if let Some(end) = pending.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&pending[..end+2])
+                    .map_err(|_| Error::new(ErrorKind::InvalidData,"invalid fixture HTTP headers"))?;
+                let mut length=0usize;
+                for line in headers.lines() {
+                    if let Some(value)=line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length=value.trim().parse().map_err(|_| Error::new(ErrorKind::InvalidData,"invalid fixture content length"))?;
+                    }
+                }
+                let total=(end+4).checked_add(length)
+                    .filter(|total| *total <= 512*1024)
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidData,"fixture request too large"))?;
+                if pending.len() >= total {
+                    let headers=headers.to_owned();
+                    let body=pending[end+4..total].to_vec();
+                    pending.drain(..total);
+                    return Ok(Some((headers,body)));
+                }
+            }
+            if pending.len() >= 512*1024 { return Err(Error::new(ErrorKind::InvalidData,"fixture request too large")); }
+            let mut bytes=[0u8;8192];
+            match reader.read(&mut bytes) {
+                Ok(0) if pending.is_empty() => return Ok(None),
+                Ok(0) => return Err(Error::new(ErrorKind::UnexpectedEof,"truncated fixture request")),
+                Ok(count) => pending.extend_from_slice(&bytes[..count]),
+                Err(error) if matches!(error.kind(),ErrorKind::WouldBlock|ErrorKind::TimedOut|ErrorKind::Interrupted) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    struct HttpFixture {
+        origin: String,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl HttpFixture {
+        fn start(replies: Vec<(u16, Value, Duration)>) -> Self {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let connections = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (seen, accepted, stopping) = (requests.clone(), connections.clone(), stop.clone());
+            let thread = std::thread::spawn(move || {
+                let mut replies = replies.into_iter();
+                while !stopping.load(Ordering::SeqCst) {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(value) => value,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2)); continue;
+                        }
+                        Err(error) => panic!("accept: {error}"),
+                    };
+                    accepted.fetch_add(1, Ordering::SeqCst);
+                    stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+                    let mut pending = Vec::new();
+                    loop {
+                        let Some((headers, _body)) = read_fixture_request(&mut stream, &mut pending, &stopping)
+                            .expect("read fixture request") else { break; };
+                        seen.lock().unwrap().push(headers);
+                        let Some((status, body, delay)) = replies.next() else { panic!("unexpected replay"); };
+                        std::thread::sleep(delay);
+                        let body = serde_json::to_vec(&body).unwrap();
+                        let header = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
+                        if stream.write_all(header.as_bytes()).and_then(|_| stream.write_all(&body)).is_err() { break; }
+                    }
+                }
+            });
+            Self { origin, requests, connections, stop, thread: Some(thread) }
+        }
+        fn count(&self) -> usize { self.requests.lock().unwrap().len() }
+    }
+    impl Drop for HttpFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                if let Err(panic) = thread.join() {
+                    // Preserve a fixture failure on normal teardown, but never
+                    // abort the entire suite with a second panic during unwind.
+                    if !std::thread::panicking() { std::panic::resume_unwind(panic); }
+                }
+            }
+        }
+    }
+    #[test]
+    fn fixture_retains_fragmented_headers_and_body_across_socket_timeouts() {
+        use std::collections::VecDeque;
+        use std::io::{Error,ErrorKind,Read};
+        struct Reads(VecDeque<std::result::Result<Vec<u8>,ErrorKind>>);
+        impl Read for Reads {
+            fn read(&mut self, out:&mut [u8]) -> std::io::Result<usize> {
+                match self.0.pop_front() {
+                    Some(Ok(bytes)) => { assert!(bytes.len()<=out.len()); out[..bytes.len()].copy_from_slice(&bytes); Ok(bytes.len()) },
+                    Some(Err(kind)) => Err(Error::from(kind)),
+                    None => Ok(0),
+                }
+            }
+        }
+        let mut reader=Reads(VecDeque::from([
+            Ok(b"POST /v1/req".to_vec()), Err(ErrorKind::WouldBlock),
+            Ok(b"uests HTTP/1.1\r\nContent-L".to_vec()), Err(ErrorKind::TimedOut),
+            Ok(b"ength: 4\r\n\r".to_vec()), Err(ErrorKind::Interrupted),
+            Ok(b"\n\0".to_vec()), Err(ErrorKind::WouldBlock), Err(ErrorKind::TimedOut),
+            Ok(b"\xff{}GET /next HTTP/1.1\r\n\r\n".to_vec()),
+        ]));
+        let stop=std::sync::atomic::AtomicBool::new(false);
+        let mut pending=Vec::new();
+        let (headers,body)=read_fixture_request(&mut reader,&mut pending,&stop).unwrap().unwrap();
+        assert_eq!(headers,"POST /v1/requests HTTP/1.1\r\nContent-Length: 4\r\n");
+        assert_eq!(body,b"\0\xff{}");
+        assert!(!pending.is_empty(),"next request bytes must remain on the same connection");
+        let (headers,body)=read_fixture_request(&mut reader,&mut pending,&stop).unwrap().unwrap();
+        assert_eq!(headers,"GET /next HTTP/1.1\r\n");
+        assert!(body.is_empty());
+        assert!(read_fixture_request(&mut reader,&mut pending,&stop).unwrap().is_none());
+        let mut truncated=std::io::Cursor::new(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n{}".to_vec());
+        assert_eq!(read_fixture_request(&mut truncated,&mut pending,&stop).unwrap_err().kind(),ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn fixture_drop_preserves_server_failure_without_double_panic_during_unwind() {
+        fn failed_fixture() -> HttpFixture {
+            HttpFixture {
+                origin:String::new(),requests:Arc::new(std::sync::Mutex::new(Vec::new())),
+                connections:Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                stop:Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                thread:Some(std::thread::spawn(|| panic!("server failure"))),
+            }
+        }
+        let normal=std::panic::catch_unwind(|| drop(failed_fixture())).unwrap_err();
+        assert_eq!(normal.downcast_ref::<&str>(),Some(&"server failure"));
+        let unwinding=std::panic::catch_unwind(|| {
+            let _fixture=failed_fixture();
+            panic!("original assertion failure");
+        }).unwrap_err();
+        assert_eq!(unwinding.downcast_ref::<&str>(),Some(&"original assertion failure"));
+    }
+
+    fn boot(epoch: u8) -> (u16, Value, Duration) {
+        (200, json!({"protocol":1,"epoch":B64.encode([epoch;16])}), Duration::ZERO)
+    }
+    fn reply(status: u16, error: &str) -> (u16, Value, Duration) {
+        (status, json!({"error":error}), Duration::ZERO)
+    }
+    fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
+        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/requests", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+    }
+
+    #[test]
+    fn upload_failure_reports_acknowledged_progress_before_cancel() {
+        let mut calls = Vec::new();
+        let mut original_deadline = None;
+        let result = Profile::upload_via("private-name.txt", &vec![7; 65537], Duration::from_secs(1),
+            |phase, _, deadline| {
+                if let Some(expected) = original_deadline { assert_eq!(deadline, expected); }
+                original_deadline = Some(deadline);
+                calls.push(phase.to_owned());
+                match calls.len() {
+                    1 | 2 => Ok(json!({"ok":true})),
+                    3 => bail!("deadline exceeded"),
+                    4 => { assert_eq!(phase,"cancel"); bail!("cancel also failed") },
+                    _ => panic!("unexpected retry"),
+                }
+            });
+        assert_eq!(calls,["start","chunk","chunk","cancel"]);
+        let error = result.unwrap_err();
+        let diagnostic = error.to_string();
+        assert!(diagnostic.starts_with("attachment upload failed: phase=chunk, bytes_confirmed=65536/65537, elapsed_ms="));
+        assert!(!diagnostic.contains("private-name"));
+        assert!(format!("{error:#}").contains("deadline exceeded"));
+        assert!(!format!("{error:#}").contains("cancel also failed"));
+    }
+
+    #[test]
+    fn upload_start_and_finish_failures_keep_distinct_progress() {
+        for failed_phase in ["start", "finish"] {
+            let mut phases = Vec::new();
+            let error = Profile::upload_via("private.txt", &[1,2,3], Duration::from_secs(1),
+                |phase, _, _| { phases.push(phase.to_owned());
+                    if phase == failed_phase { bail!("rejected"); } Ok(json!({"ok":true}))
+                }).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains(&format!("phase={failed_phase}")));
+            if failed_phase == "start" {
+                assert_eq!(phases,["start"]);
+                assert!(message.contains("bytes_confirmed=0/3"));
+            } else {
+                assert_eq!(phases,["start","chunk","finish","cancel"]);
+                assert!(message.contains("bytes_confirmed=3/3"));
+            }
+        }
+    }
+
+    #[test]
+    fn pooled_transport_drains_error_bodies_and_bootstraps_once() {
+        let server = HttpFixture::start(vec![boot(1), reply(400,"bad_request"), reply(409,"conflict"), reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,400);
+        assert_eq!(transport_call(&transport,"POST").unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        assert_eq!(server.count(),4);
+        assert_eq!(server.connections.load(std::sync::atomic::Ordering::SeqCst),1);
+    }
+
+    #[test]
+    fn changed_epoch_retries_read_once_with_new_nonce_but_never_post() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(401,"unauthorized")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
+        let seen = server.requests.lock().unwrap();
+        assert_eq!(seen.len(),4);
+        assert!(seen[1].contains(&B64.encode([1;16])));
+        assert!(seen[3].contains(&B64.encode([2;16])));
+        let nonce = |headers: &str| headers.lines().find(|l| l.starts_with("x-device-nonce:")).unwrap().to_string();
+        assert_ne!(nonce(&seen[1]),nonce(&seen[3]));
+        drop(seen);
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"POST").unwrap().0,401);
+        assert_eq!(server.count(),2);
+        assert!(transport.epoch.lock().unwrap().value.is_none());
+    }
+
+    #[test]
+    fn unchanged_epoch_and_cursor_conflict_do_not_trigger_replay() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"stale_cursor"),reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
+        assert_eq!(server.count(),3);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        assert_eq!(server.count(),5);
+    }
+
+    #[test]
+    fn relay_epoch_conflict_invalidates_and_old_failure_cannot_erase_new_epoch() {
+        let server = HttpFixture::start(vec![boot(1),reply(409,"relay_epoch_changed"),boot(2),reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport.call(&fixture().0,"owner-a","token","GET","/v1/changes?since=0",b"",Instant::now()+Duration::from_secs(2)).unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        transport.invalidate([1;16]);
+        assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
+        assert_eq!(server.count(),4);
+        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_secs(1)).is_err());
+        assert_eq!(server.count(),4,"account switch must fail before network I/O");
+    }
+
+    #[test]
+    fn late_bootstrap_does_not_overwrite_newer_concurrent_epoch() {
+        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
+        let server = HttpFixture::start(vec![bootstrap]);
+        let transport = RelayTransport::new(&server.origin);
+        std::thread::scope(|scope| {
+            let pending = scope.spawn(|| transport.epoch(Instant::now()+Duration::from_secs(2)).unwrap());
+            let deadline = Instant::now()+Duration::from_secs(1);
+            while server.count() == 0 {
+                assert!(Instant::now()<deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            {
+                let mut newer = transport.epoch.lock().unwrap();
+                newer.generation += 1;
+                newer.value = Some([2;16]);
+            }
+            assert_eq!(pending.join().unwrap(),[2;16]);
+        });
+        assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
+    }
+
+    #[test]
+    fn bootstrap_and_request_share_deadline_and_post_timeout_does_not_replay() {
+        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
+        let mut slow = reply(200,"ok"); slow.2=Duration::from_millis(120);
+        let server = HttpFixture::start(vec![bootstrap,slow]);
+        let transport = RelayTransport::new(&server.origin);
+        assert!(transport.call(&fixture().0,"owner-a","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_millis(200)).is_err());
+        assert_eq!(server.count(),2,"timed out POST must not be repeated");
+    }
+
     #[test]
     fn queued_operation_is_encrypted_and_waits_for_its_correlated_reply_without_resubmitting() {
         let (profile, mac, mac_agreement) = fixture();
         let mut stage = 0;
         let mut request_id = String::new();
+        let mut retained: Vec<Value> = (490..=1000).map(|revision|
+            json!({"request_id":format!("historical-{revision}"),"status":"completed","revision":revision}))
+            .collect();
         let deadline = Instant::now() + Duration::from_secs(5);
         let result = profile.request_via("POST", "/v1/questions/7/answer", Some(&json!({"text":"yes"})), deadline, |method, path, bytes, budget| {
             assert_eq!(budget, deadline, "every stage shares one absolute deadline");
@@ -603,20 +972,88 @@ mod tests {
                     let plain = envelope.open(profile.signing()?.verifying_key(), &mac_agreement, "client-a", "mac-a", "mac-a", now_ms()?)?;
                     assert_eq!(serde_json::from_slice::<Value>(&plain)?, json!({"method":"POST","path":"/v1/questions/7/answer","body":{"text":"yes"}}));
                     request_id = envelope.request_id;
-                    Ok((202,json!({"request_id":request_id})))
+                    retained.push(json!({"request_id":request_id,"status":"queued","revision":1001}));
+                    Ok((202,json!({"request_id":request_id,"status":"queued","revision":1001})))
                 }
-                2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","response":null}))) }
-                3 => { assert!(path.starts_with("/v1/changes?since=0&wait_s=")); Ok((200,json!({"epoch":B64.encode([9;16]),"revision":2,"changes":[]}))) }
+                2 => { assert_eq!(path, format!("/v1/requests/{request_id}")); Ok((200,json!({"request_id":request_id,"status":"queued","revision":1001,"response":null}))) }
+                3 => {
+                    assert_eq!(method,"GET");
+                    assert!(path.starts_with("/v1/changes?"));
+                    let wait_s = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+                        .find(|(key,_)| key == "wait_s").expect("long poll wait parameter").1.parse::<u64>().unwrap();
+                    assert!(wait_s <= 25);
+                    // The request was created just before this callback. Permit at
+                    // most the second crossed while entering it, never a fresh budget.
+                    assert!(wait_s <= deadline.saturating_duration_since(Instant::now()).as_secs().saturating_add(1));
+                    let since = url::form_urlencoded::parse(path.split_once('?').unwrap().1.as_bytes())
+                        .find(|(key,_)| key == "since").unwrap().1.parse::<u64>().unwrap();
+                    assert_eq!(since,1001,"the receipt and observed state are already known");
+                    *retained.iter_mut().find(|event| event["request_id"] == request_id).unwrap() =
+                        json!({"request_id":request_id,"status":"completed","revision":1002});
+                    let changes: Vec<_> = retained.iter().filter(|event| event["revision"].as_u64().unwrap()>since).cloned().collect();
+                    assert_eq!(changes.len(),1,"historical jobs and our own queued event must not trigger another GET");
+                    assert_eq!(changes[0]["request_id"],request_id);
+                    Ok((200,json!({"epoch":B64.encode([9;16]),"revision":1002,"changes":changes})))
+                }
                 4 => {
                     assert_eq!(path, format!("/v1/requests/{request_id}"));
                     let envelope = EnvelopeV1::seal_random(EnvelopeContext { route:"mac-a",sender:"mac-a",recipient:"client-a",request_id:&request_id,kind:"response",expires_at_ms:now_ms()?+5000 }, br#"{"status":200,"body":{"ok":true}}"#, &mac, &profile.agreement()?.public_key())?;
-                    Ok((200,json!({"request_id":request_id,"status":"completed","response":envelope})))
+                    Ok((200,json!({"request_id":request_id,"status":"completed","revision":1002,"response":envelope})))
                 }
                 _ => panic!("operation unexpectedly resubmitted"),
             }
         }).unwrap();
         assert_eq!(result, (200, json!({"ok":true})));
         assert_eq!(stage, 4);
+    }
+
+    #[test]
+    fn invalid_receipts_fail_closed_without_retrying_submission() {
+        for invalid in ["missing-id","wrong-id","missing-status","wrong-status","missing-revision","fractional-revision","negative-revision","zero-revision"] {
+            let mut calls=0;
+            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
+                |method,_,bytes,_| {
+                    calls+=1;
+                    assert_eq!(method,"POST");
+                    let envelope: EnvelopeV1=serde_json::from_slice(bytes)?;
+                    let mut receipt=json!({"request_id":envelope.request_id,"status":"queued","revision":1001});
+                    match invalid {
+                        "missing-id" => { receipt.as_object_mut().unwrap().remove("request_id"); },
+                        "wrong-id" => receipt["request_id"]=json!("other-request"),
+                        "missing-status" => { receipt.as_object_mut().unwrap().remove("status"); },
+                        "wrong-status" => receipt["status"]=json!("completed"),
+                        "missing-revision" => { receipt.as_object_mut().unwrap().remove("revision"); },
+                        "fractional-revision" => receipt["revision"]=json!(1.5),
+                        "negative-revision" => receipt["revision"]=json!(-1),
+                        "zero-revision" => receipt["revision"]=json!(0),
+                        _ => unreachable!(),
+                    }
+                    Ok((202,receipt))
+                });
+            assert!(result.is_err(),"accepted invalid receipt: {invalid}");
+            assert_eq!(calls,1,"invalid receipt must not repeat a possibly accepted mutation");
+        }
+    }
+
+    #[test]
+    fn observed_job_revision_advances_cursor_and_missing_revision_stops_polling() {
+        for revision in [Some(1003),None] {
+            let mut calls=0;
+            let mut id=String::new();
+            let result=fixture().0.request_via("POST","/v1/action",None,Instant::now()+Duration::from_secs(1),
+                |_,path,bytes,_| {
+                    calls+=1;
+                    match calls {
+                        1 => { id=serde_json::from_slice::<EnvelopeV1>(bytes)?.request_id;
+                            Ok((202,json!({"request_id":id,"status":"queued","revision":1001}))) },
+                        2 => Ok((200,json!({"request_id":id,"status":"received","revision":revision,"response":null}))),
+                        3 => { assert!(path.starts_with("/v1/changes?since=1003&")); bail!("stop after verified poll") },
+                        _ => panic!("unexpected replay"),
+                    }
+                });
+            assert!(result.is_err());
+            assert_eq!(calls,if revision.is_some() {3} else {2});
+        }
     }
 
     #[test]

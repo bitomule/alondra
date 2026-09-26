@@ -59,12 +59,22 @@ struct Userinfo {
     preferred_username: Option<String>,
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionState {
+    #[default]
+    Active,
+    PendingRevocation,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Session {
     issuer: String,
     client_id: String,
     sub: String,
     refresh_token: String,
+    #[serde(default)]
+    state: SessionState,
 }
 
 #[derive(Clone)]
@@ -340,8 +350,17 @@ fn stored_optional() -> Result<Option<Session>> {
     decode_stored(get_generic_password(KEYCHAIN_SERVICE, ISSUER))
 }
 
+fn require_active(session: &Session) -> Result<()> {
+    if session.state == SessionState::PendingRevocation {
+        bail!("signed out locally; server revocation is pending; run `alondra account` when online or `alondra login` to reconnect");
+    }
+    Ok(())
+}
+
 fn stored() -> Result<Session> {
-    stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")
+    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")?;
+    require_active(&session)?;
+    Ok(session)
 }
 
 pub fn login() -> Result<()> {
@@ -406,6 +425,7 @@ pub fn login() -> Result<()> {
         client_id: CLIENT_ID.into(),
         sub: user.sub,
         refresh_token: refresh,
+        state: SessionState::Active,
     };
     set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(&session)?)?;
     println!(
@@ -478,6 +498,7 @@ fn complete_refresh(
     persist: impl FnOnce(&Session) -> Result<()>,
     identify: impl FnOnce(&str) -> Result<Userinfo>,
 ) -> Result<(AccountToken, Option<String>)> {
+    require_active(&session)?;
     // Commit rotation before any further network operation. A failed userinfo call
     // must not strand a one-use refresh token. No access token leaves this function
     // until the account binding has been checked.
@@ -518,29 +539,61 @@ pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
 }
 
 pub fn status() -> Result<()> {
-    let (account, preferred_username) = refreshed()?;
-    println!(
-        "Signed in as {}.",
-        preferred_username.as_deref().unwrap_or(&account.sub)
-    );
+    let _lock = AccountLock::acquire()?;
+    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")?;
+    if session.state == SessionState::PendingRevocation {
+        report_logout(finish_logout(session)?);
+        return Ok(());
+    }
+    let (account, preferred_username) = refreshed_locked()?;
+    println!("Signed in as {}.", preferred_username.as_deref().unwrap_or(&account.sub));
     Ok(())
 }
 
 pub fn logout() -> Result<()> {
     let _lock = AccountLock::acquire()?;
-    let session = stored()?;
-    let http = agent();
-    let remote_revoked = discovery(&http)
-        .and_then(|d| revoke_token(&http, &d, &session.refresh_token))
-        .is_ok();
-    delete_generic_password(KEYCHAIN_SERVICE, ISSUER)?;
-    println!("Signed out on this Mac.");
-    if !remote_revoked {
-        eprintln!(
-            "Could not confirm server-side revocation while offline; the local Keychain token was removed. Other copies remain valid until Keycloak expires them."
-        );
-    }
+    let Some(session) = stored_optional()? else {
+        println!("Signed out on this Mac.");
+        return Ok(());
+    };
+    // The lock excludes every refresh/read/write until pending state is durable.
+    report_logout(finish_logout(session)?);
     Ok(())
+}
+
+fn report_logout(revoked: bool) {
+    println!("Signed out on this Mac.");
+    if !revoked {
+        eprintln!("Server revocation is pending. The saved credential cannot sign in; run `alondra account` when online to complete revocation.");
+    }
+}
+
+fn finish_logout(session: Session) -> Result<bool> {
+    logout_transition(session,
+        |pending| set_generic_password(KEYCHAIN_SERVICE, ISSUER, &serde_json::to_vec(pending)?)
+            .context("could not save local sign-out; logout was not completed"),
+        |pending| {
+            let http = agent();
+            let d = discovery(&http)?;
+            revoke_token(&http, &d, &pending.refresh_token)
+        },
+        || delete_generic_password(KEYCHAIN_SERVICE, ISSUER).map_err(Into::into),
+    )
+}
+
+fn logout_transition(
+    mut session: Session,
+    persist: impl FnOnce(&Session) -> Result<()>,
+    revoke: impl FnOnce(&Session) -> Result<()>,
+    clear: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if session.state == SessionState::Active {
+        session.state = SessionState::PendingRevocation;
+        persist(&session)?;
+    }
+    if revoke(&session).is_err() { return Ok(false); }
+    clear().context("server session revoked; local sign-out remains pending until Keychain cleanup succeeds")?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -550,13 +603,88 @@ mod persistent_session_tests {
 
     fn session() -> Session {
         Session { issuer: ISSUER.into(), client_id: CLIENT_ID.into(),
-            sub: "owner".into(), refresh_token: "old-refresh".into() }
+            sub: "owner".into(), refresh_token: "old-refresh".into(), state: SessionState::Active }
     }
     fn token() -> TokenResponse {
         TokenResponse { access_token: "access".into(), refresh_token: Some("new-refresh".into()), expires_in: Some(300) }
     }
     fn owner() -> Userinfo {
         Userinfo { sub: "owner".into(), preferred_username: None }
+    }
+
+    #[test]
+    fn legacy_active_session_deserializes_and_offline_logout_survives_restart() {
+        let mut legacy=serde_json::to_value(session()).unwrap();
+        legacy.as_object_mut().unwrap().remove("state");
+        let active: Session=serde_json::from_value(legacy).unwrap();
+        assert!(active.state == SessionState::Active);
+        let saved=RefCell::new(serde_json::to_vec(&active).unwrap());
+        assert!(!logout_transition(active,
+            |pending| { *saved.borrow_mut()=serde_json::to_vec(pending)?; Ok(()) },
+            |_| bail!("offline"), || panic!("must retain revocation credential")).unwrap());
+        let restarted: Session=serde_json::from_slice(&saved.borrow()).unwrap();
+        assert!(require_active(&restarted).is_err());
+        assert_eq!(restarted.refresh_token,"old-refresh");
+        let revoked=Cell::new(false);
+        let removed=Cell::new(false);
+        assert!(logout_transition(restarted, |_| panic!("already durable"),
+            |pending| { assert_eq!(pending.refresh_token,"old-refresh"); revoked.set(true); Ok(()) },
+            || { assert!(revoked.get()); removed.set(true); Ok(()) }).unwrap());
+        assert!(removed.get());
+    }
+
+    #[test]
+    fn pending_session_invalidates_cached_token_and_never_refreshes() {
+        let active=session();
+        let cache=(serde_json::to_vec(&active).unwrap(), AccountToken {
+            sub: active.sub.clone(), access_token:"cached-access".into(), valid_for:Duration::from_secs(300),
+        }, Instant::now());
+        assert!(cached_for_session(Some(&cache), &active).unwrap().is_some());
+        let saved=RefCell::new(active.clone());
+        logout_transition(active, |pending| { *saved.borrow_mut()=pending.clone(); Ok(()) },
+            |_| bail!("offline"), || panic!("no deletion")).unwrap();
+        let other_process: Session=serde_json::from_slice(&serde_json::to_vec(&*saved.borrow()).unwrap()).unwrap();
+        assert!(cached_for_session(Some(&cache), &other_process).is_err());
+        assert!(complete_refresh(other_process, token(), Instant::now(),
+            |_| panic!("pending token must not rotate"), |_| panic!("pending token must not identify")).is_err());
+    }
+
+    #[test]
+    fn failed_local_logout_write_never_revokes_or_reports_completion() {
+        let saved=session();
+        let result=logout_transition(saved.clone(), |_| bail!("Keychain write denied"),
+            |_| panic!("must persist before network"), || panic!("must keep item"));
+        assert!(result.is_err());
+        assert!(require_active(&saved).is_ok());
+    }
+
+    #[test]
+    fn failed_clear_after_revocation_keeps_pending_until_idempotent_retry() {
+        let saved=RefCell::new(Some(session()));
+        let revocations=Cell::new(0);
+        let result=logout_transition(session(),
+            |pending| { *saved.borrow_mut()=Some(pending.clone()); Ok(()) },
+            |_| { revocations.set(revocations.get()+1); Ok(()) },
+            || bail!("Keychain deletion failed"));
+        assert!(result.is_err());
+        let pending=saved.borrow().as_ref().unwrap().clone();
+        assert!(require_active(&pending).is_err());
+        assert!(cached_for_session(None, &pending).is_err());
+        assert!(logout_transition(pending, |_| panic!("pending state already durable"),
+            |_| { revocations.set(revocations.get()+1); Ok(()) },
+            || { *saved.borrow_mut()=None; Ok(()) }).unwrap());
+        assert_eq!(revocations.get(),2,"revocation is retried idempotently before clearing");
+        assert!(saved.borrow().is_none());
+    }
+
+    #[test]
+    fn pending_login_must_finish_revocation_before_clearing_or_authorizing() {
+        let mut pending=session(); pending.state=SessionState::PendingRevocation;
+        assert!(replace_previous_login(Some(&pending), |_| bail!("still offline"),
+            || panic!("must not clear pending credential")).is_err());
+        let revoked=Cell::new(false);
+        replace_previous_login(Some(&pending), |_| { revoked.set(true); Ok(()) },
+            || { assert!(revoked.get()); Ok(()) }).unwrap();
     }
 
     #[test]
@@ -793,22 +921,26 @@ impl Drop for AccountLock {
     }
 }
 
+type CachedAccount = (Vec<u8>, AccountToken, Instant);
+
+fn cached_for_session(cache: Option<&CachedAccount>, session: &Session) -> Result<Option<AccountToken>> {
+    require_active(session)?;
+    let bytes = serde_json::to_vec(session)?;
+    Ok(cache.filter(|(generation, token, created)| generation == &bytes && created.elapsed() < token.valid_for)
+        .map(|(_, token, _)| token.clone()))
+}
+
 /// A short-lived access-token cache avoids a refresh for every encrypted file chunk.
 /// Inspect persisted session under the process lock, so logout/account changes invalidate it.
 pub fn token_for_service() -> Result<AccountToken> {
-    type Cached = (Vec<u8>, AccountToken, Instant);
-    static CACHE: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
+    static CACHE: std::sync::Mutex<Option<CachedAccount>> = std::sync::Mutex::new(None);
     let mut cache = CACHE
         .try_lock()
         .map_err(|_| anyhow!("account login or refresh is busy; retry when it finishes"))?;
     let _lock = AccountLock::for_service()?;
-    let session = serde_json::to_vec(
-        &stored().context("sign in with alondra login before connecting to a remote Mac")?,
-    )?;
-    if let Some((generation, token, created)) = &*cache {
-        if generation == &session && created.elapsed() < token.valid_for {
-            return Ok(token.clone());
-        }
+    let session = stored().context("sign in with alondra login before connecting to a remote Mac")?;
+    if let Some(token) = cached_for_session(cache.as_ref(), &session)? {
+        return Ok(token);
     }
     let (token, _) = refreshed_locked()?;
     *cache = Some((
