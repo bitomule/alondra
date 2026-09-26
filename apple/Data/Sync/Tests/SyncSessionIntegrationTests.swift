@@ -68,6 +68,34 @@ private actor ControlledTransport: HTTPTransport {
     }
 }
 
+private actor AlternateSyncTransport: SyncTransport {
+    private let body: Data
+    private var overviewCalls = 0
+    private var pollTick: UInt64?
+    private var pollWaiter: CheckedContinuation<Void, Never>?
+
+    init(body: Data) { self.body = body }
+
+    func fetchOverview() async throws -> Data {
+        overviewCalls += 1
+        return body
+    }
+
+    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
+        pollTick = afterSnapshotTick
+        pollWaiter?.resume()
+        pollWaiter = nil
+        try await Task.sleep(for: .seconds(60))
+    }
+
+    func waitForPoll() async {
+        if pollTick != nil { return }
+        await withCheckedContinuation { pollWaiter = $0 }
+    }
+
+    func counts() -> (Int, UInt64?) { (overviewCalls, pollTick) }
+}
+
 private func nextSnapshot(from iterator: inout AsyncStream<SyncState>.Iterator) async -> SyncState? {
     while let state = await iterator.next() {
         if state.snapshot != nil { return state }
@@ -93,6 +121,26 @@ final class SyncSessionIntegrationTests: XCTestCase {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         XCTAssertEqual(try decoder.decode(Overview.self, from: Data(body.utf8)).tick, tick)
         return body
+    }
+
+    func testAlternateTransportSharesOneSessionAcrossScenes() async throws {
+        let relay = AlternateSyncTransport(body: Data(try overview(9).utf8))
+        let identity = SyncIdentity(server: URL(string: "https://relay.example")!,
+                                    deviceID: "phone-1", credentialRevision: "account-1/mac-1/key-1")
+        let session = SyncSession(transport: relay, identity: identity)
+        var first = await session.subscribe().makeAsyncIterator()
+        var second = await session.subscribe().makeAsyncIterator()
+
+        let firstSnapshot = await nextSnapshot(from: &first)
+        let secondSnapshot = await nextSnapshot(from: &second)
+        XCTAssertEqual(firstSnapshot?.snapshot?.tick, 9)
+        XCTAssertEqual(firstSnapshot?.identity, identity)
+        XCTAssertEqual(firstSnapshot?.publicationRevision, secondSnapshot?.publicationRevision)
+        await relay.waitForPoll()
+        let (overviewCalls, afterTick) = await relay.counts()
+        XCTAssertEqual(overviewCalls, 1)
+        XCTAssertEqual(afterTick, 9)
+        await session.stop()
     }
 
     func testTwoWindowsShareOneLongPollAndStopCancelsIt() async throws {

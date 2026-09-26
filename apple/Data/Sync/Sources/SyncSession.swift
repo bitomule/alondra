@@ -61,7 +61,8 @@ public actor SyncSession {
     /// even when the new daemon never reaches the previous tick.
     private static let changeWaitSeconds = 10
 
-    private var client: AlondraAPIClient
+    private var transport: any SyncTransport
+    private var isUnauthorized: @Sendable (any Error) -> Bool
     public var identity: SyncIdentity { state.identity }
     public private(set) var state: SyncState
     private let retryDelay: Duration
@@ -71,12 +72,21 @@ public actor SyncSession {
     private var subscribers: [UUID: AsyncStream<SyncState>.Continuation] = [:]
 
     public init(client: AlondraAPIClient, credentialRevision: String, retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil) {
-        self.client = client
         let identity = SyncIdentity(
             server: client.base,
             deviceID: client.signer?.deviceID ?? client.device,
             credentialRevision: credentialRevision
         )
+        self.init(transport: client, identity: identity, retryDelay: retryDelay,
+                  initialInvalidConfiguration: initialInvalidConfiguration,
+                  isUnauthorized: { if case APIError.unauthorized = $0 { true } else { false } })
+    }
+
+    public init(transport: any SyncTransport, identity: SyncIdentity,
+                retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil,
+                isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
+        self.transport = transport
+        self.isUnauthorized = isUnauthorized
         self.state = SyncState(
             identity: identity,
             generation: 0,
@@ -101,15 +111,23 @@ public actor SyncSession {
     /// Replaces transport and invalidates every in-flight response before cancelling the old poll.
     /// The new identity may be the same when the caller explicitly requests a fresh connection.
     public func use(_ client: AlondraAPIClient, credentialRevision: String) {
-        generation &+= 1
-        loop?.cancel()
-        loop = nil
-        self.client = client
         let identity = SyncIdentity(
             server: client.base,
             deviceID: client.signer?.deviceID ?? client.device,
             credentialRevision: credentialRevision
         )
+        use(transport: client, identity: identity,
+            isUnauthorized: { if case APIError.unauthorized = $0 { true } else { false } })
+    }
+
+    /// Switches a local or relay transport and invalidates in-flight reads under a new identity.
+    public func use(transport next: any SyncTransport, identity: SyncIdentity,
+                    isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
+        generation &+= 1
+        loop?.cancel()
+        loop = nil
+        transport = next
+        self.isUnauthorized = isUnauthorized
         publish(SyncState(identity: identity, generation: generation, connection: .connecting, snapshot: nil))
         startIfNeeded()
     }
@@ -152,9 +170,11 @@ public actor SyncSession {
         guard !subscribers.isEmpty, loop == nil else { return }
         if case .invalidConfiguration = state.connection { return }
         let currentGeneration = generation
-        let currentClient = client
+        let currentTransport = transport
+        let unauthorized = isUnauthorized
         loop = Task { [weak self] in
-            await self?.run(client: currentClient, generation: currentGeneration)
+            await self?.run(transport: currentTransport, generation: currentGeneration,
+                            isUnauthorized: unauthorized)
         }
     }
 
@@ -184,22 +204,18 @@ public actor SyncSession {
         ))
     }
 
-    private func run(client: AlondraAPIClient, generation current: UInt64) async {
+    private func run(transport: any SyncTransport, generation current: UInt64,
+                     isUnauthorized: @Sendable (any Error) -> Bool) async {
         while !Task.isCancelled && generation == current && !subscribers.isEmpty {
             do {
                 // Always fetch the complete state after a change, reconnection, or daemon restart.
-                let body = try await client.send(AlondraEndpoints.overview())
+                let body = try await transport.fetchOverview()
                 let snapshot = try SyncSnapshot(body: body)
                 guard !Task.isCancelled, generation == current else { return }
                 publish(.online, snapshot: snapshot)
                 do {
-                    let poll = Endpoint<Data>.data(
-                        .get,
-                        path: ["v1", "changes"],
-                        query: [("after", String(snapshot.tick)), ("wait", String(Self.changeWaitSeconds))],
-                        policy: .longPoll
-                    )
-                    _ = try await client.send(poll)
+                    try await transport.waitForChange(afterSnapshotTick: snapshot.tick,
+                                                       seconds: Self.changeWaitSeconds)
                 } catch let error as URLError where error.code == .timedOut {
                     // A timeout is a normal empty poll; re-fetch to detect daemon restarts.
                 }
@@ -207,7 +223,7 @@ public actor SyncSession {
                 return
             } catch {
                 guard !Task.isCancelled, generation == current else { return }
-                if case APIError.unauthorized = error {
+                if isUnauthorized(error) {
                     publish(.unpaired)
                 } else {
                     publish(.offline(String(describing: error)))
