@@ -7,6 +7,24 @@ import Foundation
 import XCTest
 
 final class RelaySessionTests: XCTestCase {
+    func testRecoveryDistinguishesProvenAbsenceFromExecutedOrUncertainMutations() async throws {
+        for mode in [FakeHTTP.Mode.success, .oversized, .rejected] {
+            let fixture = try Fixture(mode: mode)
+            defer { try? FileManager.default.removeItem(at: fixture.directory) }
+            let absent = try await fixture.session().recoveryStatus(requestID: "operation-1")
+            XCTAssertEqual(absent, .notDispatched)
+            _ = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
+            let restored = try await fixture.session().recoveryStatus(requestID: "operation-1")
+            switch mode {
+            case .success: XCTAssertEqual(restored, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+            case .rejected: XCTAssertEqual(restored, .completed(status: 422, body: Data(#"{"error":"invalid message"}"#.utf8)))
+            default: XCTAssertEqual(restored, .unknown)
+            }
+            let posts = await fixture.http.mutations
+            XCTAssertEqual(posts.count, 1, "Recovery may only query an existing envelope")
+        }
+    }
+
     func testReadCannotReuseMutationIdentityInEitherDirection() async throws {
         let fixture = try Fixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -190,7 +208,7 @@ private struct Fixture {
 }
 
 private actor FakeHTTP: RelayHTTPTransport {
-    enum Mode { case success, oversized, wrongSender, wrongRequest, expired, restart, overview }
+    enum Mode { case success, oversized, rejected, wrongSender, wrongRequest, expired, restart, overview }
     let macSigning: P256.Signing.PrivateKey
     let phoneAgreement: P256.KeyAgreement.PublicKey
     let mode: Mode
@@ -215,7 +233,7 @@ private actor FakeHTTP: RelayHTTPTransport {
             return RelayHTTPResponse(status: 401, body: Data())
         }
         let requestID = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(mutations.last)).requestID
-        let payload = mode == .overview ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : #"{"status":200,"body":{"ok":true}}"#
+        let payload = mode == .overview ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
         let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender ? "mac-other" : "mac-test",
             recipient: "phone-test", requestID: mode == .wrongRequest ? "operation-other" : requestID, kind: "response",
             expiresAtMilliseconds: mode == .expired ? 999 : 5000, plaintext: Data(payload.utf8),

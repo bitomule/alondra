@@ -11,6 +11,12 @@ public enum RelayOperationResult: Sendable, Equatable {
     case unknown
 }
 
+public enum RelayRecoveryStatus: Sendable, Equatable {
+    case notDispatched
+    case completed(status: Int, body: Data)
+    case unknown
+}
+
 public enum RelaySessionError: Error { case invalidRequest, invalidResponse, operationIdentityConflict, outcomeUnknown, localStatus(Int) }
 
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
@@ -146,6 +152,17 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport {
             catch { return .unknown }
         }
         return .unknown
+    }
+
+    /// Absence is authoritative only because outbox entries/tombstones are never deleted.
+    /// A journal read error propagates; it must never be interpreted as permission to send.
+    public func recoveryStatus(requestID: String) async throws -> RelayRecoveryStatus {
+        guard active else { return .unknown }
+        guard try await outbox.entry(requestID: requestID) != nil else { return .notDispatched }
+        switch try await resume(requestID: requestID) {
+        case .completed(let status, let body): return .completed(status: status, body: body)
+        case .unknown: return .unknown
+        }
     }
 
     public func resume(requestID: String, statusPolls: Int = 10) async throws -> RelayOperationResult {
