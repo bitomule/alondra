@@ -63,7 +63,7 @@ impl View {
     /// task itself, and each PR of a task it depends on merged after it started. One notice per
     /// task and PR, typed into the task's node once it can take Alondra's messages.
     pub fn merge_notices_due(&self, at: Millis) -> Vec<Message> {
-        let mut next_id = self.messages.keys().next_back().copied().unwrap_or(0);
+        let mut next_id = self.next_message_id() - 1;
         let mut due = vec![];
         for task in self.board.tasks.values().filter(|t| t.recorded && Self::started(t)) {
             let Some(node) = task.assignee.as_ref().and_then(|a| self.nodes.get(&a.session_id)) else { continue };

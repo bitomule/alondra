@@ -71,17 +71,19 @@ async fn handle(mut stream: UnixStream, hub: Arc<Hub>) -> Result<()> {
     // A held permission can wait for days. If Claude exits, dropping the hook future also
     // drops its HoldGuard, which orphans the question and settles its task blocker.
     let response = tokio::select! {
-        response = crate::http::hook(State(hub.clone()), headers, Json(envelope.payload)) => response,
+        response = crate::http::hook_with_ack(State(hub.clone()), headers, Json(envelope.payload),true) => response,
         result = stream.read_u8() => {
             log!("hook client disconnected while awaiting a decision: {result:?}");
             return Ok(());
         }
     };
+    let delivery = response.headers().get("x-alondra-delivery-attempt").and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok());
     let held = response.headers().get("x-alondra-hold-id").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
     let status = response.status().as_u16();
     let bytes = match to_bytes(response.into_body(), MAX_HOOK_BYTES as usize).await {
         Ok(bytes) => bytes,
         Err(error) => {
+            if let Some(id)=delivery { crate::delivery::finish(&hub,id,crate::delivery::Outcome::Uncertain("hook_encode_failed"))?; }
             if let Some(id) = held {
                 hub.append(alondra_core::Event::QuestionClosed {
                     id,
@@ -96,9 +98,13 @@ async fn handle(mut stream: UnixStream, hub: Arc<Hub>) -> Result<()> {
         stream.write_all(&status.to_be_bytes()).await?;
         stream.write_all(&bytes).await?;
         stream.shutdown().await?;
-        anyhow::ensure!(stream.read_u8().await? == 6, "hook reply was not acknowledged");
+        anyhow::ensure!(tokio::time::timeout(std::time::Duration::from_secs(5),stream.read_u8()).await?? == 6, "hook reply was not acknowledged");
         Ok::<(), anyhow::Error>(())
     }.await;
+    if let Some(id)=delivery {
+        crate::delivery::finish(&hub,id,if sent.is_ok() { crate::delivery::Outcome::Handed }
+            else { crate::delivery::Outcome::Uncertain("hook_ack_missing") })?;
+    }
     if let Some(id) = held {
         let event = if sent.is_ok() {
             alondra_core::Event::QuestionDelivered { id }
@@ -116,6 +122,51 @@ mod tests {
     use super::*;
     use alondra_core::config::Config;
     use alondra_core::{QuestionStatus, tasks::TaskState};
+
+    #[tokio::test]
+    async fn stop_delivery_waits_for_stdout_ack_and_disconnect_is_uncertain() {
+        for ack in [Some(6u8),Some(5u8),None] {
+            let home=std::env::temp_dir().join(format!("delivery-hook-{}",crate::auth::random_hex(6)));
+            let config=Config::resolve(home.clone(),&Default::default(),|_|None,||Some("Test".into()));
+            let hub=Arc::new(Hub::open(config,false).unwrap());
+            hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {session_id:"interactive".into(),event:"UserPromptSubmit".into(),..Default::default()})).unwrap();
+            for id in [1,2] { hub.append(alondra_core::Event::MessageQueued(alondra_core::Message {id,session_id:"interactive".into(),from:alondra_core::MessageFrom::User,text:format!("instruction {id}"),answers_question:None,created_at:1,handed_at:None,delivered_at:None,attachments:vec![],about:None})).unwrap(); }
+            let (mut client,server)=UnixStream::pair().unwrap();
+            let handler=tokio::spawn(handle(server,hub.clone()));
+            let body=br#"{"launched":true,"payload":{"session_id":"interactive","hook_event_name":"Stop"}}"#;
+            client.write_u32(body.len() as u32).await.unwrap();client.write_all(body).await.unwrap();
+            let mut bytes=vec![];client.read_to_end(&mut bytes).await.unwrap();
+            let response:Value=serde_json::from_slice(&bytes[2..]).unwrap();
+            assert!(response["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("instruction 2"));
+            assert!(hub.read(|v|v.messages.values().all(|m|m.handed_at.is_none())));
+            assert!(hub.read(|v|v.delivery_blocked("interactive")));
+            if let Some(ack)=ack {client.write_u8(ack).await.unwrap();} drop(client);
+            let result=handler.await.unwrap();
+            let expected=if ack==Some(6) {alondra_core::delivery::State::Handed} else {alondra_core::delivery::State::Uncertain};
+            assert_eq!(result.is_ok(),ack==Some(6));
+            assert!(hub.read(|v|v.delivery_attempts.values().all(|a|a.state==expected)));
+            assert!(hub.read(|v|v.messages.values().all(|m|m.handed_at.is_some()==(ack==Some(6)) && m.delivered_at.is_none())));
+            drop(hub);std::fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_http_without_receipt_exposes_uncertainty_and_does_not_replay() {
+        let home=std::env::temp_dir().join(format!("delivery-http-hook-{}",crate::auth::random_hex(6)));
+        let config=Config::resolve(home.clone(),&Default::default(),|_|None,||Some("Test".into()));
+        let hub=Arc::new(Hub::open(config,false).unwrap());
+        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {session_id:"s".into(),event:"UserPromptSubmit".into(),..Default::default()})).unwrap();
+        hub.append(alondra_core::Event::MessageQueued(alondra_core::Message {id:1,session_id:"s".into(),from:alondra_core::MessageFrom::User,text:"once".into(),answers_question:None,created_at:1,handed_at:None,delivered_at:None,attachments:vec![],about:None})).unwrap();
+        let mut headers=axum::http::HeaderMap::new();headers.insert(alondra_core::LAUNCHED_HEADER,"1".parse().unwrap());
+        let payload=serde_json::json!({"session_id":"s","hook_event_name":"Stop"});
+        let response=crate::http::hook(State(hub.clone()),headers.clone(),Json(payload.clone())).await;
+        assert!(response.headers().contains_key("x-alondra-delivery-attempt"));
+        assert!(hub.read(|v|v.delivery_attempts.values().all(|a|a.state==alondra_core::delivery::State::Uncertain)));
+        assert!(hub.read(|v|v.messages[&1].handed_at.is_none()));
+        let again=crate::http::hook(State(hub.clone()),headers,Json(payload)).await;
+        assert!(!again.headers().contains_key("x-alondra-delivery-attempt"));
+        drop(hub);std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[tokio::test]
     async fn second_daemon_cannot_replace_a_live_hook_socket() {

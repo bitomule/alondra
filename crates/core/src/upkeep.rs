@@ -218,7 +218,7 @@ pub fn idle_close_question(view: &View, node: &Node, pending: &[String], after: 
     );
     let option = |label: &str| crate::model::QuestionOption { label: label.into(), description: None };
     Some(Question {
-        id: view.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: view.next_question_id(),
         session_id: node.session_id.clone(),
         node_name: Some(name.to_string()),
         title: format!("{name} has been idle for {span} with unfinished work: keep it, close it or resume it?"),

@@ -268,7 +268,7 @@ fn question_for(v: &View, node: &Node, expects: Expects) -> Question {
         (_, None) => (node.name.clone().unwrap_or_else(|| node.short_id.clone()), None),
     };
     Question {
-        id: v.questions.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_question_id(),
         session_id: node.session_id.clone(),
         node_name: node.name.clone().or_else(|| Some(node.short_id.clone())),
         title,
