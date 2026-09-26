@@ -1,5 +1,4 @@
-import AlondraShared
-import ComposableArchitecture
+import AlondraContracts
 import Foundation
 
 /// Stored attachment identifiers, never local paths or bytes, cross this feature boundary.
@@ -76,22 +75,6 @@ public struct QuestionWorkService: Sendable {
     }
 }
 
-extension QuestionWorkService: DependencyKey {
-    /// H owns the one-shot CommandGate and RelayClient adapter. An unwired feature cannot mutate.
-    public static let liveValue = QuestionWorkService(
-        submit: { _ in .failed("Question service is unavailable") },
-        document: { _ in throw QuestionWorkError.unavailable }
-    )
-    public static let testValue = liveValue
-}
-
-extension DependencyValues {
-    public var questionWorkService: QuestionWorkService {
-        get { self[QuestionWorkService.self] }
-        set { self[QuestionWorkService.self] = newValue }
-    }
-}
-
 public enum QuestionWorkError: Error, Equatable, Sendable {
     case unavailable
     case invalidOption
@@ -101,19 +84,6 @@ public enum QuestionWorkError: Error, Equatable, Sendable {
     case notReviewable
     case menuRequiresOption
     case menuDoesNotAcceptAttachments
-
-    public var message: String {
-        switch self {
-        case .unavailable: "Question service is unavailable"
-        case .invalidOption: "That option is no longer available. Review the question and choose again."
-        case .explanationRequired: "Explain your choice before sending it."
-        case .answerRequired: "Write an answer or choose an option before sending it."
-        case .noFeedback: "Add a comment or attachment before sending feedback."
-        case .notReviewable: "This report has no reviewable artifact."
-        case .menuRequiresOption: "Choose one of this terminal menu's options."
-        case .menuDoesNotAcceptAttachments: "Terminal menus do not accept attachments."
-        }
-    }
 }
 
 /// The daemon's option labels are protocol values. UI translations must not be sent back.

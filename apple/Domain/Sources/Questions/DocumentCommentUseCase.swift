@@ -1,4 +1,4 @@
-import AlondraShared
+import AlondraContracts
 import Foundation
 
 public struct DocumentCommentUseCase: Sendable {

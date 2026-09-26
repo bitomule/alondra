@@ -1,4 +1,4 @@
-import AlondraShared
+import AlondraContracts
 
 /// Review choices share the original phone behavior with platform presentations.
 public struct DocumentReviewChoices: Sendable {

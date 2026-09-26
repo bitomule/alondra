@@ -1,4 +1,4 @@
-import AlondraShared
+import AlondraContracts
 import Foundation
 
 public enum PRReviewDecision: Equatable, Sendable {
@@ -41,7 +41,7 @@ public struct PRMergeUseCase: Sendable {
     public init() {}
 
     public func allows(_ method: String, on pr: PullRequest?) -> Bool {
-        guard let pr, pr.state == "open", !pr.hasConflicts, pr.mergeBlockedReason == nil else { return false }
+        guard let pr, pr.state == "open", !pr.hasConflicts, pr.belowNumber == nil else { return false }
         return pr.methods.contains(method)
     }
 }

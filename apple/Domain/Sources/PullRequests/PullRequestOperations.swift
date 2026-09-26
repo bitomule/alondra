@@ -1,5 +1,4 @@
-import AlondraShared
-import ComposableArchitecture
+import AlondraContracts
 import Foundation
 
 public struct PRDiffSnapshot: Equatable, Sendable {
@@ -44,12 +43,6 @@ public struct PRPostDispatchUncertain: Error, Sendable {
     public init() {}
 }
 
-public enum PRPostFailureClassifier {
-    public static let isUnknown: @Sendable (any Error) -> Bool = { error in
-        error is PRPostDispatchUncertain || error.isTransient
-    }
-}
-
 /// H installs a credential-scoped adapter. Mutations must pass through CommandGate; the
 /// adapter reserves before uploading attachments and never retries an unknown dispatch.
 public struct PullRequestOperations: Sendable {
@@ -74,20 +67,3 @@ public struct PullRequestOperations: Sendable {
     }
 }
 
-private enum PullRequestOperationsKey: DependencyKey {
-    static let liveValue = PullRequestOperations(
-        diff: { _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
-        merge: { _, _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
-        resolveConflicts: { _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
-        setAside: { _ in preconditionFailure("Install PullRequestOperations at the app composition root") },
-        review: { _, _, _, _, _ in preconditionFailure("Install PullRequestOperations at the app composition root") }
-    )
-    static let testValue = liveValue
-}
-
-public extension DependencyValues {
-    var pullRequestOperations: PullRequestOperations {
-        get { self[PullRequestOperationsKey.self] }
-        set { self[PullRequestOperationsKey.self] = newValue }
-    }
-}
