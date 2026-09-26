@@ -43,6 +43,7 @@ private final class ServiceSceneContext {
             $0.taskOperations = tasks
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
+            $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
             $0.serviceTasksClient = ServiceTasksClient(observe: { await services.taskSnapshots() })
@@ -84,6 +85,8 @@ private struct ServiceRootView: View {
                 NavigationStack { CloudPairingScreen(store: pairing) }
             }
         }
+        .task { await store.send(.appeared).finish() }
+        .onDisappear { store.send(.disappeared) }
         .sheet(item: $store.scope(state: \.pullRequest, action: \.pullRequest)) { child in
             NavigationStack { ServicePullRequestView(store: child) }
         }

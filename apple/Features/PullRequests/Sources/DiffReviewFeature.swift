@@ -77,6 +77,7 @@ public struct DiffReviewFeature {
         case reviewDiffChanged([DiffFile], PRDiffSnapshot, UInt64)
         case reviewPreflightFailed(String, UInt64)
         case reviewFinished(PRMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -257,10 +258,16 @@ public struct DiffReviewFeature {
                 case .unknown, .obsolete:
                     break
                 }
-                state.submittedComments = nil
-                state.submittedNote = nil
-                state.submittedAttachments = nil
+                if outcome.uncertainID == nil {
+                    state.submittedComments = nil
+                    state.submittedNote = nil
+                    state.submittedAttachments = nil
+                }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.mutationOutcome?.uncertainID == id else { return .none }
+                state.isSending = true
+                return .send(.reviewFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
             case .commandReconciled(let id):
                 if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none

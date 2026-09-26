@@ -42,6 +42,7 @@ public struct PullRequestFeature {
         case resolveConflictsTapped
         case setAsideTapped
         case mutationFinished(PRMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -122,6 +123,10 @@ public struct PullRequestFeature {
                     state.isClosed = true
                 }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.mutationOutcome?.uncertainID == id else { return .none }
+                state.isSending = true
+                return .send(.mutationFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
             case .commandReconciled(let id):
                 if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none

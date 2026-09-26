@@ -52,6 +52,7 @@ public enum QuestionWorkOutcome: Equatable, Sendable {
     case forbidden(String)
     case failed(String)
     case uncertain
+    case uncertainCommand(UUID)
     case obsolete
 }
 

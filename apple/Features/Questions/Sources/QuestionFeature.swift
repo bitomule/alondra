@@ -12,6 +12,7 @@ public struct QuestionFeature {
         public var notice: String?
         public var conflict: String?
         public var completed = false
+        public var uncertainCommandID: UUID?
         public var needsReconciliation = false
         public var revision: UInt64 = 0
 
@@ -28,6 +29,7 @@ public struct QuestionFeature {
         case moreContextTapped
         case submissionFinished(UInt64, QuestionWorkOutcome)
         /// H sends this only after command journal and snapshot reconciliation.
+        case commandResolved(UUID, rejection: String?)
         case reconciled(cardStillOpen: Bool)
         case dismissNotice
     }
@@ -61,6 +63,7 @@ public struct QuestionFeature {
                 state.notice = nil
                 state.conflict = nil
                 state.completed = false
+                state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.revision &+= 1
                 return .cancel(id: CancelID.submit)
@@ -107,6 +110,10 @@ public struct QuestionFeature {
                     state.conflict = reason
                 case .forbidden(let reason), .failed(let reason):
                     state.notice = reason
+                case .uncertainCommand(let id):
+                    state.uncertainCommandID = id
+                    state.notice = "The result is uncertain. Checking its status…"
+                    state.needsReconciliation = true
                 case .uncertain:
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true
@@ -114,8 +121,19 @@ public struct QuestionFeature {
                     break
                 }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.needsReconciliation = false
+                state.notice = rejection
+                if rejection == nil {
+                    state.completed = true
+                    state.draft = QuestionDraft()
+                }
+                return .none
             case .reconciled(let cardStillOpen):
                 guard state.needsReconciliation else { return .none }
+                state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen
                 state.notice = nil

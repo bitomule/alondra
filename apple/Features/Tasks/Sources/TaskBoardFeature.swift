@@ -31,6 +31,7 @@ public struct TaskBoardFeature {
         case archiveTapped
         case archiveFinished(TaskMutationOutcome, UInt64)
         /// Sent only by the scoped journal owner after reconciling this archive command.
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -41,6 +42,7 @@ public struct TaskBoardFeature {
         Reduce { state, action in
             switch action {
             case .boardChanged(let board):
+                if state.archiveOutcome == .confirmed, state.doneRequestIDs != board.doneRequestIDs { state.archiveOutcome = nil }
                 state.hasSnapshot = board.hasSnapshot
                 state.openRequestIDs = board.openRequestIDs
                 state.doneRequestIDs = board.doneRequestIDs
@@ -71,7 +73,7 @@ public struct TaskBoardFeature {
                 state.showArchived = show
                 return .none
             case .archiveTapped:
-                guard state.canArchive, !state.isArchiving, state.archiveOutcome?.uncertainID == nil else { return .none }
+                guard state.canArchive, !state.isArchiving, state.archiveOutcome?.uncertainID == nil, state.archiveOutcome != .confirmed else { return .none }
                 state.isArchiving = true
                 state.archiveOutcome = nil
                 let epoch = state.presentationEpoch
@@ -83,6 +85,10 @@ public struct TaskBoardFeature {
                 guard epoch == state.presentationEpoch else { return .none }
                 state.isArchiving = false
                 state.archiveOutcome = outcome
+                return .none
+            case .commandResolved(let id, let rejection):
+                guard state.archiveOutcome?.uncertainID == id else { return .none }
+                state.archiveOutcome = rejection.map(TaskMutationOutcome.rejected) ?? .confirmed
                 return .none
             case .commandReconciled(let id):
                 if state.archiveOutcome?.uncertainID == id { state.archiveOutcome = nil }

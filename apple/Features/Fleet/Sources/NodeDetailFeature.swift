@@ -19,6 +19,7 @@ public struct NodeDetailFeature {
         public var files: [NodeFile] = []
         public var isSending = false
         public var sendOutcome: NodeMutationOutcome?
+        public var uncertainMessage: NodeMessage?
         public var sentCount = 0
         public var showCloseConfirmation = false
         public var isClosing = false
@@ -56,6 +57,7 @@ public struct NodeDetailFeature {
         case closeCancelled
         case closeConfirmed
         case closeFinished(NodeMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -109,6 +111,7 @@ public struct NodeDetailFeature {
                 state.files = []
                 state.isSending = false
                 state.sendOutcome = nil
+                state.uncertainMessage = nil
                 state.showCloseConfirmation = false
                 state.isClosing = false
                 state.closeOutcome = nil
@@ -154,6 +157,7 @@ public struct NodeDetailFeature {
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
                 state.sendOutcome = outcome
+                state.uncertainMessage = outcome.uncertainID == nil ? nil : outgoing
                 if outcome == .confirmed {
                     // The user may have changed the draft while the request was in flight.
                     if state.message.trimmingCharacters(in: .whitespacesAndNewlines) == outgoing.text,
@@ -192,6 +196,17 @@ public struct NodeDetailFeature {
                 state.isClosing = false
                 state.closeOutcome = outcome
                 state.shouldDismiss = outcome == .confirmed
+                return .none
+            case .commandResolved(let id, let rejection):
+                let outcome = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
+                if state.sendOutcome?.uncertainID == id, let outgoing = state.uncertainMessage {
+                    state.isSending = true
+                    return .send(.sendFinished(outgoing, outcome, state.presentationEpoch))
+                }
+                if state.closeOutcome?.uncertainID == id {
+                    state.isClosing = true
+                    return .send(.closeFinished(outcome, state.presentationEpoch))
+                }
                 return .none
             case .commandReconciled(let id):
                 if state.sendOutcome?.uncertainID == id { state.sendOutcome = nil }

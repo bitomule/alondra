@@ -22,6 +22,7 @@ public struct NewRequestFeature {
         public var optionsError: String?
         public var issuesError: String?
         public var submissionError: String?
+        public var uncertainCommandID: UUID?
         public var submissionUncertain = false
         public var successfulSubmissionCount = 0
         public var presentationEpoch: UInt64 = 0
@@ -58,6 +59,7 @@ public struct NewRequestFeature {
         case issuesFailed(String, UInt64)
         case submitTapped
         case submitFinished(CreateRequestResult, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case discardUncertainDraft
     }
 
@@ -201,6 +203,10 @@ public struct NewRequestFeature {
                     state.successfulSubmissionCount += 1
                 case .failed(let message):
                     state.submissionError = message
+                case .uncertainCommand(let id, let message):
+                    state.uncertainCommandID = id
+                    state.submissionError = message
+                    state.submissionUncertain = true
                 case .uncertain(let message):
                     state.submissionError = message
                     state.submissionUncertain = true
@@ -208,11 +214,23 @@ public struct NewRequestFeature {
                     break
                 }
                 return .none
+            case .commandResolved(let id, let rejection):
+                guard state.submissionUncertain, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.submissionUncertain = false
+                state.submissionError = rejection
+                if rejection == nil {
+                    state.text = ""
+                    state.attachments = []
+                    state.successfulSubmissionCount += 1
+                }
+                return .none
             case .discardUncertainDraft:
                 guard state.submissionUncertain else { return .none }
                 state.text = ""
                 state.attachments = []
                 state.submissionError = nil
+                state.uncertainCommandID = nil
                 state.submissionUncertain = false
                 return .none
             }

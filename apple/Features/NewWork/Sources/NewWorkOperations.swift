@@ -121,5 +121,6 @@ public enum CreateRequestResult: Equatable, Sendable {
     case confirmed
     case failed(String)
     case uncertain(String)
+    case uncertainCommand(UUID, String)
     case cancelled
 }

@@ -58,6 +58,7 @@ public struct DocumentReviewFeature {
         public var draft = DocumentDraft()
         public var isSubmitting = false
         public var completed = false
+        public var uncertainCommandID: UUID?
         public var needsReconciliation = false
         public var conflict: String?
         public var notice: String?
@@ -83,6 +84,7 @@ public struct DocumentReviewFeature {
         case sendFeedbackTapped(author: String)
         case reviewTapped(ReviewVerdict)
         /// H sends this only after journal and snapshot reconciliation, never merely on refresh.
+        case commandResolved(UUID, rejection: String?)
         case reconciled(cardStillOpen: Bool)
         case submissionFinished(UInt64, QuestionOperation, QuestionWorkOutcome)
         case reportFeedbackFinished(UInt64, QuestionWorkOutcome)
@@ -131,6 +133,7 @@ public struct DocumentReviewFeature {
                 state.loadError = nil
                 state.isSubmitting = false
                 state.completed = false
+                state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.conflict = nil
                 state.notice = nil
@@ -210,8 +213,19 @@ public struct DocumentReviewFeature {
                 guard case .report(let report) = state.subject else { return .none }
                 do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
                 catch { state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
+            case .commandResolved(let id, let rejection):
+                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.needsReconciliation = false
+                state.notice = rejection
+                if rejection == nil {
+                    state.completed = true
+                    state.draft = DocumentDraft()
+                }
+                return .none
             case .reconciled(let cardStillOpen):
                 guard state.needsReconciliation else { return .none }
+                state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen
                 state.notice = nil
@@ -226,6 +240,10 @@ public struct DocumentReviewFeature {
                     state.draft = DocumentDraft()
                 case .conflict(let reason): state.conflict = reason
                 case .forbidden(let reason), .failed(let reason): state.notice = reason
+                case .uncertainCommand(let id):
+                    state.uncertainCommandID = id
+                    state.notice = "The result is uncertain. Checking its status…"
+                    state.needsReconciliation = true
                 case .uncertain:
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true

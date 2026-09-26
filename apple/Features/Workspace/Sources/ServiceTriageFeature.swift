@@ -64,13 +64,13 @@ public struct ServiceTriageFeature {
                     } else { state.document = nil }
                 }
                 return .merge(effects)
-            case .question(.presented(.submissionFinished)):
+            case .question(.presented(.submissionFinished)), .question(.presented(.commandResolved)):
                 if let question = state.question, question.completed {
                     state.triage.hiddenIDs.insert("q\(question.question.id)")
                     state.question = nil
                 }
                 return .none
-            case .document(.presented(.submissionFinished)), .document(.presented(.reportFeedbackFinished)):
+            case .document(.presented(.submissionFinished)), .document(.presented(.reportFeedbackFinished)), .document(.presented(.commandResolved)):
                 if let document = state.document, document.completed {
                     state.triage.hiddenIDs.insert(document.subject.id)
                     state.document = nil

@@ -35,6 +35,7 @@ public struct FleetFeature {
         case closeCancelled
         case closeConfirmed
         case closeFinished(String, NodeMutationOutcome, UInt64)
+        case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
     }
 
@@ -94,6 +95,12 @@ public struct FleetFeature {
                 guard epoch == state.presentationEpoch, state.closingIDs.remove(id) != nil else { return .none }
                 state.closeOutcomeByID[id] = outcome
                 if outcome == .confirmed, state.selectedNodeID == id { state.selectedNodeID = nil }
+                return .none
+            case .commandResolved(let id, let rejection):
+                for (node, outcome) in state.closeOutcomeByID where outcome.uncertainID == id {
+                    state.closeOutcomeByID[node] = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
+                    if rejection == nil, state.selectedNodeID == node { state.selectedNodeID = nil }
+                }
                 return .none
             case .commandReconciled(let commandID):
                 state.closeOutcomeByID = state.closeOutcomeByID.filter { $0.value.uncertainID != commandID }

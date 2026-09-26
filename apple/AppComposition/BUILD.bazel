@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 swift_library(
     name = "AlondraAppComposition",
     module_name = "AlondraAppComposition",
@@ -11,5 +11,15 @@ swift_library(
         "//apple/Data/RelaySession:AlondraRelaySession", "//apple/Data/Sync:AlondraSync",
         "//apple/ServicePairing:AlondraServicePairing", "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+
+swift_test(
+    name = "AlondraCommandRecoveryIntegrationTests",
+    srcs = ["Tests/CommandRecoveryIntegrationTests.swift"],
+    deps = [
+        ":AlondraAppComposition",
+        "//apple/Data/Commands:AlondraCommands",
     ],
 )

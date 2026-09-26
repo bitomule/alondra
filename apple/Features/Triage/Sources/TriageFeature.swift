@@ -7,6 +7,7 @@ public enum TriageMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
     case unknown
+    case unknownCommand(UUID)
     case obsolete
 }
 
@@ -50,6 +51,7 @@ public struct TriageFeature {
         public var reportsByPullRequest: [UInt64: [Report]] = [:]
         public var hiddenIDs: Set<String> = []
         public var pendingIDs: Set<String> = []
+        public var uncertainByItem: [String: UUID] = [:]
         public var cursor: InboxPlace?
         public var presentedID: String?
         public var notice: String?
@@ -101,6 +103,7 @@ public struct TriageFeature {
                 && lhs.questionsByPullRequest == rhs.questionsByPullRequest
                 && lhs.reportsByPullRequest == rhs.reportsByPullRequest
                 && lhs.hiddenIDs == rhs.hiddenIDs
+                && lhs.uncertainByItem == rhs.uncertainByItem
                 && lhs.pendingIDs == rhs.pendingIDs && lhs.cursor == rhs.cursor
                 && lhs.presentedID == rhs.presentedID && lhs.notice == rhs.notice
                 && lhs.hasSnapshot == rhs.hasSnapshot && lhs.snapshotRevision == rhs.snapshotRevision
@@ -124,6 +127,7 @@ public struct TriageFeature {
         case route(String, opensDetail: Bool)
         case hide(String)
         case mutationFinished(String, TriageIdentity, TriageMutationOutcome)
+        case commandResolved(UUID, rejection: String?)
         case dismissReview
         case dismissNotice
     }
@@ -203,7 +207,7 @@ public struct TriageFeature {
                 return .none
             case .hide(let id):
                 guard let item = state.queue.first(where: { $0.id == id }),
-                      let identity = state.identity, !state.pendingIDs.contains(id),
+                      let identity = state.identity, !state.pendingIDs.contains(id), state.uncertainByItem[id] == nil,
                       let kind = mutationKind(for: item) else { return .none }
                 var ring = InboxRing(cursor: state.cursor)
                 ring.resolve(item, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
@@ -225,12 +229,24 @@ public struct TriageFeature {
                 case .rejected(let reason):
                     state.hiddenIDs.remove(id)
                     state.notice = reason
+                case .unknownCommand(let commandID):
+                    state.uncertainByItem[id] = commandID
+                    state.hiddenIDs.remove(id)
+                    state.notice = "The result is uncertain. Checking its status…"
                 case .unknown:
                     state.hiddenIDs.remove(id)
                     state.notice = String(localized: "The result is uncertain. Check the server before trying again.")
                 case .obsolete:
                     state.hiddenIDs.remove(id)
                 }
+                return .none
+            case .commandResolved(let commandID, let rejection):
+                let matches = state.uncertainByItem.filter { $0.value == commandID }.map(\.key)
+                for id in matches {
+                    state.uncertainByItem[id] = nil
+                    if rejection == nil { state.hiddenIDs.insert(id) }
+                }
+                if !matches.isEmpty { state.notice = rejection }
                 return .none
             case .dismissReview:
                 state.presentedID = nil
@@ -258,6 +274,7 @@ public struct TriageFeature {
         state.reportsByPullRequest = [:]
         state.hiddenIDs = []
         state.pendingIDs = []
+        state.uncertainByItem = [:]
         state.cursor = nil
         state.presentedID = nil
         state.notice = nil

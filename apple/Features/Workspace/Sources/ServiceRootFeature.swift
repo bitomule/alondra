@@ -1,3 +1,4 @@
+import AlondraCommands
 import AlondraNewWorkFeature
 import AlondraPullRequestsFeature
 import AlondraShared
@@ -19,6 +20,8 @@ public struct ServiceRootFeature {
         public var pendingInboxID: String?
     }
     public enum Action {
+        case appeared, disappeared
+        case commandResolved(CommandResolution)
         case tabSelected(State.Tab)
         case focusInbox(String)
         case triage(ServiceTriageFeature.Action)
@@ -27,6 +30,8 @@ public struct ServiceRootFeature {
         case newRequest(NewRequestFeature.Action)
         case pullRequest(PresentationAction<ServicePullRequestFeature.Action>)
     }
+    @Dependency(\.serviceCommandRecovery) var recovery
+    private enum RecoveryCancelID { case observation }
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
@@ -34,6 +39,12 @@ public struct ServiceRootFeature {
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
             switch action {
+            case .appeared:
+                return .run { send in
+                    for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
+                }.cancellable(id: RecoveryCancelID.observation, cancelInFlight: true)
+            case .disappeared: return .cancel(id: RecoveryCancelID.observation)
+            case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
             case .tabSelected(let tab): state.tab = tab; return .none
             case .focusInbox(let id):
                 state.tab = .inbox

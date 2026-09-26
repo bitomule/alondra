@@ -39,7 +39,7 @@ extension CloudAppServices {
                     _ = try await api.createRequest(body, operationID: id.uuidString)
                 } {
                 case .confirmed: return .confirmed
-                case .unknown: return .uncertain("The request may have been created. Check Tasks before trying again; your draft is kept.")
+                case .unknown(let command): return .uncertainCommand(command.id, "The request may have been created. Check Tasks before trying again; your draft is kept.")
                 case .obsolete: return .cancelled
                 case .rejected(let error): return .failed(error.localizedDescription)
                 }

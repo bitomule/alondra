@@ -23,7 +23,7 @@ extension CloudAppServices {
             }
             switch result {
             case .confirmed: return .confirmed
-            case .unknown: return .uncertain
+            case .unknown(let command): return .uncertainCommand(command.id)
             case .obsolete: return .obsolete
             case .rejected(let error):
                 switch error as? APIError {
