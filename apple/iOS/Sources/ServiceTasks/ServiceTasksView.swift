@@ -92,8 +92,8 @@ struct ServiceTasksView: View {
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             Group {
-                if store.overview == nil, store.board.hasSnapshot {
-                    Label("Connection interrupted", systemImage: "wifi.slash")
+                if case .offline(let reason) = store.connection {
+                    Label(reason, systemImage: "wifi.slash")
                         .foregroundStyle(Palette.rose)
                 } else {
                     Text(fleet.summary)

@@ -119,6 +119,8 @@ public struct ServiceRootFeature {
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
+            // Triage owns the scoped sync connection; snapshots alone cannot express offline.
+            state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
                 return .merge(.send(.delivery(.appeared)), .run { send in

@@ -1,4 +1,5 @@
 import AlondraShared
+import AlondraDomain
 import AlondraTasksFeature
 import ComposableArchitecture
 import Foundation
@@ -34,6 +35,7 @@ public struct ServiceTasksFeature {
         public var isWithdrawing = false
         public var withdrawOutcome: TaskMutationOutcome?
         public var withdrawOperationRequestID: String?
+        public var connection: TriageConnection = .connecting
         public var overview: Overview?
         public var taskBoard = TaskBoard.empty
         public var openTrees: [RequestTree] = []
