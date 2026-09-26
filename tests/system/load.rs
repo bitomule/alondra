@@ -991,7 +991,19 @@ where
     (steady, recovery)
 }
 
-pub async fn run(driver: Arc<Driver>) -> Result<()> {
+pub async fn entry() -> Result<()> {
+    let began = Instant::now();
+    let profile: Value = serde_json::from_slice(&std::fs::read("/system/load-profile.json")?)?;
+    let seconds = profile["duration_seconds"].as_u64().context("duration")?;
+    ensure!((10..=3600).contains(&seconds), "bounded duration");
+    let preparation_deadline = began + Duration::from_secs(30);
+    strict_deadline(began + Duration::from_secs(seconds + 210), async {
+        let driver = Arc::new(strict_deadline(preparation_deadline, Driver::open()).await?);
+        run(driver, preparation_deadline).await
+    })
+    .await
+}
+async fn run(driver: Arc<Driver>, preparation_deadline: Instant) -> Result<()> {
     let profile: Value = serde_json::from_slice(&std::fs::read("/system/load-profile.json")?)?;
     let seconds = profile["duration_seconds"]
         .as_u64()
@@ -1015,10 +1027,13 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     let accounts = driver.tokens.len();
     ensure!((2..=16).contains(&accounts), "account count");
     let links = Arc::new(links(accounts));
-    setup(&driver, &links).await?;
-    let parked_delivery = parked_delivery(driver.clone(), &links, accounts).await?;
+    let (parked_delivery, steady_start) = strict_deadline(preparation_deadline, async {
+        setup(&driver, &links).await?;
+        let parked = parked_delivery(driver.clone(), &links, accounts).await?;
+        Ok((parked, fresh_waiters(&driver.epoch).await?))
+    })
+    .await?;
     let current = Arc::new(RwLock::new(driver));
-    let steady_start = fresh_waiters(&get(&current).await.epoch).await?;
     ensure!(
         steady_start["changes"]["above_ms"] == 0,
         "prelude crossed steady-only threshold"
@@ -1339,7 +1354,7 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
     burst_json["not_started_requests"] = json!((count as u64 * 2).saturating_sub(started));
     let work_json = work_polls.lock().unwrap().json();
     save(
-        "load-progress.json",
+        "load-steady.json",
         json!({"phase":"steady_finished","polls":poll_json,"work_polls":work_json,"bursts":burst_json,
             "oidc_refresh_batches":refreshes,"mixed_roundtrips":mixed_roundtrips,
             "mixed_attempts":mixed_attempts,"mixed_roundtrip_latency":mixed_roundtrip_latency,"mixed_account_columns":["attempted","completed"],
@@ -1479,7 +1494,13 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
             "recovery_passed":true,"polls":poll_json,"work_polls":work_json,"bursts":burst_json}),
         )?;
         tokio::time::sleep(Duration::from_secs(15)).await;
-        Some(restart_probe(get(&current).await, &links).await)
+        Some(
+            strict_deadline(
+                Instant::now() + Duration::from_secs(30),
+                restart_probe(get(&current).await, &links),
+            )
+            .await,
+        )
     } else {
         None
     };
@@ -1493,7 +1514,7 @@ pub async fn run(driver: Arc<Driver>) -> Result<()> {
         "load.json",
         json!({"phase":"load","status":if passed {"passed"} else {"failed"},"profile":profile,"accounts":accounts,"macs":accounts*2,"links":links.len(),
         "elapsed_seconds":origin.elapsed().as_secs_f64(),"polls":poll_json,"work_polls":work_json,"bursts":burst_json,"oidc_refresh_batches":refreshes,"mixed_encrypted_roundtrips":mixed_roundtrips,"mixed_overload_retries":CRYPTO_RETRIES.load(Ordering::Relaxed),"revocation_under_load_seconds":revoke_seconds,
-        "steady_passed":sustained.is_ok(),"steady_failures":failures,"parked_delivery":parked_delivery,"mixed_roundtrip_latency":mixed_roundtrip_latency,
+        "steady_passed":sustained.is_ok(),"steady_failures":failures,"parked_delivery":parked_delivery,"mixed_roundtrip_latency":mixed_roundtrip_latency,"mixed_account_columns":["attempted","completed"],"mixed_by_account":mixed_by_account,
         "server_waiters_passed":waiter_gate,"server_waiters":server_waiters.ok(),
         "steady_server_start":steady_start,"steady_server_end":steady_end.ok(),"steady_occupancy":steady_occupancy.ok(),
         "recovery_passed":recovery.is_ok(),"recovery":recovery.ok(),

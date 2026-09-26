@@ -582,12 +582,15 @@ async fn main() -> Result<()> {
         ["initial", "restart", "perf", "load"].contains(&phase.as_str()),
         "invalid phase"
     );
+    if phase == "load" {
+        return load::entry().await;
+    }
     let driver = Arc::new(Driver::open().await?);
     match phase.as_str() {
         "initial" => driver.initial().await,
         "restart" => driver.restart().await,
         "perf" => driver.perf().await,
-        "load" => load::run(driver).await,
+
         _ => unreachable!(),
     }
 }
