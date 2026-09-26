@@ -55,6 +55,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
                     .help("Archive completed tasks")
             }
         }
+        .focusedSceneValue(\.workspaceSettingsStore, isActive ? store : nil)
         .sheet(isPresented: Binding(get: { presentation.newRequestPresented }, set: { presentation.send(.newRequestPresented($0)) })) {
             ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
         }

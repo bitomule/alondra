@@ -1,6 +1,8 @@
 import AlondraAppComposition
 import AlondraAuth
 import AlondraCommands
+import AlondraWorkspaceFeature
+import ComposableArchitecture
 import AppKit
 import SwiftUI
 
@@ -24,6 +26,30 @@ struct AlondraMacApp: App {
         .defaultSize(width: 1240, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            WorkspaceSettingsCommands()
+        }
+    }
+}
+
+private struct WorkspaceSettingsStoreKey: FocusedValueKey {
+    typealias Value = StoreOf<ServiceRootFeature>
+}
+
+extension FocusedValues {
+    var workspaceSettingsStore: StoreOf<ServiceRootFeature>? {
+        get { self[WorkspaceSettingsStoreKey.self] }
+        set { self[WorkspaceSettingsStoreKey.self] = newValue }
+    }
+}
+
+private struct WorkspaceSettingsCommands: Commands {
+    @FocusedValue(\.workspaceSettingsStore) private var store
+
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { store?.send(.settingsPresented(true)) }
+                .keyboardShortcut(",")
+                .disabled(store == nil)
         }
     }
 }
