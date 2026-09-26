@@ -34,3 +34,36 @@ P-256 envelope and HTTP challenge signatures using the Rust crate's framing, and
 forged or cross-account approval before persistence. Device verification with MAV belongs
 to the iOS integration PR. After #160 merges, run the full app Bazel build and a real
 Mac CLI to phone round trip against a disposable relay and test Keycloak account.
+
+## Local collection migration
+
+`KeychainApprovedPairingStore` keeps the existing service
+`com.bitomule.alondra.service-pairing.v1` and account `approved-phone`. Reads accept
+both the original single pairing and a version-1 collection envelope. A legacy read
+is non-mutating; the next successful approval writes the collection in one in-place
+Keychain update. Private keys, pinned keys and `approvedAtMs` of retained entries
+stay unchanged, preserving their durable journal scope. Unknown versions, corrupt
+collections and locked Keychain reads fail closed. A failed write never deletes the
+previous item. Older binaries cannot decode the new envelope: this is migration of
+old data, not support for downgrading the application after new data are written.
+
+Binding identity is `(relayURL, ownerSub, macID, deviceID)`. Adding an approval
+retains other bindings and selects that approval for the existing single-active
+adapter. Saving the same identity with changed private keys, or a previously pinned
+Mac with changed public keys, is rejected until explicit removal. Re-saving an
+identical identity retains its original approval timestamp. `delete()` remains an
+explicit removal of the whole collection, as used by logout; it must not silently
+switch the user to a different retained account or Mac.
+
+All synchronous read/modify/write operations share a process-local `Mutex`; separate
+store instances cannot lose each other's writes. The notification extension does
+not write this item. This does not provide cross-process serialization for future
+writers. Tests inject item I/O and exercise the actual codec and transaction with
+independent store instances; they do not use personal Keychain data.
+
+The legacy model does not record an OIDC issuer. Filtering by subject and relay is
+not a claim of multi-issuer isolation. `CloudPairingOwner` retains its configured
+provider, verified-subject comparison and relay allowlist before activating keys.
+Do not expose Mac selection until push bindings, NSE contexts, account scoping and
+notification routing are stored and selected per binding. No UI or notification
+storage changes ship in this foundation block.
