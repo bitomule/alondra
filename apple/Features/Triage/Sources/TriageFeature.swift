@@ -1,44 +1,22 @@
 import AlondraDomain
-import AlondraCommands
 import AlondraShared
 import ComposableArchitecture
 import Foundation
 
-public enum TriageMutationOutcome: Equatable, Sendable {
-    case confirmed
-    case rejected(String)
-    case unknown
-    case unknownCommand(UUID)
-    case obsolete
-}
-
-public struct TriageService: Sendable {
-    public var observe: @Sendable () async -> AsyncStream<TriageInboxUpdate>
-    public var mutate: @Sendable (CommandKind, String, TriageIdentity) async -> TriageMutationOutcome
-
-    public init(
-        observe: @escaping @Sendable () async -> AsyncStream<TriageInboxUpdate>,
-        mutate: @escaping @Sendable (CommandKind, String, TriageIdentity) async -> TriageMutationOutcome
-    ) {
-        self.observe = observe
-        self.mutate = mutate
-    }
-}
-
-extension TriageService: DependencyKey {
+private enum TriageServiceKey: DependencyKey {
     /// H installs a process-owned SyncSession/CommandGate adapter at the scene boundary.
     /// An unconfigured feature neither polls nor sends a mutation.
-    public static let liveValue = TriageService(
+    static let liveValue = TriageService(
         observe: { AsyncStream { $0.finish() } },
         mutate: { _, _, _ in .obsolete }
     )
-    public static let testValue = liveValue
+    static let testValue = liveValue
 }
 
 extension DependencyValues {
     public var triageService: TriageService {
-        get { self[TriageService.self] }
-        set { self[TriageService.self] = newValue }
+        get { self[TriageServiceKey.self] }
+        set { self[TriageServiceKey.self] = newValue }
     }
 }
 
