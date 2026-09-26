@@ -159,11 +159,12 @@ swift_library(
     name = "AlondraNotificationServiceLib",
     srcs = glob(["iOSNotificationService/Sources/**/*.swift"]),
     module_name = "AlondraNotificationService",
-    deps = ["//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = ["//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Data/Notifications:AlondraNotificationActions"],
 )
 
 ios_extension(
     name = "AlondraNotificationService",
+    entitlements = "iOSNotificationService/AlondraNotificationService.entitlements",
     bundle_id = NOTIFICATION_SERVICE_BUNDLE_ID,
     bundle_name = "AlondraNotificationService",
     families = ["iphone"],

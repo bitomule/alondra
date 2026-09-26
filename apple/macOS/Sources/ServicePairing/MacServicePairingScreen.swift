@@ -11,6 +11,10 @@ struct MacServicePairingScreen: View {
             VStack(alignment: .leading, spacing: 24) {
                 MacServicePairingHeader()
                 MacServicePairingStep(store: store)
+                    .padding(28)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.background, in: .rect(cornerRadius: 20))
+                    .overlay { RoundedRectangle(cornerRadius: 20).stroke(.primary.opacity(0.08)) }
                 if let error = store.error {
                     Text(error)
                         .foregroundStyle(.red)
@@ -18,26 +22,29 @@ struct MacServicePairingScreen: View {
                         .accessibilityIdentifier("pairing.error")
                 }
             }
-            .padding(32)
-            .frame(maxWidth: 580, alignment: .leading)
+            .padding(48)
+            .frame(maxWidth: 660, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Connect Alondra")
+        .background(Color(nsColor: .windowBackgroundColor))
+        .tint(.orange)
+        .navigationTitle("Alondra")
         .task { store.send(.appeared) }
     }
 }
 
 private struct MacServicePairingHeader: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: "desktopcomputer.and.arrow.down")
-                .font(.system(size: 40))
-                .foregroundStyle(.tint)
-                .accessibilityHidden(true)
-            Text("Connect this Mac").font(.largeTitle.bold())
-            Text("Sign in with the account used for Alondra setup, then paste the pairing invitation from the Mac running your work.")
-                .foregroundStyle(.secondary)
-        }
+        VStack(alignment: .leading, spacing: 18) {
+            Label("ALONDRA", systemImage: "sunrise.fill")
+                .font(.caption.weight(.bold)).tracking(3).foregroundStyle(.orange)
+            Text("A home for your work.")
+                .font(.system(.largeTitle, design: .serif, weight: .semibold))
+            Text("Connect your account and the Mac running your agents. Your questions, tasks and conversations come together here.")
+                .font(.title3).foregroundStyle(.secondary)
+            Label("Encrypted between your devices", systemImage: "lock.shield")
+                .font(.callout).foregroundStyle(.secondary)
+        }.padding(.vertical, 20)
     }
 }
 
@@ -64,19 +71,26 @@ private struct MacServicePairingStep: View {
                     .controlSize(.large)
                     .accessibilityIdentifier("pairing.signIn")
             case .scanning:
-                Text("Copy the full pairing invitation shown by Alondra setup.")
-                TextField("Pairing QR contents", text: $store.payload, axis: .vertical)
-                    .lineLimit(3...8)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("pairing.payload")
-                HStack {
-                    Button("Connect") { store.send(.submit) }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("pairing.submit")
-                    Button("Sign out") { store.send(.logout) }
+                Label("Connect your workspace", systemImage: "laptopcomputer").font(.title2.bold())
+                Text("On the Mac running Alondra, run this command in Terminal and copy the connection invitation.")
+                    .foregroundStyle(.secondary)
+                Text("alondra setup").font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: .rect(cornerRadius: 10))
+                PasteButton(payloadType: String.self) { values in
+                    if let invitation = values.first { store.send(.scanned(invitation)) }
+                }.controlSize(.large).accessibilityLabel("Paste connection invitation")
+                DisclosureGroup("Enter invitation manually") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("Connection invitation", text: $store.payload, axis: .vertical)
+                            .lineLimit(3...6).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                            .accessibilityIdentifier("pairing.payload")
+                        Button("Connect") { store.send(.submit) }
+                            .buttonStyle(.borderedProminent).disabled(store.payload.isEmpty)
+                            .accessibilityIdentifier("pairing.submit")
+                    }.padding(.top, 10)
                 }
+                Button("Use another account") { store.send(.logout) }
             case .pending(let code):
                 Text("Approve this Mac in Alondra setup").font(.headline)
                 Text(verbatim: code)
