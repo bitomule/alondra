@@ -26,6 +26,18 @@ public struct ServiceRootFeature {
         @Presents public var pullRequest: ServicePullRequestFeature.State?
         public var pendingInboxID: String?
         public var feedbackResolutions: [ReportFeedbackRecoveryEvent] = []
+        public var macSubtitle: String {
+            guard triage.triage.hasSnapshot, let overview = fleet.overview else {
+                return String(localized: "No connection to alondrad")
+            }
+            let count = triage.triage.queue.count
+            let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")
+            return [pending, String(localized: "\(overview.nodes.count) nodes")].joined(separator: " · ")
+        }
+        public func asksOnPullRequest(_ item: InboxItem) -> Bool {
+            guard case .pullRequest(let pr) = item else { return false }
+            return !triage.triage.questions(forPullRequest: pr.id).isEmpty
+        }
         public func taskTitle(forInboxID id: String) -> String? {
             guard let item = triage.triage.items.first(where: { $0.id == id }) else { return nil }
             return tasks.taskBoard.task(for: item)?.title

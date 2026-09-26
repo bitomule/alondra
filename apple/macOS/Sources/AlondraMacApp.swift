@@ -19,9 +19,9 @@ struct AlondraMacApp: App {
     var body: some Scene {
         WindowGroup("Alondra", id: "main") {
             MacServiceRoot(account: account)
-                .frame(minWidth: 720, minHeight: 500)
+                .frame(minWidth: 860, minHeight: 540)
         }
-        .defaultSize(width: 1100, height: 760)
+        .defaultSize(width: 1240, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }

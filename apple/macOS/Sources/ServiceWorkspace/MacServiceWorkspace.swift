@@ -50,14 +50,14 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
-        .navigationSubtitle(store.triage.triage.queue.isEmpty ? "All caught up" : "\(store.triage.triage.queue.count) pending · \(store.fleet.overview?.nodes.count ?? 0) nodes")
+        .navigationSubtitle(store.macSubtitle)
         .toolbar {
             if let overview = store.fleet.overview {
                 ToolbarItem(placement: .status) { StatusGauges(machine: overview.machine, usage: overview.usage) }
                     .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { presentation.send(.newRequestPresented(true)) } label: { Label("New…", systemImage: "square.and.pencil") }
+                Button { presentation.send(.newRequestPresented(true)) } label: { Label("New", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n").help("Ask for new work (⌘N)")
                 Button { store.send(.tasks(.board(.archiveTapped))) } label: { Label("Archive Completed", systemImage: "archivebox") }
                     .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving || store.tasks.board.archiveOutcome?.uncertainID != nil)
@@ -95,7 +95,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         .onChange(of: store.triage.triage.queue.map(\.id), initial: true) { _, ids in
             presentation.send(.inboxChanged(ids))
         }
-        .frame(minWidth: 740, minHeight: 520)
+        .frame(minWidth: 860, minHeight: 540)
     }
 }
 
@@ -161,7 +161,7 @@ private struct MacServiceInboxSection: View {
                     Label(presentation.query.isEmpty ? "All caught up" : "Nothing matches", systemImage: presentation.query.isEmpty ? "checkmark.circle" : "magnifyingglass").foregroundStyle(.secondary)
                 }
                 ForEach(items) { item in
-                    InboxRow(item: item).tag(MacPresentationFeature.Selection.item(item.id))
+                    InboxRow(item: item, asks: store.withState { $0.asksOnPullRequest(item) }).tag(MacPresentationFeature.Selection.item(item.id))
                 }
             } header: {
                 SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: items.count, tint: pullRequests ? .purple : .orange)
