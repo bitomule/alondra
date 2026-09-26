@@ -73,6 +73,119 @@ pub fn http(timeout: Duration) -> ureq::Agent {
         .build()
         .into()
 }
+#[derive(Default)]
+struct EpochCache {
+    generation: u64,
+    value: Option<[u8; 16]>,
+}
+
+/// One origin, one pool. No credentials are stored in the transport.
+struct RelayTransport {
+    origin: String,
+    agent: ureq::Agent,
+    epoch: std::sync::Mutex<EpochCache>,
+}
+impl RelayTransport {
+    fn new(origin: &str) -> Self {
+        Self { origin: origin.into(), agent: http(Duration::from_secs(35)),
+            epoch: std::sync::Mutex::new(EpochCache::default()) }
+    }
+    fn invalidate(&self, used: [u8; 16]) {
+        let mut cached = self.epoch.lock().unwrap();
+        if cached.value == Some(used) {
+            cached.value = None;
+            cached.generation += 1;
+        }
+    }
+    fn epoch(&self, deadline: Instant) -> Result<[u8; 16]> {
+        let generation = {
+            let cached = self.epoch.lock().unwrap();
+            if let Some(epoch) = cached.value { return Ok(epoch); }
+            cached.generation
+        };
+        // No lock is held across network I/O, including long polling.
+        let mut response = self.agent.get(format!("{}/v1/bootstrap", self.origin))
+            .config().timeout_global(Some(remaining(deadline)?.min(Duration::from_secs(35))))
+            .build().call()?;
+        if response.status().as_u16() != 200 { bail!("relay bootstrap unavailable"); }
+        let boot: Value = response.body_mut().with_config().limit(4096).read_json()?;
+        remaining(deadline)?;
+        if boot["protocol"].as_u64() != Some(1) { bail!("unsupported relay protocol"); }
+        let fetched: [u8; 16] = B64.decode(boot["epoch"].as_str().context("missing epoch")?)?
+            .try_into().map_err(|_| anyhow!("invalid relay epoch"))?;
+        let mut cached = self.epoch.lock().unwrap();
+        if cached.generation == generation && cached.value.is_none() {
+            cached.value = Some(fetched);
+        }
+        // An older bootstrap must not overwrite a concurrently refreshed epoch.
+        Ok(cached.value.unwrap_or(fetched))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn call(&self, profile: &Profile, owner: &str, access: &str,
+            method: &str, path: &str, body: &[u8], deadline: Instant) -> Result<(u16, Value)> {
+        remaining(deadline)?;
+        if owner != profile.owner_sub { bail!("terminal approval belongs to another account"); }
+        if !matches!(method, "GET" | "POST") { bail!("unsupported relay method"); }
+        let epoch = self.epoch(deadline)?;
+        let first = self.send(profile, access, method, path, body, epoch, deadline)?;
+        if first.0 == 401 {
+            self.invalidate(epoch);
+            // Only reads can be retried, and only after proving the relay restarted.
+            // POST responses, timeouts and disconnects never cause automatic replay.
+            if method == "GET" {
+                let current = self.epoch(deadline)?;
+                if current != epoch {
+                    let second = self.send(profile, access, method, path, body, current, deadline)?;
+                    self.observe(path, current, &second);
+                    return Ok(second);
+                }
+            }
+        } else { self.observe(path, epoch, &first); }
+        Ok(first)
+    }
+    fn observe(&self, path: &str, used: [u8; 16], result: &(u16, Value)) {
+        if result.0 == 401 || (result.0 == 409
+            && (path == "/v1/changes" || path.starts_with("/v1/changes?"))
+            && result.1["error"] == "relay_epoch_changed") {
+            self.invalidate(used);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn send(&self, profile: &Profile, access: &str, method: &str, path: &str,
+            body: &[u8], epoch: [u8; 16], deadline: Instant) -> Result<(u16, Value)> {
+        let timestamp = now_ms()?;
+        let nonce = random::<16>()?;
+        let signature = sign_http_challenge(&profile.signing()?, &profile.device_id,
+            method, path, &epoch, body, timestamp, &nonce)?;
+        let headers = [
+            ("authorization", format!("Bearer {access}")),
+            ("x-device-id", profile.device_id.clone()),
+            ("x-device-timestamp-ms", timestamp.to_string()),
+            ("x-device-nonce", B64.encode(nonce)),
+            ("x-device-signature", signature),
+            ("x-relay-epoch", B64.encode(epoch)),
+        ];
+        let endpoint = format!("{}{path}", self.origin);
+        let timeout = remaining(deadline)?.min(Duration::from_secs(35));
+        let mut response = if method == "POST" {
+            let mut request = self.agent.post(endpoint).config().timeout_global(Some(timeout)).build()
+                .header("content-type", "application/json");
+            for (key, value) in &headers { request = request.header(*key, value); }
+            request.send(body)?
+        } else {
+            let mut request = self.agent.get(endpoint).config().timeout_global(Some(timeout)).build();
+            for (key, value) in &headers { request = request.header(*key, value); }
+            request.call()?
+        };
+        let status = response.status().as_u16();
+        // Fully drain the bounded body so the connection can return to the pool.
+        let bytes = response.body_mut().with_config().limit(512 * 1024).read_to_vec()?;
+        let value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes)? };
+        remaining(deadline)?;
+        Ok((status, value))
+    }
+}
+
 fn store_path() -> std::path::PathBuf {
     crate::client::config().home.join("terminal-service.json")
 }
@@ -245,74 +358,16 @@ impl Profile {
         deadline: Instant,
     ) -> Result<(u16, Value)> {
         remaining(deadline)?;
+        // Account lookup preserves cross-process logout and account changes. Its
+        // existing OIDC timeout is independent; never reset the operation deadline.
         let token = crate::account::token_for_service()?;
-        if token.sub != self.owner_sub {
-            bail!("terminal approval belongs to another account");
-        }
-        let mut response = http(remaining(deadline)?.min(Duration::from_secs(35)))
-            .get(format!("{RELAY}/v1/bootstrap"))
-            .call()?;
-        if response.status().as_u16() != 200 {
-            bail!("relay bootstrap unavailable");
-        }
-        let boot: Value = response.body_mut().with_config().limit(4096).read_json()?;
-        let epoch: [u8; 16] = B64
-            .decode(boot["epoch"].as_str().context("missing epoch")?)?
-            .try_into()
-            .map_err(|_| anyhow!("invalid relay epoch"))?;
-        let timestamp = now_ms()?;
-        let nonce = random::<16>()?;
-        let signature = sign_http_challenge(
-            &self.signing()?,
-            &self.device_id,
-            method,
-            path,
-            &epoch,
-            body,
-            timestamp,
-            &nonce,
-        )?;
-        let headers = [
-            ("authorization", format!("Bearer {}", token.access_token)),
-            ("x-device-id", self.device_id.clone()),
-            ("x-device-timestamp-ms", timestamp.to_string()),
-            ("x-device-nonce", B64.encode(nonce)),
-            ("x-device-signature", signature),
-            ("x-relay-epoch", B64.encode(epoch)),
-        ];
-        let agent = http(remaining(deadline)?.min(Duration::from_secs(35)));
-        let endpoint = format!("{RELAY}{path}");
-        let mut response = if method == "POST" {
-            let mut request = agent
-                .post(endpoint)
-                .header("content-type", "application/json");
-            for (key, value) in &headers {
-                request = request.header(*key, value);
-            }
-            request.send(body)?
-        } else if method == "GET" {
-            let mut request = agent.get(endpoint);
-            for (key, value) in &headers {
-                request = request.header(*key, value);
-            }
-            request.call()?
-        } else {
-            bail!("unsupported relay method");
-        };
-        let status = response.status().as_u16();
-        let bytes = response
-            .body_mut()
-            .with_config()
-            .limit(512 * 1024)
-            .read_to_vec()?;
-        let value = if bytes.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&bytes)?
-        };
         remaining(deadline)?;
-        Ok((status, value))
+        static TRANSPORT: OnceLock<RelayTransport> = OnceLock::new();
+        TRANSPORT.get_or_init(|| RelayTransport::new(RELAY)).call(
+            self, &token.sub, &token.access_token, method, path, body, deadline,
+        )
     }
+
     pub fn request(
         &self,
         method: &str,
@@ -584,6 +639,174 @@ mod tests {
             mac,
             mac_agreement,
         )
+    }
+
+    struct HttpFixture {
+        origin: String,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl HttpFixture {
+        fn start(replies: Vec<(u16, Value, Duration)>) -> Self {
+            use std::io::{BufRead, BufReader, Read};
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let connections = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (seen, accepted, stopping) = (requests.clone(), connections.clone(), stop.clone());
+            let thread = std::thread::spawn(move || {
+                let mut replies = replies.into_iter();
+                while !stopping.load(Ordering::SeqCst) {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(value) => value,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2)); continue;
+                        }
+                        Err(error) => panic!("accept: {error}"),
+                    };
+                    accepted.fetch_add(1, Ordering::SeqCst);
+                    stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        if stopping.load(Ordering::SeqCst) { return; }
+                        let mut line = String::new();
+                        match reader.read_line(&mut line) {
+                            Ok(0) => break,
+                            Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                            Err(_) => break,
+                            Ok(_) => (),
+                        }
+                        let mut headers = line;
+                        let mut length = 0;
+                        loop {
+                            let mut line = String::new();
+                            reader.read_line(&mut line).unwrap();
+                            if line == "\r\n" { break; }
+                            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                                length = value.trim().parse::<usize>().unwrap();
+                            }
+                            headers.push_str(&line);
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).unwrap();
+                        seen.lock().unwrap().push(headers);
+                        let Some((status, body, delay)) = replies.next() else { panic!("unexpected replay"); };
+                        std::thread::sleep(delay);
+                        let body = serde_json::to_vec(&body).unwrap();
+                        let header = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", body.len());
+                        if stream.write_all(header.as_bytes()).and_then(|_| stream.write_all(&body)).is_err() { break; }
+                    }
+                }
+            });
+            Self { origin, requests, connections, stop, thread: Some(thread) }
+        }
+        fn count(&self) -> usize { self.requests.lock().unwrap().len() }
+    }
+    impl Drop for HttpFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.thread.take().unwrap().join().unwrap();
+        }
+    }
+    fn boot(epoch: u8) -> (u16, Value, Duration) {
+        (200, json!({"protocol":1,"epoch":B64.encode([epoch;16])}), Duration::ZERO)
+    }
+    fn reply(status: u16, error: &str) -> (u16, Value, Duration) {
+        (status, json!({"error":error}), Duration::ZERO)
+    }
+    fn transport_call(t: &RelayTransport, method: &str) -> Result<(u16, Value)> {
+        t.call(&fixture().0, "owner-a", "test-bearer", method, "/v1/requests", if method == "POST" { b"{}" } else { b"" }, Instant::now()+Duration::from_secs(2))
+    }
+
+    #[test]
+    fn pooled_transport_drains_error_bodies_and_bootstraps_once() {
+        let server = HttpFixture::start(vec![boot(1), reply(400,"bad_request"), reply(409,"conflict"), reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,400);
+        assert_eq!(transport_call(&transport,"POST").unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        assert_eq!(server.count(),4);
+        assert_eq!(server.connections.load(std::sync::atomic::Ordering::SeqCst),1);
+    }
+
+    #[test]
+    fn changed_epoch_retries_read_once_with_new_nonce_but_never_post() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(2),reply(401,"unauthorized")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
+        let seen = server.requests.lock().unwrap();
+        assert_eq!(seen.len(),4);
+        assert!(seen[1].contains(&B64.encode([1;16])));
+        assert!(seen[3].contains(&B64.encode([2;16])));
+        let nonce = |headers: &str| headers.lines().find(|l| l.starts_with("x-device-nonce:")).unwrap().to_string();
+        assert_ne!(nonce(&seen[1]),nonce(&seen[3]));
+        drop(seen);
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"POST").unwrap().0,401);
+        assert_eq!(server.count(),2);
+        assert!(transport.epoch.lock().unwrap().value.is_none());
+    }
+
+    #[test]
+    fn unchanged_epoch_and_cursor_conflict_do_not_trigger_replay() {
+        let server = HttpFixture::start(vec![boot(1),reply(401,"unauthorized"),boot(1),reply(409,"stale_cursor"),reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,401);
+        assert_eq!(server.count(),3);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        assert_eq!(server.count(),5);
+    }
+
+    #[test]
+    fn relay_epoch_conflict_invalidates_and_old_failure_cannot_erase_new_epoch() {
+        let server = HttpFixture::start(vec![boot(1),reply(409,"relay_epoch_changed"),boot(2),reply(200,"ok")]);
+        let transport = RelayTransport::new(&server.origin);
+        assert_eq!(transport.call(&fixture().0,"owner-a","token","GET","/v1/changes?since=0",b"",Instant::now()+Duration::from_secs(2)).unwrap().0,409);
+        assert_eq!(transport_call(&transport,"GET").unwrap().0,200);
+        transport.invalidate([1;16]);
+        assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
+        assert_eq!(server.count(),4);
+        assert!(transport.call(&fixture().0,"other-owner","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_secs(1)).is_err());
+        assert_eq!(server.count(),4,"account switch must fail before network I/O");
+    }
+
+    #[test]
+    fn late_bootstrap_does_not_overwrite_newer_concurrent_epoch() {
+        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
+        let server = HttpFixture::start(vec![bootstrap]);
+        let transport = RelayTransport::new(&server.origin);
+        std::thread::scope(|scope| {
+            let pending = scope.spawn(|| transport.epoch(Instant::now()+Duration::from_secs(2)).unwrap());
+            let deadline = Instant::now()+Duration::from_secs(1);
+            while server.count() == 0 {
+                assert!(Instant::now()<deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            {
+                let mut newer = transport.epoch.lock().unwrap();
+                newer.generation += 1;
+                newer.value = Some([2;16]);
+            }
+            assert_eq!(pending.join().unwrap(),[2;16]);
+        });
+        assert_eq!(transport.epoch.lock().unwrap().value,Some([2;16]));
+    }
+
+    #[test]
+    fn bootstrap_and_request_share_deadline_and_post_timeout_does_not_replay() {
+        let mut bootstrap = boot(1); bootstrap.2=Duration::from_millis(120);
+        let mut slow = reply(200,"ok"); slow.2=Duration::from_millis(120);
+        let server = HttpFixture::start(vec![bootstrap,slow]);
+        let transport = RelayTransport::new(&server.origin);
+        assert!(transport.call(&fixture().0,"owner-a","token","POST","/v1/requests",b"{}",Instant::now()+Duration::from_millis(200)).is_err());
+        assert_eq!(server.count(),2,"timed out POST must not be repeated");
     }
 
     #[test]
