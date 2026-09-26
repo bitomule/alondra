@@ -269,6 +269,7 @@ fn queued_error(e: QueueError) -> (StatusCode, Json<Value>) {
         QueueError::NotFound | QueueError::WrongDevice => error(StatusCode::NOT_FOUND, "not_found"),
         QueueError::NotReceived => error(StatusCode::CONFLICT, "mac_receipt_required"),
         QueueError::Expired => error(StatusCode::GONE, "outcome_unknown"),
+        QueueError::ResultEvicted => error(StatusCode::GONE, "result_evicted"),
     }
 }
 
@@ -590,7 +591,8 @@ async fn changes(
                 Json(json!({"error":"stale_cursor","epoch":server.epoch,"revision":revision})),
             ));
         }
-        if !events.is_empty() || wait_s == 0 || tokio::time::Instant::now() >= deadline {
+        if !events.is_empty() || wait_s == 0 || tokio::time::Instant::now() >= deadline
+            || server.queue.compacted_since(&who.owner_sub, &who.device_id, query.since) {
             drop(permit);
             return Ok((
                 StatusCode::OK,
@@ -902,6 +904,74 @@ mod http_tests {
             axum::serve(listener, router(serving)).await.unwrap();
         });
         (url, server, join)
+    }
+
+    #[tokio::test]
+    async fn compacted_http_result_requires_auth_and_changes_cursor_does_not_spin() {
+        let mac_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let (url, server, join) = test_server(&mac_key).await;
+        let epoch = server.auth.server_epoch();
+        server.auth.enroll(&auth::Identity {
+            device_id: "mac-1".into(), owner_sub: "owner".into(),
+        }, PhoneDevice {
+            device_id: "phone-1".into(), owner_sub: "owner".into(),
+            signing_key: key_bytes(&phone_key),
+        }).unwrap();
+        let now = now_ms();
+        for index in 0..state::MAX_STORED {
+            let id = format!("retained-{index}");
+            server.queue.submit("owner", "phone-1", "mac-1", &id, [1; 32],
+                json!({"ciphertext":"opaque"}), now + 120_000, now).unwrap();
+            server.queue.next_work("mac-1", now).unwrap();
+            server.queue.mark_received("mac-1", &id, now).unwrap();
+            server.queue.respond("mac-1", "phone-1", &id,
+                json!({"ciphertext":"opaque"}), now).unwrap();
+        }
+        let (before, _) = server.queue.changes("owner", "phone-1", 0, now);
+        // Another device causes compaction without adding a change for phone-1.
+        server.queue.submit("other", "other-phone", "other-mac", "pressure", [2; 32],
+            json!({"ciphertext":"opaque"}), now + 120_000, now).unwrap();
+        let client = reqwest::Client::new();
+        let path = "/v1/requests/retained-0";
+        assert_eq!(client.get(format!("{url}{path}")).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED);
+        let response = sign(&epoch, client.get(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", path, &[], 1)
+            .send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::GONE);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"error":"result_evicted"}));
+
+        let path = format!("/v1/changes?since={before}&epoch={}&wait_s=25", server.epoch);
+        let response = tokio::time::timeout(Duration::from_secs(2),
+            sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now)),
+                &phone_key, "phone-1", "GET", &path, &[], 2).send()).await
+            .expect("compaction must wake the cursor even without retained events").unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.json::<Value>().await.unwrap();
+        assert_eq!(body["changes"], json!([]));
+        let revision = body["revision"].as_u64().unwrap();
+        assert!(revision > before);
+        let path = format!("/v1/changes?since={revision}&epoch={}&wait_s=1", server.epoch);
+        let started = tokio::time::Instant::now();
+        let response = sign(&epoch, client.get(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", &path, &[], 3)
+            .send().await.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(900), "same cursor must long poll");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["changes"], json!([]));
+        let path = "/v1/devices/phone-1";
+        let response = sign(&epoch, client.delete(format!("{url}{path}")), &mac_key,
+            "mac-1", "DELETE", path, &[], 4).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let path = "/v1/requests/retained-0";
+        let response = sign(&epoch, client.get(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now)), &phone_key, "phone-1", "GET", path, &[], 5)
+            .send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(server.queue.get("owner", "phone-1", "retained-0", now).unwrap_err(),
+            QueueError::NotFound);
+        join.abort();
     }
 
     #[tokio::test]
