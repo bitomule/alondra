@@ -921,28 +921,28 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::CREATED);
 
         let phone_key = key_bytes(&phone_sign);
-        let plaintext = serde_json::to_vec(&json!({"device_id":"phone-a","signing_key":phone_key,
+        let plaintext = serde_json::to_vec(&json!({"device_id":"client-a","signing_key":phone_key,
             "agreement_key":URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_point(false).as_bytes()),
             "display_name":"iPhone","owner_sub":"owner","session_id":session_id})).unwrap();
-        let envelope = EnvelopeV1::seal_random(Context { route: "mac-1", sender: "phone-a",
+        let envelope = EnvelopeV1::seal_random(Context { route: "mac-1", sender: "client-a",
             recipient: "mac-1", request_id: session_id, kind: "pairing", expires_at_ms: expires },
             &plaintext, &phone_sign, &mac_agreement.public_key()).unwrap();
         let candidate = serde_json::to_vec(&pairing::CandidateRequest {
-            secret: URL_SAFE_NO_PAD.encode(secret), device_id: "phone-a".into(),
+            secret: URL_SAFE_NO_PAD.encode(secret), device_id: "client-a".into(),
             signing_key: phone_key.clone(), envelope,
         }).unwrap();
         let path = format!("/v1/pairings/{session_id}/candidates");
         let response = sign(&epoch, client.post(format!("{url}{path}"))
-            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "POST", &path,
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "client-a", "POST", &path,
             &candidate, 2).body(candidate).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let approval_path = format!("/v1/pairings/{session_id}/approval");
         let response = sign(&epoch, client.get(format!("{url}{approval_path}"))
-            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "GET",
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "client-a", "GET",
             &approval_path, &[], 3).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-        let registration = serde_json::to_vec(&PhoneDevice { device_id: "phone-a".into(),
+        let registration = serde_json::to_vec(&PhoneDevice { device_id: "client-a".into(),
             owner_sub: "owner".into(), signing_key: phone_key.clone() }).unwrap();
         let response = sign(&epoch, client.post(format!("{url}/v1/devices")), &mac_sign,
             "mac-1", "POST", "/v1/devices", &registration, 4)
@@ -950,7 +950,7 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::CREATED);
         let approval = pairing::Approval { v: 1, session_id: session_id.into(), owner_sub: "owner".into(),
             mac_id: "mac-1".into(), mac_signing_key: key_bytes(&mac_sign),
-            mac_agreement_key, device_id: "phone-a".into(), phone_signing_key: phone_key,
+            mac_agreement_key, device_id: "client-a".into(), phone_signing_key: phone_key,
             phone_agreement_key: URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_point(false).as_bytes()),
             expires_at_ms: expires };
         let signature: Signature = mac_sign.sign(&approval.signed_bytes());
@@ -960,7 +960,7 @@ mod http_tests {
             "mac-1", "POST", &approval_path, &body, 5).body(body).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let response = sign(&epoch, client.get(format!("{url}{approval_path}"))
-            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "phone-a", "GET",
+            .bearer_auth(jwt("owner", now_ms())), &phone_sign, "client-a", "GET",
             &approval_path, &[], 6).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let returned: pairing::ApprovalProof = response.json().await.unwrap();

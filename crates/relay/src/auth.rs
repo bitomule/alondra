@@ -421,7 +421,7 @@ impl Auth {
             if registry.phone_macs.get(device_id) != Some(&mac.device_id) {
                 bail!("device is paired to another Mac");
             }
-        } else if !registry.revoked_ids.contains(device_id) && !device_id.starts_with("phone-") {
+        } else if !registry.revoked_ids.contains(device_id) && !valid_client_id(device_id) {
             bail!("unknown phone device");
         }
         if registry.revoked_ids.contains(device_id) {
@@ -773,7 +773,7 @@ impl Auth {
         signing_key: &str,
         mac_id: &str,
     ) -> Result<Identity> {
-        if !valid_device_id(device_id) || !device_id.starts_with("phone-") {
+        if !valid_client_id(device_id) {
             bail!("invalid candidate ID");
         }
         canonical_public_key(signing_key)?;
@@ -960,6 +960,12 @@ fn canonical_public_key(encoded: &str) -> Result<()> {
     }
     VerifyingKey::from_sec1_bytes(&bytes)?;
     Ok(())
+}
+
+fn valid_client_id(id: &str) -> bool {
+    // Client keys have the same authority on iOS and macOS. Keep persisted pilot
+    // phone IDs valid while new clients use the platform-neutral namespace.
+    valid_device_id(id) && (id.starts_with("client-") || id.starts_with("phone-"))
 }
 
 fn valid_device_id(id: &str) -> bool {

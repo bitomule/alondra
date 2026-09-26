@@ -624,7 +624,7 @@ pub fn run(home: &Path) -> Result<()> {
         || phone.signing_key != candidate.signing_key
         || phone.owner_sub != config.owner_sub
         || phone.session_id != session_id
-        || !phone.device_id.starts_with("phone-")
+        || !(phone.device_id.starts_with("client-") || phone.device_id.starts_with("phone-"))
         || phone.device_id.len() > 128
         || !phone
             .device_id
