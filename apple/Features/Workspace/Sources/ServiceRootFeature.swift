@@ -93,6 +93,8 @@ public struct ServiceRootFeature {
             guard let event = noticeEvent(state: state, action: action) else { return .none }
             if case .closeRefused(let message) = event { state.closeRefusal = message; return .none }
             let notice = WorkspaceNotice(event: event)
+            // A repeated failed user action is a new error even when its message is unchanged.
+            if notice.failure { state.lastMacErrorMessage = nil }
             state.notice = notice
             return .run { send in
                 try await noticeClock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
