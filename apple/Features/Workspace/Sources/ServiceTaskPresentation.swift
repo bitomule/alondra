@@ -12,7 +12,7 @@ public struct ServiceTaskPresentation {
         let grouping = InboxGrouping(questions: (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true }, reports: (overview?.news ?? []).filter { $0.toOrchestrator != true }, pullRequests: overview?.prs ?? [])
         inbox = Self.orderedInbox(grouping: grouping, pullRequests: overview?.prs ?? []).filter { !hiddenIDs.contains($0.id) }
     }
-    /// Detail lists use the original FleetStore inbox order, not the triage ring's arrival order.
+    /// Detail lists use the original inbox order, not the triage ring's arrival order.
     static func orderedInbox(grouping: InboxGrouping, pullRequests: [PullRequest]) -> [InboxItem] {
         let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
         let prs = pullRequests.sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
