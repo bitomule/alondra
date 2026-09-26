@@ -105,7 +105,18 @@ struct StableDetailOwnerIntegrationTests {
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         let sent = LockIsolated<[String]>([])
-        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
+        let opened = AsyncStream<String>.makeStream()
+        let store = Store(initialState: initial) {
+            CombineReducers {
+                ServiceRootFeature()
+                Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { _, action in
+                    if case .fleet(.nodes(.element(let id, .snapshotChanged))) = action {
+                        opened.continuation.yield(id)
+                    }
+                    return .none
+                }
+            }
+        } withDependencies: {
             $0.continuousClock = ImmediateClock()
             $0.nodeOperations = .init(send: { id, _ in
                 sent.withValue { $0.append(id) }
@@ -114,6 +125,9 @@ struct StableDetailOwnerIntegrationTests {
                 return .unknown(commandID)
             }, close: { _ in .rejected("Unexpected close") }, threads: { _ in [] })
         }
+        // Stack presentation effects live until pop. Await the snapshot action that
+        // makes each destination usable, then join its lifetime only after unmounting.
+        var navigationTasks: [StoreTask] = []
         var nextPathID = 0
         func open(_ id: String) async {
             if stackNavigation {
@@ -122,7 +136,9 @@ struct StableDetailOwnerIntegrationTests {
                 }
                 let elementID = StackElementID(integerLiteral: nextPathID)
                 nextPathID += 1
-                await store.send(.fleet(.path(.push(id: elementID, state: .node(.init(sessionID: id)))))).finish()
+                navigationTasks.append(store.send(.fleet(.path(.push(id: elementID, state: .node(.init(sessionID: id)))))))
+                var snapshots = opened.stream.makeAsyncIterator()
+                #expect(await snapshots.next() == id)
             } else {
                 await store.send(.fleet(.openNode(id))).finish()
             }
@@ -157,6 +173,8 @@ struct StableDetailOwnerIntegrationTests {
         await store.send(.triage(.triage(.identityChanged(other)))).finish()
         #expect(store.fleet.nodes.isEmpty)
         #expect(store.fleet.detailID == nil)
+        for task in navigationTasks { await task.finish() }
+        opened.continuation.finish()
         started.continuation.finish(); release.continuation.finish()
     }
 
@@ -187,7 +205,7 @@ struct StableDetailOwnerIntegrationTests {
         #expect(store.triage.document?.draft.general == "B draft")
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     func authoritativeNodeRemovalPrunesOnlyOwnersWithoutOutstandingCommands() async throws {
         var editable = NodeDetailFeature.State(sessionID: "editable")
         editable.message = "Draft on removed node"
@@ -204,6 +222,8 @@ struct StableDetailOwnerIntegrationTests {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":2,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
         let store = Store(initialState: initial) { ServiceFleetFeature() }
+        // Mount the seeded route separately from the finite projection operations.
+        let navigation = store.send(.hiddenInboxChanged([]))
         await store.send(.snapshot(nil)).finish()
         #expect(store.nodes.count == 3)
         await store.send(.snapshot(overview)).finish()
@@ -214,6 +234,9 @@ struct StableDetailOwnerIntegrationTests {
         #expect(route.sessionID == "editable")
         #expect(store.nodes[id: "uncertain"]?.message == "Keep recovery")
         #expect(store.nodes[id: "sending"]?.isSending == true)
+        let pathID = try #require(store.path.ids.first)
+        await store.send(.path(.popFrom(id: pathID))).finish()
+        await navigation.finish()
     }
 
     @Test(.timeLimit(.minutes(1)), arguments: [false, true])

@@ -68,6 +68,9 @@ struct TaskRejectionNoticeIntegrationTests {
                 reopen: { value in #expect(value.id == "t-1"); calls.withValue { $0.append("reopen") }; return result },
                 archiveCompleted: { calls.withValue { $0.append("archive") }; return result }, details: { _ in nil })
         }
+        // The fixture contains both a sheet and a stack destination. Their first
+        // action mounts lifetime effects, which must be joined after dismiss/pop.
+        let presentation = store.send(.settingsPresented(false))
         let submit: ServiceRootFeature.Action
         switch route {
         case .archive: submit = .tasks(.board(.archiveTapped))
@@ -112,6 +115,9 @@ struct TaskRejectionNoticeIntegrationTests {
             #expect(store.notice == nil)
         }
         #expect(calls.value == [expected])
+        await store.send(.tasks(.detail(.dismiss))).finish()
+        await store.send(.tasks(.taskPath(.popFrom(id: pathID)))).finish()
+        await presentation.finish()
         observed.continuation.finish()
     }
 }
