@@ -6,6 +6,24 @@ import ComposableArchitecture
 import Foundation
 import Testing
 
+/// Separates the upload receipt event from the final command's response. Release
+/// is remembered even if the effect has not reached wait() yet.
+private actor ReviewSubmissionGate {
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
 @MainActor
 struct QuestionsFeatureTests {
     private func question(_ id: Int = 1, origin: String = "permission", options: String = "[]", toolUseID: String? = nil) throws -> Question {
@@ -112,6 +130,7 @@ struct QuestionsFeatureTests {
         state.attachmentPicker.entries = [.init(draft: file, status: .uploading)]
         let uploads = LockIsolated<[AttachmentDraft]>([])
         let submissions = LockIsolated<[QuestionOperation]>([])
+        let finalResponse = ReviewSubmissionGate()
         let store = TestStore(initialState: state) { QuestionFeature() } withDependencies: {
             $0.attachmentUpload = .init(upload: { draft in
                 uploads.withValue { $0.append(draft) }
@@ -119,6 +138,7 @@ struct QuestionsFeatureTests {
             })
             $0.questionWorkService = .init(submit: { operation in
                 submissions.withValue { $0.append(operation) }
+                await finalResponse.wait()
                 return .uncertain
             }, document: { _ in "" })
         }
@@ -144,6 +164,7 @@ struct QuestionsFeatureTests {
             $0.isSubmitting = true
         }
         await store.receive(\.attachmentPicker.uploadNext)
+        await finalResponse.release()
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.needsReconciliation = true
@@ -203,6 +224,7 @@ struct QuestionsFeatureTests {
         state.draft.general = "Clarify this"
         state.attachmentPicker.entries = [.init(draft: file, status: .failed("Offline"))]
         let submissions = LockIsolated<[QuestionOperation]>([])
+        let finalResponse = ReviewSubmissionGate()
         let clock = TestClock()
         let store = TestStore(initialState: state) { DocumentReviewFeature() } withDependencies: {
             $0.attachmentUpload = .init(upload: { draft in
@@ -212,6 +234,7 @@ struct QuestionsFeatureTests {
             })
             $0.questionWorkService = .init(submit: { operation in
                 submissions.withValue { $0.append(operation) }
+                await finalResponse.wait()
                 return .failed("Rejected")
             }, document: { _ in "" })
         }
@@ -238,6 +261,7 @@ struct QuestionsFeatureTests {
         }
         await store.receive(\.attachmentPicker.uploadNext)
         if !cancelByEditing {
+            await finalResponse.release()
             await store.receive(\.submissionFinished) { $0.isSubmitting = false; $0.notice = "Rejected" }
         }
         await store.finish()
