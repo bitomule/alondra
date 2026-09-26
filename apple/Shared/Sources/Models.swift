@@ -343,7 +343,7 @@ public func ago(_ millis: Int64) -> String {
     }
 }
 
-public enum InboxItem: Identifiable, Hashable {
+public enum InboxItem: Identifiable, Hashable, Sendable {
     case question(Question)
     case report(Report)
     case pullRequest(PullRequest)
