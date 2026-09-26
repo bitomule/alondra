@@ -32,17 +32,6 @@ struct AlondraMacApp: App {
     }
 }
 
-private struct WorkspaceSettingsStoreKey: FocusedValueKey {
-    typealias Value = StoreOf<ServiceRootFeature>
-}
-
-extension FocusedValues {
-    var workspaceSettingsStore: StoreOf<ServiceRootFeature>? {
-        get { self[WorkspaceSettingsStoreKey.self] }
-        set { self[WorkspaceSettingsStoreKey.self] = newValue }
-    }
-}
-
 private struct WorkspaceSettingsCommands: Commands {
     @FocusedValue(\.workspaceSettingsStore) private var store
 
