@@ -260,7 +260,7 @@ public struct ServiceRootFeature {
                     state.pullRequestID = nil
                 }
                 return .none
-            case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.orchestratorName != nil)))
+            case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.canSubmit)))
             case .triage:
                 return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
             case .macPresentation, .dismissMacError, .delivery, .tasks, .pullRequests, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none

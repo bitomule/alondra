@@ -541,6 +541,9 @@ pub fn run(args: Args) -> Result<()> {
         args.dry_run, &mut std::io::stdin().lock(), &mut std::io::stdout().lock(),
     )?;
     projects.apply(args.dry_run)?;
+    if !args.dry_run {
+        std::fs::create_dir_all(paths.alondra_home.join("runtime/orchestrator"))?;
+    }
     if args.dry_run {
         println!("would verify Claude Code authentication in the daemon environment (no login during dry run)");
     } else {

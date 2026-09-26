@@ -8,6 +8,7 @@ pub mod issues;
 pub mod keeper;
 pub mod model;
 pub mod options;
+pub mod orchestrator;
 pub mod pr;
 pub mod sessions;
 pub mod stack;

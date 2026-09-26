@@ -50,6 +50,12 @@ enum Cmd {
     Logout,
     #[command(about = tr!("Text summary: open questions, fleet and machine", "Resumen en texto: preguntas abiertas, flota y máquina"))]
     Status,
+    #[command(about = "Stop the active orchestrator execution; inspect partial effects before retrying")]
+    OrchestratorCancel { run_id: String },
+    #[command(about = "Continue without replaying the interrupted batch after checking its effects")]
+    OrchestratorAcknowledge { run_id: String, #[arg(long, required = true)] confirm: bool },
+    #[command(about = "Retry an ambiguous orchestrator run after checking its previous effects")]
+    OrchestratorRetry { run_id: String, #[arg(long, required = true, help = "Confirm that replay may repeat actions from this execution")] confirm: bool },
     #[command(about = tr!("Answer a question by its number", "Contesta una pregunta por su número"))]
     Answer { id: u64, text: Vec<String> },
     #[command(about = tr!("Send a message to a node (name, short id or session_id)", "Manda un mensaje a un nodo (nombre, id corto o session_id)"))]
@@ -140,6 +146,21 @@ fn main() -> Result<()> {
         Some(Cmd::Account) => account::status(),
         Some(Cmd::Logout) => account::logout(),
         Some(Cmd::Status) => status(),
+        Some(Cmd::OrchestratorCancel { run_id }) => {
+            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/cancel", &json!({"run_id": run_id}))?;
+            println!("{}", tr!("Orchestrator stop requested", "Parada del orquestador solicitada"));
+            Ok(())
+        },
+        Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => {
+            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/acknowledge", &json!({"run_id": run_id}))?;
+            println!("{}", tr!("Previous batch acknowledged; newer work remains queued", "Lote anterior resuelto; el trabajo nuevo sigue en cola"));
+            Ok(())
+        },
+        Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => {
+            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/retry", &json!({"run_id": run_id}))?;
+            println!("{}", tr!("Orchestrator retry queued", "Reintento del orquestador encolado"));
+            Ok(())
+        },
         Some(Cmd::Answer { id, text }) => {
             Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
             println!("{}", trf!("Answered #{id}", "Contestada #{id}"));
@@ -153,6 +174,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Attach { node }) => {
             let v: serde_json::Value = Client::new(Duration::from_secs(5)).get(&format!("/v1/nodes/{}", mcp::urlencode(&node)))?;
+            anyhow::ensure!(v["node"]["is_orchestrator"] != true, "Alondra manages the orchestrator automatically; open its activity in the fleet");
             let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
             attach::attach(&short, attach::Over::Shell)
         }
@@ -202,6 +224,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("resume_dead_nodes", c.resume_dead_nodes.to_string()),
         ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
         ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
+        ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("archived_tasks_days", c.archived_tasks_days.to_string()),
     ];
     match get {
@@ -237,6 +260,9 @@ fn hook() -> Result<()> {
         return Ok(());
     }
     compact_hook_payload(&mut payload);
+    if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") {
+        payload["_alondra_run"] = json!(run);
+    }
     let critical = matches!(payload.get("hook_event_name").and_then(serde_json::Value::as_str),
         Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
     let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
@@ -342,7 +368,11 @@ fn status() -> Result<()> {
     println!("\n{}", trf!("Fleet ({fleet}):", "Flota ({fleet}):"));
     for n in &o.nodes {
         let mins = (now_millis() - n.state_since) / 60_000;
-        println!("  {:<24} {:<34} {:>5}m", i18n::node_state(n), n.display_name(), mins);
+        println!("  {:<24} {:<34} {:>5}m", n.status_label(), n.display_name(), mins);
+        if let Some(runtime) = &n.orchestrator_runtime {
+            if let Some(error) = &runtime.last_error { println!("    {error}"); }
+            if let Some(run) = &runtime.active_run_id { println!("    execution: {run} · queue: {}", runtime.queue_depth); }
+        }
     }
     Ok(())
 }

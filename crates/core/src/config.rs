@@ -10,6 +10,7 @@ pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
 pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
 pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
+pub const DEFAULT_COMPACT_ORCHESTRATOR_AT: f64 = 50.0;
 pub const OFF: &str = "off";
 
 /// What `config.toml` says. Every key is optional: a missing key falls back to the default,
@@ -42,6 +43,9 @@ pub struct FileConfig {
     /// a new task. 0 turns it off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_idle_nodes_at: Option<f64>,
+    /// Compact the on-demand orchestrator after a turn at this context percentage; zero disables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_orchestrator_at: Option<f64>,
     /// Days an archived task is kept before Alondra forgets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_tasks_days: Option<f64>,
@@ -56,6 +60,9 @@ impl FileConfig {
         if file.compact_idle_nodes_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
             return Err("compact_idle_nodes_at: a percentage from 0 (off) to 100".into());
         }
+        if file.compact_orchestrator_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
+            return Err("compact_orchestrator_at: a percentage from 0 (off) to 100".into());
+        }
         Ok(file)
     }
 
@@ -68,7 +75,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, archived_tasks_days);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days);
         self
     }
 }
@@ -117,6 +124,7 @@ pub struct Config {
     /// Compact an idle node whose context is at least this full, in percent, before typing it
     /// a new task. 30 unless set; `None` is off.
     pub compact_idle_nodes_at: Option<f64>,
+    pub compact_orchestrator_at: Option<f64>,
     pub archived_tasks_days: f64,
 }
 
@@ -194,6 +202,12 @@ impl Config {
                     .unwrap_or(DEFAULT_COMPACT_IDLE_NODES_AT),
             )
             .filter(|p| *p > 0.0),
+            compact_orchestrator_at: Some(
+                var("ALONDRA_COMPACT_ORCHESTRATOR_AT")
+                    .and_then(|v| if v.eq_ignore_ascii_case(OFF) { Some(0.0) } else { v.parse::<f64>().ok().filter(|p| (0.0..=100.0).contains(p)) })
+                    .or(file.compact_orchestrator_at)
+                    .unwrap_or(DEFAULT_COMPACT_ORCHESTRATOR_AT),
+            ).filter(|p| *p > 0.0),
             archived_tasks_days: var("ALONDRA_ARCHIVED_TASKS_DAYS")
                 .and_then(|v| v.parse().ok())
                 .or(file.archived_tasks_days)
@@ -349,6 +363,18 @@ mod tests {
         assert_eq!(resolve(&file, &[]).archived_tasks_days, 7.0);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "0.5")]).archived_tasks_days, 0.5);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "soon")]).archived_tasks_days, 7.0, "a broken env value falls through to the file");
+        assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
+    }
+
+    #[test]
+    fn orchestrator_compaction_has_an_independent_validated_threshold() {
+        assert_eq!(resolve(&FileConfig::default(), &[]).compact_orchestrator_at, Some(50.0));
+        let file = FileConfig::parse("compact_orchestrator_at = 70").unwrap();
+        assert_eq!(resolve(&file, &[]).compact_orchestrator_at, Some(70.0));
+        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_ORCHESTRATOR_AT", "40")]).compact_orchestrator_at, Some(40.0));
+        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_ORCHESTRATOR_AT", "off")]).compact_orchestrator_at, None);
+        assert!(FileConfig::parse("compact_orchestrator_at = 101").is_err());
+        assert!(FileConfig::parse("compact_orchestrator_at = nan").is_err());
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 

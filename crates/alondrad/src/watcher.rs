@@ -74,7 +74,9 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
             let meaningful = seen.get(&short).is_none_or(|s| differs(&s.obs, &obs) || mtime - s.recorded >= HEARTBEAT_MS);
             let mut recorded = seen.get(&short).map_or(mtime, |s| s.recorded);
             if meaningful {
-                if hub.append(Event::DaemonSeen(obs.clone())).is_err() {
+                if hub.append_with(|v| (!v.removed.contains_key(&obs.session_id)
+                    && !v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == obs.session_id))
+                    .then(|| Event::DaemonSeen(obs.clone()))).is_err() {
                     log!("could not save the observation of {short}");
                 }
                 recorded = mtime;

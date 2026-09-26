@@ -28,6 +28,18 @@ extension CloudAppServices {
             }
         }, threads: { session in
             try await self.workspaceDecode(NodeThreads.self, endpoint: AlondraEndpoints.nodeActivity(session)).activity
+        }, retryOrchestrator: { runID in
+            await self.nodeCommand(.retryOrchestrator(runID), session: "alondra-orchestrator") { api, id in
+                _ = try await api.send(AlondraEndpoints.retryOrchestrator(runID), operationID: id.uuidString)
+            }
+        }, cancelOrchestrator: { runID in
+            await self.nodeCommand(.cancelOrchestrator(runID), session: "alondra-orchestrator") { api, id in
+                _ = try await api.send(AlondraEndpoints.cancelOrchestrator(runID), operationID: id.uuidString)
+            }
+        }, acknowledgeOrchestrator: { runID in
+            await self.nodeCommand(.acknowledgeOrchestrator(runID), session: "alondra-orchestrator") { api, id in
+                _ = try await api.send(AlondraEndpoints.acknowledgeOrchestrator(runID), operationID: id.uuidString)
+            }
         })
     }
 

@@ -1193,6 +1193,15 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
+        // Leaving a recovery confirmation (including Escape or changing selection) cancels it.
+        if self.pending_close.as_ref().is_some_and(|(key, _)| {
+            let expected = if key.starts_with("retry:") { Some('R') }
+                else if key.starts_with("cancel:") { Some('S') }
+                else if key.starts_with("acknowledge:") { Some('C') } else { None };
+            expected.is_some_and(|letter| k.code != KeyCode::Char(letter))
+        }) {
+            self.pending_close = None;
+        }
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
@@ -1352,6 +1361,9 @@ impl App {
                 let session = n.session_id.clone();
                 self.compose(Target::Message { session, name: tr!("the orchestrator", "el orquestador").into() }, "");
             }
+            None if self.data.orchestrator.is_some() => self.compose(Target::Message {
+                session: "alondra-orchestrator".into(), name: tr!("the orchestrator", "el orquestador").into()
+            }, ""),
             None => self.fail(tr!("The orchestrator is not connected to Alondra yet", "El orquestador todavía no está conectado a Alondra")),
         }
     }
@@ -1490,6 +1502,13 @@ impl App {
 
     fn attach_to(&mut self, session: &str) -> Flow {
         match self.node(session) {
+            Some(n) if n.is_orchestrator => {
+                let session = n.session_id.clone();
+                self.screen = Screen::Fleet;
+                self.fleet_sel = Some(session);
+                self.fleet_zoom = true;
+                Flow::Go
+            }
             Some(n) => Flow::Attach(n.short_id.clone()),
             None => {
                 self.fail(tr!("That node is no longer in the fleet", "Ese nodo ya no está en la flota"));
@@ -1695,6 +1714,10 @@ impl App {
     /// `claude rm` plus its check can take several seconds, so the answer comes back as its own
     /// message and a refusal reads as a close that did not happen, not as a message not sent.
     fn close(&mut self, session: &str, name: &str, force: bool) {
+        if self.node(session).is_some_and(|node| node.is_orchestrator) {
+            self.fail(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente"));
+            return;
+        }
         let path = format!("/v1/nodes/{}/close", urlencode(session));
         let name = name.to_string();
         self.flash(trf!("Closing {name}…", "Cerrando {name}…"));
@@ -2087,7 +2110,7 @@ impl App {
             n.project.clone().unwrap_or_default(),
             n.state.label(),
             i18n::state(n.state),
-            i18n::fleet_state(n),
+            n.status_label(),
             said(n),
             n.cwd.clone().unwrap_or_default(),
             tasks.join(" ")
@@ -2198,6 +2221,48 @@ impl App {
 
     fn fleet_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
+            KeyCode::Char('C') if self.connected => {
+                if let Some(run_id) = self.selected_node().and_then(|node| node.orchestrator_runtime.as_ref())
+                    .filter(|runtime| runtime.can_retry).and_then(|runtime| runtime.active_run_id.clone()) {
+                    let key = format!("acknowledge:{run_id}");
+                    let now = now_millis();
+                    if self.pending_close.as_ref().is_some_and(|(s, until)| s == &key && now < *until) {
+                        self.pending_close = None;
+                        self.post(None, vec![("/v1/orchestrator/acknowledge".into(), json!({"run_id": run_id}))], tr!("Continuing without repeating", "Continuando sin repetir").into());
+                    } else {
+                        self.pending_close = Some((key, now + 4000));
+                        self.fail(tr!("Inspect partial effects first. Press C again to continue without repeating this batch.", "Revisa los efectos parciales. Pulsa C otra vez para continuar sin repetir este lote."));
+                    }
+                }
+            }
+            KeyCode::Char('S') if self.connected => {
+                if let Some(run_id) = self.selected_node().and_then(|node| node.orchestrator_runtime.as_ref())
+                    .filter(|runtime| runtime.can_cancel).and_then(|runtime| runtime.active_run_id.clone()) {
+                    let key = format!("cancel:{run_id}");
+                    let now = now_millis();
+                    if self.pending_close.as_ref().is_some_and(|(s, until)| s == &key && now < *until) {
+                        self.pending_close = None;
+                        self.post(None, vec![("/v1/orchestrator/cancel".into(), json!({"run_id": run_id}))], tr!("Orchestrator stop requested", "Parada del orquestador solicitada").into());
+                    } else {
+                        self.pending_close = Some((key, now + 4000));
+                        self.fail(tr!("Completed actions cannot be undone. Press S again to stop this intervention.", "Las acciones completadas no se deshacen. Pulsa S otra vez para detener esta intervención."));
+                    }
+                }
+            }
+            KeyCode::Char('R') if self.connected => {
+                if let Some(run_id) = self.selected_node().and_then(|node| node.orchestrator_runtime.as_ref())
+                    .filter(|runtime| runtime.can_retry).and_then(|runtime| runtime.active_run_id.clone()) {
+                    let key = format!("retry:{run_id}");
+                    let now = now_millis();
+                    if self.pending_close.as_ref().is_some_and(|(s, until)| s == &key && now < *until) {
+                        self.pending_close = None;
+                        self.post(None, vec![("/v1/orchestrator/retry".into(), json!({"run_id": run_id}))], tr!("Orchestrator retry requested", "Reintento del orquestador solicitado").into());
+                    } else {
+                        self.pending_close = Some((key, now + 4000));
+                        self.fail(tr!("Actions may already have completed. Check tasks; press R again to retry.", "Puede haber acciones completadas. Comprueba las tareas; pulsa R otra vez para reintentar."));
+                    }
+                }
+            }
             KeyCode::Char('J') => self.fleet_detail_scroll = keys::by(self.fleet_detail_scroll, 5, self.fleet_view.h, self.fleet_view.total),
             KeyCode::Char('K') => self.fleet_detail_scroll = keys::by(self.fleet_detail_scroll, -5, self.fleet_view.h, self.fleet_view.total),
             KeyCode::Char('/') => match self.search.as_mut() {
@@ -2205,7 +2270,7 @@ impl App {
                 None => self.search = Some(Search { input: TextInput::default(), editing: true, typed_at: now_millis(), remote: Remote::Idle }),
             },
             KeyCode::Char('x') => {
-                if let Some(n) = self.selected_node() {
+                if let Some(n) = self.selected_node().filter(|n| !n.is_orchestrator) {
                     let (session, name) = (n.session_id.clone(), n.display_name().to_string());
                     if self.confirm_close(&session, &name) {
                         self.close(&session, &name, true);
@@ -2352,7 +2417,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn alive_node(session: &str) -> crate::client::FleetNode {
-        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None }
+        crate::client::FleetNode { node: alondra_core::model::Node::new(session, 0), project: None, orchestrator_runtime: None }
     }
 
     pub(super) fn app_with(questions: Vec<Question>) -> (App, Receiver<Msg>) {
@@ -2362,6 +2427,42 @@ pub(crate) mod tests {
         app.data.open_questions = questions.into_iter().map(Into::into).collect();
         app.reconcile();
         (app, rx)
+    }
+
+    #[test]
+    fn managed_orchestrator_opens_activity_and_never_closes_as_a_worker() {
+        let (mut app, _) = app_with(vec![]);
+        let mut node = alive_node("alondra-orchestrator");
+        node.node.is_orchestrator = true;
+        node.node.alive = false;
+        app.data.nodes = vec![node];
+        assert!(matches!(app.attach_to("alondra-orchestrator"), Flow::Go));
+        assert!(app.fleet_zoom);
+        assert_eq!(app.fleet_sel.as_deref(), Some("alondra-orchestrator"));
+        app.close("alondra-orchestrator", "Orchestrator", true);
+        assert!(app.posted.borrow().is_empty());
+    }
+
+    #[test]
+    fn stop_confirmation_is_scoped_to_the_exact_intervention() {
+        let (mut app, _) = app_with(vec![]);
+        app.connected = true;
+        let mut node = alive_node("alondra-orchestrator");
+        node.node.is_orchestrator = true;
+        node.orchestrator_runtime = Some(crate::client::OrchestratorRuntime {
+            phase: "running".into(), can_cancel: true, active_run_id: Some("run-1".into()), ..Default::default()
+        });
+        app.data.nodes = vec![node];
+        app.fleet_sel = Some("alondra-orchestrator".into());
+        let key = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        app.fleet_key(key);
+        assert!(app.posted.borrow().is_empty());
+        app.data.nodes[0].orchestrator_runtime.as_mut().unwrap().active_run_id = Some("run-2".into());
+        app.fleet_key(key);
+        assert!(app.posted.borrow().is_empty(), "an old confirmation cannot stop the new run");
+        app.fleet_key(key);
+        assert_eq!(app.posted.borrow().len(), 1);
+        assert_eq!(app.posted.borrow()[0].0, vec!["/v1/orchestrator/cancel"]);
     }
 
     #[test]
@@ -2793,7 +2894,7 @@ pub(crate) mod tests {
         let (mut app, _rx) = app_with(vec![]);
         let mut node = alondra_core::model::Node::new("s1", 0);
         node.cwd = Some(repo.display().to_string());
-        app.data.nodes = vec![crate::client::FleetNode { node, project: None }];
+        app.data.nodes = vec![crate::client::FleetNode { node, project: None, orchestrator_runtime: None }];
         app.data.prs = vec![pr_card(None)];
         app.reconcile();
         app.settle_until = 0;

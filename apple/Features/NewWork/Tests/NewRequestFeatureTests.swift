@@ -7,6 +7,21 @@ import Testing
 
 @MainActor
 struct NewRequestFeatureTests {
+    @Test func managedOrchestratorAcceptsRequestsBeforeItsFirstSessionAndStopsOnDisconnect() async throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false},"orchestrator":{"phase":"idle","queue_depth":0}}"#.utf8))
+        let store = TestStore(initialState: NewRequestFeature.State()) { NewRequestFeature() }
+        await store.send(.workspaceUpdated(overview)) {
+            $0.hasSnapshot = true
+            $0.canSubmit = true
+        }
+        await store.send(.workspaceUpdated(nil)) {
+            $0.hasSnapshot = false
+            $0.canSubmit = false
+        }
+    }
+
     @Test
     func projectChangeDiscardsOldCatalogAndIssueWhileKeepingNewDefaultsAutomatic() async throws {
         let a = try catalog(#"{"project":"A","options":[{"id":"effort","label":"Effort","kind":"choice","values":[{"id":"auto","label":"Auto"},{"id":"hard","label":"Hard"}],"default":"auto"}]}"#)

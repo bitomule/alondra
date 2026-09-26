@@ -69,7 +69,7 @@ pub fn resumes_given_up_message(view: &View, node: &Node, at: Millis) -> Option<
     if !died_working(node) || node.exited_at.is_none_or(|exit| exit <= attempt.at) {
         return None;
     }
-    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
+    let orchestrator = view.orchestrator_node()?;
     let tag = resume_tag(node, attempt.at);
     let told = view.messages.values().any(|m| m.session_id == orchestrator.session_id && m.text.starts_with(RESUMES_GIVEN_UP_PREFIX) && m.text.contains(&tag));
     if told {
@@ -111,7 +111,7 @@ fn resume_tag(node: &Node, at: Millis) -> String {
 /// back anyway.
 pub fn resume_failed_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<Message> {
     let attempt = node.resumed.as_ref().filter(|r| !r.ok && !node.alive)?;
-    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
+    let orchestrator = view.orchestrator_node()?;
     let tag = resume_tag(node, attempt.at);
     let told = view.messages.values().any(|m| {
         m.session_id == orchestrator.session_id && m.from == MessageFrom::Alondra && m.text.starts_with(RESUME_FAILED_PREFIX) && m.text.contains(&tag)

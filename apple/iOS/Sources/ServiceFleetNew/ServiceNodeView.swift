@@ -28,8 +28,26 @@ struct ServiceNodeView: View {
         .background(DawnBackground(glow: store.node?.glyphTint ?? Palette.dawn))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .alert("Continue without repeating?", isPresented: Binding(get: { store.acknowledgeConfirmationRunID != nil }, set: { if !$0 { store.send(.acknowledgeCancelled) } })) {
+            Button("Continue") { store.send(.acknowledgeConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.acknowledgeCancelled) }
+        } message: {
+            Text("The interrupted batch will not run again. Inspect any partial effects first. Later messages remain queued and can continue.")
+        }
+        .alert("Stop the current intervention?", isPresented: Binding(get: { store.cancelConfirmationRunID != nil }, set: { if !$0 { store.send(.cancelCancelled) } })) {
+            Button("Stop", role: .destructive) { store.send(.cancelConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.cancelCancelled) }
+        } message: {
+            Text("Completed actions cannot be undone. Alondra keeps the conversation and pending messages; interrupted work may need review before retrying.")
+        }
+        .alert("Retry the interrupted work?", isPresented: Binding(get: { store.retryConfirmationRunID != nil }, set: { if !$0 { store.send(.retryCancelled) } })) {
+            Button("Retry") { store.send(.retryConfirmed) }
+            Button("Cancel", role: .cancel) { store.send(.retryCancelled) }
+        } message: {
+            Text("Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.")
+        }
         .toolbar {
-            if store.node != nil {
+            if store.node?.isOrchestrator == false {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button(role: .destructive) {
@@ -71,12 +89,31 @@ struct ServiceNodeView: View {
                     Text(node.displayName)
                         .font(.display(.largeTitle, weight: .bold))
                         .fixedSize(horizontal: false, vertical: true)
-                    if let cwd = node.cwd {
+                    if !node.isOrchestrator, let cwd = node.cwd {
                         Text(cwd.replacing(/^\/Users\/[^\/]+\//, with: "~/"))
                             .font(.mono(.caption))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
+                }
+
+                if let runtime = node.orchestratorRuntime {
+                    Text(runtime.availabilityDescription).foregroundStyle(.secondary)
+                    if runtime.queueDepth != nil { Text(runtime.queueLabel).font(.subheadline) }
+                    if let error = runtime.lastError { Text(error).foregroundStyle(Palette.rose).textSelection(.enabled) }
+                    if runtime.canRetry == true {
+                        Button("Retry Orchestrator…") { store.send(.retryRequested) }
+                            .disabled(!store.canRetryOrchestrator)
+                            Button("Continue without repeating…") { store.send(.acknowledgeRequested) }
+                                .disabled(!store.canAcknowledgeOrchestrator)
+                    }
+                    ServiceNodeOutcome(outcome: store.retryOutcome)
+                        ServiceNodeOutcome(outcome: store.acknowledgeOutcome)
+                    if runtime.canCancel == true {
+                        Button("Stop Orchestrator…", role: .destructive) { store.send(.cancelRequested) }
+                            .disabled(!store.canCancelOrchestrator)
+                    }
+                    ServiceNodeOutcome(outcome: store.cancelOutcome)
                 }
 
                 let tasks = store.tasks

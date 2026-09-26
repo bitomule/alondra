@@ -94,6 +94,7 @@ pub fn claim(hub: &Hub, sid: &str, channel: Channel) -> Result<Option<Attempt>> 
         let Some(node) = v.nodes.get(sid) else {
             return Err(());
         };
+        if node.is_orchestrator { return Err(()); }
         let ids = match channel {
             Channel::Compact
                 if node.in_daemon && node.compaction.is_some_and(|c| c.typed_at.is_none()) =>

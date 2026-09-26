@@ -232,6 +232,13 @@ pub fn evaluate(view: &View, node: &Node, now: Millis, trigger: Trigger) -> Outc
 
 /// What the node would show at `now` if the machine were (or were not) strained.
 pub fn evaluate_with(view: &View, node: &Node, now: Millis, trigger: Trigger, machine_strained: bool) -> Outcome {
+    if node.session_id == crate::orchestrator::NODE_ID && let Some(runtime) = &view.orchestrator {
+        let state = runtime.state();
+        return Outcome {
+            state: state.node_state(), status: if runtime.is_active() { NodeStatus::Busy } else { NodeStatus::Free },
+            orchestrator: Some(state), evidence: Evidence { row: "durable orchestrator lifecycle".into(), signal: Signal::Nothing, at: runtime.updated_at }, drop_tool: !runtime.is_active(),
+        };
+    }
     let facts = facts_with(view, node, now, machine_strained);
     let drop_tool = node.tool.is_some()
         && facts.at(Signal::ToolInFlight).is_none()
@@ -452,7 +459,7 @@ pub fn stall_move(view: &View, node: &Node) -> Option<StallMove> {
     if node.state != NodeState::Stalled || node.attached {
         return None;
     }
-    let orchestrator = || view.nodes.values().find(|n| n.is_orchestrator && n.alive);
+    let orchestrator = || view.orchestrator_node();
     let told = |orchestrator: &Node, tag: &str| {
         view.messages.values().any(|m| m.session_id == orchestrator.session_id && m.from == MessageFrom::Alondra && m.text.starts_with(STALLED_PREFIX) && m.text.contains(tag))
     };
@@ -589,7 +596,7 @@ fn nudge_then_orchestrator(view: &View, node: &Node) -> Option<StallMove> {
     if !stopped_after_nudge {
         return None;
     }
-    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive)?;
+    let orchestrator = view.orchestrator_node()?;
     let tag = stalled_tag(node);
     (!alondra_wrote(&orchestrator.session_id, STALLED_PREFIX, Some(&tag))).then(|| StallMove::TellOrchestrator { orchestrator: orchestrator.session_id.clone() })
 }
@@ -711,7 +718,7 @@ pub fn hung_message(view: &View, node: &Node, user: &str, at: Millis) -> Option<
     let wrote = |session: &str, tag: &str| {
         view.messages.values().filter(|m| m.session_id == session && m.from == MessageFrom::Alondra && m.text.starts_with(HUNG_PREFIX) && m.text.contains(tag)).last()
     };
-    let orchestrator = view.nodes.values().find(|n| n.is_orchestrator && n.alive);
+    let orchestrator = view.orchestrator_node();
     let (session_id, text) = background(node, at).into_iter().filter(|b| b.suspect).find_map(|b| {
         let tag = hung_tag(node, &b);
         match wrote(&node.session_id, &tag) {

@@ -30,6 +30,16 @@ pub fn launch_flags(plugins: &[&Path]) -> Vec<String> {
     out
 }
 
+/// Print-mode keeps plugin hooks/MCP but has no terminal status line.
+pub fn orchestrator_flags(plugins: &[&Path]) -> Vec<String> {
+    let mut flags = launch_flags(plugins);
+    let last = flags.last_mut().expect("launch settings");
+    let mut settings: Value = serde_json::from_str(last).expect("generated settings");
+    settings.as_object_mut().expect("settings object").remove("statusLine");
+    *last = settings.to_string();
+    flags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,7 @@ pub const ANNOUNCE_PREFIX: &str = "Alondra launched an orchestrator";
 /// An orchestrator counts while it has a process or the Claude daemon still keeps its session,
 /// since a message wakes a dormant one.
 pub fn has_orchestrator(v: &View) -> bool {
-    v.nodes.values().any(|n| n.is_orchestrator && (n.alive || n.in_daemon))
+    v.orchestrator.is_some() || v.nodes.values().any(|n| n.is_orchestrator && (n.alive || n.in_daemon))
 }
 
 pub fn should_launch(v: &View, now: Millis, started_at: Millis) -> bool {
@@ -34,7 +34,7 @@ pub fn to_announce(v: &View) -> Option<&Node> {
 
 pub fn announcement(v: &View, orchestrator: &Node, at: Millis) -> Report {
     Report {
-        id: v.reports.keys().next_back().copied().unwrap_or(0) + 1,
+        id: v.next_report_id(),
         session_id: orchestrator.session_id.clone(),
         node_name: orchestrator.name.clone().or_else(|| Some(orchestrator.short_id.clone())),
         title: format!("{ANNOUNCE_PREFIX}: none was running"),

@@ -30,6 +30,98 @@ struct FleetFeatureTests {
         NodeOperations(send: send, close: close, threads: threads)
     }
 
+    @Test func acknowledgeDoesNotRetryAndRetainsUncertaintyUntilJournalResolution() async throws {
+        let json = #"[{"session_id":"alondra-orchestrator","short_id":"orchestrator","is_orchestrator":true,"has_plugin":true,"state":"unclear","state_since":1,"state_source":"runtime","orchestrator_runtime":{"phase":"failed","can_retry":true,"active_run_id":"run-1"}}]"#
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: json), visibleInboxIDs: [], sequence: 1)
+        let commandID = UUID()
+        var initial = NodeDetailFeature.State(sessionID: "alondra-orchestrator")
+        initial.entry = snapshot.orchestrator
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = NodeOperations(send: { _, _ in .obsolete }, close: { _ in .obsolete }, threads: { _ in nil },
+                retryOrchestrator: { _ in Issue.record("Acknowledgement must never retry work"); return .obsolete },
+                acknowledgeOrchestrator: { runID in #expect(runID == "run-1"); return .unknown(commandID) })
+        }
+        await store.send(.acknowledgeRequested) { $0.acknowledgeConfirmationRunID = "run-1" }
+        await store.send(.acknowledgeConfirmed) {
+            $0.acknowledgeConfirmationRunID = nil
+            $0.acknowledgedRunID = "run-1"
+            $0.isAcknowledging = true
+        }
+        await store.receive(\.acknowledgeFinished) {
+            $0.isAcknowledging = false
+            $0.acknowledgeOutcome = .unknown(commandID)
+        }
+        await store.send(.retryRequested)
+        await store.send(.acknowledgeRequested)
+        await store.send(.commandResolved(commandID, rejection: nil)) { $0.acknowledgeOutcome = .confirmed }
+        await store.send(.retryRequested)
+        #expect(!store.state.canAcknowledgeOrchestrator)
+    }
+
+    @Test func cancelConfirmationCannotStopADifferentIntervention() async throws {
+        let json = #"[{"session_id":"alondra-orchestrator","short_id":"orchestrator","is_orchestrator":true,"has_plugin":true,"state":"working","state_since":1,"state_source":"runtime","orchestrator_runtime":{"phase":"running","can_cancel":true,"active_run_id":"run-1"}}]"#
+        let first = ProjectFleetUseCase().execute(try overview(nodes: json), visibleInboxIDs: [], sequence: 1)
+        let second = ProjectFleetUseCase().execute(try overview(nodes: json.replacingOccurrences(of: "run-1", with: "run-2")), visibleInboxIDs: [], sequence: 2)
+        var initial = NodeDetailFeature.State(sessionID: "alondra-orchestrator")
+        initial.entry = first.orchestrator
+        let store = TestStore(initialState: initial) { NodeDetailFeature() }
+        await store.send(.cancelRequested) { $0.cancelConfirmationRunID = "run-1" }
+        await store.send(.snapshotChanged(second)) {
+            $0.entry = second.orchestrator
+            $0.acceptedSequence = 2
+            $0.acceptedTick = 1
+            $0.cancelConfirmationRunID = nil
+        }
+        await store.send(.cancelConfirmed)
+        #expect(!store.state.isCancelling)
+    }
+
+    @Test func retryUsesConfirmedRunIdentityAndBlocksUncertainOrRepeatedDispatch() async throws {
+        let json = #"[{"session_id":"alondra-orchestrator","short_id":"orchestrator","is_orchestrator":true,"has_plugin":true,"state":"unclear","state_since":1,"state_source":"runtime","orchestrator_runtime":{"phase":"failed","queue_depth":2,"can_retry":true,"active_run_id":"run-1"}}]"#
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: json), visibleInboxIDs: [], sequence: 1)
+        let commandID = UUID()
+        var initial = NodeDetailFeature.State(sessionID: "alondra-orchestrator")
+        initial.entry = snapshot.orchestrator
+        let store = TestStore(initialState: initial) { NodeDetailFeature() } withDependencies: {
+            $0.nodeOperations = NodeOperations(send: { _, _ in .obsolete }, close: { _ in .obsolete }, threads: { _ in nil }, retryOrchestrator: { runID in
+                #expect(runID == "run-1")
+                return .unknown(commandID)
+            })
+        }
+        await store.send(.retryRequested) { $0.retryConfirmationRunID = "run-1" }
+        await store.send(.retryConfirmed) {
+            $0.retryConfirmationRunID = nil
+            $0.retryRunID = "run-1"
+            $0.isRetrying = true
+        }
+        await store.receive(\.retryFinished) {
+            $0.isRetrying = false
+            $0.retryOutcome = .unknown(commandID)
+        }
+        await store.send(.retryRequested)
+        await store.send(.commandResolved(commandID, rejection: nil)) { $0.retryOutcome = .confirmed }
+        await store.send(.retryRequested)
+        #expect(!store.state.canRetryOrchestrator)
+    }
+
+    @Test func managedOrchestratorIsAvailableWithoutAProcessAndCannotBeClosed() async throws {
+        let json = #"[{"session_id":"alondra-orchestrator","short_id":"orchestrator","name":"Orchestrator","is_orchestrator":true,"has_plugin":true,"state":"done","state_since":1,"state_source":"runtime","orchestrator_state":"on_duty","orchestrator_runtime":{"phase":"idle","queue_depth":2}}]"#
+        let snapshot = ProjectFleetUseCase().execute(try overview(nodes: json), visibleInboxIDs: [], sequence: 1)
+        let node = try #require(snapshot.orchestrator?.node)
+        #expect(node.orchestratorRuntime?.phase == .idle)
+        #expect(node.orchestratorRuntime?.queueDepth == 2)
+        #expect(node.stateLabel == node.orchestratorRuntime?.label)
+        let fleet = TestStore(initialState: FleetFeature.State()) { FleetFeature() }
+        await fleet.send(.snapshotChanged(snapshot)) { $0.snapshot = snapshot }
+        await fleet.send(.closeRequested(node.id))
+        #expect(fleet.state.closeConfirmationID == nil)
+        var initial = NodeDetailFeature.State(sessionID: node.id)
+        initial.entry = snapshot.orchestrator
+        let detail = TestStore(initialState: initial) { NodeDetailFeature() }
+        await detail.send(.closeRequested)
+        #expect(!detail.state.showCloseConfirmation)
+    }
+
     @Test func multipleTasksRemainAttachedToOneNodeAndSearchFindsEither() throws {
         let tasks = "[\(task("t1", title: "Compile")),\(task("t2", title: "Deploy"))]"
         let snapshot = ProjectFleetUseCase().execute(try overview(nodes: "[\(node())]", tasks: tasks), visibleInboxIDs: [], sequence: 1)
