@@ -35,7 +35,10 @@ struct ServiceAttachedQuestion: View {
                 .foregroundStyle(Palette.ink.opacity(0.9))
             }
             if !question.options.isEmpty {
-                ServiceOptionGrid(options: question.options, picked: picked) { store.send(.attachedOptionTapped($0.label)) }
+                ServiceOptionGrid(options: question.options, picked: picked) {
+                    replyFocused = false
+                    store.send(.attachedOptionTapped($0.label))
+                }
             }
             if showsDetail || question.options.isEmpty || picked != nil {
                 replyField
@@ -70,7 +73,11 @@ struct ServiceAttachedQuestion: View {
                 .focused($replyFocused)
                 .padding(.trailing, 14)
                 .padding(.vertical, 10)
-            Button { store.send(.attachedAnswerTapped) } label: {
+            Button {
+                // A fast failure can complete before SwiftUI observes `sending`.
+                replyFocused = false
+                store.send(.attachedAnswerTapped)
+            } label: {
                 Image(systemName: "arrow.up")
                     .font(.body.weight(.bold))
                     .foregroundStyle(Palette.onAccent)

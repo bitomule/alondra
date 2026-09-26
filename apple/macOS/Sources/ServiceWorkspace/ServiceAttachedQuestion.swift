@@ -30,7 +30,10 @@ struct ServiceAttachedQuestion: View {
             }
             ServiceLinksRow(links: question.links.filter { $0.url != pullRequestURL }, attachments: question.attachments, store: store.scope(state: \.downloads, action: \.downloads))
             if !question.options.isEmpty {
-                QuestionOptions(options: question.options, selected: pendingOption, showsKeys: false, choose: { store.send(.optionTapped($0.label)) })
+                QuestionOptions(options: question.options, selected: pendingOption, showsKeys: false, choose: {
+                    focus = nil
+                    store.send(.optionTapped($0.label))
+                })
             }
             ServiceComposer(
                 placeholder: placeholder,
@@ -38,11 +41,15 @@ struct ServiceAttachedQuestion: View {
                 focus: $focus,
                 sendTitle: pendingOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"),
                 canSend: !store.draft.text.isEmpty || !store.attachmentPicker.entries.isEmpty,
-                submit: { store.send(.answerTapped) },
+                submit: {
+                    focus = nil
+                    store.send(.answerTapped)
+                },
                 escape: { store.send(.optionSelected(nil)) },
                 attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker)
             )
             Button {
+                focus = nil
                 store.send(.moreContextTapped)
             } label: {
                 Label("I need more context", systemImage: "questionmark.bubble")
