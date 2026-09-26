@@ -22,5 +22,8 @@ struct AlondraMacApp: App {
                 .frame(minWidth: 720, minHeight: 500)
         }
         .defaultSize(width: 1100, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
     }
 }

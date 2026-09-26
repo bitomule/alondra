@@ -58,7 +58,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { presentation.send(.newRequestPresented(true)) } label: { Label("New…", systemImage: "square.and.pencil") }
-                    .keyboardShortcut("n", modifiers: [.command, .shift]).help("Ask for new work (⇧⌘N)")
+                    .keyboardShortcut("n").help("Ask for new work (⌘N)")
                 Button { store.send(.tasks(.board(.archiveTapped))) } label: { Label("Archive Completed", systemImage: "archivebox") }
                     .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving || store.tasks.board.archiveOutcome?.uncertainID != nil)
                     .help("Archive completed tasks")
@@ -162,11 +162,6 @@ private struct MacServiceInboxSection: View {
                 }
                 ForEach(items) { item in
                     InboxRow(item: item).tag(MacPresentationFeature.Selection.item(item.id))
-                        .contextMenu {
-                            Button("Skip for Now") { store.send(.triage(.triage(.skip(item.id)))) }
-                            if case .report = item { Button("Mark as Read") { store.send(.triage(.triage(.hide(item.id)))) } }
-                            if case .pullRequest = item { Button("Dismiss Pull Request") { store.send(.triage(.triage(.hide(item.id)))) } }
-                        }
                 }
             } header: {
                 SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: items.count, tint: pullRequests ? .purple : .orange)
