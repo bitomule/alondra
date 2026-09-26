@@ -122,9 +122,9 @@ test('revoking a Mac requires confirmation and preserves the key after ambiguous
   expect(route.request().method()).toBe('DELETE');
   expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf');
   keys.push(route.request().headers()['idempotency-key']);
+  revoked = true; // The server committed before the response was lost.
   if (keys.length === 1) return route.abort('connectionreset');
-  revoked = true;
-  return route.fulfill({ status: 202, json: { reconciliation: 'pending' } });
+  return route.fulfill({ status: 409, json: { error: { code: 'action_already_applied' } } });
  });
  await page.goto('/account');
  await page.getByRole('button', { name: 'Retirar acceso al Mac' }).click();
@@ -135,7 +135,7 @@ test('revoking a Mac requires confirmation and preserves the key after ambiguous
  await expect(page.getByRole('dialog')).toHaveCount(0);
  expect(keys).toHaveLength(2); expect(keys[1]).toBe(keys[0]);
  await expect(page.getByRole('button', { name: 'Retirar acceso al Mac' })).toHaveCount(0);
- await expect(page.getByRole('status')).toContainText('Acceso retirado');
+ await expect(page.getByRole('status')).toContainText('ya se había aplicado');
 });
 test('self deletion leaves private UI and does not query a disabled account again', async ({ page }) => {
  await session(page, false);
@@ -157,4 +157,21 @@ test('self deletion leaves private UI and does not query a disabled account agai
  await expect(page.getByRole('button', { name: 'Cerrar sesión' })).toHaveCount(0);
  await expect(page.getByText('David de prueba')).toHaveCount(0);
  expect(deleted).toBe(true);
+});
+test('ambiguous self deletion never presents a later auth failure as proof of deletion', async ({ page }) => {
+ await session(page, false);
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [] } }));
+ let attempts = 0;
+ await page.route('**/v1/account', route => {
+  attempts++;
+  return attempts === 1 ? route.abort('connectionreset') : route.fulfill({ status: 401, json: { error: { code: 'unauthorized' } } });
+ });
+ await page.goto('/account');
+ await page.getByRole('button', { name: 'Dar de baja mi cuenta' }).click();
+ await page.getByRole('button', { name: 'Confirmar retirada de acceso' }).click();
+ await expect(page.getByRole('alert')).toContainText('No podemos confirmar');
+ await page.getByRole('button', { name: 'Confirmar retirada de acceso' }).click();
+ await expect(page.getByRole('alert')).toContainText('No podemos confirmar la baja');
+ await expect(page.getByRole('heading', { name: 'Has solicitado la baja.' })).toHaveCount(0);
+ expect(new URL(page.url()).pathname).not.toContain('account-closed');
 });

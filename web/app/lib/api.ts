@@ -33,6 +33,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
 
 export function errorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return 'No se ha podido completar la operación. Vuelve a intentarlo.';
+  if (error.code === 'account_closure_unconfirmed') return 'No podemos confirmar la baja y el acceso a la cuenta ya no está disponible. No vuelvas a enviar la solicitud; contacta con quien te invitó para comprobar su estado.';
   if (error.status === 401) return 'La sesión ha terminado. Vuelve a entrar para continuar.';
   if (error.status === 403) return 'Tu cuenta no tiene permiso para esta operación.';
   if (error.status === 409) return 'El estado ha cambiado. Actualiza la lista antes de continuar.';
