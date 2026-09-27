@@ -46,6 +46,24 @@ def publish(path, value):
     with temporary.open('x') as stream:
         json.dump(value, stream, indent=2); stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
     temporary.replace(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_NOFOLLOW)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+
+
+def finish_result(path, result):
+    """Never expose PASS while guest data is still awaiting its final sync."""
+    intended_status = result['status']
+    result['status'] = 'finalizing'
+    publish(path, result)
+    try:
+        subprocess.run(['/bin/sync'], check=True, timeout=30, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        result.update(status='failed', durability_error=type(error).__name__)
+    else:
+        result['status'] = intended_status
+    publish(path, result)
 
 
 def state_manifest(root):
@@ -332,7 +350,7 @@ def run():
         try: stop(); result['cleanup'] = True
         except Exception as error:
             result.update(status='failed', cleanup=False, cleanup_error=type(error).__name__)
-        publish(project / 'cli-result.json', result)
+        finish_result(project / 'cli-result.json', result)
     return 0 if result['status'] == 'passed' else 1
 
 

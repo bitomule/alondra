@@ -122,6 +122,27 @@ class LifecycleContracts(unittest.TestCase):
                     lifecycle.retire_stale_socket(state)
                 self.assertEqual((state / 'durable').read_text(), 'unchanged')
 
+    def test_final_receipt_exists_before_sync_and_sync_failure_is_not_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'result.json'; result = {'status': 'passed'}
+            def sync(argv, **kwargs):
+                self.assertEqual(argv, ['/bin/sync'])
+                self.assertEqual(json.loads(path.read_text())['status'], 'finalizing')
+                raise OSError('controlled sync failure')
+            with patch.object(lifecycle.subprocess, 'run', sync): lifecycle.finish_result(path, result)
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(json.loads(path.read_text())['durability_error'], 'OSError')
+
+    def test_sync_success_preserves_original_failed_or_passed_verdict(self):
+        for status in ('failed', 'passed'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'result.json'; result = {'status': status}
+                def sync(*args, **kwargs):
+                    self.assertEqual(json.loads(path.read_text())['status'], 'finalizing')
+                with patch.object(lifecycle.subprocess, 'run', sync): lifecycle.finish_result(path, result)
+                self.assertEqual(json.loads(path.read_text())['status'], status)
+                self.assertEqual(result['status'], status)
+
     def test_plan_never_starts_tools_and_rejects_mismatched_profiles(self):
         spec = importlib.util.spec_from_file_location('lifecycle_tart', HERE / 'macos.py')
         gate = importlib.util.module_from_spec(spec); spec.loader.exec_module(gate)
