@@ -15,6 +15,12 @@ interface_state=$(/sbin/ifconfig en0)
 if printf '%s\n' "$interface_state" | head -1 | grep -Eq '<([^>]*,)?UP(,|>)'; then
   echo 'Guest network still up'; exit 2
 fi
+# cua-driver scopes element tokens to a session. MAV 0.31 uses separate CLI
+# processes for snapshot and click; give those two calls a shared public label.
+mkdir -p driver-bin
+cp cua-session.py driver-bin/cua-driver
+chmod 700 driver-bin/cua-driver
+export PATH="$ROOT/driver-bin:$PATH"
 mkdir -p project/.mav
 cp config.yaml project/.mav/config.yaml
 cp demo.yaml project/demo.yaml

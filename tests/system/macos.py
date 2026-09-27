@@ -230,6 +230,7 @@ class Gate:
                 shutil.copytree(app, stage / 'Alondra.app', symlinks=True)
                 shutil.copyfile(HERE / 'macos/guest.sh', stage / 'guest.sh')
                 shutil.copyfile(HERE / 'macos/demo.yaml', stage / 'demo.yaml')
+                shutil.copyfile(HERE / 'macos/cua-session.py', stage / 'cua-session.py')
                 (stage / 'config.yaml').write_text(config())
             else:
                 shutil.copyfile(HERE / 'macos/cli.py', stage / 'cli.py')

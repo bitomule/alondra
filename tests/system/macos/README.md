@@ -67,6 +67,12 @@ This runner instead invokes MAV **inside its own Tart clone**, so its generated
 guest configuration intentionally says `vm: false`. It cannot select the host's
 app: the guest script checks `hw.model` and the prepared-base marker.
 
+MAV 0.31 makes separate `cua-driver call` invocations for a snapshot and its
+semantic click. The guest-only adapter adds the same documented public `session`
+label to these two calls, so tokens survive across them. It forwards the real
+driver's response unchanged; it does not grant permissions or turn failed clicks
+into successes. The flow still requires visible destination readback.
+
 ## Assertions and limits
 
 CLI: public installation, package version, Developer ID signatures, packaged
