@@ -46,24 +46,9 @@
   --lark-wing: var(--color-accent);
   --lark-body: var(--color-ink);
 
-  --tui-bg: oklch(18% 0.018 230);
-  --tui-fg: oklch(90% 0.01 230);
-  --tui-yellow: oklch(84% 0.13 85);
-  --tui-lightyellow: oklch(90% 0.12 90);
-  --tui-green: oklch(74% 0.15 150);
-  --tui-lightgreen: oklch(82% 0.15 150);
-  --tui-red: oklch(68% 0.17 25);
-  --tui-lightred: oklch(74% 0.16 25);
-  --tui-cyan: oklch(78% 0.1 210);
-  --tui-lightcyan: oklch(85% 0.1 210);
-  --tui-blue: oklch(70% 0.12 250);
-  --tui-lightblue: oklch(78% 0.11 250);
-  --tui-magenta: oklch(72% 0.15 330);
-  --tui-lightmagenta: oklch(80% 0.14 330);
-  --tui-gray: oklch(70% 0.01 230);
-  --tui-darkgray: oklch(55% 0.01 230);
-  --tui-white: oklch(96% 0.005 230);
-  --tui-black: oklch(18% 0.018 230);
+  --color-term-bg: oklch(18% 0.018 230);
+  --color-term-fg: oklch(90% 0.01 230);
+  --color-term-dim: oklch(62% 0.01 230);
 
   --text-2xs: 0.6875rem;
   --text-xs: 0.78rem;

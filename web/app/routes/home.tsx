@@ -3,8 +3,9 @@ import { Lark } from '../public/Lark';
 import { Score } from '../public/Score';
 import { Shot } from '../public/Shot';
 import { Stages } from '../public/Stages';
-import { Terminal } from '../public/Terminal';
 import { WaitlistForm, useWaitlist } from '../public/WaitlistForm';
+import macCapture from '../public/captures/mac-programadas.png?no-inline';
+import tuiCapture from '../public/captures/tui-programadas.png?no-inline';
 
 export function meta() {
   return [
@@ -52,8 +53,8 @@ export default function Home() {
           <Lark className="wingspan-lark"/>
           <div className="wing wing-far-l"><Shot name="pr" alt="" tone="dark" eager/></div>
           <div className="wing wing-near-l"><Shot name="te-espera" alt="" tone="dark" eager/></div>
-          <div className="wing wing-near-r"><Terminal name="tareas" label=""/></div>
-          <div className="wing wing-far-r"><Shot name="tareas" alt="" tone="dark" eager/></div>
+          <div className="wing wing-near-r"><Shot name="tarea" alt="" tone="dark" eager/></div>
+          <div className="wing wing-far-r"><Shot name="nuevo" alt="" tone="dark" eager/></div>
         </div>
       </section>
 
@@ -79,28 +80,32 @@ export default function Home() {
       </section>
 
       <section className="surfaces" aria-labelledby="surfaces-title">
-        <h2 id="surfaces-title" className="pub-h2">En todas partes. La misma flota.</h2>
+        <div className="surfaces-head">
+          <h2 id="surfaces-title" className="pub-h2">En todas partes. La misma flota.</h2>
+          <p>Las misiones programadas del orquestador, desde los tres sitios donde usas Alondra. Capturas reales de las apps, con datos de ejemplo.</p>
+        </div>
         <div className="surfaces-grid">
-          <article className="surface surface-phone">
-            <Shot name="te-espera" alt="La pestaña Te espera en el iPhone" className="surface-shot"/>
-            <div>
+          <figure className="surface surface-phone">
+            <Shot name="programadas" alt="Nueva programación en el iPhone: misión, proyecto, repetición cada día a las 9:00 y opciones de lanzamiento" className="surface-shot"/>
+            <figcaption>
               <h3>iPhone</h3>
               <p>Te espera, Tareas, Flota y Nuevo. Notificaciones con acciones: responde, permite o aprueba sin abrir la app.</p>
-            </div>
-          </article>
-          <article className="surface surface-terminal">
-            <Terminal name="bandeja" label="La TUI de Alondra en el terminal, pestaña Bandeja"/>
-            <div>
+            </figcaption>
+          </figure>
+          <figure className="surface surface-mac">
+            <img className="surface-capture" src={macCapture} width={1200} height={466} loading="lazy" decoding="async" alt="La app de Mac con dos tareas programadas: Resumen diario, pausada, y Revisión semanal, activa, con su próxima ejecución"/>
+            <figcaption>
+              <h3>Mac</h3>
+              <p>La bandeja en el lateral, el diff a lo ancho y <kbd>⇧⌘N</kbd> para pedir trabajo nuevo desde cualquier sitio.</p>
+            </figcaption>
+          </figure>
+          <figure className="surface surface-terminal">
+            <img className="surface-capture" src={tuiCapture} width={1100} height={282} loading="lazy" decoding="async" alt="La TUI de Alondra en el terminal, pestaña Programadas, con la misión Revisión semanal"/>
+            <figcaption>
               <h3>Terminal</h3>
               <p><code>alondra</code> abre la TUI con Bandeja, Tareas, Programadas y Flota. <code>alondra status</code> da lo mismo en texto.</p>
-            </div>
-          </article>
-          <article className="surface surface-mac">
-            <div>
-              <h3>Mac</h3>
-              <p>La app de Mac: la bandeja en el lateral, el diff a lo ancho y <kbd>⇧⌘N</kbd> para pedir trabajo nuevo.</p>
-            </div>
-          </article>
+            </figcaption>
+          </figure>
         </div>
       </section>
 
