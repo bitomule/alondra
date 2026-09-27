@@ -55,6 +55,8 @@ pub struct Args {
     pub skip_plugin: bool,
     #[arg(long)]
     pub skip_pair: bool,
+    #[arg(long, help = "Explicitly recover the service identity; requires local confirmation and new client pairing")]
+    pub recover_service: bool,
     #[arg(long, help = tr!("Overwrite config.toml / apns.json values that differ", "Sobrescribe los valores de config.toml / apns.json que cambien"))]
     pub force: bool,
     #[arg(long, help = tr!("Print what would be done without doing it", "Enseña lo que haría sin hacerlo"))]
@@ -518,6 +520,28 @@ pub fn run(args: Args) -> Result<()> {
         .clone()
         .or_else(|| existing.as_ref().and_then(|e| e.service_label.clone()))
         .unwrap_or_else(|| config::DEFAULT_LABEL.into());
+    if args.recover_service {
+        if args.dry_run {
+            println!("would confirm service recovery, stop only this HOME's daemon, preserve tasks/receipts, replace service identity and require new pairings");
+            return Ok(());
+        }
+        if args.no_input { bail!("--recover-service requires local confirmation; remove --no-input"); }
+        if args.skip_service { bail!("--recover-service cannot be combined with --skip-service"); }
+        let outcome = crate::service_setup::recover(&paths.alondra_home, || stop_for_recovery(&paths, &label),
+            &mut std::io::stdin().lock(), &mut std::io::stdout().lock())?;
+        return continue_after_recovery(outcome, || {
+            let mut resumed = args;
+            resumed.recover_service = false;
+            run(resumed)
+        });
+    }
+    // Shared ownership excludes a recovery writer; check pending after locking,
+    // before setup can load or change any service trust or launch the daemon.
+    let _home_lock = if args.dry_run { None } else {
+        let lock = alondra_core::home_lock::HomeLock::shared(&paths.alondra_home)?;
+        alondra_core::home_lock::ensure_ready(&paths.alondra_home)?;
+        Some(lock)
+    };
     if let (Ok(config), Ok(watcher)) = (std::env::var("CLAUDE_CONFIG_DIR"), std::env::var("CLAUDE_HOME")) {
         if config != watcher { bail!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup"); }
     }
@@ -961,5 +985,64 @@ esac
         let p = plan(&named("Ana"), None, &Args { skip_plugin: true, ..Default::default() }, &paths(), &Observed { binaries: false, ..fresh() });
         assert!(runs(&p).is_empty());
         assert!(p.steps.iter().any(|s| matches!(s, Step::Warn(w) if w.contains("make install"))));
+    }
+}
+
+
+fn recovery_job_matches(text: &str, home: &Path, daemon: &Path) -> bool {
+    fn values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
+        text.lines().filter_map(|line| line.trim().strip_prefix(key)).map(str::trim).collect()
+    }
+    let homes = values(text, "ALONDRA_HOME => ");
+    let programs = values(text, "program = ");
+    homes.len() == 1 && programs.len() == 1
+        && Path::new(homes[0]) == home && Path::new(programs[0]) == daemon
+}
+
+fn stop_for_recovery(paths: &Paths, label: &str) -> Result<()> {
+    if !service_loaded(paths.uid, label) { return Ok(()); }
+    let target = format!("gui/{}/{label}", paths.uid);
+    let state = Command::new("launchctl").args(["print", &target]).output()?;
+    anyhow::ensure!(state.status.success(), "cannot inspect daemon ownership before recovery");
+    let state = String::from_utf8(state.stdout)?;
+    anyhow::ensure!(recovery_job_matches(&state, &paths.alondra_home, &paths.bin.join("alondrad")),
+        "cannot prove launchd job belongs to this HOME and executable; stop its daemon explicitly before recovery");
+    let stopped = Command::new("launchctl").args(["bootout", &target]).output()?;
+    anyhow::ensure!(stopped.status.success(), "could not unload this HOME's daemon; recovery not started");
+    // bootout removes KeepAlive before we attempt the exclusive HOME lock. Never
+    // kill arbitrary PIDs or infer ownership from a TCP port.
+    Ok(())
+}
+
+#[cfg(test)] mod recovery_job_tests {
+    use super::*;
+    #[test] fn only_exact_home_and_executable_are_owned() {
+        let text="program = /example/bin/alondrad\n environment = {\n ALONDRA_HOME => /example/home\n }";
+        assert!(recovery_job_matches(text,Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+        assert!(!recovery_job_matches(text,Path::new("/other/home"),Path::new("/example/bin/alondrad")));
+        assert!(!recovery_job_matches(text,Path::new("/example/home"),Path::new("/other/bin/alondrad")));
+        assert!(!recovery_job_matches(&(text.to_owned()+"\n ALONDRA_HOME => /other/home"),Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+    }
+}
+
+
+// Keep the decision in the caller: cancellation must not enter normal setup,
+// which can otherwise log in, enroll, launch services and modify plugins.
+fn continue_after_recovery(outcome: crate::service_setup::RecoveryOutcome, resume: impl FnOnce() -> Result<()>) -> Result<()> {
+    match outcome {
+        crate::service_setup::RecoveryOutcome::Cancelled => Ok(()),
+        crate::service_setup::RecoveryOutcome::Committed => resume(),
+    }
+}
+
+#[cfg(test)] mod recovery_continuation_tests {
+    use super::*;
+    #[test] fn cancelled_recovery_never_enters_normal_setup_but_committed_does() {
+        continue_after_recovery(crate::service_setup::RecoveryOutcome::Cancelled,
+            || panic!("cancelled recovery must not run auth/enrollment/launchd/plugins")).unwrap();
+        let mut entered = false;
+        continue_after_recovery(crate::service_setup::RecoveryOutcome::Committed,
+            || { entered = true; Ok(()) }).unwrap();
+        assert!(entered, "control: completed recovery must continue ordinary setup");
     }
 }
