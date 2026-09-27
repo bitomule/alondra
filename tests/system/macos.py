@@ -128,7 +128,11 @@ def validate_report(folder):
         except (KeyError, ValueError, TypeError) as error:
             raise GateError('missing capture timestamps for banner correlation') from error
         matched = False
-        for action_path in reports[0].parent.glob('video/turn-*/action.json'):
+        preserved = folder / 'project/driver-ax' / reports[0].parent.name
+        action_paths = list(preserved.glob('turn-*/action.json'))
+        if not action_paths:
+            action_paths = list(reports[0].parent.glob('video/turn-*/action.json'))
+        for action_path in action_paths:
             def read_state(path):
                 if path.stat().st_size > 2 * 1024**2:
                     raise GateError('oversized raw AX state')

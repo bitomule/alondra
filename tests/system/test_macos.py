@@ -85,6 +85,36 @@ class MacGateTests(unittest.TestCase):
             with self.assertRaises(m.GateError):
                 m.validate_report(folder)
 
+    def test_ax_evidence_survives_mav_cleanup_and_rejects_links(self):
+        spec = importlib.util.spec_from_file_location('cua_session', Path(__file__).parent / 'macos/cua-session.py')
+        adapter = importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            turn = project / '.mav/runs/run/video/turn-00001'
+            turn.mkdir(parents=True)
+            (turn / 'after_state.json').write_text('{"tree_markdown":"actual driver state"}')
+            adapter.preserve_ax(project)
+            import shutil
+            shutil.rmtree(project / '.mav')
+            saved = project / 'driver-ax/run/turn-00001/after_state.json'
+            self.assertEqual(json.loads(saved.read_text())['tree_markdown'], 'actual driver state')
+            turn.mkdir(parents=True)
+            (turn / 'action.json').symlink_to(saved)
+            with self.assertRaises(ValueError): adapter.preserve_ax(project)
+
+    def test_ax_adapter_keeps_driver_error_when_preservation_fails(self):
+        spec = importlib.util.spec_from_file_location('cua_session', Path(__file__).parent / 'macos/cua-session.py')
+        adapter = importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
+        with patch('sys.argv', ['cua-driver', 'call', 'click', '{"element_token":"a:1"}']), \
+             patch.object(adapter.subprocess, 'check_output', return_value='VirtualMac2,1'), \
+             patch.object(adapter.Path, 'is_file', return_value=True), \
+             patch.object(adapter.subprocess, 'run', return_value=subprocess.CompletedProcess([], 7)) as run, \
+             patch.object(adapter, 'preserve_ax', side_effect=OSError('no space')):
+            self.assertEqual(adapter.main(), 7)
+            self.assertEqual(json.loads(run.call_args.args[0][-1])['element_token'], 'a:1')
+            self.assertNotIn('stdout', run.call_args.kwargs)
+            self.assertNotIn('stderr', run.call_args.kwargs)
+
     def test_partial_clone_failure_cleans_only_reserved_name(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
