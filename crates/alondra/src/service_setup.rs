@@ -293,10 +293,10 @@ fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bo
 }
 
 /// Returns whether service.toml was newly created and an existing daemon must restart.
-pub fn enroll(home: &Path) -> Result<bool> {
+pub fn enroll(home: &Path, no_input: bool) -> Result<bool> {
     let _lock = alondra_core::home_lock::HomeLock::shared(home)?;
     alondra_core::home_lock::ensure_ready(home)?;
-    let account = crate::account::ensure_token_for_enrollment()?;
+    let account = crate::account::token_for_setup(no_input)?;
     let (identity, signing) = load_or_create_keys(&identity_base(home)?)?;
     // Validate every field of any existing configuration before changing relay state.
     service_file(home, &identity, &account.sub, false)?;

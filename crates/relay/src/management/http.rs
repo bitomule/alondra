@@ -18,6 +18,11 @@ pub fn routes() -> Router<Arc<Server>> {
     Router::new()
         .route("/v1/account", get(account).delete(delete_self))
         .route("/v1/account/devices", get(account_devices))
+        .route("/v1/account/devices/macs/{id}/label", post(rename_mac))
+        .route(
+            "/v1/account/devices/clients/{id}/label",
+            post(rename_client),
+        )
         .route("/v1/account/devices/macs/{id}", delete(revoke_own_mac))
         .route(
             "/v1/account/devices/clients/{id}",
@@ -92,6 +97,7 @@ async fn account(State(server): State<Arc<Server>>, headers: HeaderMap) -> ApiRe
 struct ClientMetadata {
     device_id: String,
     label: Option<String>,
+    label_revision: i64,
     status: &'static str,
     reconciliation: Option<&'static str>,
 }
@@ -99,6 +105,7 @@ struct ClientMetadata {
 struct MacMetadata {
     mac_id: String,
     label: Option<String>,
+    label_revision: i64,
     status: &'static str,
     reconciliation: Option<&'static str>,
     clients: Vec<ClientMetadata>,
@@ -125,6 +132,7 @@ async fn owned_metadata(
         .map(|(mac_id, clients)| MacMetadata {
             mac_id,
             label: None,
+            label_revision: 0,
             status: "active",
             reconciliation: None,
             clients: clients
@@ -132,6 +140,7 @@ async fn owned_metadata(
                 .map(|device_id| ClientMetadata {
                     device_id,
                     label: None,
+                    label_revision: 0,
                     status: "active",
                     reconciliation: None,
                 })
@@ -145,6 +154,7 @@ async fn owned_metadata(
             rows.push(MacMetadata {
                 mac_id: r.mac_id.clone(),
                 label: None,
+                label_revision: 0,
                 status: "revoked",
                 reconciliation: None,
                 clients: Vec::new(),
@@ -167,12 +177,29 @@ async fn owned_metadata(
             mac.clients.push(ClientMetadata {
                 device_id: r.device_id,
                 label: None,
+                label_revision: 0,
                 status: "revoked",
                 reconciliation,
             });
         }
     }
+    let labels = db(server)?.device_labels(actor.id).await.map_err(failure)?;
     for mac in &mut rows {
+        if let Some(label) = labels
+            .iter()
+            .find(|l| l.kind == "mac" && l.device_id == mac.mac_id && l.mac_id == mac.mac_id)
+        {
+            mac.label = label.label.clone();
+            mac.label_revision = label.label_revision;
+        }
+        for client in &mut mac.clients {
+            if let Some(label) = labels.iter().find(|l| {
+                l.kind == "client" && l.device_id == client.device_id && l.mac_id == mac.mac_id
+            }) {
+                client.label = label.label.clone();
+                client.label_revision = label.label_revision;
+            }
+        }
         if mac.status == "revoked" {
             for client in &mut mac.clients {
                 client.status = "revoked";
@@ -188,6 +215,84 @@ async fn account_devices(State(server): State<Arc<Server>>, headers: HeaderMap) 
     let actor = actor(&server, &headers).await?;
     Ok(Json(json!({"macs":owned_metadata(&server,&actor,&headers).await?})).into_response())
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameDevice {
+    #[serde(deserialize_with = "Option::<String>::deserialize")]
+    label: Option<String>,
+    expected_revision: i64,
+}
+async fn rename_mac(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenameDevice>,
+) -> ApiResult {
+    rename_owned(server, headers, id, "mac", body).await
+}
+async fn rename_client(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenameDevice>,
+) -> ApiResult {
+    rename_owned(server, headers, id, "client", body).await
+}
+async fn rename_owned(
+    server: Arc<Server>,
+    headers: HeaderMap,
+    id: String,
+    kind: &str,
+    body: RenameDevice,
+) -> ApiResult {
+    let actor = actor(&server, &headers).await?;
+    let owner = server
+        .auth
+        .account_owner(&headers, now_ms())
+        .await
+        .map_err(|e| crate::authentication_error(e).into_response())?;
+    let mac_id = server
+        .auth
+        .account_device_metadata(&owner)
+        .map_err(failure)?
+        .into_iter()
+        .find(|(mac, clients)| {
+            if kind == "mac" {
+                mac == &id
+            } else {
+                clients.contains(&id)
+            }
+        })
+        .map(|(mac, _)| mac)
+        .ok_or_else(|| failure(DomainError::NotFound.into()))?;
+    let key = request(
+        &headers,
+        "rename_device",
+        json!({"kind":kind,"id":id,"label":body.label,"expected_revision":body.expected_revision}),
+        false,
+    )?;
+    let label = db(&server)?
+        .rename_device_request(
+            actor.id,
+            kind,
+            &id,
+            &mac_id,
+            body.label.as_deref(),
+            body.expected_revision,
+            &key,
+            || {
+                server.auth.account_device_metadata(&owner).map(|rows| {
+                    rows.iter().any(|(mac, clients)| {
+                        mac == &mac_id && (kind == "mac" || clients.contains(&id))
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(failure)?;
+    Ok(Json(json!({"label":label.label,"label_revision":label.label_revision})).into_response())
+}
+
 async fn revoke_owned(
     server: Arc<Server>,
     headers: HeaderMap,
