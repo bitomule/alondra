@@ -142,6 +142,28 @@ class Gate:
     def guest(self, *args, timeout=60, **kwargs):
         return self.call('tart', 'exec', self.name, *args, timeout=timeout, **kwargs)
 
+    def collect_evidence(self):
+        # Tart's guest transport can disconnect during an otherwise read-only
+        # transfer. Keep every partial attempt and retry this owned archive only.
+        self.result['collection_attempts'] = []
+        for attempt in range(1, 4):
+            archive = self.out / f'evidence-attempt-{attempt}.tar'
+            try:
+                with archive.open('wb') as stream:
+                    result = self.guest('/usr/bin/tar', '-cf', '-', '-C', GUEST, 'project',
+                                        timeout=90, output_file=stream, check=False)
+                detail = {'attempt': attempt, 'exit_code': result.returncode}
+                if result.returncode:
+                    (self.out / f'collection-{attempt}.txt').write_bytes(result.stderr[-8000:])
+            except subprocess.TimeoutExpired:
+                detail = {'attempt': attempt, 'timeout': True}
+            self.result['collection_attempts'].append(detail)
+            if detail.get('exit_code') == 0:
+                archive.rename(self.out / 'evidence.tar')
+                extract_evidence(self.out / 'evidence.tar', self.out / 'evidence')
+                return
+        raise GateError('evidence transfer failed after three attempts; partial archives retained')
+
     def execute(self):
         if self.out.exists():
             raise GateError('output directory already exists; choose a new evidence directory')
@@ -221,10 +243,9 @@ class Gate:
             parameter = 'debug' if self.args.profile == 'app' else self.args.brew_version
             test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
             (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
+            self.result['guest_exit_code'] = test.returncode
             self.step = 'collect'
-            with (self.out / 'evidence.tar').open('wb') as stream:
-                self.guest('/usr/bin/tar', '-cf', '-', '-C', GUEST, 'project', timeout=90, output_file=stream)
-            extract_evidence(self.out / 'evidence.tar', self.out / 'evidence')
+            self.collect_evidence()
             if test.returncode:
                 raise GateError(f'guest demo failed with exit {test.returncode}; see guest.txt and collected evidence')
             if self.args.profile == 'app':

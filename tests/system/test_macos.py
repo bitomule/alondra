@@ -102,6 +102,29 @@ class MacGateTests(unittest.TestCase):
             with self.assertRaisesRegex(m.GateError, 'Debug app'):
                 m.validate_app(app)
 
+    def test_collection_retries_preserving_partial_transfer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            gate = m.Gate(argparse.Namespace(output_dir=root, base=m.BASE_NAME, profile='cli'))
+            attempts = []
+            def guest(*args, **kwargs):
+                attempts.append(args)
+                if len(attempts) == 1:
+                    kwargs['output_file'].write(b'partial evidence')
+                    return subprocess.CompletedProcess(args, 1, b'', b'transport disconnected')
+                with tarfile.open(fileobj=kwargs['output_file'], mode='w') as tar:
+                    member = tarfile.TarInfo('project/result.json')
+                    body = b'{"synthetic":true}'
+                    member.size = len(body)
+                    tar.addfile(member, io.BytesIO(body))
+                return subprocess.CompletedProcess(args, 0, b'', b'')
+            with patch.object(gate, 'guest', guest):
+                gate.collect_evidence()
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual((root / 'evidence-attempt-1.tar').read_bytes(), b'partial evidence')
+            self.assertEqual(json.loads((root / 'evidence/project/result.json').read_text()), {'synthetic': True})
+            self.assertEqual(gate.result['collection_attempts'], [{'attempt': 1, 'exit_code': 1}, {'attempt': 2, 'exit_code': 0}])
+
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp)

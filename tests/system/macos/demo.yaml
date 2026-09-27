@@ -4,8 +4,15 @@ steps:
   - wait: { text: Explore the demo, timeout: 30s }
   - video.start: {}
   - evidence.step: { name: clean-onboarding, note: A new VM reaches onboarding without a saved account. }
-  - tap: { text: Explore the demo }
-  - wait: { text: Demo · Sample data, timeout: 30s }
+  # MAV may fall back to an unconfirmed click after a stale element token.
+  # Re-resolve the selector and require the destination, never tap exit 0.
+  - whileNotVisible:
+      text: Demo · Sample data
+      timeout: 90s
+      do:
+        - tap: { text: Explore the demo }
+        - delay: 500ms
+  - wait: { text: Demo · Sample data, timeout: 10s }
   - wait: { text: Reset demo, timeout: 10s }
   - evidence.step: { name: demo-open, note: The app opens the sample workspace without account login. }
   - tap: { text: Reset demo }
