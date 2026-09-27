@@ -43,10 +43,12 @@ final class VisualFixture {
         client.hasSavedConfiguration = { true }
         $0.cloudPairing = client
     }
-    @ObservationIgnored lazy var settings: StoreOf<ServiceSettingsFeature> = {
+    @ObservationIgnored lazy var settings = makeSettings()
+
+    private func makeSettings() -> StoreOf<ServiceSettingsFeature> {
         var state = ServiceSettingsFeature.State(service: "synthetic.invalid", device: "visual-client", supportsNotifications: false)
         state.macs = [ServiceMacChoice(id: Self.alpha, macID: "alpha-mac"), ServiceMacChoice(id: Self.beta, macID: "beta-mac")]
-        state.selectedMacID = Self.alpha
+        state.selectedMacID = selected
         var client = ServiceSettingsClient(observe: { AsyncStream { $0.finish() } },
             save: { _, _ in throw CancellationError() }, requestPermission: {}, openSystemSettings: {},
             checkConnection: {}, logout: {})
@@ -59,7 +61,7 @@ final class VisualFixture {
             $0.cloudPairing = CloudPairingService(restore: { false }, login: { throw CancellationError() },
                 begin: { _ in throw CancellationError() }, approve: { throw CancellationError() }, cancel: {}, logout: {})
         }
-    }()
+    }
 
     init(environment: [String: String]) throws {
         guard let run = environment["ALONDRA_VISUAL_RUN_ID"], UUID(uuidString: run) != nil,
@@ -111,6 +113,7 @@ final class VisualFixture {
         workspace.send(.disappeared)
         workspace.send(.tasks(.disappeared)); workspace.send(.fleet(.disappeared))
         try await feed.selectBeta()
+        settings = makeSettings()
         workspace = makeWorkspace(identity: id, settingsPresented: false)
     }
 
