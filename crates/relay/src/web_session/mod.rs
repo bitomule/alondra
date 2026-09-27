@@ -732,6 +732,7 @@ mod tests {
             requests: Arc::new(Semaphore::new(8)),
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
             epoch: "synthetic".into(),
+            lab_waiters: Arc::default(),
         });
         let run = tokio::spawn(async move {
             axum::serve(listener, crate::router(server)).await.unwrap();

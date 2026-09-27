@@ -16,6 +16,11 @@ def fixture(commit="before"):
 
 
 class ComparatorTests(unittest.TestCase):
+    def test_instrumented_load_cannot_be_compared_to_uninstrumented_baseline(self):
+        changed=fixture("after");changed["instrumentation"]={"feature":"lab-waiter-metrics"}
+        with self.assertRaisesRegex(ValueError,"instrumentation"):
+            suite.compare(fixture(),changed)
+
     def test_different_commits_same_hardware_are_comparable(self):
         result = suite.compare(fixture(), fixture("after"))
         self.assertEqual(result["regressions"], 0)

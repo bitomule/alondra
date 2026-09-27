@@ -83,6 +83,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.23.1",
+ "libc",
  "openidconnect",
  "p256 0.14.0",
  "reqwest",
