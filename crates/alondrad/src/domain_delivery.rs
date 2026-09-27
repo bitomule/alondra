@@ -126,7 +126,9 @@ async fn deliver_user(
             .broadcast_push(&payload, true)
             .await
             .map_err(|_| (State::Uncertain, "encrypted_push_unknown"))?;
-    } else if push.enabled() && !hub.home.join("service.toml").exists() {
+    } else if hub.home.join("service.toml").exists() {
+        return Err((State::Retryable, "encrypted_service_unavailable"));
+    } else if push.enabled() {
         push.broadcast(&payload, true).await;
     }
     Ok(())
@@ -318,6 +320,16 @@ mod tests {
                 .iter()
                 .any(|e| e.message_id == agent_message.id && e.state == "retryable")
         );
+        command(&hub, Actor::Agent { agent_id: "agent-a".into() }, "info-2",
+            Command::PublishInformation { attachments: vec![], interaction_id: "info-b".into(),
+                scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
+                body: "Another update".into() });
+        std::fs::write(home.join("service.toml"), "service unavailable").unwrap();
+        let user_message = hub.domain.store.lock().unwrap().pending_messages().unwrap()
+            .into_iter().find(|m| m.interaction_id.as_deref() == Some("info-b")).unwrap();
+        deliver_one(&hub, &push, None, user_message.clone()).await.unwrap();
+        assert!(hub.domain.store.lock().unwrap().delivery_evidence().unwrap().iter()
+            .any(|e| e.message_id == user_message.id && e.state == "retryable"));
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
