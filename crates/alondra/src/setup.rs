@@ -135,16 +135,44 @@ fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv 
     // A setup retry from another shell must not silently switch an installed Claude profile.
     if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() && std::env::var_os("CLAUDE_HOME").is_none() {
         context.config_dir = read_plist(&paths.plist(label)).ok()
-            .and_then(|v| v.get("EnvironmentVariables")?.get("CLAUDE_CONFIG_DIR").or_else(|| v.get("EnvironmentVariables")?.get("CLAUDE_HOME"))?.as_str().map(str::to_owned));
+            .and_then(|v| persisted_claude_profile(&v, &paths.home));
     }
     context
 }
 
+fn persisted_claude_profile(plist: &serde_json::Value, _home: &Path) -> Option<String> {
+    let vars = plist.get("EnvironmentVariables")?;
+    vars.get("CLAUDE_CONFIG_DIR").or_else(|| vars.get("CLAUDE_HOME"))?.as_str().map(str::to_owned)
+}
+
+fn legacy_default_profile(plist: &serde_json::Value, home: &Path) -> bool {
+    let Some(vars) = plist.get("EnvironmentVariables") else { return false; };
+    let default = home.join(".claude");
+    vars.get("ALONDRA_CLAUDE_PROFILE_MODE").is_none()
+        && vars.get("CLAUDE_CONFIG_DIR").and_then(|v| v.as_str()) == default.to_str()
+        && vars.get("CLAUDE_HOME").and_then(|v| v.as_str()) == default.to_str()
+}
+
+// A legacy default could have been intentional. Only repair it when the old
+// namespace is unauthenticated and the implicit namespace is already authenticated.
+// No login, credential copy or profile mutation is performed by these probes.
+fn resolve_legacy_profile(context: crate::claude_auth::ContextEnv, legacy: bool) -> Result<crate::claude_auth::ContextEnv> {
+    if !legacy || context.status()? { return Ok(context); }
+    let mut implicit = context.clone();
+    implicit.config_dir = None;
+    if implicit.status()? { Ok(implicit) } else { Ok(context) }
+}
+
 pub fn render_plist(label: &str, paths: &Paths) -> Result<String> {
+    render_plist_with_context(label, paths, &claude_context(paths, label))
+}
+
+fn render_plist_with_context(label: &str, paths: &Paths, context: &crate::claude_auth::ContextEnv) -> Result<String> {
     let username = crate::claude_auth::effective_username()?;
-    let context = claude_context(paths, label);
-    let profile = context.config_dir.clone().unwrap_or_else(|| paths.home.join(".claude").to_string_lossy().into_owned());
-    let config = format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string><key>USER</key><string>{1}</string><key>LOGNAME</key><string>{1}</string>", xml_escape(&profile), xml_escape(&username));
+    let mut config = format!("<key>USER</key><string>{0}</string><key>LOGNAME</key><string>{0}</string>", xml_escape(&username));
+    if let Some(profile) = &context.config_dir {
+        config.push_str(&format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string><key>ALONDRA_CLAUDE_PROFILE_MODE</key><string>explicit</string>", xml_escape(profile)));
+    }
     Ok(TEMPLATE
         .replace("@CLAUDE_CONFIG_ENV@", &config)
         .replace("@PATH@", &xml_escape(&context.path))
@@ -176,6 +204,10 @@ fn as_map(c: &FileConfig) -> BTreeMap<String, String> {
 }
 
 pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths, seen: &Observed) -> Plan {
+    plan_with_context(wanted, apns, args, paths, seen, None)
+}
+
+fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths, seen: &Observed, context: Option<&crate::claude_auth::ContextEnv>) -> Plan {
     let mut steps = vec![];
     let mut conflicts = vec![];
 
@@ -232,7 +264,11 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
         }
         let label = merged.service_label.clone().unwrap_or_else(|| config::DEFAULT_LABEL.into());
         let plist_path = paths.plist(&label);
-        let plist = match render_plist(&label, paths) {
+        let rendered = match context {
+            Some(context) => render_plist_with_context(&label, paths, context),
+            None => render_plist(&label, paths),
+        };
+        let plist = match rendered {
             Ok(plist) => plist,
             Err(error) => {
                 conflicts.push(error.to_string());
@@ -484,9 +520,8 @@ fn other_services(paths: &Paths, label: &str) -> Vec<PathBuf> {
     found
 }
 
-fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args) -> Observed {
+fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context: &crate::claude_auth::ContextEnv) -> Observed {
     let read = |p: PathBuf| std::fs::read_to_string(p).ok();
-    let context = claude_context(paths, label);
     let plugins = if args.skip_plugin { None } else { plugin_list(&context) };
     Observed {
         config: read(paths.config()),
@@ -553,8 +588,12 @@ pub fn run(args: Args) -> Result<()> {
         if config != watcher { bail!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup"); }
     }
     let context = claude_context(&paths, &label);
-    let seen = observe(&paths, &label, apns.as_ref(), &args);
-    let plan = plan(&wanted, apns.as_ref(), &args, &paths, &seen);
+    let legacy = std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
+        && std::env::var_os("CLAUDE_HOME").is_none()
+        && read_plist(&paths.plist(&label)).is_ok_and(|p| legacy_default_profile(&p, &paths.home));
+    let context = if args.dry_run { context } else { resolve_legacy_profile(context, legacy)? };
+    let seen = observe(&paths, &label, apns.as_ref(), &args, &context);
+    let plan = plan_with_context(&wanted, apns.as_ref(), &args, &paths, &seen, Some(&context));
 
     if !plan.conflicts.is_empty() {
         eprintln!("{}", tr!("Not touching anything, because:", "No toco nada, por esto:"));
@@ -576,7 +615,7 @@ pub fn run(args: Args) -> Result<()> {
         std::fs::create_dir_all(paths.alondra_home.join("runtime/orchestrator"))?;
     }
     if args.dry_run {
-        println!("would verify Claude Code authentication in the daemon environment (no login during dry run)");
+        println!("would verify Claude Code authentication in the daemon environment (no login during dry run; legacy default profile migration deferred until authentication probes)");
     } else {
         context.ensure(args.no_input)?;
     }
@@ -711,6 +750,84 @@ pub fn pairing_url(config: &Config) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Operational gate only: reads an explicitly authorized installed plist and
+    // invokes Claude auth status. Never logs in, writes profiles, or runs setup.
+    #[test]
+    #[ignore = "requires explicit authorization for the current user's Claude auth status"]
+    fn real_claude_legacy_profile_status_read_only() {
+        assert_eq!(std::env::var("ALONDRA_REAL_CLAUDE_PROFILE_CHECK").as_deref(), Ok("1"));
+        let path = PathBuf::from(std::env::var_os("ALONDRA_REAL_CLAUDE_PLIST").expect("explicit installed plist path"));
+        assert!(path.is_absolute());
+        let before = std::fs::read(&path).unwrap();
+        let value = read_plist(&path).unwrap();
+        let vars = value["EnvironmentVariables"].as_object().unwrap().iter().map(|(k,v)| (k.clone(), v.as_str().unwrap().to_owned())).collect::<std::collections::BTreeMap<_,_>>();
+        let home = PathBuf::from(vars.get("HOME").expect("installed HOME"));
+        assert!(home.is_absolute());
+        assert!(legacy_default_profile(&value, &home), "requires the legacy forced-default shape");
+        let original = crate::claude_auth::ContextEnv::from_environment(&home, &vars).unwrap();
+        assert!(!original.status().unwrap(), "legacy namespace must reproduce the diagnosed failure");
+        let selected = resolve_legacy_profile(original, true).unwrap();
+        assert!(selected.config_dir.is_none());
+        assert!(selected.status().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), before, "operational gate must not rewrite the installed plist");
+        println!("legacy_authenticated=false selected_implicit=true selected_authenticated=true plist_unchanged=true");
+    }
+
+    #[test]
+    fn legacy_default_profile_resolution_uses_actual_child_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("alondra-profile-resolution-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let script = root.join("bin/claude");
+        std::fs::write(&script, r#"#!/bin/sh
+[ "$1 $2 $3" = 'auth status --json' ] || exit 17
+if [ "${CLAUDE_CONFIG_DIR+x}" = x ]; then
+  [ "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" ] && [ "$CLAUDE_HOME" = "$CLAUDE_CONFIG_DIR" ] || exit 18
+  state=$(/bin/cat "$HOME/explicit-state")
+else
+  [ "${CLAUDE_HOME+x}" != x ] || exit 19
+  state=$(/bin/cat "$HOME/implicit-state")
+fi
+[ "$state" = error ] && exit 20
+printf '{"loggedIn":%s}' "$state"
+[ "$state" = true ]
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = crate::claude_auth::ContextEnv { home: root.clone(), path: root.join("bin").to_string_lossy().into_owned(), config_dir: Some(root.join(".claude").to_string_lossy().into_owned()) };
+        let mut paths = paths(); paths.home = root.clone(); paths.bin = root.join("bin");
+        for (explicit, implicit, migrated) in [("false", "true", true), ("true", "true", false), ("false", "false", false)] {
+            std::fs::write(root.join("explicit-state"), explicit).unwrap();
+            std::fs::write(root.join("implicit-state"), implicit).unwrap();
+            let selected = resolve_legacy_profile(context.clone(), true).unwrap();
+            assert_eq!(selected.config_dir.is_none(), migrated);
+            let plist = paths.plist("profile-probe");
+            std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+            std::fs::write(&plist, render_plist_with_context("profile-probe", &paths, &selected).unwrap()).unwrap();
+            let value = read_plist(&plist).unwrap();
+            let vars = value["EnvironmentVariables"].as_object().unwrap().iter().map(|(k,v)| (k.clone(), v.as_str().unwrap().to_owned())).collect();
+            let installed = crate::claude_auth::ContextEnv::from_environment(&root, &vars).unwrap();
+            assert_eq!(installed.config_dir, selected.config_dir);
+            assert_eq!(installed.status().unwrap(), if migrated { implicit } else { explicit } == "true");
+            assert!(!legacy_default_profile(&value, &root));
+        }
+        std::fs::write(root.join("explicit-state"), "false").unwrap();
+        std::fs::write(root.join("implicit-state"), "true").unwrap();
+        assert!(resolve_legacy_profile(context.clone(), false).unwrap().config_dir.is_some(), "explicit selection must not fall back");
+        for (explicit, implicit) in [("error", "true"), ("false", "error")] {
+            std::fs::write(root.join("explicit-state"), explicit).unwrap();
+            std::fs::write(root.join("implicit-state"), implicit).unwrap();
+            assert!(resolve_legacy_profile(context.clone(), true).is_err());
+        }
+        let legacy = serde_json::json!({"EnvironmentVariables": {"CLAUDE_CONFIG_DIR": context.config_dir, "CLAUDE_HOME": context.config_dir}});
+        assert!(legacy_default_profile(&legacy, &root));
+        let mut explicit = legacy.clone(); explicit["EnvironmentVariables"]["ALONDRA_CLAUDE_PROFILE_MODE"] = "explicit".into();
+        assert!(!legacy_default_profile(&explicit, &root));
+        let custom = serde_json::json!({"EnvironmentVariables": {"CLAUDE_CONFIG_DIR": root.join("custom"), "CLAUDE_HOME": root.join("custom")}});
+        assert!(!legacy_default_profile(&custom, &root));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn custom_profile_retry_keeps_auth_plugins_and_watcher_together() {

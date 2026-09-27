@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 
-def check_plan(output, prefix, smoke_home):
+def check_plan(output, prefix, smoke_home, explicit_profile=None):
     expected_daemon = f'<string>{prefix}/bin/alondrad</string>'
     expected_assets = f'would run: claude plugin marketplace add {prefix}/libexec/alondra'
     if expected_daemon not in output:
@@ -23,8 +23,14 @@ def check_plan(output, prefix, smoke_home):
     if '(dry run: nothing was written or run)' not in output:
         raise RuntimeError('Setup did not finish in dry-run mode')
     for key in ('CLAUDE_CONFIG_DIR', 'CLAUDE_HOME'):
-        if f'<key>{key}</key><string>{smoke_home}/.claude</string>' not in output:
-            raise RuntimeError(f'Setup did not pin the isolated default Claude profile: {key}')
+        if explicit_profile is None:
+            if f'<key>{key}</key>' in output:
+                raise RuntimeError(f'Setup forced an implicit Claude profile: {key}')
+        elif f'<key>{key}</key><string>{explicit_profile}</string>' not in output:
+            raise RuntimeError(f'Setup lost the explicitly requested Claude profile: {key}')
+    marker = '<key>ALONDRA_CLAUDE_PROFILE_MODE</key><string>explicit</string>'
+    if (explicit_profile is None and '<key>ALONDRA_CLAUDE_PROFILE_MODE</key>' in output) or (explicit_profile is not None and marker not in output):
+        raise RuntimeError('Setup did not preserve explicit profile provenance')
     if '/Cellar/' in output or 'make install' in output:
         raise RuntimeError('Setup leaked versioned keg paths or requested a source checkout')
 
@@ -43,10 +49,27 @@ def profile_snapshot(profile):
     return snapshot
 
 
-def main():
-    prefix = pathlib.Path(sys.argv[1]).absolute()  # Keep opt symlink spelling.
-    if prefix.name != 'alondra' or prefix.parent.name != 'opt':
-        raise RuntimeError('Pass the Homebrew opt/alondra prefix')
+def check_observations(entries, smoke_home, explicit_profile=None):
+    allowed = {
+        ('claude', ('--version',)),
+        ('claude', ('plugin', 'list', '--json')),
+        ('claude', ('plugin', 'marketplace', 'list', '--json')),
+    }
+    saw_claude = False
+    expected = [str(smoke_home), explicit_profile, explicit_profile]
+    for name, args, profile in entries:
+        if name == 'claude':
+            saw_claude = True
+            if profile != expected:
+                raise RuntimeError('Claude observation used a different user/profile from the daemon')
+        read_only_launchctl = name == 'launchctl' and len(args) == 2 and args[0] == 'print'
+        if (name, tuple(args)) not in allowed and not read_only_launchctl:
+            raise RuntimeError(f'Dry-run attempted a mutation: {name} {args}')
+    if not saw_claude:
+        raise RuntimeError('Setup did not observe the installed Claude executable')
+
+
+def run_case(prefix, profile_name):
     with tempfile.TemporaryDirectory(prefix='alondra-setup-smoke-') as temporary:
         workspace = pathlib.Path(temporary)
         working_directory = workspace / 'outside-repository'
@@ -86,6 +109,12 @@ else:
             'ALONDRA_LANG': 'en',
             'PATH': f'{observation_bin}:/usr/bin:/bin:/usr/sbin:/sbin',
         }
+        explicit_profile = str(smoke_home / profile_name) if profile_name is not None else None
+        if explicit_profile is not None:
+            # Both an explicit custom directory and explicitly chosen ~/.claude
+            # must retain their identity; neither is an implicit default.
+            environment['CLAUDE_CONFIG_DIR'] = explicit_profile
+            environment['CLAUDE_HOME'] = explicit_profile
         before = profile_snapshot(smoke_home)
         result = subprocess.run(
             [str(prefix / 'bin/alondra'), 'setup', '--dry-run'],
@@ -95,22 +124,21 @@ else:
         print(result.stdout, end='')
         if result.returncode:
             raise RuntimeError(f'Setup dry-run failed: {result.stderr}')
-        check_plan(result.stdout, prefix, smoke_home)
+        check_plan(result.stdout, prefix, smoke_home, explicit_profile)
         if profile_snapshot(smoke_home) != before:
             raise RuntimeError('Setup dry-run wrote files in the isolated user profile')
-        allowed = {
-            ('claude', ('--version',)),
-            ('claude', ('plugin', 'list', '--json')),
-            ('claude', ('plugin', 'marketplace', 'list', '--json')),
-        }
-        for line in calls.read_text().splitlines():
-            name, args, profile = json.loads(line)
-            if name == 'claude' and profile != [str(smoke_home), str(smoke_home / '.claude'), str(smoke_home / '.claude')]:
-                raise RuntimeError('Claude observation used a different user/profile from the daemon')
-            read_only_launchctl = name == 'launchctl' and len(args) == 2 and args[0] == 'print'
-            if (name, tuple(args)) not in allowed and not read_only_launchctl:
-                raise RuntimeError(f'Dry-run attempted a mutation: {name} {args}')
-        print('Installed setup autodetection passed with read-only Claude/launchctl observations; no real login, registration or daemon start tested.')
+        check_observations([json.loads(line) for line in calls.read_text().splitlines()], smoke_home, explicit_profile)
+        label = 'implicit-unset' if profile_name is None else f'explicit-{profile_name}'
+        print(f'Installed setup profile {label} passed read-only observations; no real login, registration or daemon start tested.')
+
+
+def main():
+    prefix = pathlib.Path(sys.argv[1]).absolute()  # Keep opt symlink spelling.
+    if prefix.name != 'alondra' or prefix.parent.name != 'opt':
+        raise RuntimeError('Pass the Homebrew opt/alondra prefix')
+    for profile_name in (None, 'custom-profile', '.claude'):
+        run_case(prefix, profile_name)
+
 
 
 if __name__ == '__main__':

@@ -119,13 +119,11 @@ impl ContextEnv {
             .env("USER", &username)
             .env("LOGNAME", &username)
             .current_dir(&self.home);
-        let dir = self
-            .config_dir
-            .clone()
-            .unwrap_or_else(|| self.home.join(".claude").to_string_lossy().into_owned());
-        command
-            .env("CLAUDE_CONFIG_DIR", &dir)
-            .env("CLAUDE_HOME", &dir);
+        // Presence changes Claude's credential namespace even for HOME/.claude.
+        // An implicit default must remain absent, not an explicit default path.
+        if let Some(dir) = &self.config_dir {
+            command.env("CLAUDE_CONFIG_DIR", dir).env("CLAUDE_HOME", dir);
+        }
         Ok(command)
     }
 
