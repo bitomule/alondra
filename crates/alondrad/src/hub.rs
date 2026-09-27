@@ -46,7 +46,7 @@ pub struct Hub {
     changes: watch::Sender<u64>,
     /// What clients were last shown: the overview's digest and the machine's rounded gauges.
     shown: Mutex<(u64, u64)>,
-    holds: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
+    holds: Mutex<HashMap<u64, oneshot::Sender<(Answer, u64)>>>,
     unclaimed: Mutex<Unclaimed>,
     own_attaches: Mutex<HashSet<String>>,
     closing: Mutex<HashSet<String>>,
@@ -437,15 +437,23 @@ impl Hub {
         let _ = tokio::time::timeout(wait, rx.changed()).await;
     }
 
-    pub fn register_hold(&self, question: u64) -> oneshot::Receiver<Answer> {
+    /// Publish the question and its receiver together to answer callers.
+    pub fn register_question_hold(&self, build: impl FnOnce(&View) -> alondra_core::Question) -> Result<(u64, oneshot::Receiver<(Answer, u64)>)> {
+        let mut holds = self.holds.lock().expect("holds lock poisoned");
+        let (_, Event::QuestionAsked(question)) = self.append_with(|v| Some(Event::QuestionAsked(build(v))))?
+            .expect("question builder always records") else { unreachable!() };
         let (tx, rx) = oneshot::channel();
-        self.holds.lock().expect("holds lock poisoned").insert(question, tx);
-        rx
+        holds.insert(question.id, tx);
+        Ok((question.id, rx))
     }
 
-    pub fn release_hold(&self, question: u64, answer: Answer) -> bool {
+    pub fn has_hold(&self, question: u64) -> bool {
+        self.holds.lock().expect("holds lock poisoned").contains_key(&question)
+    }
+
+    pub fn release_hold(&self, question: u64, answer: Answer, attempt: u64) -> bool {
         match self.holds.lock().expect("holds lock poisoned").remove(&question) {
-            Some(tx) => tx.send(answer).is_ok(),
+            Some(tx) => tx.send((answer, attempt)).is_ok(),
             None => false,
         }
     }

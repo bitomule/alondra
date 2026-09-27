@@ -7,6 +7,7 @@ pub enum Channel {
     Terminal,
     Compact,
     HookStop,
+    HookDecision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
