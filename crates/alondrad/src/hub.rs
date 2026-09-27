@@ -49,7 +49,7 @@ pub struct Hub {
     holds: Mutex<HashMap<u64, oneshot::Sender<(Answer, u64)>>>,
     unclaimed: Mutex<Unclaimed>,
     own_attaches: Mutex<HashSet<String>>,
-    closing: Mutex<HashSet<String>>,
+    closing: Mutex<HashMap<String, usize>>,
     activity: Mutex<HashMap<String, i64>>,
     pub options: Mutex<Option<alondra_core::options::OptionsFile>>,
     pub issues: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
@@ -128,7 +128,7 @@ impl Hub {
             holds: Mutex::new(HashMap::new()),
             unclaimed: Mutex::new(Unclaimed::default()),
             own_attaches: Mutex::new(HashSet::new()),
-            closing: Mutex::new(HashSet::new()),
+            closing: Mutex::new(HashMap::new()),
             activity: Mutex::new(HashMap::new()),
             options: Mutex::new(None),
             issues: tokio::sync::Mutex::new(None),
@@ -363,12 +363,12 @@ impl Hub {
     /// Marks that Alondra is closing a node, whose process `claude rm` stops on the way: that
     /// exit is not one to restart.
     pub fn closing(&self, session_id: &str) -> Closing<'_> {
-        self.closing.lock().expect("closing lock poisoned").insert(session_id.to_string());
+        *self.closing.lock().expect("closing lock poisoned").entry(session_id.to_string()).or_default() += 1;
         Closing { hub: self, session_id: session_id.to_string() }
     }
 
     pub fn is_closing(&self, session_id: &str) -> bool {
-        self.closing.lock().expect("closing lock poisoned").contains(session_id)
+        self.closing.lock().expect("closing lock poisoned").contains_key(session_id)
     }
 
     pub fn read<T>(&self, f: impl FnOnce(&View) -> T) -> T {
@@ -517,7 +517,11 @@ pub struct Closing<'a> {
 
 impl Drop for Closing<'_> {
     fn drop(&mut self) {
-        self.hub.closing.lock().expect("closing lock poisoned").remove(&self.session_id);
+        let mut closing = self.hub.closing.lock().expect("closing lock poisoned");
+        if let Some(count) = closing.get_mut(&self.session_id) {
+            *count -= 1;
+            if *count == 0 { closing.remove(&self.session_id); }
+        }
     }
 }
 
@@ -536,6 +540,21 @@ mod tests {
 
     fn prompt(session: &str) -> Event {
         Event::Hook(alondra_core::HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })
+    }
+
+    #[test]
+    fn overlapping_close_leases_keep_node_unavailable_until_last_owner_finishes() {
+        let hub = hub("overlapping-close");
+        let first = hub.closing("node");
+        let second = hub.closing("node");
+        let unrelated = hub.closing("other");
+        drop(first);
+        assert!(hub.is_closing("node"), "one completed close must not admit new work during another close");
+        drop(second);
+        assert!(!hub.is_closing("node"));
+        assert!(hub.is_closing("other"));
+        drop(unrelated);
+        assert!(!hub.is_closing("other"));
     }
 
     #[test]
