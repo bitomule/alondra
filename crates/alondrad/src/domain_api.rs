@@ -10,7 +10,9 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
+use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
 pub fn routes() -> Router<Arc<Hub>> {
     Router::new()
@@ -133,22 +135,9 @@ async fn pull_request_diff(State(hub): State<Arc<Hub>>, Path(id): Path<String>) 
     if before != expected_head {
         return domain_error(DomainError::new("stale_head", "registered PR head changed"));
     }
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::process::Command::new("gh")
-            .args(["pr", "diff", &url])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    let output = match output {
-        Ok(Ok(output)) if output.status.success() => output,
-        _ => {
-            return domain_error(DomainError::new(
-                "external_read_failed",
-                "could not load PR diff",
-            ));
-        }
+    let (bytes, truncated) = match bounded_diff(&url).await {
+        Ok(result) => result,
+        Err(error) => return error,
     };
     let after = match live_head(&url).await {
         Ok(head) => head,
@@ -160,20 +149,62 @@ async fn pull_request_diff(State(hub): State<Arc<Hub>>, Path(id): Path<String>) 
             "PR head changed while loading diff",
         ));
     }
-    let mut diff = String::from_utf8_lossy(&output.stdout).into_owned();
-    let truncated = diff.len() > MAX_DIFF_BYTES;
+    let mut diff = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_DIFF_BYTES)]).into_owned();
     if truncated {
-        let cut = (0..=MAX_DIFF_BYTES)
-            .rev()
-            .find(|index| diff.is_char_boundary(*index))
-            .unwrap_or(0);
-        diff.truncate(cut);
+        while diff.ends_with('\u{fffd}') {
+            diff.pop();
+        }
     }
     Json(
         json!({"pr_id":pr.id,"host":pr.host,"repository":pr.repository,
         "number":pr.number,"head":before,"diff":diff,"truncated":truncated}),
     )
     .into_response()
+}
+
+async fn bounded_diff(url: &str) -> Result<(Vec<u8>, bool), Response> {
+    let mut child = tokio::process::Command::new("gh")
+        .args(["pr", "diff", url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| {
+            domain_error(DomainError::new(
+                "external_read_failed",
+                "could not start PR diff",
+            ))
+        })?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut bytes = Vec::new();
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        stdout
+            .take((MAX_DIFF_BYTES + 1) as u64)
+            .read_to_end(&mut bytes),
+    )
+    .await;
+    if !matches!(read, Ok(Ok(_))) {
+        let _ = child.kill().await;
+        return Err(domain_error(DomainError::new(
+            "external_read_failed",
+            "PR diff timed out",
+        )));
+    }
+    let truncated = bytes.len() > MAX_DIFF_BYTES;
+    if truncated {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    } else {
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        if !matches!(status, Ok(Ok(status)) if status.success()) {
+            return Err(domain_error(DomainError::new(
+                "external_read_failed",
+                "could not load PR diff",
+            )));
+        }
+    }
+    Ok((bytes, truncated))
 }
 
 async fn live_head(url: &str) -> Result<String, Response> {
