@@ -14,6 +14,9 @@ const FOLDER: &str = "domain-v2";
 pub(crate) struct Prepared {
     pub envelope: CommandEnvelope,
     created_digest: Option<String>,
+    // Keep this cross-process lease until the SQLite commit or cleanup ends.
+    // A second daemon must not reuse a new blob that the first can still remove.
+    _lease: Option<File>,
 }
 
 impl Prepared {
@@ -46,6 +49,7 @@ pub(crate) fn prepare(home: &Path, envelope: &CommandEnvelope) -> Result<Prepare
             return Ok(Prepared {
                 envelope: prepared,
                 created_digest: None,
+                _lease: None,
             });
         }
     };
@@ -56,6 +60,9 @@ pub(crate) fn prepare(home: &Path, envelope: &CommandEnvelope) -> Result<Prepare
     {
         return Err(DomainError::new("invalid_input", "invalid document SHA256"));
     }
+    let lease = document_lease(home).map_err(|_| {
+        DomainError::new("content_unavailable", "document storage lease unavailable")
+    })?;
     let (managed, created) = store_verified(home, reference, digest).map_err(|_| {
         DomainError::new(
             "content_unavailable",
@@ -67,7 +74,17 @@ pub(crate) fn prepare(home: &Path, envelope: &CommandEnvelope) -> Result<Prepare
     Ok(Prepared {
         envelope: prepared,
         created_digest,
+        _lease: Some(lease),
     })
+}
+
+fn document_lease(home: &Path) -> Result<File> {
+    let folder = managed_folder(home)?;
+    let name = CString::new(".lease")?;
+    let lease = open_at(&folder, &name, libc::O_RDWR | libc::O_CREAT)?;
+    let locked = unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX) };
+    ensure!(locked == 0, "document storage lease failed");
+    Ok(lease)
 }
 
 fn store_verified(home: &Path, reference: &str, digest: &str) -> Result<(String, bool)> {
@@ -225,4 +242,62 @@ fn verify(file: &mut File, expected: &str) -> Result<()> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alondra_core::domain_v2::{CommandId, DataEpoch};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn rejected_copy_cannot_remove_a_second_runtime_admission() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-domain-copy-lease-{}", crate::auth::random_hex(16)));
+        std::fs::create_dir_all(home.join("files")).unwrap();
+        let body = b"A reviewed document";
+        std::fs::write(home.join("files/source"), body).unwrap();
+        let digest = hex(&Sha256::digest(body));
+        let command = CommandEnvelope {
+            protocol_version: 2, data_epoch: DataEpoch("epoch".into()),
+            command_id: CommandId("copy".into()), expected_revision: 0,
+            command: Command::CreateDocument {
+                task_id: "task".into(), document_id: "document".into(),
+                title: "Document".into(), revision_id: "revision".into(),
+                content_digest: digest.clone(), content_reference: "files/source".into(),
+                role: "result".into(),
+            },
+        };
+        let (first_ready_tx, first_ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_home = home.clone();
+        let first_command = command.clone();
+        let first = std::thread::spawn(move || {
+            let prepared = prepare(&first_home, &first_command).unwrap();
+            first_ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            prepared.discard_uncommitted(&first_home);
+        });
+        first_ready_rx.recv().unwrap();
+        let (second_ready_tx, second_ready_rx) = mpsc::channel();
+        let (second_done_tx, second_done_rx) = mpsc::channel();
+        let second_home = home.clone();
+        let second = std::thread::spawn(move || {
+            second_ready_tx.send(()).unwrap();
+            let prepared = prepare(&second_home, &command).unwrap();
+            second_done_tx.send(prepared).unwrap();
+        });
+        second_ready_rx.recv().unwrap();
+        assert!(second_done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "second admission must wait for the first commit/cleanup lease");
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        let prepared = second_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(prepared.created_digest.is_some());
+        assert_eq!(std::fs::read(home.join("files/domain-v2").join(digest)).unwrap(), body);
+        second.join().unwrap();
+        drop(prepared);
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }
