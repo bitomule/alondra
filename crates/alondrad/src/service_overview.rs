@@ -18,6 +18,7 @@ struct Entry {
     created: Instant,
     data: Option<Vec<u8>>,
     hash: String,
+    revoked: bool,
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -70,18 +71,20 @@ impl Snapshots {
                 return error(429,"snapshot_busy");
             }
             if slots.contains_key(&id) { return error(503,"snapshot_random_collision"); }
-            slots.insert(id.clone(), Entry { owner:owner.into(),binding:binding.into(),created:Instant::now(),data:None,hash:String::new() });
+            slots.insert(id.clone(), Entry { owner:owner.into(),binding:binding.into(),created:Instant::now(),data:None,hash:String::new(),revoked:false });
         }
         let mut reservation = Reservation { snapshots:self,id:id.clone(),committed:false };
         let data = match capture(MAX_BYTES) {
             Ok(data) if !data.is_empty() && data.len() <= MAX_BYTES => data,
             Ok(_) => return error(413,"snapshot_too_large"),
-            Err(_) => return error(413,"snapshot_capture_failed"),
+            Err(error) if error.is::<crate::http::OverviewTooLarge>() => return self::error(413,"snapshot_too_large"),
+            Err(_) => return error(500,"snapshot_capture_failed"),
         };
         if authorize().is_err() { return error(403,"snapshot_access_denied"); }
         let hash = format!("{:x}",Sha256::digest(&data));
         let mut slots = self.0.lock().expect("overview snapshots lock poisoned");
         let Some(entry) = slots.get_mut(&id) else { return error(404,"snapshot_missing"); };
+        if entry.revoked { return error(403,"snapshot_access_denied"); }
         entry.data = Some(data); entry.hash = hash;
         let response = chunk(&id,entry,0);
         reservation.committed = true;
@@ -91,7 +94,7 @@ impl Snapshots {
     pub fn get(&self, owner: &str, binding: &str, id: &str, offset: usize) -> Value {
         let mut slots = self.0.lock().expect("overview snapshots lock poisoned");
         let Some(entry) = slots.get(id) else { return error(404,"snapshot_missing"); };
-        if entry.owner != owner || entry.binding != binding { return error(404,"snapshot_missing"); }
+        if entry.revoked || entry.owner != owner || entry.binding != binding { return error(404,"snapshot_missing"); }
         if entry.created.elapsed() >= TTL {
             slots.remove(id); return error(410,"snapshot_expired");
         }
@@ -101,12 +104,19 @@ impl Snapshots {
 
     pub fn release(&self, owner: &str, binding: &str, id: &str) -> Value {
         let mut slots = self.0.lock().expect("overview snapshots lock poisoned");
-        if slots.get(id).is_some_and(|v| v.owner == owner && v.binding == binding) { slots.remove(id); }
+        if let Some(entry) = slots.get_mut(id).filter(|v| v.owner == owner && v.binding == binding) {
+            if entry.data.is_none() { entry.revoked = true; } else { slots.remove(id); }
+        }
         json!({"status":200,"body":{"released":true}})
     }
 
     pub fn revoke(&self, owner: &str) {
-        self.0.lock().expect("overview snapshots lock poisoned").retain(|_,v| v.owner != owner);
+        self.0.lock().expect("overview snapshots lock poisoned").retain(|_,v| {
+            if v.owner != owner { return true; }
+            // A blocking capture may still own up to MAX_BYTES. Keep its reserved
+            // budget until Reservation drops, even after approval is revoked.
+            if v.data.is_none() { v.revoked = true; true } else { false }
+        });
     }
 }
 
@@ -161,6 +171,22 @@ mod tests {
         assert_eq!(outer["status"],200);s.revoke("a");
         assert!(std::panic::catch_unwind(|| s.begin("a","g", |_|panic!("capture panicked"), ||Ok(()))).is_err());
         assert!(s.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn revocation_during_capture_keeps_budget_reserved_until_worker_finishes() {
+        let s=Snapshots::default();
+        let value=s.begin("a","g", |_| {
+            s.revoke("a");
+            assert_eq!(s.0.lock().unwrap().len(),1,"revocation cannot release a still-allocating worker's slot");
+            let second=s.begin("a","g2", |_| {
+                assert_eq!(s.begin("a","g2", |_|panic!("revoked worker still holds budget"), ||Ok(()))["status"],429);
+                Ok(vec![1])
+            }, ||Ok(()));assert_eq!(second["status"],200);Ok(vec![1])
+        }, ||Ok(()));
+        assert_eq!(value["status"],403);
+        assert_eq!(s.0.lock().unwrap().len(),1);
+        s.revoke("a");assert!(s.0.lock().unwrap().is_empty());
     }
 
     #[test]
