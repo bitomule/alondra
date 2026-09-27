@@ -243,7 +243,7 @@ impl Service {
 
     fn snapshot_route_binding(&self, sender: &str, device: &Device, path: &str) -> Result<String> {
         let binding = self.snapshot_binding(sender, device)?;
-        if path.starts_with("/v2/domain/snapshot") {
+        if path == "/v2/domain" || path.starts_with("/v2/domain/") {
             let epoch = self.hub.as_ref().context("domain snapshot requires hub")?.domain.state()?.data_epoch;
             Ok(format!("{binding}:domain-v2:{epoch}"))
         } else { Ok(binding) }
@@ -579,12 +579,7 @@ impl Service {
             .devices
             .get(&e.sender)
             .context("work from unapproved device")?;
-        if !self.auth.approved_key_matches(&e.sender, &device.signing) {
-            bail!("work from locally revoked device");
-        }
-        if !self.journal.enrollment_active(&e.sender)? {
-            bail!("work from device without active local service enrollment");
-        }
+        self.require_device_approval(&e.sender, device)?;
         let plaintext = e
             .open(
                 &device.signing,
@@ -597,7 +592,9 @@ impl Service {
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         let body = serde_json::to_vec(e)?;
-        let digest: [u8; 32] = if request.body.is_none() && crate::service_overview::route(&request.method,&request.path) {
+        let approval_bound_read = request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
+            || request.method == "GET" && request.path.starts_with("/v2/domain"));
+        let digest: [u8; 32] = if approval_bound_read {
             // Completed encrypted receipts must not bypass a newer approval generation.
             // Legacy routes retain their original digest contract.
             let binding = match self.snapshot_route_binding(&e.sender,device,&request.path) {
@@ -646,11 +643,13 @@ impl Service {
                 .await?,
         )
         .await?;
-        if request.body.is_none() && crate::service_overview::route(&request.method,&request.path) {
+        if request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
+            || request.method == "GET" && request.path.starts_with("/v2/domain")) {
             let binding = self.snapshot_route_binding(&e.sender,device,&request.path)?;
             let current = snapshot_receipt_digest(&serde_json::to_vec(e)?,&binding);
             anyhow::ensure!(current == digest,"snapshot approval generation changed while acknowledging work");
         }
+        self.require_device_approval(&e.sender, device)?;
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
@@ -693,6 +692,7 @@ impl Service {
                 }
             }
         };
+        self.require_device_approval(&e.sender, device)?;
         let response_path = format!("/v1/work/{}/response", e.request_id);
         Self::drain_ack(
             self.signed(Method::POST, &response_path, response, epoch)
@@ -2312,6 +2312,29 @@ agreement_key = "{}"
 
     fn repeat_work(work: &Work) -> Work {
         Work { request_id: work.request_id.clone(), envelope: work.envelope.clone() }
+    }
+
+    #[test]
+    fn completed_domain_read_is_not_redelivered_after_persisted_revocation() {
+        let (service, _) = push_fixture();
+        activate_push(&service);
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Fixture".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let service = service.with_hub(hub);
+        let work = changes_work(&service, "domain-read-before-revoke",
+            json!({"method":"GET","path":"/v2/domain/capabilities"}));
+        let prepared = service.prepare_work(&work).unwrap().unwrap();
+        let digest = prepared.digest;
+        drop(prepared);
+        assert!(matches!(service.journal.accept("phone-1", &work.request_id, &digest).unwrap(), Disposition::Accepted));
+        service.journal.executing("phone-1", &work.request_id, &digest).unwrap();
+        service.journal.complete("phone-1", &work.request_id, b"cached ciphertext").unwrap();
+        assert!(matches!(service.journal.accept("phone-1", &work.request_id, &digest).unwrap(), Disposition::Completed(_)));
+        Auth::open(&home).unwrap().revoke("phone-1").unwrap();
+        assert!(service.prepare_work(&work).is_err(), "cached ciphertext must not reach revoked devices");
+        drop(service);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     fn opened_results(service: &Service, phone: &SecretKey, responses: &Mutex<Vec<Vec<u8>>>) -> Vec<Value> {
