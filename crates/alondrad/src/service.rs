@@ -1296,6 +1296,7 @@ mod tests {
         extract::State,
         http::HeaderMap,
         routing::{delete, get, post},
+        response::IntoResponse,
     };
     use base64::engine::general_purpose::STANDARD;
     use std::sync::{
@@ -2461,6 +2462,126 @@ agreement_key = "{}"
         assert!(oversized.to_string().contains("encrypted relay limit"));
         task.abort();
     }
+    #[derive(Default)]
+    struct CutExternal {
+        merges: AtomicUsize,
+        retargets: AtomicUsize,
+        removes: AtomicUsize,
+    }
+    impl crate::prs::Gh for CutExternal {
+        async fn merge(&self, _: &str, _: alondra_core::pr::MergeMethod, _: Option<&str>) -> std::result::Result<(), String> {
+            self.merges.fetch_add(1, Ordering::SeqCst); Ok(())
+        }
+        async fn edit_base(&self, _: &str, _: &str) -> std::result::Result<(), String> {
+            self.retargets.fetch_add(1, Ordering::SeqCst);
+            // Deliberate provider refusal prevents unrelated background GitHub polling.
+            Err("synthetic retarget refusal".into())
+        }
+        async fn view(&self, _: &str) -> Option<Value> { panic!("no provider read expected") }
+        async fn exists(&self, _: &str) -> bool { panic!("no provider read expected") }
+    }
+    impl crate::http::Agents for CutExternal {
+        async fn run(&self, args: &[&str]) -> std::result::Result<String, String> {
+            match args {
+                ["rm", "nd"] => { self.removes.fetch_add(1, Ordering::SeqCst); Ok("removed nd".into()) },
+                ["agents", "--json", "--all"] => Ok("[]".into()),
+                _ => panic!("unexpected external command"),
+            }
+        }
+    }
+
+    /// Real service envelope -> loopback HTTP -> production merge/close executors.
+    /// SQLite aborts at the local marker after the provider has succeeded. A second
+    /// injected failure prevents completing the transport receipt, modelling loss
+    /// of the result at this cut. Reopening must return uncertainty, never dispatch.
+    async fn external_cut_recovery(merge: bool, cut: bool) {
+        use alondra_core::{Event, pr::{MergeMethod, PrState}};
+        let (mut service, phone) = push_fixture(); activate_push(&service);
+        let config = alondra_core::config::Config::resolve(service.home.clone(), &Default::default(), |_| None, || Some("Fixture".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id:"nd".into(),short_id:"nd".into(),pid:Some(1),..Default::default() })).unwrap();
+        if merge {
+            for (id, base, head) in [(1,"main","branch-a"),(2,"branch-a","branch-b")] {
+                hub.append(Event::PrOpened { url:format!("https://github.com/fixture/repo/pull/{id}"),session_id:"nd".into(),task:None }).unwrap();
+                let mut pr=hub.read(|v|v.prs[&id].clone());pr.base=Some(base.into());pr.head=Some(head.into());
+                hub.append(Event::PrUpdated(pr)).unwrap();
+            }
+            assert_eq!(hub.read(|v| v.retarget_plan(1).len()),1,"retarget boundary must be non-vacuous");
+        }
+        let db=Connection::open(service.home.join("alondra.db")).unwrap();
+        if cut {
+            let marker=if merge { "pr_merged" } else { "node_removed" };
+            db.execute_batch(&format!("CREATE TRIGGER cut_local BEFORE INSERT ON event_log WHEN NEW.body LIKE '%{marker}%' BEGIN SELECT RAISE(ABORT,'synthetic post-effect cut'); END;")).unwrap();
+            service.journal.db().unwrap().execute_batch("CREATE TRIGGER cut_receipt BEFORE UPDATE OF response ON service_receipts BEGIN SELECT RAISE(ABORT,'synthetic lost receipt'); END;").unwrap();
+        }
+        let external=Arc::new(CutExternal::default());
+        let entered=Arc::new(AtomicUsize::new(0));
+        let route=if merge { "/v1/prs/1/merge" } else { "/v1/nodes/nd/close" };
+        let local=Router::new().route(route,post({
+            let hub=hub.clone();let external=external.clone();let entered=entered.clone();
+            move || { let hub=hub.clone();let external=external.clone();let entered=entered.clone();async move {
+                entered.fetch_add(1,Ordering::SeqCst);
+                if merge {
+                    match crate::http::merge(&hub,1,MergeMethod::Merge,crate::http::Merger::User("fixture".into()),external.as_ref()).await {
+                        Ok(())=>(StatusCode::OK,axum::Json(json!({"merged":true}))),
+                        Err(_)=>(StatusCode::INTERNAL_SERVER_ERROR,axum::Json(json!({"error":"local_marker_failed"}))),
+                    }.into_response()
+                } else { crate::http::close_with(&hub,"nd",false,None,external.as_ref()).await }
+            }}
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.local_port=listener.local_addr().unwrap().port();
+        let local_server=tokio::spawn(axum::serve(listener,local).into_future());
+        let responses=Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let relay=Router::new().route("/v1/work/{id}/receipt",post(||async{StatusCode::ACCEPTED}))
+            .route("/v1/work/{id}/response",post({let responses=responses.clone();move|body:Bytes|{let responses=responses.clone();async move{responses.lock().unwrap().push(body.to_vec());StatusCode::ACCEPTED}}}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+        let relay_server=tokio::spawn(axum::serve(listener,relay).into_future());
+        let work=changes_work(&service,"external-cut",json!({"method":"POST","path":route,"body":{"method":"merge"}}));
+        let digest: [u8;32]=Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).into();
+        let result=service.handle(repeat_work(&work),&[7;16]).await;
+        assert_eq!(result.is_err(),cut);
+        assert_eq!(entered.load(Ordering::SeqCst),1);
+        assert_eq!(external.merges.load(Ordering::SeqCst),usize::from(merge));
+        assert_eq!(external.removes.load(Ordering::SeqCst),usize::from(!merge));
+        assert_eq!(external.retargets.load(Ordering::SeqCst),usize::from(merge&&!cut));
+        if merge { assert_eq!(hub.read(|v|v.prs[&1].state),if cut{PrState::Open}else{PrState::Merged}); }
+        else { assert_eq!(hub.read(|v|v.nodes.contains_key("nd")),cut); }
+        if cut {
+            assert!(responses.lock().unwrap().is_empty());
+            assert!(matches!(service.journal.accept("phone-1","external-cut",&digest).unwrap(),Disposition::Executing));
+            db.execute_batch("DROP TRIGGER cut_local").unwrap();
+            service.journal.db().unwrap().execute_batch("DROP TRIGGER cut_receipt").unwrap();
+        }
+        let reopened_hub=crate::hub::Hub::open(hub.config.clone(),false).unwrap();
+        if merge {assert_eq!(reopened_hub.read(|v|v.prs[&1].state),if cut{PrState::Open}else{PrState::Merged});}
+        else {assert_eq!(reopened_hub.read(|v|v.nodes.contains_key("nd")),cut);}
+        let mut restarted=Service::open(&service.home,service.local_port,Arc::new(Auth::open(&service.home).unwrap())).unwrap().unwrap();
+        restarted.relay=service.relay.clone();
+        restarted.handle(repeat_work(&work),&[7;16]).await.unwrap();
+        let recovered=opened_results(&restarted,&phone,&responses);
+        if cut {assert_eq!(recovered.last().unwrap()["error"],"uncertain");assert_eq!(recovered.last().unwrap()["status"],409);}
+        else {assert_eq!(recovered.last().unwrap()["status"],200);}
+        restarted.handle(work,&[7;16]).await.unwrap();
+        let bytes=responses.lock().unwrap();assert_eq!(bytes[bytes.len()-1],bytes[bytes.len()-2],"recovery receipt must replay identical ciphertext");drop(bytes);
+        assert_eq!(entered.load(Ordering::SeqCst),1,"restart must not redispatch either executor");
+        assert_eq!(external.merges.load(Ordering::SeqCst),usize::from(merge));
+        assert_eq!(external.removes.load(Ordering::SeqCst),usize::from(!merge));
+        assert_eq!(external.retargets.load(Ordering::SeqCst),usize::from(merge&&!cut));
+        local_server.abort();relay_server.abort();let _=local_server.await;let _=relay_server.await;
+        let home=service.home.clone();drop(reopened_hub);drop(db);drop(hub);drop(restarted);drop(service);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[tokio::test]
+    async fn merge_external_success_before_local_marker_recovers_without_replay() {
+        external_cut_recovery(true,true).await;external_cut_recovery(true,false).await;
+    }
+    #[tokio::test]
+    async fn close_external_success_before_node_removed_recovers_without_replay() {
+        external_cut_recovery(false,true).await;external_cut_recovery(false,false).await;
+    }
+
     #[test]
     fn durable_receipt_rejects_changed_bytes_and_never_reruns_executing() {
         let path = std::env::temp_dir().join(format!(
