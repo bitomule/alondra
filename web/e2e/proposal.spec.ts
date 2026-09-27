@@ -29,7 +29,7 @@ for (const preview of [false, true]) for (const locale of ['en', 'es']) {
     await page.unroute('**/api/waitlist');
     await page.route('**/api/waitlist', route => route.fulfill({ status: 202 }));
     await forms.first().getByRole('button').click();
-    await expect(page.locator('.waitlist.is-done')).toHaveCount(2);
+    await expect(page.locator('.waitlist.is-done')).toHaveCount(1);
     await expect(page.getByRole('status')).toContainText(locale === 'en' ? 'on the list' : 'Estás en la lista');
     expect(body).toEqual({ email: 'proposal@example.com' });
     await page.getByRole('link', { name: locale === 'en' ? 'Español' : 'English', exact: true }).click();

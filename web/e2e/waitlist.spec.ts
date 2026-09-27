@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 
-const hero = (page: Page) => page.locator('.p-hero');
+const hero = (page: Page) => page.locator('#alpha');
 const access = (page: Page) => page.locator('#alpha');
 
 async function mockWaitlist(page: Page, handler: (route: Route, body: { email: string }) => Promise<void> | void) {
@@ -20,7 +20,7 @@ async function submit(page: Page, scope: ReturnType<typeof hero>, email: string)
   await scope.getByRole('button', { name: 'Apuntarme a la alpha' }).click();
 }
 
-test('a new email is accepted, confirmed without promising an email, and settles both forms', async ({ page }) => {
+test('a new email is accepted, confirmed without promising an email, and focuses the confirmation', async ({ page }) => {
   const bodies = await mockWaitlist(page, route => route.fulfill({ status: 202, json: { status: 'accepted' } }));
   await page.goto('/');
   await submit(page, hero(page), '  ada@example.com ');
@@ -31,7 +31,6 @@ test('a new email is accepted, confirmed without promising an email, and settles
   await expect(done).toBeFocused();
   expect(bodies).toEqual([{ email: 'ada@example.com' }]);
   await expect(access(page)).toContainText('Estás en la lista.');
-  await expect(access(page).getByRole('status')).toHaveCount(0);
 });
 
 test('an email already on the list gets exactly the same answer as a new one', async ({ page }) => {
@@ -58,7 +57,6 @@ test('the server rejecting the address keeps it, marks the field and explains', 
   await expect(input).toHaveValue('ada@example.invalid');
   await expect(input).toHaveAttribute('aria-invalid', 'true');
   await expect(input).toBeFocused();
-  await expect(hero(page).getByRole('alert')).toHaveCount(0);
 });
 
 test('an obviously wrong address never reaches the API', async ({ page }) => {
@@ -116,7 +114,6 @@ test('while sending, the form says so and cannot be sent twice', async ({ page }
   await expect(hero(page).locator('form')).toHaveAttribute('aria-busy', 'true');
   await expect(hero(page).getByRole('status')).toHaveText('Enviando tu email…');
   await expect(hero(page).getByLabel('Tu email')).toHaveAttribute('readonly', '');
-  await expect(access(page).getByRole('button', { name: 'Apuntarme a la alpha' })).toBeDisabled();
   await hero(page).getByLabel('Tu email').press('Enter');
   release();
   await expect(hero(page).getByRole('status')).toContainText('Estás en la lista.');

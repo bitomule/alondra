@@ -1,6 +1,5 @@
 import { Link, useParams, useLocation } from 'react-router';
 import { Lark } from '../public/Lark';
-import { Shot } from '../public/Shot';
 import { WaitlistForm, useWaitlist } from '../public/WaitlistForm';
 import '../public/public.css';
 import '../public/proposal.css';
@@ -10,65 +9,47 @@ export function meta({ params, location }: { params: { locale?: string }; locati
   const es = (preview ? params.locale : new URLSearchParams(location.search).get('lang')) !== 'en';
   return [
     { title: es ? 'Alondra — El orquestador para tus agentes' : 'Alondra — The orchestrator for your agents' },
-    { name: 'description', content: es ? 'Todo en todas partes. Estamos construyendo un orquestador para personas y equipos que trabajan con agentes. Forma parte desde el principio.' : 'Everything, everywhere. We’re building an orchestrator for individuals and teams working with agents. Be part of it from the start.' },
+    { name: 'description', content: es ? 'El orquestador para tus agentes. Alondra está en construcción. Apúntate a la alpha privada.' : 'The orchestrator for your agents. Alondra is in the making. Join the private alpha waitlist.' },
     ...(preview ? [{ name: 'robots', content: 'noindex, nofollow' }] : [{ tagName: 'link', rel: 'canonical', href: `https://alondra.davidcollado.dev/${es ? '' : '?lang=en'}` }]),
   ];
 }
 
 const copy = {
   es: {
-    vision: 'La visión', access: 'Apuntarme a la alpha',
-    badge: 'Estamos construyendo Alondra', title: 'El orquestador para tus agentes.',
-    intro: 'Escala tu capacidad de trabajar con agentes. Estamos construyendo el harness que te permite dirigir más trabajo con contexto, coordinación y control.',
-    note: 'Únete a la lista de espera. Forma parte desde el principio.',
-    graphic: 'Visión: tú o tu equipo dais la dirección. Alondra aporta el harness y la orquestación para coordinar agentes en paralelo, en distintos modelos y máquinas.',
-    director: 'Tú / Tu equipo', direction: 'Dirección y criterio', harness: 'Harness + Orquestador', coordination: 'Contexto · Coordinación · Control', agents: 'Agentes trabajando en paralelo', distributed: 'Distintos modelos. Distintas máquinas.', scale: 'Más capacidad. Una misma dirección.',
-    everywhere: 'Todo en todas partes.',
-    everywhereBody: 'Imagina que todo ese trabajo repartido entre agentes, máquinas y personas tuviera un lugar en común.',
-    everywhereClose: 'Eso es lo que estamos construyendo.',
-    solo: 'Para lo que quieres construir tú.', team: 'Para lo que podéis construir juntos.',
-    together: 'Queremos que tu capacidad crezca con tus agentes. Que puedas pasar de trabajar con uno a dirigir muchos, por tu cuenta o con tu equipo, sin perder el control del conjunto.',
-    judgment: 'Más capacidad para crear. Más claridad para decidir.',
-    judgmentBody: 'Los agentes pueden producir más trabajo del que podemos revisar. El siguiente paso es poder entenderlo, darle dirección y confiar en lo que llega a nuestras manos.',
-    judgmentClose: 'Queremos que trabajar con agentes se sienta así.',
-    started: 'Ya hemos empezado.',
-    startedBody: 'La primera alpha conecta el trabajo de los agentes con tus decisiones. Es el comienzo de una visión que queremos construir contigo.',
-    capture: 'Un vistazo a la alpha actual. Captura real con datos de ejemplo.',
-    questionAlt: 'Alpha actual de Alondra: una pregunta de un agente con contexto y opciones para responder',
-    alpha: 'Lo que viene empieza contigo.',
-    alphaBody: 'Si ya imaginas lo que podrías construir con tus agentes, queremos que formes parte.',
-    requirementsTitle: '¿Qué podré probar primero?',
-    requirements: 'La primera alpha funciona con Claude Code en un Mac encendido. Los clientes de Mac y iPhone se distribuyen por TestFlight. La visión para equipos, otros modelos y entornos distribuidos se desarrollará a partir de esta base; aún no está disponible en la alpha.',
-    invitation: 'Alpha privada. Invitaciones en tandas pequeñas.',
-    privacy: 'Privacidad', privacyNote: 'En español', footer: 'Todo en todas partes.',
+    title: 'El orquestador para tus agentes.', intro: 'Tú marcas la dirección.',
+    idea: 'La idea', you: 'Tú', agents: 'Tus agentes',
+    graphic: 'Concepto de orquestación: tú das la dirección a Alondra, que conecta con varios agentes.',
+    alpha: 'Estamos construyéndolo.', access: 'Apuntarme a la alpha', badge: 'Alpha privada',
+    privacy: 'Privacidad', footer: 'Todo en todas partes.',
   },
   en: {
-    vision: 'The vision', access: 'Join the alpha',
-    badge: 'We’re building Alondra', title: 'The orchestrator for your agents.',
-    intro: 'Scale your ability to work with agents. We’re building the harness to help you direct more work with context, coordination and control.',
-    note: 'Join the waitlist. Be part of it from the start.',
-    graphic: 'Vision: you or your team set the direction. Alondra provides the harness and orchestration to coordinate parallel agents across models and machines.',
-    director: 'You / Your team', direction: 'Direction and judgment', harness: 'Harness + Orchestrator', coordination: 'Context · Coordination · Control', agents: 'Agents working in parallel', distributed: 'Different models. Different machines.', scale: 'More capacity. One shared direction.',
-    everywhere: 'Everything, everywhere.',
-    everywhereBody: 'Imagine all that work, spread across agents, machines and people, having a place in common.',
-    everywhereClose: 'That’s what we’re building.',
-    solo: 'For what you want to build.', team: 'For what you can build together.',
-    together: 'We want your capacity to grow with your agents. To go from working with one to directing many, on your own or with your team, while keeping the whole picture in hand.',
-    judgment: 'More power to create. More clarity to decide.',
-    judgmentBody: 'Agents can produce more work than we can review. The next step is being able to understand it, give it direction and trust what reaches our hands.',
-    judgmentClose: 'That’s how we want working with agents to feel.',
-    started: 'We’ve already started.',
-    startedBody: 'The first alpha connects the agents’ work with your decisions. It’s the beginning of a vision we want to build with you.',
-    capture: 'A glimpse of the current alpha. Real screenshot with example data, in Spanish.',
-    questionAlt: 'Current Alondra alpha: an agent’s question with context and response options',
-    alpha: 'What comes next starts with you.',
-    alphaBody: 'If you can already imagine what you could build with your agents, we’d love you to be part of it.',
-    requirementsTitle: 'What can I try first?',
-    requirements: 'The first alpha runs with Claude Code on a powered-on Mac. Mac and iPhone clients are distributed through TestFlight. The vision for teams, other models and distributed environments will grow from this foundation; it is not yet available in the alpha.',
-    invitation: 'Private alpha. Invitations in small batches.',
-    privacy: 'Privacy', privacyNote: 'In Spanish', footer: 'Everything, everywhere.',
+    title: 'The orchestrator for your agents.', intro: 'You set the direction.',
+    idea: 'The idea', you: 'You', agents: 'Your agents',
+    graphic: 'Orchestration concept: you give direction to Alondra, which connects to several agents.',
+    alpha: 'In the making.', access: 'Join the alpha', badge: 'Private alpha',
+    privacy: 'Privacy', footer: 'Everything, everywhere.',
   },
 };
+
+// Concept illustration, deliberately separate from the actual alpha interface.
+function Orchestra({ mobile = false }: { mobile?: boolean }) {
+  const center = mobile ? { x: 200, y: 200 } : { x: 440, y: 190 };
+  const person = mobile ? { x: 200, y: 45 } : { x: 100, y: 190 };
+  const agents = mobile
+    ? [{ x: 55, y: 350 }, { x: 150, y: 350 }, { x: 250, y: 350 }, { x: 345, y: 350 }]
+    : [{ x: 725, y: 70 }, { x: 855, y: 145 }, { x: 725, y: 235 }, { x: 855, y: 310 }];
+  const input = mobile ? 'M200 73 V144' : 'M128 190 H384';
+  const paths = agents.map(a => mobile
+    ? `M200 256 V280 Q200 300 ${a.x} 300 V324`
+    : `M496 190 H550 C620 190 625 ${a.y} ${a.x - 26} ${a.y}`);
+  return <svg className={mobile ? 'o-drawing o-mobile' : 'o-drawing o-desktop'} viewBox={mobile ? '0 0 400 395' : '0 0 960 380'} aria-hidden="true">
+    <g className="o-wires"><path d={input}/>{paths.map((d, i) => <path key={i} d={d}/>)}</g>
+    <g className="o-signals"><path d={input}/>{paths.map((d, i) => <path key={i} d={d} style={{ animationDelay: `${i * -.7}s` }}/>)}</g>
+    <g transform={`translate(${person.x} ${person.y})`} className="o-person"><circle r="28"/><circle cy="-6" r="6"/><path d="M-12 14 C-12 0 12 0 12 14"/></g>
+    <g transform={`translate(${center.x} ${center.y})`} className="o-core"><rect x="-56" y="-56" width="112" height="112" rx="24"/><path className="o-brackets" d="M-66 -38 H-74 V38 H-66 M66 -38 H74 V38 H66"/><svg x="-39" y="-28" width="78" height="56"><Lark/></svg></g>
+    {agents.map((a, i) => <g key={i} transform={`translate(${a.x} ${a.y})`} className="o-agent"><rect x="-26" y="-26" width="52" height="52" rx="12"/><path d="M-8 -9 L-17 0 L-8 9 M8 -9 L17 0 L8 9"/><circle r="2.5"/></g>)}
+  </svg>;
+}
 
 export default function Proposal() {
   const params = useParams();
@@ -81,36 +62,17 @@ export default function Proposal() {
   return <div className="pub proposal" lang={locale}>
     <header className="p-header p-wrap">
       <Link to={localeUrl(locale)} className="pub-brand" aria-label={locale === 'es' ? 'Alondra, inicio' : 'Alondra, home'}><Lark className="pub-brand-mark"/><span>Alondra</span></Link>
-      <nav aria-label={locale === 'es' ? 'Principal' : 'Main'}>
-        <a className="p-nav-detail" href="#vision">{c.vision}</a>
-        <div className="p-languages" aria-label={locale === 'es' ? 'Idioma' : 'Language'}><Link to={localeUrl('en')} lang="en" aria-label="English" aria-current={locale === 'en' ? 'page' : undefined}>EN</Link><Link to={localeUrl('es')} lang="es" aria-label="Español" aria-current={locale === 'es' ? 'page' : undefined}>ES</Link></div>
-        <a className="p-nav-cta" href="#alpha">{c.access}</a>
-      </nav>
+      <nav aria-label={locale === 'es' ? 'Idioma' : 'Language'} className="p-languages"><Link to={localeUrl('en')} lang="en" aria-label="English" aria-current={locale === 'en' ? 'page' : undefined}>EN</Link><Link to={localeUrl('es')} lang="es" aria-label="Español" aria-current={locale === 'es' ? 'page' : undefined}>ES</Link></nav>
     </header>
     <main id="main">
-      <section className="p-hero p-wrap">
-        <div className="p-hero-copy"><p className="p-badge">{c.badge}</p><h1>{c.title}</h1><p className="p-intro">{c.intro}</p>
-          <WaitlistForm waitlist={waitlist} name="proposal-hero" locale={locale} submitLabel={c.access}/><p className="p-note">{c.note}</p>
-        </div>
-        <figure className="v-harness" role="img" aria-label={c.graphic}>
-          <div className="v-director" aria-hidden="true"><strong>{c.director}</strong><span>{c.direction}</span></div>
-          <svg className="v-input-wire" viewBox="0 0 400 40" aria-hidden="true"><path d="M190 0 V38 M210 38 V0 M186 32 L190 38 L194 32 M206 6 L210 0 L214 6"/></svg>
-          <div className="v-harness-core" aria-hidden="true"><Lark className="v-harness-mark"/><strong>Alondra</strong><span className="v-harness-role">{c.harness}</span><span className="v-harness-capabilities">{c.coordination}</span></div>
-          <svg className="v-fan" viewBox="0 0 400 68" preserveAspectRatio="none" aria-hidden="true"><path d="M200 0 V24 M50 66 V24 H350 V66 M150 24 V66 M250 24 V66"/><path className="v-fan-arrows" d="M45 60 L50 66 L55 60 M145 60 L150 66 L155 60 M245 60 L250 66 L255 60 M345 60 L350 66 L355 60"/></svg>
-          <div className="v-agent-row" aria-hidden="true">{[0, 1, 2, 3].map(n => <div className="v-agent" key={n}><svg viewBox="0 0 48 48"><path d="M16 10 L4 24 L16 38 M32 10 L44 24 L32 38"/><circle cx="24" cy="24" r="4"/></svg></div>)}</div>
-          <div className="v-agent-caption" aria-hidden="true"><strong>{c.agents}</strong><span>{c.distributed}</span></div>
-          <figcaption aria-hidden="true">{c.scale}</figcaption>
-        </figure>
-      </section>
-      <section className="v-vision" id="vision"><div className="p-wrap">
-        <h2><span>{locale === 'es' ? 'Todo en' : 'Everything,'}</span><span>{locale === 'es' ? 'todas partes.' : 'everywhere.'}</span></h2>
-        <div className="v-vision-copy"><p>{c.everywhereBody}</p><p>{c.everywhereClose}</p></div>
-        <div className="v-together"><div><p>{c.solo}</p><p>{c.team}</p></div><p>{c.together}</p></div>
-      </div></section>
-      <section className="v-judgment p-wrap"><h2>{c.judgment}</h2><div><p>{c.judgmentBody}</p><p className="v-judgment-close">{c.judgmentClose}</p></div></section>
-      <section className="v-proof p-wrap"><figure><Shot name="te-espera" tone="light" alt={c.questionAlt}/><figcaption>{c.capture}</figcaption></figure><div><h2>{c.started}</h2><p>{c.startedBody}</p></div></section>
-      <section className="p-alpha" id="alpha"><div className="p-wrap p-alpha-grid"><div><h2>{c.alpha}</h2><p>{c.alphaBody}</p></div><div><WaitlistForm waitlist={waitlist} name="proposal-alpha" locale={locale} submitLabel={c.access}/><p className="p-note">{c.invitation}</p><details className="v-alpha-details"><summary>{c.requirementsTitle}</summary><p>{c.requirements}</p></details></div></div></section>
+      <section className="p-hero p-wrap"><h1>{c.title}</h1><p className="p-intro">{c.intro}</p><a className="p-hero-link" href="#alpha">{c.access}<span aria-hidden="true"> ↗</span></a></section>
+      <figure className="v-harness p-wrap" id="vision" role="img" aria-label={c.graphic}>
+        <div className="o-heading" aria-hidden="true"><span>{c.idea}</span></div>
+        <div className="o-canvas" aria-hidden="true"><Orchestra/><Orchestra mobile/><div className="o-labels"><span>{c.you}</span><span>Alondra</span><span>{c.agents}</span></div></div>
+        <figcaption aria-hidden="true">{c.footer}</figcaption>
+      </figure>
+      <section className="p-alpha p-wrap" id="alpha"><div className="p-alpha-title"><p className="p-badge">{c.badge}</p><h2>{c.alpha}</h2></div><div className="p-alpha-form"><WaitlistForm waitlist={waitlist} name="proposal-alpha" locale={locale} submitLabel={c.access}/></div></section>
     </main>
-    <footer className="p-footer p-wrap"><Link className="pub-brand" to={localeUrl(locale)}>Alondra</Link><p>{c.footer}</p><nav aria-label={locale === 'es' ? 'Enlaces' : 'Links'}><Link to="/install">{locale === 'es' ? 'Instalar' : 'Install (ES)'}</Link><a href="/auth/login">{locale === 'es' ? 'Entrar' : 'Sign in'}</a><Link to="/privacy">{c.privacy}</Link></nav></footer>
+    <footer className="p-footer p-wrap"><Link className="pub-brand" to={localeUrl(locale)}>Alondra</Link><nav aria-label={locale === 'es' ? 'Enlaces' : 'Links'}><Link to="/install">{locale === 'es' ? 'Instalar' : 'Install (ES)'}</Link><a href="/auth/login">{locale === 'es' ? 'Entrar' : 'Sign in'}</a><Link to="/privacy">{c.privacy}</Link></nav></footer>
   </div>;
 }

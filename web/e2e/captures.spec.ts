@@ -38,7 +38,7 @@ test('capture the landing walkthrough as video', async ({ browser }) => {
  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: out! } });
  const page = await context.newPage();
  await page.goto('/');
- for (const selector of ['.v-harness', '#vision', '.v-judgment', '.v-proof', '#alpha']) {
+ for (const selector of ['.p-hero', '.v-harness', '#alpha']) {
   await page.locator(selector).scrollIntoViewIfNeeded();
   await page.waitForTimeout(1000);
  }

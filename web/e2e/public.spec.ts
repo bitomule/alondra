@@ -89,12 +89,10 @@ test('the real icon is the favicon and the brand mark', async ({ page }) => {
  await expect(page.getByRole('link', { name: 'Alondra, inicio' }).locator('svg.lark')).toBeVisible();
 });
 
-test('the new landing keeps vision, alpha requirements and keyboard navigation accessible', async ({ page }) => {
+test('the new landing keeps language switching and keyboard navigation accessible', async ({ page }) => {
  await page.emulateMedia({ reducedMotion: 'reduce' });
  await page.goto('/');
  await expect(page.getByRole('heading', { level: 1 })).toHaveText('El orquestador para tus agentes.');
- await page.locator('summary').click();
- await expect(page.locator('details')).toContainText('aún no está disponible en la alpha');
  await page.getByRole('link', { name: 'English', exact: true }).click();
  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
  await expect(page.getByRole('heading', { level: 1 })).toHaveText('The orchestrator for your agents.');
