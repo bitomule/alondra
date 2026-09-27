@@ -87,6 +87,26 @@ mod tests {
         assert_eq!(reopened.read(|v|v.orchestrator.as_ref().unwrap().last_report),1);
         drop(reopened); std::fs::remove_dir_all(home).unwrap();
     }
+    /// On 27-sep the migrated orchestrator started from report 0 and got #1-#265 again as news.
+    #[test]
+    fn enabling_the_orchestrator_does_not_resend_reports_it_already_had() {
+        let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
+        let hub = Hub::open(config, false).unwrap();
+        let report = |id, title: &str| alondra_core::Report { id, session_id: "worker".into(), node_name: Some("worker".into()), title: title.into(), body: None, links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final, created_at: 1, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None };
+        for title in ["Old one", "Old two"] {
+            hub.append_with(|v| Some(Event::ReportPosted(report(v.next_report_id(), title)))).unwrap();
+        }
+        hub.append(Event::Orchestrator(Transition::Enabled { session_id: None })).unwrap();
+        enqueue(&hub, &[]).unwrap();
+        assert_eq!(hub.read(|v| v.pending_messages(alondra_core::orchestrator::NODE_ID).count()), 0);
+        hub.append_with(|v| Some(Event::ReportPosted(report(v.next_report_id(), "New one")))).unwrap();
+        enqueue(&hub, &[]).unwrap();
+        let digests: Vec<String> = hub.read(|v| v.pending_messages(alondra_core::orchestrator::NODE_ID).map(|m| m.text.clone()).collect());
+        assert!(digests.len() == 1 && digests[0].contains("#3") && !digests[0].contains("Old"), "{digests:?}");
+        drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
     #[test]
     fn report_ids_and_handoffs_advance_after_retention_and_snapshot_restart() {
         let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
@@ -114,5 +134,4 @@ mod tests {
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
-
 }

@@ -1,4 +1,5 @@
 export type Account = { id: string; status: string; is_admin: boolean; display_name: string };
+export type AdminAccount = Account & { email?: string | null };
 export type Session = { csrf_token: string; account: Account };
 export type Invitation = { id: string; email: string; status: string; expires_at_ms: number; account_id: string | null };
 export type IssuedInvitation = { invitation: Invitation; token: string };

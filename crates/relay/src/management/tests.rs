@@ -23,6 +23,9 @@ pub(crate) async fn fixture_for_identity(
     sqlx::raw_sql(include_str!("../../migrations/0004_device_labels.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0005_waitlist.sql"))
+        .execute(pool)
+        .await?;
     let actor = management.bootstrap(subject, "Admin").await?;
     Ok((management, actor, schema))
 }
@@ -557,12 +560,13 @@ async fn migrations_empty_and_concurrent_start_create_complete_schema_once() -> 
         sqlx::query_scalar("SELECT version FROM management_schema ORDER BY version")
             .fetch_all(&db.pool)
             .await?;
-    assert_eq!(versions, vec![1, 2, 3, 4]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
     for table in [
         "management_accounts",
         "web_sessions",
         "management_device_revocations",
         "management_device_labels",
+        "management_waitlist",
     ] {
         let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
             .bind(table)
@@ -576,7 +580,7 @@ async fn migrations_empty_and_concurrent_start_create_complete_schema_once() -> 
 #[tokio::test]
 #[ignore = "requires disposable local PostgreSQL"]
 async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> {
-    for prefix in [1, 2, 3] {
+    for prefix in [1, 2, 3, 4] {
         let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
         migrate(&db.pool, &MIGRATIONS[..prefix]).await?;
         let account = db.bootstrap("migration-admin", "Existing admin").await?;
@@ -601,7 +605,7 @@ async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> 
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM management_schema")
             .fetch_one(&db.pool)
             .await?;
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
         cleanup(db, schema).await?;
     }
     Ok(())
@@ -915,5 +919,46 @@ async fn management_device_labels_delete_is_atomic_and_account_scoped() -> Resul
             .fetch_all(&db.pool)
             .await?;
     assert_eq!(remaining, vec![admin.id]);
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn waitlist_deduplicates_by_normalized_email_in_the_database() -> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    let email = waitlist::normalize(" Early.Bird@Example.COM ").unwrap();
+    let (first, second) = tokio::join!(db.join_waitlist(&email), db.join_waitlist(&email));
+    first?;
+    second?;
+    db.join_waitlist(&email).await?;
+    assert!(db.join_waitlist("Early.Bird@Example.COM").await.is_err());
+    let duplicate = sqlx::query("INSERT INTO management_waitlist(id,email) VALUES($1,$2)")
+        .bind(Uuid::new_v4())
+        .bind(&email)
+        .execute(&db.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        duplicate.as_database_error().and_then(|e| e.constraint()),
+        Some("management_waitlist_email_key")
+    );
+    assert!(
+        sqlx::query("INSERT INTO management_waitlist(id,email) VALUES($1,'Upper@Example.com')")
+            .bind(Uuid::new_v4())
+            .execute(&db.pool)
+            .await
+            .is_err(),
+        "the table itself refuses unnormalized addresses"
+    );
+    let page = db.list_waitlist(admin.id, None, 10).await?;
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].email, "early.bird@example.com");
+    let accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM management_accounts")
+        .fetch_one(&db.pool)
+        .await?;
+    let invitations: i64 = sqlx::query_scalar("SELECT count(*) FROM management_invitations")
+        .fetch_one(&db.pool)
+        .await?;
+    assert_eq!((accounts, invitations), (1, 0), "joining grants nothing");
     cleanup(db, schema).await
 }

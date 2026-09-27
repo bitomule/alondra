@@ -113,6 +113,76 @@ test('admin emits link once, confirms deletion and sends CSRF/idempotency', asyn
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await page.screenshot({ path: info.outputPath('admin-mobile.png'), fullPage: true });
 });
+test('admin distinguishes same-name accounts before disabling or deleting the selected identity', async ({ page }, info) => {
+ await session(page);
+ const accounts = [
+  { id: 'same-name-one', display_name: 'Alex de prueba', email: 'alex.one@example.test', status: 'active', is_admin: false },
+  { id: 'same-name-two', display_name: 'Alex de prueba', email: 'alex.two@example.test', status: 'active', is_admin: false },
+ ];
+ await page.route('**/v1/admin/accounts', route => route.fulfill({ json: { accounts: [owner, ...accounts], next_cursor: null } }));
+ await page.route('**/v1/admin/invitations', route => route.fulfill({ json: { invitations: [], next_cursor: null } }));
+ const writes: string[] = [];
+ await page.route('**/v1/admin/accounts/*', route => {
+  writes.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
+  return route.fulfill({ status: 202, json: { reconciliation: 'pending' } });
+ });
+ await page.route('**/v1/admin/accounts/*/disable', route => {
+  writes.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
+  return route.fulfill({ status: 202, json: { reconciliation: 'pending' } });
+ });
+ await page.goto('/admin');
+ for (const account of accounts) {
+  const row = page.getByRole('listitem').filter({ hasText: account.email });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole('heading')).toHaveText(account.display_name);
+ }
+ await page.getByRole('listitem').filter({ hasText: accounts[0].email }).getByRole('button', { name: 'Desactivar', exact: true }).click();
+ const dialog = page.getByRole('dialog');
+ await expect(dialog).toContainText(`${accounts[0].display_name} — ${accounts[0].email}`);
+ await expect(dialog).not.toContainText(accounts[1].email);
+ expect(writes).toEqual([]);
+ await dialog.getByRole('button', { name: 'Volver', exact: true }).click();
+ expect(writes).toEqual([]);
+ await page.getByRole('listitem').filter({ hasText: accounts[1].email }).getByRole('button', { name: 'Eliminar', exact: true }).click();
+ await expect(dialog).toContainText(`${accounts[1].display_name} — ${accounts[1].email}`);
+ await expect(dialog).not.toContainText(accounts[0].email);
+ expect(writes).toEqual([]);
+ await page.setViewportSize({ width: 375, height: 900 });
+ await page.screenshot({ path: info.outputPath('admin-same-name-confirmation.png'), fullPage: true });
+ await dialog.getByRole('button', { name: 'Eliminar cuenta', exact: true }).click();
+ await expect(dialog).toHaveCount(0);
+ expect(writes).toEqual(['DELETE /v1/admin/accounts/same-name-two']);
+ await page.getByRole('listitem').filter({ hasText: accounts[0].email }).getByRole('button', { name: 'Desactivar', exact: true }).click();
+ await dialog.getByRole('button', { name: 'Desactivar cuenta', exact: true }).click();
+ await expect(dialog).toHaveCount(0);
+ expect(writes).toEqual(['DELETE /v1/admin/accounts/same-name-two', 'POST /v1/admin/accounts/same-name-one/disable']);
+});
+
+for (const email of [null, undefined]) {
+ test(`admin identifies an account with ${email === null ? 'null' : 'missing'} email by immutable ID`, async ({ page }, info) => {
+  await session(page);
+  const account = { id: 'legacy-6b36474f-05ba-47ab-9d48-e5a4e1829a3d', display_name: 'Alex de prueba', email, status: 'active', is_admin: false };
+  await page.route('**/v1/admin/accounts', route => route.fulfill({ json: { accounts: [owner, account], next_cursor: null } }));
+  await page.route('**/v1/admin/invitations', route => route.fulfill({ json: { invitations: [], next_cursor: null } }));
+  let writes = 0;
+  await page.route('**/v1/admin/accounts/*', route => { writes++; return route.fulfill({ status: 202, json: { reconciliation: 'pending' } }); });
+  await page.goto('/admin');
+  const row = page.getByRole('listitem').filter({ hasText: `ID: ${account.id}` });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByRole('heading')).toHaveText(account.display_name);
+  await row.getByRole('button', { name: 'Eliminar', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText(`${account.display_name} — ID: ${account.id}`);
+  expect(writes).toBe(0);
+  await page.setViewportSize({ width: 375, height: 900 });
+  const description = dialog.locator('p');
+  expect(await description.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('admin-legacy-confirmation.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Volver', exact: true }).click();
+  expect(writes).toBe(0);
+ });
+}
+
 test('revoking a Mac requires confirmation and preserves the key after ambiguous failure', async ({ page }) => {
  await session(page, false);
  let revoked = false;

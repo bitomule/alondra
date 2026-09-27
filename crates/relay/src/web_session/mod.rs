@@ -731,6 +731,7 @@ mod tests {
             change_waiters: Arc::new(Semaphore::new(1)),
             requests: Arc::new(Semaphore::new(8)),
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
+            waitlist: crate::management::waitlist::Limiter::new(None),
             epoch: "synthetic".into(),
             lab_waiters: Arc::default(),
         });
