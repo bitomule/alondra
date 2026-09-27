@@ -84,7 +84,8 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
             let chunk = document.subdata(in: offset..<min(offset + 65_536, document.count))
             payload = ["status": 200, "body": ["schema": 1, "snapshot_id": Self.snapshotID,
                 "total_bytes": document.count, "sha256": SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined(),
-                "chunk_bytes": 65_536, "offset": offset, "data": Base64URL.encode(chunk)]]
+                "chunk_bytes": 65_536, "offset": offset, "data": chunk.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")]]
             if offset == 0, let callback = firstChunk {
                 firstChunk = nil
                 try await callback()
