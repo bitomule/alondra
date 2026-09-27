@@ -23,7 +23,11 @@ public struct AlondraAPIClient: Sendable {
         switch try await operations.perform(request) {
         case .unknown: throw ServiceAPIError.outcomeUnknown
         case let .completed(status, body):
-            guard (200..<300).contains(status) else { throw APIError.from(status: status, body: body) }
+            guard (200..<300).contains(status) else {
+                if endpoint.path.starts(with: ["v2", "domain"]),
+                   let error = try? DomainV2.decode(DomainV2.DomainError.self, from: body) { throw error }
+                throw APIError.from(status: status, body: body)
+            }
             if endpoint.method != .get,
                let issue = try DeliveryHandoffUnconfirmed.inspect(body, requiresJSONObject: endpoint.requiresJSONObjectResponse, status: status) { throw issue }
             return try endpoint.decode(body)

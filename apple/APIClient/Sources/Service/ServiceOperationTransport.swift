@@ -24,7 +24,10 @@ public struct ServiceRequest: Sendable, Equatable {
     public let body: Data?
 
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
-        guard !operationID.isEmpty, endpoint.path.first == "v1",
+        let domainV2 = endpoint.path == ["v2", "domain"] && endpoint.method == .get
+            || endpoint.path == ["v2", "domain", "capabilities"] && endpoint.method == .get
+            || endpoint.path == ["v2", "domain", "commands"] && endpoint.method == .post
+        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
         }
