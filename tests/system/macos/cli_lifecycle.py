@@ -6,6 +6,8 @@ launchd setup, Claude or production account is involved.
 """
 import json
 from contextlib import closing
+import errno
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -18,6 +20,7 @@ import stat
 import subprocess
 import sys
 import urllib.request
+import uuid
 
 import cli
 
@@ -83,6 +86,59 @@ def snapshot(source, target):
 def reject_unsupported_downgrade(code, output):
     cli.require(code != 0 and re.search(r"unknown variant [`'\"]splits_released[`'\"]", output),
                 '018 audit did not specifically reject the new 019 event')
+
+
+def retire_stale_socket(state):
+    """Only two owned fixture paths; never relax the evidence collector."""
+    allowed = {cli.ROOT / 'project/cli-home/.alondra', cli.ROOT / 'project/post-upgrade-state'}
+    cli.require(state in allowed, 'socket retirement outside lifecycle fixture')
+    for parent in (state, *state.parents):
+        if parent == cli.ROOT: break
+        cli.require(not parent.is_symlink(), 'socket parent is symlink')
+    path = state / 'hooks.sock'
+    try: before = path.lstat()
+    except FileNotFoundError: return None
+    cli.require(stat.S_ISSOCK(before.st_mode) and before.st_uid == os.getuid()
+                and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1,
+                'socket retirement requires owned mode0600 Unix socket')
+    fd = os.open(state / 'service-home.lock', os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        lock = os.fstat(fd)
+        cli.require(stat.S_ISREG(lock.st_mode) and lock.st_uid == os.getuid()
+                    and lock.st_nlink == 1 and stat.S_IMODE(lock.st_mode) == 0o600, 'unsafe home lock')
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        hashes = state_manifest(state)
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.settimeout(1)
+            code = probe.connect_ex(str(path))
+        cli.require(code == errno.ECONNREFUSED, 'socket not positively quiescent')
+        current = path.lstat()
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_nlink)
+        cli.require(identity(current) == identity(before), 'socket changed before unlink')
+        metadata = {'path': str(path.relative_to(cli.ROOT)), 'device': before.st_dev,
+                    'inode': before.st_ino, 'mode': oct(before.st_mode), 'uid': before.st_uid,
+                    'connect_errno': code, 'exclusive_home_lock': True, 'durable_hashes': hashes}
+        audits = cli.ROOT / 'project/socket-retirements'
+        audits.mkdir(mode=0o700, exist_ok=True)
+        audit_stat = audits.lstat()
+        cli.require(stat.S_ISDIR(audit_stat.st_mode) and audit_stat.st_uid == os.getuid()
+                    and stat.S_IMODE(audit_stat.st_mode) == 0o700, 'unsafe retirement audit directory')
+        receipt = audits / (uuid.uuid4().hex + '.json')
+        metadata['status'] = 'prepared'
+        publish(receipt, metadata)
+        directory_fd = os.open(audits, os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
+        # Receipt is durable before mutation; a failed/interrupted unlink keeps it.
+        cli.require(identity(path.lstat()) == identity(before), 'socket changed after audit')
+        path.unlink()
+        cli.require(not path.exists() and not path.is_symlink() and state_manifest(state) == hashes,
+                    'socket retirement changed durable state')
+        metadata['status'] = 'retired'
+        metadata['durable_hashes_after'] = state_manifest(state)
+        publish(receipt, metadata)
+        return metadata
+    finally: os.close(fd)
 
 
 def run():
@@ -165,6 +221,8 @@ def run():
         if daemon_log is not None: daemon_log.close(); daemon_log = None
         with socket.socket() as probe:
             cli.require(probe.connect_ex(('127.0.0.1', port)) != 0, 'local daemon listener remains')
+        retired = retire_stale_socket(state)
+        if retired is not None: result.setdefault('retired_sockets', []).append(retired)
         return pid
     def schedules(): return cli.request(port, '/v1/schedules')['schedules']
     def create_schedule(title):

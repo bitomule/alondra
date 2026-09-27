@@ -1,6 +1,10 @@
 """Fast lifecycle safety oracles: no Brew, daemon, network or VM."""
 from contextlib import closing
 import importlib.util
+import fcntl
+import json
+import os
+import socket
 from pathlib import Path
 import sqlite3
 import sys
@@ -64,6 +68,59 @@ class LifecycleContracts(unittest.TestCase):
             self.assertEqual(lifecycle.state_manifest(preserved), saved)
             self.assertEqual((preserved / 'marker').read_text(), '019')
             self.assertEqual((state / 'marker').read_text(), '018')
+
+    def socket_fixture(self, root):
+        state = root / 'project/cli-home/.alondra'; state.mkdir(parents=True)
+        (state / 'service-home.lock').touch(mode=0o600)
+        (state / 'durable').write_text('unchanged')
+        path = state / 'hooks.sock'
+        server = socket.socket(socket.AF_UNIX); server.bind(str(path)); path.chmod(0o600)
+        return state, path, server
+
+    def test_retirement_persists_metadata_before_unlink_and_preserves_data(self):
+        with tempfile.TemporaryDirectory(dir='/tmp', prefix='sock') as directory:
+            root = Path(directory); state, path, server = self.socket_fixture(root); server.close()
+            before = lifecycle.state_manifest(state); unlink = Path.unlink
+            def observed(target, *args, **kwargs):
+                if target == path:
+                    receipts = list((root / 'project/socket-retirements').glob('*.json'))
+                    self.assertEqual(len(receipts), 1)
+                    receipt = json.loads(receipts[0].read_text())
+                    self.assertEqual(receipt['status'], 'prepared')
+                    self.assertEqual(receipt['inode'], path.lstat().st_ino)
+                    self.assertEqual(receipt['durable_hashes'], before)
+                return unlink(target, *args, **kwargs)
+            with patch.object(lifecycle.cli, 'ROOT', root), patch.object(Path, 'unlink', observed):
+                result = lifecycle.retire_stale_socket(state)
+            self.assertEqual(result['status'], 'retired')
+            self.assertFalse(path.exists())
+            self.assertEqual(lifecycle.state_manifest(state), before)
+
+    def test_retirement_refuses_live_listener_and_busy_home_lock(self):
+        with tempfile.TemporaryDirectory(dir='/tmp', prefix='sock') as directory:
+            root = Path(directory); state, path, server = self.socket_fixture(root)
+            with patch.object(lifecycle.cli, 'ROOT', root):
+                server.listen()
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'quiescent'):
+                        lifecycle.retire_stale_socket(state)
+                finally: server.close()
+                with (state / 'service-home.lock').open() as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with self.assertRaises(BlockingIOError): lifecycle.retire_stale_socket(state)
+                self.assertTrue(path.exists())
+                self.assertFalse((root / 'project/socket-retirements').exists())
+
+    def test_retirement_refuses_other_path_and_symlink(self):
+        with tempfile.TemporaryDirectory(dir='/tmp', prefix='sock') as directory:
+            root = Path(directory); state, path, server = self.socket_fixture(root); server.close()
+            with patch.object(lifecycle.cli, 'ROOT', root):
+                with self.assertRaisesRegex(RuntimeError, 'outside'):
+                    lifecycle.retire_stale_socket(root / 'unowned')
+                path.unlink(); path.symlink_to(state / 'durable')
+                with self.assertRaisesRegex(RuntimeError, 'Unix socket'):
+                    lifecycle.retire_stale_socket(state)
+                self.assertEqual((state / 'durable').read_text(), 'unchanged')
 
     def test_plan_never_starts_tools_and_rejects_mismatched_profiles(self):
         spec = importlib.util.spec_from_file_location('lifecycle_tart', HERE / 'macos.py')
