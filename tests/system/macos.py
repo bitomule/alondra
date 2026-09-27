@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in macOS demo gate: clone a prepared Tart base, run MAV, retain evidence, delete only this run's clone."""
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -143,26 +144,68 @@ class Gate:
         return self.call('tart', 'exec', self.name, *args, timeout=timeout, **kwargs)
 
     def collect_evidence(self):
-        # Tart's guest transport can disconnect during an otherwise read-only
-        # transfer. Keep every partial attempt and retry this owned archive only.
-        self.result['collection_attempts'] = []
-        for attempt in range(1, 4):
-            archive = self.out / f'evidence-attempt-{attempt}.tar'
-            try:
-                with archive.open('wb') as stream:
-                    result = self.guest('/usr/bin/tar', '-cf', '-', '-C', GUEST, 'project',
-                                        timeout=90, output_file=stream, check=False)
-                detail = {'attempt': attempt, 'exit_code': result.returncode}
-                if result.returncode:
-                    (self.out / f'collection-{attempt}.txt').write_bytes(result.stderr[-8000:])
-            except subprocess.TimeoutExpired:
-                detail = {'attempt': attempt, 'timeout': True}
-            self.result['collection_attempts'].append(detail)
-            if detail.get('exit_code') == 0:
-                archive.rename(self.out / 'evidence.tar')
-                extract_evidence(self.out / 'evidence.tar', self.out / 'evidence')
-                return
-        raise GateError('evidence transfer failed after three attempts; partial archives retained')
+        # Short text responses avoid Tart's observed truncation of long binary stdout.
+        # Each retry asks for the same immutable range; no append occurs before validation.
+        deadline = time.monotonic() + 300
+        helper = GUEST + '/evidence-transfer.py'
+        attempts = self.result['collection_attempts'] = []
+        def request(action, *args):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GateError('evidence collection exceeded 300 seconds')
+            response = self.guest('/usr/bin/python3', helper, action, *map(str, args),
+                                  timeout=min(60, remaining), check=False)
+            if response.returncode:
+                raise GateError('guest evidence request failed: ' + response.stderr[-500:].decode(errors='replace'))
+            if len(response.stdout) > 128 * 1024:
+                raise GateError('evidence response exceeds bound')
+            return json.loads(response.stdout)
+        try:
+            diagnostics = request('diagnostics')
+            (self.out / 'guest-diagnostics.json').write_text(json.dumps(diagnostics, indent=2) + '\n')
+        except (GateError, ValueError, subprocess.TimeoutExpired) as error:
+            self.result['diagnostics_error'] = str(error)
+        initial = request('prepare')
+        size = initial.get('size')
+        expected_hash = initial.get('sha256')
+        if (initial.get('schema') != 1 or type(size) is not int or not 0 < size <= 544 * 1024**2
+                or initial.get('chunk_bytes') != 65536 or not isinstance(expected_hash, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected_hash)):
+            raise GateError('invalid frozen evidence descriptor')
+        if shutil.disk_usage(self.out).free < MIN_FREE + size:
+            raise GateError('insufficient space for frozen evidence')
+        self.result['evidence_descriptor'] = initial
+        partial = self.out / 'evidence.partial'
+        hasher = hashlib.sha256()
+        with partial.open('xb') as stream:
+            for offset in range(0, size, 65536):
+                for attempt in range(1, 4):
+                    detail = {'offset': offset, 'attempt': attempt}
+                    try:
+                        value = request('chunk', offset)
+                        if (value.get('schema') != 1 or value.get('offset') != offset
+                                or value.get('total') != size or value.get('archive_sha256') != expected_hash):
+                            raise GateError('evidence chunk identity mismatch')
+                        data = base64.b64decode(value.get('data', ''), validate=True)
+                        if (len(data) != min(65536, size - offset)
+                                or hashlib.sha256(data).hexdigest() != value.get('sha256')):
+                            raise GateError('evidence chunk size/hash mismatch')
+                        detail['verified'] = True
+                        attempts.append(detail)
+                        break
+                    except (GateError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
+                        detail['error'] = str(error)
+                        attempts.append(detail)
+                        if attempt == 3 or time.monotonic() >= deadline:
+                            raise GateError('evidence chunk transfer failed; partial retained') from error
+                stream.write(data)
+                hasher.update(data)
+        if hasher.hexdigest() != expected_hash or request('describe') != initial:
+            raise GateError('frozen evidence global hash/descriptor mismatch')
+        archive = self.out / 'evidence.tar'
+        os.link(partial, archive)  # never overwrite an existing completed artifact
+        partial.unlink()
+        extract_evidence(archive, self.out / 'evidence')
 
     def execute(self):
         if self.out.exists():
@@ -226,6 +269,7 @@ class Gate:
             self.step = 'stage'
             stage = self.out / 'payload'
             stage.mkdir()
+            shutil.copyfile(HERE / 'macos/evidence-transfer.py', stage / 'evidence-transfer.py')
             if self.args.profile == 'app':
                 shutil.copytree(app, stage / 'Alondra.app', symlinks=True)
                 shutil.copyfile(HERE / 'macos/guest.sh', stage / 'guest.sh')
@@ -242,13 +286,24 @@ class Gate:
                 self.call('tart', 'exec', '-i', self.name, '/usr/bin/tar', '-xf', '-', '-C', GUEST, timeout=120, input_file=payload)
             self.step = self.args.profile
             parameter = 'debug' if self.args.profile == 'app' else self.args.brew_version
-            test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
-            (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
-            self.result['guest_exit_code'] = test.returncode
+            try:
+                test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
+                (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
+                self.result['guest_exit_code'] = test.returncode
+                if test.returncode:
+                    self.result['guest_failure'] = {'exit_code': test.returncode}
+            except subprocess.TimeoutExpired as error:
+                (self.out / 'guest.txt').write_bytes((error.stdout or b'') + (error.stderr or b''))
+                self.result['guest_failure'] = {'timeout_seconds': 600}
+                # Stop only this clone's MAV run before freezing partial evidence.
+                stop = self.guest('/bin/bash', '-c',
+                                  'cd /Users/admin/alondra-gate/project && /Users/admin/alondra-test-tools/mav stop',
+                                  timeout=30, check=False)
+                self.result['timeout_mav_stop_exit'] = stop.returncode
             self.step = 'collect'
             self.collect_evidence()
-            if test.returncode:
-                raise GateError(f'guest demo failed with exit {test.returncode}; see guest.txt and collected evidence')
+            if 'guest_failure' in self.result:
+                raise GateError('guest execution failed; see guest_failure and collected diagnostics/evidence')
             if self.args.profile == 'app':
                 report_path, report = validate_report(self.out / 'evidence')
                 self.result['mav_report'] = str(report_path.relative_to(self.out))

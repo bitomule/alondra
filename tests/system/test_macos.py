@@ -102,28 +102,85 @@ class MacGateTests(unittest.TestCase):
             with self.assertRaisesRegex(m.GateError, 'Debug app'):
                 m.validate_app(app)
 
-    def test_collection_retries_preserving_partial_transfer(self):
+    def transfer_fixture(self, root, mutate=None):
+        guest_root = root / 'guest'
+        project = guest_root / 'project'
+        project.mkdir(parents=True)
+        # Incompressible multi-chunk fixture exercises offsets and retry, not just a tiny TAR.
+        body = os.urandom(170000)
+        (project / 'payload.bin').write_bytes(body)
+        out = root / 'output'
+        out.mkdir()
+        gate = m.Gate(argparse.Namespace(output_dir=out, base=m.BASE_NAME, profile='cli'))
+        calls = []
+        def guest(*args, **kwargs):
+            action = args[2]
+            offset = int(args[3]) if len(args) == 4 else None
+            calls.append((action, offset))
+            if action == 'prepare': value = transfer.prepare(guest_root)
+            elif action == 'describe': value = transfer.descriptor(guest_root)
+            elif action == 'chunk': value = transfer.chunk(guest_root, offset)
+            else: value = transfer.diagnostics(guest_root)
+            if mutate:
+                value = mutate(action, offset, value, calls)
+            return subprocess.CompletedProcess(args, 0, json.dumps(value).encode(), b'')
+        return gate, guest, calls, body
+
+    def test_chunk_retry_is_same_range_and_preserves_exact_archive(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            gate = m.Gate(argparse.Namespace(output_dir=root, base=m.BASE_NAME, profile='cli'))
-            attempts = []
-            def guest(*args, **kwargs):
-                attempts.append(args)
-                if len(attempts) == 1:
-                    kwargs['output_file'].write(b'partial evidence')
-                    return subprocess.CompletedProcess(args, 1, b'', b'transport disconnected')
-                with tarfile.open(fileobj=kwargs['output_file'], mode='w') as tar:
-                    member = tarfile.TarInfo('project/result.json')
-                    body = b'{"synthetic":true}'
-                    member.size = len(body)
-                    tar.addfile(member, io.BytesIO(body))
-                return subprocess.CompletedProcess(args, 0, b'', b'')
-            with patch.object(gate, 'guest', guest):
-                gate.collect_evidence()
-            self.assertEqual(len(attempts), 2)
-            self.assertEqual((root / 'evidence-attempt-1.tar').read_bytes(), b'partial evidence')
-            self.assertEqual(json.loads((root / 'evidence/project/result.json').read_text()), {'synthetic': True})
-            self.assertEqual(gate.result['collection_attempts'], [{'attempt': 1, 'exit_code': 1}, {'attempt': 2, 'exit_code': 0}])
+            def drop(action, offset, value, calls):
+                if action == 'chunk' and offset == 65536 and calls.count((action, offset)) == 1:
+                    raise subprocess.TimeoutExpired('fixture transfer', 1)
+                return value
+            gate, guest, calls, body = self.transfer_fixture(root, drop)
+            with patch.object(gate, 'guest', guest): gate.collect_evidence()
+            self.assertEqual(calls.count(('chunk', 65536)), 2)
+            self.assertEqual((gate.out / 'evidence/project/payload.bin').read_bytes(), body)
+            self.assertFalse((gate.out / 'evidence.partial').exists())
+            self.assertTrue((gate.out / 'guest-diagnostics.json').exists())
+
+    def test_corruption_and_descriptor_mixing_never_publish(self):
+        for kind in ('chunk_hash', 'global_hash', 'offset', 'oversize', 'changed_final'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                def mutate(action, offset, value, calls):
+                    if kind == 'oversize' and action == 'prepare': value['size'] = 545 * 1024**2
+                    if kind == 'changed_final' and action == 'describe': value['sha256'] = '0' * 64
+                    if action == 'chunk':
+                        if kind == 'chunk_hash': value['sha256'] = '0' * 64
+                        if kind == 'offset': value['offset'] += 1
+                        if kind == 'global_hash':
+                            data = m.base64.b64decode(value['data']);data = bytes([data[0] ^ 1]) + data[1:]
+                            value['data'] = m.base64.b64encode(data).decode()
+                            value['sha256'] = m.hashlib.sha256(data).hexdigest()
+                    return value
+                gate, guest, calls, body = self.transfer_fixture(root, mutate)
+                with patch.object(gate, 'guest', guest), self.assertRaises(m.GateError): gate.collect_evidence()
+                self.assertFalse((gate.out / 'evidence.tar').exists())
+                self.assertFalse((gate.out / 'evidence').exists())
+                if kind != 'oversize': self.assertTrue((gate.out / 'evidence.partial').exists())
+                self.assertLessEqual(calls.count(('chunk', 0)), 3)
+
+    def test_collection_deadline_and_frozen_file_change_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            gate, guest, _, _ = self.transfer_fixture(root)
+            with patch.object(gate, 'guest', guest), patch.object(m.time, 'monotonic', side_effect=[0, 301, 302]):
+                with self.assertRaisesRegex(m.GateError, '300 seconds'): gate.collect_evidence()
+            self.assertFalse((gate.out / 'evidence.tar').exists())
+            transfer.prepare(root / 'guest')
+            with (root / 'guest/evidence.tar').open('ab') as stream: stream.write(b'mutation')
+            with self.assertRaisesRegex(ValueError, 'changed'): transfer.chunk(root / 'guest', 0)
+
+    def test_guest_freeze_rejects_links_and_diagnostics_are_bounded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp);(root/'project').mkdir()
+            (root/'project/flow.txt').write_text('X' * 100000)
+            value=transfer.diagnostics(root)['files']['project/flow.txt']
+            self.assertTrue(value['truncated']);self.assertEqual(len(value['tail']),3072)
+            (root/'project/leak').symlink_to(root/'project/flow.txt')
+            with self.assertRaisesRegex(ValueError, 'unsupported'): transfer.prepare(root)
 
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -134,6 +191,10 @@ class MacGateTests(unittest.TestCase):
                 gate.execute()
             self.assertEqual((out / 'result.json').read_text(), 'previous evidence')
 
+
+transfer_spec = importlib.util.spec_from_file_location('evidence_transfer', Path(m.__file__).parent / 'macos/evidence-transfer.py')
+transfer = importlib.util.module_from_spec(transfer_spec)
+transfer_spec.loader.exec_module(transfer)
 
 spec = importlib.util.spec_from_file_location('cli_gate', Path(m.__file__).parent / 'macos/cli.py')
 cli_gate = importlib.util.module_from_spec(spec)

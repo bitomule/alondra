@@ -115,3 +115,22 @@ python3 -m unittest discover -s tests/system -p test_macos.py -v
 bash -n tests/system/macos/guest.sh tests/system/macos/cli.sh
 mav flow lint tests/system/macos/demo.yaml
 ```
+
+### Evidence transport
+
+The guest stops MAV before collection. The runner first saves bounded text tails
+(flow, doctor, commands and report) so a failed video transfer does not erase the
+original test failure. It then freezes one compressed TAR inside the owned guest
+and downloads 64 KiB blocks as JSON/base64 over separate `tart exec` calls. Each
+block must match its exact offset, size and SHA-256; retries request the same
+frozen range at most three times. A global five-minute deadline bounds collection.
+The final size, archive hash and a fresh descriptor must all agree before the
+host publishes `evidence.tar` and applies the existing safe extraction checks.
+Partial files remain evidence of a failed transfer, never an accepted report.
+
+This avoids the observed truncation of long binary stdout streams from Tart; it
+does not assert an upstream root cause. The guest archive is limited to 544 MiB,
+its source files to 512 MiB / 10,000 entries, and the host retains its 8 GiB free
+space guard. No production account, keychain or host share enters this archive.
+A nonzero guest result and collection errors are recorded independently. A
+successful transfer does not convert a failed UI assertion into a passing gate.
