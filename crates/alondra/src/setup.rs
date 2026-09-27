@@ -140,17 +140,18 @@ fn claude_context(paths: &Paths, label: &str) -> crate::claude_auth::ContextEnv 
     context
 }
 
-pub fn render_plist(label: &str, paths: &Paths) -> String {
+pub fn render_plist(label: &str, paths: &Paths) -> Result<String> {
+    let username = crate::claude_auth::effective_username()?;
     let context = claude_context(paths, label);
     let profile = context.config_dir.clone().unwrap_or_else(|| paths.home.join(".claude").to_string_lossy().into_owned());
-    let config = format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string>", xml_escape(&profile));
-    TEMPLATE
+    let config = format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string><key>USER</key><string>{1}</string><key>LOGNAME</key><string>{1}</string>", xml_escape(&profile), xml_escape(&username));
+    Ok(TEMPLATE
         .replace("@CLAUDE_CONFIG_ENV@", &config)
         .replace("@PATH@", &xml_escape(&context.path))
         .replace("@LABEL@", label)
         .replace("@BIN@", &xml_escape(&paths.bin.display().to_string()))
         .replace("@HOME@", &xml_escape(&paths.home.display().to_string()))
-        .replace("@ALONDRA_HOME@", &xml_escape(&paths.alondra_home.display().to_string()))
+        .replace("@ALONDRA_HOME@", &xml_escape(&paths.alondra_home.display().to_string())))
 }
 
 /// Keys the user already has keep their value unless `force`; missing keys are filled in.
@@ -231,7 +232,13 @@ pub fn plan(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, paths: &Paths
         }
         let label = merged.service_label.clone().unwrap_or_else(|| config::DEFAULT_LABEL.into());
         let plist_path = paths.plist(&label);
-        let plist = render_plist(&label, paths);
+        let plist = match render_plist(&label, paths) {
+            Ok(plist) => plist,
+            Err(error) => {
+                conflicts.push(error.to_string());
+                return Plan { steps: vec![], config: merged, conflicts };
+            }
+        };
         let domain = format!("gui/{}", paths.uid);
         let target = format!("{domain}/{label}");
         if !seen.binaries {
@@ -721,8 +728,10 @@ mod tests {
         // No environment mutation: retry must recover the persisted profile.
         let context = claude_context(&paths, "test-profile");
         assert_eq!(context.config_dir.as_deref(), Some(profile.as_str()));
-        std::fs::write(&plist, render_plist("test-profile", &paths)).unwrap();
+        std::fs::write(&plist, render_plist("test-profile", &paths).unwrap()).unwrap();
         let value = read_plist(&plist).unwrap();
+        assert_eq!(value["EnvironmentVariables"]["USER"], crate::claude_auth::effective_username().unwrap());
+        assert_eq!(value["EnvironmentVariables"]["LOGNAME"], value["EnvironmentVariables"]["USER"]);
         assert_eq!(value["EnvironmentVariables"]["CLAUDE_HOME"], profile);
         assert_eq!(value["EnvironmentVariables"]["CLAUDE_CONFIG_DIR"], profile);
         let script = paths.bin.join("claude");
@@ -833,7 +842,7 @@ esac
         let seen = Observed {
             config: Some(plan(&named("Ana"), None, &Args::default(), &paths(), &fresh()).config.render()),
             apns: Some("{}".into()),
-            plist: Some(render_plist("dev.alondra.alondrad", &paths())),
+            plist: Some(render_plist("dev.alondra.alondrad", &paths()).unwrap()),
             service_loaded: true,
             marketplace: true,
             enabled_globally: enabled_globally(&list),
@@ -855,7 +864,7 @@ esac
         let seen = Observed {
             config: Some(first.config.render()),
             apns: Some("{}".into()),
-            plist: Some(render_plist("dev.alondra.alondrad", &paths())),
+            plist: Some(render_plist("dev.alondra.alondrad", &paths()).unwrap()),
             service_loaded: true,
             marketplace: true,
             ..fresh()
@@ -870,7 +879,7 @@ esac
     fn a_changed_config_restarts_the_loaded_service_and_a_changed_plist_reloads_it() {
         let seen = Observed {
             config: Some(named("Ana").render()),
-            plist: Some(render_plist("dev.alondra.alondrad", &paths())),
+            plist: Some(render_plist("dev.alondra.alondrad", &paths()).unwrap()),
             service_loaded: true,
             marketplace: true,
             ..fresh()
@@ -923,7 +932,7 @@ esac
 
     #[test]
     fn the_plist_points_at_this_user_and_label() {
-        let plist = render_plist("com.example.alondra", &paths());
+        let plist = render_plist("com.example.alondra", &paths()).unwrap();
         assert!(plist.contains("<string>com.example.alondra</string>"));
         assert!(plist.contains("<string>/Users/ana/.local/bin/alondrad</string>"));
         assert!(plist.contains("<string>/Users/ana/.alondra/alondrad.log</string>"));

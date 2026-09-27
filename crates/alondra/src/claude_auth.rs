@@ -25,6 +25,37 @@ pub fn daemon_path(home: &Path, bin: &Path) -> String {
     )
 }
 
+/// Resolve the account that actually executes Claude, never inherited USER/LOGNAME.
+/// Claude uses this identity when finding its macOS login credentials.
+pub(crate) fn effective_username() -> Result<String> {
+    let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 16384];
+    let code = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            record.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if code != 0 || result.is_null() {
+        bail!("cannot resolve effective OS account for Claude; no login was attempted");
+    }
+    let record = unsafe { record.assume_init() };
+    if record.pw_name.is_null() {
+        bail!("effective OS account has no username");
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(record.pw_name) }
+        .to_str()
+        .context("effective OS username is not UTF-8")?;
+    if name.is_empty() {
+        bail!("effective OS account has an empty username");
+    }
+    Ok(name.to_owned())
+}
+
 impl ContextEnv {
     pub fn for_setup(home: &Path, bin: &Path) -> Self {
         let config_dir = std::env::var("CLAUDE_CONFIG_DIR")
@@ -79,11 +110,14 @@ impl ContextEnv {
             use std::os::unix::fs::PermissionsExt;
             p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         }).context("Claude Code is missing from the daemon PATH; install Claude Code, then rerun alondra setup")?;
+        let username = effective_username()?;
         let mut command = Command::new(executable);
         command
             .env_clear()
             .env("HOME", &self.home)
             .env("PATH", &self.path)
+            .env("USER", &username)
+            .env("LOGNAME", &username)
             .current_dir(&self.home);
         let dir = self
             .config_dir
@@ -279,6 +313,76 @@ fi
         assert!(env.status().unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn os_identity_unlocks_mock_auth_without_inheriting_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "alondra-claude-user-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let username = effective_username().unwrap();
+        std::fs::write(dir.join("expected-user"), &username).unwrap();
+        let script = dir.join("claude");
+        std::fs::write(&script, r#"#!/bin/sh
+expected=$(cat "$HOME/expected-user")
+if [ "$USER" = "$expected" ] && [ "$LOGNAME" = "$expected" ] && [ "$CLAUDE_CONFIG_DIR" = "$HOME/custom" ] && [ "$CLAUDE_HOME" = "$CLAUDE_CONFIG_DIR" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+  printf '{"loggedIn":true}'
+else
+  printf '{"loggedIn":false}'
+fi
+"#).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let context = ContextEnv {
+            home: dir.clone(),
+            path: format!("{}:/usr/bin:/bin", dir.display()),
+            config_dir: Some(dir.join("custom").to_string_lossy().into_owned()),
+        };
+        assert!(context.status().unwrap());
+        // Reproduce the old env_clear omission with the same executable/profile.
+        let output = context
+            .command()
+            .unwrap()
+            .env_remove("USER")
+            .env_remove("LOGNAME")
+            .args(["auth", "status", "--json"])
+            .output()
+            .unwrap();
+        assert!(!parse_status(output.status.success(), &output.stdout).unwrap());
+        let output = context
+            .command()
+            .unwrap()
+            .env("LOGNAME", "wrong-account")
+            .args(["auth", "status", "--json"])
+            .output()
+            .unwrap();
+        assert!(!parse_status(output.status.success(), &output.stdout).unwrap());
+        let command = context.command().unwrap();
+        let vars: BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.unwrap().to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(vars["USER"], username);
+        assert_eq!(vars["LOGNAME"], username);
+        assert_eq!(
+            vars.len(),
+            6,
+            "only explicit identity/path/profile variables are passed"
+        );
+        // The same command factory is used for interactive login and plugin operations.
+        context.ensure(true).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn installed_context_uses_daemon_configuration() {
         let vars = BTreeMap::from([
