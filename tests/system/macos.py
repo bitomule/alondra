@@ -169,10 +169,13 @@ class Gate:
     def __init__(self, args):
         self.args = args
         self.name = run_name()
+        self.owner_token = uuid.uuid4().hex
         self.out = args.output_dir.resolve()
         self.env = {**os.environ, 'TART_NO_AUTO_PRUNE': 'true'}
         self.process = None
         self.created = False
+        self.evidence_pending = False
+        self.tart_home = None
         self.lock = None
         self.step = 'preflight'
         self.result = {'status': 'incomplete', 'vm': self.name, 'base': args.base,
@@ -217,13 +220,18 @@ class Gate:
         except (GateError, ValueError, subprocess.TimeoutExpired) as error:
             self.result['diagnostics_error'] = str(error)
         initial = request('prepare')
+        expected = getattr(self, 'recovery_descriptor', None)
+        if expected is not None and initial != expected:
+            raise GateError('recovery archive differs from original frozen evidence')
         size = initial.get('size')
         expected_hash = initial.get('sha256')
         if (initial.get('schema') != 1 or type(size) is not int or not 0 < size <= 544 * 1024**2
                 or initial.get('chunk_bytes') != 65536 or not isinstance(expected_hash, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', expected_hash)):
             raise GateError('invalid frozen evidence descriptor')
-        if shutil.disk_usage(self.out).free < MIN_FREE + size:
+        self.result['evidence_descriptor'] = initial
+        self.result['collection_free_bytes'] = shutil.disk_usage(self.out).free
+        if self.result['collection_free_bytes'] < MIN_FREE + size:
             raise GateError('insufficient space for frozen evidence')
         self.result['evidence_descriptor'] = initial
         partial = self.out / 'evidence.partial'
@@ -274,6 +282,8 @@ class Gate:
                 self.result['source']['app_source'] = self.args.app_source
                 self.call('codesign', '--verify', '--deep', '--strict', str(app))
             tart_home = Path(os.environ.get('TART_HOME', str(Path.home() / '.tart'))).resolve(strict=True)
+            self.tart_home = tart_home
+            self.result['initial_free_bytes'] = {'tart': shutil.disk_usage(tart_home).free, 'evidence': shutil.disk_usage(self.out).free}
             if shutil.disk_usage(tart_home).free < MIN_FREE or shutil.disk_usage(self.out).free < MIN_FREE:
                 raise GateError('at least 8 GiB free required on Tart and evidence volumes')
             # A local lock serializes this suite across worktrees. External builds still
@@ -293,7 +303,7 @@ class Gate:
                 raise GateError('generated VM name already exists')
             (self.out / 'ownership.json').write_text(json.dumps({
                 'vm': self.name, 'base': self.args.base, 'tart_home': str(tart_home),
-                'source': self.result['source'], 'state': 'reserved_before_clone'}, indent=2) + '\n')
+                'source': self.result['source'], 'owner_token': self.owner_token, 'state': 'reserved_before_clone'}, indent=2) + '\n')
             self.created = True  # Own this reserved name even if cloning only partially succeeds.
             self.call('tart', 'clone', self.args.base, self.name, timeout=90)
             self.call('tart', 'set', self.name, '--cpu', '2', '--memory', '4096')
@@ -320,6 +330,7 @@ class Gate:
             self.step = 'stage'
             stage = self.out / 'payload'
             stage.mkdir()
+            (stage / 'ownership.json').write_text(json.dumps({'vm': self.name, 'owner_token': self.owner_token}))
             shutil.copyfile(HERE / 'macos/evidence-transfer.py', stage / 'evidence-transfer.py')
             if self.args.profile == 'app':
                 shutil.copytree(app, stage / 'Alondra.app', symlinks=True)
@@ -335,6 +346,7 @@ class Gate:
             self.guest('/bin/mkdir', '-p', GUEST)
             with (self.out / 'payload.tar').open('rb') as payload:
                 self.call('tart', 'exec', '-i', self.name, '/usr/bin/tar', '-xf', '-', '-C', GUEST, timeout=120, input_file=payload)
+            self.evidence_pending = True
             self.step = self.args.profile
             parameter = 'debug' if self.args.profile == 'app' else self.args.brew_version
             try:
@@ -357,6 +369,7 @@ class Gate:
                         'kind': type(stop_error).__name__, 'detail': str(stop_error)}
             self.step = 'collect'
             self.collect_evidence()
+            self.evidence_pending = False
             if 'guest_failure' in self.result:
                 raise GateError('guest execution failed; see guest_failure and collected diagnostics/evidence')
             if self.args.profile == 'app':
@@ -385,8 +398,26 @@ class Gate:
                 self.call('tart', 'stop', self.name, timeout=40, check=False)
                 if self.process:
                     self.process.wait(timeout=20)
-                self.call('tart', 'delete', self.name, timeout=40)
-                self.result['cleanup']['owned_clone_deleted'] = True
+                if self.evidence_pending:
+                    entries = json.loads(self.call('tart', 'list', '--format', 'json').stdout)
+                    owned = [entry for entry in entries if entry.get('Name') == self.name and entry.get('Source') == 'local']
+                    if len(owned) != 1 or owned[0].get('State') != 'stopped':
+                        raise GateError('evidence clone could not be confirmed stopped; retained without deletion')
+                    receipt = {'schema': 1, 'scope': 'alondra-tart-evidence-recovery',
+                               'vm': self.name, 'owner_token': self.owner_token, 'tart_home': str(self.tart_home),
+                               'config_sha256': digest(self.tart_home / 'vms' / self.name / 'config.json'),
+                               'ownership_sha256': digest(self.out / 'ownership.json'),
+                               'original_output': str(self.out), 'source': self.result.get('source'),
+                               'profile': self.args.profile, 'brew_version': getattr(self.args, 'brew_version', None),
+                               'guest_failure': self.result.get('guest_failure'),
+                               'evidence_descriptor': self.result.get('evidence_descriptor')}
+                    (self.out / 'recovery.json').write_text(json.dumps(receipt, indent=2) + '\n')
+                    self.result['cleanup'].update(owned_clone_deleted=False, owned_clone_stopped=True,
+                                                 evidence_retained=True, recovery_receipt=str(self.out / 'recovery.json'))
+                    self.result['status'] = 'failed'
+                else:
+                    self.call('tart', 'delete', self.name, timeout=40)
+                    self.result['cleanup']['owned_clone_deleted'] = True
             except Exception as error:
                 self.result['cleanup'] = {'owned_clone_deleted': False, 'detail': str(error), 'remaining_vm': self.name}
                 self.result['status'] = 'failed'
