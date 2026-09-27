@@ -463,6 +463,7 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::management::sqlx;
     use crate::management::tests::{cleanup, fixture_for_issuer};
     use anyhow::Context;
 
