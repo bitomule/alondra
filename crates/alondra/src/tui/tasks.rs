@@ -367,11 +367,6 @@ impl App {
         given.map_or_else(|| t.title.clone(), str::to_string)
     }
 
-    /// A dependency of the task belongs to another request.
-    pub fn waits_elsewhere(&self, t: &ClientTask) -> bool {
-        self.dependencies(t).iter().any(|d| d.request != t.request)
-    }
-
     pub fn task_project(&self, t: &ClientTask) -> Option<String> {
         let named = |p: &String| (!p.is_empty() && p != alondra_core::OTHERS_PROJECT).then(|| p.clone());
         t.options
@@ -688,7 +683,7 @@ impl App {
             return;
         }
         if !finished {
-            self.fail(tr!("Only a done or cancelled task reopens", "Solo se reabre una tarea hecha o descartada"));
+            self.fail(tr!("Only a finished or cancelled task reopens", "Solo se reabre una tarea terminada o descartada"));
             return;
         }
         self.task_action(format!("/v1/tasks/{}/reopen", urlencode(&id)), trf!("Reopened: {title}", "Reabierta: {title}"), Msg::TaskAction);

@@ -351,7 +351,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Archiva todas las tareas hechas o descartadas"
+            "value": "Archiva todas las tareas terminadas o descartadas"
           }
         }
       }
@@ -2001,7 +2001,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reabre una tarea hecha o descartada"
+            "value": "Reabre una tarea terminada o descartada"
           }
         }
       }
@@ -2301,7 +2301,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
+            "value": "Queda como terminada, sin tareas, y el orquestador ya no puede definirla."
           }
         }
       }

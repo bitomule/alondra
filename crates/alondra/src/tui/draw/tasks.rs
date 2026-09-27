@@ -67,14 +67,9 @@ fn titled(bar: &Span<'static>, lead: Vec<Span<'static>>, title: &str, style: Sty
 }
 
 /// The state and age a task's row ends with.
-fn state_and_age(app: &App, t: &ClientTask) -> Vec<Span<'static>> {
+fn state_and_age(t: &ClientTask) -> Vec<Span<'static>> {
     let (_, color) = task_glyph(t);
-    let state = match t.state {
-        TaskState::WaitingDependency if app.waits_elsewhere(t) => tr!("waiting ↗", "en espera ↗").to_string(),
-        TaskState::WaitingDependency => tr!("waiting", "en espera").to_string(),
-        s => i18n::task_state(s).to_string(),
-    };
-    vec![Span::styled(state, Style::new().fg(color)), Span::styled(format!("{:>5}", ago(t.state_since)), Style::new().fg(DIM))]
+    vec![Span::styled(i18n::task_state(t.state), Style::new().fg(color)), Span::styled(format!("{:>5}", ago(t.state_since)), Style::new().fg(DIM))]
 }
 
 fn title_style(t: &ClientTask) -> Style {
@@ -144,7 +139,7 @@ fn list_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Option<(usize, us
                 let Some(t) = app.task(&id) else { continue };
                 let (glyph, color) = list_glyph(t);
                 let lead = vec![Span::raw("  "), Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
-                let right = state_and_age(app, t);
+                let right = state_and_age(t);
                 lines.extend(titled(&bar, lead, &app.single_title(t), title_style(t), "  ", right, width));
                 if t.archived_at.is_none() && let Some(now) = app.task_now(t) {
                     lines.push(fit(vec![bar.clone(), Span::raw("  "), Span::styled(md::one_line(&now), Style::new().fg(SOFT))], width));
@@ -161,7 +156,7 @@ fn list_lines(app: &App, width: usize) -> (Vec<Line<'static>>, Option<(usize, us
                 let (glyph, color) = list_glyph(t);
                 let lead = vec![Span::styled(tree_lead(&row), Style::new().fg(DIM)), Span::styled(format!("{glyph} "), Style::new().fg(color).bold())];
                 let under = tree_under(&row);
-                lines.extend(titled(&bar, lead, &t.title, title_style(t), &under, state_and_age(app, t), width));
+                lines.extend(titled(&bar, lead, &t.title, title_style(t), &under, state_and_age(t), width));
                 if t.archived_at.is_none() && let Some(now) = app.task_now(t) {
                     lines.push(fit(vec![bar.clone(), Span::styled(under, Style::new().fg(DIM)), Span::styled(md::one_line(&now), Style::new().fg(SOFT))], width));
                 }
@@ -563,8 +558,8 @@ mod tests {
             "◆ App",
             "⇄ Editor covers readable text",
             "└◌ Album and Siri",
-            "en espera",
-            "en revisión",
+            "en marcha",
+            "te espera",
             "PR #150 · listo para fusionar",
             "◇ Preparando petición",
             "definiendo",
@@ -584,7 +579,7 @@ mod tests {
         board(&mut app);
         press(&mut app, "f");
         let s = screen(&mut app, 130, 33);
-        for text in ["libre", "ocupado", "⇄ Editor covers readable text · en revisión", "◌ Album and Siri · esperando a otra", "Measure on the iPhone · en marcha"] {
+        for text in ["libre", "ocupado", "⇄ Editor covers readable text · te espera", "◌ Album and Siri · en marcha", "Measure on the iPhone · en marcha"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
         press(&mut app, "j");
@@ -879,7 +874,7 @@ mod tests {
         mockup(&mut app);
         code(&mut app, KeyCode::Tab);
         let s = screen(&mut app, 100, 30);
-        for text in ["│ EN CURSO", "╭ ● Tarea ", "◆ Alondra", "◆ Redraft", "Alondra: rehacer la vista", "para que se lea bien", "└◌ Redraft: beta 4.5.0 (192)", "en espera", "▸ Terminadas · 3", "Programadas [s]"] {
+        for text in ["│ EN CURSO", "╭ ● Tarea ", "◆ Alondra", "◆ Redraft", "Alondra: rehacer la vista", "para que se lea bien", "└◌ Redraft: beta 4.5.0 (192)", "en marcha", "▸ Terminadas · 3", "Programadas [s]"] {
             assert!(s.contains(text), "{text}:\n{s}");
         }
         let list: String = s.lines().map(|l| l.chars().take(60).collect::<String>()).collect::<Vec<_>>().join("\n");
@@ -984,18 +979,14 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_task_shows_its_elbow_and_waits_with_an_arrow_when_its_dependency_is_in_another_request() {
+    fn a_waiting_task_shows_its_elbow_and_reads_as_running_with_what_it_waits_for_in_its_detail() {
         let (mut app, _rx) = app_with(vec![]);
         set_for_this_thread(Lang::Es);
         mockup(&mut app);
         code(&mut app, KeyCode::Tab);
         let list = list_of(&screen(&mut app, 130, 33));
-        assert!(list.contains("└◌ Redraft: beta 4.5.0") && list.contains("en espera  10m"), "{list}");
-        assert!(!list.contains("tras «") && !list.contains("esperando a otra"), "{list}");
-        app.data.tasks.iter_mut().find(|t| t.id == "t-44137").unwrap().task.request = "r-view".into();
-        app.data.requests.iter_mut().find(|r| r.id == "r-view").unwrap().tasks.push("t-44137".into());
-        let list = list_of(&screen(&mut app, 130, 33));
-        assert!(list.contains("en espera ↗"), "{list}");
+        assert!(list.contains("└◌ Redraft: beta 4.5.0") && list.contains("en marcha  10m"), "{list}");
+        assert!(!list.contains("tras «") && !list.contains("esperando a otra") && !list.contains("en espera"), "{list}");
         let at = app.task_keys().iter().position(|k| *k == TaskKey::Task("t-44137".into())).expect("the waiting task");
         app.move_tasks(at as isize);
         assert!(screen(&mut app, 130, 33).contains("depende de ● Redraft: sacar las llamadas"), "the detail names what it waits for");
@@ -1039,6 +1030,29 @@ mod tests {
         let s = screen(&mut app, 130, 40);
         assert!(s.contains("PR handling review each one"), "{s}");
         assert!(!s.contains("review PR") && !s.contains("auto-merge no"), "one setting, one row:\n{s}");
+    }
+
+    #[test]
+    fn a_task_with_its_pr_merged_and_its_final_report_reads_as_finished_under_finished() {
+        let (mut app, _rx) = app_with(vec![]);
+        set_for_this_thread(Lang::Es);
+        mockup(&mut app);
+        let now = now_millis();
+        app.data.requests.push(serde_json::from_value(json!({"id": "r-waitlist", "created_at": now - 30 * 60_000, "state": "done", "tasks": ["t-56786"]})).unwrap());
+        app.data.tasks.push(
+            serde_json::from_value(json!({
+                "id": "t-56786", "request": "r-waitlist", "title": "Alondra web: waitlist en el servidor", "state": "done",
+                "state_since": now - 60_000, "created_at": now - 30 * 60_000, "recorded": true, "prs": [114], "final_report": 274,
+                "options": {"project": "alondra"}
+            }))
+            .unwrap(),
+        );
+        app.reconcile();
+        open_finished(&mut app);
+        let list = list_of(&screen(&mut app, 130, 33));
+        let row = list.lines().find(|l| l.contains("waitlist en el servidor")).unwrap_or_else(|| panic!("the finished task:\n{list}"));
+        assert!(row.contains("terminada"), "{row}");
+        assert!(["hecha", "cerrando", "en revisión"].iter().all(|w| !list.contains(w)), "{list}");
     }
 
 }
