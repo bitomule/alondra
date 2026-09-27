@@ -720,6 +720,9 @@ impl Service {
             });
         }
         let method = approved_method(request)?;
+        if method == Method::POST && crate::http::prepared_service_path(&request.path) {
+            return self.dispatch_prepared(sender, request, &crate::prs::GhCli, &crate::http::LiveReviewHead).await;
+        }
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
         if let Some(body) = &request.body {
@@ -739,6 +742,19 @@ impl Service {
             serde_json::from_slice::<Value>(&bytes)
                 .unwrap_or_else(|_| json!({"text":String::from_utf8_lossy(&bytes)}))
         };
+        Ok(json!({"status":status,"body":body}))
+    }
+
+    async fn dispatch_prepared(&self, sender: &str, request: &LocalRequest,
+        gh: &impl crate::prs::Gh, reader: &impl crate::http::ReviewHead) -> Result<Value> {
+        let hub = self.hub.as_ref().context("prepared operation requires local hub")?;
+        let device = self.devices.get(sender).context("unapproved device")?;
+        let response = crate::http::prepared_service_request_with(hub.clone(), &request.path,
+            request.body.clone().context("prepared operation body required")?, gh, reader,
+            || self.require_device_approval(sender, device)).await;
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
+        let body: Value = serde_json::from_slice(&bytes)?;
         Ok(json!({"status":status,"body":body}))
     }
 
@@ -1555,6 +1571,86 @@ agreement_key = "{}"
         assert_eq!(bytes[0], bytes[1], "completed retransmission uses identical encrypted bytes");
         drop(bytes); relay_task.abort(); drop(service); drop(hub);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    struct PausedPreparation {
+        resume: tokio::sync::Notify,
+        entered: std::sync::atomic::AtomicBool,
+    }
+    impl PausedPreparation {
+        async fn wait(&self) {
+            self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.resume.notified().await;
+        }
+    }
+    impl crate::prs::Gh for PausedPreparation {
+        async fn edit_base(&self, _: &str, _: &str) -> std::result::Result<(), String> { unreachable!() }
+        async fn view(&self, _: &str) -> Option<Value> { unreachable!() }
+        async fn exists(&self, _: &str) -> bool { unreachable!() }
+        async fn issue_view(&self, _: &str, _: u64) -> std::result::Result<Value, String> {
+            self.wait().await;
+            Ok(json!({"title":"Issue", "body":"Public fixture", "state":"OPEN"}))
+        }
+    }
+    impl crate::http::ReviewHead for PausedPreparation {
+        async fn read(&self, _: &str) -> std::result::Result<(String, bool), axum::response::Response> {
+            self.wait().await;
+            Ok(("a".repeat(40), true))
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_actions_recheck_local_and_enrollment_revocation_before_commit() {
+        use alondra_core::{Event, HookEvent};
+        for route in ["/v1/requests", "/v1/prs/1/changes", "/v1/prs/1/ask"] {
+            for revoke in ["none", "approval", "enrollment"] {
+                let (mut service, _) = push_fixture(); activate_push(&service);
+                let home = service.home.clone();
+                let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("David".into()));
+                let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+                hub.append(Event::Hook(HookEvent { session_id:"s".into(),event:"UserPromptSubmit".into(),..Default::default() })).unwrap();
+                hub.append(Event::MarkedOrchestrator { session_id:"s".into() }).unwrap();
+                hub.append(Event::PrOpened { url:"https://github.com/example/fixture/pull/1".into(),session_id:"s".into(),task:None }).unwrap();
+                let mut pr = hub.read(|v| v.prs[&1].clone());
+                pr.head_sha = Some("a".repeat(40));
+                hub.append(Event::PrUpdated(pr)).unwrap();
+                service = service.with_hub(hub.clone());
+                let body = if route == "/v1/requests" { json!({"text":"Read issue", "issue":"example/fixture#1"}) }
+                    else { json!({"text":"Review this", "expected_head_sha":"a".repeat(40)}) };
+                let request = LocalRequest { method:"POST".into(), path:route.into(), body:Some(body) };
+                assert!(crate::http::prepared_service_path(route));
+                assert!(!service.atomic_local(&request), "preserve conservative external receipt recovery");
+                service.require_device_approval("phone-1", &service.devices["phone-1"]).unwrap();
+                service.journal.accept("phone-1", "prepared", &[4;32]).unwrap();
+                service.journal.executing("phone-1", "prepared", &[4;32]).unwrap();
+                let seq = hub.read(|v| v.seq);
+                let preparation = PausedPreparation { resume:tokio::sync::Notify::new(), entered:std::sync::atomic::AtomicBool::new(false) };
+                let mut pending = Box::pin(service.dispatch_prepared("phone-1", &request, &preparation, &preparation));
+                let waker = std::task::Waker::noop();
+                assert!(std::future::Future::poll(pending.as_mut(), &mut std::task::Context::from_waker(waker)).is_pending());
+                assert!(preparation.entered.load(std::sync::atomic::Ordering::SeqCst), "must actually reach external preparation: {route}");
+                assert_eq!(hub.read(|v| v.seq), seq);
+                match revoke {
+                    "approval" => { Auth::open(&home).unwrap().revoke("phone-1").unwrap(); },
+                    "enrollment" => service.journal.revoke_enrollment("phone-1").unwrap(),
+                    _ => (),
+                }
+                preparation.resume.notify_one();
+                let result = tokio::time::timeout(Duration::from_secs(2), pending).await.unwrap().unwrap();
+                if revoke == "none" {
+                    assert_eq!(result["status"], 200, "{route}: {result}");
+                    assert_eq!(hub.read(|v| v.messages.len()), 1);
+                    assert!(hub.read(|v| v.seq) > seq);
+                } else {
+                    assert_eq!(result["status"], 403, "{route} {revoke}: {result}");
+                    assert_eq!(hub.read(|v| v.seq), seq, "revoked preparation must append nothing");
+                    assert_eq!(hub.read(|v| v.messages.len()), 0);
+                }
+                // No automatic retry after interruption, with or without final commit.
+                assert!(matches!(service.journal.accept("phone-1", "prepared", &[4;32]).unwrap(), Disposition::Executing));
+                drop(service); drop(hub); std::fs::remove_dir_all(home).unwrap();
+            }
+        }
     }
 
     #[tokio::test]
