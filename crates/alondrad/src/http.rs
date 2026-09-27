@@ -776,22 +776,8 @@ impl Drop for HoldGuard {
     fn drop(&mut self) {
         self.hub.drop_hold(self.id);
         if !self.completed {
-            let id = self.id;
-            let attempt = self.hub.read(|v| v.delivery_attempts.values().find(|a|
-                a.channel == alondra_core::delivery::Channel::HookDecision
-                && a.state == alondra_core::delivery::State::Dispatching
-                && a.message_ids.iter().any(|mid| v.messages.get(mid).is_some_and(|m| m.answers_question == Some(id))))
-                .map(|a| a.id));
-            if let Some(attempt) = attempt {
-                if let Err(e) = crate::delivery::finish(&self.hub, attempt, crate::delivery::Outcome::Uncertain("hook_waiter_gone")) {
-                    log!("could not persist interrupted hook #{id}: {e}");
-                }
-                return;
-            }
-            if let Err(e) = self.hub.append_with(|v| v.questions.get(&id)
-                .filter(|q| matches!(q.status, QuestionStatus::Open | QuestionStatus::Answered))
-                .map(|_| Event::QuestionClosed { id, status: QuestionStatus::Orphaned, note: None })) {
-                log!("could not orphan disconnected hook question #{id}: {e}");
+            if let Err(e) = crate::delivery::cancel_held_question(&self.hub, self.id, "hook_waiter_gone") {
+                log!("could not finalize disconnected hook question #{}: {e}", self.id);
             }
         }
     }
@@ -2917,14 +2903,19 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     if local_keep { return Json(json!({"id": id, "kept": true})).into_response(); }
     if local_discard { return close_discarding(&hub, &q.session_id, &ClaudeAgents).await; }
     if let Some(attempt) = events.iter().find_map(|(_, e)| match e { Event::DeliveryAttemptRecorded(a) => Some(a.id), _ => None }) {
-        if !hub.release_hold(id, hook_answer, attempt) {
-            if let Err(e) = crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("hook_receiver_gone")) { return internal(e); }
-            return Json(json!({"id": id, "delivery_state": "uncertain", "delivery_attempt": attempt})).into_response();
-        }
-        return Json(json!({"id": id, "delivery_state": "dispatching", "delivery_attempt": attempt})).into_response();
+        return handoff_held_answer(&hub, id, hook_answer, attempt);
     }
     Json(json!({"id": id, "delivered": "inbox"})).into_response()
 
+}
+
+fn handoff_held_answer(hub: &Hub, id: u64, answer: Answer, attempt: u64) -> Response {
+    if !hub.release_hold(id, answer, attempt) {
+        if let Err(e) = crate::delivery::cancel_held_question(hub, id, "hook_receiver_gone") { return internal(e); }
+        let state = hub.read(|v| v.delivery_attempts.get(&attempt).map(|a| a.state));
+        return Json(json!({"id": id, "delivery_state": state, "delivery_attempt": attempt})).into_response();
+    }
+    Json(json!({"id": id, "delivery_state": "dispatching", "delivery_attempt": attempt})).into_response()
 }
 
 /// What the node reads when the user resolves a "your turn" card.
@@ -5168,6 +5159,91 @@ mod tests {
         assert_eq!(reopened.read(|v| v.delivery_attempts[&attempt].state), alondra_core::delivery::State::Uncertain);
         assert!(crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
         assert!(reopened.read(|v| v.messages.values().any(|m| m.answers_question.is_none() && m.text == "Use the staging environment")));
+    }
+
+    async fn committed_held_denial(tag: &str) -> (Arc<Hub>, u64, Answer, u64) {
+        let hub = started(tag, &["s"]);
+        let hook = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), ..Default::default() };
+        let (id, receiver) = hub.register_question_hold(|v| held_question(v, &json!({"tool_name":"Bash"}), &hook, QuestionOrigin::Permission)).unwrap();
+        let response = answer(State(hub.clone()), None, Path(id), Json(AnswerBody {
+            text: "Use staging instead".into(), option: Some(answer_option::DENY.into()), by: None, attachments: vec![],
+        })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let (decision, attempt) = receiver.await.unwrap();
+        assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), alondra_core::delivery::State::Dispatching);
+        (hub, id, decision, attempt)
+    }
+
+    #[tokio::test]
+    async fn answer_durable_cancellation_order_is_idempotent_after_commit() {
+        for waiter_first in [true, false] {
+            // The durable boundary has committed and no hook ACK exists. Both
+            // cancellation observers below run in the exact reviewed orders.
+            let (hub, id, decision, attempt) = committed_held_denial("answer-cancel-order").await;
+            let guard = HoldGuard { hub: hub.clone(), id, completed: false };
+            if waiter_first {
+                drop(guard);
+                let seq = hub.read(|v| v.seq);
+                let response = handoff_held_answer(&hub, id, decision, attempt);
+                assert_eq!(response.status(), StatusCode::OK, "committed cancellation is not HTTP 500");
+                assert_eq!(hub.read(|v| v.seq), seq, "second observer must not append another finalization");
+            } else {
+                let response = handoff_held_answer(&hub, id, decision, attempt);
+                assert_eq!(response.status(), StatusCode::OK);
+                let seq = hub.read(|v| v.seq);
+                drop(guard);
+                assert_eq!(hub.read(|v| v.seq), seq, "waiter must not orphan an answer with durable intent");
+            }
+            hub.read(|v| {
+                assert_eq!(v.questions[&id].status, QuestionStatus::Answered);
+                assert_eq!(v.delivery_attempts[&attempt].state, alondra_core::delivery::State::Uncertain);
+                assert_eq!(v.delivery_attempts[&attempt].version, 2);
+                assert!(v.delivery_blocked("s"));
+                assert!(v.messages.values().all(|m| m.handed_at.is_none()));
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_durable_ack_keeps_followup_independent_across_restart() {
+        let (hub, id, _, attempt) = committed_held_denial("answer-followup-ack").await;
+        crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Handed).unwrap();
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        assert_eq!(reopened.read(|v| v.questions[&id].status), QuestionStatus::Delivered);
+        let followup = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
+        reopened.read(|v| {
+            assert_eq!(followup.message_ids.len(), 1, "ACKed decision fallback must not replay");
+            let message = &v.messages[&followup.message_ids[0]];
+            assert_eq!(message.answers_question, None);
+            assert_eq!(message.text, "Use staging instead");
+        });
+        crate::delivery::finish(&reopened, followup.id, crate::delivery::Outcome::Handed).unwrap();
+        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn answer_durable_missing_ack_explicit_resolution_controls_fallback() {
+        for retry in [true, false] {
+            let (hub, id, _, attempt) = committed_held_denial("answer-followup-resolution").await;
+            crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("hook_ack_missing")).unwrap();
+            assert!(crate::delivery::claim(&hub, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+            let version = hub.read(|v| v.delivery_attempts[&attempt].version);
+            let result = crate::delivery::resolve(&hub, None, attempt, retry, crate::delivery::Resolution {
+                expected_version: version, terminal_checked: true, confirm_duplicate_risk: retry,
+            }).unwrap();
+            assert_eq!(result["status"], 200);
+            // A late waiter cancellation cannot undo the user's recorded choice.
+            crate::delivery::cancel_held_question(&hub, id, "late_waiter").unwrap();
+            assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), if retry { alondra_core::delivery::State::Retryable } else { alondra_core::delivery::State::Discarded });
+            let reopened = Hub::open(hub.config.clone(), false).unwrap();
+            let next = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
+            assert_eq!(next.message_ids.len(), if retry { 2 } else { 1 });
+            assert_eq!(reopened.read(|v| next.message_ids.iter().filter(|mid| v.messages.get(*mid).is_some_and(|m| m.answers_question == Some(id))).count()), usize::from(retry));
+            crate::delivery::finish(&reopened, next.id, crate::delivery::Outcome::Handed).unwrap();
+            let restarted = Hub::open(hub.config.clone(), false).unwrap();
+            assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+        }
     }
 
     /// Report #136 (the day-one audit) and a question about it, 24 Sep: two cards for one decision.
