@@ -190,10 +190,10 @@ fn cli_recovery_against_restored_service() -> Result<()> {
     )?;
     let (old_identity, old_key) = load_or_create_keys(&home)?;
     assert_eq!(old["old_mac"], old_identity.mac_id);
-    assert!(
-        register_at(&old_identity, &old_key, &fixture.token, relay).is_err(),
-        "quarantined identity must not re-enroll"
-    );
+    let rejected = register_at(&old_identity, &old_key, &fixture.token, relay)
+        .expect_err("quarantined identity must not re-enroll");
+    assert!(rejected.to_string().contains("explicit recovery is required"),
+        "old identity must receive enrollment conflict, not an unrelated auth or network error");
     let before = macs(&fixture)?;
     let mut output = Vec::new();
     let outcome = interactive_with(
@@ -240,7 +240,10 @@ fn cli_recovery_against_restored_service() -> Result<()> {
         )?,
         409
     );
-    assert!(register_at(&old_identity, &old_key, &fixture.token, relay).is_err());
+    let rejected = register_at(&old_identity, &old_key, &fixture.token, relay)
+        .expect_err("old identity must remain quarantined after fresh enrollment");
+    assert!(rejected.to_string().contains("explicit recovery is required"),
+        "old identity must receive enrollment conflict, not an unrelated auth or network error");
     let approvals: Vec<Value> =
         serde_json::from_str(&fs::read_to_string(home.join("devices.json"))?)?;
     assert_eq!(approvals.len(), 1);
