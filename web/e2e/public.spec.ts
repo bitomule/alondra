@@ -65,15 +65,15 @@ test('the privacy copy says what is encrypted and what the service sees, and pro
 test('public and private pages never load each other’s styles, even after client navigation', async ({ page }) => {
  const sheets = () => page.locator('link[rel="stylesheet"]').evaluateAll(links => links.map(link => (link as HTMLLinkElement).href));
  await page.goto('/');
- expect((await sheets()).some(href => href.includes('public-layout'))).toBe(true);
+ expect((await sheets()).some(href => /\/(?:public|public-layout)-[^/]+\.css$/.test(href))).toBe(true);
  expect((await sheets()).some(href => href.includes('private-layout'))).toBe(false);
  await page.goto('/login-error');
  expect((await sheets()).some(href => href.includes('private-layout'))).toBe(true);
- expect((await sheets()).some(href => href.includes('public-layout'))).toBe(false);
+ expect((await sheets()).some(href => /\/(?:public|public-layout)-[^/]+\.css$/.test(href))).toBe(false);
  await page.getByRole('link', { name: 'Privacidad' }).first().click();
  await expect(page.getByRole('heading', { name: 'Qué conoce el servicio' })).toBeVisible();
  await expect.poll(async () => (await sheets()).some(href => href.includes('private-layout'))).toBe(false);
- expect((await sheets()).some(href => href.includes('public-layout'))).toBe(true);
+ expect((await sheets()).some(href => /\/(?:public|public-layout)-[^/]+\.css$/.test(href))).toBe(true);
 });
 
 test('the build only ships asset types the relay serves', () => {
