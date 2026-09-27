@@ -789,11 +789,6 @@ impl Auth {
     }
 
     #[cfg(test)]
-    pub fn is_mac_registered(&self, mac_id: &str) -> bool {
-        self.devices.lock().unwrap().macs.contains_key(mac_id)
-    }
-
-    #[cfg(test)]
     pub fn is_phone_registered(&self, device_id: &str) -> bool {
         self.devices.lock().unwrap().devices.contains_key(device_id)
     }
