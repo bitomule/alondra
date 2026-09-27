@@ -32,9 +32,17 @@ pub fn routes() -> Router<Arc<Hub>> {
 }
 async fn document_content(
     State(hub): State<Arc<Hub>>,
+    signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    document_content_inner(hub, id, query).await
+}
+
+async fn document_content_inner(hub: Arc<Hub>, id: String, query: Option<String>) -> Response {
     let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
@@ -101,7 +109,18 @@ pub(crate) fn document_content_query(query: &str) -> Option<(u64, Option<String>
     }
     Some((offset, version))
 }
-async fn task_actions(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Response {
+async fn task_actions(
+    State(hub): State<Arc<Hub>>,
+    signed: Option<Extension<Signed>>,
+    Path(id): Path<String>,
+) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    task_actions_inner(hub, id)
+}
+
+fn task_actions_inner(hub: Arc<Hub>, id: String) -> Response {
     let state = match hub.domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -117,7 +136,18 @@ async fn task_actions(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Re
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RELAY_DIFF_RESPONSE: usize = 120 * 1024;
 
-async fn pull_request_diff(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Response {
+async fn pull_request_diff(
+    State(hub): State<Arc<Hub>>,
+    signed: Option<Extension<Signed>>,
+    Path(id): Path<String>,
+) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    pull_request_diff_inner(hub, id).await
+}
+
+async fn pull_request_diff_inner(hub: Arc<Hub>, id: String) -> Response {
     let state = match hub.domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -301,7 +331,18 @@ pub(crate) fn changes_query(query: &str) -> Option<(String, Revision, u64)> {
     }
     Some((epoch?, after?, wait?))
 }
-async fn changes(State(hub): State<Arc<Hub>>, RawQuery(query): RawQuery) -> Response {
+async fn changes(
+    State(hub): State<Arc<Hub>>,
+    signed: Option<Extension<Signed>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    changes_inner(hub, query).await
+}
+
+async fn changes_inner(hub: Arc<Hub>, query: Option<String>) -> Response {
     let Some((epoch, after, wait)) = query.as_deref().and_then(changes_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
@@ -324,13 +365,27 @@ async fn changes(State(hub): State<Arc<Hub>>, RawQuery(query): RawQuery) -> Resp
     Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,"revision":state.revision,
         "changed":state.data_epoch.0 != epoch || state.revision != after})).into_response()
 }
-async fn capabilities(State(hub): State<Arc<Hub>>) -> Response {
+async fn capabilities(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    capabilities_inner(hub)
+}
+
+fn capabilities_inner(hub: Arc<Hub>) -> Response {
     match hub.domain.state() {
         Ok(state) => Json(json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision})).into_response(),
         Err(_) => storage_error(),
     }
 }
-async fn projection(State(hub): State<Arc<Hub>>) -> Response {
+async fn projection(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
+    if signed.is_none() {
+        return unsigned_read();
+    }
+    projection_inner(hub)
+}
+
+fn projection_inner(hub: Arc<Hub>) -> Response {
     match hub.domain.snapshot(crate::service_overview::MAX_BYTES) {
         Ok(bytes) => (
             [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -345,6 +400,42 @@ async fn projection(State(hub): State<Arc<Hub>>) -> Response {
         }
         Err(_) => storage_error(),
     }
+}
+
+/// Encrypted reads enter through a verified, still-approved device proof. They
+/// never round-trip over the unsigned loopback HTTP listener.
+pub(crate) async fn encrypted_read(
+    hub: Arc<Hub>,
+    approved: &crate::service::ApprovedDevice<'_>,
+    path: &str,
+) -> anyhow::Result<Response> {
+    approved.recheck()?;
+    let response = if path == "/v2/domain" {
+        projection_inner(hub)
+    } else if path == "/v2/domain/capabilities" {
+        capabilities_inner(hub)
+    } else if let Some(query) = path.strip_prefix("/v2/domain/changes?") {
+        changes_inner(hub, Some(query.to_owned())).await
+    } else if let Some(id) = path
+        .strip_prefix("/v2/domain/pull-requests/")
+        .and_then(|suffix| suffix.strip_suffix("/diff"))
+    {
+        pull_request_diff_inner(hub, id.to_owned()).await
+    } else if let Some(id) = path
+        .strip_prefix("/v2/domain/tasks/")
+        .and_then(|suffix| suffix.strip_suffix("/actions"))
+    {
+        task_actions_inner(hub, id.to_owned())
+    } else if let Some((id, query)) = path
+        .strip_prefix("/v2/domain/document-revisions/")
+        .and_then(|suffix| suffix.split_once("/content?"))
+    {
+        document_content_inner(hub, id.to_owned(), Some(query.to_owned())).await
+    } else {
+        anyhow::bail!("unapproved encrypted domain read path")
+    };
+    approved.recheck()?;
+    Ok(response)
 }
 async fn command(
     State(hub): State<Arc<Hub>>,
@@ -449,6 +540,9 @@ fn status_for(error: &DomainError) -> StatusCode {
 }
 fn domain_error(error: DomainError) -> Response {
     (status_for(&error), Json(error)).into_response()
+}
+fn unsigned_read() -> Response {
+    domain_error(DomainError::new("forbidden", "signed user device required"))
 }
 fn storage_error() -> Response {
     (
@@ -630,6 +724,25 @@ mod tests {
             )
             .body(body)
     }
+    fn signed_get(
+        client: &reqwest::Client,
+        base: &str,
+        key: &SigningKey,
+        device_id: &str,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
+        let timestamp = alondra_core::now_millis();
+        let message = crate::auth::signed_message("GET", path, &timestamp.to_string(), b"");
+        let signature: Signature = key.sign(message.as_bytes());
+        client
+            .get(format!("{base}{path}"))
+            .header("x-alondra-device", device_id)
+            .header("x-alondra-timestamp", timestamp.to_string())
+            .header(
+                "x-alondra-signature",
+                STANDARD.encode(signature.to_der().as_bytes()),
+            )
+    }
     #[tokio::test]
     async fn http_and_encrypted_dispatch_share_receipts_and_read_semantics() {
         let (home, hub) = fixture();
@@ -707,15 +820,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
-        assert!(
-            hub.domain
-                .store
-                .lock()
-                .unwrap()
-                .pending_messages()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(hub.domain.store.lock().unwrap().pending_messages().unwrap().is_empty());
         assert!(
             hub.domain
                 .store
@@ -725,8 +830,8 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let projection: DomainProjection = client
-            .get(format!("{base}/v2/domain"))
+        assert_eq!(client.get(format!("{base}/v2/domain")).send().await.unwrap().status(), reqwest::StatusCode::FORBIDDEN);
+        let projection: DomainProjection = signed_get(&client, &base, &key, &device_id, "/v2/domain")
             .send()
             .await
             .unwrap()
@@ -829,7 +934,10 @@ mod tests {
                         document_id: "doc-a".into(),
                         title: "Design".into(),
                         revision_id: "rev-a".into(),
-                        content_digest: format!("{:x}", Sha256::digest(data)),
+                        content_digest: Sha256::digest(data)
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect(),
                         content_reference: "files/design.md".into(),
                         role: "result".into(),
                     },
@@ -838,10 +946,19 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
-        let (base, server, _, _) = server(hub.clone()).await;
+        let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
-        let actions: Value = client
-            .get(format!("{base}/v2/domain/tasks/task-a/actions"))
+        let actions_path = "/v2/domain/tasks/task-a/actions";
+        assert_eq!(
+            client
+                .get(format!("{base}{actions_path}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let actions: Value = signed_get(&client, &base, &key, &device_id, actions_path)
             .send()
             .await
             .unwrap()
@@ -850,10 +967,17 @@ mod tests {
             .unwrap();
         assert_eq!(actions["protocol_version"], 2);
         assert_eq!(actions["actions"].as_array().unwrap().len(), 3);
-        let chunk: Value = client
-            .get(format!(
-                "{base}/v2/domain/document-revisions/rev-a/content?offset=0"
-            ))
+        let chunk_path = "/v2/domain/document-revisions/rev-a/content?offset=0";
+        assert_eq!(
+            client
+                .get(format!("{base}{chunk_path}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let chunk: Value = signed_get(&client, &base, &key, &device_id, chunk_path)
             .send()
             .await
             .unwrap()
@@ -863,7 +987,10 @@ mod tests {
         assert_eq!(chunk["revision_id"], "rev-a");
         assert_eq!(
             chunk["content_digest"],
-            format!("{:x}", Sha256::digest(data))
+            Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         );
         assert_eq!(
             URL_SAFE_NO_PAD

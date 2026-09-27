@@ -9,7 +9,6 @@ mod classify;
 mod http;
 mod hook_socket;
 mod delivery;
-mod domain_store;
 mod issues;
 mod keeper;
 mod managed_orchestrator;

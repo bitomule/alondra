@@ -131,6 +131,19 @@ pub struct Service {
     hub: Option<Arc<crate::hub::Hub>>,
 }
 
+/// A verified encrypted sender with persisted approval and enrollment.
+/// Only Service can construct it; readers recheck after asynchronous work.
+pub(crate) struct ApprovedDevice<'a> {
+    service: &'a Service,
+    sender: &'a str,
+    device: &'a Device,
+}
+impl ApprovedDevice<'_> {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self.service.require_device_approval(self.sender, self.device)
+    }
+}
+
 #[derive(Deserialize)]
 struct Work {
     request_id: String,
@@ -789,6 +802,18 @@ impl Service {
         if matches!(request.path.split('?').next(), Some("/v1/changes" | "/v2/domain/changes")) && approved_method(request).is_err() {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
         }
+        if request.method == "GET" && request.path.starts_with("/v2/domain/") && request.body.is_none() {
+            approved_method(request)?;
+            let hub = self.hub.clone().context("domain read requires local hub")?;
+            let device = self.devices.get(sender).context("unapproved device")?;
+            let approved = self.approved_device(sender, device)?;
+            let response = crate::domain_api::encrypted_read(hub, &approved, &request.path).await?;
+            let status = response.status().as_u16();
+            let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
+            approved.recheck()?;
+            let body: Value = serde_json::from_slice(&bytes)?;
+            return Ok(json!({"status":status,"body":body}));
+        }
         if request.method == "POST" && request.path == "/v1/service/push-binding" {
             let (binding, quiet, revision) = parse_push_preferences(request)?;
             match self.journal.set_versioned_push_preferences(sender, &binding, quiet, revision)? {
@@ -893,6 +918,10 @@ impl Service {
             bail!("device is not actively enrolled and locally approved");
         }
         Ok(())
+    }
+    fn approved_device<'a>(&'a self, id: &'a str, device: &'a Device) -> Result<ApprovedDevice<'a>> {
+        self.require_device_approval(id, device)?;
+        Ok(ApprovedDevice { service: self, sender: id, device })
     }
 
     async fn send_device_push(&self, id: &str, device: &Device, binding: &str, payload: &Value,
