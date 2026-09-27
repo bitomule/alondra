@@ -81,7 +81,7 @@ impl Snapshots {
             Err(_) => return error(500,"snapshot_capture_failed"),
         };
         if authorize().is_err() { return error(403,"snapshot_access_denied"); }
-        let hash = format!("{:x}",Sha256::digest(&data));
+        let hash = Sha256::digest(&data).iter().map(|b|format!("{b:02x}")).collect::<String>();
         let mut slots = self.0.lock().expect("overview snapshots lock poisoned");
         let Some(entry) = slots.get_mut(&id) else { return error(404,"snapshot_missing"); };
         if entry.revoked { return error(403,"snapshot_access_denied"); }
@@ -95,10 +95,10 @@ impl Snapshots {
         let mut slots = self.0.lock().expect("overview snapshots lock poisoned");
         let Some(entry) = slots.get(id) else { return error(404,"snapshot_missing"); };
         if entry.revoked || entry.owner != owner || entry.binding != binding { return error(404,"snapshot_missing"); }
+        if entry.data.is_none() { return error(429,"snapshot_busy"); }
         if entry.created.elapsed() >= TTL {
             slots.remove(id); return error(410,"snapshot_expired");
         }
-        if entry.data.is_none() { return error(429,"snapshot_busy"); }
         chunk(id,entry,offset)
     }
 
@@ -136,7 +136,7 @@ mod tests {
             assert_eq!(value["body"]["sha256"],first["body"]["sha256"]);
             actual.extend(URL_SAFE_NO_PAD.decode(value["body"]["data"].as_str().unwrap()).unwrap());
         }
-        assert_eq!(actual,data); assert_eq!(first["body"]["sha256"],format!("{:x}",Sha256::digest(&actual)));
+        assert_eq!(actual,data); assert_eq!(first["body"]["sha256"],Sha256::digest(&actual).iter().map(|b|format!("{b:02x}")).collect::<String>());
         assert_eq!(s.get("b","generation-1",id,0)["status"],404);
         assert_eq!(s.get("a","generation-2",id,0)["status"],404);
         assert_eq!(s.get("a","generation-1",id,1)["status"],422);
@@ -177,6 +177,9 @@ mod tests {
     fn revocation_during_capture_keeps_budget_reserved_until_worker_finishes() {
         let s=Snapshots::default();
         let value=s.begin("a","g", |_| {
+            let id = s.0.lock().unwrap().keys().next().unwrap().clone();
+            s.0.lock().unwrap().get_mut(&id).unwrap().created=Instant::now()-TTL;
+            assert_eq!(s.get("a","g",&id,0)["status"],429,"expired live capture still owns its reservation");
             s.revoke("a");
             assert_eq!(s.0.lock().unwrap().len(),1,"revocation cannot release a still-allocating worker's slot");
             let second=s.begin("a","g2", |_| {

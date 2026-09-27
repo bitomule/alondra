@@ -1633,7 +1633,7 @@ agreement_key = "{}"
             assert_eq!(last,&results[results.len()-2]);assert_eq!(last["body"]["sha256"],first["body"]["sha256"]);
             bytes.extend(URL_SAFE_NO_PAD.decode(last["body"]["data"].as_str().unwrap()).unwrap());
         }
-        assert_eq!(bytes.len(),total);assert_eq!(format!("{:x}",Sha256::digest(&bytes)),first["body"]["sha256"]);
+        assert_eq!(bytes.len(),total);assert_eq!(Sha256::digest(&bytes).iter().map(|b|format!("{b:02x}")).collect::<String>(),first["body"]["sha256"]);
         let document:Value=serde_json::from_slice(&bytes).unwrap();
         assert!(document["reports"].as_array().unwrap().iter().any(|v|v["id"]==7));
         assert!(!document["reports"].as_array().unwrap().iter().any(|v|v["id"]==8),"snapshot must not mix revisions");
