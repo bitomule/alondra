@@ -132,6 +132,9 @@ def retire_stale_socket(state):
         # Receipt is durable before mutation; a failed/interrupted unlink keeps it.
         cli.require(identity(path.lstat()) == identity(before), 'socket changed after audit')
         path.unlink()
+        state_fd = os.open(state, os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(state_fd)
+        finally: os.close(state_fd)
         cli.require(not path.exists() and not path.is_symlink() and state_manifest(state) == hashes,
                     'socket retirement changed durable state')
         metadata['status'] = 'retired'
