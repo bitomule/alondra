@@ -966,16 +966,16 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(before, hub.domain.state().unwrap());
-        assert!(
-            encrypted_command(
-                &hub,
-                "phone-a",
-                Some(&serde_json::to_value(&request).unwrap()),
-                ("phone-a", "revoked", &[4; 32]),
-                || anyhow::bail!("device revoked")
-            )
-            .is_err()
-        );
+        let revoked = encrypted_command(
+            &hub,
+            "phone-a",
+            Some(&serde_json::to_value(&request).unwrap()),
+            ("phone-a", "revoked", &[4; 32]),
+            || anyhow::bail!("device revoked"),
+        )
+        .unwrap();
+        assert_eq!(revoked["status"], 403);
+        assert_eq!(revoked["body"]["code"], "forbidden");
         assert_eq!(before, hub.domain.state().unwrap());
         server.abort();
         let _ = server.await;
