@@ -223,6 +223,9 @@ impl View {
             if a.channel == crate::delivery::Channel::Compact {
                 self.delivery_attempts.values().rev().find(|other| other.session_id == a.session_id && other.channel == a.channel)
                     .is_some_and(|other| other.id == a.id)
+            } else if let Some(question) = a.question_id {
+                self.delivery_attempts.values().rev().find(|other| other.question_id == Some(question))
+                    .is_some_and(|other| other.id == a.id)
             } else {
                 a.message_ids.iter().any(|id| self.message_attempt(*id).is_some_and(|latest| latest.id == a.id))
             })
@@ -242,7 +245,8 @@ impl View {
         let delivery_messages:std::collections::HashSet<u64>=self.delivery_attempts.values()
             .filter(|a| self.delivery_needs_resolution(a)).flat_map(|a|a.message_ids.iter().copied()).collect();
         let delivery_questions: std::collections::HashSet<u64> = delivery_messages.iter()
-            .filter_map(|id| self.messages.get(id).and_then(|m| m.answers_question)).collect();
+            .filter_map(|id| self.messages.get(id).and_then(|m| m.answers_question))
+            .chain(self.delivery_attempts.values().filter(|a| self.delivery_needs_resolution(a)).filter_map(|a| a.question_id)).collect();
         let mut heard: std::collections::HashMap<&str, Millis> = std::collections::HashMap::new();
         let activity = self.questions.values().map(|q| (q.session_id.as_str(), q.asked_at))
             .chain(self.reports.values().map(|r| (r.session_id.as_str(), r.created_at)))
@@ -1295,7 +1299,7 @@ mod tests {
         let mut v=View::default();
         v.messages.insert(12, Message {id:12,session_id:"s".into(),from:MessageFrom::User,text:"answer".into(),
             answers_question:Some(27),created_at:1,handed_at:None,delivered_at:None,attachments:vec![],about:None});
-        v.delivery_attempts.insert(40,crate::delivery::Attempt {id:40,session_id:"s".into(),channel:crate::delivery::Channel::Terminal,
+        v.delivery_attempts.insert(40,crate::delivery::Attempt {id:40,session_id:"s".into(),channel:crate::delivery::Channel::Terminal,question_id:None,
             message_ids:vec![33],state:crate::delivery::State::Handed,version:2,reason:None,created_at:1,updated_at:1,resolved_from_version:None});
         let mut old=serde_json::to_value(&v).unwrap();
         old.as_object_mut().unwrap().remove("message_id_high_water");
