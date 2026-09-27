@@ -36,10 +36,14 @@ async fn document_content(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    document_content_inner(hub, id, query).await
+    let response = document_content_inner(hub.clone(), id, query).await;
+    if !signed_read(&hub, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 async fn document_content_inner(hub: Arc<Hub>, id: String, query: Option<String>) -> Response {
@@ -114,7 +118,7 @@ async fn task_actions(
     signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
 ) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     task_actions_inner(hub, id)
@@ -141,10 +145,14 @@ async fn pull_request_diff(
     signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
 ) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    pull_request_diff_inner(hub, id).await
+    let response = pull_request_diff_inner(hub.clone(), id).await;
+    if !signed_read(&hub, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 async fn pull_request_diff_inner(hub: Arc<Hub>, id: String) -> Response {
@@ -336,10 +344,14 @@ async fn changes(
     signed: Option<Extension<Signed>>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    changes_inner(hub, query).await
+    let response = changes_inner(hub.clone(), query).await;
+    if !signed_read(&hub, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 async fn changes_inner(hub: Arc<Hub>, query: Option<String>) -> Response {
@@ -366,7 +378,7 @@ async fn changes_inner(hub: Arc<Hub>, query: Option<String>) -> Response {
         "changed":state.data_epoch.0 != epoch || state.revision != after})).into_response()
 }
 async fn capabilities(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     capabilities_inner(hub)
@@ -379,7 +391,7 @@ fn capabilities_inner(hub: Arc<Hub>) -> Response {
     }
 }
 async fn projection(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
-    if signed.is_none() {
+    if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     projection_inner(hub)
@@ -477,22 +489,16 @@ async fn command(
                 "this producer must resume with a domain v2 capability",
             ));
         }
-        // Loopback reachability is not human authority: Agent processes run under
-        // the same UID and can omit producer headers. User writes require a
-        // verified device signature even when the TCP peer is local.
-        let Some(Extension(signed)) = signed else {
+        // A same-UID Agent can call local pairing and create its own signing
+        // key. Signed loopback writes must remain closed until a user-presence
+        // enrollment channel exists. Apps use the encrypted service path.
+        let Some(Extension(_signed)) = signed else {
             return domain_error(DomainError::new("forbidden", "signed user device required"));
         };
-        let user_id = format!("device:{}", signed.device_id);
-        hub.domain
-            .execute(&Actor::User { user_id }, &envelope, None, || {
-                let persisted = crate::auth::Auth::open(&hub.home)?;
-                if !persisted.list().iter().any(|device| device.id == signed.device_id
-                    && device.public_key == signed.public_key) {
-                    return Err(DomainError::new("forbidden", "signed device approval was revoked").into());
-                }
-                Ok(())
-            })
+        return domain_error(DomainError::new(
+            "forbidden",
+            "local user presence is required for domain commands",
+        ));
     };
     match result {
         Ok(outcome) => Json(outcome).into_response(),
@@ -526,7 +532,10 @@ pub fn encrypted_command(
         },
         &envelope,
         Some(identity),
-        || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
+        || {
+            authorize()
+                .map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())
+        },
     );
     Ok(match result {
         Ok(outcome) => json!({"status":200,"body":outcome}),
@@ -550,6 +559,16 @@ fn domain_error(error: DomainError) -> Response {
 }
 fn unsigned_read() -> Response {
     domain_error(DomainError::new("forbidden", "signed user device required"))
+}
+fn signed_read(hub: &Hub, signed: &Option<Extension<Signed>>) -> bool {
+    let Some(Extension(signed)) = signed else {
+        return false;
+    };
+    crate::auth::Auth::open(&hub.home).ok().is_some_and(|auth| {
+        auth.list()
+            .iter()
+            .any(|device| device.id == signed.device_id && device.public_key == signed.public_key)
+    })
 }
 fn storage_error() -> Response {
     (
@@ -751,7 +770,7 @@ mod tests {
             )
     }
     #[tokio::test]
-    async fn http_and_encrypted_dispatch_share_receipts_and_read_semantics() {
+    async fn local_user_write_fails_closed_while_encrypted_receipts_and_reads_work() {
         let (home, hub) = fixture();
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
@@ -766,19 +785,9 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(first.status(), reqwest::StatusCode::OK);
-        let outcome: CommandOutcome = first.json().await.unwrap();
-        assert!(outcome.effects.is_empty());
-        let retry: CommandOutcome = signed_post(&client, &base, &key, &device_id, &request)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(outcome, retry);
+        assert_eq!(first.status(), reqwest::StatusCode::FORBIDDEN);
         let body = serde_json::to_value(&request).unwrap();
-        let conflict = encrypted_command(
+        let result = encrypted_command(
             &hub,
             "phone-a",
             Some(&body),
@@ -786,9 +795,29 @@ mod tests {
             || Ok(()),
         )
         .unwrap();
+        assert_eq!(result["status"], 200);
+        assert_eq!(
+            result,
+            encrypted_command(
+                &hub,
+                "phone-a",
+                Some(&body),
+                ("phone-a", "request-one", &[1; 32]),
+                || Ok(())
+            )
+            .unwrap()
+        );
+        let conflict = encrypted_command(
+            &hub,
+            "phone-b",
+            Some(&body),
+            ("phone-b", "request-one", &[1; 32]),
+            || Ok(()),
+        )
+        .unwrap();
         assert_eq!(
             conflict["status"], 409,
-            "another sender is not a retry of the local user"
+            "another sender is not a retry of the original user"
         );
         let remote = envelope(
             &hub,
@@ -827,7 +856,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
-        assert!(hub.domain.store.lock().unwrap().pending_messages().unwrap().is_empty());
+        assert!(
+            hub.domain
+                .store
+                .lock()
+                .unwrap()
+                .pending_messages()
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             hub.domain
                 .store
@@ -837,15 +874,36 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(client.get(format!("{base}/v2/domain")).send().await.unwrap().status(), reqwest::StatusCode::FORBIDDEN);
-        let projection: DomainProjection = signed_get(&client, &base, &key, &device_id, "/v2/domain")
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+        assert_eq!(
+            client
+                .get(format!("{base}/v2/domain"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let projection: DomainProjection =
+            signed_get(&client, &base, &key, &device_id, "/v2/domain")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
         assert_eq!(projection, hub.domain.projection().unwrap());
+        crate::auth::Auth::open(&home)
+            .unwrap()
+            .revoke(&device_id)
+            .unwrap();
+        assert_eq!(
+            signed_get(&client, &base, &key, &device_id, "/v2/domain")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
         server.abort();
         let _ = server.await;
         drop(hub);
