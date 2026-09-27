@@ -528,6 +528,20 @@ pub fn token_for_enrollment() -> Result<AccountToken> {
     Ok(refreshed()?.0)
 }
 
+/// Noninteractive setup may refresh existing credentials, but must never replace
+/// the login grant or open a browser when credentials are absent or expired.
+pub(crate) fn token_for_setup(no_input: bool) -> Result<AccountToken> {
+    setup_token_with(no_input, token_for_enrollment, ensure_token_for_enrollment)
+}
+
+fn setup_token_with(
+    no_input: bool,
+    refresh_existing: impl FnOnce() -> Result<AccountToken>,
+    ensure_interactive: impl FnOnce() -> Result<AccountToken>,
+) -> Result<AccountToken> {
+    if no_input { refresh_existing() } else { ensure_interactive() }
+}
+
 pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
     if stored_optional()?.is_none() {
         login()?;
@@ -1038,5 +1052,33 @@ mod account_lock_tests {
         drop(lock);
         probe("free", "/tmp/other-alondra-profile-b");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod setup_auth_mode_tests {
+    use super::*;
+
+    fn fixture_token() -> AccountToken {
+        AccountToken { sub: "synthetic-account".into(), access_token: "synthetic-token".into(), valid_for: Duration::from_secs(60) }
+    }
+
+    #[test]
+    fn no_input_auth_failures_never_open_or_replace_login() {
+        for error in [anyhow!("no stored session"), SessionExpired.into(), anyhow!("refresh transport unavailable")] {
+            let expected = error.to_string();
+            let result = setup_token_with(true, || Err(error), || panic!("interactive login must not run"));
+            assert_eq!(result.err().unwrap().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn no_input_refreshes_existing_session_and_interactive_setup_retains_login() {
+        let token = setup_token_with(true, || Ok(fixture_token()), || panic!("valid session must not open login")).unwrap();
+        assert_eq!(token.sub, "synthetic-account");
+        assert_eq!(token.access_token, "synthetic-token");
+        assert_eq!(token.valid_for, Duration::from_secs(60));
+        let token = setup_token_with(false, || panic!("interactive mode delegates existing login policy"), || Ok(fixture_token())).unwrap();
+        assert_eq!(token.sub, "synthetic-account");
     }
 }
