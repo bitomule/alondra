@@ -60,6 +60,43 @@ def atomic_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def write_summary(output: Path, manifest: dict) -> None:
+    lines = ["# Native client test evidence", "",
+             "These Debug app scenarios execute real Alondra client services with synthetic HTTP peers and credentials.",
+             "They do not prove real-backend E2E, UI, APNs or production performance.", "",
+             f"- Result: **{manifest.get('mode', 'incomplete')}**",
+             f"- Platform: `{manifest.get('platform', 'unknown')}`",
+             f"- Source: `{manifest.get('source', 'unavailable')}`",
+             f"- Executable SHA-256: `{manifest.get('binarySHA256', 'unavailable')}`",
+             f"- Cleanup: **{manifest.get('cleanup', 'pending')}**",
+             "- [Full execution manifest](manifest.json)", "",
+             "| Scenario | Result | Checks | Elapsed (ms) |",
+             "| --- | --- | ---: | ---: |"]
+    details = []
+    for scenario in manifest.get('scenarios', []):
+        if scenario not in CHECKS:
+            continue
+        path = output / (scenario + '.json')
+        if not path.exists():
+            lines.append(f"| {scenario} | no final report | — | — |")
+            continue
+        try:
+            report = json.loads(path.read_text())
+        except (ValueError, OSError):
+            lines.append(f"| {scenario} | unreadable report | — | — |")
+            continue
+        checks = report.get('checks', {})
+        passed = sum(checks.get(name) is True for name in CHECKS[scenario])
+        # The machine validator remains authoritative; the table exposes missing checks.
+        lines.append(f"| [{scenario}]({scenario}.json) | {report.get('status', 'incomplete')} | {passed}/{len(CHECKS[scenario])} | {report.get('elapsedMilliseconds', 'unavailable')} |")
+        details.extend(["", "## " + scenario, "", "Run ID: `" + str(report.get('runID', 'missing')) + "`", ""])
+        details.extend(f"- [{'x' if checks.get(name) is True else ' '}] `{name}`" for name in sorted(CHECKS[scenario]))
+    lines.extend(details)
+    lines.extend(["", "## Command logs", "", "Each log begins with its exact command. Failed attempts are retained separately; a later successful run does not erase them.", ""])
+    lines.extend(f"- [{path.name}]({path.name})" for path in sorted(output.glob('command-*.log')))
+    (output / 'report.md').write_text('\n'.join(lines) + '\n')
+
+
 def base_environment() -> dict[str, str]:
     # Do not forward OP_*, credentials or launch overrides into the test app.
     keys = ("PATH", "HOME", "TMPDIR", "DEVELOPER_DIR", "LANG", "LC_ALL")
@@ -103,8 +140,26 @@ def interrupted(signum, frame):
     raise InterruptedError("native harness interrupted by signal " + str(signum))
 
 
-def cleanup_owned(commands: Commands, owned_udid: str | None, cache: Path, cache_lock, fresh: bool) -> list[str]:
+def cleanup_owned(commands: Commands, owned_udid: str | None, cache: Path, cache_lock, fresh: bool,
+                  reserved_name: str | None = None) -> list[str]:
     errors = []
+    if owned_udid is None and reserved_name:
+        # Create may have completed in CoreSimulator before its caller was interrupted.
+        # Reconcile only our pre-recorded UUID name; never choose a booted/personal device.
+        try:
+            uuid.UUID(reserved_name.removeprefix("Alondra-native-"))
+            if not reserved_name.startswith("Alondra-native-"):
+                raise ValueError("invalid owned simulator name")
+            listing = json.loads(commands.run(["xcrun", "simctl", "list", "devices", "--json"]))
+            matches = [device for devices in listing["devices"].values() for device in devices
+                       if device.get("name") == reserved_name]
+            if len(matches) != 1:
+                # An absent device immediately after an interrupted create is not
+                # proof that the service cannot finish the request later.
+                raise ValueError("interrupted simulator creation remains unconfirmed")
+            owned_udid = str(uuid.UUID(matches[0]["udid"]))
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
+            errors.append("simulator_creation_unresolved")
     if owned_udid:
         try:
             commands.run(["xcrun", "simctl", "delete", owned_udid])
@@ -290,7 +345,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest["appPath"] = str(app)
         if args.platform == "ios":
             # Never boot, erase, install into or delete a user's existing simulator.
-            owned_udid = commands.run(["xcrun", "simctl", "create", "Alondra-native-" + run_id,
+            manifest["ownedSimulatorName"] = "Alondra-native-" + run_id
+            atomic_json(output / "manifest.json", manifest)
+            owned_udid = commands.run(["xcrun", "simctl", "create", manifest["ownedSimulatorName"],
                                        args.device_type, args.runtime])
             uuid.UUID(owned_udid)
             manifest["ownedSimulator"] = owned_udid
@@ -330,16 +387,19 @@ def main(argv: list[str] | None = None) -> int:
         for value in old_signals:
             signal.signal(value, signal.SIG_IGN)
         try:
-            errors = cleanup_owned(commands, owned_udid, cache, cache_lock, args.fresh_build)
+            errors = cleanup_owned(commands, owned_udid, cache, cache_lock, args.fresh_build,
+                                   manifest.get("ownedSimulatorName"))
             manifest["cleanup"] = "failed" if errors else "complete"
             if errors:
                 manifest["cleanupErrors"] = errors
                 manifest["mode"] = "failed"
             atomic_json(output / "manifest.json", manifest)
+            write_summary(output, manifest)
         finally:
             for value, previous in old_signals.items():
                 signal.signal(value, previous)
-    print(json.dumps({"status": manifest["mode"], "manifest": str(output / "manifest.json")}, indent=2))
+    print(json.dumps({"status": manifest["mode"], "manifest": str(output / "manifest.json"),
+                      "evidence": str(output / "report.md")}, indent=2))
     return 0 if manifest["mode"] == "passed" else 1
 
 

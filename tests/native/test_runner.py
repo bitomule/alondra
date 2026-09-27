@@ -109,6 +109,76 @@ class RunnerContracts(unittest.TestCase):
         self.assertEqual(runner.cleanup_owned(commands, None, Path("/unowned"), None, False), [])
         commands.run.assert_not_called()
 
+    def test_interrupted_create_reconciles_only_reserved_uuid_name(self):
+        name = 'Alondra-native-7f8f1667-bae7-4432-9f05-4b9c9db991ea'
+        owned = '67D20E42-75C7-4C21-AFA7-986FF4C7FC94'
+        devices = [{'name': 'Personal iPhone', 'udid': 'DD7B9A9D-E186-4849-8EF0-798526E07EC9'},
+                   {'name': name, 'udid': owned}]
+        commands = Mock()
+        commands.run.side_effect = [json.dumps({'devices': {'runtime': devices}}), '']
+        # The create request reached the service, but timeout lost the returned UUID.
+        errors = runner.cleanup_owned(commands, None, Path('/unused'), None, False, name)
+        self.assertEqual(errors, [])
+        self.assertEqual(commands.run.call_args_list[-1].args[0], ['xcrun', 'simctl', 'delete', owned.lower()])
+        self.assertEqual(commands.run.call_count, 2)
+
+    def test_unknown_interrupted_create_is_not_reported_clean(self):
+        name = 'Alondra-native-7f8f1667-bae7-4432-9f05-4b9c9db991ea'
+        for devices in ([], [{'name': name, 'udid': 'invalid'}],
+                        [{'name': name, 'udid': 'one'}, {'name': name, 'udid': 'two'}]):
+            commands = Mock()
+            commands.run.return_value = json.dumps({'devices': {'runtime': devices}})
+            self.assertEqual(runner.cleanup_owned(commands, None, Path('/unused'), None, False, name),
+                             ['simulator_creation_unresolved'])
+            self.assertEqual(commands.run.call_count, 1)
+
+    def test_main_create_then_timeout_reconciles_persisted_ownership(self):
+        for interruption in ('timeout', 'signal'):
+            with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / 'result'
+                binary = root / 'synthetic-executable'
+                binary.write_bytes(b'synthetic test artifact')
+                personal = {'name': 'Personal iPhone', 'udid': 'e0fb6c6d-8969-4e0d-86dd-e945b91c5b9f'}
+                devices = [personal.copy()]
+                reserved_before_create = []
+                commands = Mock()
+                def command(argv, **kwargs):
+                    if argv == ['git', 'rev-parse', 'HEAD']:
+                        return 'a' * 40
+                    if argv[:3] == ['xcrun', 'simctl', 'create']:
+                        persisted = json.loads((output / 'manifest.json').read_text())
+                        reserved_before_create.append(persisted.get('ownedSimulatorName') == argv[3])
+                        devices.append({'name': argv[3], 'udid': '67d20e42-75c7-4c21-afa7-986ff4c7fc94'})
+                        if interruption == 'timeout':
+                            raise runner.subprocess.TimeoutExpired(argv, 1)
+                        raise InterruptedError('synthetic SIGTERM after creation')
+                    if argv == ['xcrun', 'simctl', 'list', 'devices', '--json']:
+                        return json.dumps({'devices': {'runtime': devices}})
+                    if argv[:3] == ['xcrun', 'simctl', 'delete']:
+                        devices[:] = [item for item in devices if item['udid'] != argv[3]]
+                    return ''
+                commands.run.side_effect = command
+                lock = Mock()
+                with patch.object(runner.subprocess, 'check_output', return_value=''), \
+                     patch.object(runner, 'free_bytes', return_value=10 * 1024**3), \
+                     patch.object(runner, 'Commands', return_value=commands), \
+                     patch.object(runner, 'acquire_cache', return_value=lock), \
+                     patch.object(runner, 'build_app', return_value=root / 'Harness.app'), \
+                     patch.object(runner, 'app_executable', return_value=binary), \
+                     patch.object(runner.sys, 'platform', 'darwin'), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    result = runner.main(['--platform', 'ios', '--run', '--runtime', 'synthetic-runtime',
+                                          '--output', str(output), '--build-cache', str(root / 'cache')])
+                self.assertEqual(devices, [personal], 'interrupted creation leaked its owned simulator')
+                self.assertEqual(reserved_before_create, [True])
+                self.assertEqual(result, 1)
+                manifest = json.loads((output / 'manifest.json').read_text())
+                self.assertEqual(manifest['mode'], 'failed')
+                self.assertEqual(manifest['cleanup'], 'complete')
+                self.assertTrue((output / 'report.md').is_file())
+                lock.close.assert_called_once()
+
     def test_cache_lock_rejects_concurrent_use_and_foreign_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

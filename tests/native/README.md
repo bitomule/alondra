@@ -77,10 +77,17 @@ deleted. Only explicit `--fresh-build` creates/removes a disposable per-run cach
 The exact owned simulator is cleaned at the end; extracted test artifacts, logs
 and reports are retained in the chosen new output directory. SIGINT/SIGTERM enter cleanup, repeat signals are deferred, and owned command
 process groups are terminated on timeout/interruption. An interrupted cleanup is a
-failed run, and the manifest retains the exact owned simulator ID for recovery.
+failed run. Before creation the manifest reserves a UUID-based simulator name;
+if create is interrupted before returning its ID, cleanup reconciles only that
+exact name. Missing or ambiguous evidence is reported as unresolved cleanup,
+never as confirmation that no resource remains. Successful creation also stores
+the exact simulator ID for recovery.
 No global cache pruning, recurring automation or hosted GitHub runner is enabled.
 
 ## Evidence contract
+
+`report.md` is the human-readable evidence summary, including every expected check
+and links to exact command logs and original JSON. Failed attempts are preserved.
 
 `manifest.json` records source commit, clean state, platform/Xcode, Debug
 configuration, executable SHA-256, simulator runtime/UUID, report hashes and
