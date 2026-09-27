@@ -134,3 +134,36 @@ its source files to 512 MiB / 10,000 entries, and the host retains its 8 GiB fre
 space guard. No production account, keychain or host share enters this archive.
 A nonzero guest result and collection errors are recorded independently. A
 successful transfer does not convert a failed UI assertion into a passing gate.
+
+### Interrupted evidence collection
+
+A guest run can complete while the host no longer has the 8 GiB reserve needed
+for collection. This is a failed acceptance run. The runner now stops and retains
+its own clone when evidence has not been collected, rather than deleting the only
+video. `result.json` records `evidence_retained` and a private `recovery.json`.
+Keep that receipt and `ownership.json` together in the original output directory.
+The stopped clone consumes storage until recovery completes; it is not a leak to
+remove during routine cache cleanup.
+
+After reserving the heavy slot and restoring space, recover to a **new**, persistent
+output directory on the same or another volume:
+
+```sh
+TART_HOME=/Volumes/Externo/.tart python3 tests/system/macos_recover.py \
+  --receipt /absolute/original-output/recovery.json \
+  --output /absolute/new-persistent-output --run
+```
+
+Without `--run`, the command only describes the operation. Recovery checks the
+original host ownership receipt, exact VM configuration, stopped state and a
+random ownership token inside the guest before collecting. It does not launch
+Alondra or rerun tests. The frozen archive identity is preserved across retries.
+A completed transfer deletes only that owned clone; another transfer failure
+stops and retains it again. The original failed result is never overwritten.
+`recovered-validated-evidence` means the original evidence passed validation,
+not a new execution; failed original guest execution remains failed. Actual media
+still needs visual inspection. The 8 GiB preflight and collection reserve remain.
+
+The runner records free space at preflight and collection. A change between those
+measurements alone does not identify its cause: guest disk, host swap and other
+processes must be measured before attributing consumption to any writer.
