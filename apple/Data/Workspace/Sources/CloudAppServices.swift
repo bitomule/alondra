@@ -40,7 +40,7 @@ public actor CloudAppServices {
         operations = try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
             scope: RelayOutboxScope(relay: approved.relayURL, macID: approved.macID,
                                    deviceID: approved.deviceID, credentialRevision: revision),
-            bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
+            bearer: { try await auth.bearerToken() }, cachedBearer: { try await auth.cachedBearerLease() }, signing: signing, agreement: agreement,
             macSigning: approved.macSigningPublicKey(),
             macAgreement: approved.macAgreementPublicKey())
         api = AlondraAPIClient(serviceURL: approved.relayURL, deviceID: approved.deviceID, operations: operations)

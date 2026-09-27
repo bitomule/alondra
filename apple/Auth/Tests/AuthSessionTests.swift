@@ -223,6 +223,56 @@ private final class FlowEvidence: @unchecked Sendable {
 }
 
 final class AuthSessionTests: XCTestCase {
+    func testCachedLeaseDoesNotRenewAndRejectsExpiryPersistedRevocationAndLogout() async throws {
+        let clock = LeaseClock()
+        let storage = MemoryStorage("refresh")
+        let transport = FixtureTransport { _ in Self.tokens(access: "cached", refresh: "rotated", idToken: nil) }
+        let browser = FixtureBrowser { _ in XCTFail("Browser must not open"); return URL(string: "https://invalid.example")! }
+        let session = AuthSession(transport: transport, browser: browser, storage: storage, now: { clock.read() })
+        do { _ = try await session.cachedBearerLease(); XCTFail("Lease must not refresh") } catch AuthError.noSession { }
+        var posts = await transport.tokenRequests()
+        XCTAssertTrue(posts.isEmpty)
+        _ = try await session.bearerToken()
+        let lease = try await session.cachedBearerLease()
+        let token = try await lease()
+        XCTAssertEqual(token, "cached")
+        clock.advance()
+        do { _ = try await lease(); XCTFail("Expired lease") } catch AuthError.noSession { }
+        clock.reset()
+        try storage.write(RefreshCredential(token: "rotated", status: .pendingRevocation))
+        do { _ = try await lease(); XCTFail("Persisted revocation") } catch AuthError.pendingRevocation { }
+        try storage.write(RefreshCredential(token: "rotated"))
+        try await session.logout()
+        do { _ = try await lease(); XCTFail("Logged out lease") } catch AuthError.noSession { }
+        posts = await transport.tokenRequests()
+        XCTAssertEqual(posts.count, 1)
+    }
+
+    func testCachedLeaseCannotAdoptNewLoginEvenWhenTokenBytesMatch() async throws {
+        let evidence = FlowEvidence()
+        let transport = FixtureTransport { _ in
+            Self.tokens(access: "same-token", refresh: "refresh", idToken: Self.idToken(nonce: evidence.values().0))
+        }
+        let browser = FixtureBrowser { url in
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            let values = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value!) })
+            evidence.record(nonce: values["nonce"]!, challenge: values["code_challenge"]!)
+            return URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak?code=auth-code&state=\(values["state"]!)")!
+        }
+        let session = AuthSession(transport: transport, browser: browser, storage: MemoryStorage(),
+            now: { Date(timeIntervalSince1970: 2_000_000_000) })
+        try await session.login()
+        let old = try await session.cachedBearerLease()
+        try await session.logout()
+        try await session.login()
+        let current = try await session.cachedBearerLease()
+        let token = try await current()
+        XCTAssertEqual(token, "same-token")
+        do { _ = try await old(); XCTFail("Old lease adopted new login") } catch AuthError.noSession { }
+        let posts = await transport.tokenRequests()
+        XCTAssertEqual(posts.count, 2)
+    }
+
     func testVerifiedSubjectUsesPinnedUserInfoAndBearer() async throws {
         let transport = UserInfoTransport()
         let browser = FixtureBrowser { _ in XCTFail("Browser should not open"); return URL(string: "https://invalid.example")! }
@@ -711,4 +761,12 @@ private actor TokenResponseGate: AuthHTTPTransport {
         await withCheckedContinuation { responseWaiter = $0 }
     }
     func release() { releaseWaiter?.resume(); releaseWaiter = nil }
+}
+
+private final class LeaseClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var offset: TimeInterval = 0
+    func read() -> Date { lock.lock(); defer { lock.unlock() }; return Date(timeIntervalSince1970: 2_000_000_000 + offset) }
+    func advance() { lock.lock(); defer { lock.unlock() }; offset = 4000 }
+    func reset() { lock.lock(); defer { lock.unlock() }; offset = 0 }
 }
