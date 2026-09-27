@@ -1,0 +1,1970 @@
+use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+type Result<T> = std::result::Result<T, DomainError>;
+fn fail<T>(code: &str, msg: &str) -> Result<T> {
+    Err(DomainError::new(code, msg))
+}
+fn nonempty(s: &str) -> Result<()> {
+    if s.trim().is_empty() || s.len() > 1_048_576 {
+        fail("invalid_input", "Empty or oversized value")
+    } else {
+        Ok(())
+    }
+}
+fn id(s: &str) -> Result<()> {
+    nonempty(s)?;
+    if s.len() > 256 || s.chars().any(char::is_control) {
+        fail("invalid_input", "Invalid identifier")
+    } else {
+        Ok(())
+    }
+}
+fn digest(s: &str) -> Result<()> {
+    if s.len() != 64
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        fail("invalid_input", "Content digest must be lowercase SHA-256")
+    } else {
+        Ok(())
+    }
+}
+fn head(s: &str) -> Result<()> {
+    nonempty(s)?;
+    if s.len() > 256 || s.chars().any(char::is_whitespace) {
+        fail("invalid_input", "Invalid head")
+    } else {
+        Ok(())
+    }
+}
+fn user(actor: &Actor) -> Result<String> {
+    match actor {
+        Actor::User { user_id } => {
+            id(user_id)?;
+            Ok(user_id.clone())
+        }
+        _ => fail("forbidden", "User decision required"),
+    }
+}
+fn system(actor: &Actor) -> Result<()> {
+    if matches!(actor, Actor::System) {
+        Ok(())
+    } else {
+        fail("forbidden", "Trusted observation required")
+    }
+}
+impl DomainState {
+    fn fence(&self, actor: &Actor) -> Result<()> {
+        match actor {
+            Actor::Orchestrator { generation } if *generation != self.orchestrator_generation => {
+                fail("stale_generation", "Orchestrator generation changed")
+            }
+            Actor::User { user_id } => id(user_id),
+            Actor::Agent { agent_id } => id(&agent_id.0),
+            _ => Ok(()),
+        }
+    }
+    fn manager(&self, actor: &Actor) -> Result<()> {
+        self.fence(actor)?;
+        if matches!(actor, Actor::User { .. } | Actor::Orchestrator { .. }) {
+            Ok(())
+        } else {
+            fail("forbidden", "User or current orchestrator required")
+        }
+    }
+    fn task(&self, task: &TaskId) -> Result<&Task> {
+        self.tasks
+            .get(task)
+            .ok_or_else(|| DomainError::new("not_found", "Task does not exist"))
+    }
+    fn active(&self, task: &TaskId) -> Result<&Task> {
+        let t = self.task(task)?;
+        if t.state.terminal() {
+            fail("task_not_active", "Task is terminal")
+        } else {
+            Ok(t)
+        }
+    }
+    fn assigned(&self, actor: &Actor, task: &TaskId) -> Result<&Task> {
+        let t = self.active(task)?;
+        match actor {
+            Actor::Agent { agent_id } if t.agent_id.as_ref() == Some(agent_id) => Ok(t),
+            _ => fail("not_assigned", "Command requires the assigned Agent"),
+        }
+    }
+    fn task_editor(&self, actor: &Actor, task: &TaskId) -> Result<()> {
+        self.active(task)?;
+        if matches!(actor, Actor::Agent { .. }) {
+            self.assigned(actor, task)?;
+        } else {
+            self.manager(actor)?;
+        }
+        Ok(())
+    }
+    fn author(&self, actor: &Actor, scope: &Scope) -> Result<Author> {
+        self.fence(actor)?;
+        self.validate_scope(scope)?;
+        match (actor, scope) {
+            (Actor::Agent { agent_id }, Scope::Task { task_id }) => {
+                self.assigned(actor, task_id)?;
+                Ok(Author::Agent {
+                    agent_id: agent_id.clone(),
+                })
+            }
+            (Actor::Orchestrator { generation }, _) => {
+                if let Scope::Task { task_id } = scope {
+                    self.active(task_id)?;
+                }
+                Ok(Author::Orchestrator {
+                    generation: *generation,
+                })
+            }
+            _ => fail(
+                "forbidden",
+                "Only assigned Agent or current orchestrator may communicate",
+            ),
+        }
+    }
+    fn validate_scope(&self, scope: &Scope) -> Result<()> {
+        match scope {
+            Scope::Task { task_id } => {
+                self.task(task_id)?;
+            }
+            Scope::Orchestrator {
+                request_id: Some(r),
+            } => {
+                if !self.requests.contains_key(r) {
+                    return fail("not_found", "Request does not exist");
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn recipient(&self, to: &Recipient) -> Result<()> {
+        if let Recipient::Agent { agent_id } = to {
+            if !self.agents.contains_key(agent_id) {
+                return fail("not_found", "Recipient Agent does not exist");
+            }
+        }
+        Ok(())
+    }
+    fn interaction(&self, i: &InteractionId) -> Result<&Interaction> {
+        self.interactions
+            .get(i)
+            .ok_or_else(|| DomainError::new("not_found", "Interaction does not exist"))
+    }
+    fn presentation(
+        &self,
+        i: &InteractionId,
+    ) -> Result<(&Interaction, &Task, &Vec<DeliveryTarget>)> {
+        let p = self.interaction(i)?;
+        let Scope::Task { task_id } = &p.scope else {
+            return fail("invalid_action_for_kind", "Delivery must have Task scope");
+        };
+        let t = self.active(task_id)?;
+        let InteractionPayload::Delivery { targets, .. } = &p.payload else {
+            return fail(
+                "invalid_action_for_kind",
+                "A delivery presentation is required",
+            );
+        };
+        if t.final_presentation.as_ref() != Some(i) {
+            return fail("acceptance_stale", "Presentation is not the current final");
+        };
+        self.targets(task_id, targets)?;
+        Ok((p, t, targets))
+    }
+    fn targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
+        let t = self.task(task)?;
+        if targets.is_empty() || targets.len() > 64 {
+            return fail(
+                "invalid_input",
+                "Delivery requires a bounded nonempty result set",
+            );
+        };
+        let mut seen = BTreeSet::new();
+        for target in targets {
+            let key = serde_json::to_string(target)
+                .map_err(|_| DomainError::new("invalid_input", "Invalid target"))?;
+            if !seen.insert(key) {
+                return fail("invalid_input", "Duplicate delivery target");
+            };
+            match target {
+                DeliveryTarget::Text { text } => nonempty(text)?,
+                DeliveryTarget::DocumentRevision {
+                    document_id,
+                    revision_id,
+                } => {
+                    if !t.documents.contains_key(document_id) {
+                        return fail("forbidden", "Document is not linked to this Task");
+                    };
+                    let d = self
+                        .documents
+                        .get(document_id)
+                        .ok_or_else(|| DomainError::new("not_found", "Document missing"))?;
+                    let r = self
+                        .document_revisions
+                        .get(revision_id)
+                        .ok_or_else(|| DomainError::new("not_found", "Revision missing"))?;
+                    if &r.document_id != document_id {
+                        return fail("invalid_input", "Revision belongs to another document");
+                    };
+                    if &d.current_revision != revision_id {
+                        return fail("acceptance_stale", "Document has a newer revision");
+                    }
+                }
+                DeliveryTarget::PullRequest {
+                    pr_id,
+                    head: expected,
+                } => {
+                    let p = self
+                        .pull_requests
+                        .get(pr_id)
+                        .ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
+                    if &p.task_id != task || t.pr_id.as_ref() != Some(pr_id) {
+                        return fail("forbidden", "PR belongs to another Task");
+                    };
+                    if &p.head != expected {
+                        return fail("stale_head", "PR head changed");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn insert_interaction(
+        &mut self,
+        actor: &Actor,
+        i: &InteractionId,
+        scope: &Scope,
+        to: &Recipient,
+        body: &str,
+        blocking: bool,
+        attachments: &[AttachmentRef],
+        payload: InteractionPayload,
+    ) -> Result<()> {
+        id(&i.0)?;
+        content(body, attachments)?;
+        if self.interactions.contains_key(i) {
+            return fail("invalid_input", "Interaction ID already exists");
+        };
+        let author = self.author(actor, scope)?;
+        self.recipient(to)?;
+        self.interactions.insert(
+            i.clone(),
+            Interaction {
+                attachments: attachments.to_vec(),
+                id: i.clone(),
+                scope: scope.clone(),
+                author,
+                recipient: to.clone(),
+                body: body.into(),
+                blocking,
+                subject: None,
+                payload,
+                revision: self.revision + 1,
+                order: self.revision + 1,
+            },
+        );
+        Ok(())
+    }
+    fn invalidate(&mut self, task: &TaskId) {
+        for p in self.interactions.values_mut() {
+            if p.scope
+                == (Scope::Task {
+                    task_id: task.clone(),
+                })
+            {
+                if let InteractionPayload::Delivery {
+                    acceptance: Some(a),
+                    ..
+                } = &mut p.payload
+                {
+                    a.valid = false;
+                }
+            }
+        }
+        for a in self
+            .merge_authorizations
+            .values_mut()
+            .filter(|a| &a.task_id == task)
+        {
+            a.valid = false;
+        }
+        if let Some(s) = self.stack_readiness.get_mut(task) {
+            s.ready = false;
+        }
+    }
+    fn notify(
+        &self,
+        task: &TaskId,
+        interaction: Option<InteractionId>,
+        message: &str,
+        effects: &mut Vec<DomainEffect>,
+    ) -> Result<()> {
+        if let Some(agent_id) = &self.task(task)?.agent_id {
+            effects.push(DomainEffect::NotifyAgent {
+                agent_id: agent_id.clone(),
+                task_id: Some(task.clone()),
+                interaction_id: interaction,
+                message: message.into(),
+            });
+        }
+        Ok(())
+    }
+    fn dependency_graph(&self) -> Result<()> {
+        fn visit(
+            s: &DomainState,
+            t: &TaskId,
+            path: &mut BTreeSet<TaskId>,
+            done: &mut BTreeSet<TaskId>,
+        ) -> Result<()> {
+            if done.contains(t) {
+                return Ok(());
+            }
+            if !path.insert(t.clone()) {
+                return fail("dependency_cycle", "Task dependencies contain a cycle");
+            };
+            let task = s.task(t)?;
+            for d in task
+                .dependencies
+                .iter()
+                .chain(task.stack.iter().map(|s| &s.upstream_task))
+            {
+                visit(s, d, path, done)?;
+            }
+            path.remove(t);
+            done.insert(t.clone());
+            Ok(())
+        }
+        let mut done = BTreeSet::new();
+        for t in self.tasks.keys() {
+            visit(self, t, &mut BTreeSet::new(), &mut done)?;
+        }
+        Ok(())
+    }
+    fn ready_to_start(&self, t: &Task) -> Result<()> {
+        for dep in &t.dependencies {
+            if self.task(dep)?.state != TaskState::Done {
+                return fail("dependency_not_done", "Objective dependency is not done");
+            }
+        }
+        if let Some(stack) = &t.stack {
+            let up = self.task(&stack.upstream_task)?;
+            if up.state == TaskState::Cancelled {
+                return fail("stack_not_ready", "Upstream Task is cancelled");
+            };
+            let ready = self.stack_readiness.get(&stack.upstream_task);
+            if !ready.is_some_and(|r| {
+                r.ready
+                    && r.presentation_id == stack.presentation_id
+                    && r.pr_id == stack.pr_id
+                    && r.head == stack.head
+            }) || up.final_presentation.as_ref() != Some(&stack.presentation_id)
+                || !self
+                    .pull_requests
+                    .get(&stack.pr_id)
+                    .is_some_and(|p| p.task_id == stack.upstream_task && p.head == stack.head)
+            {
+                return fail("stack_not_ready", "Stack readiness is absent or stale");
+            }
+        }
+        Ok(())
+    }
+    fn accepted(&self, p: &Interaction) -> bool {
+        matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
+    }
+    fn blockers(&self, t: &TaskId) -> bool {
+        self.interactions.values().any(|i| {
+            i.scope == (Scope::Task { task_id: t.clone() })
+                && i.blocking
+                && matches!(
+                    i.payload,
+                    InteractionPayload::Question { answer: None, .. }
+                        | InteractionPayload::ActionRequest { answer: None, .. }
+                )
+        })
+    }
+    fn derive_states(&mut self) {
+        let updates: Vec<_> = self
+            .tasks
+            .values()
+            .filter(|t| !t.state.terminal())
+            .map(|t| {
+                let state = if self.ready_to_start(t).is_err() {
+                    TaskState::WaitingDependency
+                } else if self.blockers(&t.id) {
+                    TaskState::NeedsYou
+                } else if let Some(p) = t
+                    .final_presentation
+                    .as_ref()
+                    .and_then(|p| self.interactions.get(p))
+                {
+                    if self.accepted(p) {
+                        TaskState::Closing
+                    } else {
+                        TaskState::InReview
+                    }
+                } else if t.started {
+                    TaskState::Running
+                } else {
+                    TaskState::NotStarted
+                };
+                (t.id.clone(), state)
+            })
+            .collect();
+        for (id, state) in updates {
+            self.tasks.get_mut(&id).unwrap().state = state;
+        }
+    }
+    /// Clone, validate, swap: even an error discovered after preparing several changes is atomic.
+    /// Semantic receipts belong to the SQL transaction and are looked up before this method.
+    pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
+        self.validate()?;
+        if envelope.protocol_version != PROTOCOL_VERSION {
+            return fail("incompatible_protocol", "Protocol version 2 is required");
+        };
+        if envelope.data_epoch != self.data_epoch {
+            return fail("stale_epoch", "Business data epoch changed");
+        };
+        id(&envelope.command_id.0)?;
+        self.fence(actor)?;
+        if envelope.expected_revision != self.revision {
+            let mut e = DomainError::new("stale_revision", "Refresh before applying this decision");
+            e.current_revision = Some(self.revision);
+            return Err(e);
+        };
+        if self.revision >= MAX_REVISION {
+            return fail("invalid_input", "Revision limit reached");
+        };
+        let mut next = self.clone();
+        let mut effects = vec![];
+        let mut created = vec![];
+        next.apply(actor, &envelope.command, &mut effects, &mut created)?;
+        next.derive_states();
+        for (id, t) in &mut next.tasks {
+            if self.tasks.get(id) != Some(t) {
+                t.revision = self.revision + 1;
+            }
+        }
+        let changed = next != *self;
+        if changed {
+            next.revision += 1;
+        } else {
+            effects.clear();
+            created.clear();
+        }
+        next.validate()?;
+        let outcome = CommandOutcome {
+            revision: next.revision,
+            changed,
+            effects,
+            created_ids: created,
+        };
+        *self = next;
+        Ok(outcome)
+    }
+    fn apply(
+        &mut self,
+        actor: &Actor,
+        c: &Command,
+        effects: &mut Vec<DomainEffect>,
+        created: &mut Vec<String>,
+    ) -> Result<()> {
+        match c {
+            Command::CreateRequest { request_id, body } => {
+                self.manager(actor)?;
+                id(&request_id.0)?;
+                nonempty(body)?;
+                if self.requests.contains_key(request_id) {
+                    return fail("invalid_input", "Request already exists");
+                };
+                self.requests.insert(
+                    request_id.clone(),
+                    Request {
+                        id: request_id.clone(),
+                        body: body.clone(),
+                        closed: false,
+                    },
+                );
+                created.push(request_id.0.clone());
+            }
+            Command::CloseRequest { request_id } => {
+                self.manager(actor)?;
+                if self
+                    .tasks
+                    .values()
+                    .any(|t| &t.request_id == request_id && !t.state.terminal())
+                {
+                    return fail("task_not_active", "Request still has unfinished Tasks");
+                };
+                self.requests
+                    .get_mut(request_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Request missing"))?
+                    .closed = true;
+            }
+            Command::RegisterAgent { agent_id, name } => {
+                system(actor)?;
+                id(&agent_id.0)?;
+                nonempty(name)?;
+                if self.agents.contains_key(agent_id) {
+                    return fail("invalid_input", "Agent instance already exists");
+                };
+                self.agents.insert(
+                    agent_id.clone(),
+                    Agent {
+                        id: agent_id.clone(),
+                        name: name.clone(),
+                        connected: true,
+                    },
+                );
+                created.push(agent_id.0.clone());
+            }
+            Command::ObserveAgent {
+                agent_id,
+                connected,
+            } => {
+                system(actor)?;
+                self.agents
+                    .get_mut(agent_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Agent missing"))?
+                    .connected = *connected;
+            }
+            Command::AdvanceOrchestratorGeneration { generation } => {
+                system(actor)?;
+                if *generation <= self.orchestrator_generation || *generation > MAX_REVISION {
+                    return fail("stale_generation", "Generation must advance monotonically");
+                };
+                self.orchestrator_generation = *generation;
+            }
+            Command::CreateTask {
+                task_id,
+                request_id,
+                title,
+                agent_id,
+                review_prs,
+                dependencies,
+                stack,
+            } => {
+                self.manager(actor)?;
+                id(&task_id.0)?;
+                nonempty(title)?;
+                if self.tasks.contains_key(task_id) {
+                    return fail("invalid_input", "Task already exists");
+                };
+                if !self.requests.get(request_id).is_some_and(|r| !r.closed) {
+                    return fail("not_found", "Open Request required");
+                };
+                if agent_id
+                    .as_ref()
+                    .is_some_and(|a| !self.agents.contains_key(a))
+                {
+                    return fail("not_found", "Agent missing");
+                };
+                self.tasks.insert(
+                    task_id.clone(),
+                    Task {
+                        id: task_id.clone(),
+                        request_id: request_id.clone(),
+                        agent_id: agent_id.clone(),
+                        title: title.clone(),
+                        state: TaskState::NotStarted,
+                        revision: self.revision + 1,
+                        started: false,
+                        review_prs: *review_prs,
+                        final_presentation: None,
+                        pr_id: None,
+                        dependencies: dependencies.clone(),
+                        stack: stack.clone(),
+                        documents: BTreeMap::new(),
+                        archived: false,
+                    },
+                );
+                self.dependency_graph()?;
+                created.push(task_id.0.clone());
+            }
+            Command::AssignTask { task_id, agent_id } => {
+                self.manager(actor)?;
+                self.active(task_id)?;
+                if !self.agents.contains_key(agent_id) {
+                    return fail("not_found", "Agent missing");
+                };
+                if self.task(task_id)?.agent_id.as_ref() != Some(agent_id) {
+                    self.invalidate(task_id);
+                    self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
+                }
+            }
+            Command::SetDependencies {
+                task_id,
+                dependencies,
+                stack,
+            } => {
+                self.manager(actor)?;
+                self.active(task_id)?;
+                self.invalidate(task_id);
+                let t = self.tasks.get_mut(task_id).unwrap();
+                t.dependencies = dependencies.clone();
+                t.stack = stack.clone();
+                self.dependency_graph()?;
+            }
+            Command::StartTask { task_id } => {
+                self.task_editor(actor, task_id)?;
+                let t = self.task(task_id)?;
+                if t.agent_id.is_none() {
+                    return fail("not_assigned", "Task requires an Agent");
+                };
+                self.ready_to_start(t)?;
+                self.tasks.get_mut(task_id).unwrap().started = true;
+            }
+            Command::PublishInformation {
+                attachments,
+                interaction_id,
+                scope,
+                recipient,
+                body,
+            } => {
+                self.insert_interaction(
+                    actor,
+                    interaction_id,
+                    scope,
+                    recipient,
+                    body,
+                    false,
+                    attachments,
+                    InteractionPayload::Information {
+                        read_by: BTreeSet::new(),
+                    },
+                )?;
+                created.push(interaction_id.0.clone());
+            }
+            Command::AskQuestion {
+                attachments,
+                interaction_id,
+                scope,
+                recipient,
+                body,
+                blocking,
+                options,
+            }
+            | Command::RequestAction {
+                attachments,
+                interaction_id,
+                scope,
+                recipient,
+                body,
+                blocking,
+                options,
+            } => {
+                validate_options(options)?;
+                let payload = if matches!(c, Command::AskQuestion { .. }) {
+                    InteractionPayload::Question {
+                        options: options.clone(),
+                        answer: None,
+                    }
+                } else {
+                    InteractionPayload::ActionRequest {
+                        options: options.clone(),
+                        answer: None,
+                    }
+                };
+                self.insert_interaction(
+                    actor,
+                    interaction_id,
+                    scope,
+                    recipient,
+                    body,
+                    *blocking,
+                    attachments,
+                    payload,
+                )?;
+                created.push(interaction_id.0.clone());
+                if matches!(recipient, Recipient::Orchestrator) {
+                    effects.push(DomainEffect::NotifyOrchestrator {
+                        interaction_id: interaction_id.clone(),
+                    });
+                }
+            }
+            Command::MarkRead { interaction_id } => {
+                let u = user(actor)?;
+                let i = self
+                    .interactions
+                    .get_mut(interaction_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Interaction missing"))?;
+                let InteractionPayload::Information { read_by } = &mut i.payload else {
+                    return fail(
+                        "invalid_action_for_kind",
+                        "Only information can be marked read",
+                    );
+                };
+                if read_by.is_empty() {
+                    read_by.insert(u);
+                    i.revision = self.revision + 1;
+                }
+            }
+            Command::AnswerQuestion {
+                attachments,
+                interaction_id,
+                option_id,
+                inputs,
+            } => {
+                let i = self.interaction(interaction_id)?.clone();
+                let responder = match (&i.recipient, actor) {
+                    (Recipient::User, Actor::User { user_id }) => user_id.clone(),
+                    (Recipient::Agent { agent_id }, Actor::Agent { agent_id: a })
+                        if agent_id == a =>
+                    {
+                        a.0.clone()
+                    }
+                    (Recipient::Orchestrator, Actor::Orchestrator { .. }) => {
+                        "alondra-orchestrator".into()
+                    }
+                    _ => return fail("forbidden", "Only the intended recipient can answer"),
+                };
+                if let Scope::Task { task_id } = &i.scope {
+                    self.active(task_id)?;
+                }
+                let (options, answer) = match &i.payload {
+                    InteractionPayload::Question { options, answer }
+                    | InteractionPayload::ActionRequest { options, answer } => (options, answer),
+                    _ => {
+                        return fail(
+                            "invalid_action_for_kind",
+                            "This Interaction cannot be answered",
+                        );
+                    }
+                };
+                if answer.is_some() {
+                    return fail("invalid_action_for_kind", "Question already answered");
+                };
+                validate_answer(options, option_id, inputs)?;
+                validate_attachments(attachments)?;
+                let a = Answer {
+                    attachments: attachments.clone(),
+                    option_id: option_id.clone(),
+                    inputs: inputs.clone(),
+                    responder,
+                    at_revision: self.revision + 1,
+                };
+                let i = self.interactions.get_mut(interaction_id).unwrap();
+                match &mut i.payload {
+                    InteractionPayload::Question { answer, .. }
+                    | InteractionPayload::ActionRequest { answer, .. } => *answer = Some(a),
+                    _ => unreachable!(),
+                };
+                i.revision = self.revision + 1;
+                match &i.author {
+                    Author::Agent { agent_id } => effects.push(DomainEffect::NotifyAgent {
+                        agent_id: agent_id.clone(),
+                        task_id: match &i.scope {
+                            Scope::Task { task_id } => Some(task_id.clone()),
+                            _ => None,
+                        },
+                        interaction_id: Some(interaction_id.clone()),
+                        message: "Question answered".into(),
+                    }),
+                    Author::Orchestrator { .. } => effects.push(DomainEffect::NotifyOrchestrator {
+                        interaction_id: interaction_id.clone(),
+                    }),
+                    Author::System => {}
+                }
+            }
+            Command::CreateDocument {
+                task_id,
+                document_id,
+                title,
+                revision_id,
+                content_digest,
+                content_reference,
+                role,
+            } => {
+                self.assigned(actor, task_id)?;
+                id(&document_id.0)?;
+                id(&revision_id.0)?;
+                nonempty(title)?;
+                nonempty(role)?;
+                digest(content_digest)?;
+                nonempty(content_reference)?;
+                if self.documents.contains_key(document_id)
+                    || self.document_revisions.contains_key(revision_id)
+                {
+                    return fail("invalid_input", "Document or revision already exists");
+                };
+                self.documents.insert(
+                    document_id.clone(),
+                    Document {
+                        id: document_id.clone(),
+                        title: title.clone(),
+                        current_revision: revision_id.clone(),
+                    },
+                );
+                self.document_revisions.insert(
+                    revision_id.clone(),
+                    DocumentRevision {
+                        id: revision_id.clone(),
+                        document_id: document_id.clone(),
+                        number: 1,
+                        content_digest: content_digest.clone(),
+                        content_reference: content_reference.clone(),
+                    },
+                );
+                self.tasks
+                    .get_mut(task_id)
+                    .unwrap()
+                    .documents
+                    .insert(document_id.clone(), role.clone());
+                self.document_reviews.push(DocumentReview {
+                    task_id: task_id.clone(),
+                    document_id: document_id.clone(),
+                    decisions: vec![],
+                });
+                created.extend([document_id.0.clone(), revision_id.0.clone()]);
+            }
+            Command::LinkTaskDocument {
+                task_id,
+                document_id,
+                role,
+            } => {
+                // A document can be shared across Tasks. Only a manager may grant
+                // that cross-Task link; knowing a document ID is not authority.
+                self.active(task_id)?;
+                self.manager(actor)?;
+                nonempty(role)?;
+                if !self.documents.contains_key(document_id) {
+                    return fail("not_found", "Document missing");
+                };
+                self.tasks
+                    .get_mut(task_id)
+                    .unwrap()
+                    .documents
+                    .insert(document_id.clone(), role.clone());
+                if !self
+                    .document_reviews
+                    .iter()
+                    .any(|r| &r.task_id == task_id && &r.document_id == document_id)
+                {
+                    self.document_reviews.push(DocumentReview {
+                        task_id: task_id.clone(),
+                        document_id: document_id.clone(),
+                        decisions: vec![],
+                    });
+                }
+            }
+            Command::ReviseDocument {
+                task_id,
+                document_id,
+                revision_id,
+                content_digest,
+                content_reference,
+            } => {
+                self.assigned(actor, task_id)?;
+                if !self.task(task_id)?.documents.contains_key(document_id) {
+                    return fail("forbidden", "Document not linked to Task");
+                };
+                id(&revision_id.0)?;
+                digest(content_digest)?;
+                nonempty(content_reference)?;
+                if self.document_revisions.contains_key(revision_id) {
+                    return fail("invalid_input", "Revision is immutable");
+                };
+                let doc = self
+                    .documents
+                    .get(document_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Document missing"))?;
+                let number = self.document_revisions[&doc.current_revision]
+                    .number
+                    .checked_add(1)
+                    .filter(|n| *n <= MAX_REVISION)
+                    .ok_or_else(|| DomainError::new("invalid_input", "Revision overflow"))?;
+                self.document_revisions.insert(
+                    revision_id.clone(),
+                    DocumentRevision {
+                        id: revision_id.clone(),
+                        document_id: document_id.clone(),
+                        number,
+                        content_digest: content_digest.clone(),
+                        content_reference: content_reference.clone(),
+                    },
+                );
+                self.documents
+                    .get_mut(document_id)
+                    .unwrap()
+                    .current_revision = revision_id.clone();
+                let affected: Vec<_> = self
+                    .tasks
+                    .values()
+                    .filter(|t| t.documents.contains_key(document_id))
+                    .map(|t| t.id.clone())
+                    .collect();
+                for t in affected {
+                    self.invalidate(&t);
+                }
+                created.push(revision_id.0.clone());
+            }
+            Command::DecideDocumentReview {
+                task_id,
+                document_id,
+                revision_id,
+                accepted,
+            } => {
+                let u = user(actor)?;
+                self.active(task_id)?;
+                if !self.task(task_id)?.documents.contains_key(document_id) {
+                    return fail("forbidden", "Document not linked to Task");
+                };
+                if !self
+                    .documents
+                    .get(document_id)
+                    .is_some_and(|d| &d.current_revision == revision_id)
+                {
+                    return fail("acceptance_stale", "Document revision changed");
+                };
+                let sole_final = self.task(task_id)?.final_presentation.clone().filter(|id| {
+                    self.presentation(id).is_ok_and(|(_, _, targets)| {
+                        targets.as_slice()
+                            == [DeliveryTarget::DocumentRevision {
+                                document_id: document_id.clone(),
+                                revision_id: revision_id.clone(),
+                            }]
+                    })
+                });
+                if *accepted && let Some(presentation) = &sole_final {
+                    // The document approval is the one click on an exact, sole
+                    // final delivery. A mixed delivery needs its own full-package
+                    // decision, so approving one component cannot accept another.
+                    self.accept(presentation, &u)?;
+                } else {
+                    self.document_decision(task_id, document_id, revision_id, None, *accepted, &u)?;
+                }
+                if !accepted {
+                    self.invalidate(task_id);
+                }
+                self.notify(task_id, None, "Document decision recorded", effects)?;
+            }
+            Command::RegisterPr {
+                task_id,
+                pr_id,
+                host,
+                repository,
+                number,
+                head: sha,
+                base,
+                allowed_methods,
+            } => {
+                self.assigned(actor, task_id)?;
+                id(&pr_id.0)?;
+                canonical_pr(host, repository, *number)?;
+                head(sha)?;
+                nonempty(base)?;
+                if allowed_methods.is_empty() {
+                    return fail("invalid_input", "Merge methods required");
+                };
+                if let Some(existing) = &self.task(task_id)?.pr_id {
+                    let p = &self.pull_requests[existing];
+                    if existing == pr_id
+                        && p.host == *host
+                        && p.repository == *repository
+                        && p.number == *number
+                    {
+                        return Ok(());
+                    }
+                    return fail("task_already_has_pr", "Task already owns a lifetime PR");
+                };
+                if self.pull_requests.values().any(|p| {
+                    p.id == *pr_id
+                        || (p.host == *host && p.repository == *repository && p.number == *number)
+                }) {
+                    return fail("pr_owned_by_other_task", "PR is already registered");
+                };
+                let review = self
+                    .task(task_id)?
+                    .review_prs
+                    .then(|| PullRequestReview { decisions: vec![] });
+                self.pull_requests.insert(
+                    pr_id.clone(),
+                    PullRequest {
+                        id: pr_id.clone(),
+                        task_id: task_id.clone(),
+                        host: host.clone(),
+                        repository: repository.clone(),
+                        number: *number,
+                        head: sha.clone(),
+                        base: base.clone(),
+                        state: PrState::Open,
+                        merged_head: None,
+                        allowed_methods: allowed_methods.clone(),
+                        review,
+                    },
+                );
+                self.tasks.get_mut(task_id).unwrap().pr_id = Some(pr_id.clone());
+                created.push(pr_id.0.clone());
+            }
+            Command::LinkInteractionSubject {
+                interaction_id,
+                subject,
+            } => {
+                let i = self.interaction(interaction_id)?;
+                let Scope::Task { task_id } = &i.scope else {
+                    return fail("invalid_input", "Subject link requires Task scope");
+                };
+                self.assigned(actor, task_id)?;
+                if !matches!((&i.author,actor),(Author::Agent{agent_id:a},Actor::Agent{agent_id:b}) if a==b)
+                {
+                    return fail(
+                        "forbidden",
+                        "Only the Interaction author can link its subject",
+                    );
+                };
+                self.subject(task_id, subject)?;
+                if let Some(existing) = &i.subject {
+                    if existing != subject {
+                        return fail("subject_already_linked", "Interaction subject is immutable");
+                    }
+                    return Ok(());
+                }
+                let i = self.interactions.get_mut(interaction_id).unwrap();
+                i.subject = Some(subject.clone());
+                i.revision = self.revision + 1;
+            }
+            Command::PresentResult {
+                attachments,
+                task_id,
+                interaction_id,
+                body,
+                targets,
+                is_final,
+            } => {
+                self.assigned(actor, task_id)?;
+                self.targets(task_id, targets)?;
+                self.insert_interaction(
+                    actor,
+                    interaction_id,
+                    &Scope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    &Recipient::User,
+                    body,
+                    false,
+                    attachments,
+                    InteractionPayload::Delivery {
+                        targets: targets.clone(),
+                        is_final: *is_final,
+                        acceptance: None,
+                        feedback: vec![],
+                    },
+                )?;
+                if *is_final {
+                    self.invalidate(task_id);
+                    self.tasks.get_mut(task_id).unwrap().final_presentation =
+                        Some(interaction_id.clone());
+                }
+                created.push(interaction_id.0.clone());
+            }
+            Command::SubmitFeedback {
+                attachments,
+                presentation_id,
+                targets,
+                body,
+            } => {
+                let u = user(actor)?;
+                content(body, attachments)?;
+                let (_, t, current) = self.presentation(presentation_id)?;
+                if current != targets {
+                    return fail("acceptance_stale", "Feedback targets changed");
+                };
+                let task = t.id.clone();
+                self.invalidate(&task);
+                let p = self.interactions.get_mut(presentation_id).unwrap();
+                if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
+                    feedback.push(Feedback {
+                        attachments: attachments.clone(),
+                        user_id: u,
+                        body: body.clone(),
+                        at_revision: self.revision + 1,
+                    });
+                }
+                p.revision = self.revision + 1;
+                self.notify(&task, Some(presentation_id.clone()), body, effects)?;
+            }
+            Command::AcceptDelivery {
+                presentation_id,
+                targets,
+            } => {
+                let u = user(actor)?;
+                let (_, t, current) = self.presentation(presentation_id)?;
+                if current != targets {
+                    return fail("acceptance_stale", "Delivery targets changed");
+                };
+                let task = t.id.clone();
+                for target in targets {
+                    if let DeliveryTarget::PullRequest { pr_id, head } = target {
+                        let pr = &self.pull_requests[pr_id];
+                        let already_merged =
+                            pr.state == PrState::Merged && pr.merged_head.as_ref() == Some(head);
+                        let locally_authorized = self.merge_authorizations.values().any(|a| {
+                            a.valid
+                                && a.presentation_id == *presentation_id
+                                && a.pr_id == *pr_id
+                                && a.head == *head
+                        });
+                        if !already_merged && !locally_authorized {
+                            return fail(
+                                "acceptance_missing",
+                                "Open PR needs explicit merge authorization",
+                            );
+                        }
+                    }
+                }
+                self.accept(presentation_id, &u)?;
+                self.notify(
+                    &task,
+                    Some(presentation_id.clone()),
+                    "Delivery accepted; completion still requires Agent declaration",
+                    effects,
+                )?;
+            }
+            Command::AuthorizeMerge {
+                authorization_id,
+                presentation_id,
+                pr_id,
+                expected_head,
+                method,
+            } => {
+                let u = user(actor)?;
+                id(&authorization_id.0)?;
+                let (_, t, targets) = self.presentation(presentation_id)?;
+                if !targets.contains(&DeliveryTarget::PullRequest {
+                    pr_id: pr_id.clone(),
+                    head: expected_head.clone(),
+                }) {
+                    return fail("stale_head", "PR/head not in current delivery");
+                };
+                let task = t.id.clone();
+                let pr = &self.pull_requests[pr_id];
+                if pr.state != PrState::Open {
+                    return fail(
+                        "invalid_action_for_kind",
+                        "Only an open PR can be authorized",
+                    );
+                };
+                if !pr.allowed_methods.contains(method) {
+                    return fail("invalid_input", "Merge method not allowed");
+                };
+                if self.merge_authorizations.contains_key(authorization_id) {
+                    return fail("invalid_input", "Authorization ID already exists");
+                };
+                if self.merge_authorizations.values().any(|a| {
+                    a.pr_id == *pr_id
+                        && matches!(
+                            a.attempt,
+                            MergeAttemptState::Claimed | MergeAttemptState::Uncertain
+                        )
+                }) {
+                    return fail(
+                        "delivery_uncertain",
+                        "Reconcile existing merge attempt before authorizing again",
+                    );
+                };
+                for a in self
+                    .merge_authorizations
+                    .values_mut()
+                    .filter(|a| a.pr_id == *pr_id)
+                {
+                    a.valid = false;
+                }
+                self.merge_authorizations.insert(
+                    authorization_id.clone(),
+                    MergeAuthorization {
+                        id: authorization_id.clone(),
+                        task_id: task.clone(),
+                        pr_id: pr_id.clone(),
+                        presentation_id: presentation_id.clone(),
+                        head: expected_head.clone(),
+                        method: *method,
+                        user_id: u.clone(),
+                        valid: true,
+                        attempt: MergeAttemptState::Unclaimed,
+                        claimed_by: None,
+                        at_revision: self.revision + 1,
+                    },
+                );
+                if let Some(r) = &mut self.pull_requests.get_mut(pr_id).unwrap().review {
+                    r.decisions.push(PrDecision {
+                        presentation_id: presentation_id.clone(),
+                        head: expected_head.clone(),
+                        accepted: true,
+                        user_id: u.clone(),
+                        at_revision: self.revision + 1,
+                    });
+                }
+                self.accept(presentation_id, &u)?;
+                self.notify(
+                    &task,
+                    Some(presentation_id.clone()),
+                    "Merge authorized for the presented head; not executed",
+                    effects,
+                )?;
+                created.push(authorization_id.0.clone());
+            }
+            Command::ClaimMergeAuthorization {
+                authorization_id,
+                remote_head,
+                remote_base,
+                base_verified,
+            } => {
+                let a = self
+                    .merge_authorizations
+                    .get(authorization_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Authorization missing"))?
+                    .clone();
+                self.assigned(actor, &a.task_id)?;
+                self.presentation(&a.presentation_id)?;
+                if !a.valid {
+                    return fail("acceptance_stale", "Authorization was invalidated");
+                };
+                if a.attempt != MergeAttemptState::Unclaimed {
+                    return fail(
+                        "delivery_uncertain",
+                        "Merge attempt already claimed; reconcile instead of retry",
+                    );
+                };
+                let pr = &self.pull_requests[&a.pr_id];
+                if pr.state != PrState::Open || pr.head != a.head || remote_head != &a.head {
+                    return fail("stale_head", "Approved and remote head differ");
+                };
+                if !base_verified || remote_base != &pr.base {
+                    return fail("stack_not_ready", "Remote base must be verified");
+                };
+                let t = self.task(&a.task_id)?;
+                self.ready_to_start(t)?;
+                if let Some(s) = &t.stack {
+                    let upstream = self.pull_requests.get(&s.pr_id).ok_or_else(|| {
+                        DomainError::new("stack_not_ready", "Upstream PR missing")
+                    })?;
+                    if upstream.state != PrState::Merged
+                        || upstream.merged_head.as_ref() != Some(&s.head)
+                        || upstream.base != pr.base
+                    {
+                        return fail(
+                            "stack_not_ready",
+                            "Upstream merge and retarget must be confirmed",
+                        );
+                    }
+                }
+                let a = self.merge_authorizations.get_mut(authorization_id).unwrap();
+                a.attempt = MergeAttemptState::Claimed;
+                a.claimed_by = self.tasks[&a.task_id].agent_id.clone();
+            }
+            Command::ObserveMergeAttempt {
+                authorization_id,
+                state,
+            } => {
+                system(actor)?;
+                let a = self
+                    .merge_authorizations
+                    .get_mut(authorization_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Authorization missing"))?;
+                if !matches!(
+                    state,
+                    MergeAttemptState::Uncertain | MergeAttemptState::Failed
+                ) || !matches!(
+                    a.attempt,
+                    MergeAttemptState::Claimed | MergeAttemptState::Uncertain
+                ) {
+                    return fail("invalid_input", "Invalid merge attempt transition");
+                };
+                a.attempt = *state;
+            }
+            Command::ObservePrState {
+                pr_id,
+                head: sha,
+                base,
+                state,
+                merged_head,
+            } => {
+                system(actor)?;
+                head(sha)?;
+                nonempty(base)?;
+                if (*state == PrState::Merged) != merged_head.is_some() {
+                    return fail(
+                        "invalid_input",
+                        "Merged observation requires exact merged head",
+                    );
+                };
+                if let Some(h) = merged_head {
+                    head(h)?;
+                }
+                let p = self
+                    .pull_requests
+                    .get(pr_id)
+                    .ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
+                if p.state == PrState::Merged
+                    && (*state != PrState::Merged || p.merged_head != *merged_head)
+                {
+                    return fail(
+                        "invalid_input",
+                        "Confirmed merge cannot be undone by observation",
+                    );
+                };
+                let task = p.task_id.clone();
+                if p.head != *sha {
+                    self.invalidate(&task);
+                }
+                let p = self.pull_requests.get_mut(pr_id).unwrap();
+                p.head = sha.clone();
+                p.base = base.clone();
+                p.state = *state;
+                p.merged_head = merged_head.clone();
+                if *state == PrState::Merged {
+                    for a in self.merge_authorizations.values_mut().filter(|a| {
+                        a.pr_id == *pr_id
+                            && Some(&a.head) == merged_head.as_ref()
+                            && matches!(
+                                a.attempt,
+                                MergeAttemptState::Claimed | MergeAttemptState::Uncertain
+                            )
+                    }) {
+                        a.attempt = MergeAttemptState::Confirmed;
+                    }
+                }
+            }
+            Command::PublishStackReadiness {
+                task_id,
+                presentation_id,
+                pr_id,
+                head: sha,
+                ready,
+            } => {
+                self.assigned(actor, task_id)?;
+                let (_, t, targets) = self.presentation(presentation_id)?;
+                if &t.id != task_id
+                    || !targets.contains(&DeliveryTarget::PullRequest {
+                        pr_id: pr_id.clone(),
+                        head: sha.clone(),
+                    })
+                {
+                    return fail(
+                        "stack_not_ready",
+                        "Stack must identify this Task's current PR delivery",
+                    );
+                };
+                self.stack_readiness.insert(
+                    task_id.clone(),
+                    StackReadiness {
+                        task_id: task_id.clone(),
+                        presentation_id: presentation_id.clone(),
+                        pr_id: pr_id.clone(),
+                        head: sha.clone(),
+                        ready: *ready,
+                    },
+                );
+            }
+            Command::CompleteTask {
+                task_id,
+                presentation_id,
+            } => {
+                self.assigned(actor, task_id)?;
+                let (p, t, targets) = self.presentation(presentation_id)?;
+                if &t.id != task_id {
+                    return fail("forbidden", "Presentation belongs to another Task");
+                };
+                if !self.accepted(p) {
+                    return fail(
+                        "acceptance_missing",
+                        "Current delivery needs user acceptance",
+                    );
+                };
+                if self.blockers(task_id) {
+                    return fail(
+                        "blocking_interaction",
+                        "Task has an unanswered blocking Interaction",
+                    );
+                };
+                for dep in &t.dependencies {
+                    if self.task(dep)?.state != TaskState::Done {
+                        return fail("dependency_not_done", "Objective dependency incomplete");
+                    }
+                }
+                for target in targets {
+                    if let DeliveryTarget::PullRequest { pr_id, head } = target {
+                        let pr = &self.pull_requests[pr_id];
+                        if pr.state != PrState::Merged || pr.merged_head.as_ref() != Some(head) {
+                            return fail(
+                                "merge_not_confirmed",
+                                "Presented head is not confirmed merged",
+                            );
+                        };
+                        // User conformity for the exact final delivery is mandatory. A PR
+                        // merged externally can be explicitly accepted after observation;
+                        // observation itself never grants that conformity.
+                    }
+                }
+                self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
+            }
+            Command::CancelTask { task_id } => {
+                self.manager(actor)?;
+                self.active(task_id)?;
+                self.invalidate(task_id);
+                self.tasks.get_mut(task_id).unwrap().state = TaskState::Cancelled;
+            }
+            Command::ReopenTask { task_id } => {
+                self.manager(actor)?;
+                if !self.task(task_id)?.state.terminal() {
+                    return fail("task_not_active", "Only terminal Tasks can be reopened");
+                };
+                self.invalidate(task_id);
+                let t = self.tasks.get_mut(task_id).unwrap();
+                t.state = TaskState::Running;
+                t.started = true;
+                t.archived = false;
+            }
+            Command::ArchiveTask { task_id, archived } => {
+                user(actor)?;
+                if *archived && !self.task(task_id)?.state.terminal() {
+                    return fail("task_not_active", "Only terminal Tasks can be archived");
+                };
+                self.tasks.get_mut(task_id).unwrap().archived = *archived;
+            }
+        }
+        Ok(())
+    }
+    fn subject(&self, task: &TaskId, subject: &InteractionSubject) -> Result<()> {
+        match subject {
+            InteractionSubject::PullRequest { pr_id } => {
+                if !self
+                    .pull_requests
+                    .get(pr_id)
+                    .is_some_and(|p| &p.task_id == task)
+                {
+                    return fail("forbidden", "PR belongs to another Task");
+                }
+            }
+            InteractionSubject::DocumentReview {
+                document_id,
+                revision_id,
+            } => {
+                if !self.task(task)?.documents.contains_key(document_id)
+                    || !self
+                        .document_revisions
+                        .get(revision_id)
+                        .is_some_and(|r| &r.document_id == document_id)
+                {
+                    return fail("forbidden", "Document revision is not linked to this Task");
+                }
+            }
+        }
+        Ok(())
+    }
+    fn document_decision(
+        &mut self,
+        task: &TaskId,
+        doc: &DocumentId,
+        rev: &DocumentRevisionId,
+        presentation: Option<InteractionId>,
+        accepted: bool,
+        u: &str,
+    ) -> Result<()> {
+        let r = self
+            .document_reviews
+            .iter_mut()
+            .find(|r| &r.task_id == task && &r.document_id == doc)
+            .ok_or_else(|| DomainError::new("not_found", "Document review missing"))?;
+        r.decisions.push(DocumentDecision {
+            revision_id: rev.clone(),
+            presentation_id: presentation,
+            accepted,
+            user_id: u.into(),
+            at_revision: self.revision + 1,
+        });
+        Ok(())
+    }
+    fn accept(&mut self, presentation: &InteractionId, u: &str) -> Result<()> {
+        let (_, t, targets) = self.presentation(presentation)?;
+        let task = t.id.clone();
+        let targets = targets.clone();
+        for target in targets {
+            if let DeliveryTarget::DocumentRevision {
+                document_id,
+                revision_id,
+            } = target
+            {
+                self.document_decision(
+                    &task,
+                    &document_id,
+                    &revision_id,
+                    Some(presentation.clone()),
+                    true,
+                    u,
+                )?;
+            }
+        }
+        let p = self.interactions.get_mut(presentation).unwrap();
+        if let InteractionPayload::Delivery { acceptance, .. } = &mut p.payload {
+            *acceptance = Some(Acceptance {
+                user_id: u.into(),
+                at_revision: self.revision + 1,
+                valid: true,
+            });
+        }
+        p.revision = self.revision + 1;
+        Ok(())
+    }
+    /// Structural validation is also required after loading relational rows.
+    /// Historical presentations retain old document revisions and heads deliberately.
+    pub fn validate(&self) -> Result<()> {
+        id(&self.data_epoch.0)?;
+        if self.revision > MAX_REVISION || self.orchestrator_generation > MAX_REVISION {
+            return fail("invalid_input", "Unsafe revision or generation");
+        };
+        for (k, r) in &self.requests {
+            id(&k.0)?;
+            if k != &r.id {
+                return fail("invalid_input", "Request identity mismatch");
+            };
+            nonempty(&r.body)?;
+        }
+        for (k, a) in &self.agents {
+            id(&k.0)?;
+            if k != &a.id {
+                return fail("invalid_input", "Agent identity mismatch");
+            };
+            nonempty(&a.name)?;
+        }
+        for (k, t) in &self.tasks {
+            id(&k.0)?;
+            nonempty(&t.title)?;
+            if k != &t.id
+                || !self.requests.contains_key(&t.request_id)
+                || t.revision > self.revision
+                || t.agent_id
+                    .as_ref()
+                    .is_some_and(|a| !self.agents.contains_key(a))
+            {
+                return fail("invalid_input", "Invalid Task relation or revision");
+            };
+            if t.archived && !t.state.terminal() {
+                return fail("invalid_input", "Archived Task is still active");
+            };
+            for (d, role) in &t.documents {
+                nonempty(role)?;
+                if !self.documents.contains_key(d) {
+                    return fail("not_found", "Linked document missing");
+                }
+            }
+            if let Some(p) = &t.pr_id {
+                if !self.pull_requests.get(p).is_some_and(|p| &p.task_id == k) {
+                    return fail("invalid_input", "Task PR ownership mismatch");
+                }
+            }
+            if let Some(i) = &t.final_presentation {
+                let i = self.interaction(i)?;
+                if i.scope != (Scope::Task { task_id: k.clone() })
+                    || !matches!(
+                        i.payload,
+                        InteractionPayload::Delivery { is_final: true, .. }
+                    )
+                {
+                    return fail(
+                        "invalid_input",
+                        "Final presentation must be a final delivery of the same Task",
+                    );
+                }
+            }
+            if let Some(s) = &t.stack {
+                let up = self.task(&s.upstream_task)?;
+                if up.pr_id.as_ref()!=Some(&s.pr_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:s.upstream_task.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Stack references wrong upstream presentation")}
+            }
+        }
+        self.dependency_graph()?;
+        let mut numbers = BTreeSet::new();
+        for (k, r) in &self.document_revisions {
+            id(&k.0)?;
+            if k != &r.id
+                || !self.documents.contains_key(&r.document_id)
+                || r.number == 0
+                || r.number > MAX_REVISION
+                || !numbers.insert((r.document_id.clone(), r.number))
+            {
+                return fail("invalid_input", "Invalid document revision identity");
+            };
+            digest(&r.content_digest)?;
+            nonempty(&r.content_reference)?;
+        }
+        for (k, d) in &self.documents {
+            id(&k.0)?;
+            nonempty(&d.title)?;
+            if k != &d.id
+                || !self
+                    .document_revisions
+                    .get(&d.current_revision)
+                    .is_some_and(|r| &r.document_id == k)
+            {
+                return fail("invalid_input", "Document current revision mismatch");
+            }
+        }
+        let mut reviews = BTreeSet::new();
+        for r in &self.document_reviews {
+            if !reviews.insert((r.task_id.clone(), r.document_id.clone()))
+                || !self
+                    .task(&r.task_id)?
+                    .documents
+                    .contains_key(&r.document_id)
+            {
+                return fail("invalid_input", "Invalid or duplicate document review");
+            };
+            for d in &r.decisions {
+                if !self
+                    .document_revisions
+                    .get(&d.revision_id)
+                    .is_some_and(|v| v.document_id == r.document_id)
+                    || d.at_revision > self.revision
+                {
+                    return fail("invalid_input", "Document decision revision mismatch");
+                };
+                id(&d.user_id)?;
+                if let Some(p) = &d.presentation_id {
+                    let i = self.interaction(p)?;
+                    if i.scope
+                        != (Scope::Task {
+                            task_id: r.task_id.clone(),
+                        })
+                        || !matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::DocumentRevision{document_id:r.document_id.clone(),revision_id:d.revision_id.clone()}))
+                    {
+                        return fail("invalid_input", "Document decision presentation mismatch");
+                    }
+                }
+            }
+        }
+        for t in self.tasks.values() {
+            for d in t.documents.keys() {
+                if !reviews.contains(&(t.id.clone(), d.clone())) {
+                    return fail("invalid_input", "Linked document lacks review");
+                }
+            }
+        }
+        let mut identities = BTreeSet::new();
+        let mut owners = BTreeSet::new();
+        for (k, p) in &self.pull_requests {
+            id(&k.0)?;
+            canonical_pr(&p.host, &p.repository, p.number)?;
+            head(&p.head)?;
+            nonempty(&p.base)?;
+            let t = self.task(&p.task_id)?;
+            if k != &p.id
+                || t.pr_id.as_ref() != Some(k)
+                || !owners.insert(p.task_id.clone())
+                || !identities.insert((&p.host, &p.repository, p.number))
+                || p.review.is_some() != t.review_prs
+                || p.allowed_methods.is_empty()
+            {
+                return fail(
+                    "invalid_input",
+                    "Invalid lifetime PR identity or review policy",
+                );
+            };
+            if (p.state == PrState::Merged) != p.merged_head.is_some() {
+                return fail("invalid_input", "Merge state lacks evidence");
+            };
+            if let Some(h) = &p.merged_head {
+                head(h)?;
+            }
+            if let Some(r) = &p.review {
+                for d in &r.decisions {
+                    id(&d.user_id)?;
+                    head(&d.head)?;
+                    if d.at_revision>self.revision || !self.interactions.get(&d.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:p.task_id.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:k.clone(),head:d.head.clone()}))){return fail("invalid_input","PR review decision does not match presentation")}
+                }
+            }
+        }
+        for (k, i) in &self.interactions {
+            id(&k.0)?;
+            content(&i.body, &i.attachments)?;
+            if k != &i.id || i.revision > self.revision || i.order > self.revision {
+                return fail("invalid_input", "Invalid Interaction identity/revision");
+            };
+            self.validate_scope(&i.scope)?;
+            self.recipient(&i.recipient)?;
+            match &i.author {
+                Author::Agent { agent_id } => {
+                    if !self.agents.contains_key(agent_id) || !matches!(i.scope, Scope::Task { .. })
+                    {
+                        return fail("invalid_input", "Agent authored Interaction without Task");
+                    }
+                }
+                Author::Orchestrator { generation }
+                    if *generation > self.orchestrator_generation =>
+                {
+                    return fail("stale_generation", "Future author generation");
+                }
+                _ => {}
+            };
+            if let Some(s) = &i.subject {
+                let Scope::Task { task_id } = &i.scope else {
+                    return fail("invalid_input", "Subject requires Task scope");
+                };
+                self.subject(task_id, s)?;
+            }
+            match &i.payload {
+                InteractionPayload::Information { read_by } => {
+                    if i.blocking {
+                        return fail("invalid_input", "Information cannot block");
+                    };
+                    for u in read_by {
+                        id(u)?;
+                    }
+                }
+                InteractionPayload::Question { options, answer }
+                | InteractionPayload::ActionRequest { options, answer } => {
+                    validate_options(options)?;
+                    if let Some(a) = answer {
+                        validate_attachments(&a.attachments)?;
+                        validate_answer(options, &a.option_id, &a.inputs)?;
+                        id(&a.responder)?;
+                        if a.at_revision > self.revision {
+                            return fail("invalid_input", "Answer revision from future");
+                        }
+                    }
+                }
+                InteractionPayload::Delivery {
+                    targets,
+                    acceptance,
+                    feedback,
+                    ..
+                } => {
+                    let Scope::Task { task_id } = &i.scope else {
+                        return fail("invalid_input", "Delivery must have Task scope");
+                    };
+                    if i.blocking
+                        || i.recipient != Recipient::User
+                        || targets.is_empty()
+                        || targets.len() > 64
+                    {
+                        return fail("invalid_input", "Invalid delivery payload");
+                    };
+                    let t = self.task(task_id)?;
+                    let mut seen = BTreeSet::new();
+                    for target in targets {
+                        if !seen.insert(serde_json::to_string(target).unwrap()) {
+                            return fail("invalid_input", "Duplicate target");
+                        };
+                        match target {
+                            DeliveryTarget::Text { text } => nonempty(text)?,
+                            DeliveryTarget::DocumentRevision {
+                                document_id,
+                                revision_id,
+                            } => {
+                                if !t.documents.contains_key(document_id)
+                                    || !self
+                                        .document_revisions
+                                        .get(revision_id)
+                                        .is_some_and(|r| &r.document_id == document_id)
+                                {
+                                    return fail(
+                                        "invalid_input",
+                                        "Historical document target mismatch",
+                                    );
+                                }
+                            }
+                            DeliveryTarget::PullRequest { pr_id, head: sha } => {
+                                head(sha)?;
+                                if !self
+                                    .pull_requests
+                                    .get(pr_id)
+                                    .is_some_and(|p| &p.task_id == task_id)
+                                {
+                                    return fail("invalid_input", "Historical PR target mismatch");
+                                }
+                            }
+                        }
+                    }
+                    if let Some(a) = acceptance {
+                        id(&a.user_id)?;
+                        if a.at_revision > self.revision {
+                            return fail("invalid_input", "Acceptance revision from future");
+                        };
+                        if a.valid && t.final_presentation.as_ref() != Some(k) {
+                            return fail(
+                                "invalid_input",
+                                "Noncurrent delivery has valid acceptance",
+                            );
+                        }
+                    }
+                    for f in feedback {
+                        id(&f.user_id)?;
+                        content(&f.body, &f.attachments)?;
+                        if f.at_revision > self.revision {
+                            return fail("invalid_input", "Feedback revision from future");
+                        }
+                    }
+                }
+            }
+        }
+        for (k, a) in &self.merge_authorizations {
+            id(&k.0)?;
+            id(&a.user_id)?;
+            head(&a.head)?;
+            if k!=&a.id || a.at_revision>self.revision || !self.pull_requests.get(&a.pr_id).is_some_and(|p|p.task_id==a.task_id) || !self.interactions.get(&a.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:a.task_id.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:a.pr_id.clone(),head:a.head.clone()}))){return fail("invalid_input","Merge authorization relation mismatch")};
+            if let Some(agent) = &a.claimed_by {
+                if !self.agents.contains_key(agent) {
+                    return fail("not_found", "Merge attempt Agent missing");
+                }
+            }
+            if matches!(
+                a.attempt,
+                MergeAttemptState::Claimed
+                    | MergeAttemptState::Uncertain
+                    | MergeAttemptState::Confirmed
+                    | MergeAttemptState::Failed
+            ) && a.claimed_by.is_none()
+            {
+                return fail("invalid_input", "Merge attempt lacks claimed Agent");
+            }
+        }
+        for (k, s) in &self.stack_readiness {
+            if k!=&s.task_id || !self.pull_requests.get(&s.pr_id).is_some_and(|p|p.task_id==s.task_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:k.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Invalid stack readiness relation")}
+        }
+        Ok(())
+    }
+}
+fn validate_options(options: &[QuestionOption]) -> Result<()> {
+    if options.len() > 32 {
+        return fail(
+            "invalid_input",
+            "A question supports at most 32 stable options",
+        );
+    };
+    let mut ids = BTreeSet::new();
+    for option in options {
+        id(&option.id)?;
+        nonempty(&option.label)?;
+        if !ids.insert(&option.id) {
+            return fail("invalid_input", "Duplicate option ID");
+        };
+        if option.inputs.len() > 32 {
+            return fail("invalid_input", "Too many input fields");
+        };
+        let mut fields = BTreeSet::new();
+        for input in &option.inputs {
+            id(&input.id)?;
+            if !fields.insert(&input.id) {
+                return fail("invalid_input", "Duplicate input ID");
+            }
+        }
+    }
+    Ok(())
+}
+fn validate_answer(
+    options: &[QuestionOption],
+    option: &str,
+    inputs: &BTreeMap<String, InputValue>,
+) -> Result<()> {
+    if options.is_empty() || option.is_empty() {
+        if !option.is_empty()
+            || inputs.len() != 1
+            || !matches!(inputs.get("text"), Some(InputValue::Text(text)) if !text.trim().is_empty() && text.len() <= 1_048_576)
+        {
+            return fail(
+                "invalid_input",
+                "Free response requires empty option_id and nonempty text input",
+            );
+        }
+        return Ok(());
+    }
+    let spec = options
+        .iter()
+        .find(|o| o.id == option)
+        .ok_or_else(|| DomainError::new("invalid_input", "Unknown option ID"))?;
+    for k in inputs.keys() {
+        if !spec.inputs.iter().any(|s| &s.id == k) {
+            return fail("invalid_input", "Unknown answer field");
+        }
+    }
+    for s in &spec.inputs {
+        match inputs.get(&s.id) {
+            None if s.required => return fail("invalid_input", "Required answer field missing"),
+            None => {}
+            Some(v) => {
+                let valid = match (s.kind, v) {
+                    (InputKind::Text, InputValue::Text(text)) => {
+                        text.len() <= 1_048_576 && (!s.required || !text.trim().is_empty())
+                    }
+                    (InputKind::Boolean, InputValue::Boolean(_)) => true,
+                    (InputKind::Integer, InputValue::Integer(n)) => {
+                        n.unsigned_abs() <= MAX_REVISION
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    return fail("invalid_input", "Answer field type or value invalid");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn canonical_pr(host: &str, repo: &str, number: u64) -> Result<()> {
+    if number == 0
+        || number > MAX_REVISION
+        || host.is_empty()
+        || host != host.to_ascii_lowercase()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        || repo != repo.to_ascii_lowercase()
+        || repo.split('/').count() != 2
+        || repo.split('/').any(|s| {
+            s.is_empty()
+                || s == "."
+                || s == ".."
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        })
+    {
+        fail(
+            "invalid_input",
+            "Canonical lowercase host/owner/repository and positive PR number required",
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_attachments(attachments: &[AttachmentRef]) -> Result<()> {
+    if attachments.len() > 32 {
+        return fail("payload_too_large", "Too many attachments");
+    }
+    let mut seen = BTreeSet::new();
+    let mut bytes = 0u64;
+    for attachment in attachments {
+        id(&attachment.id)?;
+        nonempty(&attachment.name)?;
+        nonempty(&attachment.content_reference)?;
+        digest(&attachment.content_digest)?;
+        if attachment.name.len() > 1024
+            || attachment.content_reference.len() > 8192
+            || attachment.name.chars().any(char::is_control)
+            || !seen.insert(&attachment.id)
+        {
+            return fail("invalid_input", "Invalid or duplicate attachment reference");
+        }
+        bytes = bytes
+            .checked_add(attachment.bytes)
+            .ok_or_else(|| DomainError::new("payload_too_large", "Attachment size overflow"))?;
+        if attachment.bytes > 64 * 1024 * 1024 || bytes > 128 * 1024 * 1024 {
+            return fail("payload_too_large", "Attachment content exceeds limits");
+        }
+    }
+    Ok(())
+}
+fn content(body: &str, attachments: &[AttachmentRef]) -> Result<()> {
+    validate_attachments(attachments)?;
+    if body.len() > 1_048_576 || body.trim().is_empty() && attachments.is_empty() {
+        return fail(
+            "invalid_input",
+            "Content or attachment required within limits",
+        );
+    }
+    Ok(())
+}
