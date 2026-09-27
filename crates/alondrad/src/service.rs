@@ -149,6 +149,13 @@ struct LocalRequest {
     body: Option<Value>,
 }
 
+fn snapshot_receipt_digest(envelope: &[u8], binding: &str) -> [u8;32] {
+    let mut hash=Sha256::new();
+    hash.update(b"alondra:overview-snapshot:receipt:v1\0");
+    hash.update(envelope);hash.update([0]);hash.update(binding.as_bytes());
+    hash.finalize().into()
+}
+
 fn parse_push_preferences(
     request: &LocalRequest,
 ) -> Result<(String, Option<QuietHours>, Option<i64>)> {
@@ -573,7 +580,7 @@ impl Service {
                 Ok(binding) => binding,
                 Err(error) => { self.snapshots.revoke(&e.sender); return Err(error); }
             };
-            let mut hash=Sha256::new();hash.update(&body);hash.update([0]);hash.update(binding.as_bytes());hash.finalize().into()
+            snapshot_receipt_digest(&body,&binding)
         } else { Sha256::digest(&body).into() };
         let is_changes = request.path.split('?').next() == Some("/v1/changes")
             && approved_method(&request).is_ok();
@@ -617,8 +624,7 @@ impl Service {
         .await?;
         if request.body.is_none() && crate::service_overview::route(&request.method,&request.path) {
             let binding = self.snapshot_binding(&e.sender,device)?;
-            let mut hash=Sha256::new();hash.update(serde_json::to_vec(e)?);hash.update([0]);hash.update(binding.as_bytes());
-            let current: [u8;32] = hash.finalize().into();
+            let current = snapshot_receipt_digest(&serde_json::to_vec(e)?,&binding);
             anyhow::ensure!(current == digest,"snapshot approval generation changed while acknowledging work");
         }
         let response = match disposition {
