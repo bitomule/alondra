@@ -930,7 +930,11 @@ impl Auth {
     pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
         if let Some(db)=&self.management {
             db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
-                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {anyhow::anyhow!(AccountGateError::Unavailable)}
+                if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {
+                    #[cfg(feature = "lab-waiter-metrics")]
+                    crate::management::lab_metrics::record(&error);
+                    anyhow::anyhow!(AccountGateError::Unavailable)
+                }
             })?;
         }
         Ok(())
@@ -945,7 +949,11 @@ impl Auth {
             management.active_identity(&self.config.issuer,subject).await.map_err(|error| {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {
                     anyhow::anyhow!(AccountGateError::Denied)
-                } else {anyhow::anyhow!(AccountGateError::Unavailable)}
+                } else {
+                    #[cfg(feature = "lab-waiter-metrics")]
+                    crate::management::lab_metrics::record(&error);
+                    anyhow::anyhow!(AccountGateError::Unavailable)
+                }
             })?;
         }
         Ok(())
