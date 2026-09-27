@@ -262,6 +262,78 @@ fn ledger(home: &Path) -> Result<rusqlite::Connection> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS attempts(sender TEXT NOT NULL, transfer_id TEXT NOT NULL, PRIMARY KEY(sender,transfer_id));")?;
     Ok(connection)
 }
+pub(crate) fn read_verified_domain_chunk(home: &Path, reference: &str, digest: &str,
+    offset: u64, version: Option<String>) -> Result<Value> {
+    let path = Path::new(reference);
+    let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
+    let mut file = open_stored_file(home, &path)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file() && metadata.len() <= crate::uploads::MAX_UPLOAD_BYTES as u64,
+        "invalid stored document");
+    let current_version = file_version(&metadata);
+    ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
+    ensure!(version.as_ref().is_none_or(|v| v == &current_version), "file changed; restart download");
+    let mut hash = Sha256::new();
+    let mut position = 0u64;
+    let mut bytes = Vec::with_capacity(CHUNK.min((metadata.len() - offset) as usize));
+    let end = offset.saturating_add(CHUNK as u64).min(metadata.len());
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+        let segment_end = position + count as u64;
+        if segment_end > offset && position < end {
+            let start = offset.saturating_sub(position) as usize;
+            let stop = (end.min(segment_end) - position) as usize;
+            bytes.extend_from_slice(&buffer[start..stop]);
+        }
+        position = segment_end;
+        ensure!(position <= crate::uploads::MAX_UPLOAD_BYTES as u64, "stored document too large");
+    }
+    ensure!(position == metadata.len() && hex_digest(hash.finalize().as_slice()) == digest,
+        "stored document digest does not match revision");
+    let after = file.metadata()?;
+    ensure!(file_version(&after) == current_version, "file changed during read");
+    let next = offset + bytes.len() as u64;
+    Ok(json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(bytes),
+        "offset":offset,"total":metadata.len(),"next_offset":next,"eof":next==metadata.len()}))
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn file_version(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!("{}-{}-{}-{}-{}-{}-{}", metadata.dev(), metadata.ino(), metadata.len(),
+        metadata.mtime(), metadata.mtime_nsec(), metadata.ctime(), metadata.ctime_nsec())
+}
+
+pub(crate) fn open_stored_file(home: &Path, path: &Path) -> Result<std::fs::File> {
+    let root = home.join("files").canonicalize()?;
+    let path = path.canonicalize()?;
+    let relative = path.strip_prefix(&root).context("only Alondra stored copies may be read")?;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY).open(root)?;
+    let mut directory: OwnedFd = root.into();
+    let components: Vec<_> = relative.components().collect();
+    ensure!(!components.is_empty(), "not a regular file");
+    for (index, component) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = component else { anyhow::bail!("invalid stored path") };
+        let name = std::ffi::CString::new(name.as_bytes())?;
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK
+            | if index + 1 < components.len() { libc::O_DIRECTORY } else { 0 };
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        ensure!(fd >= 0, "stored file unavailable");
+        directory = unsafe { OwnedFd::from_raw_fd(fd) };
+    }
+    Ok(std::fs::File::from(directory))
+}
+
 fn download(home: &Path, b: Download) -> Result<Value> {
     ensure!(b.length > 0 && b.length <= CHUNK, "invalid chunk length");
     let root = home.join("files").canonicalize()?;
