@@ -944,7 +944,7 @@ impl App {
         self.posted_keys.borrow_mut().push(key);
         self.spawn(move |tx| {
             let client = Client::for_tui(Duration::from_secs(15));
-            let result = crate::delivery::post_feedback(calls, ok, |path, body| client.post(path, body))
+            let result = crate::delivery::post_feedback(calls, ok, crate::service_client::target(), |path, body| client.post(path, body))
                 .map_err(|error| error.to_string());
             let _ = tx.send(Msg::Posted { key, result });
         });
@@ -1406,7 +1406,7 @@ impl App {
             }
             "h" | "help" => {
                 self.delivery_help = false;
-                    self.help = true;
+                self.help = true;
                 self.help_scroll = 0;
             }
             "inbox" | "i" => {

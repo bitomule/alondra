@@ -1975,7 +1975,10 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     let view_h = h.saturating_sub(2) as usize;
     app.help_view = View { h: view_h, total: lines.len(), shown: true };
     app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(view_h));
-    let mut block = panel(Line::from(tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ").bold()), true);
+    let title = if app.delivery_help {
+        tr!(" Deliveries · j/k scroll · any other key closes ", " Entregas · j/k desplaza · cualquier otra tecla cierra ")
+    } else { tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ") };
+    let mut block = panel(Line::from(title.bold()), true);
     if let Some(hint) = more_hint(app.help_scroll, view_h, lines.len()) {
         block = block.title_bottom(hint);
     }

@@ -167,7 +167,7 @@ fn main() -> Result<()> {
         },
         Some(Cmd::Answer { id, text }) => {
             let result = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
-            println!("{}", delivery::response_notice(&result).unwrap_or_else(|| trf!("Answered #{id}", "Contestada #{id}")));
+            println!("{}", delivery::response_notice(&result, None).unwrap_or_else(|| trf!("Answered #{id}", "Contestada #{id}")));
             Ok(())
         }
         Some(Cmd::Send { node, text }) => {

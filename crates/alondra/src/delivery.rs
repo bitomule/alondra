@@ -82,7 +82,7 @@ pub fn state_text(state: State) -> &'static str {
     }
 }
 /// Used by every answer consumer rather than treating HTTP 200 as completed execution.
-pub fn response_notice(value: &Value) -> Option<String> {
+pub fn response_notice(value: &Value, mac: Option<&str>) -> Option<String> {
     let raw = value.get("delivery_state")?;
     let text = serde_json::from_value::<State>(raw.clone())
         .map(state_text)
@@ -91,24 +91,22 @@ pub fn response_notice(value: &Value) -> Option<String> {
             "Resultado desconocido; revisa antes de repetir"
         ));
     Some(format!(
-        "{} · {}",
+        "{} · {} list / :deliveries",
         text,
-        tr!(
-            "inspect with alondra delivery list / :deliveries",
-            "consulta alondra delivery list / :deliveries"
-        )
+        command_prefix(mac)
     ))
 }
 pub fn post_feedback(
     calls: Vec<(String, Value)>,
     ok: String,
+    mac: Option<&str>,
     mut post: impl FnMut(&str, &Value) -> Result<Value>,
 ) -> Result<String> {
     let mut feedback = ok;
     for (index, (path, body)) in calls.into_iter().enumerate() {
         match post(&path, &body) {
             Ok(value) if index == 0 => {
-                if let Some(notice) = response_notice(&value) {
+                if let Some(notice) = response_notice(&value, mac) {
                     feedback = notice;
                     if value["delivery_state"] != "handed" {
                         break;
@@ -334,6 +332,7 @@ mod tests {
                     ("mark-read".into(), json!({})),
                 ],
                 "Answered successfully".into(),
+                Some("mac-b"),
                 |path, _| {
                     paths.push(path.to_owned());
                     Ok(json!({"delivery_state":state}))
@@ -341,6 +340,7 @@ mod tests {
             )
             .unwrap();
             assert_ne!(result, "Answered successfully");
+            assert!(result.contains("alondra delivery --mac mac-b list"));
             assert_eq!(paths.len(), if state == "handed" { 2 } else { 1 });
         }
     }
@@ -433,8 +433,8 @@ mod tests {
             "discarded",
             "future",
         ] {
-            assert!(response_notice(&json!({"delivery_state":state})).is_some());
+            assert!(response_notice(&json!({"delivery_state":state}), None).is_some());
         }
-        assert!(response_notice(&json!({"ok":true})).is_none());
+        assert!(response_notice(&json!({"ok":true}), None).is_none());
     }
 }
