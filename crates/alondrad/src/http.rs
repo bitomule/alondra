@@ -2104,11 +2104,19 @@ fn fleet_order_key(n: &alondra_core::Node) -> (bool, alondra_core::Millis, Strin
     (!n.is_orchestrator, n.created_at, n.session_id.clone())
 }
 
+#[path = "http_overview.rs"]
+mod overview_stream;
+pub(crate) use overview_stream::OverviewTooLarge;
+pub(crate) fn overview_snapshot(hub: &Hub, limit: usize) -> anyhow::Result<Vec<u8>> { overview_stream::capture(hub, limit) }
+
 async fn overview(State(hub): State<AppState>) -> Json<Value> {
     let now = now_millis();
     let machine = hub.machine();
     let usage = crate::usage::current(&crate::watcher::claude_home());
-    let body = hub.read(|v| {
+    Json(hub.read(|v| overview_value(&hub, v, now, &machine, &usage)))
+}
+
+fn overview_value(hub: &Hub, v: &View, now: i64, machine: &impl serde::Serialize, usage: &impl serde::Serialize) -> Value {
         let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
         nodes.sort_by_key(|n| fleet_order_key(n));
         let open: Vec<Value> = v
@@ -2171,9 +2179,8 @@ async fn overview(State(hub): State<AppState>) -> Json<Value> {
             "tasks": v.board.tasks.values().map(|t| client_task(v, t, now)).collect::<Vec<Value>>(),
             "user": hub.config.name,
         })
-    });
-    Json(body)
 }
+
 
 /// What the overview shows that a client acts on, leaving out what moves with every hook: the
 /// tool in flight, the last message and prompt, when a node was last seen, its activity. Clients
