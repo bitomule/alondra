@@ -9,6 +9,11 @@ CHECKS = {
     'account-settings': {'settings_sheet_presented', 'real_settings_account', 'alpha_selected', 'workspace_approved'},
     'mac-selection': {'selection_requested_by_settings', 'beta_selected', 'beta_content_loaded', 'late_alpha_delivered', 'late_alpha_rejected'},
 }
+STEPS = {
+    'reconnect': ['saved-home-reconnecting', 'saved-home-connected'],
+    'account-settings': ['account-in-settings'],
+    'mac-selection': ['alpha-selected', 'beta-selected', 'late-alpha-rejected'],
+}
 
 
 def atomic_json(path, value):
@@ -68,7 +73,7 @@ def validate_mav_report(path, expected):
         raise ValueError('MAV reported blocking issue')
 
 
-def exercise(mav, read, control, output: Path, run_id: str, scenario: str):
+def exercise(mav, read, control, output: Path, run_id: str, scenario: str, mav_report: Path | None = None):
     """mav is a recorded command adapter pinned to one owned app/simulator."""
     output.mkdir(exist_ok=False)
     sequence = 0
@@ -124,7 +129,7 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str):
         validate_report(report, run_id, scenario)
         mav('evidence', 'stop')
         mav('evidence', 'report')
-        validate_mav_report(output.parent / 'mav-run/report.json', steps)
+        validate_mav_report(mav_report or output.parent / 'mav-run/report.json', steps)
         atomic_json(output / 'driver.json', {'schema': 1, 'runID': run_id, 'scenario': scenario, 'steps': steps, 'status': 'passed'})
         return report
     except BaseException as error:

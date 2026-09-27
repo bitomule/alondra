@@ -13,6 +13,9 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 from visual import driver
 import visual_run
+mac_spec = importlib.util.spec_from_file_location('visual_tart', Path(__file__).parents[1] / 'system/macos.py')
+visual_tart = importlib.util.module_from_spec(mac_spec)
+mac_spec.loader.exec_module(visual_tart)
 
 
 class VisualContracts(unittest.TestCase):
@@ -84,6 +87,57 @@ class VisualContracts(unittest.TestCase):
     def test_mac_host_runtime_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             visual_run.main(['--platform', 'mac', '--run', '--output', '/private/tmp/uncreated-visual'])
+
+    def test_tart_host_rechecks_each_scenario_and_required_captures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = {'status': 'passed', 'cleanup': True, 'scenarios': []}
+            for index, scenario in enumerate(driver.CHECKS, 1):
+                run = '00000000-0000-0000-0000-%012d' % index
+                summary['scenarios'].append({'scenario': scenario, 'runID': run})
+                assertions = root / 'project' / scenario / 'assertions'
+                assertions.mkdir(parents=True)
+                native = {**self.report(scenario), 'runID': run}
+                (assertions / 'result.json').write_text(json.dumps(native))
+                receipt = {'status': 'passed', 'runID': run, 'scenario': scenario, 'steps': driver.STEPS[scenario]}
+                (assertions / 'driver.json').write_text(json.dumps(receipt))
+                report = root / 'project/.mav/runs' / run / 'report.json'
+                report.parent.mkdir(parents=True)
+                report.write_text(json.dumps({'steps': [{'name': name, 'image': {'ok': True}} for name in driver.STEPS[scenario]],
+                                              'crashes': [], 'invalid_step_count': 0, 'video_status': 'accepted'}))
+            path = root / 'project/visual-summary.json'
+            path.write_text(json.dumps(summary))
+            visual_tart.validate_visual(root)
+            # A passing wrapper cannot hide a missing actual identity assertion.
+            last = root / 'project/mac-selection/assertions/result.json'
+            original = last.read_text()
+            altered = json.loads(original); altered['checks']['late_alpha_rejected'] = False
+            last.write_text(json.dumps(altered))
+            with self.assertRaisesRegex(ValueError, 'failed visual fixture checks'):
+                visual_tart.validate_visual(root)
+            last.write_text(original)
+            receipt = root / 'project/mac-selection/assertions/driver.json'
+            altered = json.loads(receipt.read_text()); altered['steps'] = []
+            receipt.write_text(json.dumps(altered))
+            with self.assertRaisesRegex(visual_tart.GateError, 'wrong visual driver receipt'):
+                visual_tart.validate_visual(root)
+
+    def test_visual_app_profile_rejects_shipping_bundle(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / 'Alondra.app'
+            (app / 'Contents').mkdir(parents=True)
+            path = app / 'Contents/Info.plist'
+            info = {'CFBundleIdentifier': 'com.bitomule.alondra.mac', 'CFBundleExecutable': 'Alondra', 'CFBundlePackageType': 'APPL'}
+            path.write_bytes(plistlib.dumps(info))
+            with self.assertRaisesRegex(visual_tart.GateError, 'unexpected app identity'):
+                visual_tart.validate_app(app, visual=True)
+            info['CFBundleIdentifier'] = 'com.bitomule.alondra.visualharness'
+            path.write_bytes(plistlib.dumps(info))
+            visual_tart.validate_app(app, visual=True)
+            (app / 'Contents/embedded.provisionprofile').write_bytes(b'synthetic')
+            with self.assertRaisesRegex(visual_tart.GateError, 'Debug app'):
+                visual_tart.validate_app(app, visual=True)
 
     def test_failed_mav_still_stops_owned_run_before_simulator_cleanup(self):
         for stop_fails in (False, True):

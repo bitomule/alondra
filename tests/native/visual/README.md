@@ -56,6 +56,12 @@ python3 tests/native/visual_run.py --platform ios --run \
 python3 tests/native/visual_run.py --platform mac --run --build-only \
   --build-cache /Volumes/Externo/bazel/alondra-visual \
   --output /private/tmp/alondra-visual-mac-UNIQUE
+
+# Use appPath/source from that build's manifest; retain the same heavy slot.
+python3 tests/system/macos.py --run --profile visual \
+  --app /absolute/path/from/manifest/AlondraVisualHarness.app \
+  --app-source FULL_SOURCE_COMMIT \
+  --output-dir /private/tmp/alondra-visual-tart-UNIQUE
 ```
 
 The iOS runner creates, owns and deletes its exact simulator. It uses the native
@@ -63,6 +69,11 @@ runner's reserved-name recovery if simulator creation loses its result. MAV is
 pinned to that simulator and attaches to the already-launched test app. Mac
 runtime is reserved for the disposable Tart guest; `visual_run.py` refuses to
 launch it on the host. A build-only result is `built`, never acceptance `passed`.
+The `visual` Tart profile reuses the existing prepared-base checks, clone ownership,
+disk guards, frozen evidence transfer and cleanup. Its guest disables networking,
+starts the test binary directly, and owns each process group by its returned PID.
+The host validates all three scenario reports again and compares the guest binary
+hash with the input artifact. No personal app or auth state is staged.
 Do not use a personal simulator, the installed Alondra app or TestFlight binaries.
 
 Builds use Debug, one job, an owned locked cache and no user/system bazelrc or
@@ -82,6 +93,8 @@ The outer driver separately checks actual MAV accessibility output for required
 and forbidden content. It records that output, named captures, video and the
 native state at each capture. Valid screenshots/video and absence of reported
 crashes are mandatory. A native JSON result alone does not pass the visual gate.
+Review the actual screenshots and video too: MAV's `video_status: accepted`
+checks the media, but does not establish that a permissions dialog is absent.
 The main manifest records cleanup failures as failures.
 
 Fast tests do not start MAV, builds, a simulator or a VM:
