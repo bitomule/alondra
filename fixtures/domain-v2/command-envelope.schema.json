@@ -1,0 +1,1350 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": 2
+    },
+    "data_epoch": {
+      "$ref": "#/$defs/DataEpoch"
+    },
+    "command_id": {
+      "$ref": "#/$defs/CommandId"
+    },
+    "expected_revision": {
+      "$ref": "#/$defs/Revision"
+    },
+    "command": {
+      "$ref": "#/$defs/Command"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "data_epoch",
+    "command_id",
+    "expected_revision",
+    "command"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "TaskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "AgentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "RequestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "InteractionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "DocumentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "DocumentRevisionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "PrId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "AuthorizationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "CommandId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "DataEpoch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "orchestrator"
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequestId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "request_id"
+          ]
+        }
+      ]
+    },
+    "Recipient": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "user"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "orchestrator"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent"
+            },
+            "agent_id": {
+              "$ref": "#/$defs/AgentId"
+            }
+          },
+          "required": [
+            "kind",
+            "agent_id"
+          ]
+        }
+      ]
+    },
+    "MergeMethod": {
+      "enum": [
+        "merge",
+        "squash",
+        "rebase"
+      ]
+    },
+    "PrState": {
+      "enum": [
+        "open",
+        "closed",
+        "merged"
+      ]
+    },
+    "MergeAttemptState": {
+      "enum": [
+        "unclaimed",
+        "claimed",
+        "uncertain",
+        "confirmed",
+        "failed"
+      ]
+    },
+    "StackDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "upstream_task": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "presentation_id": {
+          "$ref": "#/$defs/InteractionId"
+        },
+        "pr_id": {
+          "$ref": "#/$defs/PrId"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "upstream_task",
+        "presentation_id",
+        "pr_id",
+        "head"
+      ]
+    },
+    "DeliveryTarget": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "document_revision"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "revision_id": {
+              "$ref": "#/$defs/DocumentRevisionId"
+            }
+          },
+          "required": [
+            "kind",
+            "document_id",
+            "revision_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pull_request"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            },
+            "head": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "pr_id",
+            "head"
+          ]
+        }
+      ]
+    },
+    "InteractionSubject": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "pull_request"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            }
+          },
+          "required": [
+            "kind",
+            "pr_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "document_review"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "revision_id": {
+              "$ref": "#/$defs/DocumentRevisionId"
+            }
+          },
+          "required": [
+            "kind",
+            "document_id",
+            "revision_id"
+          ]
+        }
+      ]
+    },
+    "InputValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "boolean"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "integer"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "QuestionOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "text",
+                  "boolean",
+                  "integer"
+                ]
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "required"
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "inputs"
+      ]
+    },
+    "Command": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "create_request"
+            },
+            "request_id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "body"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "close_request"
+            },
+            "request_id": {
+              "$ref": "#/$defs/RequestId"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "register_agent"
+            },
+            "agent_id": {
+              "$ref": "#/$defs/AgentId"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent_id",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "observe_agent"
+            },
+            "agent_id": {
+              "$ref": "#/$defs/AgentId"
+            },
+            "connected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "agent_id",
+            "connected"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "advance_orchestrator_generation"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "generation"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "create_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "request_id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "title": {
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "review_prs": {
+              "type": "boolean"
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "stack": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StackDependency"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "request_id",
+            "title",
+            "agent_id",
+            "review_prs",
+            "dependencies",
+            "stack"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "assign_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "agent_id": {
+              "$ref": "#/$defs/AgentId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "agent_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "set_dependencies"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskId"
+              }
+            },
+            "stack": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StackDependency"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "dependencies",
+            "stack"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "start_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "publish_information"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            },
+            "recipient": {
+              "$ref": "#/$defs/Recipient"
+            },
+            "body": {
+              "type": "string"
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "scope",
+            "recipient",
+            "body"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "ask_question"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            },
+            "recipient": {
+              "$ref": "#/$defs/Recipient"
+            },
+            "body": {
+              "type": "string"
+            },
+            "blocking": {
+              "type": "boolean"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/QuestionOption"
+              }
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "scope",
+            "recipient",
+            "body",
+            "blocking",
+            "options"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "request_action"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "scope": {
+              "$ref": "#/$defs/Scope"
+            },
+            "recipient": {
+              "$ref": "#/$defs/Recipient"
+            },
+            "body": {
+              "type": "string"
+            },
+            "blocking": {
+              "type": "boolean"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/QuestionOption"
+              }
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "scope",
+            "recipient",
+            "body",
+            "blocking",
+            "options"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "mark_read"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "answer_question"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "option_id": {
+              "type": "string"
+            },
+            "inputs": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/InputValue"
+              }
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "option_id",
+            "inputs"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "create_document"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "title": {
+              "type": "string"
+            },
+            "revision_id": {
+              "$ref": "#/$defs/DocumentRevisionId"
+            },
+            "content_digest": {
+              "type": "string"
+            },
+            "content_reference": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "document_id",
+            "title",
+            "revision_id",
+            "content_digest",
+            "content_reference",
+            "role"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "revise_document"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "revision_id": {
+              "$ref": "#/$defs/DocumentRevisionId"
+            },
+            "content_digest": {
+              "type": "string"
+            },
+            "content_reference": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "document_id",
+            "revision_id",
+            "content_digest",
+            "content_reference"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "link_task_document"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "role": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "document_id",
+            "role"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "decide_document_review"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "document_id": {
+              "$ref": "#/$defs/DocumentId"
+            },
+            "revision_id": {
+              "$ref": "#/$defs/DocumentRevisionId"
+            },
+            "accepted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "document_id",
+            "revision_id",
+            "accepted"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "register_pr"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            },
+            "host": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "number": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "head": {
+              "type": "string"
+            },
+            "base": {
+              "type": "string"
+            },
+            "allowed_methods": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MergeMethod"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "pr_id",
+            "host",
+            "repository",
+            "number",
+            "head",
+            "base",
+            "allowed_methods"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "link_interaction_subject"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "subject": {
+              "$ref": "#/$defs/InteractionSubject"
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id",
+            "subject"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "present_result"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "body": {
+              "type": "string"
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DeliveryTarget"
+              }
+            },
+            "is_final": {
+              "type": "boolean"
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "interaction_id",
+            "body",
+            "targets",
+            "is_final"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "submit_feedback"
+            },
+            "presentation_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DeliveryTarget"
+              }
+            },
+            "body": {
+              "type": "string"
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AttachmentRef"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "presentation_id",
+            "targets",
+            "body"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accept_delivery"
+            },
+            "presentation_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DeliveryTarget"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "presentation_id",
+            "targets"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "authorize_merge"
+            },
+            "authorization_id": {
+              "$ref": "#/$defs/AuthorizationId"
+            },
+            "presentation_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            },
+            "expected_head": {
+              "type": "string"
+            },
+            "method": {
+              "$ref": "#/$defs/MergeMethod"
+            }
+          },
+          "required": [
+            "kind",
+            "authorization_id",
+            "presentation_id",
+            "pr_id",
+            "expected_head",
+            "method"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "claim_merge_authorization"
+            },
+            "authorization_id": {
+              "$ref": "#/$defs/AuthorizationId"
+            },
+            "remote_head": {
+              "type": "string"
+            },
+            "remote_base": {
+              "type": "string"
+            },
+            "base_verified": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "authorization_id",
+            "remote_head",
+            "remote_base",
+            "base_verified"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "observe_merge_attempt"
+            },
+            "authorization_id": {
+              "$ref": "#/$defs/AuthorizationId"
+            },
+            "state": {
+              "$ref": "#/$defs/MergeAttemptState"
+            }
+          },
+          "required": [
+            "kind",
+            "authorization_id",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "observe_pr_state"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            },
+            "head": {
+              "type": "string"
+            },
+            "base": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/PrState"
+            },
+            "merged_head": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "pr_id",
+            "head",
+            "base",
+            "state",
+            "merged_head"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "publish_stack_readiness"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "presentation_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "pr_id": {
+              "$ref": "#/$defs/PrId"
+            },
+            "head": {
+              "type": "string"
+            },
+            "ready": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "presentation_id",
+            "pr_id",
+            "head",
+            "ready"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "complete_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "presentation_id": {
+              "$ref": "#/$defs/InteractionId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "presentation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "cancel_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "reopen_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "archive_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "archived": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "archived"
+          ]
+        }
+      ]
+    },
+    "AttachmentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "content_digest",
+        "content_reference",
+        "bytes"
+      ]
+    }
+  }
+}

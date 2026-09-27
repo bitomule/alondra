@@ -1,0 +1,158 @@
+{
+  "contract_version": 2,
+  "initial_state": {
+    "data_epoch": "fixture-epoch-2",
+    "revision": 0
+  },
+  "execution_status": "specified_not_executed",
+  "steps": [
+    {
+      "actor": "user-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-01",
+        "expected_revision": 0,
+        "command": {
+          "kind": "create_request",
+          "request_id": "request-1",
+          "body": "Synthetic request"
+        }
+      },
+      "expected": {
+        "revision": 1,
+        "changed": true
+      }
+    },
+    {
+      "actor": "system",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-02",
+        "expected_revision": 1,
+        "command": {
+          "kind": "register_agent",
+          "agent_id": "agent-a",
+          "name": "Synthetic Claude instance"
+        }
+      },
+      "expected": {
+        "revision": 2,
+        "changed": true
+      }
+    },
+    {
+      "actor": "user-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-03",
+        "expected_revision": 2,
+        "command": {
+          "kind": "create_task",
+          "task_id": "task-1",
+          "request_id": "request-1",
+          "title": "Synthetic answer",
+          "agent_id": "agent-a",
+          "review_prs": false,
+          "dependencies": [],
+          "stack": null
+        }
+      },
+      "expected": {
+        "revision": 3,
+        "changed": true
+      }
+    },
+    {
+      "actor": "agent-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-04",
+        "expected_revision": 3,
+        "command": {
+          "kind": "start_task",
+          "task_id": "task-1"
+        }
+      },
+      "expected": {
+        "revision": 4,
+        "changed": true
+      }
+    },
+    {
+      "actor": "agent-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-05",
+        "expected_revision": 4,
+        "command": {
+          "kind": "present_result",
+          "task_id": "task-1",
+          "interaction_id": "final-1",
+          "body": "Synthetic answer",
+          "targets": [
+            {
+              "kind": "text",
+              "text": "Synthetic answer"
+            }
+          ],
+          "is_final": true,
+          "attachments": []
+        }
+      },
+      "expected": {
+        "revision": 5,
+        "changed": true
+      }
+    },
+    {
+      "actor": "user-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-06",
+        "expected_revision": 5,
+        "command": {
+          "kind": "accept_delivery",
+          "presentation_id": "final-1",
+          "targets": [
+            {
+              "kind": "text",
+              "text": "Synthetic answer"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "revision": 6,
+        "changed": true
+      }
+    },
+    {
+      "actor": "agent-a",
+      "envelope": {
+        "protocol_version": 2,
+        "data_epoch": "fixture-epoch-2",
+        "command_id": "text-flow-07",
+        "expected_revision": 6,
+        "command": {
+          "kind": "complete_task",
+          "task_id": "task-1",
+          "presentation_id": "final-1"
+        }
+      },
+      "expected": {
+        "revision": 7,
+        "changed": true
+      }
+    }
+  ],
+  "expected_final": {
+    "tasks.task-1.state": "done",
+    "pull_requests.count": 0
+  }
+}

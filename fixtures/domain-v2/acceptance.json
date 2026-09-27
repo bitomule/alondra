@@ -1,0 +1,3452 @@
+{
+  "schema_version": 1,
+  "contract_version": 2,
+  "execution_status": "specified_not_executed",
+  "base": {
+    "data_epoch": "fixture-epoch-2",
+    "revision": 1,
+    "protocol_version": 2,
+    "requests": [
+      {
+        "id": "request-1",
+        "origin": "user",
+        "content": "Synthetic request"
+      }
+    ],
+    "agents": [
+      {
+        "id": "agent-a",
+        "session_id": "agent-a",
+        "connected": true
+      },
+      {
+        "id": "agent-b",
+        "session_id": "agent-b",
+        "connected": true
+      }
+    ],
+    "tasks": [
+      {
+        "id": "task-1",
+        "request_id": "request-1",
+        "agent_id": "agent-a",
+        "status": "running",
+        "review_prs": true,
+        "dependencies": []
+      },
+      {
+        "id": "task-2",
+        "request_id": "request-1",
+        "agent_id": "agent-b",
+        "status": "running",
+        "review_prs": false,
+        "dependencies": []
+      }
+    ],
+    "interactions": [
+      {
+        "id": "info-1",
+        "kind": "information",
+        "scope": {
+          "kind": "task",
+          "task_id": "task-1"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "agent-a"
+        },
+        "recipient": {
+          "kind": "user",
+          "user_id": "user-a"
+        },
+        "content": "Synthetic information",
+        "read_by": []
+      },
+      {
+        "id": "question-1",
+        "kind": "question",
+        "scope": {
+          "kind": "task",
+          "task_id": "task-1"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "agent-a"
+        },
+        "recipient": {
+          "kind": "user",
+          "user_id": "user-a"
+        },
+        "content": "Synthetic question",
+        "blocking": false,
+        "open": true,
+        "answer": null,
+        "options": [
+          {
+            "option_id": "yes",
+            "label": "Yes",
+            "inputs": []
+          },
+          {
+            "option_id": "no",
+            "label": "No",
+            "inputs": []
+          }
+        ]
+      }
+    ],
+    "documents": [],
+    "pull_requests": [],
+    "messages": [],
+    "outbox": [],
+    "delivery_attempts": []
+  },
+  "variants": {
+    "unaccepted-text-final": {
+      "task_id": "task-1",
+      "presentation_id": "final-1",
+      "final": true,
+      "targets": [
+        {
+          "kind": "text",
+          "content": "Synthetic answer"
+        }
+      ],
+      "accepted": false,
+      "task_status": "in_review"
+    },
+    "accepted-text-final": {
+      "extends": "unaccepted-text-final",
+      "accepted": true,
+      "task_status": "closing"
+    },
+    "document-v1": {
+      "task_id": "task-1",
+      "document": {
+        "id": "doc-1",
+        "url": "https://docs.example.invalid/design/1"
+      },
+      "revision": {
+        "id": "docrev-1",
+        "document_id": "doc-1",
+        "number": 1,
+        "content": "v1",
+        "content_hash": "sha256-v1"
+      },
+      "document_review_id": "doc-review-1",
+      "presentation_id": "final-1",
+      "final": true,
+      "targets": [
+        {
+          "kind": "document_revision",
+          "revision_id": "docrev-1"
+        }
+      ],
+      "accepted": false,
+      "task_status": "in_review"
+    },
+    "accepted-document-v1": {
+      "extends": "document-v1",
+      "accepted": true,
+      "task_status": "closing"
+    },
+    "mixed-text-document-final": {
+      "extends": "document-v1",
+      "targets": [
+        {
+          "kind": "text",
+          "content": "Synthetic answer"
+        },
+        {
+          "kind": "document_revision",
+          "revision_id": "docrev-1"
+        }
+      ]
+    },
+    "pr-final": {
+      "task_id": "task-1",
+      "pr": {
+        "id": "pr-1",
+        "task_id": "task-1",
+        "host": "github.example.invalid",
+        "repository": "synthetic/repo",
+        "number": 1,
+        "head": "head-a",
+        "state": "open"
+      },
+      "review_id": "pr-review-1",
+      "presentation_id": "final-1",
+      "final": true,
+      "targets": [
+        {
+          "kind": "pull_request",
+          "pr_id": "pr-1",
+          "head": "head-a"
+        }
+      ],
+      "accepted": false,
+      "task_status": "in_review"
+    },
+    "authorized-pr": {
+      "extends": "pr-final",
+      "authorization": {
+        "id": "authorization-1",
+        "pr_id": "pr-1",
+        "presentation_id": "final-1",
+        "head": "head-a",
+        "method": "squash",
+        "actor": "user-a",
+        "valid": true
+      },
+      "accepted": true,
+      "task_status": "closing"
+    },
+    "pr-with-question-child": {
+      "extends": "pr-final",
+      "subject_links": {
+        "question-1": {
+          "kind": "pull_request",
+          "id": "pr-1"
+        }
+      }
+    },
+    "stacked-prs": {
+      "extends": "authorized-pr",
+      "downstream": {
+        "task_id": "task-2",
+        "pr_id": "pr-2",
+        "head": "head-b",
+        "base_pr_id": "pr-1"
+      },
+      "readiness": false
+    }
+  },
+  "scenarios": [
+    {
+      "id": "V01",
+      "rules": [
+        "R06",
+        "R07",
+        "R15"
+      ],
+      "title": "Information is read without a reply",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "mark_read",
+            "interaction_id": "info-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.info-1.read_by",
+          "op": "eq",
+          "value": [
+            "user-a"
+          ]
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.delivery_attempts",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.outbox",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "running"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V02",
+      "rules": [
+        "R07",
+        "R08",
+        "R16"
+      ],
+      "title": "Reading a root does not act on its child",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "set": "inbox.info-1.children",
+          "value": [
+            "question-1"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "mark_read",
+            "interaction_id": "info-1"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "publish_information_after_selection",
+          "parameters": {
+            "id": "info-2"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.question-1.answer",
+          "op": "eq",
+          "value": null
+        },
+        {
+          "path": "interactions.question-1.open",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "interactions.info-2.read_by",
+          "op": "eq",
+          "value": []
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V03",
+      "rules": [
+        "R08"
+      ],
+      "title": "Question answer and delivery are atomic",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.question-1.answer.option_id",
+          "op": "eq",
+          "value": "yes"
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "delta.outbox",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "delivery.execution_confirmed",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V04",
+      "rules": [
+        "R08",
+        "R16"
+      ],
+      "title": "Semantic retry and transport receipt are distinct",
+      "layers": [
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "send_encrypted_command",
+          "parameters": {
+            "sender": "device-a",
+            "request_id": "request-a",
+            "ciphertext_digest": "digest-a",
+            "command_id": "answer-1",
+            "command": {
+              "kind": "answer_question",
+              "interaction_id": "question-1",
+              "option_id": "yes",
+              "inputs": {}
+            }
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "retry_same_ciphertext",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "send_same_command_id_from_other_principal",
+          "parameters": {
+            "principal": "user-b",
+            "expected_revision": 1
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "delta.outbox",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "receipts.transport.sender",
+          "op": "eq",
+          "value": "device-a"
+        },
+        {
+          "path": "receipts.transport.digest",
+          "op": "eq",
+          "value": "digest-a"
+        },
+        {
+          "path": "retry.same_receipt",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "other_principal.error",
+          "op": "eq",
+          "value": "stale_revision"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V05",
+      "rules": [
+        "R08",
+        "R16"
+      ],
+      "title": "Concurrent incompatible decisions have one winner",
+      "layers": [
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "race_answers",
+          "parameters": {
+            "interaction_id": "question-1",
+            "expected_revision": 1,
+            "option_ids": [
+              "yes",
+              "no"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "successful_decisions",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "failed_decisions",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "loser.error",
+          "op": "eq",
+          "value": "stale_revision"
+        },
+        {
+          "path": "loser.draft_preserved",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V06",
+      "rules": [
+        "R03",
+        "R13"
+      ],
+      "title": "Final text needs acceptance and agent declaration",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "set": "interactions.question-1.blocking",
+          "value": false
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "present_result",
+            "task_id": "task-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ],
+            "interaction_id": "final-1",
+            "is_final": true,
+            "body": "Answer"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ]
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "done"
+        },
+        {
+          "path": "pull_requests.count",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "documents.count",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V07",
+      "rules": [
+        "R07",
+        "R13",
+        "R15"
+      ],
+      "title": "Read information cannot substitute acceptance",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "unaccepted-text-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "mark_read",
+            "interaction_id": "info-1"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "acceptance_missing"
+        },
+        {
+          "path": "last_rejected.delta.rows",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "last_rejected.delta.outbox",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "in_review"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V08",
+      "rules": [
+        "R11",
+        "R12",
+        "R13"
+      ],
+      "title": "Document v2 cannot inherit v1 approval",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-document-v1"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "revise_document",
+            "document_id": "doc-1",
+            "revision_id": "docrev-2",
+            "task_id": "task-1",
+            "content_digest": "sha256-v2",
+            "content_reference": "fixture://v2"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "present_result",
+            "task_id": "task-1",
+            "targets": [
+              {
+                "kind": "document_revision",
+                "revision_id": "docrev-2",
+                "document_id": "doc-1"
+              }
+            ],
+            "interaction_id": "final-2",
+            "is_final": true,
+            "body": "v2"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "document_reviews.doc-review-1.accepted_revision_id",
+          "op": "eq",
+          "value": "docrev-1"
+        },
+        {
+          "path": "presentations.final-2.accepted",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "client.old_draft.stale",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V09",
+      "rules": [
+        "R11",
+        "R12"
+      ],
+      "title": "Document identity is provider independent",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "document-v1",
+          "url": "https://docs.example.invalid/design/1"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "document_revision",
+                "document_id": "doc-1",
+                "revision_id": "docrev-1"
+              }
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "presentations.final-1.accepted",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "documents.doc-1.url",
+          "op": "eq",
+          "value": "https://docs.example.invalid/design/1"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V10",
+      "rules": [
+        "R03",
+        "R11",
+        "R13"
+      ],
+      "title": "Mixed presentation binds all targets",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "mixed-text-document-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              },
+              {
+                "kind": "document_revision",
+                "document_id": "doc-1",
+                "revision_id": "docrev-1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "present_result",
+            "task_id": "task-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Changed"
+              },
+              {
+                "kind": "document_revision",
+                "revision_id": "docrev-1",
+                "document_id": "doc-1"
+              }
+            ],
+            "interaction_id": "final-2",
+            "is_final": true,
+            "body": "Changed"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "presentations.final-1.accepted",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "presentations.final-2.accepted",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "tasks.task-1.current_final_id",
+          "op": "eq",
+          "value": "final-2"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V11",
+      "rules": [
+        "R03",
+        "R04",
+        "R05"
+      ],
+      "title": "Registering one canonical PR twice does not duplicate",
+      "layers": [
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "register_pr",
+            "task_id": "task-1",
+            "pr_id": "pr-1",
+            "host": "github.example.invalid",
+            "repository": "synthetic/repo",
+            "number": 1,
+            "head": "head-a",
+            "base": "main",
+            "allowed_methods": [
+              "squash"
+            ]
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "register_pr",
+            "task_id": "task-1",
+            "pr_id": "pr-1",
+            "host": "github.example.invalid",
+            "repository": "synthetic/repo",
+            "number": 1,
+            "head": "head-a",
+            "base": "main",
+            "allowed_methods": [
+              "squash"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "pull_requests.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "task_pr_links.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "pull_request_reviews.count",
+          "op": "eq",
+          "value": 1
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V12",
+      "rules": [
+        "R03",
+        "R04"
+      ],
+      "title": "Two PRs race for one task",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "race_register_pr",
+          "parameters": {
+            "task_id": "task-1",
+            "pr_ids": [
+              "pr-1",
+              "pr-2"
+            ],
+            "canonical_numbers": [
+              1,
+              2
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "successful_registrations",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "pull_requests.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "loser.error",
+          "op": "eq",
+          "value": "task_already_has_pr"
+        },
+        {
+          "path": "loser.delta.rows",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V13",
+      "rules": [
+        "R03",
+        "R04"
+      ],
+      "title": "PR lifetime ownership survives close and removal attempts",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "observe_closed_pr",
+          "parameters": {
+            "pr_id": "pr-1"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "attempt_unlink_delete_or_reparent",
+          "parameters": {
+            "pr_id": "pr-1"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "register_pr",
+            "task_id": "task-1",
+            "pr_id": "pr-2",
+            "host": "github.example.invalid",
+            "repository": "synthetic/repo",
+            "number": 2,
+            "head": "head-b",
+            "base": "main",
+            "allowed_methods": [
+              "squash"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "task_already_has_pr"
+        },
+        {
+          "path": "task_pr_links.task-1",
+          "op": "eq",
+          "value": "pr-1"
+        },
+        {
+          "path": "ownership_preserved",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V14",
+      "rules": [
+        "R04",
+        "R09"
+      ],
+      "title": "PR number alone is not identity",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "register_distinct_repository_prs",
+          "parameters": {
+            "task_ids": [
+              "task-1",
+              "task-2"
+            ],
+            "number": 1,
+            "repositories": [
+              "synthetic/a",
+              "synthetic/b"
+            ]
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "publish_incidental_pr_url",
+          "parameters": {
+            "task_id": "task-1",
+            "repository": "synthetic/b",
+            "number": 1
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "pull_requests.count",
+          "op": "eq",
+          "value": 2
+        },
+        {
+          "path": "task_pr_links.task-1.repository",
+          "op": "eq",
+          "value": "synthetic/a"
+        },
+        {
+          "path": "task_pr_links.task-2.repository",
+          "op": "eq",
+          "value": "synthetic/b"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V15",
+      "rules": [
+        "R05",
+        "R12",
+        "R14"
+      ],
+      "title": "Review preference does not authorize merge",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "register_pr_with_review_options",
+          "parameters": {
+            "options": [
+              true,
+              false
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "review_on.review_count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "review_off.review_count",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "review_on.merge_authorized",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "review_off.merge_authorized",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V16",
+      "rules": [
+        "R03",
+        "R04",
+        "R14"
+      ],
+      "title": "Feedback and new head keep PR identity",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "submit_feedback",
+            "presentation_id": "final-1",
+            "body": "Correct synthetic issue",
+            "targets": [
+              {
+                "kind": "pull_request",
+                "pr_id": "pr-1",
+                "head": "head-a"
+              }
+            ]
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "observe_new_head",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-b"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "present_result",
+            "task_id": "task-1",
+            "targets": [
+              {
+                "kind": "pull_request",
+                "pr_id": "pr-1",
+                "head": "head-b"
+              }
+            ],
+            "interaction_id": "final-2",
+            "is_final": true,
+            "body": "Corrected"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "pull_requests.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "pull_request_reviews.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "feedback.history_count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "tasks.task-1.current_final_id",
+          "op": "eq",
+          "value": "final-2"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V17",
+      "rules": [
+        "R08",
+        "R14"
+      ],
+      "title": "Merge authorization is not a merge",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "authorize_merge",
+            "pr_id": "pr-1",
+            "presentation_id": "final-1",
+            "expected_head": "head-a",
+            "method": "squash",
+            "authorization_id": "authorization-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "authorizations.count",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "pull_requests.pr-1.state",
+          "op": "eq",
+          "value": "open"
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "closing"
+        },
+        {
+          "path": "ui.result",
+          "op": "eq",
+          "value": "authorization_recorded"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V18",
+      "rules": [
+        "R13",
+        "R14"
+      ],
+      "title": "Push invalidates authorization",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "observe_new_head",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-b"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "claim_merge_authorization",
+            "authorization_id": "authorization-1",
+            "remote_head": "head-a",
+            "remote_base": "main",
+            "base_verified": true
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "stale_head"
+        },
+        {
+          "path": "delta.external_merge_calls",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "in_review"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V19",
+      "rules": [
+        "R14",
+        "R15"
+      ],
+      "title": "Merge timeout requires reconciliation",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "claim_merge_authorization",
+            "authorization_id": "authorization-1",
+            "remote_head": "head-a",
+            "remote_base": "main",
+            "base_verified": true
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "github_merge_timeout",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "restart",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "merge_attempt.state",
+          "op": "eq",
+          "value": "uncertain"
+        },
+        {
+          "path": "automatic_retries",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "closing"
+        },
+        {
+          "path": "ui.claims_merged",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V20",
+      "rules": [
+        "R14",
+        "R15"
+      ],
+      "title": "Observed merge waits for declaration",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "observe_merge",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-a"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "pull_requests.pr-1.state",
+          "op": "eq",
+          "value": "merged"
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "closing"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V21",
+      "rules": [
+        "R13",
+        "R14"
+      ],
+      "title": "External merge does not fabricate consent",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "observe_merge",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-a"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "pull_requests.pr-1.state",
+          "op": "eq",
+          "value": "merged"
+        },
+        {
+          "path": "presentations.final-1.accepted",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "acceptance_missing"
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "in_review"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V22",
+      "rules": [
+        "R01",
+        "R13",
+        "R15"
+      ],
+      "title": "Absent agent leaves accepted task open",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "agent_disconnect",
+          "parameters": {
+            "agent_id": "agent-a"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "advance_time",
+          "parameters": {
+            "seconds": 86400
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "closing"
+        },
+        {
+          "path": "agents.agent-a.connected",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "tasks.task-1.operational_reason",
+          "op": "eq",
+          "value": "agent_unavailable"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V23",
+      "rules": [
+        "R02",
+        "R13"
+      ],
+      "title": "Another agent cannot complete a task",
+      "layers": [
+        "C",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-b",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "not_assigned"
+        },
+        {
+          "path": "last_rejected.delta.rows",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V24",
+      "rules": [
+        "R01",
+        "R02",
+        "R15"
+      ],
+      "title": "One agent with two tasks has isolated effects",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        },
+        {
+          "set": "tasks.task-2.agent_id",
+          "value": "agent-a"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "done"
+        },
+        {
+          "path": "tasks.task-2.status",
+          "op": "eq",
+          "value": "running"
+        },
+        {
+          "path": "agents.agent-a.connected",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V25",
+      "rules": [
+        "R09"
+      ],
+      "title": "Orchestrator recipient does not change task scope",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "ask_question",
+            "interaction_id": "question-2",
+            "recipient": {
+              "kind": "orchestrator"
+            },
+            "options": [
+              {
+                "label": "Yes",
+                "inputs": [],
+                "id": "yes"
+              }
+            ],
+            "scope": {
+              "kind": "task",
+              "task_id": "task-1"
+            },
+            "body": "Coordinate",
+            "blocking": false
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.question-2.scope",
+          "op": "eq",
+          "value": {
+            "kind": "task",
+            "task_id": "task-1"
+          }
+        },
+        {
+          "path": "interactions.question-2.recipient.kind",
+          "op": "eq",
+          "value": "orchestrator"
+        },
+        {
+          "path": "delta.tasks",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V26",
+      "rules": [
+        "R09",
+        "R10"
+      ],
+      "title": "Coordination remains actionable without placeholder task",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "orchestrator_question",
+          "parameters": {
+            "interaction_id": "coordination-1",
+            "request_id": "request-1"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "coordination-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.coordination-1.scope.kind",
+          "op": "eq",
+          "value": "orchestrator"
+        },
+        {
+          "path": "interactions.coordination-1.task_id",
+          "op": "eq",
+          "value": null
+        },
+        {
+          "path": "delta.tasks",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V27",
+      "rules": [
+        "R10"
+      ],
+      "title": "Technical permission preserves its channel",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "provider_menu",
+          "parameters": {
+            "agent_id": "agent-a",
+            "token": "synthetic-menu-token",
+            "channel": "synthetic-channel"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "respond_provider_menu",
+          "parameters": {
+            "token": "synthetic-menu-token",
+            "option_id": "allow_once"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "provider.response.channel",
+          "op": "eq",
+          "value": "synthetic-channel"
+        },
+        {
+          "path": "provider.response.token",
+          "op": "eq",
+          "value": "synthetic-menu-token"
+        },
+        {
+          "path": "delta.interactions",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.tasks",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V28",
+      "rules": [
+        "R01",
+        "R02"
+      ],
+      "title": "Concurrent claims preserve reservation bindings",
+      "layers": [
+        "C",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "race_subagent_claims",
+          "parameters": {
+            "reservations": {
+              "sub-a": "task-1",
+              "sub-b": "task-2"
+            },
+            "arrival_order": [
+              "sub-b",
+              "sub-a"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "bindings.sub-a.task_id",
+          "op": "eq",
+          "value": "task-1"
+        },
+        {
+          "path": "bindings.sub-b.task_id",
+          "op": "eq",
+          "value": "task-2"
+        },
+        {
+          "path": "bindings_swapped",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V29",
+      "rules": [
+        "R13",
+        "R15"
+      ],
+      "title": "Dependencies need completed objectives",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "add_dependency_cycle",
+          "parameters": {
+            "edges": [
+              [
+                "task-1",
+                "task-2"
+              ],
+              [
+                "task-2",
+                "task-1"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "check_dependency_states",
+          "parameters": {
+            "states": [
+              "cancelled",
+              "in_review",
+              "closing",
+              "done"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "cycle.error",
+          "op": "eq",
+          "value": "dependency_cycle"
+        },
+        {
+          "path": "readiness_by_state",
+          "op": "eq",
+          "value": {
+            "cancelled": false,
+            "in_review": false,
+            "closing": false,
+            "done": true
+          }
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V30",
+      "rules": [
+        "R14"
+      ],
+      "title": "Stack start readiness is explicit and merge ordered",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "stacked-prs"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "publish_stack_readiness",
+          "parameters": {
+            "upstream_task": "task-1",
+            "presentation_id": "final-1",
+            "head": "head-a"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "claim_downstream_merge_before_upstream_merge",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "observe_upstream_merge_and_retarget",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "claim_downstream_merge_after_remote_sha_check",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "start_before_readiness",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "start_after_readiness",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "early_merge.error",
+          "op": "eq",
+          "value": "stack_not_ready"
+        },
+        {
+          "path": "retarget.base_verified",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "merge_order",
+          "op": "eq",
+          "value": [
+            "pr-1",
+            "pr-2"
+          ]
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V31",
+      "rules": [
+        "R08"
+      ],
+      "title": "SQL error before receipt rolls back everything",
+      "layers": [
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "fault_injection",
+          "parameters": {
+            "point": "after_decision_before_receipt"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "delta.rows",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.receipts",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.outbox",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.published_ticks",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V32",
+      "rules": [
+        "R08"
+      ],
+      "title": "Committed command recovers receipt after response loss",
+      "layers": [
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "fault_injection",
+          "parameters": {
+            "point": "after_commit_before_response"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "restart_and_retry_same_command",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "delta.messages",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "delta.outbox",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "retry.same_receipt",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V33",
+      "rules": [
+        "R08",
+        "R14"
+      ],
+      "title": "Terminal handoff uncertainty survives restart",
+      "layers": [
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "answer_then_crash_during_terminal_effect",
+          "parameters": {
+            "interaction_id": "question-1"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "restart",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "delivery_attempt.state",
+          "op": "eq",
+          "value": "uncertain"
+        },
+        {
+          "path": "automatic_terminal_retries",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "ui.action",
+          "op": "eq",
+          "value": "reconcile_delivery"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V34",
+      "rules": [
+        "R16"
+      ],
+      "title": "Relational restart preserves projections",
+      "layers": [
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "capture_projection",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "restart",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "run_sql_integrity_checks",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "projection.equals_before_restart",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "pragma.foreign_keys",
+          "op": "eq",
+          "value": 1
+        },
+        {
+          "path": "pragma.foreign_key_check",
+          "op": "eq",
+          "value": []
+        },
+        {
+          "path": "pragma.integrity_check",
+          "op": "eq",
+          "value": [
+            "ok"
+          ]
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V35",
+      "rules": [
+        "R03",
+        "R11"
+      ],
+      "title": "Archival retains referenced and pending subjects",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "document-v1"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "archive_and_run_retention",
+          "parameters": {
+            "task_id": "task-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "documents.doc-1.exists",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "document_revisions.docrev-1.exists",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "pending_subjects_hidden",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "history.accessible",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V36",
+      "rules": [
+        "R09"
+      ],
+      "title": "Old orchestrator generation cannot publish",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "orchestrator_generation_change",
+          "parameters": {
+            "from_generation": 1,
+            "to_generation": 2
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "publish_from_generation",
+          "parameters": {
+            "generation": 1
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "restart_with_ambiguous_batch",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "stale_generation"
+        },
+        {
+          "path": "delta.decisions",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "ambiguous_batch.automatic_retries",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V37",
+      "rules": [
+        "R16"
+      ],
+      "title": "Canonical inbox has identical consumer semantics",
+      "layers": [
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "decode_projection_in_clients",
+          "parameters": {
+            "clients": [
+              "tui",
+              "ios",
+              "mac"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "clients.same_root_ids",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "clients.same_child_ids",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "clients.same_counts",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "clients.same_actions",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V38",
+      "rules": [
+        "R08",
+        "R16"
+      ],
+      "title": "TUI child keyboard action targets the child",
+      "layers": [
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-with-question-child"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "tui_select_and_answer",
+          "parameters": {
+            "selected_id": "question-1",
+            "option_id": "yes"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.question-1.answer.option_id",
+          "op": "eq",
+          "value": "yes"
+        },
+        {
+          "path": "authorizations.count",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "command.subject_id",
+          "op": "eq",
+          "value": "question-1"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V39",
+      "rules": [
+        "R16"
+      ],
+      "title": "Refresh and window conflicts preserve local work",
+      "layers": [
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "open_draft",
+          "parameters": {
+            "interaction_id": "question-1",
+            "text": "Synthetic draft",
+            "attachments": [
+              "attachment-1"
+            ]
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "regroup_refresh_second_window_answer",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "client.selection",
+          "op": "eq",
+          "value": "question-1"
+        },
+        {
+          "path": "client.draft.text",
+          "op": "eq",
+          "value": "Synthetic draft"
+        },
+        {
+          "path": "client.draft.attachments",
+          "op": "eq",
+          "value": [
+            "attachment-1"
+          ]
+        },
+        {
+          "path": "client.conflict_visible",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "client.uncertain_operation_preserved",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V40",
+      "rules": [
+        "R09",
+        "R16"
+      ],
+      "title": "Deep links validate account Mac epoch and child",
+      "layers": [
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-with-question-child"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "notification_deep_link",
+          "parameters": {
+            "account": "account-a",
+            "mac": "mac-a",
+            "epoch": "fixture-epoch-2",
+            "subject_id": "question-1"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "negative_deep_links",
+          "parameters": {
+            "mismatched_fields": [
+              "account",
+              "mac",
+              "epoch"
+            ]
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "client.focused_subject",
+          "op": "eq",
+          "value": "question-1"
+        },
+        {
+          "path": "client.parent_subject",
+          "op": "eq",
+          "value": "pr-1"
+        },
+        {
+          "path": "negative_links.installed_snapshots",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V41",
+      "rules": [
+        "R08",
+        "R16"
+      ],
+      "title": "Local and encrypted command services agree",
+      "layers": [
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "compare_local_encrypted",
+          "parameters": {
+            "command": {
+              "kind": "answer_question",
+              "interaction_id": "question-1",
+              "option_id": "yes",
+              "inputs": {}
+            }
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "routes.equal_outcome",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "routes.equal_authorization",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "routes.equal_errors",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "routes.receipt_preserved",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "encrypted.allowlist_accepts",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V42",
+      "rules": [
+        "R16"
+      ],
+      "title": "Old protocols and epochs are rejected",
+      "layers": [
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "old_protocol_epoch_commands",
+          "parameters": {
+            "protocol_versions": [
+              1,
+              3
+            ],
+            "epochs": [
+              "fixture-epoch-1"
+            ]
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "install_delayed_snapshot",
+          "parameters": {
+            "epoch": "fixture-epoch-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "old_protocol.error",
+          "op": "eq",
+          "value": "incompatible_protocol"
+        },
+        {
+          "path": "old_epoch.error",
+          "op": "eq",
+          "value": "stale_epoch"
+        },
+        {
+          "path": "delta.rows",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "client.stale_snapshot_installed",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V43",
+      "rules": [
+        "R16"
+      ],
+      "title": "Large payload uses bounded snapshots or explicit error",
+      "layers": [
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "large_payload_boundary_cases",
+          "parameters": {
+            "below_limit": true,
+            "above_limit": true,
+            "include_large_child": true
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "below_limit.complete",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "above_limit.error",
+          "op": "eq",
+          "value": "payload_too_large"
+        },
+        {
+          "path": "truncated_subjects",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "partial_snapshot_installed",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V44",
+      "rules": [
+        "R03",
+        "R11"
+      ],
+      "title": "Future migration preserves existing decisions",
+      "layers": [
+        "S"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-document-v1"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "apply_next_schema_migration",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "run_sql_integrity_checks",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "decisions.equal_before",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "relations.equal_before",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "new_field.backfill_complete",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "pragma.foreign_key_check",
+          "op": "eq",
+          "value": []
+        },
+        {
+          "path": "pragma.integrity_check",
+          "op": "eq",
+          "value": [
+            "ok"
+          ]
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V45",
+      "rules": [
+        "R08",
+        "R13"
+      ],
+      "title": "Feedback invalidates acceptance without head change",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "submit_feedback",
+            "presentation_id": "final-1",
+            "body": "Please correct",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ]
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "acceptance_stale"
+        },
+        {
+          "path": "presentations.final-1.accepted",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "last_rejected.delta.rows",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "running"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V46",
+      "rules": [
+        "R08",
+        "R16"
+      ],
+      "title": "Option validation uses stable IDs and input contracts",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "set": "interactions.question-1.options",
+          "value": [
+            {
+              "option_id": "other",
+              "label": "Otra opción",
+              "inputs": [
+                {
+                  "name": "explanation",
+                  "type": "text",
+                  "required": true,
+                  "max_length": 200
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "other",
+            "inputs": {}
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "translate_option_label",
+          "parameters": {
+            "option_id": "other",
+            "label": "Custom"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "other",
+            "inputs": {
+              "explanation": {
+                "kind": "text",
+                "value": "Synthetic reason"
+              }
+            }
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "first_command.error",
+          "op": "eq",
+          "value": "invalid_input"
+        },
+        {
+          "path": "interactions.question-1.answer.option_id",
+          "op": "eq",
+          "value": "other"
+        },
+        {
+          "path": "interactions.question-1.answer.inputs.explanation",
+          "op": "eq",
+          "value": "Synthetic reason"
+        },
+        {
+          "path": "clients.same_input_validation",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V47",
+      "rules": [
+        "R01",
+        "R09"
+      ],
+      "title": "Orchestrator identity survives runtime session changes",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "orchestrator_publish",
+          "parameters": {
+            "session": "session-a",
+            "generation": 1
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "orchestrator_generation_change",
+          "parameters": {
+            "from_generation": 1,
+            "to_generation": 2
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "orchestrator_publish",
+          "parameters": {
+            "session": "session-b",
+            "generation": 2
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "publish_from_generation",
+          "parameters": {
+            "generation": 1
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "orchestrator.author_ids",
+          "op": "eq",
+          "value": [
+            "alondra-orchestrator",
+            "alondra-orchestrator"
+          ]
+        },
+        {
+          "path": "delta.persistent_employee_agents",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "stale_generation"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V48",
+      "rules": [
+        "R14"
+      ],
+      "title": "Remote SHA check guards race after claim",
+      "layers": [
+        "C",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "claim_merge_authorization",
+            "authorization_id": "authorization-1",
+            "remote_head": "head-a",
+            "remote_base": "main",
+            "base_verified": true
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "github_push_before_merge",
+          "parameters": {
+            "new_head": "head-b"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "execute_merge_with_remote_sha_precondition",
+          "parameters": {
+            "sha": "head-a"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "github.merge_rejected",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "merged_unapproved_head",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "in_review"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V49",
+      "rules": [
+        "R14",
+        "R15"
+      ],
+      "title": "Cancellation before and during effects is reconciled",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "cancel_before_claim_case",
+          "parameters": {}
+        },
+        {
+          "type": "environment",
+          "operation": "cancel_during_merge_case",
+          "parameters": {}
+        }
+      ],
+      "assert": [
+        {
+          "path": "before_claim.error",
+          "op": "eq",
+          "value": "task_not_active"
+        },
+        {
+          "path": "before_claim.external_calls",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "during_effect.remote_fact_recorded",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "during_effect.task_status",
+          "op": "eq",
+          "value": "cancelled"
+        },
+        {
+          "path": "during_effect.claims_undone",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V50",
+      "rules": [
+        "R13",
+        "R14"
+      ],
+      "title": "Same approved presentation completes after merge",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "authorized-pr"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "observe_merge",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-a"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "done"
+        },
+        {
+          "path": "delta.presentations",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "delta.user_acceptances",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-1.current_final_id",
+          "op": "eq",
+          "value": "final-1"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V51",
+      "rules": [
+        "R02",
+        "R13"
+      ],
+      "title": "Shared agent cannot cross-link another task delivery",
+      "layers": [
+        "C",
+        "S",
+        "A"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        },
+        {
+          "set": "tasks.task-2.agent_id",
+          "value": "agent-a"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-2",
+            "presentation_id": "final-1"
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "link_other_task_target",
+          "parameters": {
+            "task_id": "task-2",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "last_error.code",
+          "op": "eq",
+          "value": "invalid_input"
+        },
+        {
+          "path": "last_rejected.delta.rows",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "tasks.task-2.status",
+          "op": "eq",
+          "value": "running"
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V52",
+      "rules": [
+        "R04",
+        "R08",
+        "R09"
+      ],
+      "title": "Explicit subject link preserves earlier question",
+      "layers": [
+        "C",
+        "S",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "pr-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "link_interaction_subject",
+            "interaction_id": "question-1",
+            "subject": {
+              "kind": "pull_request",
+              "pr_id": "pr-1"
+            }
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        },
+        {
+          "type": "environment",
+          "operation": "observe_merge",
+          "parameters": {
+            "pr_id": "pr-1",
+            "head": "head-a"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "interactions.question-1.scope.task_id",
+          "op": "eq",
+          "value": "task-1"
+        },
+        {
+          "path": "interactions.question-1.subject.id",
+          "op": "eq",
+          "value": "pr-1"
+        },
+        {
+          "path": "interactions.question-1.answer.option_id",
+          "op": "eq",
+          "value": "yes"
+        },
+        {
+          "path": "unrelated_questions_relinked",
+          "op": "eq",
+          "value": 0
+        },
+        {
+          "path": "unrelated_questions_closed",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V53",
+      "rules": [
+        "R07",
+        "R13",
+        "R15"
+      ],
+      "title": "Blocking question blocks completion but unread information does not",
+      "layers": [
+        "C",
+        "A",
+        "U"
+      ],
+      "base": "synthetic-base",
+      "arrange": [
+        {
+          "fixture": "accepted-text-final"
+        }
+      ],
+      "steps": [
+        {
+          "type": "environment",
+          "operation": "set_blocking_question_open",
+          "parameters": {
+            "interaction_id": "question-1"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        },
+        {
+          "type": "command",
+          "actor": "agent-a",
+          "command": {
+            "kind": "complete_task",
+            "task_id": "task-1",
+            "presentation_id": "final-1"
+          }
+        }
+      ],
+      "assert": [
+        {
+          "path": "first_complete.error",
+          "op": "eq",
+          "value": "blocking_interaction"
+        },
+        {
+          "path": "tasks.task-1.status",
+          "op": "eq",
+          "value": "done"
+        },
+        {
+          "path": "interactions.info-1.read_by",
+          "op": "eq",
+          "value": []
+        }
+      ],
+      "execution_status": "specified_not_executed"
+    }
+  ]
+}

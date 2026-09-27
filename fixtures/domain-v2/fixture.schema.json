@@ -1,0 +1,174 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "contract_version": {
+      "const": 2
+    },
+    "execution_status": {
+      "const": "specified_not_executed"
+    },
+    "base": {
+      "type": "object"
+    },
+    "variants": {
+      "type": "object"
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 53,
+      "maxItems": 53,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^V(0[1-9]|[1-4][0-9]|5[0-3])$"
+          },
+          "rules": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^R(0[1-9]|1[0-6])$"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "C",
+                "S",
+                "A",
+                "U"
+              ]
+            }
+          },
+          "base": {
+            "const": "synthetic-base"
+          },
+          "arrange": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "command"
+                    },
+                    "actor": {
+                      "enum": [
+                        "agent-a",
+                        "agent-b",
+                        "user-a",
+                        "user-b",
+                        "orchestrator",
+                        "system"
+                      ]
+                    },
+                    "command": {
+                      "type": "object",
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "actor",
+                    "command"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "environment"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "operation",
+                    "parameters"
+                  ]
+                }
+              ]
+            }
+          },
+          "assert": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "op": {
+                  "enum": [
+                    "eq",
+                    "ne",
+                    "contains"
+                  ]
+                },
+                "value": {}
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            }
+          },
+          "execution_status": {
+            "const": "specified_not_executed"
+          }
+        },
+        "required": [
+          "id",
+          "rules",
+          "title",
+          "layers",
+          "base",
+          "arrange",
+          "steps",
+          "assert",
+          "execution_status"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "contract_version",
+    "execution_status",
+    "base",
+    "variants",
+    "scenarios"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
