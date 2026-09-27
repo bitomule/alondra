@@ -178,10 +178,12 @@ pub fn finish(hub: &Hub, id: u64, outcome: Outcome) -> Result<()> {
                         session_id: next.session_id.clone(),
                         step: alondra_core::event::CompactionStep::Typed,
                     });
-                } else if next.channel == Channel::MenuDecision {
+                } else if matches!(next.channel, Channel::MenuDecision | Channel::NodeDiscard) {
                     if let Some(id) = next.question_id {
                         events.push(Event::QuestionDelivered { id });
-                        events.push(Event::MenuSeen { session_id: next.session_id.clone(), waiting_for: None });
+                        if next.channel == Channel::MenuDecision {
+                            events.push(Event::MenuSeen { session_id: next.session_id.clone(), waiting_for: None });
+                        }
                     }
                 } else {
                     for id in &next.message_ids {
@@ -318,9 +320,12 @@ pub fn resolve(
                     "delivery attempt changed; refresh before deciding",
                 ));
             }
-            if retry && current.channel == Channel::MenuDecision && current.question_id
+            if retry && matches!(current.channel, Channel::MenuDecision | Channel::NodeDiscard) && current.question_id
                 .is_none_or(|id| v.questions.get(&id).is_none_or(|q| q.status != alondra_core::QuestionStatus::Answered)) {
-                return Err(error(409, "menu question was closed; inspect the terminal instead of retrying"));
+                return Err(error(409, "question was closed; inspect the destination instead of retrying"));
+            }
+            if retry && current.channel == Channel::NodeDiscard && !v.nodes.contains_key(&current.session_id) {
+                return Err(error(409, "node no longer exists; inspect the worktree and discard this intent instead"));
             }
             let mut next = current.clone();
             next.state = target;
@@ -346,7 +351,7 @@ pub fn resolve(
                     },
                 });
             }
-            if next.channel == Channel::MenuDecision {
+            if matches!(next.channel, Channel::MenuDecision | Channel::NodeDiscard) {
                 if let Some(id) = next.question_id {
                     events.push(Event::QuestionClosed { id,
                         status: if retry { alondra_core::QuestionStatus::Open } else { alondra_core::QuestionStatus::Withdrawn },

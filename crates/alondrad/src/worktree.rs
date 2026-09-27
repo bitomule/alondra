@@ -49,9 +49,13 @@ pub async fn unmerged_in(dir: &Path) -> Option<String> {
 
 /// Deletes the node's worktree with whatever it holds, so `claude rm` closes the node: its
 /// uncommitted changes are lost, its commits stay on its branch.
-pub async fn discard(session_id: &str) -> Result<(), String> {
+pub async fn discard(session_id: &str, permitted: impl Fn() -> bool) -> Result<(), String> {
     let Some(dir) = worktree_of(session_id) else { return Ok(()) };
-    let common = git(&dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
+    discard_in(&dir, permitted).await
+}
+async fn discard_in(dir: &Path, permitted: impl Fn() -> bool) -> Result<(), String> {
+    let common = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
+    if !permitted() { return Err("node changed while preparing discard".into()); }
     let out = Command::new("git")
         .arg(format!("--git-dir={common}"))
         .args(["worktree", "remove", "--force"])
@@ -91,6 +95,31 @@ mod tests {
     fn run(dir: &Path, args: &[&str]) {
         let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    #[tokio::test]
+    async fn discard_revalidates_after_git_preparation_before_removing_real_worktree() {
+        let root = std::env::temp_dir().join(format!("alondra-discard-{}-{}", std::process::id(), alondra_core::now_millis()));
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "repo"]);
+        let repo = root.join("repo");
+        run(&repo, &["config", "user.email", "test@example.invalid"]);
+        run(&repo, &["config", "user.name", "Test"]);
+        run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let wt = root.join("owned-worktree");
+        run(&repo, &["worktree", "add", "-q", "-b", "disposable", wt.to_str().unwrap()]);
+        std::fs::write(wt.join("unsaved"), b"keep until authorized").unwrap();
+        let observed = std::sync::atomic::AtomicBool::new(false);
+        let result = discard_in(&wt, || {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            false
+        }).await;
+        assert!(result.is_err());
+        assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(std::fs::read(wt.join("unsaved")).unwrap(), b"keep until authorized");
+        discard_in(&wt, || true).await.unwrap();
+        assert!(!wt.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Pushed is not enough to close a node: its commits must be on the remote's default branch.

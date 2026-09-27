@@ -19,7 +19,7 @@ pub struct Options {
 pub enum Command {
     /// Inspect recorded attempts, their versions and recovery instructions.
     List,
-    /// Allow another attempt only after inspecting the destination terminal.
+    /// Allow another attempt after inspecting the destination terminal, node and worktree.
     Retry {
         id: u64,
         #[arg(long)]
@@ -138,6 +138,12 @@ pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
             a.id, a.version, a.session_id, a.channel
         ));
         lines.push(state_text(a.state).into());
+        if a.channel == "node_discard" {
+            lines.push(tr!(
+                "Inspect the node and worktree too. Retry only reopens the question; choose again explicitly. Discard retires the intent without undoing deletion.",
+                "Revisa también el nodo y el worktree. Reintentar sólo reabre la pregunta: elige de nuevo explícitamente. Descartar retira la intención sin deshacer el borrado."
+            ).into());
+        }
         if let Some(reason) = &a.reason {
             lines.push(reason.clone());
         }
@@ -281,6 +287,16 @@ mod tests {
     fn attempt(state: &str, version: u64) -> Value {
         json!({"id":7,"session_id":"mac-session","channel":"menu_decision","state":state,"version":version,"reason":null})
     }
+    #[test]
+    fn node_discard_recovery_instructions_require_inspecting_filesystem_and_new_decision() {
+        let attempt = Attempt { id: 1, session_id: "node".into(), channel: "node_discard".into(),
+            state: State::Uncertain, version: 2, reason: None };
+        let text = details(&[attempt], Some("mac-b")).join("\n");
+        assert!(text.contains("worktree"));
+        assert!(text.contains("alondra delivery --mac mac-b retry 1 --expected-version 2"));
+        assert!(text.contains("reopens") || text.contains("reabre"));
+    }
+
     #[test]
     fn destination_is_explicit_and_failed_remote_never_constructs_local_client() {
         let local = destination_client(
