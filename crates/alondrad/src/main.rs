@@ -22,6 +22,7 @@ mod prs;
 mod schedules;
 mod service;
 mod service_files;
+mod service_overview;
 mod push;
 mod sentinel;
 mod store;

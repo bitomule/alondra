@@ -337,6 +337,15 @@ pub fn initialize(requested: Option<&str>) -> Result<()> {
         .map_err(|_| anyhow!("terminal target already initialized"))?;
     Ok(())
 }
+impl crate::overview_snapshot::Transport for Profile {
+    fn initial_overview(&self, timeout: Duration) -> Result<(u16, Value)> {
+        self.request("GET", "/v1/overview", None, timeout)
+    }
+    fn snapshot(&self, method: &str, path: &str, timeout: Duration) -> Result<(u16, Value)> {
+        self.snapshot_request(method, path, timeout)
+    }
+}
+
 impl Profile {
     fn signing(&self) -> Result<SigningKey> {
         Ok(SigningKey::from_slice(&B64.decode(&self.signing_key)?)?)
@@ -374,6 +383,29 @@ impl Profile {
         TRANSPORT.get_or_init(|| RelayTransport::new(RELAY)).call(
             self, &token.sub, &token.access_token, method, path, body, deadline,
         )
+    }
+
+    /// Snapshot fragments and cleanup never refresh account tokens mid-read.
+    /// Every call still checks the persisted session generation, so logout or
+    /// changing accounts cannot silently continue with a cached credential.
+    pub(crate) fn snapshot_request(
+        &self,
+        method: &str,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<(u16, Value)> {
+        anyhow::ensure!(matches!(method, "GET" | "DELETE")
+            && (path == "/v1/service/overview-snapshot" || path.starts_with("/v1/service/overview-snapshot/")),
+            "invalid snapshot read operation");
+        self.request_via(method, path, None, Instant::now() + timeout, |method, path, body, deadline| {
+            remaining(deadline)?;
+            let token = crate::account::token_for_service_cached_only()?;
+            remaining(deadline)?;
+            static TRANSPORT: OnceLock<RelayTransport> = OnceLock::new();
+            TRANSPORT.get_or_init(|| RelayTransport::new(RELAY)).call(
+                self, &token.sub, &token.access_token, method, path, body, deadline,
+            )
+        })
     }
 
     pub fn request(

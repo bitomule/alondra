@@ -558,6 +558,11 @@ impl Client {
     }
 
     pub fn overview(&self) -> Result<Overview> {
+        if let Some(service) = &self.service {
+            let (status, value) = crate::overview_snapshot::read_transport(service.as_ref(), self.timeout)?;
+            if status >= 400 { return Err(Self::failure(status, serde_json::to_string(&value)?)); }
+            return Ok(serde_json::from_value(value)?);
+        }
         self.get("/v1/overview")
     }
 }
