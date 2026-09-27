@@ -264,3 +264,90 @@ test('replacing a ready invitation clears its entered name and password', async 
  await expect(page.getByLabel('Elige una contraseña')).toHaveValue('');
  expect(new URL(page.url()).hash).toBe('');
 });
+
+test('device name retry preserves target, revision, normalized payload and key after a lost response', async ({ page }, info) => {
+ await session(page, false);
+ let label: string | null = null; let revision = 0;
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [{ mac_id: 'mac-alias-fixture', label, label_revision: revision, status: 'active', reconciliation: null, clients: [] }] } }));
+ const writes: { key: string; body: unknown }[] = [];
+ await page.route('**/v1/account/devices/macs/mac-alias-fixture/label', route => {
+  expect(route.request().method()).toBe('POST');
+  expect(route.request().headers()['x-csrf-token']).toBe('synthetic-csrf');
+  writes.push({ key: route.request().headers()['idempotency-key'], body: route.request().postDataJSON() });
+  label = 'Portátil de José'; revision = 1;
+  if (writes.length === 1) return route.abort('connectionreset');
+  return route.fulfill({ status: 409, json: { error: { code: 'action_already_applied' } } });
+ });
+ await page.goto('/account');
+ await page.getByRole('button', { name: 'Cambiar nombre del Mac' }).click();
+ await page.getByLabel('Nombre del Mac', { exact: true }).fill('  Portátil de Jose\u0301  ');
+ await page.getByRole('button', { name: 'Guardar nombre', exact: true }).click();
+ await expect(page.getByRole('alert')).toContainText('No podemos confirmar');
+ await expect(page.getByLabel('Nombre del Mac', { exact: true })).toBeDisabled();
+ expect(writes).toHaveLength(1);
+ expect(writes[0].body).toEqual({ label: 'Portátil de José', expected_revision: 0 });
+ await page.getByRole('button', { name: 'Reintentar el mismo cambio' }).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.getByRole('heading', { name: 'Portátil de José' })).toBeVisible();
+ expect(writes).toHaveLength(2); expect(writes[1]).toEqual(writes[0]);
+ await page.setViewportSize({ width: 375, height: 900 });
+ await page.getByRole('button', { name: 'Cambiar nombre del Mac' }).click();
+ await expect(page.getByText('Este nombre se guarda en tu cuenta', { exact: false })).toBeVisible();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await page.screenshot({ path: info.outputPath('device-name-mobile.png'), fullPage: true });
+});
+
+test('device name conflict never overwrites a newer revision and revoked devices cannot be renamed', async ({ page }) => {
+ await session(page, false);
+ let label = 'Anterior'; let revision = 1; let reads = 0;
+ await page.route('**/v1/account/devices', route => { reads++; return route.fulfill({ json: { macs: [
+  { mac_id: 'mac-current', label, label_revision: revision, status: 'active', reconciliation: null, clients: [] },
+  { mac_id: 'mac-revoked', label: 'Retirado', label_revision: 2, status: 'revoked', reconciliation: 'completed', clients: [] },
+ ] } }); });
+ let writes = 0;
+ await page.route('**/v1/account/devices/macs/mac-current/label', route => {
+  writes++; expect(route.request().postDataJSON()).toEqual({ label: 'Mi propuesta', expected_revision: 1 });
+  label = 'Cambio desde otra sesión'; revision = 2;
+  return route.fulfill({ status: 409, json: { error: { code: 'state_conflict' } } });
+ });
+ await page.goto('/account');
+ await expect(page.getByRole('button', { name: 'Cambiar nombre del Mac' })).toHaveCount(1);
+ await page.getByRole('button', { name: 'Cambiar nombre del Mac' }).click();
+ await page.getByLabel('Nombre del Mac', { exact: true }).fill('Mi propuesta');
+ // A background refetch must not change the revision of an already-open draft.
+ const beforeRefresh = reads;
+ label = 'Cambio desde otra sesión'; revision = 2;
+ await page.evaluate(() => window.dispatchEvent(new Event('visibilitychange')));
+ await expect.poll(() => reads).toBeGreaterThan(beforeRefresh);
+ await expect(page.locator('h3').filter({ hasText: 'Cambio desde otra sesión' })).toHaveText('Cambio desde otra sesión');
+ await expect(page.getByLabel('Nombre del Mac', { exact: true })).toHaveValue('Mi propuesta');
+ await page.getByRole('button', { name: 'Guardar nombre', exact: true }).click();
+ await expect(page.getByRole('alert')).toContainText('otra sesión');
+ await expect(page.getByRole('button', { name: 'Reintentar el mismo cambio' })).toHaveCount(0);
+ await page.getByRole('button', { name: 'Actualizar lista', exact: true }).click();
+ await expect(page.getByRole('heading', { name: 'Cambio desde otra sesión' })).toBeVisible();
+ expect(writes).toBe(1);
+});
+
+test('client name uses its own link, rejects controls and can clear an alias', async ({ page }) => {
+ await session(page, false);
+ let label: string | null = 'Teléfono';
+ await page.route('**/v1/account/devices', route => route.fulfill({ json: { macs: [{ mac_id: 'mac-parent', label: 'Mac', label_revision: 1, status: 'active', reconciliation: null,
+  clients: [{ device_id: 'client-link-one', label, label_revision: 3, status: 'active', reconciliation: null }] }] } }));
+ let writes = 0;
+ await page.route('**/v1/account/devices/clients/client-link-one/label', route => {
+  writes++; expect(route.request().postDataJSON()).toEqual({ label: null, expected_revision: 3 }); label = null;
+  return route.fulfill({ json: { label: null, label_revision: 4 } });
+ });
+ await page.goto('/account');
+ await page.getByText('Identidad y dispositivos vinculados (1)').click();
+ await page.getByRole('button', { name: 'Cambiar nombre del cliente' }).click();
+ await page.getByLabel('Nombre del cliente', { exact: true }).fill('Nombre\u202E');
+ await expect(page.getByRole('button', { name: 'Guardar nombre', exact: true })).toBeDisabled();
+ expect(writes).toBe(0);
+ await page.getByLabel('Nombre del cliente', { exact: true }).fill('');
+ await page.getByRole('button', { name: 'Guardar nombre', exact: true }).click();
+ await expect(page.getByRole('dialog')).toHaveCount(0);
+ await expect(page.getByText('Cliente vinculado', { exact: true })).toBeVisible();
+ expect(writes).toBe(1);
+});

@@ -249,6 +249,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
         3,
         include_str!("../../migrations/0003_device_revocations.sql"),
     ),
+    (4, include_str!("../../migrations/0004_device_labels.sql")),
 ];
 
 // One transaction and advisory lock cover version checks and every new DDL.
@@ -562,6 +563,12 @@ impl Management {
             .fetch_one(&mut *tx)
             .await?;
             ensure!(admins > 1, DomainError::Forbidden);
+        }
+        if delete {
+            // Display aliases are not authorization tombstones. Erase them in the
+            // same transaction as account deletion, including a repeated cleanup.
+            sqlx::query("DELETE FROM management_device_labels WHERE account_id=$1")
+                .bind(id).execute(&mut *tx).await?;
         }
         if account.status == "deleted" || account.status == "deleting" && !delete {
             tx.commit().await?;

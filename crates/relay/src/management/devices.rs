@@ -121,3 +121,138 @@ impl Management {
         Ok(())
     }
 }
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceLabel {
+    pub kind: String,
+    pub device_id: String,
+    pub mac_id: String,
+    pub label: Option<String>,
+    pub label_revision: i64,
+}
+
+pub fn normalized_label(value: Option<&str>) -> Result<Option<String>> {
+    use unicode_normalization::UnicodeNormalization;
+    let Some(value) = value else { return Ok(None) };
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    // Reject rather than erase invisible control input; aliases are never trust IDs.
+    ensure!(
+        !value.chars().any(|c| matches!(
+            c.general_category(),
+            GeneralCategory::Control | GeneralCategory::Format
+        )),
+        DomainError::InvalidInput
+    );
+    let label: String = value.trim().nfc().collect();
+    ensure!(label.chars().count() <= 128, DomainError::InvalidInput);
+    Ok((!label.is_empty()).then_some(label))
+}
+
+impl Management {
+    pub async fn device_labels(&self, actor: Uuid) -> Result<Vec<DeviceLabel>> {
+        let mut tx = self.actor_tx(actor, false).await?;
+        let rows=sqlx::query("SELECT kind,device_id,mac_id,label,revision FROM management_device_labels WHERE account_id=$1 ORDER BY kind,device_id")
+            .bind(actor).fetch_all(&mut *tx).await?;
+        let labels = rows
+            .iter()
+            .map(|row| {
+                Ok(DeviceLabel {
+                    kind: row.try_get("kind")?,
+                    device_id: row.try_get("device_id")?,
+                    mac_id: row.try_get("mac_id")?,
+                    label: row.try_get("label")?,
+                    label_revision: row.try_get("revision")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        tx.commit().await?;
+        Ok(labels)
+    }
+
+    /// IDs come from an owner-scoped registry lookup. Recheck that lookup while the
+    /// account transaction serializes label writes with lifecycle/revocation commits.
+    pub async fn rename_device_request(
+        &self,
+        actor: Uuid,
+        kind: &str,
+        id: &str,
+        mac: &str,
+        label: Option<&str>,
+        expected_revision: i64,
+        request: &AdminRequest,
+        still_owned: impl FnOnce() -> Result<bool>,
+    ) -> Result<DeviceLabel> {
+        ensure!(
+            matches!(kind, "mac" | "client")
+                && !id.is_empty()
+                && id.len() <= 128
+                && !mac.is_empty()
+                && mac.len() <= 128
+                && (kind != "mac" || id == mac)
+                && expected_revision >= 0
+                && expected_revision < i64::MAX,
+            DomainError::InvalidInput
+        );
+        let label = normalized_label(label)?;
+        let mut tx = self.actor_tx(actor, false).await?;
+        ensure!(still_owned()?, DomainError::NotFound);
+        let revoked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM management_device_revocations WHERE (kind='mac' AND device_id=$1) OR (kind=$2 AND device_id=$3))")
+            .bind(mac).bind(kind).bind(id).fetch_one(&mut *tx).await?;
+        ensure!(!revoked, DomainError::NotFound);
+        request.reserve(&mut tx, actor).await?;
+        let current=sqlx::query("SELECT mac_id,revision FROM management_device_labels WHERE account_id=$1 AND kind=$2 AND device_id=$3 FOR UPDATE")
+            .bind(actor).bind(kind).bind(id).fetch_optional(&mut *tx).await?;
+        if let Some(row) = current {
+            ensure!(
+                row.try_get::<String, _>("mac_id")? == mac,
+                DomainError::NotFound
+            );
+            ensure!(
+                row.try_get::<i64, _>("revision")? == expected_revision,
+                DomainError::Conflict
+            );
+        } else {
+            ensure!(expected_revision == 0, DomainError::Conflict);
+        }
+        let revision = expected_revision + 1;
+        sqlx::query("INSERT INTO management_device_labels(account_id,kind,device_id,mac_id,label,revision) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(account_id,kind,device_id) DO UPDATE SET label=EXCLUDED.label,revision=EXCLUDED.revision")
+            .bind(actor).bind(kind).bind(id).bind(mac).bind(&label).bind(revision).execute(&mut *tx).await?;
+        audit(&mut tx, Some(actor), "device_label", actor).await?;
+        tx.commit().await?;
+        Ok(DeviceLabel {
+            kind: kind.into(),
+            device_id: id.into(),
+            mac_id: mac.into(),
+            label,
+            label_revision: revision,
+        })
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    #[test]
+    fn labels_normalize_without_accepting_hidden_controls_or_excess_length() {
+        assert_eq!(
+            normalized_label(Some("  Cafe\u{301}  "))
+                .unwrap()
+                .as_deref(),
+            Some("Café")
+        );
+        assert_eq!(normalized_label(Some("  ")).unwrap(), None);
+        assert_eq!(normalized_label(None).unwrap(), None);
+        assert!(normalized_label(Some(&"é".repeat(128))).is_ok());
+        assert!(normalized_label(Some(&"é".repeat(129))).is_err());
+        for value in [
+            "A\nB",
+            "A\u{0}B",
+            "A\u{202e}B",
+            "A\u{2066}B",
+            "A\u{200d}B",
+            "A\u{ad}B",
+        ] {
+            assert!(normalized_label(Some(value)).is_err());
+        }
+    }
+}

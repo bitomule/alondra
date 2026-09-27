@@ -20,6 +20,9 @@ pub(crate) async fn fixture_for_identity(
     sqlx::raw_sql(include_str!("../../migrations/0003_device_revocations.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("../../migrations/0004_device_labels.sql"))
+        .execute(pool)
+        .await?;
     let actor = management.bootstrap(subject, "Admin").await?;
     Ok((management, actor, schema))
 }
@@ -554,11 +557,12 @@ async fn migrations_empty_and_concurrent_start_create_complete_schema_once() -> 
         sqlx::query_scalar("SELECT version FROM management_schema ORDER BY version")
             .fetch_all(&db.pool)
             .await?;
-    assert_eq!(versions, vec![1, 2, 3]);
+    assert_eq!(versions, vec![1, 2, 3, 4]);
     for table in [
         "management_accounts",
         "web_sessions",
         "management_device_revocations",
+        "management_device_labels",
     ] {
         let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
             .bind(table)
@@ -572,11 +576,11 @@ async fn migrations_empty_and_concurrent_start_create_complete_schema_once() -> 
 #[tokio::test]
 #[ignore = "requires disposable local PostgreSQL"]
 async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> {
-    for prefix in [1, 2] {
+    for prefix in [1, 2, 3] {
         let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
         migrate(&db.pool, &MIGRATIONS[..prefix]).await?;
         let account = db.bootstrap("migration-admin", "Existing admin").await?;
-        if prefix == 2 {
+        if prefix >= 2 {
             sqlx::query("INSERT INTO web_login_flows(cookie_hash,state_hash,sealed,expires_ms) VALUES($1,$2,$3,9000)")
                 .bind(vec![1u8;32]).bind(vec![2u8;32]).bind(b"opaque-existing-ciphertext".to_vec()).execute(&db.pool).await?;
         }
@@ -588,7 +592,7 @@ async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> 
                 .id,
             account.id
         );
-        if prefix == 2 {
+        if prefix >= 2 {
             let sealed: Vec<u8> = sqlx::query_scalar("SELECT sealed FROM web_login_flows")
                 .fetch_one(&db.pool)
                 .await?;
@@ -597,7 +601,7 @@ async fn migrations_upgrade_preserves_account_and_browser_state() -> Result<()> 
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM management_schema")
             .fetch_one(&db.pool)
             .await?;
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
         cleanup(db, schema).await?;
     }
     Ok(())
@@ -691,5 +695,225 @@ async fn management_reconciliation_lookup_requires_unaccepted_invitation_without
         }
         assert_eq!(count, 3);
     }
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn management_device_labels_cas_replay_revocation_and_persistence() -> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    let invitation = db
+        .create_invitation(admin.id, "labels-other@example.invalid", 300)
+        .await?;
+    let other = db
+        .reserve_acceptance(&invitation.token, "Other")
+        .await?
+        .complete("other-label-sub")
+        .await?;
+    let request = |key: &str, label: Option<&str>, revision: i64| {
+        AdminRequest::new(
+            key,
+            "rename_device",
+            &serde_json::json!({"label":label,"expected_revision":revision}),
+            false,
+        )
+    };
+    let first = request("label-request-first-0001", Some("  Cafe\u{301}  "), 0)?;
+    let result = db
+        .rename_device_request(
+            admin.id,
+            "mac",
+            "mac-a",
+            "mac-a",
+            Some("  Cafe\u{301}  "),
+            0,
+            &first,
+            || Ok(true),
+        )
+        .await?;
+    assert_eq!(result.label.as_deref(), Some("Café"));
+    assert_eq!(result.label_revision, 1);
+    let replay = db
+        .rename_device_request(
+            admin.id,
+            "mac",
+            "mac-a",
+            "mac-a",
+            Some("  Cafe\u{301}  "),
+            0,
+            &first,
+            || Ok(true),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        replay.downcast_ref::<DomainError>(),
+        Some(&DomainError::AlreadyApplied)
+    );
+    let changed = request("label-request-first-0001", Some("Different"), 1)?;
+    assert_eq!(
+        db.rename_device_request(
+            admin.id,
+            "mac",
+            "mac-a",
+            "mac-a",
+            Some("Different"),
+            1,
+            &changed,
+            || Ok(true)
+        )
+        .await
+        .unwrap_err()
+        .downcast_ref::<DomainError>(),
+        Some(&DomainError::IdempotencyConflict)
+    );
+    let a = request("label-concurrent-request-a", Some("A"), 1)?;
+    let b = request("label-concurrent-request-b", Some("B"), 1)?;
+    let (a, b) = tokio::join!(
+        db.rename_device_request(admin.id, "mac", "mac-a", "mac-a", Some("A"), 1, &a, || Ok(
+            true
+        )),
+        db.rename_device_request(admin.id, "mac", "mac-a", "mac-a", Some("B"), 1, &b, || Ok(
+            true
+        ))
+    );
+    assert_eq!(
+        usize::from(a.is_ok()) + usize::from(b.is_ok()),
+        1,
+        "two concurrent editors must not both win"
+    );
+    let failure = if let Err(error) = a {
+        error
+    } else {
+        b.unwrap_err()
+    };
+    assert_eq!(
+        failure.downcast_ref::<DomainError>(),
+        Some(&DomainError::Conflict)
+    );
+    let clear = request("label-clear-request-00001", None, 2)?;
+    db.rename_device_request(admin.id, "mac", "mac-a", "mac-a", None, 2, &clear, || {
+        Ok(true)
+    })
+    .await?;
+    // New management handle reads committed state; clearing never resets the CAS revision.
+    let persisted = db.clone().device_labels(admin.id).await?;
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].label, None);
+    assert_eq!(persisted[0].label_revision, 3);
+    assert!(db.device_labels(other.id).await?.is_empty());
+    let foreign = request("label-foreign-request-001", Some("Foreign"), 0)?;
+    assert_eq!(
+        db.rename_device_request(
+            other.id,
+            "mac",
+            "mac-a",
+            "mac-a",
+            Some("Foreign"),
+            0,
+            &foreign,
+            || Ok(false)
+        )
+        .await
+        .unwrap_err()
+        .downcast_ref::<DomainError>(),
+        Some(&DomainError::NotFound)
+    );
+    let revoke = AdminRequest::new(
+        "label-revoke-request-0001",
+        "revoke_device",
+        &serde_json::json!({}),
+        false,
+    )?;
+    db.revoke_device_request(admin.id, "mac", "mac-a", "mac-a", &[], &revoke)
+        .await?;
+    let after = request("label-after-revoke-00001", Some("Forbidden"), 3)?;
+    assert_eq!(
+        db.rename_device_request(
+            admin.id,
+            "mac",
+            "mac-a",
+            "mac-a",
+            Some("Forbidden"),
+            3,
+            &after,
+            || Ok(true)
+        )
+        .await
+        .unwrap_err()
+        .downcast_ref::<DomainError>(),
+        Some(&DomainError::NotFound)
+    );
+    // Alias text is account metadata, never copied into audit logs or idempotency records.
+    let actions: Vec<String> =
+        sqlx::query_scalar("SELECT action FROM management_audit WHERE action='device_label'")
+            .fetch_all(&db.pool)
+            .await?;
+    assert_eq!(actions.len(), 3);
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn management_device_labels_delete_is_atomic_and_account_scoped() -> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    let invite = db
+        .create_invitation(admin.id, "delete-label@example.invalid", 300)
+        .await?;
+    let other = db
+        .reserve_acceptance(&invite.token, "Other")
+        .await?
+        .complete("delete-label-sub")
+        .await?;
+    for (actor, id) in [(admin.id, "admin-mac"), (other.id, "other-mac")] {
+        let request = AdminRequest::new(
+            "label-deletion-setup-0001",
+            "rename_device",
+            &serde_json::json!({}),
+            false,
+        )?;
+        db.rename_device_request(
+            actor,
+            "mac",
+            id,
+            id,
+            Some("Private alias"),
+            0,
+            &request,
+            || Ok(true),
+        )
+        .await?;
+    }
+    db.disable_account(admin.id, other.id, false).await?;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM management_device_labels WHERE account_id=$1"
+        )
+        .bind(other.id)
+        .fetch_one(&db.pool)
+        .await?,
+        1,
+        "temporary disable preserves alias"
+    );
+    // Force a later transaction statement to fail: deletion must not partially
+    // erase aliases while leaving the account transition uncommitted.
+    sqlx::raw_sql("ALTER TABLE management_audit ADD CONSTRAINT synthetic_delete_failure CHECK(action != 'account_delete') NOT VALID").execute(&db.pool).await?;
+    assert!(db.disable_account(admin.id, other.id, true).await.is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM management_device_labels")
+            .fetch_one(&db.pool)
+            .await?,
+        2
+    );
+    sqlx::raw_sql("ALTER TABLE management_audit DROP CONSTRAINT synthetic_delete_failure")
+        .execute(&db.pool)
+        .await?;
+    db.disable_account(admin.id, other.id, true).await?;
+    db.disable_account(admin.id, other.id, true).await?;
+    let remaining: Vec<Uuid> =
+        sqlx::query_scalar("SELECT account_id FROM management_device_labels")
+            .fetch_all(&db.pool)
+            .await?;
+    assert_eq!(remaining, vec![admin.id]);
     cleanup(db, schema).await
 }
