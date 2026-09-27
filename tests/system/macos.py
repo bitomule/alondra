@@ -2,6 +2,8 @@
 """Opt-in macOS demo gate: clone a prepared Tart base, run MAV, retain evidence, delete only this run's clone."""
 import argparse
 import base64
+from datetime import datetime
+import math
 import fcntl
 import hashlib
 import json
@@ -111,19 +113,47 @@ def validate_report(folder):
     run = json.loads((reports[0].parent / 'run.json').read_text())
     if run.get('status') != 'passed' or run.get('skipped'):
         raise GateError('required demo steps were skipped')
-    # MAV's semantic parser omits unindexed AXStaticText from text waits. Preserve
-    # the actual banner assertion against the driver's raw, recorded AX state.
-    banner_seen = False
-    for path in reports[0].parent.glob('video/turn-*/app_state.json'):
-        if path.stat().st_size > 2 * 1024**2:
-            raise GateError('oversized raw AX state')
-        tree = json.loads(path.read_text()).get('tree_markdown', '')
-        if ('AXStaticText = "Demo · Sample data"' in tree
-                and 'AXButton (Reset demo)' in tree and 'AXButton (Exit demo)' in tree):
-            banner_seen = True
-            break
-    if not banner_seen:
-        raise GateError('demo banner was not recorded in raw AX evidence')
+    # Correlate each AXPress's own after-state with its named capture interval.
+    # A banner from entry must never satisfy the post-reset assertion.
+    named = {step['name']: step for step in steps}
+    for before, after, identifier in [('clean-onboarding', 'demo-open', 'demo.enter'),
+                                       ('demo-open', 'demo-reset', 'demo.reset')]:
+        try:
+            start = datetime.fromisoformat(named[before]['created_at'].replace('Z', '+00:00')).timestamp()
+            end = datetime.fromisoformat(named[after]['created_at'].replace('Z', '+00:00')).timestamp() + 1
+        except (KeyError, ValueError, TypeError) as error:
+            raise GateError('missing capture timestamps for banner correlation') from error
+        matched = False
+        for action_path in reports[0].parent.glob('video/turn-*/action.json'):
+            def read_state(path):
+                if path.stat().st_size > 2 * 1024**2:
+                    raise GateError('oversized raw AX state')
+                return json.loads(path.read_text())
+            action = read_state(action_path)
+            if action.get('tool') != 'click' or action.get('result_error') is not False:
+                continue
+            try:
+                timestamp = float(action['timestamp'])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if not math.isfinite(timestamp) or not start <= timestamp <= end:
+                continue
+            token = action.get('arguments', {}).get('element_token', '')
+            match = re.fullmatch(r'[^:]+:([0-9]+)', token)
+            if not match:
+                continue
+            before_tree = read_state(action_path.parent / 'before_state.json').get('tree_markdown', '')
+            button = re.compile(r'^\s*- \[' + match[1] + r'\] AXButton\b[^\n]*\[id='
+                                + re.escape(identifier) + r'(?:\s|\])', re.MULTILINE)
+            if not button.search(before_tree):
+                continue
+            after_tree = read_state(action_path.parent / 'after_state.json').get('tree_markdown', '')
+            if ('AXStaticText = "Demo · Sample data"' in after_tree
+                    and 'AXButton (Reset demo)' in after_tree and 'AXButton (Exit demo)' in after_tree):
+                matched = True
+                break
+        if not matched:
+            raise GateError('demo banner missing from correlated ' + after + ' AX action')
     return reports[0], report
 
 

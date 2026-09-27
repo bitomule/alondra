@@ -52,12 +52,18 @@ class MacGateTests(unittest.TestCase):
             folder = Path(temp)
             run = folder / 'project/.mav/runs/one'
             run.mkdir(parents=True)
-            good = {'steps': [{'name': n, 'image': {'ok': True}} for n in ('clean-onboarding', 'demo-open', 'demo-reset', 'demo-exit')],
+            good = {'steps': [{'name': n, 'image': {'ok': True}, 'created_at': f'2026-09-27T10:00:{i * 10:02d}Z'} for i,n in enumerate(('clean-onboarding', 'demo-open', 'demo-reset', 'demo-exit'))],
                     'crashes': [], 'invalid_step_count': 0, 'video_status': 'accepted'}
             (run / 'run.json').write_text(json.dumps({'status': 'passed', 'skipped': []}))
-            raw = run / 'video/turn-00001/app_state.json'
-            raw.parent.mkdir(parents=True)
-            raw.write_text(json.dumps({'tree_markdown': 'AXStaticText = "Demo · Sample data"\n[1] AXButton (Reset demo)\n[2] AXButton (Exit demo)'}))
+            for i, identifier in enumerate(('demo.enter', 'demo.reset')):
+                turn = run / f'video/turn-{i:05d}'
+                turn.mkdir(parents=True)
+                timestamp = m.datetime.fromisoformat(f'2026-09-27T10:00:{i * 10 + 5:02d}+00:00').timestamp()
+                (turn / 'action.json').write_text(json.dumps({'tool': 'click', 'result_error': False,
+                    'timestamp': str(timestamp), 'arguments': {'element_token': 'session:1'}}))
+                (turn / 'before_state.json').write_text(json.dumps({'tree_markdown': f'- [1] AXButton (Demo) [id={identifier} actions=[press]]'}))
+                (turn / 'after_state.json').write_text(json.dumps({'tree_markdown': 'AXStaticText = "Demo · Sample data"\n[1] AXButton (Reset demo)\n[2] AXButton (Exit demo)'}))
+            raw = run / 'video/turn-00001/after_state.json'  # Only reset loses its banner below.
             for field, bad in [('video_status', 'invalid'), ('crashes', ['crash.ips']), ('invalid_step_count', 1), ('steps', [])]:
                 (run / 'report.json').write_text(json.dumps({**good, field: bad}))
                 with self.subTest(field=field), self.assertRaises(m.GateError):
