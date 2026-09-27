@@ -1228,6 +1228,7 @@ impl Journal {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
     fn reserve_enrollment(&self, id: &str, signing_key: &[u8]) -> Result<EnrollmentDecision> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().context("journal home missing")?)?;
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let previous: Option<(Vec<u8>, String)> = tx
@@ -1255,6 +1256,7 @@ impl Journal {
         Ok(state)
     }
     fn activate_enrollment(&self, id: &str) -> Result<()> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().context("journal home missing")?)?;
         let c = self.db()?;
         let n = c.execute(
             "UPDATE service_enrollments SET state='active' WHERE device_id=?1 AND state='pending'",
@@ -1266,6 +1268,7 @@ impl Journal {
         Ok(())
     }
     fn revoke_enrollment(&self, id: &str) -> Result<()> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().context("journal home missing")?)?;
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute(

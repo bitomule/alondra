@@ -485,7 +485,14 @@ async fn command(
         };
         let user_id = format!("device:{}", signed.device_id);
         hub.domain
-            .execute(&Actor::User { user_id }, &envelope, None, || Ok(()))
+            .execute(&Actor::User { user_id }, &envelope, None, || {
+                let persisted = crate::auth::Auth::open(&hub.home)?;
+                if !persisted.list().iter().any(|device| device.id == signed.device_id
+                    && device.public_key == signed.public_key) {
+                    return Err(DomainError::new("forbidden", "signed device approval was revoked").into());
+                }
+                Ok(())
+            })
     };
     match result {
         Ok(outcome) => Json(outcome).into_response(),
@@ -519,7 +526,7 @@ pub fn encrypted_command(
         },
         &envelope,
         Some(identity),
-        authorize,
+        || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
     );
     Ok(match result {
         Ok(outcome) => json!({"status":200,"body":outcome}),

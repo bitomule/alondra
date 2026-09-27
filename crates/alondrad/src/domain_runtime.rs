@@ -3,12 +3,13 @@ use crate::domain_authority::{Authority, Capability, Principal};
 use crate::domain_store::{DomainStore, StoreError, TransportIdentity};
 use alondra_core::domain_v2::*;
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::sync::watch;
 
 pub struct DomainRuntime {
     pub(crate) store: Mutex<DomainStore>,
+    approval_home: PathBuf,
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
 }
@@ -19,6 +20,7 @@ impl DomainRuntime {
         let (changed, _) = watch::channel(state.revision);
         Ok(Self {
             store: Mutex::new(store),
+            approval_home: home.to_path_buf(),
             authority: Mutex::new(Authority::new(state.data_epoch.0)),
             changed,
         })
@@ -72,9 +74,18 @@ impl DomainRuntime {
         actor: &Actor,
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
-        authorize: impl FnOnce() -> Result<()>,
+        authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
     ) -> Result<CommandOutcome, StoreError> {
         let mut store = self.store.lock().expect("domain store poisoned");
+        // Lock order is domain store → approval lease. Revocation takes only the
+        // exclusive approval lease and never waits for the domain store.
+        let _approval = if matches!(actor, Actor::User { .. }) {
+            Some(crate::approval_lease::ApprovalLease::shared(
+                &self.approval_home,
+            )?)
+        } else {
+            None
+        };
         authorize()?;
         let commit = store.execute_authenticated(actor, envelope, transport)?;
         if !commit.replayed && commit.outcome.changed {
@@ -186,5 +197,109 @@ fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {
     match &state.interactions.get(id)?.scope {
         Scope::Task { task_id } => Some(task_id.clone()),
         Scope::Orchestrator { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use crate::auth::Auth;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use p256::ecdsa::SigningKey;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn external_revocation_waits_for_authorized_domain_commit() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-domain-lease-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let auth = Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[9; 32]).unwrap();
+        let device = auth
+            .pair(
+                &auth.new_pairing_code(),
+                "Test Phone",
+                &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
+            )
+            .unwrap();
+        let runtime = Arc::new(DomainRuntime::open(&home).unwrap());
+        let state = runtime.state().unwrap();
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: "command-lease".into(),
+            expected_revision: state.revision,
+            command: Command::CreateRequest {
+                request_id: "request-lease".into(),
+                body: "Work".into(),
+            },
+        };
+        let (checked_tx, checked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let writing = runtime.clone();
+        let writer_home = home.clone();
+        let device_id = device.id.clone();
+        let writer = std::thread::spawn(move || {
+            writing.execute(
+                &Actor::User {
+                    user_id: format!("device:{device_id}"),
+                },
+                &envelope,
+                None,
+                || {
+                    assert!(
+                        Auth::open(&writer_home)
+                            .unwrap()
+                            .list()
+                            .iter()
+                            .any(|entry| entry.id == device_id)
+                    );
+                    checked_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    Ok(())
+                },
+            )
+        });
+        checked_rx.recv().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (revoked_tx, revoked_rx) = mpsc::channel();
+        let revoker_home = home.clone();
+        let revoke_id = device.id.clone();
+        let revoker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let changed = Auth::open(&revoker_home)
+                .unwrap()
+                .revoke(&revoke_id)
+                .unwrap();
+            revoked_tx.send(changed).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            revoked_rx.recv_timeout(Duration::from_millis(30)).is_err(),
+            "revoke returned while writer still held approval lease"
+        );
+        resume_tx.send(()).unwrap();
+        assert!(writer.join().unwrap().unwrap().changed);
+        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        assert!(
+            runtime
+                .state()
+                .unwrap()
+                .requests
+                .contains_key(&"request-lease".into())
+        );
+        assert!(
+            !Auth::open(&home)
+                .unwrap()
+                .list()
+                .iter()
+                .any(|entry| entry.id == device.id)
+        );
+        drop(runtime);
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
