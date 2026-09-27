@@ -42,8 +42,8 @@ pub async fn step(server: &Server) -> Result<bool> {
         return Ok(false);
     };
     match job.action.as_str() {
-        "keycloak_disable" => keycloak.disable(job.account_id).await?,
-        "keycloak_delete" => keycloak.delete(job.account_id).await?,
+        "keycloak_disable" => keycloak.disable(&job).await?,
+        "keycloak_delete" => keycloak.delete(&job).await?,
         "relay_revoke" => {
             if let Some(owner) = &job.subject {
                 let _gate = server.device_gate.write().await;
