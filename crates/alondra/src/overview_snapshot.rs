@@ -139,7 +139,11 @@ fn assemble(
         );
         chunk = serde_json::from_value(value).context("invalid overview snapshot chunk")?;
     }
-    let actual = format!("{:x}", hash.finalize());
+    let actual = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     ensure!(
         actual == expected_hash,
         "overview snapshot digest mismatch; no partial overview was applied"
@@ -156,7 +160,7 @@ mod tests {
         serde_json::to_vec(&json!({"tick": 42, "document": "á".repeat(len)})).unwrap()
     }
     fn chunk(bytes: &[u8], offset: usize) -> Value {
-        json!({"schema":1,"snapshot_id":ID,"total_bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(bytes)),
+        json!({"schema":1,"snapshot_id":ID,"total_bytes":bytes.len(),"sha256":Sha256::digest(bytes).iter().map(|byte|format!("{byte:02x}")).collect::<String>(),
             "chunk_bytes":CHUNK_BYTES,"offset":offset,"data":B64.encode(&bytes[offset..(offset+CHUNK_BYTES).min(bytes.len())])})
     }
     fn run(
