@@ -26,6 +26,10 @@ def receipt(path):
     owned = json.loads(ownership.read_text())
     if any(owned.get(k) != value[k] for k in ('vm', 'owner_token', 'tart_home', 'source')):
         raise m.GateError('recovery ownership mismatch')
+    if value.get('profile') not in ('app', 'cli', 'visual'):
+        raise m.GateError('unexpected recovery profile')
+    if value['profile'] == 'visual' and not re.fullmatch('[a-f0-9]{64}', value.get('input_executable_sha256') or ''):
+        raise m.GateError('visual recovery requires original executable hash')
     return value
 
 
@@ -47,6 +51,7 @@ def recover(args):
     gate.recovery_descriptor = saved.get('evidence_descriptor')
     gate.result.update(source=saved['source'], vm=gate.name, recovery_of=str(args.receipt), status='failed',
                        guest_failure=saved.get('guest_failure'),
+                       input_executable_sha256=saved.get('input_executable_sha256'),
                        evidence_descriptor=saved.get('evidence_descriptor'))
     # Receipt ownership remains rooted in the original run, including on a failed retry.
     (gate.out / 'ownership.json').write_text((Path(saved['original_output']) / 'ownership.json').read_text())
@@ -84,6 +89,10 @@ def recover(args):
         if saved['profile'] == 'app':
             path, _ = m.validate_report(gate.out / 'evidence')
             gate.result['mav_report_sha256'] = m.digest(path)
+        elif saved['profile'] == 'visual':
+            gate.result['visual'] = m.validate_visual(gate.out / 'evidence')
+            if gate.result['visual'].get('binarySHA256') != saved['input_executable_sha256']:
+                raise m.GateError('visual guest ran a different executable')
         else:
             cli = json.loads((gate.out / 'evidence/project/cli-result.json').read_text())
             if cli.get('status') != 'passed' or cli.get('version') != saved['brew_version'] or cli.get('cleanup') is not True:

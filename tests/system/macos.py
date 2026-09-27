@@ -454,6 +454,7 @@ class Gate:
                                'original_output': str(self.out), 'source': self.result.get('source'),
                                'profile': self.args.profile, 'brew_version': getattr(self.args, 'brew_version', None),
                                'guest_failure': self.result.get('guest_failure'),
+                               'input_executable_sha256': self.result.get('input_executable_sha256'),
                                'evidence_descriptor': self.result.get('evidence_descriptor')}
                     (self.out / 'recovery.json').write_text(json.dumps(receipt, indent=2) + '\n')
                     self.result['cleanup'].update(owned_clone_deleted=False, owned_clone_stopped=True,

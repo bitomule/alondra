@@ -76,6 +76,19 @@ The host validates all three scenario reports again and compares the guest binar
 hash with the input artifact. No personal app or auth state is staged.
 Do not use a personal simulator, the installed Alondra app or TestFlight binaries.
 
+If collection fails, the shared runner stops and retains only its owned clone
+with `recovery.json`. Use the explicit `tests/system/macos_recover.py` procedure
+in `tests/system/macos/README.md`; it retrieves the frozen evidence without
+rerunning the app. Visual recovery repeats the same scenario/MAV validation and
+requires the original executable hash. An original guest failure remains failed,
+including across interrupted recovery attempts. A missing executable pin fails
+before boot; do not manufacture a pin for an older receipt.
+
+The runner commit may differ from the recorded `--app-source` when only runner
+code changes. Reuse the preserved Debug artifact and its manifest in that case;
+record both commits and the matching executable hash. Runner-only changes do not
+claim that the artifact includes newer product UI changes.
+
 Builds use Debug, one job, an owned locked cache and no user/system bazelrc or
 remote cache/BES. Source commit and executable hashes are recorded. Output and
 cache volumes both need 8 GiB free. The persistent cache is retained; there is no
