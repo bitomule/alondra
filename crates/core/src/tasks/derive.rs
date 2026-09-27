@@ -580,6 +580,12 @@ impl View {
             (Event::TaskAssigned { task, session_id, agent_id }, _) => {
                 if let Some(t) = self.board.tasks.get_mut(task) {
                     t.assignee = Some(Assignee { session_id: session_id.clone(), agent_id: agent_id.clone() });
+                    t.taken(at);
+                }
+            }
+            (Event::TaskReleased { task }, _) => {
+                if let Some(t) = self.board.tasks.get_mut(task) {
+                    t.released(at);
                 }
             }
             (Event::TaskMoved { task, event }, _) => {
@@ -591,6 +597,7 @@ impl View {
                     t.launched_at = Some(at);
                     t.launched_as = Some(name.clone());
                     t.assignee = None;
+                    t.taken(at);
                     if let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                         t.title = title.to_string();
                     }
@@ -1033,7 +1040,7 @@ impl View {
             TaskState::Done => TaskEvent::Reopen,
             TaskState::InReview => TaskEvent::ChangesRequested { on: by },
             TaskState::WaitingDependency if started => TaskEvent::ChangesRequested { on: by },
-            TaskState::WaitingDependency | TaskState::Running | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => return None,
+            TaskState::NotStarted | TaskState::WaitingDependency | TaskState::Running | TaskState::NeedsYou | TaskState::Closing | TaskState::Cancelled => return None,
         };
         self.fact(id, event, at).then(|| id.to_string())
     }
@@ -1874,7 +1881,7 @@ mod tests {
             let refusal = d.refusal(asked(254, "s", on("t-47328", None)));
             assert_eq!(
                 refusal.as_deref(),
-                Some("PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and ask there")
+                Some("PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and work_on_it: true, and ask there")
             );
             assert_eq!(d.view.board, before, "a refusal moves nothing");
 

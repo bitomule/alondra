@@ -13,6 +13,7 @@ public struct Endpoint<Response: Sendable>: Sendable {
     public let query: [(String, String)]
     public let body: Data?
     public let contentType: String?
+    public let requiresJSONObjectResponse: Bool
     public let decode: @Sendable (Data) throws -> Response
 
     public init(
@@ -21,6 +22,7 @@ public struct Endpoint<Response: Sendable>: Sendable {
         query: [(String, String)] = [],
         body: Data? = nil,
         contentType: String? = nil,
+        requiresJSONObjectResponse: Bool = false,
         decode: @escaping @Sendable (Data) throws -> Response
     ) {
         self.method = method
@@ -28,6 +30,7 @@ public struct Endpoint<Response: Sendable>: Sendable {
         self.query = query
         self.body = body
         self.contentType = contentType
+        self.requiresJSONObjectResponse = requiresJSONObjectResponse
         self.decode = decode
     }
 }
@@ -38,9 +41,10 @@ extension Endpoint where Response == Data {
         path: [String],
         query: [(String, String)] = [],
         body: Data? = nil,
-        contentType: String? = nil
+        contentType: String? = nil,
+        requiresJSONObjectResponse: Bool = false
     ) -> Self {
-        .init(method, path: path, query: query, body: body, contentType: contentType) { $0 }
+        .init(method, path: path, query: query, body: body, contentType: contentType, requiresJSONObjectResponse: requiresJSONObjectResponse) { $0 }
     }
 }
 

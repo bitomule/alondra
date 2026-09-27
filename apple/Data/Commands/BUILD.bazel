@@ -5,7 +5,7 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraCommands",
     visibility = ["//visibility:public"],
-    deps = ["//apple/Domain:AlondraDomain"],
+    deps = ["//apple/Domain:AlondraDomain", "//apple/Contracts:AlondraContracts"],
 )
 
 swift_test(

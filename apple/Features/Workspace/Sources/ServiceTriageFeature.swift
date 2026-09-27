@@ -133,7 +133,7 @@ public struct ServiceTriageFeature {
                         state.machine = overview.machine; state.usage = overview.usage
                         state.nodes = overview.nodes; state.tasks = overview.tasks ?? []
                         let ids = Set(state.triage.items.map(\.id))
-                        state.cards.removeAll { !ids.contains($0.id) }
+                        state.cards.removeAll { !ids.contains($0.id) && !$0.retainsPendingDelivery }
                         for item in state.triage.items {
                             if state.cards[id: item.id] == nil {
                                 state.cards.append(TriageCardFeature.State(item: item, identity: workIdentity(state)))
@@ -154,7 +154,7 @@ public struct ServiceTriageFeature {
                         if let item = state.triage.items.first(where: { $0.id == "q\(question.question.id)" }),
                            case .question(let fresh) = item {
                             effects.append(.send(.question(.presented(.refreshed(fresh)))))
-                        } else { state.question = nil }
+                        } else if !question.isSubmitting && !question.needsReconciliation { state.question = nil }
                     }
                     for document in state.documents {
                         if let item = state.triage.items.first(where: { $0.id == document.id }) {
@@ -169,7 +169,7 @@ public struct ServiceTriageFeature {
                         }
                     }
                     return .merge(effects)
-                case .question(.presented(.submissionFinished)), .question(.presented(.commandResolved)):
+                case .question(.presented(.submissionFinished)), .question(.presented(.commandResolved)), .question(.presented(.deliveryDecisionResolved)):
                     if let question = state.question, question.completed {
                         state.triage.hiddenIDs.insert("q\(question.question.id)")
                         state.question = nil
@@ -181,7 +181,8 @@ public struct ServiceTriageFeature {
                     return .none
                 case .documents(.element(let id, .submissionFinished)),
                      .documents(.element(let id, .reportFeedbackFinished)),
-                     .documents(.element(let id, .commandResolved)):
+                     .documents(.element(let id, .commandResolved)),
+                     .documents(.element(let id, .deliveryDecisionResolved)):
                     if state.documents[id: id]?.completed == true {
                         state.triage.hiddenIDs.insert(id)
                         state.documents.remove(id: id)

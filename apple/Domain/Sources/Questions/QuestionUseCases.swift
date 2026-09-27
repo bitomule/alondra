@@ -52,6 +52,7 @@ public enum QuestionWorkOutcome: Equatable, Sendable {
     case failed(String)
     case uncertain
     case uncertainCommand(UUID)
+    case deliveryUnconfirmed(attemptID: UInt64?)
     case obsolete
 }
 

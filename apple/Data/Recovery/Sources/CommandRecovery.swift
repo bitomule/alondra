@@ -7,7 +7,7 @@ public actor CommandRecovery {
     private let gate: CommandGate
     private let scope: CommandScope
     private let file: URL
-    private let status: @Sendable (UUID) async throws -> Int?
+    private let response: @Sendable (UUID) async throws -> CommandResponse?
     private var resolutions: [UUID: CommandResolution] = [:]
     private var loaded = false
     private var listeners: [UUID: AsyncStream<CommandResolution>.Continuation] = [:]
@@ -17,7 +17,13 @@ public actor CommandRecovery {
 
     public init(gate: CommandGate, scope: CommandScope, file: URL,
                 status: @escaping @Sendable (UUID) async throws -> Int?) {
-        self.gate = gate; self.scope = scope; self.file = file; self.status = status
+        self.gate = gate; self.scope = scope; self.file = file
+        self.response = { id in try await status(id).map { CommandResponse(status: $0) } }
+    }
+
+    public init(gate: CommandGate, scope: CommandScope, file: URL,
+                response: @escaping @Sendable (UUID) async throws -> CommandResponse?) {
+        self.gate = gate; self.scope = scope; self.file = file; self.response = response
     }
 
     public func subscribe() -> AsyncStream<CommandResolution> {
@@ -70,8 +76,8 @@ public actor CommandRecovery {
                 if case .replyToReport = command.kind { continue } // Two-step feedback owns its own recovery.
                 if resolutions[command.id] == nil {
                     do {
-                        guard let code = try await status(command.id), (200..<500).contains(code) else { continue }
-                        let resolution = CommandResolution(command: command, status: code)
+                        guard let response = try await response(command.id), (200..<500).contains(response.status) else { continue }
+                        let resolution = try CommandResolution.checked(command: command, response: response)
                         var next = resolutions; next[command.id] = resolution
                         try persist(next)
                         resolutions = next

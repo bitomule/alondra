@@ -3,14 +3,14 @@ use serde_json::{Value, json};
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
     time::Instant,
 };
 
 pub(crate) const THRESHOLD: u64 = 200;
-#[derive(Default)]
 struct Counts {
+    threshold: u64,
     current: u64,
     peak: u64,
     entered: u64,
@@ -19,17 +19,31 @@ struct Counts {
     above: std::time::Duration,
     longest: std::time::Duration,
 }
+impl Default for Counts {
+    fn default() -> Self {
+        Self {
+            threshold: THRESHOLD,
+            current: 0,
+            peak: 0,
+            entered: 0,
+            exited: 0,
+            above_since: None,
+            above: std::time::Duration::ZERO,
+            longest: std::time::Duration::ZERO,
+        }
+    }
+}
 impl Counts {
     fn enter(&mut self, now: Instant) {
         self.current += 1;
         self.peak = self.peak.max(self.current);
         self.entered += 1;
-        if self.current == THRESHOLD {
+        if self.current == self.threshold {
             self.above_since = Some(now);
         }
     }
     fn exit(&mut self, now: Instant) {
-        if self.current == THRESHOLD {
+        if self.current == self.threshold {
             let duration = now.duration_since(self.above_since.take().expect("threshold entry"));
             self.above += duration;
             self.longest = self.longest.max(duration);
@@ -43,22 +57,29 @@ impl Counts {
             .map(|start| now.duration_since(start))
             .unwrap_or_default();
         json!({"current":self.current,"peak":self.peak,"entered":self.entered,"exited":self.exited,
-            "threshold":THRESHOLD,"above_ms":(self.above+ongoing).as_millis() as u64,
+            "threshold":self.threshold,"above_ms":(self.above+ongoing).as_millis() as u64,
             "longest_above_ms":self.longest.max(ongoing).as_millis() as u64})
     }
 }
 #[derive(Default)]
 pub(crate) struct Gauge {
     state: Mutex<Counts>,
+    aggregate: OnceLock<Arc<Gauge>>,
 }
 impl Gauge {
     // One short bookkeeping lock orders threshold crossings with the clock;
     // separate atomics could reorder enter/exit and invent time above threshold.
     fn enter(&self) {
         self.state.lock().unwrap().enter(Instant::now());
+        if let Some(total) = self.aggregate.get() {
+            total.enter();
+        }
     }
     fn exit(&self) {
         self.state.lock().unwrap().exit(Instant::now());
+        if let Some(total) = self.aggregate.get() {
+            total.exit();
+        }
     }
     fn json(&self) -> Value {
         self.state.lock().unwrap().json(Instant::now())
@@ -155,11 +176,21 @@ fn read_challenge_file(file: std::fs::File) -> Result<String, CaptureError> {
     Ok(nonce)
 }
 
-#[derive(Default)]
 pub(crate) struct Metrics {
     pub changes: Arc<Gauge>,
     pub work: Arc<Gauge>,
+    pub total: Arc<Gauge>,
 }
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            changes: Arc::new(Gauge::default()),
+            work: Arc::new(Gauge::default()),
+            total: Arc::new(Gauge::default()),
+        }
+    }
+}
+
 impl Metrics {
     pub(crate) fn start(self: &Arc<Self>, epoch: String) -> anyhow::Result<()> {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -176,6 +207,36 @@ impl Metrics {
             metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0,
             "private laboratory metrics directory required"
         );
+        // Fixed capacity presets are laboratory-only. Never accept an arbitrary threshold.
+        if let Ok(preset) = std::env::var("ALONDRA_LAB_CAPACITY_PRESET") {
+            if !preset.is_empty() {
+                let total = match preset.as_str() {
+                    "1000" => 1000u64,
+                    "5000" => 5000,
+                    "10000" => 10000,
+                    _ => anyhow::bail!("invalid capacity metrics preset"),
+                };
+                anyhow::ensure!(
+                    self.changes.aggregate.set(self.total.clone()).is_ok()
+                        && self.work.aggregate.set(self.total.clone()).is_ok(),
+                    "capacity total gauge already configured"
+                );
+                let macs = total / 3;
+                let clients = total - macs;
+                for (gauge, count) in [
+                    (&self.changes, clients),
+                    (&self.work, macs),
+                    (&self.total, total),
+                ] {
+                    let mut state = gauge.state.lock().unwrap();
+                    anyhow::ensure!(
+                        state.entered == 0,
+                        "capacity thresholds must precede requests"
+                    );
+                    state.threshold = (count * 80).div_ceil(100);
+                }
+            }
+        }
         let metrics = self.clone();
         tokio::spawn(async move {
             let started = Instant::now();
@@ -193,7 +254,7 @@ impl Metrics {
                     #[allow(unused_mut)]
                     let mut value=json!({"schema":1,"scope":"lab_pending_futures","epoch":epoch,"sequence":sequence,
                         "challenge":challenge,"sampler_challenge":sampler_challenge,
-                        "uptime_ms":changes["observed_uptime_ms"],"changes":changes,"work":work});
+                        "uptime_ms":changes["observed_uptime_ms"],"changes":changes,"work":work,"total":metrics.total.snapshot(started)});
                     #[cfg(feature="lab-waiter-metrics")]
                     {value["sql_errors"]=crate::management::lab_metrics::snapshot();}
                     let temporary=format!("/system-metrics/waiters-{epoch}.tmp");
@@ -240,6 +301,27 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn combined_gauge_counts_only_pending_and_releases_both_cohorts() {
+        let metrics = Metrics::default();
+        assert!(metrics.changes.aggregate.set(metrics.total.clone()).is_ok());
+        assert!(metrics.work.aggregate.set(metrics.total.clone()).is_ok());
+        let mut changes = Box::pin(metrics.changes.observe(std::future::pending::<()>()));
+        let mut work = Box::pin(metrics.work.observe(std::future::pending::<()>()));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert_eq!(metrics.total.json()["current"], 0);
+        assert!(changes.as_mut().poll(&mut cx).is_pending());
+        assert!(work.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(metrics.total.json()["current"], 2);
+        drop(changes);
+        assert_eq!(metrics.total.json()["current"], 1);
+        drop(work);
+        assert_eq!(metrics.total.json()["current"], 0);
+        assert_eq!(
+            metrics.total.json()["entered"],
+            metrics.total.json()["exited"]
+        );
+    }
     #[test]
     fn challenge_reads_bound_inode_and_reject_symlink_or_partial_publication() {
         let directory =

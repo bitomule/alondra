@@ -75,6 +75,8 @@ pub enum RequestState {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
+    /// Nobody works on it yet: the orchestrator launches it or gives it to a node.
+    NotStarted,
     WaitingDependency,
     Running,
     NeedsYou,
@@ -85,7 +87,8 @@ pub enum TaskState {
 }
 
 impl TaskState {
-    pub const ALL: [TaskState; 7] = [
+    pub const ALL: [TaskState; 8] = [
+        TaskState::NotStarted,
         TaskState::WaitingDependency,
         TaskState::Running,
         TaskState::NeedsYou,
@@ -97,6 +100,7 @@ impl TaskState {
 
     pub fn name(self) -> &'static str {
         match self {
+            TaskState::NotStarted => "not_started",
             TaskState::WaitingDependency => "waiting_dependency",
             TaskState::Running => "running",
             TaskState::NeedsYou => "needs_you",
@@ -109,6 +113,7 @@ impl TaskState {
 
     pub fn label(self) -> &'static str {
         match self {
+            TaskState::NotStarted => "not started",
             TaskState::WaitingDependency => "waiting for another task",
             TaskState::Running => "running",
             TaskState::NeedsYou => "needs you",
@@ -315,7 +320,7 @@ fn about_the_review(b: &Blocker, g: &Guards) -> Result<(), Refused> {
     match g.unmerged_pr {
         Some(n) if b.asked && b.about_pr.is_none() => Err(refused(format!(
             "PR #{n} waits for review. If the answer changes what PR #{n} contains or how it ships, resend with about_pr: {n}. \
-             Otherwise open a separate task with new_task and ask there"
+             Otherwise open a separate task with new_task and work_on_it: true, and ask there"
         ))),
         _ => Ok(()),
     }
@@ -382,7 +387,22 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
     use TaskState::*;
     match (state, event) {
         (WaitingDependency, E::DependencyReady { .. }) => Ok(if g.waiting_on.is_some() || g.awaited_merge.is_some() { WaitingDependency } else { Running }),
-        (Running | NeedsYou | InReview | Closing | Done | Cancelled, E::DependencyReady { .. }) => Ok(state),
+        (NotStarted | Running | NeedsYou | InReview | Closing | Done | Cancelled, E::DependencyReady { .. }) => Ok(state),
+
+        (
+            NotStarted,
+            E::AwaitsMerge { .. }
+            | E::BlockerRaised { .. }
+            | E::PrOpened { .. }
+            | E::DocumentSent { .. }
+            | E::AutoMerged { .. }
+            | E::FinalReport { .. }
+            | E::Answered { .. }
+            | E::ChangesRequested { .. }
+            | E::NodeUpdated { .. }
+            | E::Merged { .. }
+            | E::ReviewClosed { .. },
+        ) => Err(refused("the task has not started: no node works on it yet")),
 
         (Running | WaitingDependency, E::AwaitsMerge { .. }) => Ok(WaitingDependency),
         (NeedsYou | InReview | Closing, E::AwaitsMerge { .. }) => Ok(state),
@@ -471,9 +491,9 @@ pub fn transition(state: TaskState, event: &TaskEvent, g: &Guards) -> Result<Tas
         (Running | NeedsYou | Closing | Done | Cancelled, E::ReviewClosed { .. }) => Ok(state),
 
         (Done | Cancelled, E::Reopen) => reopened(g),
-        (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Reopen) => Err(refused("only a done or cancelled task can be reopened")),
+        (NotStarted | WaitingDependency | Running | NeedsYou | InReview | Closing, E::Reopen) => Err(refused("only a done or cancelled task can be reopened")),
 
-        (WaitingDependency | Running | NeedsYou | InReview | Closing, E::Cancel { .. }) => Ok(Cancelled),
+        (NotStarted | WaitingDependency | Running | NeedsYou | InReview | Closing, E::Cancel { .. }) => Ok(Cancelled),
         (Done, E::Cancel { .. }) => Err(refused("the task is already done")),
         (Cancelled, E::Cancel { .. }) => Err(refused("the task is already cancelled")),
     }
@@ -615,7 +635,8 @@ pub struct NewTask {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub options: TaskOptions,
-    /// The node working on it; none yet for a launch whose node has not shown up.
+    /// The node working on it; none yet for a launch whose node has not shown up, nor for a task
+    /// no node took yet, which starts `not_started`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Made by a launch: the node that shows up under its title takes it.
@@ -637,6 +658,24 @@ impl Task {
     /// Alondra has yet to start it: it may start, and no node took it nor was launched for it.
     pub fn needs_start(&self) -> bool {
         self.recorded && self.start.is_some() && self.state == TaskState::Running && self.assignee.is_none() && !self.launched
+    }
+
+    /// A node took it, or was launched for it: it runs from now on if nobody had it yet.
+    pub(crate) fn taken(&mut self, at: Millis) {
+        if self.state == TaskState::NotStarted {
+            self.state = TaskState::Running;
+            self.state_since = at;
+        }
+    }
+
+    /// Its node let it go without working on it: it waits, with no node, for the orchestrator.
+    pub(crate) fn released(&mut self, at: Millis) {
+        self.assignee = None;
+        self.launched = false;
+        if self.state == TaskState::Running {
+            self.state = TaskState::NotStarted;
+            self.state_since = at;
+        }
     }
 
     /// The name the node launched for it goes by.
@@ -707,6 +746,10 @@ pub struct Board {
     /// keep having their task read from their other events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_since: Option<Millis>,
+    /// Since when `new_task` leaves a task with no node unless its opener works on it; the tasks
+    /// it gave away before were released then (`Event::SplitsReleased`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splits_released_since: Option<Millis>,
 }
 
 impl Board {
@@ -764,7 +807,13 @@ impl Board {
             documents: vec![],
             blocker: None,
             notices: vec![],
-            state: if t.depends_on.is_empty() { TaskState::Running } else { TaskState::WaitingDependency },
+            state: if !t.depends_on.is_empty() {
+                TaskState::WaitingDependency
+            } else if t.session_id.is_none() && !t.launched && t.start.is_none() {
+                TaskState::NotStarted
+            } else {
+                TaskState::Running
+            },
             state_since: at,
             created_at: at,
             final_report: None,
@@ -841,26 +890,26 @@ mod tests {
     }
 
     /// `None` is refused.
-    type Row = (&'static str, [Option<TaskState>; 7]);
+    type Row = (&'static str, [Option<TaskState>; 8]);
 
     /// Every (state, event) pair with nothing in the way: no blocker, nothing under review, no
     /// dependency left, checks passed, not auto-merge. Columns follow `TaskState::ALL`:
-    /// waiting_dependency, running, needs_you, in_review, closing, done, cancelled.
+    /// not_started, waiting_dependency, running, needs_you, in_review, closing, done, cancelled.
     const MATRIX: [Row; 14] = [
-        ("dependency_ready", [Some(Running), Some(Running), Some(NeedsYou), Some(InReview), Some(Closing), Some(Done), Some(Cancelled)]),
-        ("awaits_merge", [Some(WaitingDependency), Some(WaitingDependency), Some(NeedsYou), Some(InReview), Some(Closing), None, None]),
-        ("blocker_raised", [None, Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), None, None]),
-        ("pr_opened", [None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
-        ("document_sent", [None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
-        ("auto_merged", [None, Some(Closing), Some(NeedsYou), Some(Closing), Some(Closing), Some(Done), Some(Cancelled)]),
-        ("final_report", [None, Some(Done), Some(Done), Some(Done), Some(Done), Some(Done), None]),
-        ("answered", [None, None, Some(Running), None, None, None, None]),
-        ("changes_requested", [None, Some(Running), Some(NeedsYou), Some(Running), Some(Running), None, None]),
-        ("node_updated", [None, Some(Running), Some(NeedsYou), Some(InReview), Some(Closing), None, None]),
-        ("merged", [None, Some(Closing), Some(NeedsYou), Some(Closing), Some(Closing), Some(Done), Some(Cancelled)]),
-        ("review_closed", [None, Some(Running), Some(NeedsYou), Some(Running), Some(Closing), Some(Done), Some(Cancelled)]),
-        ("reopen", [None, None, None, None, None, Some(Running), Some(Running)]),
-        ("cancel", [Some(Cancelled), Some(Cancelled), Some(Cancelled), Some(Cancelled), Some(Cancelled), None, None]),
+        ("dependency_ready", [Some(NotStarted), Some(Running), Some(Running), Some(NeedsYou), Some(InReview), Some(Closing), Some(Done), Some(Cancelled)]),
+        ("awaits_merge", [None, Some(WaitingDependency), Some(WaitingDependency), Some(NeedsYou), Some(InReview), Some(Closing), None, None]),
+        ("blocker_raised", [None, None, Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), Some(NeedsYou), None, None]),
+        ("pr_opened", [None, None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
+        ("document_sent", [None, None, Some(InReview), Some(NeedsYou), Some(InReview), Some(InReview), None, None]),
+        ("auto_merged", [None, None, Some(Closing), Some(NeedsYou), Some(Closing), Some(Closing), Some(Done), Some(Cancelled)]),
+        ("final_report", [None, None, Some(Done), Some(Done), Some(Done), Some(Done), Some(Done), None]),
+        ("answered", [None, None, None, Some(Running), None, None, None, None]),
+        ("changes_requested", [None, None, Some(Running), Some(NeedsYou), Some(Running), Some(Running), None, None]),
+        ("node_updated", [None, None, Some(Running), Some(NeedsYou), Some(InReview), Some(Closing), None, None]),
+        ("merged", [None, None, Some(Closing), Some(NeedsYou), Some(Closing), Some(Closing), Some(Done), Some(Cancelled)]),
+        ("review_closed", [None, None, Some(Running), Some(NeedsYou), Some(Running), Some(Closing), Some(Done), Some(Cancelled)]),
+        ("reopen", [None, None, None, None, None, None, Some(Running), Some(Running)]),
+        ("cancel", [Some(Cancelled), Some(Cancelled), Some(Cancelled), Some(Cancelled), Some(Cancelled), Some(Cancelled), None, None]),
     ];
 
     #[test]
@@ -954,6 +1003,7 @@ mod tests {
             ("done again from a PR", Done, TaskEvent::PrOpened { pr: 1 }, Guards::default(), "the task is done: reopen it first"),
             ("cancelling what is finished", Done, TaskEvent::Cancel { reason: None }, Guards::default(), "the task is already done"),
             ("reopening what is not done", Running, TaskEvent::Reopen, Guards::default(), "only a done or cancelled task can be reopened"),
+            ("working before a node took it", NotStarted, TaskEvent::PrOpened { pr: 1 }, Guards::default(), "the task has not started: no node works on it yet"),
             ("working before its dependency", WaitingDependency, TaskEvent::PrOpened { pr: 1 }, Guards { waiting_on: Some("t-a".into()), ..Guards::default() }, "the task has not started: it waits for t-a"),
         ];
         for (what, state, event, g, reason) in cases {
@@ -981,7 +1031,7 @@ mod tests {
         let raised = |kind, asked, about_pr| TaskEvent::BlockerRaised { blocker: Blocker { kind, asked, about_pr, ..Q }, replaces: false };
         let other_work = Err(refused(
             "PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. \
-             Otherwise open a separate task with new_task and ask there",
+             Otherwise open a separate task with new_task and work_on_it: true, and ask there",
         ));
         for state in [Running, InReview, Closing] {
             assert_eq!(transition(state, &raised(BlockerKind::Question, true, None), &review), other_work, "{state:?}: #254, about other work");

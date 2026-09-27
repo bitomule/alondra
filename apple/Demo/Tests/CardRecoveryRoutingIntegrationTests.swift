@@ -1,4 +1,6 @@
 import AlondraCommands
+import AlondraContracts
+import AlondraRecovery
 import AlondraDomain
 import AlondraQuestionsFeature
 import AlondraShared
@@ -14,6 +16,98 @@ struct CardRecoveryRoutingIntegrationTests {
     private let scope = CommandScope(server: URL(string: "https://service.example")!, deviceID: "phone", credentialRevision: "one", generation: 1)
     private let commandID = UUID(uuidString: "00000000-0000-0000-0000-000000000091")!
     private let otherID = UUID(uuidString: "00000000-0000-0000-0000-000000000092")!
+
+    @Test(arguments: ["handed", "retryable", "discarded"])
+    func hookDeliveryWithoutQuestionIDResolvesOnlyThePinnedAttemptAndSession(state: String) async throws {
+        let card = try card(.question, command: commandID)
+        var initial = ServiceRootFeature.State()
+        initial.triage.cards = [card]
+        initial.deliveryJournal.active = true; initial.deliveryJournal.epoch = 1
+        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: { $0.continuousClock = ImmediateClock() }
+        let response = CommandResolution(command: .init(id: commandID, scope: scope, kind: .answer(1), itemID: "q1"), status: 200,
+                                         body: Data(#"{"delivery_state":"uncertain","delivery_attempt":77}"#.utf8))
+        await store.send(.commandResolved(response)).finish()
+        for invalid in [
+            DeliveryAttempt(id: 77, sessionID: "other", channel: "hook_decision", state: state, version: 3),
+            DeliveryAttempt(id: 77, sessionID: "s", channel: "hook_decision", state: state, version: 3, questionID: 999)
+        ] {
+            await store.send(.deliveryJournal(.loaded(1, .init(scope: scope, macID: "mac-a", attempts: [invalid])))).finish()
+            #expect(store.triage.cards[id: card.id]?.question?.needsReconciliation == true)
+        }
+        let valid = DeliveryAttempt(id: 77, sessionID: "s", channel: "hook_decision", state: state, version: 3)
+        await store.send(.deliveryJournal(.loaded(1, .init(scope: scope, macID: "mac-a", attempts: [valid])))).finish()
+        let question = try #require(store.triage.cards[id: card.id]?.question)
+        #expect(!question.needsReconciliation)
+        #expect(question.completed == (state != "retryable"))
+        #expect(store.triage.cards[id: card.id]?.stamp == (state == "discarded" ? .setAside : state == "handed" ? .sent : nil))
+        #expect(question.draft.text == "Keep draft")
+    }
+
+    @Test(arguments: [false, true])
+    func disappearingPRKeepsAttachedPendingQuestionAndItsDraft(submitting: Bool) async throws {
+        var prCard = try card(.pullRequest, command: commandID)
+        let question = try #require(card(.question, command: commandID).question)
+        var attached = AttachedPRQuestionFeature.State(question.question)
+        attached.question = question
+        attached.question.isSubmitting = submitting
+        attached.question.needsReconciliation = !submitting
+        attached.question.uncertainCommandID = submitting ? nil : commandID
+        prCard.pullRequest?.pr.mutationOutcome = nil
+        prCard.pullRequest?.questionFeatures = [attached]
+        let identity = TriageIdentity(server: scope.server, deviceID: scope.deviceID, credentialRevision: scope.credentialRevision, generation: scope.generation)
+        var initial = ServiceRootFeature.State()
+        initial.triage.triage.identity = identity; initial.triage.cardIdentity = identity
+        initial.triage.cards = [prCard]
+        initial.deliveryJournal.active = true; initial.deliveryJournal.epoch = 1
+        let empty = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [])
+        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
+            $0.continuousClock = ImmediateClock()
+            $0.deliveryJournal = DeliveryJournalClient(refresh: { empty }, resolve: { _, _, _, _, _ in throw DeliveryJournalError.obsolete })
+        }
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":2,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
+        await store.send(.triage(.triage(.inboxUpdated(.init(identity: identity, overview: overview, connection: .online))))).finish()
+        #expect(store.triage.cards[id: prCard.id]?.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep draft")
+        if submitting {
+            let completed = ServicePullRequestFeature.Action.attachedQuestion(.element(id: 1,
+                action: .question(.submissionFinished(0, .deliveryUnconfirmed(attemptID: 77)))))
+            await store.send(.triage(.cards(.element(id: prCard.id, action: .pullRequest(completed))))).finish()
+        } else {
+            let result = CommandResolution(command: .init(id: commandID, scope: scope, kind: .answer(1), itemID: "q1"), status: 200,
+                                           body: Data(#"{"delivery_state":"uncertain","delivery_attempt":77}"#.utf8))
+            await store.send(.commandResolved(result)).finish()
+        }
+        let resolved = DeliveryAttempt(id: 77, sessionID: "s", channel: "hook_decision", state: "retryable", version: 3)
+        await store.send(.deliveryJournal(.loaded(1, .init(scope: scope, macID: "mac-a", attempts: [resolved])))).finish()
+        let kept = try #require(store.triage.cards[id: prCard.id]?.pullRequest?.questionFeatures[id: 1]?.question)
+        #expect(kept.draft.text == "Keep draft" && !kept.completed && !kept.needsReconciliation)
+    }
+
+    @Test func recoveredUncertainMenuKeepsDraftUntilThatExactAttemptIsResolved() async throws {
+        let card = try card(.question, command: commandID)
+        var initial = ServiceRootFeature.State()
+        initial.triage.cards = [card]
+        initial.deliveryJournal.active = true; initial.deliveryJournal.epoch = 1
+        let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
+            $0.continuousClock = ImmediateClock()
+        }
+        let result = CommandResolution(command: .init(id: commandID, scope: scope, kind: .answer(1), itemID: "q1"), status: 200,
+                                       body: Data(#"{"delivery_state":"uncertain","delivery_attempt":77}"#.utf8))
+        await store.send(.commandResolved(result)).finish()
+        let pending = try #require(store.triage.cards[id: card.id]?.question)
+        #expect(pending.draft.text == "Keep draft" && pending.needsReconciliation && !pending.completed)
+        #expect(pending.deliveryAttemptID == 77 && !store.triage.triage.hiddenIDs.contains(card.id))
+        let old = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [DeliveryAttempt(id: 76, sessionID: "s", channel: "menu_decision", state: "retryable", version: 3, questionID: 1)])
+        await store.send(.deliveryJournal(.loaded(1, old))).finish()
+        #expect(store.triage.cards[id: card.id]?.question?.needsReconciliation == true)
+        let matching = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [DeliveryAttempt(id: 77, sessionID: "s", channel: "menu_decision", state: "retryable", version: 3, questionID: 1)])
+        await store.send(.deliveryJournal(.loaded(0, matching))).finish()
+        #expect(store.triage.cards[id: card.id]?.question?.needsReconciliation == true)
+        await store.send(.deliveryJournal(.loaded(1, matching))).finish()
+        let reopened = try #require(store.triage.cards[id: card.id]?.question)
+        #expect(!reopened.needsReconciliation && !reopened.completed && reopened.draft.text == "Keep draft")
+        #expect(!store.triage.triage.hiddenIDs.contains(card.id))
+    }
 
     private func card(_ owner: Owner, command: UUID) throws -> TriageCardFeature.State {
         let decoder = JSONDecoder()

@@ -606,6 +606,22 @@ mod tests {
     /// `ALONDRA_REPLAY_DB=/tmp/alondra.db cargo test --release -p alondrad replay_a_copy_of_the_real_log -- --ignored --nocapture`.
     /// In release, as the daemon runs: the log of 22-24 Sep trips the debug-only limbo check of
     /// `View::apply` on two nodes, with or without tasks.
+    /// What the first daemon with `SplitsReleased` gives back, on a copy of the real log:
+    /// `ALONDRA_REPLAY_DB=/tmp/alondra.db cargo test -p alondrad untouched_splits_of_a_copy -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn untouched_splits_of_a_copy_of_the_real_log() {
+        let path = std::env::var("ALONDRA_REPLAY_DB").expect("ALONDRA_REPLAY_DB names a copy of alondra.db");
+        let s = Store::open(Path::new(&path)).unwrap();
+        let (after, mut view) = s.latest_snapshot().unwrap().unwrap_or_default();
+        view.backfill_tasks();
+        s.replay(after, |seq, at, e| view.apply(seq, at, &e)).unwrap();
+        for id in view.untouched_splits() {
+            let t = &view.board.tasks[&id];
+            println!("{id} {} {:?} {}", t.request, t.assignee.as_ref().map(|a| &a.session_id), t.title);
+        }
+    }
+
     #[test]
     #[ignore]
     fn replay_a_copy_of_the_real_log() {

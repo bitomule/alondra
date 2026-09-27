@@ -21,7 +21,9 @@ public actor CloudAppServices {
     private let deliveryStatus: DeliveryStatusService
     private let commandRecovery: CommandRecovery
     private let reportFeedback: ReportFeedbackCoordinator
-    private let scope: CommandScope
+    let scope: CommandScope
+    let macID: String
+    var deliveryJournal: DeliveryJournal?
     let attachmentStorage = AttachmentDownloadStorage()
     private var active = true
     private var feedbackRecoveryTask: Task<Void, Never>?
@@ -37,6 +39,7 @@ public actor CloudAppServices {
         let scope = CommandScope(server: approved.relayURL, deviceID: approved.deviceID,
                                  credentialRevision: revision, generation: 0)
         self.scope = scope
+        self.macID = approved.macID
         operations = try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
             scope: RelayOutboxScope(relay: approved.relayURL, macID: approved.macID,
                                    deviceID: approved.deviceID, credentialRevision: revision),
@@ -54,9 +57,9 @@ public actor CloudAppServices {
             feedback: { await feedbackCoordinator.recoveryEvents() })
         let serviceOperations = operations
         commandRecovery = CommandRecovery(gate: gate, scope: scope,
-            file: directory.appendingPathComponent("command-resolutions.json"), status: { id in
+            file: directory.appendingPathComponent("command-resolutions-v2.json"), response: { id in
                 switch try await serviceOperations.resume(requestID: id.uuidString, statusPolls: 1) {
-                case .completed(let status, _): return status
+                case .completed(let status, let body): return CommandResponse(status: status, body: body)
                 case .unknown: return nil
                 }
             })
@@ -64,6 +67,7 @@ public actor CloudAppServices {
 
     public func deactivate() async {
         active = false
+        await deliveryJournal?.stop()
         await attachmentStorage.deactivate()
         feedbackRecoveryTask?.cancel()
         feedbackRecoveryTask = nil
@@ -172,6 +176,7 @@ public actor CloudAppServices {
             isUnknown: { error in
                 if let error = error as? ServiceAPIError { return error == .outcomeUnknown }
                 if error is APIError { return false }
+                if error is DeliveryHandoffUnconfirmed { return false }
                 if case RelaySessionError.invalidRequest = error { return false }
                 if case RelaySessionError.operationIdentityConflict = error { return false }
                 return true

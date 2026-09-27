@@ -47,6 +47,8 @@ struct PullRequestOwnerIntegrationTests {
             }
         } withDependencies: {
             $0.continuousClock = ImmediateClock()
+            $0.uuid = .incrementing
+            $0.attachmentBudget = AttachmentBudget()
             $0.attachmentImport = .init(file: { _ in file }, photo: { _ in file })
             $0.attachmentUpload = .init(upload: { draft in
                 #expect(draft == file)

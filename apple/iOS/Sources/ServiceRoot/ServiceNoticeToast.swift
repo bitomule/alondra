@@ -8,6 +8,7 @@ struct ServiceNoticeToast: View {
     let store: StoreOf<ServiceRootFeature>
     var body: some View {
         VStack(spacing: 8) {
+            DeliveryJournalButton(store: store.scope(state: \.deliveryJournal, action: \.deliveryJournal))
             if let notice = store.notice {
                 Label {
                     noticeText(notice.event)

@@ -103,10 +103,12 @@ pub fn node_state(n: &Node) -> &'static str {
     n.orchestrator_state.map_or_else(|| state(n.state), orchestrator)
 }
 
-/// What a task means to the user: it runs, it waits for them (a question, an action or a PR to
-/// review), it finished, or it was cancelled. The steps in between are Alondra's, not theirs.
+/// What a task means to the user: nobody works on it yet, it runs, it waits for them (a question,
+/// an action or a PR to review), it finished, or it was cancelled. The steps in between are
+/// Alondra's, not theirs.
 pub fn task_state(s: TaskState) -> &'static str {
     match s {
+        TaskState::NotStarted => tr!("not started", "por empezar"),
         TaskState::WaitingDependency | TaskState::Running | TaskState::Closing => tr!("running", "en marcha"),
         TaskState::NeedsYou | TaskState::InReview => tr!("needs you", "te espera"),
         TaskState::Done => tr!("finished", "terminada"),
@@ -359,7 +361,7 @@ mod tests {
     fn task_request_and_node_labels_read_as_the_apps_do() {
         set_for_this_thread(Lang::Es);
         let tasks: Vec<&str> = TaskState::ALL.iter().map(|s| task_state(*s)).collect();
-        assert_eq!(tasks, ["en marcha", "en marcha", "te espera", "te espera", "en marcha", "terminada", "descartada"]);
+        assert_eq!(tasks, ["por empezar", "en marcha", "en marcha", "te espera", "te espera", "en marcha", "terminada", "descartada"]);
         assert_eq!(request_state(RequestState::Done), "terminada");
         assert_eq!(request_state(RequestState::Defining), "definiendo");
         let mut n = Node::new("s", 0);

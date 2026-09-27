@@ -141,7 +141,7 @@ public struct ServiceTaskPresentation {
             return nil
         case .closing:
             return String(localized: "merged; the node does what the merge unblocks")
-        case .running, .done, .cancelled:
+        case .notStarted, .running, .done, .cancelled:
             return nil
         }
     }

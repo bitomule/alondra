@@ -119,9 +119,9 @@ mod tests {
     fn log() -> Vec<(Millis, Event)> {
         vec![
             (1, Event::TasksRecorded),
-            (2, created("t-done", "r-1", None)),
-            (3, created("t-gone", "r-1", None)),
-            (4, created("t-run", "r-2", None)),
+            (2, created("t-done", "r-1", Some("n"))),
+            (3, created("t-gone", "r-1", Some("n"))),
+            (4, created("t-run", "r-2", Some("n"))),
             (5, moved("t-done", TaskEvent::FinalReport { report: 1 })),
             (6, moved("t-gone", TaskEvent::Cancel { reason: None })),
         ]

@@ -1,4 +1,5 @@
 import Foundation
+import AlondraContracts
 
 /// Describes the effect for reconciliation. The payload stays with the caller until it has
 /// been sent once; no closure or payload is retained for an automatic replay.
@@ -24,6 +25,7 @@ public enum CommandKind: Hashable, Sendable, Codable {
     case askOnPullRequest(UInt64)
     case dismissPullRequest(UInt64)
     case task(String)
+    case resolveDelivery(DeliveryDecision)
 
 
 }

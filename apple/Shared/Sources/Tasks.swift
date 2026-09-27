@@ -15,6 +15,7 @@ extension WorkRequest.State {
 extension WorkTask.State {
     public var label: String {
         switch shown {
+        case .notStarted: String(localized: "not started", table: "AlondraShared", bundle: #bundle)
         case .needsYou: String(localized: "needs you", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "task-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
         case .cancelled: String(localized: "cancelled", table: "AlondraShared", bundle: #bundle)
@@ -63,6 +64,7 @@ extension TaskStateGroup {
         case .defining: String(localized: "Defining", table: "AlondraShared", bundle: #bundle)
         case .task(let state):
             switch state.shown {
+            case .notStarted: String(localized: "Not started", table: "AlondraShared", bundle: #bundle)
             case .needsYou: String(localized: "Needs you", table: "AlondraShared", bundle: #bundle)
             case .done: String(localized: "task-group.done", defaultValue: "Finished", table: "AlondraShared", bundle: #bundle)
             case .cancelled: String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)

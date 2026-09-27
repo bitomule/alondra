@@ -2603,10 +2603,14 @@ struct NewTaskBody {
     /// The task the new work splits from; needed only by a node with several open tasks.
     #[serde(default)]
     task: Option<String>,
+    /// The node works on it, or asks about it, itself.
+    #[serde(default)]
+    work_on_it: bool,
 }
 
-/// A node opens a task of its own for work that is not its task's: it joins the same request,
-/// with the node as assignee, so a question about it does not sit on a PR under review.
+/// A node opens a task for work that is not its task's, in the same request. With `work_on_it`
+/// the node has it, so a question about it does not sit on a PR under review; otherwise nobody
+/// does, it is `not_started`, and the orchestrator is told to launch it or give it to a node.
 async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Response {
     if let Some(r) = outside_caller(&hub, &b.caller).or_else(|| caller_probe_refused(&hub, &b.caller)) {
         return r;
@@ -2624,29 +2628,37 @@ async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Re
         Err((status, why)) => return err(status, why),
     };
     let brief = b.brief.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let recorded = hub.append_with(|v| {
-        let source = v.board.tasks.get(&from)?;
-        Some(Event::TaskCreated(alondra_core::tasks::NewTask {
-            id: format!("t-{}", v.seq + 1),
+    let recorded = hub.append_all(|v| {
+        let source = v.board.tasks.get(&from).ok_or(())?;
+        let id = format!("t-{}", v.seq + 1);
+        let mut events = vec![Event::TaskCreated(alondra_core::tasks::NewTask {
+            id: id.clone(),
             request: source.request.clone(),
             title: title.clone(),
             brief: brief.clone(),
             depends_on: vec![],
             options: source.options.clone(),
-            session_id: Some(sid.clone()),
+            session_id: b.work_on_it.then(|| sid.clone()),
             launched: false,
             launched_as: None,
             start: None,
-        }))
+        })];
+        if !b.work_on_it {
+            events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(&[id])));
+        }
+        Ok::<_, ()>(events)
     });
-    match recorded {
-        Ok(Some((_, Event::TaskCreated(t)))) => Json(json!({
-            "id": t.id,
-            "request": t.request,
-            "next": format!("Task {} is yours, in the same request as {from}. Ask about it with task: {}, and name the task in every call from now on.", t.id, t.id),
-        }))
-        .into_response(),
-        Ok(_) => err(StatusCode::NOT_FOUND, format!("task {from} does not exist. Nothing was recorded.")),
+    let created = recorded.map(|r| r.ok().and_then(|all| all.into_iter().find_map(|(_, e)| if let Event::TaskCreated(t) = e { Some(t) } else { None })));
+    match created {
+        Ok(Some(t)) => {
+            let next = if b.work_on_it {
+                format!("Task {} is yours, in the same request as {from}. Ask about it with task: {}, and name the task in every call from now on.", t.id, t.id)
+            } else {
+                format!("Task {} is in the same request as {from}, not started and with no node: the orchestrator launches it or gives it to a node. It is not yours: do not work on it or ask about it.", t.id)
+            };
+            Json(json!({"id": t.id, "request": t.request, "next": next})).into_response()
+        }
+        Ok(None) => err(StatusCode::NOT_FOUND, format!("task {from} does not exist. Nothing was recorded.")),
         Err(e) => internal(e),
     }
 }
@@ -5551,7 +5563,7 @@ mod tests {
         assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("task_refused")), "{said}");
         assert_eq!(
             said["error"],
-            "Nothing was recorded: PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and ask there."
+            "Nothing was recorded: PR #102 waits for review. If the answer changes what PR #102 contains or how it ships, resend with about_pr: 102. Otherwise open a separate task with new_task and work_on_it: true, and ask there."
         );
         let (status, said) = status_and_body(request_action(State(hub.clone()), Json(AskBody { steps: vec!["Edita su run.sh".into()], ..ask_body("s", "Cambia la entrega del cron") })).await).await;
         assert_eq!(status, StatusCode::CONFLICT, "an action about other work too: {said}");
@@ -5565,6 +5577,7 @@ mod tests {
             title: title.into(),
             brief: Some("El cron del 30-09 entrega con el report de Alondra, que ya no tendrá.".into()),
             task: None,
+            work_on_it: true,
         };
         let (status, said) = status_and_body(new_task(State(hub.clone()), Json(body("s", "  "))).await).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
@@ -5586,6 +5599,73 @@ mod tests {
         orchestrated.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
         let (status, said) = status_and_body(new_task(State(orchestrated.clone()), Json(body("orch", "Otra cosa"))).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "the orchestrator defines tasks instead: {said}");
+    }
+
+    /// t-67825 (27 Sep): alondra/auditoria-codex opened 15 fix tasks with new_task for the
+    /// orchestrator to launch and stopped; each showed "en marcha" on it with nobody working.
+    #[tokio::test]
+    async fn a_task_a_node_opens_for_others_has_no_node_until_the_orchestrator_gives_it() {
+        use alondra_core::tasks::TaskState;
+        let hub = started("new-task-for-others", &["s", "orch", "other"]);
+        hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let body = NewTaskBody {
+            caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
+            title: "Quitar el filtro de palabras de los informes".into(),
+            brief: None,
+            task: None,
+            work_on_it: false,
+        };
+        let (status, said) = status_and_body(new_task(State(hub.clone()), Json(body)).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let id = said["id"].as_str().unwrap_or_default().to_string();
+        assert!(said["next"].as_str().unwrap_or_default().contains("not yours"), "{said}");
+
+        let task = |hub: &Hub| hub.read(|v| v.board.tasks.get(&id).map(|t| (t.state, t.assignee.clone().map(|a| a.session_id))));
+        assert_eq!(task(&hub), Some((TaskState::NotStarted, None)), "not started, with no node");
+        assert_eq!(task(&hub_at_home_of(&hub)), Some((TaskState::NotStarted, None)), "a replay keeps it so");
+        let told = hub.read(|v| v.messages.values().filter(|m| m.session_id == "orch").map(|m| m.text.clone()).collect::<Vec<_>>());
+        assert!(told.iter().any(|t| t.contains(&id) && t.contains("not started")), "the orchestrator is told: {told:?}");
+
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some(id.clone()), ..ask_body("s", "¿Lo quito?") })).await).await;
+        assert_ne!(status, StatusCode::OK, "it is not the opener's to ask about: {said}");
+
+        crate::orchestrate::hand(&hub, &id, "other", "Trabaja en esto".into(), alondra_core::MessageFrom::Orchestrator, vec![]).unwrap();
+        assert_eq!(task(&hub), Some((TaskState::Running, Some("other".into()))), "running once the orchestrator gives it to a node");
+    }
+
+    /// The 15 tasks of t-67825 were already in the log, given to their opener: the first daemon
+    /// with the fix gives back what nobody touched, once, and leaves what its node works on.
+    #[tokio::test]
+    async fn the_first_start_gives_back_what_new_task_handed_its_opener_untouched() {
+        use alondra_core::tasks::{NewTask, TaskOptions, TaskState};
+        let hub = started("splits-released", &["s"]);
+        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let request = hub.read(|v| v.board.tasks["t-s"].request.clone());
+        for id in ["t-900", "t-901"] {
+            hub.append(Event::TaskCreated(NewTask {
+                id: id.into(), request: request.clone(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
+                session_id: Some("s".into()), launched: false, launched_as: None, start: None,
+            }))
+            .unwrap();
+        }
+        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some("t-901".into()), ..ask_body("s", "¿Sigo?") })).await).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute("DELETE FROM event_log WHERE kind = 'splits_released'", []).unwrap();
+        drop(db);
+
+        let state = |hub: &Hub, id: &str| hub.read(|v| v.board.tasks.get(id).map(|t| (t.state, t.assignee.clone().map(|a| a.session_id))));
+        let reopened = hub_at_home_of(&hub);
+        assert_eq!(state(&reopened, "t-900"), Some((TaskState::NotStarted, None)), "untouched: back to no node");
+        assert_eq!(state(&reopened, "t-901"), Some((TaskState::NeedsYou, Some("s".into()))), "its node asked about it: it stays");
+        assert_eq!(state(&reopened, "t-s").map(|(_, a)| a), Some(Some("s".into())), "a node's own task stays");
+
+        reopened.append(Event::TaskAssigned { task: "t-900".into(), session_id: "s".into(), agent_id: None }).unwrap();
+        let again = hub_at_home_of(&reopened);
+        assert_eq!(state(&again, "t-900"), Some((TaskState::Running, Some("s".into()))), "only the first start releases");
     }
 
     /// A node's call that its task cannot take is refused and the node is told what to do,
@@ -7293,7 +7373,11 @@ defaults = { pr = "auto_merge" }
             let (_, said) = status_and_body(new_request(State(hub.clone()), request("x", None, user_effort)).await).await;
             let id = said["request_id"].as_str().unwrap().to_string();
             let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
-            assert_eq!(text.contains("Effort is auto: for each launch, choose"), expected != "light", "{what}: {text}");
+            let automatic = expected != "light";
+            assert_eq!(text.contains("Effort is auto:"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("choose per task after splitting"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("Normal is the starting point"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("was chosen by Ana and is binding: do not pass effort"), !automatic, "{what}: {text}");
             let resolved = launch_options(&hub, &launch_body(Some(&id), "/tmp", orchestrator)).unwrap_or_else(|_| panic!("{what}"));
             assert_eq!(resolved.effort, expected, "{what}");
         }
@@ -7536,7 +7620,7 @@ mod archive_tests {
         let task = |id: &str, request: &str| {
             Event::TaskCreated(NewTask {
                 id: id.into(), request: request.into(), title: id.into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-                session_id: None, launched: false, start: None, launched_as: None,
+                session_id: Some("n".into()), launched: false, start: None, launched_as: None,
             })
         };
         let moved = |id: &str, event: TaskEvent| Event::TaskMoved { task: id.into(), event };

@@ -59,6 +59,7 @@ public struct WorkRequest: Codable, Identifiable, Hashable, Sendable {
 /// One piece of work a request became, with its own state machine on the server.
 public struct WorkTask: Codable, Identifiable, Hashable, Sendable {
     public enum State: String, Codable, Hashable, Sendable, CaseIterable {
+        case notStarted = "not_started"
         case waitingDependency = "waiting_dependency"
         case running
         case needsYou = "needs_you"

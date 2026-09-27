@@ -131,6 +131,24 @@ impl View {
         due
     }
 
+    /// Tasks `new_task` gave to the node that opened them before it asked whether that node works
+    /// on them, which nobody touched since: `SplitsReleased` gives them back to the orchestrator.
+    /// A `new_task` task has a numbered id, was neither launched nor defined with a start, and had
+    /// its node from its creation.
+    pub fn untouched_splits(&self) -> Vec<String> {
+        let numbered = |id: &str| id.strip_prefix("t-").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        let focused = |t: &Task| self.nodes.values().any(|n| n.ledger.focus.as_ref().is_some_and(|f| f.task == t.id));
+        self.board
+            .tasks
+            .values()
+            .filter(|t| t.recorded && numbered(&t.id) && !t.launched && t.start.is_none() && t.depends_on.is_empty())
+            .filter(|t| t.state == TaskState::Running && t.assignee.as_ref().is_some_and(|a| a.agent_id.is_none()))
+            .filter(|t| t.history.is_empty() && t.anomalies.is_empty() && t.prs.is_empty() && t.documents.is_empty())
+            .filter(|t| t.blocker.is_none() && t.final_report.is_none() && !focused(t))
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
     /// The open PRs of a task's dependencies: its own work builds on them.
     pub fn stacked_on<'a>(&'a self, task: &'a Task) -> Vec<(&'a Task, &'a PullRequest)> {
         task.depends_on.iter().filter_map(|d| self.board.tasks.get(d)).flat_map(|d| self.open_prs(d).map(move |p| (d, p))).collect()

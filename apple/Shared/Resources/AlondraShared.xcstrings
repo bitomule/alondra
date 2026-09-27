@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Retry delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar entrega #%llu"}}}},
+    "Discard delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar entrega #%llu"}}}},
     "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
 
     "Stop orchestrator": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener orquestador"}}}},
@@ -1403,6 +1405,16 @@
         }
       }
     },
+    "not started": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "por empezar"
+          }
+        }
+      }
+    },
     "needs you": {
       "localizations": {
         "es": {
@@ -1525,6 +1537,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "En marcha"
+          }
+        }
+      }
+    },
+    "Not started": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Por empezar"
           }
         }
       }

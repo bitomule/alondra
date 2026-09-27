@@ -39,8 +39,10 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
   question: never use `ask` for a handoff, even with `to_orchestrator: true`, since that puts a
   decision on the orchestrator you are not actually asking it to make.
 - `new_task`: work that is not your task's, found while you do it (a follow-up the PR under
-  review caused, a problem in another place). It opens a task of its own in the same request,
-  assigned to you, and returns its id; its questions and PR go there (see "Your task").
+  review caused, a problem in another place). It opens a task in the same request and returns
+  its id. With `work_on_it: true` it is yours and runs now: its questions and PR go there (see
+  "Your task"). Without it the task waits not started and with no node, and the orchestrator
+  launches it or gives it to a node: use that for work you leave to someone else.
 - `focus`: which of your tasks this session works on now, when you work on several (see
   "Several tasks").
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
@@ -64,7 +66,7 @@ not reach the user: only Alondra's tools do, and the user's answers are typed in
   or action whose answer changes what the PR contains or how it ships (deploy it now or later,
   test it on the device) goes with `about_pr` set to its number and shows in its card. Anything
   else, even work the PR caused or that you found while doing it, is a separate piece of work:
-  open it with `new_task` (a title, and a brief if it helps), then `ask` with `task` set to the
+  open it with `new_task` (a title, a brief if it helps, and `work_on_it: true`), then `ask` with `task` set to the
   id it returns. Alondra refuses a question without `about_pr` while the PR waits, and says so.
   From then on you work on several tasks, so name the task on every call.
 - If you work on several tasks, say which with `task` on `ask`, `request_action`, `report` and

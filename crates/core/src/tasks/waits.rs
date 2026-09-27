@@ -55,7 +55,7 @@ impl View {
         match task.state {
             TaskState::Running | TaskState::NeedsYou | TaskState::InReview | TaskState::Closing => true,
             TaskState::WaitingDependency => task.awaiting.is_some(),
-            TaskState::Done | TaskState::Cancelled => false,
+            TaskState::NotStarted | TaskState::Done | TaskState::Cancelled => false,
         }
     }
 

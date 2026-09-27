@@ -576,6 +576,11 @@ impl View {
             | Event::RequestTitled { .. }
             | Event::TaskTitled { .. }
             | Event::RequestClosed { .. } => None,
+            Event::SplitsReleased => {
+                self.board.splits_released_since.get_or_insert(at);
+                None
+            }
+            Event::TaskReleased { task } => self.board.tasks.get(task).and_then(|t| t.assignee.as_ref()).map(|a| (a.session_id.clone(), Trigger::Other)),
             Event::TasksArchived(what) => {
                 self.board.archive(what, at);
                 None

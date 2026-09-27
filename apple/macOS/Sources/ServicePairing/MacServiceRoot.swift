@@ -75,6 +75,10 @@ private final class MacServiceWindowContext {
             $0.taskOperations = tasks
             $0.scheduleOperations = schedules
             $0.pullRequestOperations = prs
+            $0.deliveryJournal = DeliveryJournalClient(refresh: { try await services.journal().refresh() },
+                resolve: { attempt, scope, retry, checked, risk in
+                    try await services.journal().resolve(attempt, in: scope, retry: retry, terminalChecked: checked, duplicateRisk: risk)
+                })
             $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
                 observeFeedback: { await services.reportFeedbackRecoveryEvents() },
                 observeDelivery: { await services.deliveryStatuses() },

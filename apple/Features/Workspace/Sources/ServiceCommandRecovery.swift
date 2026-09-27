@@ -1,5 +1,6 @@
-import AlondraCommands
+import AlondraRecovery
 import AlondraQuestionsFeature
+import AlondraCommands
 import ComposableArchitecture
 import Foundation
 
@@ -34,15 +35,19 @@ extension ServiceRootFeature {
     func resolutionEffects(_ resolution: CommandResolution, state: State) -> Effect<Action> {
         let id = resolution.id
         let rejection = resolution.succeeded ? nil : resolution.message
+        let questionAction: QuestionFeature.Action = resolution.deliveryUnconfirmed == true
+            ? .commandDeliveryUnconfirmed(id, attemptID: resolution.deliveryAttemptID) : .commandResolved(id, rejection: rejection)
+        let documentAction: DocumentReviewFeature.Action = resolution.deliveryUnconfirmed == true
+            ? .commandDeliveryUnconfirmed(id, attemptID: resolution.deliveryAttemptID) : .commandResolved(id, rejection: rejection)
         var effects: [Effect<Action>] = []
         if state.triage.triage.uncertainByItem.values.contains(id) {
             effects.append(.send(.triage(.triage(.commandResolved(id, rejection: rejection)))))
         }
         if state.triage.question?.uncertainCommandID == id {
-            effects.append(.send(.triage(.question(.presented(.commandResolved(id, rejection: rejection))))))
+            effects.append(.send(.triage(.question(.presented(questionAction)))))
         }
         for document in state.triage.documents where document.uncertainCommandID == id {
-            effects.append(.send(.triage(.documents(.element(id: document.id, action: .commandResolved(id, rejection: rejection))))))
+            effects.append(.send(.triage(.documents(.element(id: document.id, action: documentAction)))))
         }
         if state.newRequest.uncertainCommandID == id {
             effects.append(.send(.newRequest(.commandResolved(id, rejection: rejection))))
@@ -80,10 +85,10 @@ extension ServiceRootFeature {
         }
         for card in state.triage.cards {
             if card.question?.uncertainCommandID == id {
-                effects.append(.send(.triage(.cards(.element(id: card.id, action: .question(.commandResolved(id, rejection: rejection)))))))
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .question(questionAction))))))
             }
             if card.document?.uncertainCommandID == id {
-                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(.commandResolved(id, rejection: rejection)))))))
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(documentAction))))))
             }
             if card.pullRequest?.diff.mutationOutcome?.uncertainID == id {
                 effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(.diff(.commandResolved(id, rejection: rejection))))))))
@@ -93,13 +98,13 @@ extension ServiceRootFeature {
             }
             for child in card.pullRequest?.questionFeatures ?? [] where child.question.uncertainCommandID == id {
                 let action = ServicePullRequestFeature.Action.attachedQuestion(.element(
-                    id: child.id, action: .question(.commandResolved(id, rejection: rejection))))
+                    id: child.id, action: .question(questionAction)))
                 effects.append(.send(.triage(.cards(.element(id: card.id, action: .pullRequest(action))))))
             }
         }
         for detail in state.pullRequests {
             for child in detail.questionFeatures where child.question.uncertainCommandID == id {
-                effects.append(.send(.pullRequests(.element(id: detail.id, action: .attachedQuestion(.element(id: child.id, action: .question(.commandResolved(id, rejection: rejection))))))))
+                effects.append(.send(.pullRequests(.element(id: detail.id, action: .attachedQuestion(.element(id: child.id, action: .question(questionAction)))))))
             }
             if detail.pr.mutationOutcome?.uncertainID == id {
                 effects.append(.send(.pullRequests(.element(id: detail.id, action: .pr(.commandResolved(id, rejection: rejection))))))
@@ -143,5 +148,58 @@ extension ServiceRootFeature {
             return .feedbackReadRejected(id, "Your feedback was delivered, but marking the report read failed (HTTP \(status)).")
         case .unknown: return nil
         }
+    }
+}
+
+
+extension ServiceRootFeature {
+    func deliveryResolutionEffects(_ snapshot: DeliveryJournalSnapshot, state: State) -> Effect<Action> {
+        func action(_ question: QuestionFeature.State) -> QuestionFeature.Action? {
+            guard question.deliveryUnconfirmed, let id = question.deliveryAttemptID,
+                  let attempt = snapshot.attempts.first(where: { $0.id == id && $0.sessionID == question.question.sessionId
+                      && ($0.questionID == nil || $0.questionID == question.question.id) }),
+                  ["retryable", "discarded", "handed"].contains(attempt.state) else { return nil }
+            return .deliveryDecisionResolved(retry: attempt.state == "retryable", discarded: attempt.state == "discarded")
+        }
+        func documentAction(_ document: DocumentReviewFeature.State) -> DocumentReviewFeature.Action? {
+            guard document.deliveryUnconfirmed, let id = document.deliveryAttemptID,
+                  case .question(let question) = document.subject,
+                  let attempt = snapshot.attempts.first(where: { $0.id == id && $0.sessionID == question.sessionId
+                      && ($0.questionID == nil || $0.questionID == question.id) }),
+                  ["retryable", "discarded", "handed"].contains(attempt.state) else { return nil }
+            return .deliveryDecisionResolved(retry: attempt.state == "retryable", discarded: attempt.state == "discarded")
+        }
+        var effects: [Effect<Action>] = []
+        for document in state.triage.documents {
+            if let next = documentAction(document) {
+                effects.append(.send(.triage(.documents(.element(id: document.id, action: next)))))
+            }
+        }
+        if let question = state.triage.question, let next = action(question) {
+            effects.append(.send(.triage(.question(.presented(next)))))
+        }
+        for card in state.triage.cards {
+            if let document = card.document, let next = documentAction(document) {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .document(next))))))
+            }
+            if let question = card.question, let next = action(question) {
+                effects.append(.send(.triage(.cards(.element(id: card.id, action: .question(next))))))
+            }
+            for child in card.pullRequest?.questionFeatures ?? [] {
+                if let next = action(child.question) {
+                    effects.append(.send(.triage(.cards(.element(id: card.id,
+                        action: .pullRequest(.attachedQuestion(.element(id: child.id, action: .question(next)))))))))
+                }
+            }
+        }
+        for detail in state.pullRequests {
+            for child in detail.questionFeatures {
+                if let next = action(child.question) {
+                    let childAction = ServicePullRequestFeature.Action.attachedQuestion(.element(id: child.id, action: .question(next)))
+                    effects.append(.send(.pullRequests(.element(id: detail.id, action: childAction))))
+                }
+            }
+        }
+        return .merge(effects)
     }
 }

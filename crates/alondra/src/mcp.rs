@@ -131,10 +131,11 @@ fn tools(role: Role, user: &str) -> Value {
     ];
     if role == Role::Node {
         list.push(json!({"name": "claim_task", "description": "Bind this subagent to the task its parent delegated. Pass the exact opaque Alondra claim token from the first line of your Agent prompt before any other tool.", "inputSchema": {"type": "object", "properties": {"token": {"type": "string", "description": "The Alondra claim token injected into this Agent prompt"}}, "required": ["token"]}}));
-        list.push(json!({"name": "new_task", "description": format!("Open a separate task in the same request, assigned to you, for a question or piece of work that is not about this task's PR under review. Returns its id: ask about it, and name it with task in every call from now on. {user} sees it as a task of its own."), "inputSchema": {"type": "object", "properties": {
+        list.push(json!({"name": "new_task", "description": format!("Open a separate task in the same request for a question or piece of work that is not about this task's PR under review. {user} sees it as a task of its own. With work_on_it: true it is yours and runs now: ask about it, and name it with task in every call from now on. Without it, it waits not started and with no node until the orchestrator launches it or gives it to a node, and the orchestrator is told."), "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string", "description": format!("What the separate work is, in one line: it is what {user} reads in the task list")},
             "brief": {"type": "string", "description": "What the work is and why it came up (markdown, optional)"},
-            "task": {"type": "string", "description": "The task the work splits from (t-…). Only needed when you work on several tasks"}
+            "task": {"type": "string", "description": "The task the work splits from (t-…). Only needed when you work on several tasks"},
+            "work_on_it": {"type": "boolean", "description": "true when you work on it yourself, or ask about it. Leave it out for work someone else should do"}
         }, "required": ["title"]}}));
         list.push(json!({"name": "focus", "description": "Say which of your tasks this session works on now, when you work on several and the main thread works on one itself. Until it expires or another focus replaces it, what the main thread does counts for that task, as do its PRs and cards that name no task. Subagents must claim the token in their own Agent prompt.", "inputSchema": {"type": "object", "properties": {
             "task": {"type": "string", "description": "One of your open tasks (t-…)"},
@@ -282,7 +283,7 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             )
         }
         "new_task" if role == Role::Node => {
-            let r = client.post("/v1/tasks/new", &merge(pick(args, &["title", "brief", "task"]), &who))?;
+            let r = client.post("/v1/tasks/new", &merge(pick(args, &["title", "brief", "task", "work_on_it"]), &who))?;
             r.get("next").and_then(Value::as_str).unwrap_or("Task opened.").to_string()
         }
         "schedule_create" => {

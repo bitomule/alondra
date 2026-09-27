@@ -3,6 +3,11 @@ import Foundation
 
 public enum AlondraEndpoints {
     public static func overview() -> Endpoint<Data> { .data(.get, path: ["v1", "overview"]) }
+    public static func deliveryAttempts() -> Endpoint<Data> { .data(.get, path: ["v1", "delivery-attempts"]) }
+    public static func resolveDelivery(_ id: UInt64, version: UInt64, retry: Bool) throws -> Endpoint<Data> {
+        try json(.post, ["v1", "delivery-attempts", String(id), retry ? "retry" : "discard"],
+                 ["expected_version": version, "terminal_checked": true, "confirm_duplicate_risk": retry], requiresJSONObjectResponse: true)
+    }
     public static func task(_ id: String) -> Endpoint<Data> { .data(.get, path: ["v1", "tasks", id]) }
     public static func nodeActivity(_ session: String) -> Endpoint<Data> { .data(.get, path: ["v1", "nodes", session, "activity"]) }
     public static func pullRequestDiff(_ id: UInt64) -> Endpoint<Data> { .data(.get, path: ["v1", "prs", String(id), "diff"]) }
@@ -20,7 +25,7 @@ public enum AlondraEndpoints {
     public static func answer(_ question: UInt64, text: String, option: String?, attachments: [String], device: String) throws -> Endpoint<Data> {
         var body: [String: Any] = ["text": text, "device": device, "attachments": attachments]
         body["option"] = option
-        return try json(.post, ["v1", "questions", String(question), "answer"], body)
+        return try json(.post, ["v1", "questions", String(question), "answer"], body, requiresJSONObjectResponse: true)
     }
     public static func moreContext(_ question: UInt64, note: String, attachments: [String]) throws -> Endpoint<Data> {
         try json(.post, ["v1", "questions", String(question), "more-context"], ["note": note, "attachments": attachments])
@@ -73,7 +78,7 @@ public enum AlondraEndpoints {
         try json(.post, ["v1", "nodes", session, "messages"], ["text": text, "from": "david", "attachments": attachments])
     }
 
-    private static func json(_ method: HTTPMethod, _ path: [String], _ object: [String: Any]) throws -> Endpoint<Data> {
-        .data(method, path: path, body: try JSONSerialization.data(withJSONObject: object), contentType: "application/json")
+    private static func json(_ method: HTTPMethod, _ path: [String], _ object: [String: Any], requiresJSONObjectResponse: Bool = false) throws -> Endpoint<Data> {
+        .data(method, path: path, body: try JSONSerialization.data(withJSONObject: object), contentType: "application/json", requiresJSONObjectResponse: requiresJSONObjectResponse)
     }
 }
