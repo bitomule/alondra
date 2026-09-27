@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(Args)]
 pub struct Options {
     /// Explicit approved destination; omitted means Local, never the last remote Mac.
-    #[arg(long, global = true)]
+    #[arg(id = "delivery_mac", long = "mac", global = true)]
     pub mac: Option<String>,
     #[command(subcommand)]
     pub command: Command,
