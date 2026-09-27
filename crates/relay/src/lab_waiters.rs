@@ -112,21 +112,47 @@ impl<F> Drop for Observed<F> {
     }
 }
 
-fn read_challenge(directory: &std::path::Path, name: &str) -> std::io::Result<Option<String>> {
-    let path = directory.join(name);
-    let metadata = match std::fs::symlink_metadata(&path) {
-        Ok(m) => m,
+#[derive(Debug)]
+struct CaptureError {
+    phase: &'static str,
+    source: std::io::Error,
+}
+fn at(phase: &'static str) -> impl FnOnce(std::io::Error) -> CaptureError {
+    move |source| CaptureError { phase, source }
+}
+fn read_challenge(directory: &std::path::Path, name: &str) -> Result<Option<String>, CaptureError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Bind validation and reading to one inode, even when the publisher atomically
+    // replaces the pathname. Never follow a symlink and never retry away a failure.
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(directory.join(name))
+    {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => return Err(at("challenge_open")(e)),
     };
+    read_challenge_file(file).map(Some)
+}
+fn read_challenge_file(file: std::fs::File) -> Result<String, CaptureError> {
+    use std::io::Read;
+    let metadata = file.metadata().map_err(at("challenge_metadata"))?;
     if !metadata.is_file() || metadata.len() != 32 {
-        return Err(std::io::Error::other("invalid lab challenge"));
+        return Err(at("challenge_shape")(std::io::Error::from(
+            std::io::ErrorKind::InvalidData,
+        )));
     }
-    let nonce = std::fs::read_to_string(path)?;
+    let mut nonce = String::new();
+    file.take(33)
+        .read_to_string(&mut nonce)
+        .map_err(at("challenge_read"))?;
     if nonce.len() != 32 || !nonce.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(std::io::Error::other("invalid lab challenge"));
+        return Err(at("challenge_content")(std::io::Error::from(
+            std::io::ErrorKind::InvalidData,
+        )));
     }
-    Ok(Some(nonce))
+    Ok(nonce)
 }
 
 #[derive(Default)]
@@ -160,7 +186,7 @@ impl Metrics {
                 // never acknowledge an observation request issued later.
                 let metrics = metrics.clone();
                 let epoch = epoch.clone();
-                let write = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                let write = tokio::task::spawn_blocking(move || -> Result<(), CaptureError> {
                     let challenge=read_challenge(directory,"challenge")?;
                     let sampler_challenge=read_challenge(directory,"sampler-challenge")?;
                     let changes=metrics.changes.snapshot(started);let work=metrics.work.snapshot(started);
@@ -176,10 +202,10 @@ impl Metrics {
                         .write(true)
                         .create_new(true)
                         .mode(0o600)
-                        .open(&temporary)?;
+                        .open(&temporary).map_err(at("snapshot_open"))?;
                     let result = (|| {
-                        file.write_all(value.to_string().as_bytes())?;
-                        std::fs::rename(&temporary, "/system-metrics/waiters.json")
+                        file.write_all(value.to_string().as_bytes()).map_err(at("snapshot_write"))?;
+                        std::fs::rename(&temporary, "/system-metrics/waiters.json").map_err(at("snapshot_rename"))
                     })();
                     if result.is_err() {
                         let _ = std::fs::remove_file(&temporary);
@@ -188,7 +214,20 @@ impl Metrics {
                 })
                 .await;
                 if !matches!(write, Ok(Ok(()))) {
-                    eprintln!("laboratory waiter metrics stopped");
+                    match write {
+                        Ok(Err(error)) => eprintln!(
+                            "laboratory waiter metrics stopped phase={} kind={:?} errno={}",
+                            error.phase,
+                            error.source.kind(),
+                            error.source.raw_os_error().unwrap_or(0)
+                        ),
+                        Err(error) => eprintln!(
+                            "laboratory waiter metrics stopped phase=join panic={} cancelled={}",
+                            error.is_panic(),
+                            error.is_cancelled()
+                        ),
+                        _ => unreachable!(),
+                    }
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -201,6 +240,54 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn challenge_reads_bound_inode_and_reject_symlink_or_partial_publication() {
+        let directory =
+            std::env::temp_dir().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("challenge");
+        std::fs::write(&path, "a".repeat(32)).unwrap();
+        let opened = std::fs::File::open(&path).unwrap();
+        std::fs::write(directory.join("next"), "b".repeat(32)).unwrap();
+        std::fs::rename(directory.join("next"), &path).unwrap();
+        assert_eq!(read_challenge_file(opened).unwrap(), "a".repeat(32));
+        assert_eq!(
+            read_challenge(&directory, "challenge").unwrap(),
+            Some("b".repeat(32))
+        );
+        std::os::unix::fs::symlink(&path, directory.join("link")).unwrap();
+        assert_eq!(
+            read_challenge(&directory, "link").unwrap_err().phase,
+            "challenge_open"
+        );
+        std::fs::write(&path, "b").unwrap();
+        assert_eq!(
+            read_challenge(&directory, "challenge").unwrap_err().phase,
+            "challenge_shape"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn atomic_challenge_replacements_keep_reads_complete() {
+        let directory =
+            std::env::temp_dir().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("challenge"), "a".repeat(32)).unwrap();
+        let publish = directory.clone();
+        let writer = std::thread::spawn(move || {
+            for i in 0..200 {
+                let value = if i % 2 == 0 { "a" } else { "b" };
+                std::fs::write(publish.join("next"), value.repeat(32)).unwrap();
+                std::fs::rename(publish.join("next"), publish.join("challenge")).unwrap();
+            }
+        });
+        for _ in 0..200 {
+            let value = read_challenge(&directory, "challenge").unwrap().unwrap();
+            assert!(value == "a".repeat(32) || value == "b".repeat(32));
+        }
+        writer.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn immediate_ready_is_never_counted_and_cancellation_releases_pending() {
         let gauge = Arc::new(Gauge::default());
