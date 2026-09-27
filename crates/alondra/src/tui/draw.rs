@@ -24,10 +24,9 @@ const COMMENT: Color = Color::LightMagenta;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     draw_head(f, app, head);
-    let blocked = app.data.delivery_attempts.iter().filter(|a| a.blocks()).count();
-    let body = if blocked > 0 {
+    let body = if let Some(text) = delivery_warning(&app.data.delivery_attempts) {
         let [warning, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(2)]).areas(body);
-        f.render_widget(Paragraph::new(trf!("{blocked} deliveries pending/uncertain · :deliveries", "{blocked} entregas pendientes/inciertas · :deliveries")).style(Style::new().fg(ACCENT)), warning);
+        f.render_widget(Paragraph::new(text).style(Style::new().fg(ACCENT)), warning);
         rest
     } else { body };
     let body = match app.composer.as_ref() {
@@ -1963,6 +1962,15 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
     ]
 }
 
+/// Only an uncertain handoff needs David: a dispatching one settles by itself.
+fn delivery_warning(attempts: &[crate::delivery::Attempt]) -> Option<String> {
+    match attempts.iter().filter(|a| a.state == alondra_core::delivery::State::Uncertain).count() {
+        0 => None,
+        1 => Some(tr!("1 message not confirmed · review it with :deliveries", "1 mensaje sin confirmar · revísalo con :deliveries").into()),
+        n => Some(trf!("{n} messages not confirmed · review them with :deliveries", "{n} mensajes sin confirmar · revísalos con :deliveries")),
+    }
+}
+
 fn draw_help(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let lines = if app.delivery_help {
@@ -2009,7 +2017,7 @@ mod tests {
         app.data.delivery_attempts=serde_json::from_value(serde_json::json!([
             {"id":7,"session_id":"test-session","channel":"menu_decision","state":"uncertain","version":2,"reason":"write_unknown"}
         ])).unwrap();
-        assert!(screen(&mut app,120,30).contains("1 deliveries pending/uncertain"));
+        assert!(screen(&mut app,120,30).contains("1 message not confirmed · review it with :deliveries"));
         app.flash=None;
         assert!(screen(&mut app,120,30).contains(":deliveries"));
         app.run_command("deliveries");
@@ -2021,8 +2029,9 @@ mod tests {
         let detail=screen(&mut app,140,40);
         assert!(!detail.contains("--terminal-checked"),"{detail}");
         app.help=false;
+        assert!(!screen(&mut app,120,30).contains("not confirmed"),"a dispatching handoff settles by itself");
         app.data.delivery_attempts[0].state=alondra_core::delivery::State::Handed;
-        assert!(!screen(&mut app,120,30).contains("deliveries pending/uncertain"));
+        assert!(!screen(&mut app,120,30).contains("not confirmed"));
         assert!(app.posted.borrow().is_empty(),"inspection must not schedule a mutation");
     }
 

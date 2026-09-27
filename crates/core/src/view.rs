@@ -359,6 +359,9 @@ impl View {
                 self.spawn_reservations.retain(|_, r| r.session_id != *session_id);
                 self.nodes.remove(session_id);
                 self.removed.insert(session_id.clone(), at);
+                for attempt in self.delivery_attempts.values_mut().filter(|a| &a.session_id == session_id) {
+                    attempt.close_for_gone_node();
+                }
                 for q in self.questions.values_mut() {
                     if &q.session_id == session_id && q.status.is_open() {
                         q.status = QuestionStatus::Orphaned;
@@ -451,7 +454,11 @@ impl View {
             }
             Event::DeliveryProtocolActivated => { self.delivery_protocol = true; None }
             Event::DeliveryAttemptRecorded(attempt) => {
-                self.delivery_attempts.insert(attempt.id, attempt.clone()); None
+                let mut attempt = attempt.clone();
+                if attempt.session_id != crate::orchestrator::NODE_ID && !self.nodes.contains_key(&attempt.session_id) {
+                    attempt.close_for_gone_node();
+                }
+                self.delivery_attempts.insert(attempt.id, attempt); None
             }
             Event::MessageHanded { id } => {
                 // Only the fenced print-mode completion can acknowledge this inbox.
@@ -1686,6 +1693,28 @@ mod tests {
         v.apply(3, 3000, &Event::ProcessExited { session_id: "s".into(), pid: 1 });
         v.apply(4, 4000, &hook("s", "SessionEnd"));
         assert!(!v.nodes.contains_key("s"));
+    }
+
+    fn attempt(id: u64, session: &str, channel: crate::delivery::Channel, state: crate::delivery::State) -> crate::delivery::Attempt {
+        crate::delivery::Attempt { id, session_id: session.into(), channel, message_ids: vec![1], question_id: None, state, version: 1, reason: Some("legacy_delivery_unknown".into()), created_at: 0, updated_at: 0, resolved_from_version: None }
+    }
+
+    /// The 27-sep migration recorded uncertain handoffs for nodes closed days before; nobody
+    /// could reach or re-check those terminals, yet the TUI asked David to resolve them.
+    #[test]
+    fn a_handoff_to_a_node_that_is_gone_leaves_nothing_to_resolve() {
+        use crate::delivery::{Channel, State};
+        let mut v = run(&[hook("gone", "UserPromptSubmit"), hook("live", "UserPromptSubmit")]);
+        v.apply(3, 3_000, &Event::NodeRemoved { session_id: "gone".into() });
+        v.apply(4, 4_000, &Event::DeliveryAttemptRecorded(attempt(4, "gone", Channel::HookStop, State::Uncertain)));
+        v.apply(5, 5_000, &Event::DeliveryAttemptRecorded(attempt(5, "live", Channel::HookStop, State::Uncertain)));
+        assert_eq!(v.delivery_attempts[&4].state, State::Discarded);
+        assert!(!v.delivery_blocked("gone"));
+        assert_eq!(v.delivery_attempts[&5].state, State::Uncertain, "a live node still needs David");
+        v.apply(6, 6_000, &Event::NodeRemoved { session_id: "live".into() });
+        assert_eq!(v.delivery_attempts[&5].state, State::Discarded, "closing the node closes its pending handoff");
+        v.apply(7, 7_000, &Event::DeliveryAttemptRecorded(attempt(7, "gone", Channel::NodeDiscard, State::Uncertain)));
+        assert_eq!(v.delivery_attempts[&7].state, State::Uncertain, "a node discard keeps its own recovery");
     }
 
     /// The closed nodes and the options of every request only ever grew, and every snapshot
