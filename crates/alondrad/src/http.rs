@@ -1472,6 +1472,11 @@ struct ChangesBody {
 }
 
 async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ChangesBody>) -> Response {
+    request_pr_changes_authorized(hub, id, b, &LiveReviewHead, || Ok(())).await
+}
+
+async fn request_pr_changes_authorized(hub: AppState, id: u64, b: ChangesBody,
+    reader: &impl ReviewHead, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
@@ -1485,9 +1490,10 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+    if let Err(response) = verify_review_head_with(&hub, id, b.expected_head_sha.as_deref(), reader).await {
         return response;
     }
+    if authorize().is_err() { return prepared_access_denied(); }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
     match tell_review_about_pr(&hub, &pr, text, b.expected_head_sha.as_deref(), attachments) {
         Ok(to) => {
@@ -1513,6 +1519,11 @@ struct AskPrBody {
 /// card until a new push and blocked the train above it. This asks without touching the PR's
 /// state, so the card stays in the inbox and the node answers with a report linking the PR.
 async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<AskPrBody>) -> Response {
+    ask_about_pr_authorized(hub, id, b, &LiveReviewHead, || Ok(())).await
+}
+
+async fn ask_about_pr_authorized(hub: AppState, id: u64, b: AskPrBody,
+    reader: &impl ReviewHead, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
@@ -1526,9 +1537,10 @@ async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b):
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+    if let Err(response) = verify_review_head_with(&hub, id, b.expected_head_sha.as_deref(), reader).await {
         return response;
     }
+    if authorize().is_err() { return prepared_access_denied(); }
     let text = format!(
         "{} asks about {}: {}\n\nAnswer with a report linking the PR so the answer shows inside its card.",
         hub.config.name,
@@ -1567,7 +1579,15 @@ async fn live_pr_head(url: &str) -> Result<(String, bool), Response> {
     Ok((head.to_string(), value.get("state").and_then(Value::as_str) == Some("OPEN")))
 }
 
-async fn verify_review_head(hub: &Hub, id: u64, expected: Option<&str>) -> Result<(), Response> {
+pub(crate) trait ReviewHead: Sync {
+    fn read(&self, url: &str) -> impl std::future::Future<Output = Result<(String, bool), Response>> + Send;
+}
+pub(crate) struct LiveReviewHead;
+impl ReviewHead for LiveReviewHead {
+    async fn read(&self, url: &str) -> Result<(String, bool), Response> { live_pr_head(url).await }
+}
+
+async fn verify_review_head_with(hub: &Hub, id: u64, expected: Option<&str>, reader: &impl ReviewHead) -> Result<(), Response> {
     let Some(expected) = expected else { return Ok(()) };
     if expected.len() != 40 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "expected_head_sha must be a full Git commit SHA"));
@@ -1575,7 +1595,7 @@ async fn verify_review_head(hub: &Hub, id: u64, expected: Option<&str>) -> Resul
     let Some(url) = hub.read(|view| view.prs.get(&id).map(|pr| pr.url.clone())) else {
         return Err(err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist")));
     };
-    let (live, open) = live_pr_head(&url).await?;
+    let (live, open) = reader.read(&url).await?;
     if !open {
         return Err(refused(StatusCode::CONFLICT, "pr_not_open", format!("{url} is no longer open")));
     }
@@ -3651,11 +3671,53 @@ fn issue_of(b: &RequestBody, file: &alondra_core::options::OptionsFile) -> Resul
     Ok(alondra_core::issues::find_in_text(&b.text).filter(|(repo, _)| !crate::issues::excluded(file, repo)))
 }
 
+/// Preparatory network reads must not retain authority after a local revocation.
+/// These routes remain external-mode receipts: interrupted requests are uncertain,
+/// never replayed automatically, even though their final mutation is local.
+pub(crate) fn prepared_service_path(path: &str) -> bool {
+    path == "/v1/requests" || ["/changes", "/ask"].iter().any(|suffix|
+        path.strip_prefix("/v1/prs/").and_then(|p| p.strip_suffix(suffix))
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())))
+}
+fn prepared_access_denied() -> Response {
+    err(StatusCode::FORBIDDEN, "device approval was revoked before committing this action")
+}
+pub(crate) async fn prepared_service_request_with(hub: AppState, path: &str, body: Value,
+    gh: &impl crate::prs::Gh, reader: &impl ReviewHead,
+    authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
+    if path == "/v1/requests" {
+        return match serde_json::from_value(body) {
+            Ok(body) => new_request_authorized(hub, body, gh, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid request body"),
+        };
+    }
+    let Some((id, action)) = path.strip_prefix("/v1/prs/").and_then(|p| p.split_once('/')) else {
+        return err(StatusCode::NOT_FOUND, "unknown preparation route");
+    };
+    let Ok(id) = id.parse::<u64>() else { return err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR ID"); };
+    match action {
+        "changes" => match serde_json::from_value(body) {
+            Ok(body) => request_pr_changes_authorized(hub, id, body, reader, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR changes body"),
+        },
+        "ask" => match serde_json::from_value(body) {
+            Ok(body) => ask_about_pr_authorized(hub, id, body, reader, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR question body"),
+        },
+        _ => err(StatusCode::NOT_FOUND, "unknown preparation route"),
+    }
+}
+
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
     new_request_with(hub, b, &crate::prs::GhCli).await
 }
 
 pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh) -> Response {
+    new_request_authorized(hub, b, gh, || Ok(())).await
+}
+
+async fn new_request_authorized(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh,
+    authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let attachments = match attached(&hub, &b.attachments) {
         Ok(a) => a,
         Err(r) => return r,
@@ -3685,6 +3747,7 @@ pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl cr
         }
         None => None,
     };
+    if authorize().is_err() { return prepared_access_denied(); }
     let request_id = format!("r-{}-{}", now_millis(), crate::auth::random_hex(4));
     let sent = Event::RequestSent { request_id: request_id.clone(), options: resolved.clone(), text: Some(b.text.clone()), attachments: attachments.clone() };
     let text = request_text(
