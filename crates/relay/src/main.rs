@@ -205,7 +205,7 @@ async fn enroll_mac(
     let created = server
         .auth
         .enroll_mac(mac)
-        .map_err(|_| error(StatusCode::CONFLICT, "mac_enrollment_failed"))?;
+        .map_err(|cause| enrollment_error(cause, "mac_enrollment_failed"))?;
     Ok((
         if created {
             StatusCode::CREATED
@@ -309,7 +309,7 @@ async fn enroll(
     server
         .auth
         .enroll(&mac, device)
-        .map_err(|_| error(StatusCode::CONFLICT, "device_enrollment_failed"))?;
+        .map_err(|cause| enrollment_error(cause, "device_enrollment_failed"))?;
     Ok((StatusCode::CREATED, Json(json!({"ok":true}))).into_response())
 }
 
@@ -2962,6 +2962,59 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn enrollment_storage_failure_is_503_rolls_back_and_retry_requires_reload() {
+        for mac_registration in [true,false] {
+            let pilot_key=SigningKey::from_slice(&[81u8;32]).unwrap();
+            let new_key=SigningKey::from_slice(&[82u8;32]).unwrap();
+            let (url,server,handle)=test_server(&pilot_key).await;
+            let config=server.auth.config.clone();
+            let registry_before=std::fs::read(&config.device_registry_path).unwrap();
+            // Real deterministic I/O failure even as root: the staging file path
+            // is a directory. The existing committed registry remains untouched.
+            let blocked=config.device_registry_path.with_extension("tmp");
+            std::fs::create_dir(&blocked).unwrap();
+            let (path,device,signing,body)=if mac_registration {
+                ("/v1/macs","mac-storage-test",&new_key,json!({"mac_id":"mac-storage-test",
+                    "signing_key":key_bytes(&new_key),"agreement_key":key_bytes(&new_key)}))
+            } else {
+                ("/v1/devices","mac-1",&pilot_key,json!({"device_id":"client-storage-test",
+                    "owner_sub":"owner","signing_key":key_bytes(&new_key)}))
+            };
+            let bytes=serde_json::to_vec(&body).unwrap();
+            let client=reqwest::Client::new();
+            for nonce in [81,82] {
+                let response=sign(&server.auth.server_epoch(),client.post(format!("{url}{path}"))
+                    .bearer_auth(jwt("owner",now_ms())).body(bytes.clone()),signing,device,"POST",path,&bytes,nonce)
+                    .send().await.unwrap();
+                assert_eq!(response.status(),StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(response.json::<Value>().await.unwrap(),json!({"error":"registry_unavailable"}),
+                    "neither filesystem details nor identity-conflict advice may escape");
+            }
+            assert!(!server.auth.is_mac_registered("mac-storage-test"));
+            assert!(!server.auth.is_phone_registered("client-storage-test"));
+            assert!(!server.auth.jwks_ready(),"persistence poison remains fail closed");
+            assert_eq!(std::fs::read(&config.device_registry_path).unwrap(),registry_before);
+            std::fs::remove_dir(&blocked).unwrap();
+            let restarted=Auth::test(config,include_bytes!("../tests/fixtures/jwks.json")).unwrap();
+            if mac_registration {
+                let entry=auth::MacDevice{mac_id:"mac-storage-test".into(),owner_sub:"owner".into(),
+                    signing_key:key_bytes(&new_key),agreement_key:key_bytes(&new_key)};
+                assert!(restarted.enroll_mac(entry.clone()).unwrap());
+                assert!(!restarted.enroll_mac(entry.clone()).unwrap());
+                let mut collision=entry;collision.signing_key=key_bytes(&pilot_key);
+                assert_eq!(enrollment_error(restarted.enroll_mac(collision).unwrap_err(),"mac_enrollment_failed").0,StatusCode::CONFLICT);
+            } else {
+                let identity=auth::Identity{device_id:"mac-1".into(),owner_sub:"owner".into()};
+                let entry=PhoneDevice{device_id:"client-storage-test".into(),owner_sub:"owner".into(),signing_key:key_bytes(&new_key)};
+                restarted.enroll(&identity,entry.clone()).unwrap();
+                let mut collision=entry;collision.signing_key=key_bytes(&pilot_key);
+                assert_eq!(enrollment_error(restarted.enroll(&identity,collision).unwrap_err(),"device_enrollment_failed").0,StatusCode::CONFLICT);
+            }
+            handle.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn post_rename_sync_failure_poison_blocks_auth_until_restart() {
         let pilot_key = SigningKey::from_slice(&[73u8; 32]).unwrap();
         let phone_key = SigningKey::from_slice(&[74u8; 32]).unwrap();
@@ -3009,7 +3062,18 @@ mod http_tests {
     }
 }
 
+fn enrollment_error(cause:anyhow::Error, conflict_code:&str)->(StatusCode,Json<Value>) {
+    match cause.downcast_ref::<auth::EnrollmentError>() {
+        Some(auth::EnrollmentError::Conflict)=>error(StatusCode::CONFLICT,conflict_code),
+        Some(auth::EnrollmentError::InvalidRegistration)=>error(StatusCode::BAD_REQUEST,"invalid_registration"),
+        None=>error(StatusCode::SERVICE_UNAVAILABLE,"registry_unavailable"),
+    }
+}
+
 fn authentication_error(error_value:anyhow::Error)->(StatusCode,Json<Value>) {
+    if error_value.is::<auth::RegistryUnavailable>() {
+        return error(StatusCode::SERVICE_UNAVAILABLE,"registry_unavailable");
+    }
     match error_value.downcast_ref::<auth::AccountGateError>() {
         Some(auth::AccountGateError::Unavailable)=>error(StatusCode::SERVICE_UNAVAILABLE,"account_access_unavailable"),
         Some(auth::AccountGateError::Denied)=>error(StatusCode::FORBIDDEN,"account_access_denied"),
