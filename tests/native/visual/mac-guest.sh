@@ -15,7 +15,10 @@ mkdir -p driver-bin project/.mav
 cp cua-session.py driver-bin/cua-driver
 chmod 700 driver-bin/cua-driver
 export PATH="$ROOT/driver-bin:$PATH"
+# MAV doctor reads its target and launch recipe from the project config.
+# Write it before probing; an unconfigured project defaults to the simulator.
 cd project
+python3 ../mac_guest.py --prepare
 open -n -g -a CuaDriver --args serve
 for attempt in {1..20}; do
   mav doctor > doctor.txt

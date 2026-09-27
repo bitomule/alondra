@@ -8,6 +8,7 @@ import plistlib
 import re
 import resource
 import signal
+import sys
 import subprocess
 import uuid
 
@@ -32,7 +33,7 @@ def stop_owned(process):
             process.wait(timeout=5)
 
 
-def main():
+def prepare():
     os.umask(0o077)
     if not subprocess.check_output(['/usr/sbin/sysctl', '-n', 'hw.model'], text=True).startswith('VirtualMac'):
         raise RuntimeError('visual runtime is restricted to the disposable VM')
@@ -49,6 +50,11 @@ def main():
               'target_kind': 'macos', 'vm': False, 'launch': {'mode': 'custom', 'commands': {
                   'build': 'false', 'app_path': "printf '%s' /Users/admin/alondra-gate/Alondra.app", 'install': '', 'launch': ''}}}
     (PROJECT / '.mav/config.yaml').write_text(json.dumps(config))
+    return executable
+
+
+def main():
+    executable = prepare()
     summary = {'schema': 1, 'status': 'running', 'cleanup': False, 'scenarios': [],
                'binarySHA256': hashlib.sha256(executable.read_bytes()).hexdigest()}
     path = PROJECT / 'visual-summary.json'
@@ -105,4 +111,9 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    if sys.argv[1:] == ['--prepare']:
+        prepare()
+    elif sys.argv[1:]:
+        raise SystemExit('usage: mac_guest.py [--prepare]')
+    else:
+        raise SystemExit(main())
