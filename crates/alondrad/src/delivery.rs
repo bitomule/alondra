@@ -184,6 +184,33 @@ pub fn finish(hub: &Hub, id: u64, outcome: Outcome) -> Result<()> {
     Ok(())
 }
 
+/// Cancellation can be observed by both the waiter and the answer sender. Recheck
+/// and finalize once under the writer lock, without undoing ACK or explicit resolution.
+pub fn cancel_held_question(hub: &Hub, question: u64, reason: &'static str) -> Result<()> {
+    hub.append_all(|v| {
+        let intent = v.messages.values().any(|m| m.answers_question == Some(question));
+        if let Some(current) = v.delivery_attempts.values().rev().find(|a|
+            a.channel == Channel::HookDecision && a.message_ids.iter().any(|id|
+                v.messages.get(id).is_some_and(|m| m.answers_question == Some(question)))) {
+            if current.state != State::Dispatching { return Ok::<_, anyhow::Error>(vec![]); }
+            let mut next = current.clone();
+            next.state = State::Uncertain;
+            next.reason = Some(reason.into());
+            next.version += 1;
+            next.updated_at = now_millis();
+            return Ok(vec![Event::DeliveryAttemptRecorded(next)]);
+        }
+        // An answer committed an ordinary outbox after the receiver disappeared.
+        // Its durable intent remains deliverable; cancellation must not orphan it.
+        if intent { return Ok(vec![]); }
+        Ok(v.questions.get(&question)
+            .filter(|q| matches!(q.status, alondra_core::QuestionStatus::Open | alondra_core::QuestionStatus::Answered))
+            .map(|_| Event::QuestionClosed { id: question, status: alondra_core::QuestionStatus::Orphaned, note: None })
+            .into_iter().collect())
+    })??;
+    Ok(())
+}
+
 /// Recheck under the writer lock: PostCompact may arrive after the wake scan.
 pub fn mark_compaction_overdue(hub: &Hub, sid: &str, now: i64) -> Result<()> {
     hub.append_with(|v| {
