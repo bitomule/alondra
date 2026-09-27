@@ -30,6 +30,8 @@ def receipt(path):
         raise m.GateError('unexpected recovery profile')
     if value['profile'] == 'visual' and not re.fullmatch('[a-f0-9]{64}', value.get('input_executable_sha256') or ''):
         raise m.GateError('visual recovery requires original executable hash')
+    if type(value.get('brew_lifecycle', False)) is not bool or (value.get('brew_lifecycle') and value['profile'] != 'cli'):
+        raise m.GateError('invalid lifecycle recovery variant')
     return value
 
 
@@ -45,7 +47,8 @@ def recover(args):
         raise m.GateError('new absolute output required')
     args.output.mkdir(parents=True, mode=0o700)
     gate = m.Gate(argparse.Namespace(output_dir=args.output, base=m.BASE_NAME,
-                  profile=saved['profile'], brew_version=saved['brew_version']))
+                  profile=saved['profile'], brew_version=saved['brew_version'],
+                  brew_lifecycle=saved.get('brew_lifecycle', False)))
     gate.name = saved['vm']; gate.owner_token = saved['owner_token']; gate.tart_home = home
     gate.env['TART_HOME'] = str(home)
     gate.recovery_descriptor = saved.get('evidence_descriptor')
@@ -95,8 +98,8 @@ def recover(args):
                 raise m.GateError('visual guest ran a different executable')
         else:
             cli = json.loads((gate.out / 'evidence/project/cli-result.json').read_text())
-            if cli.get('status') != 'passed' or cli.get('version') != saved['brew_version'] or cli.get('cleanup') is not True:
-                raise m.GateError('original CLI assertions failed')
+            m.validate_cli(cli, saved['brew_version'], saved.get('brew_lifecycle', False))
+            gate.result['cli'] = cli
         gate.result['status'] = 'recovered-validated-evidence'
     except Exception as error:
         gate.result.update(status='failed', failure={'kind': type(error).__name__, 'detail': str(error)})

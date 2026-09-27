@@ -33,6 +33,22 @@ class GateError(RuntimeError):
     pass
 
 
+LIFECYCLE_CHECKS = ['public_018_install', 'public_019_brew_upgrade', '019_same_home_persistence',
+                    '018_rejects_019_copy_without_original_mutation', '018_snapshot_restore',
+                    'uninstall_package_preserves_user_data', 'owned_process_and_port_quiescent']
+
+
+def validate_cli(cli, version, lifecycle=False):
+    if cli.get('status') != 'passed' or cli.get('version') != version or cli.get('cleanup') is not True:
+        raise GateError('CLI guest assertions failed or wrong Brew version')
+    expected_profile = 'cli-public-package-lifecycle' if lifecycle else 'cli-public-package-local-runtime'
+    if cli.get('profile') != expected_profile:
+        raise GateError('CLI guest profile differs from requested variant')
+    if lifecycle and cli.get('checks') != LIFECYCLE_CHECKS:
+        raise GateError('incomplete lifecycle acceptance')
+    return cli
+
+
 def checked_name(name):
     if not re.fullmatch(r'alondra-[a-z0-9-]{1,70}', name):
         raise GateError('base must be an explicitly prepared local alondra-* image')
@@ -381,6 +397,8 @@ class Gate:
             else:
                 shutil.copyfile(HERE / 'macos/cli.py', stage / 'cli.py')
                 shutil.copyfile(HERE / 'macos/cli.sh', stage / 'guest.sh')
+                if getattr(self.args, 'brew_lifecycle', False):
+                    shutil.copyfile(HERE / 'macos/cli_lifecycle.py', stage / 'cli_lifecycle.py')
             self.call('/usr/bin/tar', '-cf', str(self.out / 'payload.tar'), '-C', str(stage), '.', timeout=90)
             self.result['payload_sha256'] = digest(self.out / 'payload.tar')
             self.guest('/bin/mkdir', '-p', GUEST)
@@ -388,7 +406,7 @@ class Gate:
                 self.call('tart', 'exec', '-i', self.name, '/usr/bin/tar', '-xf', '-', '-C', GUEST, timeout=120, input_file=payload)
             self.evidence_pending = True
             self.step = self.args.profile
-            parameter = 'debug' if self.args.profile in ('app', 'visual') else self.args.brew_version
+            parameter = 'debug' if self.args.profile in ('app', 'visual') else ('lifecycle' if getattr(self.args, 'brew_lifecycle', False) else self.args.brew_version)
             try:
                 test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
                 (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
@@ -422,8 +440,7 @@ class Gate:
                     raise GateError('visual guest ran a different executable')
             else:
                 cli = json.loads((self.out / 'evidence/project/cli-result.json').read_text())
-                if cli.get('status') != 'passed' or cli.get('version') != self.args.brew_version or cli.get('cleanup') is not True:
-                    raise GateError('CLI guest assertions failed or wrong Brew version')
+                validate_cli(cli, self.args.brew_version, getattr(self.args, 'brew_lifecycle', False))
                 self.result['cli'] = cli
             self.result['status'] = 'passed'
         except Exception as error:
@@ -453,6 +470,7 @@ class Gate:
                                'ownership_sha256': digest(self.out / 'ownership.json'),
                                'original_output': str(self.out), 'source': self.result.get('source'),
                                'profile': self.args.profile, 'brew_version': getattr(self.args, 'brew_version', None),
+                               'brew_lifecycle': getattr(self.args, 'brew_lifecycle', False),
                                'guest_failure': self.result.get('guest_failure'),
                                'input_executable_sha256': self.result.get('input_executable_sha256'),
                                'evidence_descriptor': self.result.get('evidence_descriptor')}
@@ -476,10 +494,13 @@ def main():
     p.add_argument('--base', default=BASE_NAME, type=checked_name)
     p.add_argument('--profile', choices=('cli', 'app', 'visual'), default='cli')
     p.add_argument('--brew-version', default='0.1.8', help='assert this exact public Brew version')
+    p.add_argument('--brew-lifecycle', action='store_true', help='018 install -> 019 upgrade -> explicit 018 snapshot recovery -> uninstall, owned guest only')
     p.add_argument('--app', type=Path)
     p.add_argument('--app-source', help='exact source SHA that produced the input app (recorded, not inferred from runner)')
     p.add_argument('--output-dir', required=True, type=Path)
     args = p.parse_args()
+    if args.brew_lifecycle and (args.profile != 'cli' or args.brew_version != '0.1.9'):
+        p.error('--brew-lifecycle requires --profile cli --brew-version 0.1.9')
     if args.profile in ('app', 'visual') and (not args.app or not re.fullmatch('[0-9a-f]{40}', args.app_source or '')):
         p.error('app/visual profile requires --app and full --app-source commit SHA')
     if args.profile == 'cli' and (args.app or args.app_source):
@@ -487,7 +508,9 @@ def main():
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', args.brew_version):
         p.error('--brew-version must be a numeric release version')
     if not args.run:
-        print(json.dumps({'status': 'planned', 'base': args.base, 'profile': args.profile, 'app': str(args.app), 'output': str(args.output_dir), 'starts_vm': False}))
+        print(json.dumps({'status': 'planned', 'base': args.base, 'profile': args.profile,
+                          'brew_lifecycle': args.brew_lifecycle, 'app': str(args.app),
+                          'output': str(args.output_dir), 'starts_vm': False}))
         return 0
     def interrupted(signum, frame):
         raise GateError(f'interrupted by signal {signum}')
