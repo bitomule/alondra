@@ -527,11 +527,13 @@ pub fn run(args: Args) -> Result<()> {
         }
         if args.no_input { bail!("--recover-service requires local confirmation; remove --no-input"); }
         if args.skip_service { bail!("--recover-service cannot be combined with --skip-service"); }
-        crate::service_setup::recover(&paths.alondra_home, || stop_for_recovery(&paths, &label),
+        let outcome = crate::service_setup::recover(&paths.alondra_home, || stop_for_recovery(&paths, &label),
             &mut std::io::stdin().lock(), &mut std::io::stdout().lock())?;
-        let mut resumed = args;
-        resumed.recover_service = false;
-        return run(resumed);
+        return continue_after_recovery(outcome, || {
+            let mut resumed = args;
+            resumed.recover_service = false;
+            run(resumed)
+        });
     }
     // Shared ownership excludes a recovery writer; check pending after locking,
     // before setup can load or change any service trust or launch the daemon.
@@ -1020,5 +1022,27 @@ fn stop_for_recovery(paths: &Paths, label: &str) -> Result<()> {
         assert!(!recovery_job_matches(text,Path::new("/other/home"),Path::new("/example/bin/alondrad")));
         assert!(!recovery_job_matches(text,Path::new("/example/home"),Path::new("/other/bin/alondrad")));
         assert!(!recovery_job_matches(&(text.to_owned()+"\n ALONDRA_HOME => /other/home"),Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+    }
+}
+
+
+// Keep the decision in the caller: cancellation must not enter normal setup,
+// which can otherwise log in, enroll, launch services and modify plugins.
+fn continue_after_recovery(outcome: crate::service_setup::RecoveryOutcome, resume: impl FnOnce() -> Result<()>) -> Result<()> {
+    match outcome {
+        crate::service_setup::RecoveryOutcome::Cancelled => Ok(()),
+        crate::service_setup::RecoveryOutcome::Committed => resume(),
+    }
+}
+
+#[cfg(test)] mod recovery_continuation_tests {
+    use super::*;
+    #[test] fn cancelled_recovery_never_enters_normal_setup_but_committed_does() {
+        continue_after_recovery(crate::service_setup::RecoveryOutcome::Cancelled,
+            || panic!("cancelled recovery must not run auth/enrollment/launchd/plugins")).unwrap();
+        let mut entered = false;
+        continue_after_recovery(crate::service_setup::RecoveryOutcome::Committed,
+            || { entered = true; Ok(()) }).unwrap();
+        assert!(entered, "control: completed recovery must continue ordinary setup");
     }
 }
