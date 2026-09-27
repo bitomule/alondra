@@ -71,10 +71,21 @@ pub(super) fn capture(hub: &Hub, limit: usize) -> anyhow::Result<Vec<u8>> {
 // behavior, but reject oversized input instead of allocating an unbounded Value.
 fn bounded_usage(home: &std::path::Path) -> anyhow::Result<Option<alondra_core::usage::Usage>> {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     let read = |name: &str| -> anyhow::Result<Option<Value>> {
-        let Ok(file) = std::fs::File::open(home.join(name)) else {
+        // Keep legacy symlinks to regular caches working. O_NONBLOCK prevents
+        // open() waiting for a FIFO writer; validate the opened FD, not a racy
+        // path metadata check. Unsupported cache types remain optional/absent.
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(home.join(name))
+        else {
             return Ok(None);
         };
+        if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+            return Ok(None);
+        }
         let mut bytes = Vec::new();
         if file
             .take(MAX_SNAPSHOT as u64 + 1)
@@ -757,5 +768,82 @@ mod tests {
             1,
             "overflow must abort iteration, not serialize the rest into temporary Values"
         );
+    }
+    #[test]
+    fn usage_cache_special_files_do_not_wait_and_regular_symlinks_still_work() {
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{OpenOptionsExt, symlink},
+        };
+        use std::time::Duration;
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let home = Directory(std::env::temp_dir().join(format!(
+            "overview-usage-types-{}",
+            crate::auth::random_hex(8)
+        )));
+        std::fs::create_dir(&home.0).unwrap();
+        let state = home.0.join(alondra_core::usage::STATE_FILE);
+        let daily = home.0.join(alondra_core::usage::DAILY_FILE);
+        let regular = home.0.join("regular.json");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(
+            &regular,
+            serde_json::to_vec(
+                &json!({"seven_day":{"used_percentage":12.5,"resets_at":now+86400}}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        symlink(&regular, &state).unwrap();
+        assert_eq!(bounded_usage(&home.0).unwrap().unwrap().week_percent, 12.5);
+        std::fs::remove_file(&state).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        assert!(bounded_usage(&home.0).unwrap().is_none());
+        std::fs::remove_dir(&state).unwrap();
+        for (fifo, expect_usage) in [(&state, false), (&daily, true)] {
+            if expect_usage {
+                symlink(&regular, &state).unwrap();
+            }
+            let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let root = home.0.clone();
+            let reader = std::thread::spawn(move || {
+                let _ = tx.send(bounded_usage(&root));
+            });
+            let result = rx.recv_timeout(Duration::from_secs(2));
+            if result.is_err() {
+                // The pre-fix blocking open is released even on the negative
+                // control, so a failed assertion leaves no blocked test worker.
+                let writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(fifo)
+                    .unwrap();
+                drop(writer);
+            }
+            reader.join().unwrap();
+            assert_eq!(
+                result
+                    .expect("usage cache waited for a FIFO writer")
+                    .unwrap()
+                    .is_some(),
+                expect_usage
+            );
+            std::fs::remove_file(fifo).unwrap();
+        }
+        std::fs::remove_file(&state).unwrap();
+        let oversized = std::fs::File::create(&state).unwrap();
+        oversized.set_len(MAX_SNAPSHOT as u64 + 1).unwrap();
+        drop(oversized);
+        assert!(bounded_usage(&home.0).unwrap_err().is::<OverviewTooLarge>());
     }
 }
