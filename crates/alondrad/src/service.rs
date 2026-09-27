@@ -696,6 +696,11 @@ impl Service {
     }
 
     async fn dispatch(&self, sender: &str, request: &LocalRequest) -> Result<Value> {
+        self.dispatch_with(sender, request, &crate::prs::GhCli, &crate::http::LiveReviewHead).await
+    }
+
+    async fn dispatch_with(&self, sender: &str, request: &LocalRequest,
+        gh: &impl crate::prs::Gh, reader: &impl crate::http::ReviewHead) -> Result<Value> {
         if request.path.split('?').next() == Some("/v1/changes") && approved_method(request).is_err() {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
         }
@@ -721,7 +726,7 @@ impl Service {
         }
         let method = approved_method(request)?;
         if method == Method::POST && crate::http::prepared_service_path(&request.path) {
-            return self.dispatch_prepared(sender, request, &crate::prs::GhCli, &crate::http::LiveReviewHead).await;
+            return self.dispatch_prepared(sender, request, gh, reader).await;
         }
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
@@ -1625,7 +1630,7 @@ agreement_key = "{}"
                 service.journal.executing("phone-1", "prepared", &[4;32]).unwrap();
                 let seq = hub.read(|v| v.seq);
                 let preparation = PausedPreparation { resume:tokio::sync::Notify::new(), entered:std::sync::atomic::AtomicBool::new(false) };
-                let mut pending = Box::pin(service.dispatch_prepared("phone-1", &request, &preparation, &preparation));
+                let mut pending = Box::pin(service.dispatch_with("phone-1", &request, &preparation, &preparation));
                 let waker = std::task::Waker::noop();
                 assert!(std::future::Future::poll(pending.as_mut(), &mut std::task::Context::from_waker(waker)).is_pending());
                 assert!(preparation.entered.load(std::sync::atomic::Ordering::SeqCst), "must actually reach external preparation: {route}");
