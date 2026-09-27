@@ -2837,6 +2837,15 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
+        if crate::menus::is_menu_card(&q) {
+            if let Some(attempt) = hub.read(|v| v.delivery_attempts.values().rev().find(|a| a.question_id == Some(id)).cloned()) {
+                if !q.answer.as_ref().is_some_and(|a| a.option == b.option) {
+                    return refused(StatusCode::CONFLICT, "question_closed", "This menu already has another recorded decision.");
+                }
+                return Json(json!({"id": id, "already": true, "delivery_state": attempt.state,
+                    "delivery_attempt": attempt.id, "delivery_version": attempt.version})).into_response();
+            }
+        }
         if q.answer.as_ref().is_some_and(|a| a.text == b.text && a.option == b.option) {
             return Json(json!({"id": id, "already": true})).into_response();
         }
@@ -2903,7 +2912,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             events.push(Event::DeliveryAttemptRecorded(alondra_core::delivery::Attempt {
                 id: v.seq + 1, session_id: q.session_id.clone(),
                 channel: alondra_core::delivery::Channel::HookDecision,
-                message_ids: vec![message_id], state: alondra_core::delivery::State::Dispatching,
+                message_ids: vec![message_id], question_id: None, state: alondra_core::delivery::State::Dispatching,
                 version: 1, reason: None, created_at: now_millis(), updated_at: now_millis(), resolved_from_version: None,
             }));
             if let Some(text) = held_follow_up(q.origin, &hook_answer) {
@@ -2973,29 +2982,43 @@ async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: O
     let Some(short) = hub.read(|v| v.nodes.get(&q.session_id).map(|n| n.short_id.clone())) else {
         return err(StatusCode::NOT_FOUND, "the node is gone");
     };
-    let own = hub.own_attach(&short);
-    let pressed = {
-        let short = short.clone();
-        tokio::task::spawn_blocking(move || crate::wake::press(&short, &label)).await
+    let answer = Answer { text: label.clone(), option: Some(label.clone()), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
+    let attempt = match crate::delivery::claim_menu(&hub, q.id, answer) {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return refused(StatusCode::CONFLICT, "delivery_blocked", "Question changed or another delivery requires resolution; refresh before deciding."),
+        Err(error) => return internal(error),
     };
-    drop(own);
-    match pressed {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, format!("could not answer {short}'s menu: {e}")),
-        Err(e) => return internal(e.into()),
-    }
-    let label = option.unwrap_or_default().to_string();
-    let answer = Answer { text: label.clone(), option: Some(label), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
-    for event in [
-        Event::QuestionAnswered { id: q.id, answer },
-        Event::QuestionDelivered { id: q.id },
-        Event::MenuSeen { session_id: q.session_id.clone(), waiting_for: None },
-    ] {
-        if let Err(e) = hub.append(event) {
-            return internal(e);
-        }
-    }
-    Json(json!({"id": q.id, "delivered": "terminal"})).into_response()
+    let expected = crate::menus::Menu { title: q.title.clone(), detail: q.detail.clone().unwrap_or_default(),
+        options: q.options.iter().map(|o| o.label.clone()).collect(), selected: None };
+    let target = hub.clone();
+    let question = q.id;
+    let attempt_id = attempt.id;
+    // The blocking worker owns finalization: cancelling the HTTP future cannot
+    // abandon an in-flight terminal write without recording its outcome.
+    let pressed = tokio::task::spawn_blocking(move || {
+        let own = target.own_attach(&short);
+        let result = crate::wake::press(&short, &label, &expected, || {
+            target.read(|v| v.delivery_attempts.get(&attempt_id).is_some_and(|a| a.state == alondra_core::delivery::State::Dispatching)
+                && v.questions.get(&question).is_some_and(|q| q.status == QuestionStatus::Answered))
+        });
+        drop(own);
+        let outcome = match result {
+            Ok(()) => crate::delivery::Outcome::Handed,
+            Err(crate::wake::WriteFailure::NotStarted) => crate::delivery::Outcome::NotStarted("menu_changed_before_write"),
+            Err(crate::wake::WriteFailure::Uncertain) => crate::delivery::Outcome::Uncertain("menu_write_uncertain"),
+        };
+        crate::delivery::finish(&target, attempt_id, outcome)
+    }).await;
+    let finished = match pressed {
+        Ok(result) => result,
+        Err(_) => crate::delivery::finish(&hub, attempt.id, crate::delivery::Outcome::Uncertain("menu_worker_failed")),
+    };
+    if let Err(error) = finished { return internal(error); }
+    let current = hub.read(|v| v.delivery_attempts[&attempt.id].clone());
+    let mut response = json!({"id": q.id, "delivery_state": current.state, "delivery_attempt": current.id,
+        "delivery_version": current.version});
+    if current.state == alondra_core::delivery::State::Handed { response["delivered"] = json!("terminal"); }
+    Json(response).into_response()
 }
 
 #[derive(Deserialize)]
@@ -4065,6 +4088,28 @@ async fn task_candidates(State(hub): State<AppState>, Query(q): Query<Candidates
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn menu_duplicate_same_option_reports_uncertainty_but_changed_option_conflicts() {
+        let hub=temp_hub("menu-duplicate");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {session_id:"menu".into(),short_id:"menu".into(),..Default::default()})).unwrap();
+        hub.append(Event::QuestionAsked(serde_json::from_value(json!({
+            "id":42,"session_id":"menu","node_name":null,"title":"Permission","detail":"Operation",
+            "options":[{"label":"Accept"},{"label":"Decline"}],"blocking":true,"origin":"ask",
+            "tool_use_id":"menu:permission","status":"open","asked_at":1
+        })).unwrap())).unwrap();
+        let chosen=Answer {text:"Accept".into(),option:Some("Accept".into()),by:None,device:Some("phone-a".into()),at:1};
+        let attempt=crate::delivery::claim_menu(&hub,42,chosen).unwrap().unwrap();
+        crate::delivery::finish(&hub,attempt.id,crate::delivery::Outcome::Uncertain("test_write_unknown")).unwrap();
+        let duplicate=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"historically ignored menu text".into(),option:Some("Accept".into()),by:None,attachments:vec![]})).await;
+        assert_eq!(duplicate.status(),StatusCode::OK);
+        let value:Value=serde_json::from_slice(&axum::body::to_bytes(duplicate.into_body(),65536).await.unwrap()).unwrap();
+        assert_eq!(value["delivery_state"],"uncertain");
+        assert_eq!(value["delivery_attempt"],attempt.id);
+        let other=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"Decline".into(),option:Some("Decline".into()),by:None,attachments:vec![]})).await;
+        assert_eq!(other.status(),StatusCode::CONFLICT);
+        assert_eq!(hub.read(|v|v.delivery_attempts.len()),1);
+    }
 
     fn answered(text: &str, option: Option<&str>) -> Answer {
         let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None, attachments: vec![] };
