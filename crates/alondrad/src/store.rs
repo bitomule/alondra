@@ -295,7 +295,10 @@ mod tests {
     #[test]
     fn migration_backup_reserves_writer_across_snapshot_and_ddl() {
         let (home, competitor) = legacy_backup_fixture();
-        let path = home.join("alondra.db");
+        // Match Store::open's canonical-parent boundary before the NOFOLLOW
+        // helper. macOS temp_dir uses /var, a symlink to /private/var.
+        let path = fs::canonicalize(&home).unwrap().join("alondra.db");
+        assert_eq!(fs::metadata(&path).unwrap().ino(), fs::metadata(home.join("alondra.db")).unwrap().ino());
         let before = fs::symlink_metadata(&path).unwrap();
         let mut migration = Connection::open(&path).unwrap();
         let tx = migration.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
