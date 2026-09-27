@@ -3,6 +3,7 @@ mod log;
 mod auth;
 mod approval_lease;
 mod domain_authority;
+mod domain_content;
 mod domain_runtime;
 mod domain_store;
 mod domain_api;

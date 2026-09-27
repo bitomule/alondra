@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use tokio::sync::watch;
 
 pub struct DomainRuntime {
+    home: PathBuf,
     pub(crate) store: Mutex<DomainStore>,
     approval_home: PathBuf,
     authority: Mutex<Authority>,
@@ -19,6 +20,7 @@ impl DomainRuntime {
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         Ok(Self {
+            home: home.to_path_buf(),
             store: Mutex::new(store),
             approval_home: home.to_path_buf(),
             authority: Mutex::new(Authority::new(state.data_epoch.0)),
@@ -87,7 +89,12 @@ impl DomainRuntime {
             None
         };
         authorize()?;
-        let commit = store.execute_authenticated(actor, envelope, transport)?;
+        let prepared = crate::domain_content::prepare(&self.home, envelope)?;
+        let commit = store.execute_authenticated(actor, &prepared.envelope, transport);
+        if matches!(&commit, Err(StoreError::Domain(_))) {
+            prepared.discard_uncommitted(&self.home);
+        }
+        let commit = commit?;
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
         }
@@ -128,7 +135,12 @@ impl DomainRuntime {
             }
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
-        let commit = store.execute_authenticated(&actor, envelope, None)?;
+        let prepared = crate::domain_content::prepare(&self.home, envelope)?;
+        let commit = store.execute_authenticated(&actor, &prepared.envelope, None);
+        if matches!(&commit, Err(StoreError::Domain(_))) {
+            prepared.discard_uncommitted(&self.home);
+        }
+        let commit = commit?;
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
         }

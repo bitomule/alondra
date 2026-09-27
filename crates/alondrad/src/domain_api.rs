@@ -65,16 +65,17 @@ async fn document_content_inner(hub: Arc<Hub>, id: String, query: Option<String>
     };
     let reference = revision.content_reference.clone();
     let digest = revision.content_digest.clone();
+    let response_digest = digest.clone();
     let revision_id = revision.id.clone();
     let home = hub.home.clone();
     let chunk = tokio::task::spawn_blocking(move || {
-        crate::service_files::read_domain_chunk(&home, &reference, offset, version)
+        crate::service_files::read_verified_domain_chunk(&home, &reference, &digest, offset, version)
     })
     .await;
     match chunk {
         Ok(Ok(mut chunk)) => {
             chunk["revision_id"] = json!(revision_id);
-            chunk["content_digest"] = json!(digest);
+            chunk["content_digest"] = json!(response_digest);
             Json(chunk).into_response()
         }
         _ => domain_error(DomainError::new(
@@ -986,6 +987,28 @@ mod tests {
         let (home, hub) = fixture();
         let data = b"# Synthetic design\n";
         std::fs::write(home.join("files/design.md"), data).unwrap();
+        let before_bad_document = hub.domain.state().unwrap();
+        let invalid = hub.domain.execute(
+            &Actor::Agent { agent_id: "agent-a".into() },
+            &envelope(&hub, "document-wrong-hash", Command::CreateDocument {
+                task_id: "task-a".into(), document_id: "bad-doc".into(),
+                title: "Bad".into(), revision_id: "bad-rev".into(),
+                content_digest: "0".repeat(64), content_reference: "files/design.md".into(),
+                role: "result".into(),
+            }), None, || Ok(()));
+        assert!(invalid.is_err());
+        assert_eq!(hub.domain.state().unwrap(), before_bad_document);
+        let valid_digest: String = Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect();
+        let rejected = hub.domain.execute(
+            &Actor::Agent { agent_id: "agent-a".into() },
+            &envelope(&hub, "document-wrong-task", Command::CreateDocument {
+                task_id: "other-task".into(), document_id: "orphan-doc".into(),
+                title: "Orphan".into(), revision_id: "orphan-rev".into(),
+                content_digest: valid_digest.clone(), content_reference: "files/design.md".into(),
+                role: "result".into(),
+            }), None, || Ok(()));
+        assert!(rejected.is_err());
+        assert!(!home.join("files/domain-v2").join(&valid_digest).exists());
         hub.domain
             .execute(
                 &Actor::Agent {
@@ -1011,6 +1034,9 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
+        let managed = hub.domain.state().unwrap().document_revisions[&DocumentRevisionId("rev-a".into())]
+            .content_reference.clone();
+        assert!(managed.starts_with("files/domain-v2/"));
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let actions_path = "/v2/domain/tasks/task-a/actions";
@@ -1032,6 +1058,14 @@ mod tests {
             .unwrap();
         assert_eq!(actions["protocol_version"], 2);
         assert_eq!(actions["actions"].as_array().unwrap().len(), 3);
+        hub.domain.execute(
+            &Actor::User { user_id: format!("device:{device_id}") },
+            &envelope(&hub, "approve-document", Command::DecideDocumentReview {
+                task_id: "task-a".into(), document_id: "doc-a".into(),
+                revision_id: "rev-a".into(), accepted: true,
+            }), None, || Ok(())).unwrap();
+        // Replacing the upload after approval cannot alter the accepted revision.
+        std::fs::write(home.join("files/design.md"), b"# Changed after review\n").unwrap();
         let chunk_path = "/v2/domain/document-revisions/rev-a/content?offset=0";
         assert_eq!(
             client
@@ -1064,6 +1098,13 @@ mod tests {
             data
         );
         assert_eq!(chunk["eof"], true);
+        // Even a same-UID writer that tampers with the managed copy gets a hard
+        // content error, never changed bytes labeled with the accepted digest.
+        std::fs::write(home.join(managed), b"# Tampered managed copy\n").unwrap();
+        let tampered = signed_get(&client, &base, &key, &device_id, chunk_path)
+            .send().await.unwrap();
+        assert_eq!(tampered.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(tampered.json::<Value>().await.unwrap()["code"], "content_unavailable");
         assert!(document_content_query("offset=1").is_none());
         assert!(document_content_query("offset=0&offset=1").is_none());
         assert!(document_content_query("offset=0&version=../").is_none());
