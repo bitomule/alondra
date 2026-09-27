@@ -121,3 +121,24 @@ negative controls for saved-config routing and the real stale-identity filter.
 These visual scenarios do not prove APNs, production accounts, backend E2E or
 production performance. Build/runtime results must be recorded explicitly; the
 presence of the harness is not passing evidence.
+
+### macOS full accessibility observation
+
+MAV 0.31 normalizes Cua's actionable `elements` array; that omits unindexed
+static text and disabled controls. The Mac guest therefore reads the public Cua
+`get_window_state` response for text assertions, while MAV still performs actions,
+screenshots and video. This is a combined MAV/full-AX gate. It does not fabricate
+accessibility nodes from fixture state or infer text from screenshots.
+
+Every full-AX read targets the still-running child PID created by this guest and
+an on-screen window returned for that PID. The returned PID/window and snapshot
+identifier are checked. Missing, malformed or degraded trees fail. Original JSON,
+response hash and snapshot identity are preserved in each scenario's `full-ax`
+directory. Calls have a ten-second timeout, file/count/total bounds and owned
+process and session cleanup. Screenshot capture is disabled for these tree-only
+reads; MAV captures the visual evidence. Explicit degradation, node truncation and
+reaching the depth cap fail. Cua does not prove complete coverage when AX child
+reads fail: forbidden-text absence means absence from the observed bounded AX
+walk, supplemented by inspection of the captured UI, not a universal visibility
+proof. The requested walk limits are preserved in each receipt. iOS keeps its existing MAV observation path. Failure paths also
+retain a direct tree and screenshot, without replacing the initial failure.

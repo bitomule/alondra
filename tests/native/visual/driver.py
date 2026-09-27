@@ -60,6 +60,16 @@ def assert_tree(tree, required, forbidden):
             raise ValueError('forbidden UI text present: ' + text)
 
 
+def wait_tree_text(read_tree, text, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        tree = read_tree()
+        if text in tree:
+            return
+        time.sleep(.1)
+    raise TimeoutError('required full AX text absent: ' + text)
+
+
 def resolve_mav_run(open_output, project, previous_runs):
     lines = [line for line in open_output.splitlines() if line.startswith('ok cmd=open ')]
     if len(lines) != 1: raise ValueError('missing or ambiguous MAV open receipt')
@@ -96,17 +106,23 @@ def validate_mav_report(path, expected, run_id=None):
         raise ValueError('MAV reported blocking issue')
 
 
-def exercise(mav, read, control, output: Path, run_id: str, scenario: str, project: Path | None = None):
+def exercise(mav, read, control, output: Path, run_id: str, scenario: str, project: Path | None = None, read_tree=None):
     """mav is a recorded command adapter pinned to one owned app/simulator."""
     output.mkdir(exist_ok=False)
     sequence = 0
+    tree_reader = read_tree or (lambda: mav('ui', 'tree', '--raw'))
+    def wait_text(text):
+        if read_tree is None:
+            mav('ui', 'wait', '--text', text, '--timeout', '15s')
+        else:
+            wait_tree_text(tree_reader, text)
     steps = []
     def command(action):
         nonlocal sequence
         sequence += 1
         control({'runID': run_id, 'sequence': sequence, 'action': action})
     def capture(name, required, forbidden=()):
-        tree = mav('ui', 'tree', '--raw')
+        tree = tree_reader()
         (output / (name + '-tree.txt')).write_text(tree)
         assert_tree(tree, required, forbidden)
         mav('evidence', 'step', '--name', name, '--note', 'Synthetic visual scenario ' + scenario)
@@ -127,23 +143,23 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, proje
         mav('evidence', 'start')
         if scenario == 'reconnect':
             wait_state(read, run_id, scenario, lambda s: s.get('savedConfiguration') is True and s.get('restoring') is True and not s.get('ready'))
-            mav('ui', 'wait', '--text', 'Connecting to the fleet…', '--timeout', '15s')
+            wait_text('Connecting to the fleet…')
             capture('saved-home-reconnecting', ('Tasks', 'Connecting to the fleet'), onboarding)
             command('restore')
             wait_state(read, run_id, scenario, lambda s: s.get('ready') and 'q101' in s.get('inboxIDs', []))
-            mav('ui', 'wait', '--text', 'Alpha Mac question', '--timeout', '15s')
+            wait_text('Alpha Mac question')
             capture('saved-home-connected', ('Alpha Mac question',), onboarding)
         elif scenario == 'account-settings':
             wait_state(read, run_id, scenario, lambda s: s.get('ready') and s.get('settingsPresented'))
-            mav('ui', 'wait', '--text', 'Sign out', '--timeout', '15s')
+            wait_text('Sign out')
             capture('account-in-settings', ('Account', 'Sign out', 'synthetic.invalid', 'Mac alpha-mac', 'Mac beta-mac'), onboarding)
         elif scenario == 'mac-selection':
             wait_state(read, run_id, scenario, lambda s: s.get('ready') and s.get('settingsPresented'))
-            mav('ui', 'wait', '--text', 'Mac beta-mac', '--timeout', '15s')
+            wait_text('Mac beta-mac')
             capture('alpha-selected', ('Mac alpha-mac', 'Mac beta-mac'), onboarding)
             mav('ui', 'tap', '--text', 'Mac beta-mac')
             wait_state(read, run_id, scenario, lambda s: s.get('selectedMac') == 'beta' and 'q202' in s.get('inboxIDs', []))
-            mav('ui', 'wait', '--text', 'Beta Mac question', '--timeout', '15s')
+            wait_text('Beta Mac question')
             capture('beta-selected', ('Beta Mac question',), (*onboarding, 'Alpha Mac question'))
             command('late-alpha')
             wait_state(read, run_id, scenario, lambda s: s.get('checks', {}).get('late_alpha_delivered') is True)
@@ -169,7 +185,7 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, proje
                                     ('failed-capture.txt', ('evidence', 'step', '--name', 'failure',
                                                             '--note', 'Failed synthetic visual scenario'))):
                 try:
-                    (output / name).write_text(mav(*arguments))
+                    (output / name).write_text(tree_reader() if name == 'failed-tree.txt' else mav(*arguments))
                 except Exception as diagnostic_error:
                     failure_diagnostics.append(name + ' unavailable: ' + type(diagnostic_error).__name__)
         try:

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,11 @@ import visual_run
 mac_spec = importlib.util.spec_from_file_location('visual_tart', Path(__file__).parents[1] / 'system/macos.py')
 visual_tart = importlib.util.module_from_spec(mac_spec)
 mac_spec.loader.exec_module(visual_tart)
+guest_spec = importlib.util.spec_from_file_location('visual_mac_guest', Path(__file__).parent / 'visual/mac_guest.py')
+visual_mac_guest = importlib.util.module_from_spec(guest_spec)
+with patch.dict(sys.modules, {'driver': driver}):
+    guest_spec.loader.exec_module(visual_mac_guest)
+
 
 
 class VisualContracts(unittest.TestCase):
@@ -127,6 +133,69 @@ class VisualContracts(unittest.TestCase):
                                   json.loads((project / 'assertions/failure-diagnostics.json').read_text()))
                 else:
                     self.assertEqual((project / 'assertions/failed-tree.txt').read_text(), 'actual accessibility tree')
+
+    def test_full_ax_requires_owned_pid_window_and_real_tree(self):
+        windows = {'windows': [{'pid': 71, 'window_id': 3, 'is_on_screen': True,
+                               'bounds': {'width': 600, 'height': 400}}]}
+        self.assertEqual(visual_mac_guest.select_window(windows, 71), 3)
+        for changed in ({'windows': []}, {'windows': windows['windows'] * 2},
+                        {'windows': [{**windows['windows'][0], 'pid': 72}]},
+                        {'windows': [{**windows['windows'][0], 'is_on_screen': False}]}):
+            with self.assertRaises(ValueError): visual_mac_guest.select_window(changed, 71)
+        value = {'structuredContent': {'pid': 71, 'window_id': 3, 'snapshot_id': 'fresh',
+                                      'elements': [], 'tree_markdown': '- AXStaticText = "Connecting to the fleet…"'}}
+        tree, snapshot = visual_mac_guest.validate_tree(value, 71, 3)
+        self.assertIn('Connecting to the fleet…', tree)
+        self.assertEqual(snapshot, 'fresh')
+        for field, bad in [('pid', 72), ('window_id', 4), ('tree_markdown', ''),
+                           ('tree_markdown', None), ('snapshot_id', ''), ('degraded', True), ('degraded_reason', 'ax_window_unresolved'), ('truncated', True),
+                           ('nodes_pending', 1), ('tree_markdown', 'AX tree truncated at 2000 nodes'),
+                           ('tree_markdown', ' ' * 80 + 'AXStaticText hidden')]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                visual_mac_guest.validate_tree({'structuredContent': {**value['structuredContent'], field: bad}}, 71, 3)
+        with self.assertRaises(ValueError): visual_mac_guest.validate_tree({'isError': True}, 71, 3)
+        with self.assertRaises(ValueError): visual_mac_guest.validate_tree([], 71, 3)
+
+    def test_full_ax_wait_sees_static_text_not_only_addressable_elements(self):
+        read = Mock(side_effect=['- AXWindow "Loading"', '- AXStaticText = "Connecting to the fleet…"'])
+        with patch.object(driver.time, 'sleep'):
+            driver.wait_tree_text(read, 'Connecting to the fleet…')
+        self.assertEqual(read.call_count, 2)
+        with patch.object(driver.time, 'monotonic', side_effect=[0, 0, 2]), patch.object(driver.time, 'sleep'):
+            with self.assertRaises(TimeoutError):
+                driver.wait_tree_text(lambda: '- AXWindow "Loading"', 'Connecting to the fleet…', timeout=1)
+
+    def test_full_ax_timeout_stops_only_command_and_preserves_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Mock(pid=71); app.poll.return_value = None
+            command = Mock(); command.wait.side_effect = subprocess.TimeoutExpired('cua-driver', 10)
+            reader = visual_mac_guest.OwnedTreeReader(app, Path(directory) / 'full-ax', {}, 'synthetic')
+            with patch.object(visual_mac_guest.subprocess, 'Popen', return_value=command) as spawn, \
+                 patch.object(visual_mac_guest, 'stop_owned') as stop:
+                with self.assertRaises(subprocess.TimeoutExpired): reader.call('list_windows', {'pid': 71})
+            stop.assert_called_once_with(command)
+            self.assertEqual(spawn.call_args.args[0][:3],
+                             ['/Applications/CuaDriver.app/Contents/MacOS/cua-driver', 'call', 'list_windows'])
+            self.assertEqual(json.loads(spawn.call_args.args[0][3])['pid'], 71)
+            self.assertTrue((Path(directory) / 'full-ax/001-list_windows.json').exists())
+            app.poll.return_value = 0
+            with patch.object(visual_mac_guest.subprocess, 'Popen') as spawn:
+                with self.assertRaisesRegex(ValueError, 'exited'): reader.call('list_windows', {'pid': 71})
+                spawn.assert_not_called()
+
+    def test_full_ax_closes_its_named_session_even_after_app_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Mock(pid=71); app.poll.return_value = 0
+            reader = visual_mac_guest.OwnedTreeReader(app, Path(directory) / 'full-ax', {}, 'owned-run')
+            def spawn(args, **kwargs):
+                self.assertEqual(args[2], 'end_session')
+                self.assertEqual(json.loads(args[3]), {'session': 'alondra-visual-owned-run'})
+                kwargs['stdout'].write(b'{}'); kwargs['stdout'].flush()
+                command = Mock(returncode=0); command.poll.return_value = 0
+                return command
+            with patch.object(visual_mac_guest.subprocess, 'Popen', side_effect=spawn) as create:
+                reader.close()
+            self.assertEqual(create.call_count, 1)
 
     def test_mac_host_runtime_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

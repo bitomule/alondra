@@ -2,6 +2,7 @@
 """Bounded native visual scenarios in the existing Gate-owned Tart clone only."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
@@ -31,6 +32,96 @@ def stop_owned(process):
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
+
+
+def structured(value):
+    if not isinstance(value, dict) or value.get('isError') is True or value.get('refusal'):
+        raise ValueError('invalid Cua response')
+    value = value.get('structuredContent', value)
+    if not isinstance(value, dict): raise ValueError('invalid Cua structured response')
+    return value
+
+
+def select_window(value, pid):
+    windows = structured(value).get('windows')
+    if not isinstance(windows, list): raise ValueError('missing Cua windows')
+    candidates = []
+    for window in windows:
+        if not isinstance(window, dict) or window.get('pid') != pid or window.get('is_on_screen') is not True:
+            continue
+        identity, bounds = window.get('window_id'), window.get('bounds', {})
+        width, height = bounds.get('width'), bounds.get('height')
+        if (type(identity) is not int or identity <= 0 or type(width) not in (int, float)
+                or type(height) not in (int, float) or not math.isfinite(width * height)
+                or width <= 0 or height <= 0):
+            raise ValueError('invalid Cua window geometry')
+        candidates.append((width * height, identity))
+    candidates.sort(reverse=True)
+    if not candidates or (len(candidates) > 1 and candidates[0][0] == candidates[1][0]):
+        raise ValueError('missing or ambiguous owned window')
+    return candidates[0][1]
+
+
+def validate_tree(value, pid, window):
+    value = structured(value)
+    if value.get('pid') != pid or value.get('window_id') != window:
+        raise ValueError('Cua tree is not the owned window')
+    tree, snapshot = value.get('tree_markdown'), value.get('snapshot_id')
+    if (not isinstance(tree, str) or not tree.strip() or not isinstance(snapshot, str) or not snapshot
+            or value.get('degraded') is True or value.get('degraded_reason')
+            or value.get('truncated') is True or value.get('nodes_pending', 0) != 0
+            or 'AX tree truncated' in tree
+            or any((len(line) - len(line.lstrip(' '))) // 2 >= 40 for line in tree.splitlines())):
+        raise ValueError('missing or degraded full Cua tree')
+    return tree, snapshot
+
+
+class OwnedTreeReader:
+    """Observe the exact live child through the public Cua CLI, preserving full AX."""
+    def __init__(self, process, directory, env, run_id):
+        self.process, self.directory, self.env, self.run_id = process, directory, env, run_id
+        self.count = 0
+        self.total = 0
+        self.directory.mkdir(mode=0o700)
+
+    def alive(self):
+        if self.process.poll() is not None: raise ValueError('owned application exited before AX read')
+
+    def call(self, tool, arguments, closing=False):
+        if not closing: self.alive()
+        self.count += 1
+        if self.count > (121 if closing else 120): raise ValueError('full AX request budget exceeded')
+        path = self.directory / ('%03d-%s.json' % (self.count, tool))
+        errors = path.with_suffix('.stderr')
+        with path.open('xb') as output, errors.open('xb') as stderr:
+            command = subprocess.Popen(['/Applications/CuaDriver.app/Contents/MacOS/cua-driver', 'call', tool,
+                json.dumps({**arguments, 'session': 'alondra-visual-' + self.run_id})], env=self.env,
+                stdout=output, stderr=stderr, start_new_session=True, preexec_fn=bounded_log)
+            try:
+                command.wait(timeout=10)
+            finally:
+                stop_owned(command)
+        if not closing: self.alive()
+        self.total += path.stat().st_size + errors.stat().st_size
+        if command.returncode or path.stat().st_size > 4 * 1024**2 or self.total > 32 * 1024**2:
+            raise ValueError('full AX command failed or evidence exceeded bounds')
+        return json.loads(path.read_text()), path
+
+    def __call__(self):
+        windows, _ = self.call('list_windows', {'pid': self.process.pid})
+        window = select_window(windows, self.process.pid)
+        result, path = self.call('get_window_state', {'pid': self.process.pid, 'window_id': window,
+                                                     'max_elements': 2000, 'max_depth': 40, 'include_screenshot': False})
+        tree, snapshot = validate_tree(result, self.process.pid, window)
+        driver.atomic_json(path.with_suffix('.receipt.json'), {'runID': self.run_id,
+            'pid': self.process.pid, 'windowID': window, 'snapshotID': snapshot,
+            'responseSHA256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'walkLimits': {'max_elements': 2000, 'max_depth': 40},
+            'coverage': 'Observed AX text; absence is limited to this bounded accessibility walk'})
+        return tree
+
+    def close(self):
+        self.call('end_session', {}, closing=True)
 
 
 def prepare():
@@ -87,18 +178,33 @@ def main():
                 if result.is_symlink() or result.stat().st_size > 1024**2: raise ValueError('invalid visual receipt')
                 return json.loads(result.read_text())
             process = None
+            tree_reader = None
+            failure = None
             with (directory / 'app.log').open('wb') as log:
                 try:
                     process = subprocess.Popen([str(executable), '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'],
                                                env=env, cwd=directory, stdout=log, stderr=subprocess.STDOUT,
                                                start_new_session=True, preexec_fn=bounded_log)
                     driver.atomic_json(directory / 'ownership.json', {'pid': process.pid, 'runID': run, 'executable': str(executable)})
+                    tree_reader = OwnedTreeReader(process, directory / 'full-ax', env, run)
                     driver.exercise(mav, read, lambda value: driver.atomic_json(directory / 'visual-control.json', value),
-                                    directory / 'assertions', run, scenario, project=PROJECT)
+                                    directory / 'assertions', run, scenario, project=PROJECT,
+                                    read_tree=tree_reader)
                     if process.poll() is not None:
                         raise RuntimeError('visual application exited before owned cleanup')
+                except BaseException as error:
+                    failure = error
+                    raise
                 finally:
-                    if process is not None: stop_owned(process)
+                    try:
+                        if tree_reader is not None:
+                            try:
+                                tree_reader.close()
+                            except Exception as error:
+                                driver.atomic_json(directory / 'ax-cleanup-error.json', {'error': type(error).__name__})
+                                if failure is None: raise
+                    finally:
+                        if process is not None: stop_owned(process)
             summary['scenarios'].append({'scenario': scenario, 'runID': run})
             driver.atomic_json(path, summary)
         summary.update(status='passed', cleanup=True)
