@@ -176,7 +176,8 @@ class MacGateTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, json.dumps(value).encode(), b'')
         return gate, guest, calls, body
 
-    def test_chunk_retry_is_same_range_and_preserves_exact_archive(self):
+    @patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=16 * 1024**3))
+    def test_chunk_retry_is_same_range_and_preserves_exact_archive(self, _disk_usage):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             def drop(action, offset, value, calls):
@@ -190,7 +191,8 @@ class MacGateTests(unittest.TestCase):
             self.assertFalse((gate.out / 'evidence.partial').exists())
             self.assertTrue((gate.out / 'guest-diagnostics.json').exists())
 
-    def test_corruption_and_descriptor_mixing_never_publish(self):
+    @patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=16 * 1024**3))
+    def test_corruption_and_descriptor_mixing_never_publish(self, _disk_usage):
         for kind in ('chunk_hash', 'global_hash', 'offset', 'oversize', 'changed_final'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -211,6 +213,18 @@ class MacGateTests(unittest.TestCase):
                 self.assertFalse((gate.out / 'evidence').exists())
                 if kind != 'oversize': self.assertTrue((gate.out / 'evidence.partial').exists())
                 self.assertLessEqual(calls.count(('chunk', 0)), 3)
+
+    def test_collection_insufficient_space_stops_before_chunks_or_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gate, guest, calls, _ = self.transfer_fixture(Path(temp))
+            # Even just above the base guard is insufficient once the archive is included.
+            with patch.object(gate, 'guest', guest), \
+                 patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=m.MIN_FREE + 1)):
+                with self.assertRaisesRegex(m.GateError, 'insufficient space'):
+                    gate.collect_evidence()
+            self.assertEqual(calls, [('diagnostics', None), ('prepare', None)])
+            for name in ('evidence.partial', 'evidence.tar', 'evidence'):
+                self.assertFalse((gate.out / name).exists())
 
     def test_collection_deadline_and_frozen_file_change_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
