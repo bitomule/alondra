@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraDomain
 import AlondraAttachmentsFeature
 import AlondraShared
@@ -134,6 +135,9 @@ public struct DocumentReviewFeature {
         public var feedbackReadRetryAvailable = false
         public var isRetryingFeedbackRead = false
         public var needsReconciliation = false
+        public var deliveryUnconfirmed = false
+        public var deliveryDiscarded = false
+        public var deliveryAttemptID: UInt64?
         public var conflict: String?
         public var notice: String?
         /// Only terminal command failures use the card toast; local/recovery warnings stay inline.
@@ -183,6 +187,8 @@ public struct DocumentReviewFeature {
         case retryFeedbackRead
         case feedbackReadRetryFinished(UUID)
         case commandResolved(UUID, rejection: String?)
+        case commandDeliveryUnconfirmed(UUID, attemptID: UInt64?)
+        case deliveryDecisionResolved(retry: Bool, discarded: Bool = false)
         case reconciled(cardStillOpen: Bool)
         case submissionFinished(UInt64, QuestionOperation, QuestionWorkOutcome)
         case reportFeedbackFinished(UInt64, QuestionWorkOutcome)
@@ -276,6 +282,7 @@ public struct DocumentReviewFeature {
                 state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
+                state.deliveryUnconfirmed = false; state.deliveryDiscarded = false; state.deliveryAttemptID = nil
                 state.conflict = nil
                 state.noticeIsSubmissionFailure = false
                 state.notice = nil
@@ -401,6 +408,18 @@ public struct DocumentReviewFeature {
                 guard state.uncertainCommandID == id else { return .none }
                 state.isRetryingFeedbackRead = false
                 return .none
+            case .commandDeliveryUnconfirmed(let id, let attemptID):
+                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID
+                state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message
+                return .none
+            case .deliveryDecisionResolved(let retry, let discarded):
+                guard state.deliveryUnconfirmed else { return .none }
+                state.deliveryDiscarded = discarded
+                state.deliveryUnconfirmed = false; state.deliveryAttemptID = nil; state.needsReconciliation = false
+                state.notice = nil; state.noticeIsSubmissionFailure = false; state.completed = !retry
+                return .none
             case .commandResolved(let id, let rejection):
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
                 state.feedbackReadRetryAvailable = false
@@ -416,7 +435,7 @@ public struct DocumentReviewFeature {
                 }
                 return .none
             case .reconciled(let cardStillOpen):
-                guard state.needsReconciliation else { return .none }
+                guard state.needsReconciliation, !state.deliveryUnconfirmed else { return .none }
                 state.feedbackReadRetryAvailable = false
                 state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
@@ -445,6 +464,9 @@ public struct DocumentReviewFeature {
                     state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true
+                case .deliveryUnconfirmed(let attemptID):
+                    state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID; state.needsReconciliation = true
+                    state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message
                 case .obsolete: break
                 }
                 return .none

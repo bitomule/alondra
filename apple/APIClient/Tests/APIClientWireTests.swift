@@ -79,7 +79,7 @@ final class APIClientWireTests: XCTestCase {
     }
 
     func testAnswerKeepsDeviceIdentityAndLogicalPathAndQueryAreEscaped() async throws {
-        let operations = WireOperations()
+        let operations = WireOperations(body: Data("{}".utf8))
         let api = client(operations)
         try await api.answer(7, text: "yes", option: nil, attachments: ["file-1"], operationID: "answer-7")
         _ = try await api.task("a/b")

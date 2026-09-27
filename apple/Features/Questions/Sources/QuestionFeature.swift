@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraDomain
 import AlondraAttachmentsFeature
 import AlondraShared
@@ -25,6 +26,9 @@ public struct QuestionFeature {
         public var completed = false
         public var uncertainCommandID: UUID?
         public var needsReconciliation = false
+        public var deliveryUnconfirmed = false
+        public var deliveryDiscarded = false
+        public var deliveryAttemptID: UInt64?
         public var revision: UInt64 = 0
         public var replyFocusRequest: UInt64 = 0
 
@@ -57,6 +61,8 @@ public struct QuestionFeature {
         case submissionFinished(UInt64, QuestionWorkOutcome)
         /// H sends this only after command journal and snapshot reconciliation.
         case commandResolved(UUID, rejection: String?)
+        case commandDeliveryUnconfirmed(UUID, attemptID: UInt64?)
+        case deliveryDecisionResolved(retry: Bool, discarded: Bool = false)
         case reconciled(cardStillOpen: Bool)
         case dismissNotice
     }
@@ -141,6 +147,8 @@ public struct QuestionFeature {
                 state.completed = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
+                state.deliveryUnconfirmed = false; state.deliveryDiscarded = false
+                state.deliveryAttemptID = nil
                 state.revision &+= 1
                 return .cancel(id: CancelID.submit)
             case .textChanged(let text):
@@ -234,9 +242,31 @@ public struct QuestionFeature {
                     state.noticeIsSubmissionFailure = false
                     state.notice = "The result is uncertain. Check the server before trying again."
                     state.needsReconciliation = true
+                case .deliveryUnconfirmed(let attemptID):
+                    state.deliveryUnconfirmed = true
+                    state.deliveryAttemptID = attemptID
+                    state.needsReconciliation = true
+                    state.noticeIsSubmissionFailure = false
+                    state.notice = DeliveryHandoffUnconfirmed.message
                 case .obsolete:
                     break
                 }
+                return .none
+            case .commandDeliveryUnconfirmed(let id, let attemptID):
+                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
+                state.uncertainCommandID = nil
+                state.deliveryUnconfirmed = true
+                state.deliveryAttemptID = attemptID
+                state.noticeIsSubmissionFailure = false
+                state.notice = DeliveryHandoffUnconfirmed.message
+                return .none
+            case .deliveryDecisionResolved(let retry, let discarded):
+                guard state.deliveryUnconfirmed else { return .none }
+                state.deliveryDiscarded = discarded
+                state.deliveryUnconfirmed = false; state.needsReconciliation = false
+                state.deliveryAttemptID = nil
+                state.notice = nil; state.noticeIsSubmissionFailure = false
+                state.completed = !retry
                 return .none
             case .commandResolved(let id, let rejection):
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
@@ -251,7 +281,7 @@ public struct QuestionFeature {
                 }
                 return .none
             case .reconciled(let cardStillOpen):
-                guard state.needsReconciliation else { return .none }
+                guard state.needsReconciliation, !state.deliveryUnconfirmed else { return .none }
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.completed = !cardStillOpen

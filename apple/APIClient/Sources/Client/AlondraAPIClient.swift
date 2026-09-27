@@ -1,4 +1,5 @@
 import Foundation
+import AlondraContracts
 
 /// Product API over the durable service operation transport. HTTP authentication,
 /// envelopes and journaling belong to the capabilities composed beneath this value.
@@ -23,6 +24,8 @@ public struct AlondraAPIClient: Sendable {
         case .unknown: throw ServiceAPIError.outcomeUnknown
         case let .completed(status, body):
             guard (200..<300).contains(status) else { throw APIError.from(status: status, body: body) }
+            if endpoint.method != .get,
+               let issue = try DeliveryHandoffUnconfirmed.inspect(body, requiresJSONObject: endpoint.requiresJSONObjectResponse, status: status) { throw issue }
             return try endpoint.decode(body)
         }
     }

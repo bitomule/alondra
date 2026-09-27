@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Retry delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar entrega #%llu"}}}},
+    "Discard delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar entrega #%llu"}}}},
     "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
 
     "Stop orchestrator": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detener orquestador"}}}},

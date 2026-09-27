@@ -30,6 +30,8 @@ struct TaskConnectionProjectionIntegrationTests {
             }
         } withDependencies: {
             $0.continuousClock = clock
+            $0.serviceCommandRecovery = .init(observe: { AsyncStream { $0.finish() } })
+            $0.deliveryJournal = .init(available: false, refresh: { throw CancellationError() }, resolve: { _, _, _, _, _ in throw CancellationError() })
             $0.triageService = TriageService(observe: {
                 subscriptions.withValue { $0 += 1 }
                 subscribed.continuation.yield(())

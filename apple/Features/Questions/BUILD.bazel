@@ -8,6 +8,7 @@ swift_library(
     deps = [
         "//apple:AlondraShared",
         "//apple/Domain:AlondraDomain",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
@@ -22,6 +23,7 @@ swift_test(
         ":AlondraQuestionsFeature",
         "//apple:AlondraShared",
         "//apple/Domain:AlondraDomain",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",

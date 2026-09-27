@@ -27,6 +27,7 @@ extension CloudAppServices {
             case .unknown(let command): return .uncertainCommand(command.id)
             case .obsolete: return .obsolete
             case .rejected(let error):
+                if let issue = error as? DeliveryHandoffUnconfirmed { return .deliveryUnconfirmed(attemptID: issue.attemptID) }
                 switch error as? APIError {
                 case .conflict(_, let detail, _): return .conflict(detail ?? "This item changed. Refresh it before trying again.")
                 case .forbidden(_, let detail, _): return .forbidden(detail ?? "You do not have permission to perform this action.")

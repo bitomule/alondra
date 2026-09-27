@@ -21,6 +21,7 @@ public struct ServiceRootFeature {
         public var tab = Tab.inbox
         public var settingsPresented = false
         public var delivery = DeliveryNoticeFeature.State()
+        public var deliveryJournal = DeliveryJournalFeature.State()
         public var macError: WorkspaceNotice?
         var lastMacErrorMessage: String?
         var macErrorMessage: String? {
@@ -72,6 +73,7 @@ public struct ServiceRootFeature {
         case appeared, disappeared
         case macPresentation(MacPresentationFeature.Action)
         case delivery(DeliveryNoticeFeature.Action)
+        case deliveryJournal(DeliveryJournalFeature.Action)
         case dismissMacError(UUID)
         case dismissNotice(UUID)
         case dismissCloseRefusal
@@ -130,6 +132,7 @@ public struct ServiceRootFeature {
                 }
             }
         Scope(state: \.delivery, action: \.delivery) { DeliveryNoticeFeature() }
+        Scope(state: \.deliveryJournal, action: \.deliveryJournal) { DeliveryJournalFeature() }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
@@ -142,7 +145,7 @@ public struct ServiceRootFeature {
             state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
-                return .merge(.send(.delivery(.appeared)), .send(.triage(.triage(.appeared))), .run { send in
+                return .merge(.send(.deliveryJournal(.appeared)), .send(.delivery(.appeared)), .send(.triage(.triage(.appeared))), .run { send in
                     await withTaskGroup(of: Void.self) { group in
                         group.addTask {
                             for await resolution in await recovery.observe() { await send(.commandResolved(resolution)) }
@@ -156,8 +159,12 @@ public struct ServiceRootFeature {
                 state.triage.cancelPendingSubmissions()
                 state.fleet.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
-                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)), .send(.triage(.triage(.disappeared))))
+                return .merge(.cancel(id: RecoveryCancelID.observation), .send(.delivery(.disappeared)), .send(.deliveryJournal(.disappeared)), .send(.triage(.triage(.disappeared))))
             case .commandResolved(let resolution): return resolutionEffects(resolution, state: state)
+            case .deliveryJournal(.loaded(let epoch, let snapshot)), .deliveryJournal(.resolved(let epoch, let snapshot)):
+                guard state.deliveryJournal.active, state.deliveryJournal.epoch == epoch,
+                      state.deliveryJournal.snapshot?.scope == snapshot.scope else { return .none }
+                return deliveryResolutionEffects(snapshot, state: state)
             case .feedbackRecovered(let events):
                 state.feedbackResolutions = events
                 return feedbackResolutionEffects(events, state: state)
@@ -204,6 +211,7 @@ public struct ServiceRootFeature {
                     .send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
                 guard update.identity == state.triage.triage.identity else { return routing }
                 var updates: [Effect<Action>] = [routing]
+                if let tick = update.overview?.tick { updates.append(.send(.deliveryJournal(.syncTick(tick)))) }
                 for detail in state.pullRequests {
                     let id = detail.id
                     guard state.triage.triage.hasSnapshot else {
@@ -262,8 +270,11 @@ public struct ServiceRootFeature {
                 return .none
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.canSubmit)))
             case .triage:
-                return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))))
-            case .macPresentation, .dismissMacError, .delivery, .tasks, .pullRequests, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
+                return .merge(.send(.fleet(.hiddenInboxChanged(state.triage.triage.hiddenIDs))), .send(.tasks(.hiddenInboxChanged(state.triage.triage.hiddenIDs))),
+                    state.deliveryJournal.snapshot.map { deliveryResolutionEffects($0, state: state) } ?? .none)
+            case .pullRequests:
+                return state.deliveryJournal.snapshot.map { deliveryResolutionEffects($0, state: state) } ?? .none
+            case .macPresentation, .dismissMacError, .delivery, .deliveryJournal, .tasks, .fleet, .newRequest, .dismissNotice, .dismissCloseRefusal: return .none
             }
         }.forEach(\.pullRequests, action: \.pullRequests) { ServicePullRequestFeature() }
         Reduce { state, _ in

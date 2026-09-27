@@ -47,6 +47,11 @@ public struct TriageCardFeature {
             let hasAttachments = !(question?.attachmentPicker.entries.isEmpty ?? document?.attachmentPicker.entries.isEmpty ?? pullRequest?.diff.attachmentPicker.entries.isEmpty ?? true)
             return !busy && (!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments)
         }
+        public var retainsPendingDelivery: Bool {
+            question?.isSubmitting == true || question?.needsReconciliation == true
+                || document?.isSubmitting == true || document?.needsReconciliation == true
+                || pullRequest?.hasOutstandingCommand == true
+        }
         public var busy: Bool {
             stamp != nil || readPending || question?.isSubmitting == true || question?.needsReconciliation == true
                 || document?.isSubmitting == true || document?.needsReconciliation == true
@@ -157,7 +162,8 @@ public struct TriageCardFeature {
                     || state.pullRequest?.pr.mutationOutcome == .confirmed
                     || (state.pullRequest?.diff.mutationOutcome == .confirmed && state.requestingChanges)
                 guard completed, state.stamp == nil else { return .none }
-                state.stamp = state.pendingStamp ?? .sent
+                state.stamp = state.question?.deliveryDiscarded == true || state.document?.deliveryDiscarded == true
+                    ? .setAside : state.pendingStamp ?? .sent
                 return .run { send in
                     try await clock.sleep(for: .milliseconds(520))
                     await send(.stampFinished)

@@ -6,6 +6,10 @@ extension CommandKind {
     var userFacingDescription: String {
         switch self {
         case .answer(let id): String(localized: "Answer question #\(id)", table: "AlondraShared", bundle: #bundle)
+        case .resolveDelivery(let decision):
+            decision.retry
+                ? String(localized: "Retry delivery #\(decision.id)", table: "AlondraShared", bundle: #bundle)
+                : String(localized: "Discard delivery #\(decision.id)", table: "AlondraShared", bundle: #bundle)
         case .moreContext(let id): String(localized: "Ask for context on question #\(id)", table: "AlondraShared", bundle: #bundle)
         case .markRead(let id): String(localized: "Mark report #\(id) read", table: "AlondraShared", bundle: #bundle)
         case .review(let id): String(localized: "Review report #\(id)", table: "AlondraShared", bundle: #bundle)
