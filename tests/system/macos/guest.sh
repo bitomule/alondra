@@ -10,7 +10,9 @@ cd "$ROOT"
 # Tart guest exec uses virtio sockets, so this does not disconnect control.
 # No host network or permission changes; this is the disposable clone only.
 sudo -n /sbin/ifconfig en0 down
-if /sbin/ifconfig en0 | head -1 | grep -Eq '<([^>]*,)?UP(,|>)'; then
+interface_state=$(/sbin/ifconfig en0)
+[[ "$interface_state" == en0:* ]] || { echo 'Invalid guest interface state'; exit 2; }
+if printf '%s\n' "$interface_state" | head -1 | grep -Eq '<([^>]*,)?UP(,|>)'; then
   echo 'Guest network still up'; exit 2
 fi
 mkdir -p project/.mav
