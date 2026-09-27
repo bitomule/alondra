@@ -182,6 +182,45 @@ class MacGateTests(unittest.TestCase):
             (root/'project/leak').symlink_to(root/'project/flow.txt')
             with self.assertRaisesRegex(ValueError, 'unsupported'): transfer.prepare(root)
 
+    def test_guest_timeout_and_stop_timeout_still_attempt_collection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base = root / 'tart/vms' / m.BASE_NAME
+            base.mkdir(parents=True)
+            (base / 'config.json').write_text('{}')
+            gate = m.Gate(argparse.Namespace(output_dir=root / 'output', base=m.BASE_NAME,
+                                            profile='cli', brew_version='0.1.8'))
+            sequence = []
+            def call(*args, **kwargs):
+                data = b''
+                if args[:2] == ('git', 'rev-parse'): data = b'a' * 40
+                if args[:2] == ('tart', 'list'):
+                    data = json.dumps([{'Name': m.BASE_NAME, 'Source': 'local', 'State': 'stopped'}]).encode()
+                if args[:2] == ('/usr/bin/tar', '-cf'): Path(args[2]).write_bytes(b'fixture')
+                return subprocess.CompletedProcess(args, 0, data, b'')
+            def guest(*args, **kwargs):
+                if args[0] == '/bin/cat':
+                    return subprocess.CompletedProcess(args, 0, json.dumps({'origin': m.BASE_ORIGIN, 'synthetic': True}).encode(), b'')
+                if args[:2] == ('/bin/bash', m.GUEST + '/guest.sh'):
+                    sequence.append('guest-timeout'); raise subprocess.TimeoutExpired(args, 600)
+                if args[:2] == ('/bin/bash', '-c'):
+                    sequence.append('stop-timeout'); raise subprocess.TimeoutExpired(args, 30)
+                return subprocess.CompletedProcess(args, 0, b'', b'')
+            fake_process = unittest.mock.Mock()
+            fake_process.poll.return_value = None
+            with patch.dict(os.environ, {'TART_HOME': str(root / 'tart')}), \
+                    patch.object(gate, 'call', call), patch.object(gate, 'guest', guest), \
+                    patch.object(gate, 'collect_evidence', side_effect=lambda: sequence.append('collect')), \
+                    patch.object(m.subprocess, 'Popen', return_value=fake_process), \
+                    patch.object(m.signal, 'signal'), \
+                    patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=m.MIN_FREE + 1)):
+                result = gate.execute()
+            self.assertEqual(sequence, ['guest-timeout', 'stop-timeout', 'collect'])
+            self.assertEqual(result['guest_failure'], {'timeout_seconds': 600})
+            self.assertEqual(result['timeout_mav_stop_error']['kind'], 'TimeoutExpired')
+            self.assertEqual(result['status'], 'failed')
+            self.assertTrue(result['cleanup']['owned_clone_deleted'])
+
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp)

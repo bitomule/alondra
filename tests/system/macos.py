@@ -296,10 +296,14 @@ class Gate:
                 (self.out / 'guest.txt').write_bytes((error.stdout or b'') + (error.stderr or b''))
                 self.result['guest_failure'] = {'timeout_seconds': 600}
                 # Stop only this clone's MAV run before freezing partial evidence.
-                stop = self.guest('/bin/bash', '-c',
-                                  'cd /Users/admin/alondra-gate/project && /Users/admin/alondra-test-tools/mav stop',
-                                  timeout=30, check=False)
-                self.result['timeout_mav_stop_exit'] = stop.returncode
+                try:
+                    stop = self.guest('/bin/bash', '-c',
+                                      'cd /Users/admin/alondra-gate/project && /Users/admin/alondra-test-tools/mav stop',
+                                      timeout=30, check=False)
+                    self.result['timeout_mav_stop_exit'] = stop.returncode
+                except (subprocess.TimeoutExpired, OSError) as stop_error:
+                    self.result['timeout_mav_stop_error'] = {
+                        'kind': type(stop_error).__name__, 'detail': str(stop_error)}
             self.step = 'collect'
             self.collect_evidence()
             if 'guest_failure' in self.result:
