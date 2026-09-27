@@ -337,6 +337,15 @@ pub fn initialize(requested: Option<&str>) -> Result<()> {
         .map_err(|_| anyhow!("terminal target already initialized"))?;
     Ok(())
 }
+impl crate::overview_snapshot::Transport for Profile {
+    fn initial_overview(&self, timeout: Duration) -> Result<(u16, Value)> {
+        self.request("GET", "/v1/overview", None, timeout)
+    }
+    fn snapshot(&self, method: &str, path: &str, timeout: Duration) -> Result<(u16, Value)> {
+        self.snapshot_request(method, path, timeout)
+    }
+}
+
 impl Profile {
     fn signing(&self) -> Result<SigningKey> {
         Ok(SigningKey::from_slice(&B64.decode(&self.signing_key)?)?)

@@ -37,6 +37,24 @@ fn remaining(deadline: Instant, per_request: Duration) -> Result<Duration> {
     Ok(left.min(per_request))
 }
 
+/// Production dispatch boundary: only the initial read may resolve/refresh auth.
+pub(crate) trait Transport {
+    fn initial_overview(&self, timeout: Duration) -> Result<(u16, Value)>;
+    fn snapshot(&self, method: &str, path: &str, timeout: Duration) -> Result<(u16, Value)>;
+}
+pub(crate) fn read_transport(
+    transport: &impl Transport,
+    timeout: Duration,
+) -> Result<(u16, Value)> {
+    read(timeout, |method, path, budget| {
+        if path == "/v1/overview" {
+            transport.initial_overview(budget)
+        } else {
+            transport.snapshot(method, path, budget)
+        }
+    })
+}
+
 pub(crate) fn read(
     timeout: Duration,
     mut call: impl FnMut(&str, &str, Duration) -> Result<(u16, Value)>,
@@ -228,6 +246,51 @@ mod tests {
                 .is_some_and(|e| e.to_string().contains("digest mismatch")),
             "modified valid JSON must fail integrity"
         );
+    }
+
+    #[test]
+    fn cache_expiry_between_fragments_does_not_dispatch_to_refresh_capable_transport() {
+        use std::cell::{Cell, RefCell};
+        struct Expiring {
+            initial: Cell<usize>,
+            continuation: RefCell<Vec<String>>,
+            bytes: Vec<u8>,
+        }
+        impl Transport for Expiring {
+            fn initial_overview(&self, _: Duration) -> Result<(u16, Value)> {
+                self.initial.set(self.initial.get() + 1);
+                ensure!(
+                    self.initial.get() == 1,
+                    "unexpected authentication refresh after first request"
+                );
+                Ok((502, json!({"error":"response_too_large"})))
+            }
+            fn snapshot(&self, method: &str, path: &str, _: Duration) -> Result<(u16, Value)> {
+                self.continuation
+                    .borrow_mut()
+                    .push(format!("{method} {path}"));
+                if path == ROOT {
+                    Ok((200, chunk(&self.bytes, 0)))
+                } else {
+                    anyhow::bail!(
+                        "account token changed or expired during overview read; retry the read"
+                    )
+                }
+            }
+        }
+        let transport = Expiring {
+            initial: Cell::new(0),
+            continuation: RefCell::new(vec![]),
+            bytes: document(100_000),
+        };
+        let result = read_transport(&transport, Duration::from_secs(15));
+        assert!(result.is_err());
+        assert_eq!(transport.initial.get(), 1);
+        let calls = transport.continuation.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], format!("GET {ROOT}"));
+        assert_eq!(calls[1], format!("GET {ROOT}/{ID}?offset={CHUNK_BYTES}"));
+        assert_eq!(calls[2], format!("DELETE {ROOT}/{ID}"));
     }
 
     #[test]
