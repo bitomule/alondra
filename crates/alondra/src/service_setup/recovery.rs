@@ -92,7 +92,11 @@ fn read_operation(home: &Path) -> Result<Option<Operation>> {
 fn generation(home: &Path, id: &str) -> PathBuf {
     home.join("service-generations").join(id)
 }
+#[cfg(test)]
 fn prepare(home: &Path, start_new_completed: bool) -> Result<Operation> {
+    prepare_at(home, start_new_completed, RELAY)
+}
+fn prepare_at(home: &Path, start_new_completed: bool, relay: &str) -> Result<Operation> {
     if let Some(op) = read_operation(home)? {
         if op.phase != "committed" || !start_new_completed {
             return Ok(op);
@@ -104,7 +108,7 @@ fn prepare(home: &Path, start_new_completed: bool) -> Result<Operation> {
     let old_base = identity_base(home)?;
     let (old_identity, _) = load_or_create_keys(&old_base)?;
     anyhow::ensure!(
-        old.mac_id == old_identity.mac_id && old.relay_url.trim_end_matches('/') == RELAY,
+        old.mac_id == old_identity.mac_id && old.relay_url.trim_end_matches('/') == relay,
         "existing service identity or relay mismatch"
     );
     let id = random::<16>()?
@@ -276,6 +280,7 @@ pub(super) fn interactive(
         stop,
         input,
         output,
+        RELAY,
         || {
             let account = crate::account::ensure_token_for_enrollment()?;
             Ok((account.sub, account.access_token))
@@ -291,6 +296,7 @@ fn interactive_with(
     stop: impl FnOnce() -> Result<()>,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    expected_relay: &str,
     account: impl FnOnce() -> Result<(String, String)>,
     registrar: &mut impl FnMut(&PublicMac, &SigningKey, &str) -> Result<()>,
 ) -> Result<RecoveryOutcome> {
@@ -369,7 +375,7 @@ fn interactive_with(
     );
     let op = match current {
         Some(op) if op.phase != "committed" => op,
-        _ => prepare(home, true)?,
+        _ => prepare_at(home, true, expected_relay)?,
     };
     let op = execute(
         home,
@@ -557,6 +563,7 @@ mod tests {
             },
             &mut &b"RECOVER\n"[..],
             &mut output,
+            RELAY,
             || Ok(("owner".into(), "synthetic-token".into())),
             &mut |_, _, _| panic!("enrolled recovery must not register again"),
         )
@@ -573,6 +580,7 @@ mod tests {
             || panic!("cancel must not stop daemon"),
             &mut &b"\n"[..],
             &mut output,
+            RELAY,
             || panic!("cancel must not read credentials"),
             &mut |_, _, _| panic!("cancel must not register"),
         )
@@ -670,3 +678,7 @@ mod tests {
         assert!(!home.join(RECOVERY).exists());
     }
 }
+
+#[cfg(test)]
+#[path = "recovery_fixture_tests.rs"]
+mod restored_fixture;
