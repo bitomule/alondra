@@ -39,7 +39,7 @@ pub fn routes() -> Router<Arc<Server>> {
         .layer(axum::extract::DefaultBodyLimit::max(8192))
 }
 type ApiResult = std::result::Result<Response, Response>;
-fn failure(error: anyhow::Error) -> Response {
+pub(super) fn failure(error: anyhow::Error) -> Response {
     let (status, code, retryable) = match error.downcast_ref::<DomainError>() {
         Some(DomainError::Forbidden) => (StatusCode::FORBIDDEN, "access_denied", false),
         Some(DomainError::NotFound) => (StatusCode::NOT_FOUND, "not_found", false),
@@ -72,14 +72,14 @@ fn failure(error: anyhow::Error) -> Response {
     )
         .into_response()
 }
-fn db(server: &Server) -> std::result::Result<&Management, Response> {
+pub(super) fn db(server: &Server) -> std::result::Result<&Management, Response> {
     server
         .auth
         .management
         .as_ref()
         .ok_or_else(|| failure(anyhow::anyhow!("management disabled")))
 }
-async fn actor(server: &Server, headers: &HeaderMap) -> std::result::Result<Account, Response> {
+pub(super) async fn actor(server: &Server, headers: &HeaderMap) -> std::result::Result<Account, Response> {
     let subject = server
         .auth
         .account_owner(headers, now_ms())
