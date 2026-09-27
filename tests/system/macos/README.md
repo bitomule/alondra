@@ -4,6 +4,40 @@ These are opt-in tests on this Mac. They do not use hosted CI or the Pi. The def
 profile installs the public Brew package and exercises the local daemon and TUI.
 MAV is needed only for the optional Apple app profile.
 
+The optional package lifecycle reuses the same prepared base and runner:
+
+```sh
+python3 tests/system/macos.py --brew-lifecycle --brew-version 0.1.9 \
+  --output-dir /private/tmp/alondra-lifecycle-UNIQUE       # plan only
+# Add --run only after reserving the heavy slot.
+```
+
+It installs the signed public 0.1.8 package, then uses `brew upgrade` to 0.1.9.
+Both historical tap commits, formula blobs, ARM64 archive and executable hashes
+are pinned in `cli_lifecycle.py`. Only a newly created tap checkout in the owned
+guest is switched; the public tap and host Homebrew never change. Both packages
+are fetched and verified before disabling guest en0; subsequent package operations
+use those cached archives. Two real paused schedules and the same synthetic HOME
+demonstrate persistence without executing agents. Local daemon health, version,
+SQLite audit, assets/signatures and the TUI are checked with existing helpers.
+
+Rollback is **package plus pre-upgrade snapshot recovery**, not a direct downgrade
+of the 0.1.9 database. 0.1.9 emits `splits_released`, an event 0.1.8 cannot replay.
+The gate preserves the original 0.1.9 directory, checks the specific old-reader
+rejection on a disposable copy, reinstalls 0.1.8 through Brew, restores the
+consistent pre-upgrade SQLite backup, and verifies its earlier sequence and
+schedule. Later changes are intentionally absent from the restored state and
+remain in the preserved 0.1.9 directory. No product data is dropped to make the
+old reader pass. This is not a general migration-compatibility guarantee.
+
+Final uninstall must remove both binaries, Cellar and opt links while preserving
+synthetic user data; each daemon PID is stopped and the loopback port must close.
+No launchd job is installed by this local-runtime gate. Login, actual setup and
+Keychain/enrollment remain in the separate authenticated gate. Each completed
+phase is recorded before the next one, and the existing Tart collector preserves
+failed evidence before deleting only its owned clone. Do not mark the lifecycle
+accepted from fast tests or source review alone.
+
 ## Commands
 
 From the repository root, inspect the plan without starting anything:
