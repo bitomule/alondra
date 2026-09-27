@@ -368,6 +368,52 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
 }
 
 #[test]
+fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisions() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    let e = acceptance(&mut store);
+    store.execute_authenticated(&user(), &e, None).unwrap();
+    let agent_message = store.pending_messages().unwrap().into_iter()
+        .find(|message| message.recipient_kind == "agent").unwrap();
+    let claim = store.claim_message(agent_message.id).unwrap().unwrap();
+    drop(store);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let epoch = restarted.load().unwrap().data_epoch.0;
+    let page = restarted.delivery_evidence_page(0).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].state, "uncertain");
+    assert_eq!(page[0].recipient_kind, "agent");
+    assert_eq!(page[0].current_state, "uncertain");
+    assert_eq!(page[0].version, 2);
+    assert!(restarted.delivery_evidence_page(claim.attempt_id).unwrap().is_empty());
+    let digest = [17u8; 32];
+    let different = [19u8; 32];
+    let first = restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch, true,
+        ("phone-a", "work-a", &digest)).unwrap();
+    assert_eq!(first["state"], "retryable");
+    assert_eq!(first["version"], 3);
+    assert_eq!(first, restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch,
+        true, ("phone-a", "work-a", &digest)).unwrap());
+    assert!(matches!(restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch,
+        false, ("phone-a", "work-a", &different)), Err(StoreError::Domain(error))
+        if error.code == "idempotency_conflict"));
+    assert!(matches!(restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch,
+        false, ("phone-a", "work-b", &different)), Err(StoreError::Domain(error))
+        if error.code == "delivery_uncertain"));
+    let followup = restarted.claim_message(agent_message.id).unwrap().unwrap();
+    drop(restarted);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(restarted.delivery_evidence_page(followup.attempt_id - 1).unwrap()[0].state,
+        "uncertain");
+    let discarded = restarted.resolve_uncertain_authenticated(followup.attempt_id, 2, &epoch,
+        false, ("phone-a", "work-c", &[23u8; 32])).unwrap();
+    assert_eq!(discarded["state"], "discarded");
+    assert!(restarted.pending_messages().unwrap().iter().all(|m| m.id != agent_message.id));
+}
+
+#[test]
 fn future_schema_and_legacy_writer_are_rejected_and_migration_preserves_rows() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

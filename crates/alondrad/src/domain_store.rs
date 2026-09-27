@@ -9,6 +9,7 @@ use alondra_core::domain_v2::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::path::Path;
 
 const SCHEMA_VERSION: i64 = 3;
@@ -394,7 +395,86 @@ pub(crate) struct DeliveryEvidence {
     pub version: u64,
     pub reason: Option<String>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct DeliveryEvidenceItem {
+    pub attempt_id: i64,
+    pub message_id: i64,
+    pub state: String,
+    pub current_state: String,
+    pub version: u64,
+    pub reason: Option<String>,
+    pub recipient_kind: String,
+    pub task_id: Option<String>,
+    pub interaction_id: Option<String>,
+}
 impl DomainStore {
+    /// One bounded page of technical evidence. The message body remains in the
+    /// domain projection; this API carries only IDs and delivery state.
+    pub(crate) fn delivery_evidence_page(&self, after: i64) -> Result<Vec<DeliveryEvidenceItem>> {
+        let mut q = self.conn.prepare(r#"SELECT a.id,a.message_id,a.state,o.state,a.version,a.reason,
+            CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,
+            m.task_id,m.interaction_id FROM delivery_attempts a
+            JOIN domain_messages m ON m.id=a.message_id
+            JOIN domain_outbox o ON o.message_id=a.message_id
+            LEFT JOIN domain_message_user_targets u ON u.message_id=a.message_id
+            WHERE a.id>?1 ORDER BY a.id LIMIT 101"#)?;
+        Ok(q.query_map([after], |r| Ok(DeliveryEvidenceItem {
+            attempt_id: r.get(0)?, message_id: r.get(1)?, state: r.get(2)?,
+            current_state: r.get(3)?, version: r.get::<_, i64>(4)? as u64,
+            reason: r.get(5)?, recipient_kind: r.get(6)?, task_id: r.get(7)?,
+            interaction_id: r.get(8)?,
+        }))?.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Resolve exactly one uncertain attempt with the same durable transport
+    /// receipt used by domain commands. No ambiguous batch is retried.
+    pub(crate) fn resolve_uncertain_authenticated(
+        &mut self, attempt_id: i64, expected_version: u64, epoch: &str,
+        retry: bool, transport: TransportIdentity<'_>,
+    ) -> std::result::Result<Value, StoreError> {
+        let (sender, request_id, ciphertext_digest) = transport;
+        let version = i64::try_from(expected_version)
+            .map_err(|_| DomainError::new("invalid_input", "delivery version overflow"))?;
+        if version < 1 || expected_version >= MAX_REVISION {
+            return Err(DomainError::new("invalid_input", "invalid delivery version").into());
+        }
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_schema(&tx)?;
+        let current_epoch: String = tx.query_row(
+            "SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |r| r.get(0))?;
+        if current_epoch != epoch {
+            return Err(DomainError::new("stale_epoch", "domain epoch changed").into());
+        }
+        let previous: Option<(Vec<u8>, String)> = tx.query_row(
+            "SELECT digest,result FROM local_command_results WHERE sender=?1 AND request_id=?2",
+            params![sender, request_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((digest, result)) = previous {
+            if digest != ciphertext_digest {
+                return Err(DomainError::new("idempotency_conflict", "request ID reused with different encrypted bytes").into());
+            }
+            return Ok(serde_json::from_str(&result)?);
+        }
+        let message_id: Option<i64> = tx.query_row(
+            "SELECT a.message_id FROM delivery_attempts a JOIN domain_outbox o ON o.message_id=a.message_id \
+             WHERE a.id=?1 AND a.version=?2 AND a.state='uncertain' AND o.state='uncertain'",
+            params![attempt_id, version], |r| r.get(0)).optional()?;
+        let Some(message_id) = message_id else {
+            return Err(DomainError::new("delivery_uncertain", "uncertain delivery changed; refresh evidence").into());
+        };
+        let status = if retry { "retryable" } else { "discarded" };
+        tx.execute("UPDATE delivery_attempts SET state=?3,version=version+1,reason='explicit_user_reconciliation' \
+            WHERE id=?1 AND version=?2 AND state='uncertain'", params![attempt_id,version,status])?;
+        tx.execute("UPDATE domain_outbox SET state=?2 WHERE message_id=?1 AND state='uncertain'",
+            params![message_id,status])?;
+        let result = json!({"attempt_id":attempt_id,"message_id":message_id,
+            "version":expected_version+1,"state":status});
+        tx.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
+            params![sender,request_id,ciphertext_digest.as_slice(),serde_json::to_string(&result)?])?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     pub(crate) fn delivery_evidence(&self) -> Result<Vec<DeliveryEvidence>> {
         let mut q = self.conn.prepare(
             "SELECT id,message_id,state,version,reason FROM delivery_attempts ORDER BY id",
@@ -410,7 +490,9 @@ impl DomainStore {
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
-    /// The caller must authenticate the user's explicit reconciliation decision.
+    /// Legacy store-level fixture. Production resolution uses the authenticated
+    /// transport receipt above so a retry cannot repeat the decision.
+    #[cfg(test)]
     pub(crate) fn resolve_uncertain(
         &mut self,
         attempt_id: i64,
