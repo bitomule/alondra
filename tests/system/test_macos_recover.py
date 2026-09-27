@@ -155,6 +155,39 @@ class RecoveryTests(unittest.TestCase):
                 else: validate.assert_called_once_with(root/'retry2/evidence')
                 if mode == 'wrong-binary': self.assertIn('different executable', result['failure']['detail'])
 
+    def test_lifecycle_recovery_preserves_variant_and_rejects_missing_check(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve(); gate, calls, call = self.fixture(root)
+                gate.args.profile = 'cli'; gate.args.brew_version = '0.1.9'; gate.args.brew_lifecycle = True
+                with patch.object(gate, 'call', call): gate.cleanup()
+                self.assertIs(recovery.receipt(gate.out/'recovery.json')['brew_lifecycle'], True)
+                cli = {'status': 'passed', 'version': '0.1.9', 'cleanup': True,
+                       'profile': 'cli-public-package-lifecycle',
+                       'checks': m.LIFECYCLE_CHECKS[:-1] if missing else list(m.LIFECYCLE_CHECKS)}
+                # The normal path uses this same validator; a PASS label is insufficient.
+                if missing:
+                    with self.assertRaisesRegex(m.GateError, 'incomplete lifecycle'):
+                        m.validate_cli(cli, '0.1.9', True)
+                else: self.assertEqual(m.validate_cli(cli, '0.1.9', True), cli)
+                with self.assertRaisesRegex(m.GateError, 'profile differs'):
+                    m.validate_cli(cli, '0.1.9', False)
+                def recover_call(instance, *args, **kwargs): return call(*args, **kwargs)
+                def guest(instance, *args, **kwargs):
+                    return subprocess.CompletedProcess(args, 0, json.dumps({'vm': gate.name, 'owner_token': gate.owner_token}).encode(), b'')
+                def collect(instance):
+                    self.assertIs(instance.args.brew_lifecycle, True)
+                    path = instance.out/'evidence/project'; path.mkdir(parents=True)
+                    (path/'cli-result.json').write_text(json.dumps(cli))
+                with patch.dict('os.environ', {'TART_HOME': str(gate.tart_home)}), \
+                     patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=m.MIN_FREE*2)), \
+                     patch.object(m.Gate, 'call', recover_call), patch.object(m.Gate, 'guest', guest), \
+                     patch.object(m.Gate, 'collect_evidence', collect), patch.object(m.subprocess, 'Popen'):
+                    result = recovery.recover(argparse.Namespace(receipt=gate.out/'recovery.json', output=root/'retry'))
+                self.assertEqual(result['status'], 'failed' if missing else 'recovered-validated-evidence')
+                self.assertTrue(result['cleanup']['owned_clone_deleted'])
+                if missing: self.assertIn('incomplete lifecycle', result['failure']['detail'])
+
     def test_visual_receipt_without_original_hash_fails_before_boot(self):
         with tempfile.TemporaryDirectory() as temp:
             gate, calls, call = self.fixture(Path(temp))

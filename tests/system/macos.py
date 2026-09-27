@@ -33,6 +33,22 @@ class GateError(RuntimeError):
     pass
 
 
+LIFECYCLE_CHECKS = ['public_018_install', 'public_019_brew_upgrade', '019_same_home_persistence',
+                    '018_rejects_019_copy_without_original_mutation', '018_snapshot_restore',
+                    'uninstall_package_preserves_user_data', 'owned_process_and_port_quiescent']
+
+
+def validate_cli(cli, version, lifecycle=False):
+    if cli.get('status') != 'passed' or cli.get('version') != version or cli.get('cleanup') is not True:
+        raise GateError('CLI guest assertions failed or wrong Brew version')
+    expected_profile = 'cli-public-package-lifecycle' if lifecycle else 'cli-public-package-local-runtime'
+    if cli.get('profile') != expected_profile:
+        raise GateError('CLI guest profile differs from requested variant')
+    if lifecycle and cli.get('checks') != LIFECYCLE_CHECKS:
+        raise GateError('incomplete lifecycle acceptance')
+    return cli
+
+
 def checked_name(name):
     if not re.fullmatch(r'alondra-[a-z0-9-]{1,70}', name):
         raise GateError('base must be an explicitly prepared local alondra-* image')
@@ -424,14 +440,7 @@ class Gate:
                     raise GateError('visual guest ran a different executable')
             else:
                 cli = json.loads((self.out / 'evidence/project/cli-result.json').read_text())
-                if cli.get('status') != 'passed' or cli.get('version') != self.args.brew_version or cli.get('cleanup') is not True:
-                    raise GateError('CLI guest assertions failed or wrong Brew version')
-                if getattr(self.args, 'brew_lifecycle', False):
-                    expected = ['public_018_install', 'public_019_brew_upgrade', '019_same_home_persistence',
-                                '018_rejects_019_copy_without_original_mutation', '018_snapshot_restore',
-                                'uninstall_package_preserves_user_data', 'owned_process_and_port_quiescent']
-                    if cli.get('profile') != 'cli-public-package-lifecycle' or cli.get('checks') != expected:
-                        raise GateError('incomplete lifecycle acceptance')
+                validate_cli(cli, self.args.brew_version, getattr(self.args, 'brew_lifecycle', False))
                 self.result['cli'] = cli
             self.result['status'] = 'passed'
         except Exception as error:
@@ -461,6 +470,7 @@ class Gate:
                                'ownership_sha256': digest(self.out / 'ownership.json'),
                                'original_output': str(self.out), 'source': self.result.get('source'),
                                'profile': self.args.profile, 'brew_version': getattr(self.args, 'brew_version', None),
+                               'brew_lifecycle': getattr(self.args, 'brew_lifecycle', False),
                                'guest_failure': self.result.get('guest_failure'),
                                'input_executable_sha256': self.result.get('input_executable_sha256'),
                                'evidence_descriptor': self.result.get('evidence_descriptor')}
