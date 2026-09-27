@@ -107,8 +107,18 @@ impl Push {
     }
 
     pub async fn broadcast(&self, payload: &Value, with_sound: bool) {
-        let Some(apns) = &self.apns else { return };
+        let _ = self.broadcast_report(payload, with_sound).await;
+    }
+
+    /// APNs acceptance is a technical handoff, not proof the person saw it.
+    /// A partial batch is explicit so domain delivery does not mark every
+    /// target handed after one device failed.
+    pub async fn broadcast_report(&self, payload: &Value, with_sound: bool) -> (usize, usize) {
+        let Some(apns) = &self.apns else { return (0, 0) };
+        let mut attempted = 0;
+        let mut accepted = 0;
         for reg in self.registrations() {
+            attempted += 1;
             let mut body = payload_for_registration(payload, &reg);
             let quiet = in_quiet_hours(reg.quiet_start.as_deref(), reg.quiet_end.as_deref(), local_minutes());
             let level = if quiet { "passive" } else { "active" };
@@ -120,7 +130,7 @@ impl Push {
             }
             let priority = if quiet { 5 } else { 10 };
             match apns.send(&reg.token, &reg.environment, &body, priority).await {
-                Ok((200, _)) => {}
+                Ok((200, _)) => { accepted += 1; }
                 Ok((410, _)) | Ok((400, _)) => {
                     log!("APNs rejects a token, forgetting it");
                     self.forget_token(&reg.token);
@@ -129,6 +139,7 @@ impl Push {
                 Err(e) => log!("APNs does not respond: {e}"),
             }
         }
+        (attempted, accepted)
     }
 }
 

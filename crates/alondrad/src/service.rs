@@ -838,18 +838,29 @@ impl Service {
     /// Send one opaque notification per enrolled phone. The relay can see only
     /// routing metadata, a random binding, and the generic APNs alert.
     pub async fn broadcast_push(&self, payload: &Value, with_sound: bool) -> Result<()> {
+        let _ = self.broadcast_push_report(payload, with_sound).await?;
+        Ok(())
+    }
+
+    /// Count relay acknowledgements for durable domain outbox handoff.
+    pub async fn broadcast_push_report(&self, payload: &Value, with_sound: bool) -> Result<(usize, usize)> {
         let mut epoch = None;
+        let mut attempted = 0;
+        let mut accepted = 0;
         for (id, device) in &self.devices {
             if !self.auth.approved_key_matches(id, &device.signing)
                 || !self.journal.enrollment_active(id)? {
                 continue;
             }
             let Some(binding) = self.journal.push_binding(id)? else { continue };
+            attempted += 1;
             if let Err(error) = self.send_device_push(id, device, &binding, payload, with_sound, &mut epoch).await {
                 log!("service push for {id} failed: {error:#}");
+            } else {
+                accepted += 1;
             }
         }
-        Ok(())
+        Ok((attempted, accepted))
     }
 
     /// An explicit local diagnostic: no Hub, task, report or legacy APNs sender.
@@ -2228,6 +2239,22 @@ agreement_key = "{}"
             server.abort();
             std::fs::remove_dir_all(&service.home).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn domain_push_report_counts_relay_rejections() {
+        let (mut service, _) = push_fixture();
+        activate_push(&service);
+        let router = Router::new()
+            .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])})) }))
+            .route("/v1/mac/push", post(|| async { StatusCode::INTERNAL_SERVER_ERROR }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let report = service.broadcast_push_report(&json!({"aps":{"alert":"hint"},"alondra":{}}), true).await.unwrap();
+        assert_eq!(report, (1, 0));
+        server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
     }
 
     fn changes_work(service: &Service, request_id: &str, request: Value) -> Work {

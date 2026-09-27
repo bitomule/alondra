@@ -25,14 +25,8 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
         };
         match pending {
             Ok(messages) => {
-                for message in messages.into_iter().take(64) {
+                for message in ready_messages(messages, &retry_after) {
                     let id = message.id;
-                    if retry_after
-                        .get(&id)
-                        .is_some_and(|at| at.elapsed() < RETRY_BACKOFF)
-                    {
-                        continue;
-                    }
                     if let Err(error) = deliver_one(&hub, &push, service.as_deref(), message).await
                     {
                         log!("domain v2 outbox dispatch failed: {error:#}");
@@ -47,6 +41,23 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
             _ = tokio::time::sleep(Duration::from_secs(10)) => {},
         }
     }
+}
+
+fn ready_messages(
+    messages: Vec<OutboxMessage>,
+    retry_after: &HashMap<i64, Instant>,
+) -> Vec<OutboxMessage> {
+    // Apply backoff before limiting a pass; otherwise 64 unavailable old
+    // recipients permanently hide all newer User and Agent messages.
+    messages
+        .into_iter()
+        .filter(|message| {
+            !retry_after
+                .get(&message.id)
+                .is_some_and(|at| at.elapsed() < RETRY_BACKOFF)
+        })
+        .take(64)
+        .collect()
 }
 
 async fn deliver_one(
@@ -122,14 +133,20 @@ async fn deliver_user(
         "sound":"default"},"alondra":{"protocol_version":2,"data_epoch":state.data_epoch,
         "item_id":item_id}});
     if let Some(service) = service {
-        service
-            .broadcast_push(&payload, true)
+        let (attempted, accepted) = service
+            .broadcast_push_report(&payload, true)
             .await
             .map_err(|_| (State::Uncertain, "encrypted_push_unknown"))?;
+        if attempted != accepted {
+            return Err((State::Uncertain, "encrypted_push_partial_or_unknown"));
+        }
     } else if hub.home.join("service.toml").exists() {
         return Err((State::Retryable, "encrypted_service_unavailable"));
     } else if push.enabled() {
-        push.broadcast(&payload, true).await;
+        let (attempted, accepted) = push.broadcast_report(&payload, true).await;
+        if attempted != accepted {
+            return Err((State::Uncertain, "push_partial_or_unknown"));
+        }
     }
     Ok(())
 }
@@ -139,6 +156,17 @@ mod tests {
     use super::*;
     use alondra_core::domain_v2::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn unavailable_old_recipients_do_not_starve_new_messages() {
+        let messages: Vec<_> = (1..=65).map(|id| OutboxMessage {
+            id, recipient_kind: "agent".into(), agent_id: Some("absent".into()),
+            task_id: None, interaction_id: None, message: String::new(), state: "retryable".into(),
+        }).collect();
+        let backoff: HashMap<_, _> = (1..=64).map(|id| (id, Instant::now())).collect();
+        let ready = ready_messages(messages, &backoff);
+        assert_eq!(ready.iter().map(|message| message.id).collect::<Vec<_>>(), vec![65]);
+    }
 
     fn command(hub: &Hub, actor: Actor, id: &str, command: Command) {
         let state = hub.domain.state().unwrap();
