@@ -115,7 +115,7 @@ def main(argv=None):
                     if path.exists(): path.unlink()
                 env = common.base_environment()
                 env.update(SIMCTL_CHILD_ALONDRA_VISUAL_RUN_ID=scenario_id, SIMCTL_CHILD_ALONDRA_VISUAL_SCENARIO=scenario,
-                           MAV_TARGET_KIND='simulator', MAV_TARGET_UDID=udid, MAV_RUN_DIR=str(project / 'mav-run'))
+                           MAV_TARGET_KIND='simulator', MAV_TARGET_UDID=udid)
                 commands.run(['xcrun', 'simctl', 'launch', '--terminate-running-process', udid, BUNDLE,
                               '-AppleLanguages', '(en)', '-AppleLocale', 'en_US'], env=env)
                 def mav(*arguments):

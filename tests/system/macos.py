@@ -97,6 +97,7 @@ def validate_visual(folder):
             or [entry.get('scenario') for entry in entries] != list(driver.CHECKS)):
         raise GateError('incomplete visual scenarios or cleanup')
     run_ids = set()
+    mav_runs = set()
     for entry in entries:
         run = str(uuid.UUID(entry['runID']))
         if run in run_ids: raise GateError('duplicate visual run ID')
@@ -109,7 +110,11 @@ def validate_visual(folder):
         if (receipt.get('status') != 'passed' or receipt.get('runID') != run or receipt.get('scenario') != scenario
                 or receipt.get('steps') != driver.STEPS[scenario]):
             raise GateError('wrong visual driver receipt')
-        driver.validate_mav_report(folder / 'project/.mav/runs' / run / 'report.json', receipt['steps'])
+        mav_run = receipt.get('mavRunID', '')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', mav_run) or mav_run in mav_runs:
+            raise GateError('invalid or reused visual MAV run')
+        mav_runs.add(mav_run)
+        driver.validate_mav_report(folder / 'project/.mav/runs' / mav_run / 'report.json', receipt['steps'], mav_run)
     return result
 
 

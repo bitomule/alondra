@@ -2,6 +2,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+import re
+import shlex
 import time
 
 CHECKS = {
@@ -58,8 +60,29 @@ def assert_tree(tree, required, forbidden):
             raise ValueError('forbidden UI text present: ' + text)
 
 
-def validate_mav_report(path, expected):
+def resolve_mav_run(open_output, project, previous_runs):
+    lines = [line for line in open_output.splitlines() if line.startswith('ok cmd=open ')]
+    if len(lines) != 1: raise ValueError('missing or ambiguous MAV open receipt')
+    fields = {}
+    for token in shlex.split(lines[0]):
+        if '=' not in token: continue
+        key, value = token.split('=', 1)
+        if key in fields: raise ValueError('duplicate MAV receipt field')
+        fields[key] = value
+    run = fields.get('run', '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', run) or run in previous_runs:
+        raise ValueError('invalid or reused MAV run')
+    expected = project.resolve() / '.mav/runs' / run
+    actual = Path(fields.get('dir', ''))
+    if not actual.is_absolute() or actual.resolve() != expected or actual.is_symlink():
+        raise ValueError('MAV run escaped its owned project')
+    return run, actual / 'report.json'
+
+
+def validate_mav_report(path, expected, run_id=None):
     report = json.loads(path.read_text())
+    if run_id is not None and report.get('run_id') != run_id:
+        raise ValueError('stale MAV report')
     steps = report.get('steps') or []
     names = [step.get('name') for step in steps]
     if (len(names) != len(set(names)) or not set(expected).issubset(names)
@@ -73,7 +96,7 @@ def validate_mav_report(path, expected):
         raise ValueError('MAV reported blocking issue')
 
 
-def exercise(mav, read, control, output: Path, run_id: str, scenario: str, mav_report: Path | None = None):
+def exercise(mav, read, control, output: Path, run_id: str, scenario: str, project: Path | None = None):
     """mav is a recorded command adapter pinned to one owned app/simulator."""
     output.mkdir(exist_ok=False)
     sequence = 0
@@ -95,8 +118,10 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, mav_r
     onboarding = ('pairing.screen', 'Your work.', 'A home for your work.', 'Connecting securely', 'pairing.signIn')
     failure = None
     failure_diagnostics = []
+    project = project or output.parent
+    previous_runs = {path.name for path in (project / '.mav/runs').glob('*')}
     try:
-        mav('open', '--no-relaunch')
+        mav_run, mav_report = resolve_mav_run(mav('open', '--no-relaunch'), project, previous_runs)
         mav('evidence', 'start')
         if scenario == 'reconnect':
             wait_state(read, run_id, scenario, lambda s: s.get('savedConfiguration') is True and s.get('restoring') is True and not s.get('ready'))
@@ -129,8 +154,9 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, mav_r
         validate_report(report, run_id, scenario)
         mav('evidence', 'stop')
         mav('evidence', 'report')
-        validate_mav_report(mav_report or output.parent / 'mav-run/report.json', steps)
-        atomic_json(output / 'driver.json', {'schema': 1, 'runID': run_id, 'scenario': scenario, 'steps': steps, 'status': 'passed'})
+        validate_mav_report(mav_report, steps, mav_run)
+        atomic_json(output / 'driver.json', {'schema': 1, 'runID': run_id, 'scenario': scenario,
+            'mavRunID': mav_run, 'steps': steps, 'status': 'passed'})
         return report
     except BaseException as error:
         failure = error

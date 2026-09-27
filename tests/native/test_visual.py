@@ -69,6 +69,23 @@ class VisualContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stale'):
             driver.wait_state(lambda: self.report('reconnect'), 'different-run', 'reconnect', lambda _: True)
 
+    def test_mav_report_uses_open_receipt_not_ignored_environment_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            run = '96be7621'
+            receipt = f'ok cmd=open dir={project}/.mav/runs/{run} run={run} target_kind=simulator'
+            actual_run, report = driver.resolve_mav_run(receipt, project, set())
+            self.assertEqual(actual_run, run)
+            self.assertEqual(report, project / '.mav/runs' / run / 'report.json')
+            for changed, old in [(receipt, {run}), (receipt.replace(run, '../outside'), set()),
+                                 (receipt.replace(str(project), '/tmp/other'), set()),
+                                 (receipt + ' run=second', set()), (receipt + '\n' + receipt, set())]:
+                with self.assertRaises(ValueError): driver.resolve_mav_run(changed, project, old)
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({'run_id': 'stale'}))
+            with self.assertRaisesRegex(ValueError, 'stale MAV report'):
+                driver.validate_mav_report(report, [], run)
+
     def test_driver_keeps_original_failure_when_receipt_and_stop_also_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             calls = []
@@ -99,11 +116,12 @@ class VisualContracts(unittest.TestCase):
                 assertions.mkdir(parents=True)
                 native = {**self.report(scenario), 'runID': run}
                 (assertions / 'result.json').write_text(json.dumps(native))
-                receipt = {'status': 'passed', 'runID': run, 'scenario': scenario, 'steps': driver.STEPS[scenario]}
+                mav_run = '%08x' % index
+                receipt = {'status': 'passed', 'runID': run, 'mavRunID': mav_run, 'scenario': scenario, 'steps': driver.STEPS[scenario]}
                 (assertions / 'driver.json').write_text(json.dumps(receipt))
-                report = root / 'project/.mav/runs' / run / 'report.json'
+                report = root / 'project/.mav/runs' / mav_run / 'report.json'
                 report.parent.mkdir(parents=True)
-                report.write_text(json.dumps({'steps': [{'name': name, 'image': {'ok': True}} for name in driver.STEPS[scenario]],
+                report.write_text(json.dumps({'run_id': mav_run, 'steps': [{'name': name, 'image': {'ok': True}} for name in driver.STEPS[scenario]],
                                               'crashes': [], 'invalid_step_count': 0, 'video_status': 'accepted'}))
             path = root / 'project/visual-summary.json'
             path.write_text(json.dumps(summary))

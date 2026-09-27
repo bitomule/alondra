@@ -58,10 +58,9 @@ def main():
             run = str(uuid.uuid4())
             directory = PROJECT / scenario
             directory.mkdir(mode=0o700)
-            run_dir = PROJECT / '.mav/runs' / run
             env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
             env.update(ALONDRA_VISUAL_RUN_ID=run, ALONDRA_VISUAL_SCENARIO=scenario,
-                       ALONDRA_VISUAL_DIRECTORY=str(directory), MAV_TARGET_KIND='macos', MAV_RUN_DIR=str(run_dir))
+                       ALONDRA_VISUAL_DIRECTORY=str(directory), MAV_TARGET_KIND='macos')
             command_count = 0
             def mav(*args):
                 nonlocal command_count
@@ -89,7 +88,7 @@ def main():
                                                start_new_session=True, preexec_fn=bounded_log)
                     driver.atomic_json(directory / 'ownership.json', {'pid': process.pid, 'runID': run, 'executable': str(executable)})
                     driver.exercise(mav, read, lambda value: driver.atomic_json(directory / 'visual-control.json', value),
-                                    directory / 'assertions', run, scenario, mav_report=run_dir / 'report.json')
+                                    directory / 'assertions', run, scenario, project=PROJECT)
                     if process.poll() is not None:
                         raise RuntimeError('visual application exited before owned cleanup')
                 finally:
