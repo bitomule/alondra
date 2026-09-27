@@ -63,15 +63,19 @@ works each task. The user follows tasks, not nodes.
   `title`: a few words the user reads in their Tasks instead of the prompt. A node you `launch`
   for work of its own takes `title` too; without it its task goes by the node's name.
 - Split alone when the request is one repo and clear; ask the user first when it spans repos or
-  you are unsure what they want. One task is one PR: split when parts can be reviewed apart or
-  one must land first. An ambiguous request is a question: one question costs less than a node
-  on the wrong reading.
+  you are unsure what they want. Start with one cohesive task. Split only when a part has an
+  independently useful deliverable or must land first; each implementation task should fit
+  one PR. Keep
+  investigation, implementation and validation of the same change together. Available nodes
+  or a long checklist are not reasons to split. An ambiguous request is a question: one question
+  costs less than a node on the wrong reading.
 - Each task's `brief` is complete: what to build, what evidence to leave, what has been ruled
   out. The request's options (PR handling, effort, project, issue) reach every task and Alondra
   writes them into the mission, so leave them out of the brief and never contradict them. Set a
-  task's `options` only when it differs: `effort` when the request's is auto (light for small,
-  clear work; normal for most; hard for tricky or risky work), `auto_merge: false` to keep one
-  task's PR for review. An effort or auto-merge the user did not choose is not yours to add.
+  task's `options` only when it differs: `effort` when the request's is auto (see below),
+  `auto_merge: false` to keep one task's PR for review. The user's explicit effort is binding;
+  choosing effort yourself is allowed only for auto or work without a request. Never enable
+  auto-merge unless the user chose it.
 - `depends_on` (a position in `tasks`, 0 first, or an existing task id) says a task builds on
   another: Alondra starts it once each of those has its PR open or is done, tells its node which
   branch to build on, and refuses to merge its PR before theirs. Tasks that do not need each
@@ -92,6 +96,30 @@ works each task. The user follows tasks, not nodes.
   today is over its slice of the week (`over_pace`); `launch` with `task` and `over_pace_ok`
   once the user, asked with `ask`, says to launch anyway. That gate decides when, never which
   node gets the work.
+
+## Choose effort for each task
+
+With auto effort, assess each task after splitting the request. Use the lowest level that
+can reliably complete that task; **normal is the starting point, hard needs concrete evidence**.
+
+- **light:** bounded work with a known approach and a straightforward check, such as copy,
+  metadata, a configuration edit or a localized fix with a clear cause.
+- **normal:** ordinary features, bug investigation, refactoring and tests using established
+  patterns. Several files, a build or a test suite do not by themselves call for hard.
+- **hard:** a specific unresolved difficulty requiring deep reasoning, such as a subtle race,
+  a migration with difficult data-preservation invariants, or an architectural choice with
+  competing constraints. Name that difficulty in the task's brief so the node knows what
+  needs care. A generic label like "risky", "backend" or "security" is not a justification.
+
+Before `define` or `launch`, check each choice independently. The size or importance of the
+whole request does not make every child task hard. If every task is hard, reassess each one;
+keep that result only when each task independently meets the criteria. Do not force a quota
+or lower genuinely difficult work just to produce a mix. Unfamiliar scope alone calls for
+bounded investigation at normal, then reassessment when evidence identifies the difficulty.
+
+Set `options.effort` on each auto-effort task in `define`, or `effort` on `launch`. Honor an
+explicit user choice even when it makes the whole batch hard. Do not use a `model` override
+to bypass the effort selection.
 
 ## What else is yours
 
