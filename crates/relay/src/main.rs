@@ -1148,6 +1148,57 @@ mod http_tests {
 
     #[tokio::test]
     #[ignore="requires disposable local PostgreSQL"]
+    async fn management_http_device_labels_are_owned_and_do_not_change_trust()->anyhow::Result<()> {
+        let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        for (email,subject) in [("label-first@example.com","owner"),("label-second@example.com","other")] {
+            let invite=db.create_invitation(admin.id,email,300).await?;
+            db.reserve_acceptance(&invite.token,"Owner").await?.complete(subject).await?;
+        }
+        let mac_key=SigningKey::from_slice(&[21u8;32]).unwrap();let phone_key=SigningKey::from_slice(&[22u8;32]).unwrap();
+        let (url,server,join)=test_server_with_management(&mac_key,None,Some(db.clone())).await;
+        server.auth.enroll_mac(auth::MacDevice{mac_id:"mac-other".into(),owner_sub:"other".into(),signing_key:key_bytes(&mac_key),agreement_key:key_bytes(&phone_key)})?;
+        for (mac,owner,id) in [("mac-1","owner","client-first"),("mac-other","other","client-other")] {
+            server.auth.enroll(&auth::Identity{device_id:mac.into(),owner_sub:owner.into()},PhoneDevice{device_id:id.into(),owner_sub:owner.into(),signing_key:key_bytes(&phone_key)})?;
+        }
+        let client=reqwest::Client::new();let token=jwt("owner",now_ms());
+        let rename=|kind:&str,id:&str,key:&str,body:Value|client.post(format!("{url}/v1/account/devices/{kind}/{id}/label")).bearer_auth(&token).header("Idempotency-Key",key).json(&body);
+        for (kind,id) in [("macs","mac-other"),("clients","client-other")] {
+            let response=rename(kind,id,"foreign-label-request-001",json!({"label":"Stolen","expected_revision":0})).send().await?;
+            assert_eq!(response.status(),StatusCode::NOT_FOUND,"foreign aliases must not be writable");
+        }
+        for (kind,id) in [("macs","mac-1"),("clients","client-first")] {
+            let key=format!("own-label-request-{kind}-0001");
+            let body=json!({"label":"  Cafe\u{301}  ","expected_revision":0});
+            let response=rename(kind,id,&key,body.clone()).send().await?;
+            assert_eq!(response.status(),StatusCode::OK);
+            assert_eq!(response.json::<Value>().await?,json!({"label":"Café","label_revision":1}));
+            let replay=rename(kind,id,&key,body).send().await?;
+            assert_eq!(replay.status(),StatusCode::CONFLICT);
+            assert_eq!(replay.json::<Value>().await?["error"]["code"],"action_already_applied");
+            let stale=rename(kind,id,&format!("stale-label-{kind}-request-001"),json!({"label":"Overwrite","expected_revision":0})).send().await?;
+            assert_eq!(stale.status(),StatusCode::CONFLICT);
+            assert_eq!(stale.json::<Value>().await?["error"]["code"],"state_conflict");
+        }
+        for value in [json!({"label":"hidden\u{200d}","expected_revision":1}),json!({"label":"x".repeat(129),"expected_revision":1}),json!({"expected_revision":1})] {
+            assert_eq!(rename("macs","mac-1","invalid-label-request-0001",value).send().await?.status(),StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        let listing:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(&token).send().await?.json().await?;
+        assert_eq!(listing["macs"][0]["label"],"Café");assert_eq!(listing["macs"][0]["label_revision"],1);
+        assert_eq!(listing["macs"][0]["clients"][0]["label"],"Café");
+        assert!(!listing.to_string().contains("other"));assert!(!listing.to_string().contains("signing_key"));
+        assert_eq!(server.auth.mac_for_owner("mac-1","owner")?.to_sec1_point(false),mac_key.verifying_key().to_sec1_point(false));
+        assert!(server.auth.phone_key("client-first").is_ok());
+        let other:Value=client.get(format!("{url}/v1/account/devices")).bearer_auth(jwt("other",now_ms())).send().await?.json().await?;
+        assert!(other["macs"][0]["label"].is_null());assert_eq!(other["macs"][0]["label_revision"],0);
+        let revoked=client.delete(format!("{url}/v1/account/devices/clients/client-first")).bearer_auth(&token).header("Idempotency-Key","label-revoke-client-request").send().await?;
+        assert_eq!(revoked.status(),StatusCode::ACCEPTED);
+        assert_eq!(rename("clients","client-first","label-after-revoke-request",json!({"label":"Again","expected_revision":1})).send().await?.status(),StatusCode::NOT_FOUND);
+        assert!(server.auth.phone_key("client-first").is_ok(),"PG denies before registry cleanup");
+        join.abort();management::tests::cleanup(db,schema).await
+    }
+
+    #[tokio::test]
+    #[ignore="requires disposable local PostgreSQL"]
     async fn management_http_own_device_revocation_isolated_immediate_and_reconciled()->anyhow::Result<()> {
         let (db,admin,schema)=management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
         for (email,subject) in [("first@example.com","owner"),("second@example.com","other")] {

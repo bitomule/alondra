@@ -95,6 +95,8 @@ dependencies = [
  "sqlx-postgres",
  "subtle",
  "tokio",
+ "unicode-normalization",
+ "unicode-properties",
  "uuid",
 ]
 
