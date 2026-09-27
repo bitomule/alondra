@@ -811,6 +811,9 @@ pub(crate) mod tests;
 
 #[derive(Debug)]
 pub struct Reconciliation {
+    pub issuer: String,
+    pub allow_provisioning_lookup: bool,
+    pub allow_provisioned_cleanup: bool,
     pub id: Uuid,
     pub account_id: Uuid,
     pub action: String,
@@ -838,13 +841,16 @@ impl Management {
         // Rechecking inactive accounts makes that absence provisional, not final.
         sqlx::query("UPDATE management_outbox o SET state='pending',available_at=clock_timestamp() FROM management_accounts a WHERE a.id=o.account_id AND a.status IN ('disabled','deleting','deleted') AND o.state='completed' AND o.completed_at<clock_timestamp()-interval '5 minutes'")
             .execute(&mut *tx).await?;
-        let row=sqlx::query("SELECT o.id,o.account_id,o.action,i.subject FROM management_outbox o LEFT JOIN management_identities i ON i.account_id=o.account_id AND i.issuer=$1 WHERE o.state='pending' AND o.available_at<=clock_timestamp() AND (o.action!='keycloak_delete' OR NOT EXISTS(SELECT 1 FROM management_outbox before_delete WHERE before_delete.account_id=o.account_id AND before_delete.action!='keycloak_delete' AND before_delete.state='pending')) ORDER BY o.available_at,o.id FOR UPDATE OF o SKIP LOCKED LIMIT 1")
+        let row=sqlx::query("SELECT o.id,o.account_id,o.action,i.subject, (EXISTS(SELECT 1 FROM management_invitations inv WHERE inv.account_id=o.account_id AND inv.status IN ('provisioning','canceled') AND inv.accepted_at IS NULL) AND NOT EXISTS(SELECT 1 FROM management_identities other WHERE other.account_id=o.account_id)) AS allow_provisioning_lookup, (EXISTS(SELECT 1 FROM management_invitations inv WHERE inv.account_id=o.account_id) AND EXISTS(SELECT 1 FROM management_accounts a WHERE a.id=o.account_id AND a.status IN ('disabled','deleting','deleted'))) AS allow_provisioned_cleanup FROM management_outbox o LEFT JOIN management_identities i ON i.account_id=o.account_id AND i.issuer=$1 WHERE o.state='pending' AND o.available_at<=clock_timestamp() AND (o.action!='keycloak_delete' OR NOT EXISTS(SELECT 1 FROM management_outbox before_delete WHERE before_delete.account_id=o.account_id AND before_delete.action!='keycloak_delete' AND before_delete.state='pending')) ORDER BY o.available_at,o.id FOR UPDATE OF o SKIP LOCKED LIMIT 1")
             .bind(&self.issuer).fetch_optional(&mut *tx).await?;
         let Some(row) = row else {
             tx.commit().await?;
             return Ok(None);
         };
         let result = Reconciliation {
+            issuer: self.issuer.clone(),
+            allow_provisioning_lookup: row.try_get("allow_provisioning_lookup")?,
+            allow_provisioned_cleanup: row.try_get("allow_provisioned_cleanup")?,
             id: row.try_get("id")?,
             account_id: row.try_get("account_id")?,
             action: row.try_get("action")?,

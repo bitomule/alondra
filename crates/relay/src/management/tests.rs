@@ -6,6 +6,12 @@ async fn fixture() -> Result<(Management, Account, String)> {
     fixture_for_issuer("https://identity.example/realms/test").await
 }
 pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Account, String)> {
+    fixture_for_identity(issuer, "stable-admin-sub").await
+}
+pub(crate) async fn fixture_for_identity(
+    issuer: &str,
+    subject: &str,
+) -> Result<(Management, Account, String)> {
     let (management, schema) = empty_fixture(issuer).await?;
     let pool = &management.pool;
     sqlx::raw_sql(include_str!("../../migrations/0001_management.sql"))
@@ -14,7 +20,7 @@ pub(crate) async fn fixture_for_issuer(issuer: &str) -> Result<(Management, Acco
     sqlx::raw_sql(include_str!("../../migrations/0003_device_revocations.sql"))
         .execute(pool)
         .await?;
-    let actor = management.bootstrap("stable-admin-sub", "Admin").await?;
+    let actor = management.bootstrap(subject, "Admin").await?;
     Ok((management, actor, schema))
 }
 async fn empty_fixture(issuer: &str) -> Result<(Management, String)> {
@@ -379,7 +385,7 @@ async fn management_provider_lost_create_response_never_resets_retry_password() 
     let provider = Shared::default();
     let router = Router::new()
         .route(
-            "/token",
+            "/realms/test/protocol/openid-connect/token",
             post(|| async { Json(json!({"access_token":"synthetic-admin-token"})) }),
         )
         .route("/admin/realms/test/users", get(lookup).post(create))
@@ -388,8 +394,9 @@ async fn management_provider_lost_create_response_never_resets_retry_password() 
     let base = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let kc = keycloak::Keycloak::new(
+        "https://identity.example/realms/test".into(),
         format!("{base}/admin/realms/test/").parse()?,
-        format!("{base}/token").parse()?,
+        format!("{base}/realms/test/protocol/openid-connect/token").parse()?,
         "fixture".into(),
         "synthetic-secret".into(),
     )?;
@@ -602,16 +609,18 @@ async fn migrations_reject_downgrade_and_checksum_change_without_mutating_state(
     let (db, schema) = empty_fixture("https://identity.example/realms/test").await?;
     migrate(&db.pool, MIGRATIONS).await?;
     let account = db.bootstrap("migration-admin", "Existing admin").await?;
-    let before: Vec<(i32, Vec<u8>)> =
-        sqlx_core::query_as::query_as("SELECT version,checksum FROM management_schema ORDER BY version")
-            .fetch_all(&db.pool)
-            .await?;
+    let before: Vec<(i32, Vec<u8>)> = sqlx_core::query_as::query_as(
+        "SELECT version,checksum FROM management_schema ORDER BY version",
+    )
+    .fetch_all(&db.pool)
+    .await?;
     let error = migrate(&db.pool, &MIGRATIONS[..2]).await.unwrap_err();
     assert!(error.to_string().contains("newer than this binary"));
-    let after: Vec<(i32, Vec<u8>)> =
-        sqlx_core::query_as::query_as("SELECT version,checksum FROM management_schema ORDER BY version")
-            .fetch_all(&db.pool)
-            .await?;
+    let after: Vec<(i32, Vec<u8>)> = sqlx_core::query_as::query_as(
+        "SELECT version,checksum FROM management_schema ORDER BY version",
+    )
+    .fetch_all(&db.pool)
+    .await?;
     assert_eq!(before, after);
     assert_eq!(
         db.active_identity("https://identity.example/realms/test", "migration-admin")
@@ -641,5 +650,46 @@ async fn migrations_reject_downgrade_and_checksum_change_without_mutating_state(
         .fetch_one(&db.pool)
         .await?;
     assert_eq!(count, 2);
+    cleanup(db, schema).await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable local PostgreSQL"]
+async fn management_reconciliation_lookup_requires_unaccepted_invitation_without_any_identity()
+-> Result<()> {
+    let (db, admin, schema) = fixture().await?;
+    for state in ["ambiguous", "accepted_missing", "other_issuer"] {
+        let invite = db
+            .create_invitation(admin.id, &format!("{state}@example.invalid"), 300)
+            .await?;
+        let acceptance = db.reserve_acceptance(&invite.token, "Fixture").await?;
+        let id = acceptance.account_id;
+        if state == "ambiguous" {
+            drop(acceptance);
+            db.cancel_invitation(admin.id, invite.invitation.id).await?;
+        } else {
+            acceptance.complete(&format!("subject-{state}")).await?;
+            if state == "accepted_missing" {
+                sqlx::query("DELETE FROM management_identities WHERE account_id=$1")
+                    .bind(id)
+                    .execute(&db.pool)
+                    .await?;
+            } else {
+                sqlx::query("UPDATE management_identities SET issuer='https://other.example/realms/test' WHERE account_id=$1").bind(id).execute(&db.pool).await?;
+            }
+            db.disable_account(admin.id, id, true).await?;
+        }
+        let mut count = 0;
+        while let Some(job) = db.next_reconciliation().await? {
+            assert_eq!(job.account_id, id);
+            assert_eq!(job.issuer, db.issuer);
+            assert!(job.subject.is_none());
+            assert_eq!(job.allow_provisioning_lookup, state == "ambiguous");
+            assert!(job.allow_provisioned_cleanup);
+            count += 1;
+            db.reconciliation_complete(&job).await?;
+        }
+        assert_eq!(count, 3);
+    }
     cleanup(db, schema).await
 }

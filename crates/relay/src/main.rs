@@ -794,6 +794,7 @@ async fn main() -> anyhow::Result<()> {
     let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
     let management_keycloak=if auth.management.is_some() {
         let keycloak=management::keycloak::Keycloak::new(
+            auth.config.issuer.clone(),
             std::env::var("ALONDRA_MANAGEMENT_KC_ADMIN_REALM_URL")?.parse()?,
             std::env::var("ALONDRA_MANAGEMENT_KC_TOKEN_URL")?.parse()?,
             std::env::var("ALONDRA_MANAGEMENT_KC_CLIENT_ID")?,
