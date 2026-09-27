@@ -685,6 +685,7 @@ async fn management_reconciliation_lookup_requires_unaccepted_invitation_without
             assert_eq!(job.issuer, db.issuer);
             assert!(job.subject.is_none());
             assert_eq!(job.allow_provisioning_lookup, state == "ambiguous");
+            assert!(job.allow_provisioned_cleanup);
             count += 1;
             db.reconciliation_complete(&job).await?;
         }

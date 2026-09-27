@@ -206,6 +206,14 @@ impl Keycloak {
         Ok(())
     }
     async fn lookup(&self, token: &AdminToken, id: Uuid) -> Result<Option<String>> {
+        self.lookup_correlated(token, id, false).await
+    }
+    async fn lookup_correlated(
+        &self,
+        token: &AdminToken,
+        id: Uuid,
+        cleanup_only: bool,
+    ) -> Result<Option<String>> {
         let username = format!("alondra-{id}");
         let response = self
             .http
@@ -231,12 +239,14 @@ impl Keycloak {
         }
         ensure!(users.len() == 1, DomainError::Conflict);
         let user = &users[0];
-        ensure!(
-            user["username"].as_str() == Some(username.as_str())
-                && user["attributes"]["alondra_account_id"][0].as_str()
-                    == Some(id.to_string().as_str()),
-            DomainError::Conflict
-        );
+        let matches_account = user["username"].as_str() == Some(username.as_str())
+            && user["attributes"]["alondra_account_id"] == json!([id.to_string()]);
+        if cleanup_only && !matches_account {
+            // A different account may now own the old name. It is not a
+            // cleanup target and must not prevent deleting the bound subject.
+            return Ok(None);
+        }
+        ensure!(matches_account, DomainError::Conflict);
         let subject = user["id"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -340,76 +350,97 @@ impl Keycloak {
         }
         Ok(Some(subject.into()))
     }
+    async fn reconciliation_subjects(
+        &self,
+        token: &AdminToken,
+        job: &Reconciliation,
+    ) -> Result<Vec<String>> {
+        let mut subjects: Vec<String> = self
+            .reconciliation_subject(token, job)
+            .await?
+            .into_iter()
+            .collect();
+        if job.subject.is_some() && job.allow_provisioned_cleanup {
+            // Separate cleanup capability, never a replacement identity: an
+            // older timed-out create may commit after the bound user is deleted.
+            // Persisted invitation provenance + inactive account restrict this
+            // to users we provisioned; legacy bootstrap users never enter here.
+            if let Some(late) = self.lookup_correlated(token, job.account_id, true).await? {
+                if !subjects.contains(&late) {
+                    subjects.push(late);
+                }
+            }
+        }
+        Ok(subjects)
+    }
     pub async fn disable(&self, job: &Reconciliation) -> Result<()> {
         ensure!(job.issuer == self.issuer, DomainError::Conflict);
         let token = self.token().await?;
-        let Some(subject) = self.reconciliation_subject(&token, job).await? else {
-            return Ok(());
-        };
-        let mut url = self.admin_realm.join("users/")?;
-        url.path_segments_mut()
-            .map_err(|_| DomainError::InvalidInput)?
-            .pop_if_empty()
-            .push(&subject);
-        let response = self
-            .http
-            .put(url.clone())
-            .bearer_auth(&token.0)
-            .json(&json!({"enabled":false}))
-            .send()
-            .await
-            .map_err(|_| DomainError::ProviderUnavailable)?;
-        ensure!(
-            matches!(
-                response.status(),
-                StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
-            ),
-            DomainError::ProviderUnavailable
-        );
-        url.path_segments_mut()
-            .map_err(|_| DomainError::InvalidInput)?
-            .push("logout");
-        let response = self
-            .http
-            .post(url)
-            .bearer_auth(&token.0)
-            .send()
-            .await
-            .map_err(|_| DomainError::ProviderUnavailable)?;
-        ensure!(
-            matches!(
-                response.status(),
-                StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
-            ),
-            DomainError::ProviderUnavailable
-        );
+        for subject in self.reconciliation_subjects(&token, job).await? {
+            let mut url = self.admin_realm.join("users/")?;
+            url.path_segments_mut()
+                .map_err(|_| DomainError::InvalidInput)?
+                .pop_if_empty()
+                .push(&subject);
+            let response = self
+                .http
+                .put(url.clone())
+                .bearer_auth(&token.0)
+                .json(&json!({"enabled":false}))
+                .send()
+                .await
+                .map_err(|_| DomainError::ProviderUnavailable)?;
+            ensure!(
+                matches!(
+                    response.status(),
+                    StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
+                ),
+                DomainError::ProviderUnavailable
+            );
+            url.path_segments_mut()
+                .map_err(|_| DomainError::InvalidInput)?
+                .push("logout");
+            let response = self
+                .http
+                .post(url)
+                .bearer_auth(&token.0)
+                .send()
+                .await
+                .map_err(|_| DomainError::ProviderUnavailable)?;
+            ensure!(
+                matches!(
+                    response.status(),
+                    StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
+                ),
+                DomainError::ProviderUnavailable
+            );
+        }
         Ok(())
     }
     pub async fn delete(&self, job: &Reconciliation) -> Result<()> {
         ensure!(job.issuer == self.issuer, DomainError::Conflict);
         let token = self.token().await?;
-        let Some(subject) = self.reconciliation_subject(&token, job).await? else {
-            return Ok(());
-        };
-        let mut url = self.admin_realm.join("users/")?;
-        url.path_segments_mut()
-            .map_err(|_| DomainError::InvalidInput)?
-            .pop_if_empty()
-            .push(&subject);
-        let response = self
-            .http
-            .delete(url)
-            .bearer_auth(&token.0)
-            .send()
-            .await
-            .map_err(|_| DomainError::ProviderUnavailable)?;
-        ensure!(
-            matches!(
-                response.status(),
-                StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
-            ),
-            DomainError::ProviderUnavailable
-        );
+        for subject in self.reconciliation_subjects(&token, job).await? {
+            let mut url = self.admin_realm.join("users/")?;
+            url.path_segments_mut()
+                .map_err(|_| DomainError::InvalidInput)?
+                .pop_if_empty()
+                .push(&subject);
+            let response = self
+                .http
+                .delete(url)
+                .bearer_auth(&token.0)
+                .send()
+                .await
+                .map_err(|_| DomainError::ProviderUnavailable)?;
+            ensure!(
+                matches!(
+                    response.status(),
+                    StatusCode::NO_CONTENT | StatusCode::NOT_FOUND
+                ),
+                DomainError::ProviderUnavailable
+            );
+        }
         Ok(())
     }
 }
@@ -623,6 +654,7 @@ mod integration_tests {
             issuer: issuer.into(),
             subject: Some("bound".into()),
             allow_provisioning_lookup: false,
+            allow_provisioned_cleanup: false,
         };
         for body in [
             json!({"id":"bound","username":"legacy-david"}),
@@ -764,6 +796,94 @@ mod integration_tests {
             }
             db.reconciliation_complete(&job).await?;
         }
+        // Replay the provider commit ordering of an older timed-out create:
+        // S1 was admitted and deleted, then that create commits S2. This is a
+        // real provider creation, not a mock that shares the resolver state.
+        let token = kc.token().await?;
+        for correlated in [true, false] {
+            let correlation = if correlated { new_id } else { Uuid::new_v4() };
+            let response = kc.http.post(kc.admin_realm.join("users")?).bearer_auth(&token.0)
+                .json(&json!({"username":format!("alondra-{new_id}"),"email":email,"firstName":"Late","enabled":true,
+                    "attributes":{"alondra_account_id":[correlation.to_string()]}})).send().await?;
+            ensure!(
+                response.status() == StatusCode::CREATED,
+                "late fixture create failed"
+            );
+            let location = Url::parse(
+                response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .context("missing create location")?
+                    .to_str()?,
+            )?;
+            let late_subject = location
+                .path_segments()
+                .and_then(|s| s.last())
+                .context("missing late id")?;
+            assert_ne!(late_subject, provisioned.subject);
+            let mut late_url = kc.admin_realm.join("users/")?;
+            late_url
+                .path_segments_mut()
+                .map_err(|_| DomainError::InvalidInput)?
+                .pop_if_empty()
+                .push(late_subject);
+            sqlx::query("UPDATE management_outbox SET completed_at=clock_timestamp()-interval '6 minutes' WHERE account_id=$1")
+                .bind(new_id).execute(&db.pool).await?;
+            let mut jobs = 0;
+            while let Some(job) = db.next_reconciliation().await? {
+                assert_eq!(job.account_id, new_id);
+                assert_eq!(job.subject.as_deref(), Some(provisioned.subject.as_str()));
+                assert!(job.allow_provisioned_cleanup);
+                assert!(!job.allow_provisioning_lookup);
+                match job.action.as_str() {
+                    "keycloak_disable" => kc.disable(&job).await?,
+                    "keycloak_delete" => kc.delete(&job).await?,
+                    "relay_revoke" => (),
+                    _ => unreachable!(),
+                }
+                db.reconciliation_complete(&job).await?;
+                jobs += 1;
+            }
+            assert_eq!(
+                jobs, 3,
+                "durable tombstones must retry the deleted admitted account"
+            );
+            let response = kc
+                .http
+                .get(late_url.clone())
+                .bearer_auth(&token.0)
+                .send()
+                .await?;
+            if correlated {
+                assert_eq!(
+                    response.status(),
+                    StatusCode::NOT_FOUND,
+                    "late S2 must be removed even though bound S1 is absent"
+                );
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                let user: Value = response.json().await?;
+                assert_eq!(
+                    user["enabled"], true,
+                    "foreign owner of deterministic name remains untouched"
+                );
+                kc.http
+                    .delete(late_url)
+                    .bearer_auth(&token.0)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+            }
+            let retained: String =
+                sqlx::query_scalar("SELECT subject FROM management_identities WHERE account_id=$1")
+                    .bind(new_id)
+                    .fetch_one(&db.pool)
+                    .await?;
+            assert_eq!(
+                retained, provisioned.subject,
+                "cleanup must never relink the identity"
+            );
+        }
         cleanup(db, schema).await
     }
     #[tokio::test]
@@ -848,6 +968,10 @@ mod integration_tests {
         while let Some(job) = db.next_reconciliation().await? {
             assert_eq!(job.subject.as_deref(), Some(subject.as_str()));
             assert!(!job.allow_provisioning_lookup);
+            assert!(
+                !job.allow_provisioned_cleanup,
+                "legacy bootstrap has no invitation provenance"
+            );
             if job.action == "keycloak_disable" {
                 kc.disable(&job).await?;
             }
@@ -905,6 +1029,7 @@ mod integration_tests {
             action: "keycloak_delete".into(),
             subject: Some(other_subject.clone()),
             allow_provisioning_lookup: false,
+            allow_provisioned_cleanup: false,
         };
         assert!(
             kc.disable(&wrong).await.is_err(),
