@@ -55,12 +55,19 @@ class MacGateTests(unittest.TestCase):
             good = {'steps': [{'name': n, 'image': {'ok': True}} for n in ('clean-onboarding', 'demo-open', 'demo-reset', 'demo-exit')],
                     'crashes': [], 'invalid_step_count': 0, 'video_status': 'accepted'}
             (run / 'run.json').write_text(json.dumps({'status': 'passed', 'skipped': []}))
+            raw = run / 'video/turn-00001/app_state.json'
+            raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({'tree_markdown': 'AXStaticText = "Demo · Sample data"\n[1] AXButton (Reset demo)\n[2] AXButton (Exit demo)'}))
             for field, bad in [('video_status', 'invalid'), ('crashes', ['crash.ips']), ('invalid_step_count', 1), ('steps', [])]:
                 (run / 'report.json').write_text(json.dumps({**good, field: bad}))
                 with self.subTest(field=field), self.assertRaises(m.GateError):
                     m.validate_report(folder)
             (run / 'report.json').write_text(json.dumps(good))
             self.assertEqual(m.validate_report(folder)[0], run / 'report.json')
+            original = raw.read_text()
+            raw.write_text(json.dumps({'tree_markdown': '[1] AXButton (Reset demo)\n[2] AXButton (Exit demo)'}))
+            with self.assertRaisesRegex(m.GateError, 'banner'): m.validate_report(folder)
+            raw.write_text(original)
             (run / 'run.json').write_text(json.dumps({'status': 'passed', 'skipped': ['1:open']}))
             with self.assertRaises(m.GateError):
                 m.validate_report(folder)

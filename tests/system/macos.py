@@ -111,6 +111,19 @@ def validate_report(folder):
     run = json.loads((reports[0].parent / 'run.json').read_text())
     if run.get('status') != 'passed' or run.get('skipped'):
         raise GateError('required demo steps were skipped')
+    # MAV's semantic parser omits unindexed AXStaticText from text waits. Preserve
+    # the actual banner assertion against the driver's raw, recorded AX state.
+    banner_seen = False
+    for path in reports[0].parent.glob('video/turn-*/app_state.json'):
+        if path.stat().st_size > 2 * 1024**2:
+            raise GateError('oversized raw AX state')
+        tree = json.loads(path.read_text()).get('tree_markdown', '')
+        if ('AXStaticText = "Demo · Sample data"' in tree
+                and 'AXButton (Reset demo)' in tree and 'AXButton (Exit demo)' in tree):
+            banner_seen = True
+            break
+    if not banner_seen:
+        raise GateError('demo banner was not recorded in raw AX evidence')
     return reports[0], report
 
 
