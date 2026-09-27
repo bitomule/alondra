@@ -78,7 +78,11 @@ pub(super) async fn execute(driver: &Driver, after: bool) -> Result<()> {
         "fresh client agreement key decrypted an existing approved response"
     );
 
-    for path in [&status_path, "/v1/changes?wait_s=0", "/v1/work?wait_s=0"] {
+    for path in [
+        status_path.as_str(),
+        "/v1/changes?wait_s=0",
+        "/v1/work?wait_s=0",
+    ] {
         let response = driver
             .http
             .get(format!("http://relay:18081{path}"))
