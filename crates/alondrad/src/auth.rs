@@ -221,12 +221,14 @@ impl Auth {
         let mut devices = self.devices.lock().expect("devices lock poisoned");
         let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("device not paired")?;
         device.last_seen = Some(now_millis());
-        Ok(Signed { name: device.name.clone() })
+        Ok(Signed { device_id: device.id.clone(), name: device.name.clone() })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Signed {
+    /// Verified device identity; display names are not command receipt scopes.
+    pub device_id: String,
     pub name: String,
 }
 
@@ -290,7 +292,9 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap().name, "iPhone");
+        let signed = auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap();
+        assert_eq!(signed.name, "iPhone");
+        assert_eq!(signed.device_id, id);
         assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap_err(), "replayed request");
     }
 

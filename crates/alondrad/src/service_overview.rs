@@ -27,8 +27,8 @@ pub fn valid_id(id: &str) -> bool {
 
 pub fn route(method: &str, path: &str) -> bool {
     if path.len() > 4096 { return false; }
-    if method == "GET" && path == "/v1/service/overview-snapshot" { return true; }
-    let Some(suffix) = path.strip_prefix("/v1/service/overview-snapshot/") else { return false; };
+    if method == "GET" && matches!(path, "/v1/service/overview-snapshot" | "/v2/domain/snapshot") { return true; }
+    let Some(suffix) = path.strip_prefix("/v1/service/overview-snapshot/").or_else(|| path.strip_prefix("/v2/domain/snapshot/")) else { return false; };
     if method == "DELETE" { return valid_id(suffix); }
     let Some((id, offset)) = suffix.split_once("?offset=") else { return false; };
     method == "GET" && valid_id(id) && !offset.is_empty()

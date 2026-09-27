@@ -31,6 +31,7 @@ type AppState = Arc<Hub>;
 
 pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
     Router::new()
+        .merge(crate::domain_api::routes())
         .route("/v1/push/register", post(push_register))
         .route("/v1/push/check", post(push_check))
         .route("/v1/pairing", post(new_pairing))

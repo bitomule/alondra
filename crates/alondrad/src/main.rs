@@ -1,6 +1,10 @@
 #[macro_use]
 mod log;
 mod auth;
+mod domain_authority;
+mod domain_runtime;
+mod domain_store;
+mod domain_api;
 mod classify;
 mod http;
 mod hook_socket;

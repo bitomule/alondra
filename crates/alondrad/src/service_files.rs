@@ -262,6 +262,13 @@ fn ledger(home: &Path) -> Result<rusqlite::Connection> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS attempts(sender TEXT NOT NULL, transfer_id TEXT NOT NULL, PRIMARY KEY(sender,transfer_id));")?;
     Ok(connection)
 }
+pub(crate) fn read_domain_chunk(home: &Path, reference: &str, offset: u64,
+    version: Option<String>) -> Result<Value> {
+    let path = Path::new(reference);
+    let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
+    download(home, Download { path, offset, length: CHUNK, version })
+}
+
 fn download(home: &Path, b: Download) -> Result<Value> {
     ensure!(b.length > 0 && b.length <= CHUNK, "invalid chunk length");
     let root = home.join("files").canonicalize()?;

@@ -66,6 +66,42 @@ pub struct AvailableAction {
     pub expected_head: Option<String>,
 }
 impl DomainState {
+    /// User task controls are computed by the same guards as command execution.
+    pub fn task_actions(&self, task_id: &TaskId) -> Option<Vec<AvailableAction>> {
+        let task = self.tasks.get(task_id)?;
+        let archive = !task.archived;
+        Some(vec![
+            self.action(
+                "cancel_task",
+                Command::CancelTask {
+                    task_id: task_id.clone(),
+                },
+                None,
+                None,
+            ),
+            self.action(
+                "reopen_task",
+                Command::ReopenTask {
+                    task_id: task_id.clone(),
+                },
+                None,
+                None,
+            ),
+            self.action(
+                if archive {
+                    "archive_task"
+                } else {
+                    "unarchive_task"
+                },
+                Command::ArchiveTask {
+                    task_id: task_id.clone(),
+                    archived: archive,
+                },
+                None,
+                None,
+            ),
+        ])
+    }
     fn action(
         &self,
         kind: &str,
