@@ -192,6 +192,23 @@ public actor AuthSession {
         return try await task.value
     }
 
+    /// Bounded fragment transfers never start discovery or token renewal.
+    /// Re-read persisted credential state so logout/revocation remains fail-closed.
+    public func cachedBearerLease() throws -> @Sendable () async throws -> String {
+        _ = try cachedBearerToken(generation: epoch)
+        let generation = epoch
+        return { try await self.cachedBearerToken(generation: generation) }
+    }
+
+    private func cachedBearerToken(generation: Int) throws -> String {
+        guard epoch == generation else { throw AuthError.noSession }
+        guard transitions == 0, refreshTask == nil else { throw AuthError.operationInProgress }
+        guard !sessionSuspended else { throw AuthError.pendingRevocation }
+        guard try activeCredential() != nil, let accessToken,
+              expiresAt > now() else { throw AuthError.noSession }
+        return accessToken
+    }
+
     /// Reads the subject from the issuer's HTTPS UserInfo endpoint using the current bearer.
     /// This value is for pairing/account correlation; the relay still verifies the JWT itself.
     /// No claim from the locally decoded, unsigned ID-token payload is used as identity.

@@ -43,7 +43,7 @@ public struct ServiceEnvelopeCodec: Sendable {
             senderKey: signing, recipientKey: macAgreement)
     }
 
-    public func verified(_ receipt: RelayReceipt, requestID: String) throws -> ServiceResponse? {
+    public func verified(_ receipt: RelayReceipt, requestID: String, allowOverviewTooLarge: Bool = false) throws -> ServiceResponse? {
         guard receipt.requestID == requestID else { throw RelayWireError.invalidResponse }
         guard receipt.status == "completed" else { return nil }
         guard let envelope = receipt.response, envelope.kind == "response", envelope.requestID == requestID else {
@@ -53,6 +53,10 @@ public struct ServiceEnvelopeCodec: Sendable {
             sender: macID, recipient: deviceID, route: macID, nowMilliseconds: now())
         guard let json = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               let status = json["status"] as? Int, (100...599).contains(status) else { throw RelayWireError.invalidResponse }
+        // This opt-in is used only by the overview reader after signature/decryption checks.
+        if allowOverviewTooLarge, status == 502, json["error"] as? String == "response_too_large" {
+            return .completed(status: status, body: Data(#"{"error":"response_too_large"}"#.utf8))
+        }
         if json["error"] as? String == "uncertain" || status >= 500 { return .unknown }
         let body = try JSONSerialization.data(withJSONObject: json["body"] ?? json, options: [.fragmentsAllowed, .sortedKeys])
         return .completed(status: status, body: body)

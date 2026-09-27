@@ -102,13 +102,13 @@ final class RelaySessionTests: XCTestCase {
     }
 
     func testReadRecoversLostResponseWithoutCreatingDurableMutationJournal() async throws {
-        let fixture = try Fixture()
+        let fixture = try Fixture(mode: .overview)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let api = AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID,
                                    operations: fixture.session())
         let response = try await api.send(Endpoint<Data>.data(.get, path: ["v1", "overview"]),
                                           operationID: "operation-1")
-        XCTAssertEqual(response, Data(#"{"ok":true}"#.utf8))
+        XCTAssertEqual(response, Data(#"{"tick":42}"#.utf8))
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1, "Lost read replies resolve through status, not another POST")
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path),
