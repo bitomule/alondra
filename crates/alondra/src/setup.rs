@@ -581,7 +581,7 @@ pub fn run(args: Args) -> Result<()> {
         context.ensure(args.no_input)?;
     }
     let service_created = if !args.dry_run {
-        crate::service_setup::enroll(&paths.alondra_home)?
+        crate::service_setup::enroll(&paths.alondra_home, args.no_input)?
     } else {
         println!("would sign in if needed and enroll this Mac with the Alondra service");
         false
