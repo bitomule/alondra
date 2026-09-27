@@ -270,7 +270,7 @@ pub(super) fn interactive(
     stop: impl FnOnce() -> Result<()>,
     input: &mut impl BufRead,
     output: &mut impl Write,
-) -> Result<()> {
+) -> Result<RecoveryOutcome> {
     interactive_with(
         home,
         stop,
@@ -293,7 +293,7 @@ fn interactive_with(
     output: &mut impl Write,
     account: impl FnOnce() -> Result<(String, String)>,
     registrar: &mut impl FnMut(&PublicMac, &SigningKey, &str) -> Result<()>,
-) -> Result<()> {
+) -> Result<RecoveryOutcome> {
     let existing = read_operation(home)?;
     if let Some(op) = &existing {
         if op.phase == "committed" {
@@ -330,7 +330,7 @@ fn interactive_with(
     input.read_line(&mut answer)?;
     if answer.trim() != "RECOVER" {
         writeln!(output, "No service identity or approval changed.")?;
-        return Ok(());
+        return Ok(RecoveryOutcome::Cancelled);
     }
     let (owner, token) = account()?;
     let before_text =
@@ -383,7 +383,7 @@ fn interactive_with(
         "Service recovery {} committed. Old clients remain unpaired. Run setup to start the daemon and create a new pairing.",
         op.id
     )?;
-    Ok(()) // exclusive lock drops before setup can launch a daemon
+    Ok(RecoveryOutcome::Committed) // exclusive lock drops before setup can launch a daemon
 }
 
 #[cfg(test)]
@@ -549,7 +549,7 @@ mod tests {
         );
         let mut output = Vec::new();
         let mut stopped = false;
-        interactive_with(
+        let outcome = interactive_with(
             home,
             || {
                 stopped = true;
@@ -561,13 +561,14 @@ mod tests {
             &mut |_, _, _| panic!("enrolled recovery must not register again"),
         )
         .unwrap();
+        assert_eq!(outcome, RecoveryOutcome::Committed);
         assert!(stopped);
         let completed = read_operation(home).unwrap().unwrap();
         assert_eq!(completed.id, op.id);
         assert_eq!(completed.phase, "committed");
         alondra_core::home_lock::ensure_ready(home).unwrap();
         // Declining a different operation is side-effect free, including login/stop.
-        interactive_with(
+        let outcome = interactive_with(
             home,
             || panic!("cancel must not stop daemon"),
             &mut &b"\n"[..],
@@ -576,6 +577,7 @@ mod tests {
             &mut |_, _, _| panic!("cancel must not register"),
         )
         .unwrap();
+        assert_eq!(outcome, RecoveryOutcome::Cancelled);
         assert_eq!(read_operation(home).unwrap().unwrap().id, op.id);
         assert_preserved(home);
     }

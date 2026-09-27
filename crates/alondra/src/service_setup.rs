@@ -390,6 +390,9 @@ fn identity_base(home: &Path) -> Result<std::path::PathBuf> {
     Ok(base)
 }
 
-pub fn recover(home: &Path, stop: impl FnOnce() -> Result<()>, input: &mut impl std::io::BufRead, output: &mut impl Write) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryOutcome { Cancelled, Committed }
+
+pub fn recover(home: &Path, stop: impl FnOnce() -> Result<()>, input: &mut impl std::io::BufRead, output: &mut impl Write) -> Result<RecoveryOutcome> {
     recovery::interactive(home, stop, input, output)
 }
