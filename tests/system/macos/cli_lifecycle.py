@@ -140,6 +140,9 @@ def retire_stale_socket(state):
         metadata['status'] = 'retired'
         metadata['durable_hashes_after'] = state_manifest(state)
         publish(receipt, metadata)
+        directory_fd = os.open(audits, os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(directory_fd)
+        finally: os.close(directory_fd)
         return metadata
     finally: os.close(fd)
 
