@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-for (const locale of ['en', 'es']) {
-  test(`proposal ${locale}: responsive, localized and working waitlist`, async ({ page }) => {
-    await page.goto(`/proposal/${locale}/`);
+for (const preview of [false, true]) for (const locale of ['en', 'es']) {
+  test(`proposal ${preview ? 'preview' : 'published'} ${locale}: responsive, localized and working waitlist`, async ({ page }) => {
+    await page.goto(preview ? `/proposal/${locale}/` : `/?lang=${locale}`);
+    if (!preview) await expect(page.locator('meta[name=robots]')).toHaveCount(0);
     await expect(page.locator('html')).toHaveAttribute('lang', locale);
     await expect(page.locator('h1')).toHaveText(locale === 'en' ? 'The orchestrator for your agents.' : 'El orquestador para tus agentes.');
     for (const width of [320, 375, 414, 768, 1440]) {

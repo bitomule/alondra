@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readdirSync } from 'node:fs';
 
-const PUBLIC = ['/', '/privacy', '/install'];
+const PUBLIC = ['/', '/?lang=en', '/privacy', '/install'];
 
 for (const colorScheme of ['light', 'dark'] as const) {
  for (const width of [320, 375, 414, 768, 1024, 1440]) {
@@ -51,7 +51,7 @@ test('installation and privacy are reachable and usable with keyboard', async ({
 });
 
 test('the privacy copy says what is encrypted and what the service sees, and promises nothing more', async ({ page }) => {
- for (const path of ['/', '/privacy']) {
+ for (const path of ['/privacy']) {
   await page.goto(path);
   const text = (await page.locator('main').innerText()).toLowerCase();
   expect(text).toContain('cifrado entre dispositivos autorizados');
@@ -89,36 +89,16 @@ test('the real icon is the favicon and the brand mark', async ({ page }) => {
  await expect(page.getByRole('link', { name: 'Alondra, inicio' }).locator('svg.lark')).toBeVisible();
 });
 
-test('the flow animation plays once in view, can be paused, and ends on its final frame', async ({ page }) => {
+test('the new landing keeps vision, alpha requirements and keyboard navigation accessible', async ({ page }) => {
+ await page.emulateMedia({ reducedMotion: 'reduce' });
  await page.goto('/');
- const canvas = page.locator('.score-canvas');
- await expect(canvas).toHaveAttribute('data-play', 'armed');
- await canvas.scrollIntoViewIfNeeded();
- await expect(canvas).toHaveAttribute('data-play', 'playing');
- const pause = page.getByRole('button', { name: 'Pausar' });
- await pause.click();
- await expect(page.getByRole('button', { name: 'Reanudar' })).toHaveAttribute('aria-pressed', 'true');
- await expect(canvas).toHaveAttribute('data-paused', 'true');
- await page.getByRole('button', { name: 'Reanudar' }).click();
- await expect(page.getByRole('button', { name: 'Ver otra vez' })).toBeVisible({ timeout: 15000 });
- await expect(canvas).toHaveAttribute('data-play', 'done');
- await expect(canvas.getByText('Fusionado con squash')).toBeVisible();
- await expect(canvas.getByText('Enviado a su nodo')).toBeVisible();
- await page.getByRole('button', { name: 'Ver otra vez' }).click();
- await expect(canvas).toHaveAttribute('data-play', 'playing');
-});
-
-test('with reduced motion nothing plays and every final state is visible at once', async ({ browser }) => {
- const context = await browser.newContext({ reducedMotion: 'reduce' });
- const page = await context.newPage();
- await page.goto('/');
- const canvas = page.locator('.score-canvas');
- await canvas.scrollIntoViewIfNeeded();
- await page.waitForTimeout(500);
- await expect(canvas).toHaveAttribute('data-play', 'static');
- await expect(canvas.getByText('Fusionado con squash')).toBeVisible();
- await expect(page.getByRole('button', { name: 'Pausar' })).toHaveCount(0);
- const animated = await page.locator('.hero-title > span, .wing').evaluateAll(nodes => nodes.filter(node => getComputedStyle(node).animationName !== 'none').length);
- expect(animated).toBe(0);
- await context.close();
+ await expect(page.getByRole('heading', { level: 1 })).toHaveText('El orquestador para tus agentes.');
+ await page.locator('summary').click();
+ await expect(page.locator('details')).toContainText('aún no está disponible en la alpha');
+ await page.getByRole('link', { name: 'English', exact: true }).click();
+ await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+ await expect(page.getByRole('heading', { level: 1 })).toHaveText('The orchestrator for your agents.');
+ await page.reload();
+ await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+ await expect(page.locator('link[rel=canonical]')).toHaveAttribute('href', 'https://alondra.davidcollado.dev/?lang=en');
 });

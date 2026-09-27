@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 
-const hero = (page: Page) => page.locator('.hero');
-const access = (page: Page) => page.locator('#acceso');
+const hero = (page: Page) => page.locator('.p-hero');
+const access = (page: Page) => page.locator('#alpha');
 
 async function mockWaitlist(page: Page, handler: (route: Route, body: { email: string }) => Promise<void> | void) {
   const bodies: { email: string }[] = [];
@@ -17,7 +17,7 @@ async function mockWaitlist(page: Page, handler: (route: Route, body: { email: s
 
 async function submit(page: Page, scope: ReturnType<typeof hero>, email: string) {
   await scope.getByLabel('Tu email').fill(email);
-  await scope.getByRole('button', { name: 'Pedir acceso' }).click();
+  await scope.getByRole('button', { name: 'Apuntarme a la alpha' }).click();
 }
 
 test('a new email is accepted, confirmed without promising an email, and settles both forms', async ({ page }) => {
@@ -78,10 +78,10 @@ test('rate limiting says when to try again and keeps the email', async ({ page }
   await expect(hero(page).getByRole('alert')).toHaveText('Demasiados intentos seguidos. Vuelve a probar en 2 minutos.');
   await expect(hero(page).getByLabel('Tu email')).toHaveValue('ada@example.com');
   retryAfter = '1';
-  await hero(page).getByRole('button', { name: 'Pedir acceso' }).click();
+  await hero(page).getByRole('button', { name: 'Apuntarme a la alpha' }).click();
   await expect(hero(page).getByRole('alert')).toHaveText('Demasiados intentos seguidos. Vuelve a probar en un segundo.');
   retryAfter = undefined;
-  await hero(page).getByRole('button', { name: 'Pedir acceso' }).click();
+  await hero(page).getByRole('button', { name: 'Apuntarme a la alpha' }).click();
   await expect(hero(page).getByRole('alert')).toHaveText('Demasiados intentos seguidos. Vuelve a probar dentro de un rato.');
 });
 
@@ -98,7 +98,7 @@ test('a lost connection or a server error keeps the email and a retry can succee
   const failed = 'No hemos podido apuntarte. Tu email sigue aquí: vuelve a intentarlo en un momento.';
   await expect(hero(page).getByRole('alert')).toHaveText(failed);
   await expect(hero(page).getByLabel('Tu email')).toHaveValue('ada@example.com');
-  await hero(page).getByRole('button', { name: 'Pedir acceso' }).click();
+  await hero(page).getByRole('button', { name: 'Apuntarme a la alpha' }).click();
   await expect(hero(page).getByRole('alert')).toHaveText(failed);
   await hero(page).getByLabel('Tu email').press('Enter');
   await expect(hero(page).getByRole('status')).toContainText('Estás en la lista.');
@@ -116,7 +116,7 @@ test('while sending, the form says so and cannot be sent twice', async ({ page }
   await expect(hero(page).locator('form')).toHaveAttribute('aria-busy', 'true');
   await expect(hero(page).getByRole('status')).toHaveText('Enviando tu email…');
   await expect(hero(page).getByLabel('Tu email')).toHaveAttribute('readonly', '');
-  await expect(access(page).getByRole('button', { name: 'Pedir acceso' })).toBeDisabled();
+  await expect(access(page).getByRole('button', { name: 'Apuntarme a la alpha' })).toBeDisabled();
   await hero(page).getByLabel('Tu email').press('Enter');
   release();
   await expect(hero(page).getByRole('status')).toContainText('Estás en la lista.');
@@ -130,7 +130,7 @@ test('the form works from the keyboard alone', async ({ page }) => {
   await input.focus();
   await page.keyboard.type('grace@example.com');
   await page.keyboard.press('Tab');
-  await expect(hero(page).getByRole('button', { name: 'Pedir acceso' })).toBeFocused();
+  await expect(hero(page).getByRole('button', { name: 'Apuntarme a la alpha' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(hero(page).getByRole('status')).toContainText('grace@example.com');
 });

@@ -99,3 +99,5 @@
 
 }
 @media (prefers-reduced-motion: reduce) { .proposal .waitlist-spinner { animation: none; } .proposal * { transition: none; } }
+
+.p-footer nav { display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; }

@@ -1,16 +1,17 @@
-import { Link, useParams } from 'react-router';
+import { Link, useParams, useLocation } from 'react-router';
 import { Lark } from '../public/Lark';
 import { Shot } from '../public/Shot';
 import { WaitlistForm, useWaitlist } from '../public/WaitlistForm';
 import '../public/public.css';
 import '../public/proposal.css';
 
-export function meta({ params }: { params: { locale?: string } }) {
-  const es = params.locale === 'es';
+export function meta({ params, location }: { params: { locale?: string }; location: { pathname: string; search: string } }) {
+  const preview = location.pathname.startsWith('/proposal/');
+  const es = (preview ? params.locale : new URLSearchParams(location.search).get('lang')) !== 'en';
   return [
     { title: es ? 'Alondra — El orquestador para tus agentes' : 'Alondra — The orchestrator for your agents' },
     { name: 'description', content: es ? 'Todo en todas partes. Estamos construyendo un orquestador para personas y equipos que trabajan con agentes. Forma parte desde el principio.' : 'Everything, everywhere. We’re building an orchestrator for individuals and teams working with agents. Be part of it from the start.' },
-    { name: 'robots', content: 'noindex, nofollow' },
+    ...(preview ? [{ name: 'robots', content: 'noindex, nofollow' }] : [{ tagName: 'link', rel: 'canonical', href: `https://alondra.davidcollado.dev/${es ? '' : '?lang=en'}` }]),
   ];
 }
 
@@ -70,15 +71,19 @@ const copy = {
 };
 
 export default function Proposal() {
-  const locale = useParams().locale === 'es' ? 'es' : 'en';
+  const params = useParams();
+  const location = useLocation();
+  const preview = location.pathname.startsWith('/proposal/');
+  const locale = (preview ? params.locale : new URLSearchParams(location.search).get('lang')) === 'en' ? 'en' : 'es';
+  const localeUrl = (language: string) => preview ? `/proposal/${language}` : (language === 'es' ? '/' : '/?lang=en');
   const c = copy[locale];
   const waitlist = useWaitlist();
   return <div className="pub proposal" lang={locale}>
     <header className="p-header p-wrap">
-      <Link to={`/proposal/${locale}`} className="pub-brand"><Lark className="pub-brand-mark"/><span>Alondra</span></Link>
+      <Link to={localeUrl(locale)} className="pub-brand" aria-label={locale === 'es' ? 'Alondra, inicio' : 'Alondra, home'}><Lark className="pub-brand-mark"/><span>Alondra</span></Link>
       <nav aria-label={locale === 'es' ? 'Principal' : 'Main'}>
         <a className="p-nav-detail" href="#vision">{c.vision}</a>
-        <div className="p-languages" aria-label={locale === 'es' ? 'Idioma' : 'Language'}><Link to="/proposal/en" lang="en" aria-label="English" aria-current={locale === 'en' ? 'page' : undefined}>EN</Link><Link to="/proposal/es" lang="es" aria-label="Español" aria-current={locale === 'es' ? 'page' : undefined}>ES</Link></div>
+        <div className="p-languages" aria-label={locale === 'es' ? 'Idioma' : 'Language'}><Link to={localeUrl('en')} lang="en" aria-label="English" aria-current={locale === 'en' ? 'page' : undefined}>EN</Link><Link to={localeUrl('es')} lang="es" aria-label="Español" aria-current={locale === 'es' ? 'page' : undefined}>ES</Link></div>
         <a className="p-nav-cta" href="#alpha">{c.access}</a>
       </nav>
     </header>
@@ -106,6 +111,6 @@ export default function Proposal() {
       <section className="v-proof p-wrap"><figure><Shot name="te-espera" tone="light" alt={c.questionAlt}/><figcaption>{c.capture}</figcaption></figure><div><h2>{c.started}</h2><p>{c.startedBody}</p></div></section>
       <section className="p-alpha" id="alpha"><div className="p-wrap p-alpha-grid"><div><h2>{c.alpha}</h2><p>{c.alphaBody}</p></div><div><WaitlistForm waitlist={waitlist} name="proposal-alpha" locale={locale} submitLabel={c.access}/><p className="p-note">{c.invitation}</p><details className="v-alpha-details"><summary>{c.requirementsTitle}</summary><p>{c.requirements}</p></details></div></div></section>
     </main>
-    <footer className="p-footer p-wrap"><Link className="pub-brand" to={`/proposal/${locale}`}>Alondra</Link><p>{c.footer}</p><Link to="/privacy">{c.privacy} <span className="p-note">({c.privacyNote})</span></Link></footer>
+    <footer className="p-footer p-wrap"><Link className="pub-brand" to={localeUrl(locale)}>Alondra</Link><p>{c.footer}</p><nav aria-label={locale === 'es' ? 'Enlaces' : 'Links'}><Link to="/install">{locale === 'es' ? 'Instalar' : 'Install (ES)'}</Link><a href="/auth/login">{locale === 'es' ? 'Entrar' : 'Sign in'}</a><Link to="/privacy">{c.privacy}</Link></nav></footer>
   </div>;
 }
