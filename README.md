@@ -72,9 +72,11 @@ alondra orchestrator-acknowledge RUN_ID --confirm
 
 ### Uncertain deliveries
 
-HTTP acceptance is not proof that Claude executed an action. The TUI keeps a
-pending/uncertain warning; `:deliveries` shows the recorded evidence and recovery
-commands. Inspect the destination terminal before choosing a resolution:
+HTTP acceptance is not proof that Claude executed an action. While a handoff to a
+live node is uncertain, the TUI shows "N messages not confirmed"; `:deliveries`
+shows the recorded evidence and recovery commands. A handoff whose node is gone
+closes by itself (`node_gone`), since there is no terminal left to check. Inspect
+the destination terminal before choosing a resolution:
 
 ```sh
 alondra delivery list

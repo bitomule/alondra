@@ -232,7 +232,9 @@ pub(crate) fn apply(view: &mut View, transition: &Transition, at: Millis) {
         for old in &legacy { view.removed.insert(old.clone(), at); view.nodes.remove(old); }
         view.removed.remove(NODE_ID);
         view.left_out.remove(NODE_ID);
-        view.orchestrator = Some(Runtime { session_id: session_id.clone(), generation: 1, phase: Phase::Idle, active_run: None, context: None, last_error: None, retry_at: None, compact_pending: false, updated_at: at, last_run_id: None, consecutive_failures: 0, cancel_requested: false, last_report: 0, last_question: 0, machine_alarm: None, pending_resolutions: vec![] });
+        // What existed before enabling was already seen by David or a legacy orchestrator.
+        let (last_report, last_question) = (view.next_report_id() - 1, view.next_question_id() - 1);
+        view.orchestrator = Some(Runtime { session_id: session_id.clone(), generation: 1, phase: Phase::Idle, active_run: None, context: None, last_error: None, retry_at: None, compact_pending: false, updated_at: at, last_run_id: None, consecutive_failures: 0, cancel_requested: false, last_report, last_question, machine_alarm: None, pending_resolutions: vec![] });
     } else {
         let runtime = view.orchestrator.as_mut().expect("validated runtime");
         runtime.updated_at = at;

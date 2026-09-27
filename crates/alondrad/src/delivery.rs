@@ -23,13 +23,13 @@ pub fn recovery_events(view: &View) -> Vec<Event> {
             )
             .collect();
         for sid in sessions {
-            let node = view.nodes.get(&sid);
+            let Some(node) = view.nodes.get(&sid) else { continue };
             let ids = view
                 .pending_messages(&sid)
                 .map(|m| m.id)
                 .collect::<Vec<_>>();
             if !ids.is_empty() {
-                let channel = if node.is_some_and(|n| n.in_daemon) {
+                let channel = if node.in_daemon {
                     Channel::Terminal
                 } else {
                     Channel::HookStop
@@ -40,7 +40,7 @@ pub fn recovery_events(view: &View) -> Vec<Event> {
                     ..new_attempt(view.seq + events.len() as u64 + 1, &sid, channel, ids)
                 }));
             }
-            if node.is_some_and(|n| n.compaction.is_some()) {
+            if node.compaction.is_some() {
                 events.push(Event::DeliveryAttemptRecorded(Attempt {
                     state: State::Uncertain,
                     reason: Some("legacy_compaction_unknown".into()),
@@ -54,10 +54,20 @@ pub fn recovery_events(view: &View) -> Vec<Event> {
             }
         }
     }
+    let gone = |a: &&Attempt| a.session_id != alondra_core::orchestrator::NODE_ID && !view.nodes.contains_key(&a.session_id);
+    for attempt in view.delivery_attempts.values().filter(gone) {
+        let mut next = attempt.clone();
+        next.close_for_gone_node();
+        if next.state != attempt.state {
+            next.version += 1;
+            next.updated_at = now_millis();
+            events.push(Event::DeliveryAttemptRecorded(next));
+        }
+    }
     for attempt in view
         .delivery_attempts
         .values()
-        .filter(|a| a.state == State::Dispatching)
+        .filter(|a| a.state == State::Dispatching && (a.channel == Channel::NodeDiscard || !gone(a)))
     {
         let mut next = attempt.clone();
         next.state = State::Uncertain;
@@ -387,6 +397,20 @@ pub fn message_value(view: &View, message: &alondra_core::Message) -> Value {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    /// David's snapshot already held the 27-sep migration's uncertain handoffs for nodes closed
+    /// on 23-sep, so replaying events alone could never clear the TUI warning.
+    #[test]
+    fn restart_closes_saved_handoffs_whose_node_is_gone() {
+        let mut view = View::default();
+        view.delivery_protocol = true;
+        view.nodes.insert("live".into(), alondra_core::Node::new("live", 1));
+        for (id, sid, channel) in [(1, "prueba-mac-ui", Channel::HookStop), (2, "live", Channel::HookStop), (3, "gone", Channel::NodeDiscard)] {
+            view.delivery_attempts.insert(id, Attempt { state: State::Uncertain, reason: Some("legacy_delivery_unknown".into()), ..new_attempt(id, sid, channel, vec![id]) });
+        }
+        let closed: Vec<Attempt> = recovery_events(&view).into_iter().filter_map(|e| match e { Event::DeliveryAttemptRecorded(a) => Some(a), _ => None }).collect();
+        assert_eq!(closed.len(), 1, "{closed:?}");
+        assert_eq!((closed[0].id, closed[0].state, closed[0].version), (1, State::Discarded, 2));
+    }
     fn fixture() -> Arc<Hub> {
         let home = std::env::temp_dir().join(format!("delivery-{}", crate::auth::random_hex(8)));
         let config = alondra_core::config::Config::resolve(
