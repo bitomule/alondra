@@ -7373,7 +7373,11 @@ defaults = { pr = "auto_merge" }
             let (_, said) = status_and_body(new_request(State(hub.clone()), request("x", None, user_effort)).await).await;
             let id = said["request_id"].as_str().unwrap().to_string();
             let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
-            assert_eq!(text.contains("Effort is auto: for each launch, choose"), expected != "light", "{what}: {text}");
+            let automatic = expected != "light";
+            assert_eq!(text.contains("Effort is auto:"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("choose per task after splitting"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("Normal is the starting point"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("was chosen by Ana and is binding: do not pass effort"), !automatic, "{what}: {text}");
             let resolved = launch_options(&hub, &launch_body(Some(&id), "/tmp", orchestrator)).unwrap_or_else(|_| panic!("{what}"));
             assert_eq!(resolved.effort, expected, "{what}");
         }
