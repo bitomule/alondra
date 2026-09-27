@@ -39,8 +39,14 @@ fn remaining(deadline: Instant, per_request: Duration) -> Result<Duration> {
 
 pub(crate) fn read(
     timeout: Duration,
-    call: impl FnMut(&str, &str, Duration) -> Result<(u16, Value)>,
+    mut call: impl FnMut(&str, &str, Duration) -> Result<(u16, Value)>,
 ) -> Result<(u16, Value)> {
+    // Resolve the ordinary authenticated request first. The bounded fragment phase
+    // never starts OIDC discovery/refresh; OS Keychain IPC is not a realtime timer.
+    let legacy = call("GET", "/v1/overview", timeout)?;
+    if legacy.0 != 502 || legacy.1["error"] != "response_too_large" {
+        return Ok(legacy);
+    }
     read_until(timeout, Instant::now() + MAX_DURATION, call)
 }
 
@@ -49,12 +55,6 @@ fn read_until(
     deadline: Instant,
     mut call: impl FnMut(&str, &str, Duration) -> Result<(u16, Value)>,
 ) -> Result<(u16, Value)> {
-    let legacy = call("GET", "/v1/overview", remaining(deadline, timeout)?)?;
-    // Authentication, transport and other endpoint errors retain their original semantics.
-    // Only the explicit envelope-size failure negotiates the bounded read extension.
-    if legacy.0 != 502 || legacy.1["error"] != "response_too_large" {
-        return Ok(legacy);
-    }
     let (status, value) = call("GET", ROOT, remaining(deadline, timeout)?)?;
     ensure!(
         status == 200,
@@ -221,7 +221,13 @@ mod tests {
                 value["data"] = json!(B64.encode(data));
             }
         });
-        assert!(result.unwrap_err().to_string().contains("digest mismatch"));
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("digest mismatch")),
+            "modified valid JSON must fail integrity"
+        );
     }
 
     #[test]
@@ -336,7 +342,13 @@ mod tests {
             v["sha256"] = json!("0".repeat(64));
             Ok((200, v))
         });
-        assert!(result.unwrap_err().to_string().contains("digest mismatch"));
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("digest mismatch")),
+            "modified valid JSON must fail integrity"
+        );
         assert_eq!(calls, 3);
     }
 }
