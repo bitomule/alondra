@@ -25,18 +25,20 @@ struct ServiceAppScene: View {
             DemoWorkspaceScreen(mode: demo) { store in
                 ServiceRootView(store: store, accountContent: DemoAccountView())
             }
-        } else if let services = owner.services {
-            ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
-                .id(ObjectIdentifier(services))
-        } else if owner.store.showsWorkspace {
-            ServiceRootView(store: restoringWorkspace, accountContent: WorkspaceRestorationView(store: owner.store))
-                .disabled(true)
-                .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: owner.store) }
         } else {
-            NavigationStack { CloudPairingScreen(store: owner.store) }
-                .safeAreaInset(edge: .bottom) {
-                    if owner.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+            CloudWorkspaceGate(store: owner.store, hasServices: owner.services != nil) {
+                if let services = owner.services {
+                    ApprovedServiceScene(services: services, owner: owner, notifications: notifications)
+                        .id(ObjectIdentifier(services))
                 }
+            } restoring: {
+                ServiceRestoringWorkspace(store: restoringWorkspace, pairing: owner.store)
+            } onboarding: {
+                NavigationStack { CloudPairingScreen(store: owner.store) }
+                    .safeAreaInset(edge: .bottom) {
+                        if owner.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+                    }
+            }
         }
         }.task { await owner.store.send(.appeared).finish() }
     }
@@ -117,7 +119,17 @@ private struct ApprovedServiceScene: View {
     }
 }
 
-private struct ServiceRootView<AccountContent: View>: View {
+struct ServiceRestoringWorkspace: View {
+    let store: StoreOf<ServiceRootFeature>
+    let pairing: StoreOf<CloudPairingFeature>
+    var body: some View {
+        ServiceRootView(store: store, accountContent: WorkspaceRestorationView(store: pairing))
+            .disabled(true)
+            .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: pairing) }
+    }
+}
+
+struct ServiceRootView<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
     let accountContent: AccountContent
     @Namespace private var triageZoom

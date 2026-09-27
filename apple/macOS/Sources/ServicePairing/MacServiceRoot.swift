@@ -24,20 +24,32 @@ struct MacServiceRoot: View {
             DemoWorkspaceScreen(mode: demo) { store in
                 MacServiceWorkspace(store: store, accountContent: DemoAccountView())
             }
-        } else if let services = account.services {
-            MacServiceWindow(services: services, account: account)
-                .id(ObjectIdentifier(services))
-        } else if account.store.showsWorkspace {
-            MacServiceWorkspace(store: restoring, accountContent: EmptyView(), isActive: false)
-                .disabled(true)
-                .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: account.store) }
         } else {
-            MacServicePairingScreen(store: account.store)
-                .safeAreaInset(edge: .bottom) {
-                    if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+            CloudWorkspaceGate(store: account.store, hasServices: account.services != nil) {
+                if let services = account.services {
+                    MacServiceWindow(services: services, account: account)
+                        .id(ObjectIdentifier(services))
                 }
+            } restoring: {
+                MacRestoringWorkspace(store: restoring, pairing: account.store)
+            } onboarding: {
+                MacServicePairingScreen(store: account.store)
+                    .safeAreaInset(edge: .bottom) {
+                        if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+                    }
+            }
         }
         }.task { await account.store.send(.appeared).finish() }
+    }
+}
+
+struct MacRestoringWorkspace: View {
+    let store: StoreOf<ServiceRootFeature>
+    let pairing: StoreOf<CloudPairingFeature>
+    var body: some View {
+        MacServiceWorkspace(store: store, accountContent: EmptyView(), isActive: false)
+            .disabled(true)
+            .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: pairing) }
     }
 }
 
@@ -97,4 +109,3 @@ private struct MacServiceWindow: View {
         }.task { await context.connect(services) }
     }
 }
-

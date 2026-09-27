@@ -108,14 +108,14 @@ class Commands:
         self.output = output
         self.index = 0
 
-    def run(self, args: list[str], *, timeout: float = 60, env: dict | None = None) -> str:
+    def run(self, args: list[str], *, timeout: float = 60, env: dict | None = None, cwd: Path | None = None) -> str:
         self.index += 1
         log = self.output / f"command-{self.index:03}.log"
         with log.open("w") as stream:
             # Paths/flags contain only synthetic fixture metadata, never credentials.
             stream.write(json.dumps(args) + "\n")
             stream.flush()
-            process = subprocess.Popen(args, cwd=ROOT, env=env or base_environment(),
+            process = subprocess.Popen(args, cwd=cwd or ROOT, env=env or base_environment(),
                                        stdout=stream, stderr=subprocess.STDOUT, text=True, start_new_session=True)
             try:
                 process.wait(timeout=timeout)
