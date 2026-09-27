@@ -509,7 +509,7 @@ impl Resolved {
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: for each launch, choose light, normal or hard from the task and pass it as effort.".into()
+            "Effort is auto: choose per task after splitting. Use light for bounded work with a known approach, normal for ordinary implementation and investigation, and hard only for a concrete unresolved difficulty named in the brief. Normal is the starting point; request size or importance does not make every task hard. Set options.effort in define or effort in launch.".into()
         } else {
             format!("Effort {} was chosen by {user} and is binding: do not pass effort.", self.effort)
         }

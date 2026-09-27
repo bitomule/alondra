@@ -103,14 +103,13 @@ pub fn node_state(n: &Node) -> &'static str {
     n.orchestrator_state.map_or_else(|| state(n.state), orchestrator)
 }
 
+/// What a task means to the user: it runs, it waits for them (a question, an action or a PR to
+/// review), it finished, or it was cancelled. The steps in between are Alondra's, not theirs.
 pub fn task_state(s: TaskState) -> &'static str {
     match s {
-        TaskState::WaitingDependency => tr!("waiting for another task", "esperando a otra"),
-        TaskState::Running => tr!("running", "en marcha"),
-        TaskState::NeedsYou => tr!("needs you", "te espera"),
-        TaskState::InReview => tr!("in review", "en revisión"),
-        TaskState::Closing => tr!("closing", "cerrando"),
-        TaskState::Done => tr!("done", "hecha"),
+        TaskState::WaitingDependency | TaskState::Running | TaskState::Closing => tr!("running", "en marcha"),
+        TaskState::NeedsYou | TaskState::InReview => tr!("needs you", "te espera"),
+        TaskState::Done => tr!("finished", "terminada"),
         TaskState::Cancelled => tr!("cancelled", "descartada"),
     }
 }
@@ -119,7 +118,7 @@ pub fn request_state(s: RequestState) -> &'static str {
     match s {
         RequestState::Defining => tr!("defining", "definiendo"),
         RequestState::InProgress => tr!("in progress", "en curso"),
-        RequestState::Done => tr!("done", "hecha"),
+        RequestState::Done => tr!("finished", "terminada"),
     }
 }
 
@@ -360,7 +359,8 @@ mod tests {
     fn task_request_and_node_labels_read_as_the_apps_do() {
         set_for_this_thread(Lang::Es);
         let tasks: Vec<&str> = TaskState::ALL.iter().map(|s| task_state(*s)).collect();
-        assert_eq!(tasks, ["esperando a otra", "en marcha", "te espera", "en revisión", "cerrando", "hecha", "descartada"]);
+        assert_eq!(tasks, ["en marcha", "en marcha", "te espera", "te espera", "en marcha", "terminada", "descartada"]);
+        assert_eq!(request_state(RequestState::Done), "terminada");
         assert_eq!(request_state(RequestState::Defining), "definiendo");
         let mut n = Node::new("s", 0);
         n.state = NodeState::Working;
@@ -368,6 +368,7 @@ mod tests {
         n.state = NodeState::WaitingMerge;
         assert_eq!(fleet_state(&n), "libre");
         set_for_this_thread(Lang::En);
-        assert_eq!(task_state(TaskState::WaitingDependency), "waiting for another task");
+        assert_eq!(task_state(TaskState::WaitingDependency), "running");
+        assert_eq!(task_state(TaskState::Done), "finished");
     }
 }

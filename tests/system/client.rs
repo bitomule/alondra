@@ -572,6 +572,7 @@ impl Driver {
     }
 }
 mod load;
+mod account_reset;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -579,7 +580,7 @@ async fn main() -> Result<()> {
         .nth(1)
         .context("phase initial|restart|perf required")?;
     ensure!(
-        ["initial", "restart", "perf", "load"].contains(&phase.as_str()),
+        ["initial", "restart", "perf", "load", "account-reset-before", "account-reset-after"].contains(&phase.as_str()),
         "invalid phase"
     );
     if phase == "load" {
@@ -590,6 +591,8 @@ async fn main() -> Result<()> {
         "initial" => driver.initial().await,
         "restart" => driver.restart().await,
         "perf" => driver.perf().await,
+        "account-reset-before" => account_reset::execute(&driver, false).await,
+        "account-reset-after" => account_reset::execute(&driver, true).await,
 
         _ => unreachable!(),
     }

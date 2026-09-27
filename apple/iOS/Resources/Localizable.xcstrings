@@ -2984,7 +2984,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Queda como hecha, sin tareas, y el orquestador ya no puede definirla."
+            "value": "Queda como terminada, sin tareas, y el orquestador ya no puede definirla."
           }
         }
       }
