@@ -57,8 +57,8 @@ security find-identity -v -p codesigning
 security find-identity -v -p basic
 ```
 
-The version is an explicit `x.y.z`; build is an integer 1–9999. The source's normal
-`0.1.0 (1)` remains unchanged. ASC's initial App Store drafts were `1.0` at the
+The version is an explicit `x.y.z`; build is an integer 1–9999. The source's normal version is `0.1.1 (3)`; distribution receives the same
+explicit version/build through the release command. ASC's initial App Store drafts were `1.0` at the
 26 Sep inventory; align the App Store version before attaching a release build.
 TestFlight can process a different marketing version without changing that draft.
 
