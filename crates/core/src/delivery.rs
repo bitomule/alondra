@@ -8,6 +8,7 @@ pub enum Channel {
     Compact,
     HookStop,
     HookDecision,
+    MenuDecision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +27,9 @@ pub struct Attempt {
     pub session_id: String,
     pub channel: Channel,
     pub message_ids: Vec<u64>,
+    /// Terminal menu intent has no message payload and must never become inbox text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<u64>,
     pub state: State,
     pub version: u64,
     pub reason: Option<String>,
