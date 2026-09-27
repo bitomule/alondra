@@ -152,7 +152,8 @@ class LifecycleContracts(unittest.TestCase):
                 self.assertEqual(gate.main(), 0)
                 run.assert_not_called(); popen.assert_not_called()
                 self.assertFalse((Path(directory) / 'absent').exists())
-            with patch.object(sys, 'argv', [*args, '--profile', 'app']), self.assertRaises(SystemExit): gate.main()
+            for profile in ('app', 'visual'):
+                with patch.object(sys, 'argv', [*args, '--profile', profile]), self.assertRaises(SystemExit): gate.main()
 
 
 if __name__ == '__main__': unittest.main()

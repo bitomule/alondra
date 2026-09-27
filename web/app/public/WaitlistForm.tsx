@@ -27,7 +27,15 @@ export function useWaitlist() {
   return { email, setEmail, origin, outcome, joined, pending: mutation.isPending, submit, again };
 }
 
-function errorText(outcome: Outcome | null): string | null {
+function errorText(outcome: Outcome | null, locale: 'es' | 'en'): string | null {
+  if (locale === 'en') {
+    switch (outcome?.kind) {
+      case 'invalid_local': case 'invalid': return 'Please enter a valid email address.';
+      case 'rate_limited': return outcome.retryAfterSeconds === null ? 'Too many attempts. Please try again later.' : `Too many attempts. Try again in ${outcome.retryAfterSeconds} seconds.`;
+      case 'failed': return 'We could not add you. Your email is still here; please try again shortly.';
+      default: return null;
+    }
+  }
   switch (outcome?.kind) {
     case 'invalid_local':
     case 'invalid': return 'Revisa el email: no parece una dirección válida.';
@@ -37,12 +45,13 @@ function errorText(outcome: Outcome | null): string | null {
   }
 }
 
-export function WaitlistForm({ waitlist, name, tone = 'paper' }: { waitlist: Waitlist; name: string; tone?: 'paper' | 'stage' }) {
+export function WaitlistForm({ waitlist, name, tone = 'paper', locale = 'es', submitLabel }: { waitlist: Waitlist; name: string; tone?: 'paper' | 'stage'; locale?: 'es' | 'en'; submitLabel?: string }) {
+  const en = locale === 'en';
   const id = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const doneRef = useRef<HTMLDivElement>(null);
   const mine = waitlist.origin === name;
-  const error = mine ? errorText(waitlist.outcome) : null;
+  const error = mine ? errorText(waitlist.outcome, locale) : null;
   const invalid = mine && (waitlist.outcome?.kind === 'invalid' || waitlist.outcome?.kind === 'invalid_local');
 
   useEffect(() => {
@@ -59,16 +68,16 @@ export function WaitlistForm({ waitlist, name, tone = 'paper' }: { waitlist: Wai
   if (waitlist.joined) {
     return (
       <div className={`waitlist is-done tone-${tone}`} ref={doneRef} tabIndex={-1} role={mine ? 'status' : undefined}>
-        <p className="waitlist-done-title"><span className="waitlist-check" aria-hidden="true"/>Estás en la lista.</p>
-        <p className="waitlist-done-body">Hemos guardado <strong>{waitlist.joined}</strong>. No te enviaremos un correo de confirmación: las invitaciones se hacen a mano, poco a poco.</p>
-        <button type="button" className="waitlist-again" onClick={waitlist.again}>Apuntar otro email</button>
+        <p className="waitlist-done-title"><span className="waitlist-check" aria-hidden="true"/>{en ? 'You’re on the list.' : 'Estás en la lista.'}</p>
+        <p className="waitlist-done-body">{en ? 'We saved ' : 'Hemos guardado '}<strong>{waitlist.joined}</strong>{en ? '. There is no confirmation email. We send invitations manually, in small batches.' : '. No te enviaremos un correo de confirmación: las invitaciones se hacen a mano, poco a poco.'}</p>
+        <button type="button" className="waitlist-again" onClick={waitlist.again}>{en ? 'Add another email' : 'Apuntar otro email'}</button>
       </div>
     );
   }
 
   return (
     <form className={`waitlist tone-${tone}`} onSubmit={onSubmit} noValidate aria-busy={waitlist.pending && mine}>
-      <label className="waitlist-label" htmlFor={`${id}-email`}>Tu email</label>
+      <label className="waitlist-label" htmlFor={`${id}-email`}>{en ? 'Your email' : 'Tu email'}</label>
       <div className="waitlist-row">
         <input
           ref={inputRef}
@@ -80,7 +89,7 @@ export function WaitlistForm({ waitlist, name, tone = 'paper' }: { waitlist: Wai
           inputMode="email"
           autoCapitalize="none"
           spellCheck={false}
-          placeholder="tu@correo.dev"
+          placeholder={en ? 'you@example.com' : 'tu@correo.dev'}
           required
           value={waitlist.email}
           readOnly={waitlist.pending}
@@ -89,11 +98,11 @@ export function WaitlistForm({ waitlist, name, tone = 'paper' }: { waitlist: Wai
           onChange={event => waitlist.setEmail(event.target.value)}
         />
         <button className="waitlist-submit" type="submit" disabled={waitlist.pending}>
-          {waitlist.pending && mine ? <><span className="waitlist-spinner" aria-hidden="true"/>Enviando…</> : 'Pedir acceso'}
+          {waitlist.pending && mine ? <><span className="waitlist-spinner" aria-hidden="true"/>{en ? 'Sending…' : 'Enviando…'}</> : (submitLabel ?? (en ? 'Join the alpha waitlist' : 'Pedir acceso'))}
         </button>
       </div>
-      <p className="waitlist-hint" id={`${id}-hint`}>Solo el email. Lo guarda el servicio para poder invitarte.</p>
-      <p className="waitlist-live" role="status">{waitlist.pending && mine ? 'Enviando tu email…' : ''}</p>
+      <p className="waitlist-hint" id={`${id}-hint`}>{en ? 'Just your email, stored so we can invite you.' : 'Solo el email. Lo guarda el servicio para poder invitarte.'}</p>
+      <p className="waitlist-live" role="status">{waitlist.pending && mine ? (en ? 'Sending your email…' : 'Enviando tu email…') : ''}</p>
       {error && <p className="waitlist-error" id={`${id}-error`} role="alert">{error}</p>}
     </form>
   );

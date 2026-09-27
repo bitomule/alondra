@@ -116,3 +116,51 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(second['evidence_descriptor'], descriptor)
                 self.assertIn('original guest execution failed', second['failure']['detail'])
                 validate.assert_not_called()
+
+    def test_visual_recovery_checks_original_binary_and_cannot_promote_guest_failure(self):
+        for mode in ('success', 'wrong-binary', 'invalid-report', 'failed-guest', 'retry-before-collection'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                gate, calls, call = self.fixture(root)
+                gate.args.profile = 'visual'
+                pin = 'b' * 64
+                gate.result['input_executable_sha256'] = pin
+                if mode == 'failed-guest': gate.result['guest_failure'] = {'exit_code': 1}
+                with patch.object(gate, 'call', call): gate.cleanup()
+                def recover_call(instance, *args, **kwargs): return call(*args, **kwargs)
+                def guest(instance, *args, **kwargs):
+                    return subprocess.CompletedProcess(args, 0, json.dumps({'vm': gate.name, 'owner_token': gate.owner_token}).encode(), b'')
+                def collect(instance): pass
+                with patch.dict('os.environ', {'TART_HOME': str(gate.tart_home)}), \
+                     patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=m.MIN_FREE * 2)), \
+                     patch.object(m.Gate, 'call', recover_call), patch.object(m.Gate, 'guest', guest), \
+                     patch.object(m.subprocess, 'Popen'), patch.object(m, 'validate_report') as app_validate, \
+                     patch.object(m, 'validate_visual', return_value={'binarySHA256': 'c' * 64 if mode == 'wrong-binary' else pin}) as validate:
+                    source_receipt = gate.out / 'recovery.json'
+                    if mode == 'retry-before-collection':
+                        with patch.object(m.Gate, 'collect_evidence', side_effect=m.GateError('interrupted transfer')):
+                            first = recovery.recover(argparse.Namespace(receipt=source_receipt, output=root/'retry1'))
+                        self.assertEqual(first['status'], 'failed')
+                        source_receipt = root/'retry1/recovery.json'
+                        self.assertEqual(recovery.receipt(source_receipt)['input_executable_sha256'], pin)
+                        validate.assert_not_called()
+                    if mode == 'invalid-report': validate.side_effect = m.GateError('incomplete visual scenarios or cleanup')
+                    with patch.object(m.Gate, 'collect_evidence', collect):
+                        result = recovery.recover(argparse.Namespace(receipt=source_receipt, output=root/'retry2'))
+                self.assertEqual(result['status'], 'recovered-validated-evidence' if mode in ('success', 'retry-before-collection') else 'failed')
+                self.assertEqual(result['input_executable_sha256'], pin)
+                self.assertTrue(result['cleanup']['owned_clone_deleted'])
+                app_validate.assert_not_called()
+                if mode == 'failed-guest': validate.assert_not_called()
+                else: validate.assert_called_once_with(root/'retry2/evidence')
+                if mode == 'wrong-binary': self.assertIn('different executable', result['failure']['detail'])
+
+    def test_visual_receipt_without_original_hash_fails_before_boot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gate, calls, call = self.fixture(Path(temp))
+            gate.args.profile = 'visual'
+            with patch.object(gate, 'call', call): gate.cleanup()
+            with patch.object(m.subprocess, 'Popen') as boot:
+                with self.assertRaisesRegex(m.GateError, 'original executable hash'):
+                    recovery.recover(argparse.Namespace(receipt=gate.out/'recovery.json', output=Path(temp)/'retry'))
+            boot.assert_not_called()
