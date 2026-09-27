@@ -6,6 +6,36 @@ use serde::{Serialize, Serializer};
 use std::io::Write;
 
 pub(super) const MAX_SNAPSHOT: usize = 8 * 1024 * 1024;
+// Domain grouping allocates reference/ID indices and can scan quadratically.
+// Reject, never truncate, before those helpers. This counts only maps traversed
+// by this projection, including retained history used by its grouping rules.
+// An oversized history requires pagination even if its final JSON could be small.
+// This is a work/scratch cardinality bound, NOT a total RSS guarantee.
+const MAX_ENTITIES: usize = 16 * 1024;
+fn ensure_cardinality(v: &View) -> anyhow::Result<()> {
+    let counts = [
+        v.nodes.len(),
+        v.questions.len(),
+        v.reports.len(),
+        v.messages.len(),
+        v.delivery_attempts.len(),
+        v.prs.len(),
+        v.board.requests.len(),
+        v.board.tasks.len(),
+    ];
+    let mut remaining = MAX_ENTITIES;
+    for count in counts {
+        remaining = remaining.checked_sub(count).ok_or(OverviewTooLarge)?;
+    }
+    Ok(())
+}
+fn with_bounded_view<T>(
+    v: &View,
+    project: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    ensure_cardinality(v)?;
+    project()
+}
 #[derive(Debug)]
 pub(crate) struct OverviewTooLarge;
 impl std::fmt::Display for OverviewTooLarge {
@@ -51,20 +81,25 @@ fn encode(value: &impl Serialize, limit: usize) -> anyhow::Result<Vec<u8>> {
     Ok(out.bytes)
 }
 pub(super) fn capture(hub: &Hub, limit: usize) -> anyhow::Result<Vec<u8>> {
+    // Check before auxiliary cache reads, then recheck the pinned View below:
+    // another writer may have added entities while those reads ran.
+    hub.read(ensure_cardinality)?;
     let now = now_millis();
     let machine = hub.machine();
     let usage = bounded_usage(&crate::watcher::claude_home())?;
     hub.read(|v| {
-        encode(
-            &Snapshot {
-                v,
-                hub,
-                now,
-                machine: &machine,
-                usage: &usage,
-            },
-            limit,
-        )
+        with_bounded_view(v, || {
+            encode(
+                &Snapshot {
+                    v,
+                    hub,
+                    now,
+                    machine: &machine,
+                    usage: &usage,
+                },
+                limit,
+            )
+        })
     })
 }
 // Usage is an auxiliary local cache. Retain its existing malformed/missing-file
@@ -115,6 +150,21 @@ fn bounded_usage(home: &std::path::Path) -> anyhow::Result<Option<alondra_core::
     Ok(alondra_core::usage::compute(
         &state, &daily, now as i64, &today,
     ))
+}
+struct FreshSequence<F>(F);
+impl<F, I> Serialize for FreshSequence<F>
+where
+    F: Fn() -> I,
+    I: Iterator,
+    I::Item: Serialize,
+{
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(None)?;
+        for item in (self.0)() {
+            seq.serialize_element(&item)?;
+        }
+        seq.end()
+    }
 }
 struct Seq<I>(I);
 impl<I: Iterator + Clone> Serialize for Seq<I>
@@ -542,11 +592,7 @@ impl<M: Serialize, U: Serialize> Serialize for Snapshot<'_, M, U> {
         )?;
         m.serialize_entry(
             "news",
-            &Seq(v
-                .inbox_reports()
-                .map(|r| Item::Report(v, r, true))
-                .collect::<Vec<_>>()
-                .into_iter()),
+            &FreshSequence(|| v.inbox_reports().map(|r| Item::Report(v, r, true))),
         )?;
         let orchestrator = v.nodes.values().find(|n| n.is_orchestrator);
         m.serialize_entry(
@@ -845,5 +891,51 @@ mod tests {
         oversized.set_len(MAX_SNAPSHOT as u64 + 1).unwrap();
         drop(oversized);
         assert!(bounded_usage(&home.0).unwrap_err().is::<OverviewTooLarge>());
+    }
+    #[test]
+    fn overview_entity_budget_is_checked_before_projection_and_accepts_exact_boundary() {
+        use std::cell::Cell;
+        let mut v = View::default();
+        let message: Message = serde_json::from_value(
+            json!({"id":1,"session_id":"fixture","from":"user","text":"x","created_at":1}),
+        )
+        .unwrap();
+        for id in 1..=MAX_ENTITIES as u64 {
+            let mut m = message.clone();
+            m.id = id;
+            v.messages.insert(id, m);
+        }
+        // Retention tombstones and unrelated launch bookkeeping are not traversed.
+        for id in 0..MAX_ENTITIES {
+            v.removed.insert(format!("removed-{id}"), 0);
+        }
+        let projected = Cell::new(0);
+        assert_eq!(
+            with_bounded_view(&v, || {
+                projected.set(projected.get() + 1);
+                Ok(7)
+            })
+            .unwrap(),
+            7
+        );
+        assert_eq!(projected.get(), 1);
+        v.nodes
+            .insert("extra".into(), alondra_core::Node::new("extra", 0));
+        let error = with_bounded_view(&v, || {
+            projected.set(projected.get() + 1);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.is::<OverviewTooLarge>());
+        assert_eq!(
+            projected.get(),
+            1,
+            "no snapshot helper or auxiliary work may run after cardinality rejection"
+        );
+        v.messages.remove(&1);
+        assert!(
+            with_bounded_view(&v, || Ok(())).is_ok(),
+            "budget is the sum across consulted maps, not a per-map cap"
+        );
     }
 }
