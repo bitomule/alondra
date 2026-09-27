@@ -839,6 +839,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod http_tests {
+    include!("pg_fault_tests.rs");
     use super::*;
     use alondra_e2e::{Context, EnvelopeV1, sign_http_challenge};
     use auth::PhoneDevice;
