@@ -104,7 +104,11 @@ def validate_report(folder):
     report = json.loads(reports[0].read_text())
     expected = {'clean-onboarding', 'demo-open', 'demo-reset', 'demo-exit'}
     steps = report.get('steps') or []
-    if {x.get('name') for x in steps} != expected or any(x.get('image', {}).get('ok') is not True for x in steps):
+    names = [x.get('name') for x in steps]
+    # MAV evidence.stop adds a validated final capture after the four required steps.
+    if (not expected <= set(names) or not set(names) <= expected | {'final'}
+            or len(names) != len(set(names))
+            or any(x.get('image', {}).get('ok') is not True for x in steps)):
         raise GateError('missing or invalid required demo evidence')
     if report.get('crashes') or report.get('invalid_step_count') != 0 or report.get('video_status') != 'accepted':
         raise GateError('MAV reports crashes, invalid evidence, or missing/invalid video')

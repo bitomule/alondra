@@ -64,10 +64,17 @@ class MacGateTests(unittest.TestCase):
                 (turn / 'before_state.json').write_text(json.dumps({'tree_markdown': f'- [1] AXButton (Demo) [id={identifier} actions=[press]]'}))
                 (turn / 'after_state.json').write_text(json.dumps({'tree_markdown': 'AXStaticText = "Demo · Sample data"\n[1] AXButton (Reset demo)\n[2] AXButton (Exit demo)'}))
             raw = run / 'video/turn-00001/after_state.json'  # Only reset loses its banner below.
+            good['steps'].append({'name': 'final', 'image': {'ok': True}})
             for field, bad in [('video_status', 'invalid'), ('crashes', ['crash.ips']), ('invalid_step_count', 1), ('steps', [])]:
                 (run / 'report.json').write_text(json.dumps({**good, field: bad}))
                 with self.subTest(field=field), self.assertRaises(m.GateError):
                     m.validate_report(folder)
+            for bad_steps in (good['steps'][1:], good['steps'] + [good['steps'][0]],
+                              good['steps'] + [{'name': 'unexpected', 'image': {'ok': True}}]):
+                (run / 'report.json').write_text(json.dumps({**good, 'steps': bad_steps}))
+                with self.assertRaises(m.GateError): m.validate_report(folder)
+            (run / 'report.json').write_text(json.dumps({**good, 'steps': good['steps'][:-1]}))
+            self.assertEqual(m.validate_report(folder)[0], run / 'report.json')
             (run / 'report.json').write_text(json.dumps(good))
             self.assertEqual(m.validate_report(folder)[0], run / 'report.json')
             original = raw.read_text()
