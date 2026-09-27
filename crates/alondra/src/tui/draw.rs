@@ -1017,19 +1017,15 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn fleet_summary(app: &App) -> Vec<Line<'static>> {
-    let mut counts: Vec<(NodeState, usize)> = vec![];
-    for n in &app.data.nodes {
-        match counts.iter_mut().find(|(s, _)| *s == n.state) {
-            Some((_, c)) => *c += 1,
-            None => counts.push((n.state, 1)),
-        }
-    }
+    let nodes: Vec<&FleetNode> = app.data.nodes.iter().filter(|n| !n.is_orchestrator).collect();
     let mut lines = vec![Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()), Line::default()];
-    if counts.is_empty() {
+    if nodes.is_empty() {
         lines.push(Line::from(tr!("No nodes yet.", "Todavía no hay nodos.").fg(DIM)));
     }
-    for (s, c) in counts {
-        lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(state_color(s))), Span::raw(format!("{c} {}", i18n::state(s)))]));
+    for occupancy in [Occupancy::Busy, Occupancy::WaitingMachine, Occupancy::Free] {
+        let Some(n) = nodes.iter().find(|n| Occupancy::of(n) == occupancy) else { continue };
+        let c = nodes.iter().filter(|n| Occupancy::of(n) == occupancy).count();
+        lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(node_color(n))), Span::raw(format!("{c} {}", occupancy.label()))]));
     }
     lines
 }
@@ -1944,8 +1940,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("o", tr!("expand the task's detail to full screen", "expandir el detalle de la tarea a pantalla completa")),
         row("r · ⏎", tr!("message its node · its node's terminal", "mensaje a su nodo · el terminal de su nodo")),
         row("x", tr!("cancel the task (twice to confirm)", "descartar la tarea (dos veces para confirmar)")),
-        row("Shift+R", tr!("reopen a done or cancelled task", "reabrir una tarea hecha o descartada")),
-        row("Shift+A", tr!("archive every done or cancelled task", "archivar todas las tareas hechas o descartadas")),
+        row("Shift+R", tr!("reopen a finished or cancelled task", "reabrir una tarea terminada o descartada")),
+        row("Shift+A", tr!("archive every finished or cancelled task", "archivar todas las tareas terminadas o descartadas")),
         row("⏎ · o", tr!("on Archived: show or hide the archived tasks", "en Archivadas: mostrar u ocultar las archivadas")),
         Line::default(),
         section(tr!("Fleet", "Flota")),
@@ -2051,6 +2047,25 @@ mod tests {
         assert!(rendered.contains("◆ Kestrel (2)") && rendered.contains("◆ Lumo (1)"), "{rendered}");
         assert!(rendered.find("lunes").unwrap() < rendered.find("jueves").unwrap() && rendered.find("jueves").unwrap() < rendered.find("◆ Lumo").unwrap(), "{rendered}");
         assert!(rendered.contains("HORARIO") && rendered.contains("ENCARGO") && rendered.contains("pausada"), "{rendered}");
+    }
+
+    #[test]
+    fn the_home_counts_nodes_as_busy_or_free_and_leaves_the_orchestrator_and_internal_states_out() {
+        let (mut app, _rx) = app_with(vec![]);
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        app.loaded = true;
+        let mut orchestrator = alive_node("alondra-orchestrator");
+        orchestrator.node.is_orchestrator = true;
+        orchestrator.node.orchestrator_state = Some(alondra_core::OrchestratorState::OnDuty);
+        orchestrator.node.state = NodeState::Delivered;
+        let mut reported = alive_node("reported");
+        reported.node.state = NodeState::Delivered;
+        let mut working = alive_node("working");
+        working.node.state = NodeState::Working;
+        app.data.nodes = vec![orchestrator, reported, working];
+        let home = screen(&mut app, 130, 33);
+        assert!(home.contains("La flota ahora") && home.contains("● 1 ocupado") && home.contains("● 1 libre"), "{home}");
+        assert!(!home.contains("entrega resultado"), "{home}");
     }
 
     #[test]

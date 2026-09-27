@@ -73,17 +73,23 @@ import Testing
         #expect(older.activity == nil)
     }
 
-    @MainActor @Test func aWaitingTaskReadsWaitingWithAnArrowWhenItWaitsInAnotherRequest() throws {
-        func task(_ id: String, _ request: String, _ state: String, _ deps: String) -> String {
-            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"\#(state)","depends_on":[\#(deps)],"state_since":1,"created_at":1,"recorded":true}"#
+    @MainActor @Test func aTaskReadsRunningWaitingForYouOrFinishedAndAMergedAndReportedTaskIsFinished() throws {
+        func task(_ id: String, _ request: String, _ state: String, _ deps: String, _ more: String = "") -> String {
+            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"\#(state)","depends_on":[\#(deps)],"state_since":1,"created_at":1,"recorded":true\#(more)}"#
         }
-        let tasks = [task("t-1", "r-1", "running", ""), task("t-2", "r-1", "waiting_dependency", #""t-1""#), task("t-3", "r-2", "waiting_dependency", #""t-1""#)]
-        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-1","t-2"]},{"id":"r-2","created_at":1,"state":"in_progress","tasks":["t-3"]}]"#
+        let tasks = [
+            task("t-1", "r-1", "running", ""), task("t-2", "r-1", "waiting_dependency", #""t-1""#), task("t-3", "r-2", "waiting_dependency", #""t-1""#),
+            task("t-4", "r-2", "in_review", "", #","prs":[114]"#), task("t-5", "r-2", "closing", "", #","prs":[114]"#),
+            task("t-6", "r-3", "done", "", #","prs":[114],"final_report":274"#),
+        ]
+        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-1","t-2"]},{"id":"r-2","created_at":1,"state":"in_progress","tasks":["t-3","t-4","t-5"]},{"id":"r-3","created_at":1,"state":"done","tasks":["t-6"]}]"#
         let store = ServiceTaskPresentation(overview: try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":\#(requests),"tasks":[\#(tasks.joined(separator: ","))]}"#))
+        let label = { (id: String) in try #require(store.board.task(id)).state.label }
+        #expect(try ["t-1", "t-2", "t-3", "t-5"].map(label) == ["running", "running", "running", "running"])
+        #expect(try label("t-4") == "needs you")
+        #expect(try label("t-6") == "finished")
         let waiting = try #require(store.board.task("t-2"))
-        let elsewhere = try #require(store.board.task("t-3"))
-        #expect(store.board.stateLabel(of: waiting) == "waiting")
-        #expect(store.board.stateLabel(of: elsewhere) == "waiting ↗")
+        #expect(store.board.stateLabel(of: waiting) == "running")
         #expect(store.now(for: waiting) == nil, "no “after …” line: the tree already shows what it waits for")
     }
 

@@ -54,6 +54,19 @@ public struct RequestTree: Identifiable, Hashable, Sendable {
     public var changedAt: Int64 { rows.map(\.task.changedAt).max() ?? request.closed?.at ?? request.createdAt }
 }
 
+extension WorkTask.State {
+    /// The state the user sees: running, waiting for them (a question, an action or a PR to
+    /// review), finished or cancelled. The steps in between are Alondra's, not theirs.
+    public var shown: WorkTask.State {
+        switch self {
+        case .waitingDependency, .running, .closing: .running
+        case .needsYou, .inReview: .needsYou
+        case .done: .done
+        case .cancelled: .cancelled
+        }
+    }
+}
+
 /// The tasks grouped the way the Mac sidebar lists them: what waits for the user first.
 public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
@@ -85,7 +98,7 @@ public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     }
 
     public static let order: [Kind] = [
-        .task(.needsYou), .task(.inReview), .task(.running), .task(.closing), .task(.waitingDependency), .defining, .task(.done), .task(.cancelled), .archived,
+        .task(.needsYou), .task(.running), .defining, .task(.done), .task(.cancelled), .archived,
     ]
 }
 
@@ -218,7 +231,7 @@ public struct TaskBoard: Sendable {
             let group: TaskStateGroup = switch kind {
             case .defining: TaskStateGroup(kind: kind, tasks: [], requests: defining)
             case .task(.done): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == .done }, requests: taskless)
-            case .task(let state): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == state }, requests: [])
+            case .task(let state): TaskStateGroup(kind: kind, tasks: active.filter { $0.state.shown == state }, requests: [])
             case .archived: TaskStateGroup(kind: kind, tasks: all.filter(\.isArchived), requests: archivedTrees.filter(\.rows.isEmpty).map(\.request))
             }
             return group.count == 0 ? nil : group

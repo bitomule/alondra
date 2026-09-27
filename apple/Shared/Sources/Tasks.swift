@@ -7,21 +7,18 @@ extension WorkRequest.State {
         switch self {
         case .defining: String(localized: "defining", table: "AlondraShared", bundle: #bundle)
         case .inProgress: String(localized: "in progress", table: "AlondraShared", bundle: #bundle)
-        case .done: String(localized: "request-state.done", defaultValue: "done", table: "AlondraShared", bundle: #bundle)
+        case .done: String(localized: "request-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
 
 extension WorkTask.State {
     public var label: String {
-        switch self {
-        case .waitingDependency: String(localized: "waiting for another task", table: "AlondraShared", bundle: #bundle)
-        case .running: String(localized: "running", table: "AlondraShared", bundle: #bundle)
+        switch shown {
         case .needsYou: String(localized: "needs you", table: "AlondraShared", bundle: #bundle)
-        case .inReview: String(localized: "in review", table: "AlondraShared", bundle: #bundle)
-        case .closing: String(localized: "closing", table: "AlondraShared", bundle: #bundle)
-        case .done: String(localized: "task-state.done", defaultValue: "done", table: "AlondraShared", bundle: #bundle)
+        case .done: String(localized: "task-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
         case .cancelled: String(localized: "cancelled", table: "AlondraShared", bundle: #bundle)
+        default: String(localized: "running", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
@@ -64,24 +61,18 @@ extension TaskStateGroup {
     public var title: String {
         switch kind {
         case .defining: String(localized: "Defining", table: "AlondraShared", bundle: #bundle)
-        case .task(.waitingDependency): String(localized: "Waiting for another task", table: "AlondraShared", bundle: #bundle)
-        case .task(.running): String(localized: "Running", table: "AlondraShared", bundle: #bundle)
-        case .task(.needsYou): String(localized: "Needs you", table: "AlondraShared", bundle: #bundle)
-        case .task(.inReview): String(localized: "In review", table: "AlondraShared", bundle: #bundle)
-        case .task(.closing): String(localized: "Closing", table: "AlondraShared", bundle: #bundle)
-        case .task(.done): String(localized: "task-group.done", defaultValue: "Done", table: "AlondraShared", bundle: #bundle)
-        case .task(.cancelled): String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)
+        case .task(let state):
+            switch state.shown {
+            case .needsYou: String(localized: "Needs you", table: "AlondraShared", bundle: #bundle)
+            case .done: String(localized: "task-group.done", defaultValue: "Finished", table: "AlondraShared", bundle: #bundle)
+            case .cancelled: String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)
+            default: String(localized: "Running", table: "AlondraShared", bundle: #bundle)
+            }
         case .archived: String(localized: "Archived", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
 
 extension TaskBoard {
-    public func stateLabel(of task: WorkTask) -> String {
-        guard task.state == .waitingDependency else { return task.state.label }
-        if dependencies(of: task).contains(where: { $0.request != task.request }) {
-            return String(localized: "waiting ↗", table: "AlondraShared", bundle: #bundle)
-        }
-        return String(localized: "waiting", table: "AlondraShared", bundle: #bundle)
-    }
+    public func stateLabel(of task: WorkTask) -> String { task.state.label }
 }

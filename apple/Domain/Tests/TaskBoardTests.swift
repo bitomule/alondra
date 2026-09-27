@@ -115,10 +115,14 @@ import Testing
             try Self.task("ask", state: "needs_you", created: 2),
             try Self.task("pr", state: "in_review", created: 3),
             try Self.task("old", state: "done", created: 4),
+            try Self.task("merged", state: "closing", created: 5),
+            try Self.task("queued", state: "waiting_dependency", created: 6),
         ]
         let board = TaskBoard(requests: [try Self.request("r-1", tasks: tasks.map(\.id)), try Self.request("r-2", tasks: [], state: "defining")], tasks: tasks)
-        #expect(board.groups.map(\.kind) == [.task(.needsYou), .task(.inReview), .task(.running), .defining, .task(.done)])
-        #expect(board.openCount == 4)
+        #expect(board.groups.map(\.kind) == [.task(.needsYou), .task(.running), .defining, .task(.done)])
+        #expect(board.groups.first?.tasks.map(\.id) == ["ask", "pr"], "a PR to review waits for the user like a question")
+        #expect(board.groups[1].tasks.map(\.id) == ["run", "merged", "queued"], "Alondra's own steps read as running")
+        #expect(board.openCount == 6)
         #expect(board.openTrees.map(\.id) == ["r-1", "r-2"], "r-1's tasks moved after r-2 was sent")
     }
 
