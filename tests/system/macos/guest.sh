@@ -19,7 +19,13 @@ mkdir -p project/.mav
 cp config.yaml project/.mav/config.yaml
 cp demo.yaml project/demo.yaml
 cd project
-mav doctor > doctor.txt
+# The prepared base has permissions, but a fresh boot has no driver daemon.
+open -n -g -a CuaDriver --args serve
+for attempt in {1..20}; do
+  mav doctor > doctor.txt
+  if grep -q 'mac_permissions=ok' doctor.txt; then break; fi
+  sleep 1
+done
 # doctor can succeed with missing optional tools; require the actual UI capabilities.
 grep -q 'mac_permissions=ok' doctor.txt
 grep -q 'mac_tree_driver=cua' doctor.txt
