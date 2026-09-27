@@ -199,9 +199,19 @@ def build_app(commands: Commands, output: Path, cache: Path, platform: str) -> P
     if platform == "ios":
         flags += ["--ios_multi_cpus=sim_arm64", "--apple_platform_type=ios"]
     commands.run(startup + ["build", label] + flags, timeout=1800)
-    bazel_bin = Path(commands.run(startup + ["info", "bazel-bin"] + flags))
+    # Apple rules transition the target configuration; generic bazel-bin from
+    # `info` can refer to Darwin even when the built target is an iOS simulator.
     suffix = ".ipa" if platform == "ios" else ".zip"
-    return extract_app(bazel_bin / "apple/NativeHarness" / (target + suffix), output / "artifact", platform)
+    files = commands.run(startup + ["cquery", label, "--output=files"] + flags)
+    archives = [Path(line) for line in files.splitlines()
+                if line.startswith("bazel-out/") and line.endswith("/" + target + suffix)]
+    if len(archives) != 1 or ".." in archives[0].parts:
+        raise ValueError("expected exactly one configured harness archive")
+    roots = [Path(line) for line in commands.run(startup + ["info", "execution_root"] + flags).splitlines()
+             if line.startswith("/")]
+    if len(roots) != 1:
+        raise ValueError("could not resolve the Bazel execution root")
+    return extract_app(roots[0] / archives[0], output / "artifact", platform)
 
 
 def wait_report(path: Path, run_id: str, scenario: str, timeout: float, evidence: Path) -> dict:
