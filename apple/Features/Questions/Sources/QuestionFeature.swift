@@ -240,14 +240,14 @@ public struct QuestionFeature {
                     state.needsReconciliation = true
                 case .uncertain:
                     state.noticeIsSubmissionFailure = false
-                    state.notice = "The result is uncertain. Check the server before trying again."
+                    state.notice = "We couldn’t confirm the result. Your draft has been kept."
                     state.needsReconciliation = true
                 case .deliveryUnconfirmed(let attemptID):
                     state.deliveryUnconfirmed = true
                     state.deliveryAttemptID = attemptID
                     state.needsReconciliation = true
                     state.noticeIsSubmissionFailure = false
-                    state.notice = DeliveryHandoffUnconfirmed.message
+                    state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
                 case .obsolete:
                     break
                 }
@@ -258,7 +258,7 @@ public struct QuestionFeature {
                 state.deliveryUnconfirmed = true
                 state.deliveryAttemptID = attemptID
                 state.noticeIsSubmissionFailure = false
-                state.notice = DeliveryHandoffUnconfirmed.message
+                state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
                 return .none
             case .deliveryDecisionResolved(let retry, let discarded):
                 guard state.deliveryUnconfirmed else { return .none }

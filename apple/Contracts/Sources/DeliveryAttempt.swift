@@ -25,7 +25,7 @@ public struct DeliveryAttempt: Codable, Equatable, Sendable, Identifiable {
 /// A confirmed HTTP response can still report an unconfirmed external handoff.
 /// Messages here are local text, never persisted arbitrary response bodies.
 public struct DeliveryHandoffUnconfirmed: Error, LocalizedError, Equatable, Sendable {
-    public static let message = "Your Mac accepted the command, but delivery is unconfirmed. Review deliveries and inspect the terminal before deciding. Your draft has been kept."
+    public static let message = "We couldn’t confirm the result."
     public var errorDescription: String? { Self.message }
     public let attemptID: UInt64?
     public init(attemptID: UInt64? = nil) { self.attemptID = attemptID }

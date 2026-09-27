@@ -5,9 +5,7 @@ import SwiftUI
 struct ServiceDeliveryBanner: View {
     let store: StoreOf<ServiceRootFeature>
     var body: some View {
-        VStack(spacing: 8) {
-            DeliveryJournalButton(store: store.scope(state: \.deliveryJournal, action: \.deliveryJournal))
-            ZStack {
+        ZStack {
             if let notice = store.macError, case .failure(let message) = notice.event {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -33,16 +31,9 @@ struct ServiceDeliveryBanner: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 9)
                 .background(.regularMaterial, in: .capsule).padding(.top, 10).transition(.opacity)
-            } else if store.delivery.pendingCount > 0 {
-                Label(String(localized: "\(store.delivery.pendingCount) operations unconfirmed; checking their status"), systemImage: "arrow.clockwise")
-                    .lineLimit(1).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(.regularMaterial, in: .capsule).padding(.top, 10).transition(.opacity)
             }
         }
-        }
         .animation(.snappy, value: store.macError)
-        .animation(.snappy, value: store.delivery.pendingCount)
         .animation(.snappy, value: store.delivery.warnings)
     }
 }

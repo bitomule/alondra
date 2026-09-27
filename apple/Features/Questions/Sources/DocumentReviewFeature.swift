@@ -412,7 +412,7 @@ public struct DocumentReviewFeature {
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
                 state.uncertainCommandID = nil
                 state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID
-                state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message
+                state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
                 return .none
             case .deliveryDecisionResolved(let retry, let discarded):
                 guard state.deliveryUnconfirmed else { return .none }
@@ -462,11 +462,11 @@ public struct DocumentReviewFeature {
                     state.needsReconciliation = true
                 case .uncertain:
                     state.noticeIsSubmissionFailure = false
-                    state.notice = "The result is uncertain. Check the server before trying again."
+                    state.notice = "We couldn’t confirm the result. Your draft has been kept."
                     state.needsReconciliation = true
                 case .deliveryUnconfirmed(let attemptID):
                     state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID; state.needsReconciliation = true
-                    state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message
+                    state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
                 case .obsolete: break
                 }
                 return .none

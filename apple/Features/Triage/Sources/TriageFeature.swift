@@ -247,7 +247,7 @@ public struct TriageFeature {
                 case .unknown:
                     state.hiddenIDs.remove(id)
                     state.noticeIsMutationFailure = false
-                    state.notice = String(localized: "The result is uncertain. Check the server before trying again.")
+                    state.notice = String(localized: "We couldn’t confirm the result.")
                 case .obsolete:
                     state.hiddenIDs.remove(id)
                     if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }

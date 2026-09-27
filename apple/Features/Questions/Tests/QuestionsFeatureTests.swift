@@ -169,7 +169,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.needsReconciliation = true
-            $0.notice = "The result is uncertain. Check the server before trying again."
+            $0.notice = "We couldn’t confirm the result. Your draft has been kept."
         }
         await store.send(attached ? .attachedAnswerTapped : .answerTapped)
         await store.finish()
@@ -527,7 +527,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.reportFeedbackFinished) {
             $0.isSubmitting = false
             $0.needsReconciliation = true
-            $0.notice = "The result is uncertain. Check the server before trying again."
+            $0.notice = "We couldn’t confirm the result. Your draft has been kept."
         }
         #expect(await coordinator.messageSends == 1)
         #expect(!store.state.completed)
@@ -593,7 +593,7 @@ struct QuestionsFeatureTests {
         await store.receive(\.submissionFinished) {
             $0.isSubmitting = false
             $0.needsReconciliation = true
-            $0.notice = "The result is uncertain. Check the server before trying again."
+            $0.notice = "We couldn’t confirm the result. Your draft has been kept."
         }
         await store.send(.answerTapped)
         await store.send(.reconciled(cardStillOpen: true)) {

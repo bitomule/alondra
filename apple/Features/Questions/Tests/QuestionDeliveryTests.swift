@@ -20,7 +20,7 @@ import Testing
         await store.send(action) {
             $0.isSubmitting = false; $0.uncertainCommandID = nil
             $0.needsReconciliation = true; $0.deliveryUnconfirmed = true; $0.deliveryAttemptID = 77
-            $0.notice = DeliveryHandoffUnconfirmed.message
+            $0.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
         }
         await store.send(.answerTapped)
         await store.send(.reconciled(cardStillOpen: false))

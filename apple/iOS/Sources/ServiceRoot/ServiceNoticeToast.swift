@@ -8,7 +8,6 @@ struct ServiceNoticeToast: View {
     let store: StoreOf<ServiceRootFeature>
     var body: some View {
         VStack(spacing: 8) {
-            DeliveryJournalButton(store: store.scope(state: \.deliveryJournal, action: \.deliveryJournal))
             if let notice = store.notice {
                 Label {
                     noticeText(notice.event)
@@ -28,12 +27,6 @@ struct ServiceNoticeToast: View {
                 .accessibilityAction(named: "Dismiss") { store.send(.dismissNotice(notice.id)) }
                 .id(notice.id)
             }
-            if store.delivery.pendingCount > 0 {
-                Label(String(localized: "\(store.delivery.pendingCount) operations unconfirmed; checking their status"), systemImage: "arrow.clockwise")
-                    .font(.footnote.weight(.medium)).lineLimit(1).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .glassEffect(.regular, in: .capsule).transition(.opacity)
-            }
             if !store.delivery.warnings.isEmpty {
                 Button { store.send(.delivery(.dismissWarnings)) } label: {
                     HStack(spacing: 10) {
@@ -51,7 +44,6 @@ struct ServiceNoticeToast: View {
         }
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: store.notice)
-        .animation(.snappy, value: store.delivery.pendingCount)
         .animation(.snappy, value: store.delivery.warnings)
         .sensoryFeedback(trigger: store.notice) { _, new in
             new?.failure == true ? .error : nil
