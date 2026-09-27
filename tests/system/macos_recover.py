@@ -45,7 +45,9 @@ def recover(args):
     gate.name = saved['vm']; gate.owner_token = saved['owner_token']; gate.tart_home = home
     gate.env['TART_HOME'] = str(home)
     gate.recovery_descriptor = saved.get('evidence_descriptor')
-    gate.result.update(source=saved['source'], vm=gate.name, recovery_of=str(args.receipt), status='failed')
+    gate.result.update(source=saved['source'], vm=gate.name, recovery_of=str(args.receipt), status='failed',
+                       guest_failure=saved.get('guest_failure'),
+                       evidence_descriptor=saved.get('evidence_descriptor'))
     # Receipt ownership remains rooted in the original run, including on a failed retry.
     (gate.out / 'ownership.json').write_text((Path(saved['original_output']) / 'ownership.json').read_text())
     try:

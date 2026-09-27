@@ -11,6 +11,7 @@ import macos_recover as recovery
 
 class RecoveryTests(unittest.TestCase):
     def fixture(self, root):
+        root = root.resolve()
         out = root / 'original'; out.mkdir()
         gate = m.Gate(argparse.Namespace(output_dir=out, base=m.BASE_NAME, profile='app'))
         gate.tart_home = root / 'tart'
@@ -81,3 +82,37 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(result['cleanup']['owned_clone_deleted'], mode != 'wrong-guest')
                 self.assertEqual(json.loads((gate.out/'recovery.json').read_text())['guest_failure'],
                     {'exit_code':1} if mode == 'failed-guest' else None)
+
+    def test_two_retries_preserve_original_failure_and_frozen_archive_pin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            gate, calls, call = self.fixture(root)
+            descriptor = {'schema': 1, 'size': 10, 'chunk_bytes': 65536, 'sha256': 'a' * 64}
+            gate.result.update(guest_failure={'exit_code': 9}, evidence_descriptor=descriptor)
+            with patch.object(gate, 'call', call): gate.cleanup()
+            def recover_call(instance, *args, **kwargs): return call(*args, **kwargs)
+            def guest(instance, *args, **kwargs):
+                return subprocess.CompletedProcess(args, 0, json.dumps({'vm': gate.name, 'owner_token': gate.owner_token}).encode(), b'')
+            def failed_collect(instance):
+                self.assertEqual(instance.recovery_descriptor, descriptor)
+                raise m.GateError('transport failed before prepare')
+            def collected(instance):
+                self.assertEqual(instance.recovery_descriptor, descriptor)
+            with patch.dict('os.environ', {'TART_HOME': str(gate.tart_home)}), \
+                 patch.object(m.shutil, 'disk_usage', return_value=argparse.Namespace(free=m.MIN_FREE * 2)), \
+                 patch.object(m.Gate, 'call', recover_call), patch.object(m.Gate, 'guest', guest), \
+                 patch.object(m.subprocess, 'Popen'):
+                with patch.object(m.Gate, 'collect_evidence', failed_collect):
+                    first = recovery.recover(argparse.Namespace(receipt=gate.out/'recovery.json', output=root/'retry1'))
+                self.assertEqual(first['status'], 'failed')
+                next_receipt = root/'retry1/recovery.json'
+                persisted = recovery.receipt(next_receipt)
+                self.assertEqual(persisted['guest_failure'], {'exit_code': 9})
+                self.assertEqual(persisted['evidence_descriptor'], descriptor)
+                with patch.object(m.Gate, 'collect_evidence', collected), patch.object(m, 'validate_report') as validate:
+                    second = recovery.recover(argparse.Namespace(receipt=next_receipt, output=root/'retry2'))
+                self.assertEqual(second['status'], 'failed')
+                self.assertEqual(second['guest_failure'], {'exit_code': 9})
+                self.assertEqual(second['evidence_descriptor'], descriptor)
+                self.assertIn('original guest execution failed', second['failure']['detail'])
+                validate.assert_not_called()
