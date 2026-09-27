@@ -377,22 +377,22 @@ impl Auth {
     pub fn enroll(&self, mac: &Identity, device: PhoneDevice) -> Result<()> {
         self.ensure_registry_ready()?;
         if device.owner_sub != mac.owner_sub || !valid_device_id(&device.device_id) {
-            bail!("invalid phone device registration");
+            bail!(EnrollmentError::InvalidRegistration);
         }
-        verifying_key(&device.signing_key)?;
+        verifying_key(&device.signing_key).map_err(|_| EnrollmentError::InvalidRegistration)?;
         let mut registry = self.devices.lock().unwrap();
         if registry.revoked_ids.contains(&device.device_id)
             || registry.macs.contains_key(&device.device_id)
             || registry.revoked_mac_ids.contains(&device.device_id)
         {
-            bail!("revoked device ID cannot be enrolled again");
+            bail!(EnrollmentError::Conflict);
         }
         if let Some(existing) = registry.devices.get(&device.device_id) {
             if existing.owner_sub != device.owner_sub
                 || existing.signing_key != device.signing_key
                 || registry.phone_macs.get(&device.device_id) != Some(&mac.device_id)
             {
-                bail!("device key replacement requires a new device ID and fresh pairing");
+                bail!(EnrollmentError::Conflict);
             }
             return Ok(());
         }
@@ -526,7 +526,7 @@ impl Auth {
             || registry.revoked_ids.contains(&mac.mac_id)
             || registry.devices.contains_key(&mac.mac_id)
         {
-            bail!("Mac ID unavailable");
+            bail!(EnrollmentError::Conflict);
         }
         if let Some(existing) = registry.macs.get(&mac.mac_id).cloned() {
             if existing == mac {
@@ -545,7 +545,7 @@ impl Auth {
                 }
                 return Ok(true);
             }
-            bail!("Mac key replacement requires a new ID");
+            bail!(EnrollmentError::Conflict);
         }
         registry.macs.insert(mac.mac_id.clone(), mac.clone());
         if let Err(err) = self.persist_registry(&registry) {
@@ -684,7 +684,7 @@ impl Auth {
 
     fn ensure_registry_ready(&self) -> Result<()> {
         if self.registry_poisoned.load(Ordering::Acquire) {
-            bail!("registry persistence failed; restart required");
+            bail!(RegistryUnavailable);
         }
         Ok(())
     }
@@ -786,6 +786,11 @@ impl Auth {
             refreshed_at: Instant::now(),
         };
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn is_mac_registered(&self, mac_id: &str) -> bool {
+        self.devices.lock().unwrap().macs.contains_key(mac_id)
     }
 
     #[cfg(test)]
@@ -1167,3 +1172,19 @@ impl std::fmt::Display for AccountGateError {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str(match self {Self::Denied=>"account_access_denied",Self::Unavailable=>"account_access_unavailable"})}
 }
 impl std::error::Error for AccountGateError {}
+
+/// Only explicit identity collisions are safe to report as HTTP conflict.
+#[derive(Debug)]
+pub enum EnrollmentError { Conflict, InvalidRegistration }
+impl std::fmt::Display for EnrollmentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {Self::Conflict=>"enrollment_conflict",Self::InvalidRegistration=>"invalid_registration"})
+    }
+}
+impl std::error::Error for EnrollmentError {}
+#[derive(Debug)]
+pub struct RegistryUnavailable;
+impl std::fmt::Display for RegistryUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {f.write_str("registry_unavailable")}
+}
+impl std::error::Error for RegistryUnavailable {}
