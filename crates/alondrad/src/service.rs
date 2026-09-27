@@ -566,7 +566,15 @@ impl Service {
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         let body = serde_json::to_vec(e)?;
-        let digest: [u8; 32] = Sha256::digest(&body).into();
+        let digest: [u8; 32] = if request.body.is_none() && crate::service_overview::route(&request.method,&request.path) {
+            // Completed encrypted receipts must not bypass a newer approval generation.
+            // Legacy routes retain their original digest contract.
+            let binding = match self.snapshot_binding(&e.sender,device) {
+                Ok(binding) => binding,
+                Err(error) => { self.snapshots.revoke(&e.sender); return Err(error); }
+            };
+            let mut hash=Sha256::new();hash.update(&body);hash.update([0]);hash.update(binding.as_bytes());hash.finalize().into()
+        } else { Sha256::digest(&body).into() };
         let is_changes = request.path.split('?').next() == Some("/v1/changes")
             && approved_method(&request).is_ok();
         let key = (e.sender.clone(), e.request_id.clone());
@@ -607,6 +615,12 @@ impl Service {
                 .await?,
         )
         .await?;
+        if request.body.is_none() && crate::service_overview::route(&request.method,&request.path) {
+            let binding = self.snapshot_binding(&e.sender,device)?;
+            let mut hash=Sha256::new();hash.update(serde_json::to_vec(e)?);hash.update([0]);hash.update(binding.as_bytes());
+            let current: [u8;32] = hash.finalize().into();
+            anyhow::ensure!(current == digest,"snapshot approval generation changed while acknowledging work");
+        }
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
@@ -1597,7 +1611,9 @@ agreement_key = "{}"
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         service.relay=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
         let relay_task=tokio::spawn(axum::serve(listener,relay).into_future());let epoch=[7;16];
-        service.handle(changes_work(&service,"snapshot-begin",json!({"method":"GET","path":"/v1/service/overview-snapshot"})),&epoch).await.unwrap();
+        let begin_work=changes_work(&service,"snapshot-begin",json!({"method":"GET","path":"/v1/service/overview-snapshot"}));
+        let old_generation_replay=repeat_work(&begin_work);
+        service.handle(begin_work,&epoch).await.unwrap();
         let first=opened_results(&service,&phone,&responses).pop().unwrap();assert_eq!(first["status"],200);
         let total=first["body"]["total_bytes"].as_u64().unwrap() as usize;assert!(total>MAX_LOCAL_RESPONSE);
         let id=first["body"]["snapshot_id"].as_str().unwrap();
@@ -1615,6 +1631,15 @@ agreement_key = "{}"
         let document:Value=serde_json::from_slice(&bytes).unwrap();
         assert!(document["reports"].as_array().unwrap().iter().any(|v|v["id"]==7));
         assert!(!document["reports"].as_array().unwrap().iter().any(|v|v["id"]==8),"snapshot must not mix revisions");
+        // Reapproving the same key under a new generation must not replay an old cached receipt.
+        let approvals=home.join("devices.json");
+        let mut approved:Value=serde_json::from_slice(&std::fs::read(&approvals).unwrap()).unwrap();
+        approved[0]["created_at"]=json!(1);
+        std::fs::write(&approvals,serde_json::to_vec(&approved).unwrap()).unwrap();
+        let sent_before=responses.lock().unwrap().len();
+        assert!(service.handle(old_generation_replay,&epoch).await.is_err());
+        assert_eq!(responses.lock().unwrap().len(),sent_before);
+        assert_eq!(service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:format!("/v1/service/overview-snapshot/{id}?offset=0"),body:None}).await.unwrap()["status"],404);
         // Persisted revocation is checked even if this Service's in-memory Auth is stale.
         Auth::open(&home).unwrap().revoke("phone-1").unwrap();
         let denied=service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:format!("/v1/service/overview-snapshot/{id}?offset=0"),body:None}).await.unwrap();
