@@ -66,6 +66,21 @@ class VisualContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stale'):
             driver.wait_state(lambda: self.report('reconnect'), 'different-run', 'reconnect', lambda _: True)
 
+    def test_driver_keeps_original_failure_when_receipt_and_stop_also_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            def mav(*args):
+                calls.append(args)
+                if args[0] == 'open': raise RuntimeError('original launch failure')
+                if args[0] == 'stop': raise TimeoutError('cleanup timeout')
+                return ''
+            with self.assertRaisesRegex(RuntimeError, 'original launch failure') as result:
+                driver.exercise(mav, Mock(side_effect=ValueError('bad JSON')), Mock(),
+                                Path(directory) / 'assertions', 'current', 'reconnect')
+            self.assertEqual(calls[-1], ('stop',))
+            self.assertEqual(json.loads((Path(directory) / 'assertions/failure-diagnostics.json').read_text()), [
+                'Failure receipt unavailable: ValueError', 'MAV cleanup failed: TimeoutError'])
+
     def test_mac_host_runtime_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             visual_run.main(['--platform', 'mac', '--run', '--output', '/private/tmp/uncreated-visual'])

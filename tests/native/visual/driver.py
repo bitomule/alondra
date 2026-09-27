@@ -88,9 +88,11 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str):
         atomic_json(output / (name + '-state.json'), value)
         steps.append(name)
     onboarding = ('pairing.screen', 'Your work.', 'A home for your work.', 'Connecting securely', 'pairing.signIn')
-    mav('open', '--no-relaunch')
-    mav('evidence', 'start')
+    failure = None
+    failure_diagnostics = []
     try:
+        mav('open', '--no-relaunch')
+        mav('evidence', 'start')
         if scenario == 'reconnect':
             wait_state(read, run_id, scenario, lambda s: s.get('savedConfiguration') is True and s.get('restoring') is True and not s.get('ready'))
             mav('ui', 'wait', '--text', 'Connecting to the fleet…', '--timeout', '15s')
@@ -125,14 +127,28 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str):
         validate_mav_report(output.parent / 'mav-run/report.json', steps)
         atomic_json(output / 'driver.json', {'schema': 1, 'runID': run_id, 'scenario': scenario, 'steps': steps, 'status': 'passed'})
         return report
-    except BaseException:
-        value = read()
-        if value is not None:
-            atomic_json(output / 'failed-result.json', value)
+    except BaseException as error:
+        failure = error
+        try:
+            value = read()
+            if value is not None:
+                atomic_json(output / 'failed-result.json', value)
+        except Exception as receipt_error:
+            failure_diagnostics.append('Failure receipt unavailable: ' + type(receipt_error).__name__)
         try:
             mav('evidence', 'stop')
         except Exception:
             pass
         raise
     finally:
-        mav('stop')
+        try:
+            mav('stop')
+        except Exception as stop_error:
+            if failure is None:
+                raise
+            failure_diagnostics.append('MAV cleanup failed: ' + type(stop_error).__name__)
+        if failure_diagnostics:
+            try:
+                atomic_json(output / 'failure-diagnostics.json', failure_diagnostics)
+            except OSError:
+                pass  # An unavailable evidence directory must not replace the initial failure.
