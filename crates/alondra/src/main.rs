@@ -5,6 +5,7 @@ mod account;
 mod client;
 mod claude_auth;
 mod doctor;
+mod delivery;
 mod mcp;
 mod service_setup;
 mod service_pair;
@@ -38,6 +39,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = "Inspect or explicitly resolve uncertain deliveries; Local by default")]
+    Delivery(delivery::Options),
     #[command(about = "List Macs enrolled in your service account")]
     Machines,
     #[command(about = "Pair/select a remote Mac; normal alondra still opens Local")]
@@ -139,6 +142,7 @@ fn main() -> Result<()> {
         service_client::initialize(cli.mac.as_deref())?;
     }
     match cli.command {
+        Some(Cmd::Delivery(options)) => delivery::run(options),
         Some(Cmd::Machines) => service_client::list(),
         Some(Cmd::Connect { mac, repair }) => service_client::connect(&mac, repair),
         None => tui::run(),
@@ -162,8 +166,8 @@ fn main() -> Result<()> {
             Ok(())
         },
         Some(Cmd::Answer { id, text }) => {
-            Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
-            println!("{}", trf!("Answered #{id}", "Contestada #{id}"));
+            let result = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
+            println!("{}", delivery::response_notice(&result, None).unwrap_or_else(|| trf!("Answered #{id}", "Contestada #{id}")));
             Ok(())
         }
         Some(Cmd::Send { node, text }) => {
@@ -449,5 +453,21 @@ mod destination_tests {
         assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a", "--remote"]).is_err());
         let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
         assert!(connect.mac.is_none() && !connect.remote);
+    }
+}
+
+#[cfg(test)]
+mod delivery_cli_tests {
+    use super::*;
+    #[test]
+    fn delivery_confirmation_and_destination_flags_are_scoped() {
+        assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2"]).is_err());
+        assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2","--terminal-checked"]).is_err());
+        let cli=Cli::try_parse_from(["alondra","delivery","retry","7","--mac","mac-b","--expected-version","2","--terminal-checked","--confirm-duplicate-risk"]).unwrap();
+        assert!(cli.mac.is_none());
+        assert!(matches!(cli.command,Some(Cmd::Delivery(delivery::Options{mac:Some(mac),..})) if mac=="mac-b"));
+        assert!(Cli::try_parse_from(["alondra","answer","7","--mac","mac-b"]).is_err());
+        let cli=Cli::try_parse_from(["alondra","delivery","list"]).unwrap();
+        assert!(matches!(cli.command,Some(Cmd::Delivery(delivery::Options{mac:None,..}))));
     }
 }
