@@ -70,6 +70,25 @@ alondra orchestrator-retry RUN_ID --confirm
 alondra orchestrator-acknowledge RUN_ID --confirm
 ```
 
+### Uncertain deliveries
+
+HTTP acceptance is not proof that Claude executed an action. The TUI keeps a
+pending/uncertain warning; `:deliveries` shows the recorded evidence and recovery
+commands. Inspect the destination terminal before choosing a resolution:
+
+```sh
+alondra delivery list
+alondra delivery retry ID --expected-version VERSION --terminal-checked --confirm-duplicate-risk
+alondra delivery discard ID --expected-version VERSION --terminal-checked
+# Use an explicitly approved remote Mac instead of Local:
+alondra delivery --mac MAC_ID list
+```
+
+Add the same `--mac MAC_ID` after `delivery` when resolving a remote attempt.
+A changed version is rejected; inspect again before deciding. Retry can duplicate
+an external effect; discard does not undo it. A menu retry reopens the question
+for a new selection. No command retries an uncertain delivery automatically.
+
 After a successful batch, Alondra measures the latest main-model input, including cache tokens.
 At `compact_orchestrator_at` percent of the reported context window (default 50; 0 disables
 manual compaction), it runs `/compact` on the same conversation before more work. A compact

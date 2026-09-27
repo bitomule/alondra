@@ -74,7 +74,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
     }
 
     let parked: Vec<(String, String)> =
-        hub.read(|v| v.nodes.values().filter(|n| states::unseen_menu(v, n, now_millis())).map(|n| (n.session_id.clone(), n.short_id.clone())).collect());
+        hub.read(|v| v.nodes.values().filter(|n| !v.delivery_blocked(&n.session_id) && states::unseen_menu(v, n, now_millis())).map(|n| (n.session_id.clone(), n.short_id.clone())).collect());
     for (session, short) in parked {
         let own = hub.own_attach(&short);
         let short_for_task = short.clone();
@@ -89,7 +89,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
         };
         hub.append_with(|v| {
             let node = v.nodes.get(&session)?;
-            states::unseen_menu(v, node, now_millis()).then(|| Event::QuestionAsked(card(v, node, &screen)))
+            (!v.delivery_blocked(&session) && states::unseen_menu(v, node, now_millis())).then(|| Event::QuestionAsked(card(v, node, &screen)))
         })?;
     }
     Ok(())
@@ -101,7 +101,7 @@ async fn sweep(hub: &Arc<Hub>, asked_at: &mut Option<Instant>) -> anyhow::Result
 fn suspect(v: &View, n: &Node, now: i64) -> bool {
     let carded = v.questions.values().any(|q| q.session_id == n.session_id && q.status.is_open());
     let idle = n.state != alondra_core::NodeState::Working || n.daemon_state.as_deref() == Some("blocked");
-    n.in_daemon && n.alive && idle && !carded && !states::watching(v, n, now)
+    n.in_daemon && n.alive && idle && !v.delivery_blocked(&n.session_id) && !carded && !states::watching(v, n, now)
 }
 
 async fn agents_waiting() -> Option<Vec<(String, String)>> {

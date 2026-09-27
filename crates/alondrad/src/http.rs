@@ -1472,6 +1472,11 @@ struct ChangesBody {
 }
 
 async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<ChangesBody>) -> Response {
+    request_pr_changes_authorized(hub, id, b, &LiveReviewHead, || Ok(())).await
+}
+
+async fn request_pr_changes_authorized(hub: AppState, id: u64, b: ChangesBody,
+    reader: &impl ReviewHead, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
@@ -1485,9 +1490,10 @@ async fn request_pr_changes(State(hub): State<AppState>, Path(id): Path<u64>, Js
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+    if let Err(response) = verify_review_head_with(&hub, id, b.expected_head_sha.as_deref(), reader).await {
         return response;
     }
+    if authorize().is_err() { return prepared_access_denied(); }
     let text = format!("{} requests changes on {}:\n\n{}", hub.config.name, pr.url, b.text.trim());
     match tell_review_about_pr(&hub, &pr, text, b.expected_head_sha.as_deref(), attachments) {
         Ok(to) => {
@@ -1513,6 +1519,11 @@ struct AskPrBody {
 /// card until a new push and blocked the train above it. This asks without touching the PR's
 /// state, so the card stays in the inbox and the node answers with a report linking the PR.
 async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): Json<AskPrBody>) -> Response {
+    ask_about_pr_authorized(hub, id, b, &LiveReviewHead, || Ok(())).await
+}
+
+async fn ask_about_pr_authorized(hub: AppState, id: u64, b: AskPrBody,
+    reader: &impl ReviewHead, authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let Some(pr) = hub.read(|v| v.prs.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
     };
@@ -1526,9 +1537,10 @@ async fn ask_about_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b):
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Err(response) = verify_review_head(&hub, id, b.expected_head_sha.as_deref()).await {
+    if let Err(response) = verify_review_head_with(&hub, id, b.expected_head_sha.as_deref(), reader).await {
         return response;
     }
+    if authorize().is_err() { return prepared_access_denied(); }
     let text = format!(
         "{} asks about {}: {}\n\nAnswer with a report linking the PR so the answer shows inside its card.",
         hub.config.name,
@@ -1567,7 +1579,15 @@ async fn live_pr_head(url: &str) -> Result<(String, bool), Response> {
     Ok((head.to_string(), value.get("state").and_then(Value::as_str) == Some("OPEN")))
 }
 
-async fn verify_review_head(hub: &Hub, id: u64, expected: Option<&str>) -> Result<(), Response> {
+pub(crate) trait ReviewHead: Sync {
+    fn read(&self, url: &str) -> impl std::future::Future<Output = Result<(String, bool), Response>> + Send;
+}
+pub(crate) struct LiveReviewHead;
+impl ReviewHead for LiveReviewHead {
+    async fn read(&self, url: &str) -> Result<(String, bool), Response> { live_pr_head(url).await }
+}
+
+async fn verify_review_head_with(hub: &Hub, id: u64, expected: Option<&str>, reader: &impl ReviewHead) -> Result<(), Response> {
     let Some(expected) = expected else { return Ok(()) };
     if expected.len() != 40 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "expected_head_sha must be a full Git commit SHA"));
@@ -1575,7 +1595,7 @@ async fn verify_review_head(hub: &Hub, id: u64, expected: Option<&str>) -> Resul
     let Some(url) = hub.read(|view| view.prs.get(&id).map(|pr| pr.url.clone())) else {
         return Err(err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist")));
     };
-    let (live, open) = live_pr_head(&url).await?;
+    let (live, open) = reader.read(&url).await?;
     if !open {
         return Err(refused(StatusCode::CONFLICT, "pr_not_open", format!("{url} is no longer open")));
     }
@@ -2817,6 +2837,15 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
+        if crate::menus::is_menu_card(&q) {
+            if let Some(attempt) = hub.read(|v| v.delivery_attempts.values().rev().find(|a| a.question_id == Some(id)).cloned()) {
+                if !q.answer.as_ref().is_some_and(|a| a.option == b.option) {
+                    return refused(StatusCode::CONFLICT, "question_closed", "This menu already has another recorded decision.");
+                }
+                return Json(json!({"id": id, "already": true, "delivery_state": attempt.state,
+                    "delivery_attempt": attempt.id, "delivery_version": attempt.version})).into_response();
+            }
+        }
         if q.answer.as_ref().is_some_and(|a| a.text == b.text && a.option == b.option) {
             return Json(json!({"id": id, "already": true})).into_response();
         }
@@ -2883,7 +2912,7 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
             events.push(Event::DeliveryAttemptRecorded(alondra_core::delivery::Attempt {
                 id: v.seq + 1, session_id: q.session_id.clone(),
                 channel: alondra_core::delivery::Channel::HookDecision,
-                message_ids: vec![message_id], state: alondra_core::delivery::State::Dispatching,
+                message_ids: vec![message_id], question_id: None, state: alondra_core::delivery::State::Dispatching,
                 version: 1, reason: None, created_at: now_millis(), updated_at: now_millis(), resolved_from_version: None,
             }));
             if let Some(text) = held_follow_up(q.origin, &hook_answer) {
@@ -2953,29 +2982,43 @@ async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: O
     let Some(short) = hub.read(|v| v.nodes.get(&q.session_id).map(|n| n.short_id.clone())) else {
         return err(StatusCode::NOT_FOUND, "the node is gone");
     };
-    let own = hub.own_attach(&short);
-    let pressed = {
-        let short = short.clone();
-        tokio::task::spawn_blocking(move || crate::wake::press(&short, &label)).await
+    let answer = Answer { text: label.clone(), option: Some(label.clone()), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
+    let attempt = match crate::delivery::claim_menu(&hub, q.id, answer) {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => return refused(StatusCode::CONFLICT, "delivery_blocked", "Question changed or another delivery requires resolution; refresh before deciding."),
+        Err(error) => return internal(error),
     };
-    drop(own);
-    match pressed {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return err(StatusCode::BAD_GATEWAY, format!("could not answer {short}'s menu: {e}")),
-        Err(e) => return internal(e.into()),
-    }
-    let label = option.unwrap_or_default().to_string();
-    let answer = Answer { text: label.clone(), option: Some(label), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
-    for event in [
-        Event::QuestionAnswered { id: q.id, answer },
-        Event::QuestionDelivered { id: q.id },
-        Event::MenuSeen { session_id: q.session_id.clone(), waiting_for: None },
-    ] {
-        if let Err(e) = hub.append(event) {
-            return internal(e);
-        }
-    }
-    Json(json!({"id": q.id, "delivered": "terminal"})).into_response()
+    let expected = crate::menus::Menu { title: q.title.clone(), detail: q.detail.clone().unwrap_or_default(),
+        options: q.options.iter().map(|o| o.label.clone()).collect(), selected: None };
+    let target = hub.clone();
+    let question = q.id;
+    let attempt_id = attempt.id;
+    // The blocking worker owns finalization: cancelling the HTTP future cannot
+    // abandon an in-flight terminal write without recording its outcome.
+    let pressed = tokio::task::spawn_blocking(move || {
+        let own = target.own_attach(&short);
+        let result = crate::wake::press(&short, &label, &expected, || {
+            target.read(|v| v.delivery_attempts.get(&attempt_id).is_some_and(|a| a.state == alondra_core::delivery::State::Dispatching)
+                && v.questions.get(&question).is_some_and(|q| q.status == QuestionStatus::Answered))
+        });
+        drop(own);
+        let outcome = match result {
+            Ok(()) => crate::delivery::Outcome::Handed,
+            Err(crate::wake::WriteFailure::NotStarted) => crate::delivery::Outcome::NotStarted("menu_changed_before_write"),
+            Err(crate::wake::WriteFailure::Uncertain) => crate::delivery::Outcome::Uncertain("menu_write_uncertain"),
+        };
+        crate::delivery::finish(&target, attempt_id, outcome)
+    }).await;
+    let finished = match pressed {
+        Ok(result) => result,
+        Err(_) => crate::delivery::finish(&hub, attempt.id, crate::delivery::Outcome::Uncertain("menu_worker_failed")),
+    };
+    if let Err(error) = finished { return internal(error); }
+    let current = hub.read(|v| v.delivery_attempts[&attempt.id].clone());
+    let mut response = json!({"id": q.id, "delivery_state": current.state, "delivery_attempt": current.id,
+        "delivery_version": current.version});
+    if current.state == alondra_core::delivery::State::Handed { response["delivered"] = json!("terminal"); }
+    Json(response).into_response()
 }
 
 #[derive(Deserialize)]
@@ -3628,11 +3671,53 @@ fn issue_of(b: &RequestBody, file: &alondra_core::options::OptionsFile) -> Resul
     Ok(alondra_core::issues::find_in_text(&b.text).filter(|(repo, _)| !crate::issues::excluded(file, repo)))
 }
 
+/// Preparatory network reads must not retain authority after a local revocation.
+/// These routes remain external-mode receipts: interrupted requests are uncertain,
+/// never replayed automatically, even though their final mutation is local.
+pub(crate) fn prepared_service_path(path: &str) -> bool {
+    path == "/v1/requests" || ["/changes", "/ask"].iter().any(|suffix|
+        path.strip_prefix("/v1/prs/").and_then(|p| p.strip_suffix(suffix))
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())))
+}
+fn prepared_access_denied() -> Response {
+    err(StatusCode::FORBIDDEN, "device approval was revoked before committing this action")
+}
+pub(crate) async fn prepared_service_request_with(hub: AppState, path: &str, body: Value,
+    gh: &impl crate::prs::Gh, reader: &impl ReviewHead,
+    authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
+    if path == "/v1/requests" {
+        return match serde_json::from_value(body) {
+            Ok(body) => new_request_authorized(hub, body, gh, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid request body"),
+        };
+    }
+    let Some((id, action)) = path.strip_prefix("/v1/prs/").and_then(|p| p.split_once('/')) else {
+        return err(StatusCode::NOT_FOUND, "unknown preparation route");
+    };
+    let Ok(id) = id.parse::<u64>() else { return err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR ID"); };
+    match action {
+        "changes" => match serde_json::from_value(body) {
+            Ok(body) => request_pr_changes_authorized(hub, id, body, reader, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR changes body"),
+        },
+        "ask" => match serde_json::from_value(body) {
+            Ok(body) => ask_about_pr_authorized(hub, id, body, reader, authorize).await,
+            Err(_) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid PR question body"),
+        },
+        _ => err(StatusCode::NOT_FOUND, "unknown preparation route"),
+    }
+}
+
 async fn new_request(State(hub): State<AppState>, Json(b): Json<RequestBody>) -> Response {
     new_request_with(hub, b, &crate::prs::GhCli).await
 }
 
 pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh) -> Response {
+    new_request_authorized(hub, b, gh, || Ok(())).await
+}
+
+async fn new_request_authorized(hub: AppState, b: RequestBody, gh: &impl crate::prs::Gh,
+    authorize: impl FnOnce() -> anyhow::Result<()> + Send) -> Response {
     let attachments = match attached(&hub, &b.attachments) {
         Ok(a) => a,
         Err(r) => return r,
@@ -3662,6 +3747,7 @@ pub(crate) async fn new_request_with(hub: AppState, b: RequestBody, gh: &impl cr
         }
         None => None,
     };
+    if authorize().is_err() { return prepared_access_denied(); }
     let request_id = format!("r-{}-{}", now_millis(), crate::auth::random_hex(4));
     let sent = Event::RequestSent { request_id: request_id.clone(), options: resolved.clone(), text: Some(b.text.clone()), attachments: attachments.clone() };
     let text = request_text(
@@ -4002,6 +4088,28 @@ async fn task_candidates(State(hub): State<AppState>, Query(q): Query<Candidates
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn menu_duplicate_same_option_reports_uncertainty_but_changed_option_conflicts() {
+        let hub=temp_hub("menu-duplicate");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {session_id:"menu".into(),short_id:"menu".into(),..Default::default()})).unwrap();
+        hub.append(Event::QuestionAsked(serde_json::from_value(json!({
+            "id":42,"session_id":"menu","node_name":null,"title":"Permission","detail":"Operation",
+            "options":[{"label":"Accept"},{"label":"Decline"}],"blocking":true,"origin":"ask",
+            "tool_use_id":"menu:permission","status":"open","asked_at":1
+        })).unwrap())).unwrap();
+        let chosen=Answer {text:"Accept".into(),option:Some("Accept".into()),by:None,device:Some("phone-a".into()),at:1};
+        let attempt=crate::delivery::claim_menu(&hub,42,chosen).unwrap().unwrap();
+        crate::delivery::finish(&hub,attempt.id,crate::delivery::Outcome::Uncertain("test_write_unknown")).unwrap();
+        let duplicate=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"historically ignored menu text".into(),option:Some("Accept".into()),by:None,attachments:vec![]})).await;
+        assert_eq!(duplicate.status(),StatusCode::OK);
+        let value:Value=serde_json::from_slice(&axum::body::to_bytes(duplicate.into_body(),65536).await.unwrap()).unwrap();
+        assert_eq!(value["delivery_state"],"uncertain");
+        assert_eq!(value["delivery_attempt"],attempt.id);
+        let other=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"Decline".into(),option:Some("Decline".into()),by:None,attachments:vec![]})).await;
+        assert_eq!(other.status(),StatusCode::CONFLICT);
+        assert_eq!(hub.read(|v|v.delivery_attempts.len()),1);
+    }
 
     fn answered(text: &str, option: Option<&str>) -> Answer {
         let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None, attachments: vec![] };

@@ -208,7 +208,20 @@ pub async fn resume_dead(hub: &Hub, sessions: &impl Sessions, now: i64, strained
     }
 }
 
-struct TmuxSession(String);
+struct TmuxSession(String, #[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
+
+fn terminal_lease(short: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    use std::sync::{Mutex, OnceLock, Weak};
+    static LEASES: OnceLock<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let lease = {
+        let mut leases = LEASES.get_or_init(Default::default).lock().expect("terminal leases poisoned");
+        leases.retain(|_, lease| lease.strong_count() > 0);
+        let lease = leases.get(short).and_then(Weak::upgrade).unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        leases.insert(short.into(), Arc::downgrade(&lease));
+        lease
+    };
+    lease.blocking_lock_owned()
+}
 
 impl Drop for TmuxSession {
     fn drop(&mut self) {
@@ -241,33 +254,37 @@ pub fn read_screen(short: &str) -> Result<String, String> {
 
 /// Picks `label` in the menu on the node's screen, by its number or with the arrows and Enter,
 /// and fails if the menu is still on screen afterwards.
-pub fn press(short: &str, label: &str) -> Result<(), String> {
-    let session = attach(short)?;
-    std::thread::sleep(Duration::from_secs(2));
-    let before = tmux(&["capture-pane", "-p", "-t", &session.0])?;
-    let Some(menu) = crate::menus::parse_menu(&before) else {
-        return Err("the node is no longer on a menu".into());
-    };
-    let Some(keys) = crate::menus::key_for(&menu, label) else {
-        return Err(format!("the menu on screen no longer offers \"{label}\""));
-    };
+pub fn press(short: &str, label: &str, expected: &crate::menus::Menu, can_write: impl Fn() -> bool) -> Result<(), WriteFailure> {
+    let session = attach(short).map_err(|_| WriteFailure::NotStarted)?;
+    press_terminal(&session.0, label, expected, can_write, tmux, std::thread::sleep)
+}
+
+fn press_terminal(session: &str, label: &str, expected: &crate::menus::Menu, can_write: impl Fn() -> bool,
+    mut command: impl FnMut(&[&str]) -> Result<String,String>, mut wait: impl FnMut(Duration)) -> Result<(),WriteFailure> {
+    wait(Duration::from_secs(2));
+    let before = command(&["capture-pane", "-p", "-t", session]).map_err(|_| WriteFailure::NotStarted)?;
+    let menu = crate::menus::parse_menu(&before).filter(|menu| menu.same_as(expected)).ok_or(WriteFailure::NotStarted)?;
+    let keys = crate::menus::key_for(&menu, label).ok_or(WriteFailure::NotStarted)?;
+    if !can_write() { return Err(WriteFailure::NotStarted); }
     for key in &keys {
-        tmux(&["send-keys", "-t", &session.0, key])?;
-        std::thread::sleep(Duration::from_millis(300));
+        // Once a send is attempted, failure cannot establish that no key arrived.
+        command(&["send-keys", "-t", session, key]).map_err(|_| WriteFailure::Uncertain)?;
+        wait(Duration::from_millis(300));
     }
-    std::thread::sleep(Duration::from_secs(2));
-    let after = tmux(&["capture-pane", "-p", "-t", &session.0])?;
+    wait(Duration::from_secs(2));
+    let after = command(&["capture-pane", "-p", "-t", session]).map_err(|_| WriteFailure::Uncertain)?;
     if crate::menus::parse_menu(&after).is_some_and(|m| m.same_as(&menu)) {
-        return Err("the menu did not take the key".into());
+        return Err(WriteFailure::Uncertain);
     }
     Ok(())
 }
 
 fn attach(short: &str) -> Result<TmuxSession, String> {
+    let lease = terminal_lease(short);
     let name = format!("alondra-{short}");
     let _ = tmux(&["kill-session", "-t", &name]);
     tmux(&["new-session", "-d", "-s", &name, "-c", "/tmp", "-x", "200", "-y", "50", &format!("claude attach {short}")])?;
-    let session = TmuxSession(name);
+    let session = TmuxSession(name, lease);
     let start = Instant::now();
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -306,7 +323,7 @@ fn folded_into_a_paste(screen: &str) -> bool {
 }
 
 #[derive(Debug)]
-enum WriteFailure { NotStarted, Uncertain }
+pub(crate) enum WriteFailure { NotStarted, Uncertain }
 
 fn type_into(short: &str, text: &str) -> Result<(), WriteFailure> {
     let session=attach(short).map_err(|_|WriteFailure::NotStarted)?;
@@ -646,5 +663,57 @@ mod resume_tests {
         assert_eq!(hub.read(|v| v.nodes["deadnode-1"].resumed.clone().and_then(|r| r.error)).as_deref(), Some("No job matching deadnode"));
         assert_eq!(alondra_said(&hub, "orchestr-1", upkeep::RESUME_FAILED_PREFIX), 1);
         assert_eq!(alondra_said(&hub, "deadnode-1", upkeep::RESUMED_PREFIX), 0, "nothing to tell a node that is still down");
+    }
+}
+
+#[cfg(test)]
+mod menu_delivery_tests {
+    use super::*;
+    fn screen(title: &str) -> String {
+        format!("────────────────────────────────────────\n{title}\nExpected operation\n\n❯ Accept    Decline\n\nEsc to cancel · ↑/↓ to navigate\n")
+    }
+    #[test]
+    fn menu_identity_and_cancel_fail_before_any_key() {
+        let expected=crate::menus::parse_menu(&screen("Permission A")).unwrap();
+        for (actual,allowed) in [(screen("Permission B"),true),(screen("Permission A"),false)] {
+            let mut sent=0;
+            let result=press_terminal("fixture","Accept",&expected,||allowed,|args| {
+                if args[0]=="send-keys" {sent+=1;}
+                Ok(actual.clone())
+            },|_|{});
+            assert!(matches!(result,Err(WriteFailure::NotStarted)));
+            assert_eq!(sent,0,"same label never authorizes a different menu or cancelled claim");
+        }
+    }
+    #[test]
+    fn menu_write_error_and_missing_confirmation_are_uncertain() {
+        let before=screen("Permission A");let expected=crate::menus::parse_menu(&before).unwrap();
+        for fail_write in [false,true] {
+            let mut sent=0;
+            let result=press_terminal("fixture","Accept",&expected,||true,|args| {
+                if args[0]=="send-keys" {sent+=1;if fail_write {return Err("ambiguous pipe failure".into());}}
+                Ok(before.clone())
+            },|_|{});
+            assert!(matches!(result,Err(WriteFailure::Uncertain)));
+            assert_eq!(sent,1);
+        }
+    }
+    #[test]
+    fn menu_confirmed_screen_change_records_local_handoff_only() {
+        let before=screen("Permission A");let expected=crate::menus::parse_menu(&before).unwrap();let mut sent=0;
+        let result=press_terminal("fixture","Accept",&expected,||true,|args| {
+            if args[0]=="send-keys" {sent+=1;return Ok(String::new());}
+            Ok(if sent==0 {before.clone()} else {"working".into()})
+        },|_|{});
+        assert!(result.is_ok());assert_eq!(sent,1);
+    }
+    #[test]
+    fn menu_terminal_lease_excludes_same_session_until_drop() {
+        let first=terminal_lease("menu-lease-fixture");
+        let (started_tx,started_rx)=std::sync::mpsc::channel();let (got_tx,got_rx)=std::sync::mpsc::channel();
+        let worker=std::thread::spawn(move || {started_tx.send(()).unwrap();let _next=terminal_lease("menu-lease-fixture");got_tx.send(()).unwrap();});
+        started_rx.recv().unwrap();
+        assert!(got_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(first);got_rx.recv_timeout(Duration::from_secs(2)).unwrap();worker.join().unwrap();
     }
 }

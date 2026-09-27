@@ -24,6 +24,12 @@ const COMMENT: Color = Color::LightMagenta;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     draw_head(f, app, head);
+    let blocked = app.data.delivery_attempts.iter().filter(|a| a.blocks()).count();
+    let body = if blocked > 0 {
+        let [warning, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(2)]).areas(body);
+        f.render_widget(Paragraph::new(trf!("{blocked} deliveries pending/uncertain · :deliveries", "{blocked} entregas pendientes/inciertas · :deliveries")).style(Style::new().fg(ACCENT)), warning);
+        rest
+    } else { body };
     let body = match app.composer.as_ref() {
         Some(c) => {
             let preview = c.chips.iter().rev().find(|c| app.previews.contains_key(&c.seq)).map(|c| c.seq);
@@ -1909,6 +1915,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("h/l  ←→", tr!("focus the list / the detail pane", "enfocar la lista / el panel de detalle")),
         row("o  ⏎", tr!("expand: open the whole question, plan or report", "expandir: abrir entera la pregunta, plan o informe")),
         row("Esc", tr!("back: close, collapse or leave the detail pane", "volver: cerrar, plegar o salir del panel de detalle")),
+        row(":deliveries", tr!("delivery evidence and explicit recovery commands", "evidencia de entrega y comandos de recuperación explícita")),
         row(":", tr!("command line: :q  :help  :inbox  :tasks  :fleet  :<number>", "línea de órdenes: :q  :help  :inbox  :tasks  :fleet  :<número>")),
         Line::default(),
         section(tr!("Bars in the header, left to right", "Barras de la cabecera, de izquierda a derecha")),
@@ -1957,15 +1964,21 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
 }
 
 fn draw_help(f: &mut Frame, app: &mut App) {
-    let lines = help_lines();
     let area = f.area();
+    let lines = if app.delivery_help {
+        crate::delivery::details(&app.data.delivery_attempts, crate::service_client::target()).into_iter()
+            .flat_map(|text| wrap(vec![Span::raw(text)], (94usize).min(area.width.saturating_sub(4) as usize).max(1), vec![], vec![])).collect()
+    } else { help_lines() };
     let w = 96.min(area.width.saturating_sub(2));
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
     let view_h = h.saturating_sub(2) as usize;
     app.help_view = View { h: view_h, total: lines.len(), shown: true };
     app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(view_h));
-    let mut block = panel(Line::from(tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ").bold()), true);
+    let title = if app.delivery_help {
+        tr!(" Deliveries · j/k scroll · any other key closes ", " Entregas · j/k desplaza · cualquier otra tecla cierra ")
+    } else { tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ") };
+    let mut block = panel(Line::from(title.bold()), true);
     if let Some(hint) = more_hint(app.help_scroll, view_h, lines.len()) {
         block = block.title_bottom(hint);
     }
@@ -1986,6 +1999,31 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn delivery_warning_survives_flash_and_detail_commands_follow_live_version() {
+        let (mut app, _rx) = app_with(vec![]);
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        app.loaded=true;
+        app.data.delivery_attempts=serde_json::from_value(serde_json::json!([
+            {"id":7,"session_id":"test-session","channel":"menu_decision","state":"uncertain","version":2,"reason":"write_unknown"}
+        ])).unwrap();
+        assert!(screen(&mut app,120,30).contains("1 deliveries pending/uncertain"));
+        app.flash=None;
+        assert!(screen(&mut app,120,30).contains(":deliveries"));
+        app.run_command("deliveries");
+        assert!(app.help && app.delivery_help);
+        let detail=screen(&mut app,140,40);
+        assert!(detail.contains("test-session") && detail.contains("--expected-version 2"),"{detail}");
+        app.data.delivery_attempts[0].version=3;
+        app.data.delivery_attempts[0].state=alondra_core::delivery::State::Dispatching;
+        let detail=screen(&mut app,140,40);
+        assert!(!detail.contains("--terminal-checked"),"{detail}");
+        app.help=false;
+        app.data.delivery_attempts[0].state=alondra_core::delivery::State::Handed;
+        assert!(!screen(&mut app,120,30).contains("deliveries pending/uncertain"));
+        assert!(app.posted.borrow().is_empty(),"inspection must not schedule a mutation");
     }
 
     #[test]

@@ -358,6 +358,69 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires ALONDRA_MENU_LEGACY_DAEMON_TEST pointing to released 0.1.5 daemon"]
+    fn menu_released_015_daemon_refuses_events_and_snapshots_before_processing_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+        let binary=std::env::var_os("ALONDRA_MENU_LEGACY_DAEMON_TEST").expect("provide released 0.1.5 daemon path");
+        let version=std::process::Command::new(&binary).arg("--version").output().unwrap();
+        assert!(version.status.success());
+        assert_eq!(String::from_utf8_lossy(&version.stdout).trim(),"alondrad 0.1.5");
+        for snapshot in [false,true] {
+            let home=std::env::temp_dir().join(format!("menu-old-reader-{}",crate::auth::random_hex(6)));
+            std::fs::create_dir(&home).unwrap();
+            struct Cleanup(PathBuf);
+            impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+            let _cleanup=Cleanup(home.clone());
+            let mut store=Store::open(&home.join("alondra.db")).unwrap();
+            let event=Event::DeliveryAttemptRecorded(alondra_core::delivery::Attempt {
+                id:1,session_id:"fixture".into(),channel:alondra_core::delivery::Channel::MenuDecision,
+                message_ids:vec![],question_id:Some(9),state:alondra_core::delivery::State::Uncertain,
+                version:2,reason:Some("fixture_write_unknown".into()),created_at:1,updated_at:1,resolved_from_version:None,
+            });
+            let sequence=store.append(1,&event).unwrap();
+            if snapshot {
+                let mut view=View::default();view.apply(sequence,1,&event);
+                store.compact(&view,2,2).unwrap();
+                assert!(store.latest_snapshot().unwrap().is_some(),"new reader understands snapshot");
+            } else {
+                assert_eq!(store.replay(0,|_,_,_|{}).unwrap(),1,"new reader understands event");
+            }
+            let rows=|store:&Store,table:&str|->Vec<(i64,String)>{
+                store.conn.prepare(&format!("SELECT seq,body FROM {table} ORDER BY seq")).unwrap()
+                    .query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+            };
+            let before=(rows(&store,"event_log"),rows(&store,"snapshots"));
+            let bin=home.join("bin");std::fs::create_dir(&bin).unwrap();
+            for command in ["claude","tmux","gh"] {
+                let path=bin.join(command);
+                std::fs::write(&path,b"#!/bin/sh\nprintf unexpected > \"$HOME/external-effect\"\nexit 99\n").unwrap();
+                std::fs::set_permissions(path,std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let stderr=std::fs::File::create(home.join("old-stderr.log")).unwrap();
+            let mut child=std::process::Command::new(&binary).env_clear().env("HOME",&home)
+                .env("PATH",format!("{}:/usr/bin:/bin",bin.display())).env("USER","menu-fixture").env("LOGNAME","menu-fixture")
+                .env("ALONDRA_HOME",&home).env("CLAUDE_CONFIG_DIR",home.join("claude"))
+                .env("ALONDRA_LISTEN","127.0.0.1").env("ALONDRA_PORT","0").env("ALONDRA_WAKE","1").env("ALONDRA_SANDBOX","1")
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr).spawn().unwrap();
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+            let status=loop {
+                if let Some(status)=child.try_wait().unwrap(){break status;}
+                if std::time::Instant::now()>deadline{child.kill().unwrap();child.wait().unwrap();panic!("old menu reader did not reject promptly");}
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            assert!(!status.success());
+            let error=std::fs::read_to_string(home.join("old-stderr.log")).unwrap();
+            assert!(error.contains("unknown variant `menu_decision`"),"snapshot={snapshot}: {error}");
+            assert!(error.contains(if snapshot {"unreadable snapshot"} else {"unreadable; replay stopped"}),"{error}");
+            assert_eq!(before,(rows(&store,"event_log"),rows(&store,"snapshots")),"old binary cannot append recovery or alter snapshot");
+            assert!(!home.join("external-effect").exists(),"no terminal/provider command may run");
+            // 0.1.5 reserves its socket before replay, but must never start serving.
+            assert!(std::os::unix::net::UnixStream::connect(home.join("hooks.sock")).is_err());
+            drop(store);
+        }
+    }
+
+    #[test]
     fn delivery_schema_migration_preserves_rows_snapshots_and_blocks_previous_writer() {
         let path=std::env::temp_dir().join(format!("delivery-migration-{}.db",crate::auth::random_hex(6)));
         let old=Connection::open(&path).unwrap();
