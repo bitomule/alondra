@@ -719,10 +719,10 @@ pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::ht
         return Json(json!({})).into_response();
     }
     match (event.as_str(), tool.as_deref()) {
-        ("PreToolUse", Some("AskUserQuestion")) => hold(hub.clone(), p, h, QuestionOrigin::AskUserQuestion).await,
-        ("PreToolUse", Some("ExitPlanMode")) => hold(hub.clone(), p, h, QuestionOrigin::Plan).await,
-        ("PermissionRequest", _) => hold(hub.clone(), p, h, QuestionOrigin::Permission).await,
-        ("Elicitation", _) => hold(hub.clone(), p, h, QuestionOrigin::Elicitation).await,
+        ("PreToolUse", Some("AskUserQuestion")) => hold(hub.clone(), p, h, QuestionOrigin::AskUserQuestion, has_ack).await,
+        ("PreToolUse", Some("ExitPlanMode")) => hold(hub.clone(), p, h, QuestionOrigin::Plan, has_ack).await,
+        ("PermissionRequest", _) => hold(hub.clone(), p, h, QuestionOrigin::Permission, has_ack).await,
+        ("Elicitation", _) => hold(hub.clone(), p, h, QuestionOrigin::Elicitation, has_ack).await,
         _ => Json(json!({})).into_response(),
     }
 }
@@ -776,11 +776,8 @@ impl Drop for HoldGuard {
     fn drop(&mut self) {
         self.hub.drop_hold(self.id);
         if !self.completed {
-            let id = self.id;
-            if let Err(e) = self.hub.append_with(|v| v.questions.get(&id)
-                .filter(|q| matches!(q.status, QuestionStatus::Open | QuestionStatus::Answered))
-                .map(|_| Event::QuestionClosed { id, status: QuestionStatus::Orphaned, note: None })) {
-                log!("could not orphan disconnected hook question #{id}: {e}");
+            if let Err(e) = crate::delivery::cancel_held_question(&self.hub, self.id, "hook_waiter_gone") {
+                log!("could not finalize disconnected hook question #{}: {e}", self.id);
             }
         }
     }
@@ -921,25 +918,25 @@ fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
     summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
 }
 
-async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin) -> Response {
-    let appended = hub.append_with(|v| Some(Event::QuestionAsked(held_question(v, &p, &h, origin))));
-    let id = match appended {
-        Ok(Some((_, Event::QuestionAsked(q)))) => q.id,
-        Ok(_) => return Json(json!({})).into_response(),
+async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin, has_ack: bool) -> Response {
+    let (id, rx) = match hub.register_question_hold(|v| held_question(v, &p, &h, origin)) {
+        Ok(registered) => registered,
         Err(e) => return internal(e),
     };
-    let rx = hub.register_hold(id);
     let mut guard = HoldGuard { hub: hub.clone(), id, completed: false };
-    let Ok(answer) = rx.await else {
+    let Ok((answer, attempt)) = rx.await else {
         return Json(json!({})).into_response();
     };
-    if let Some(text) = held_follow_up(origin, &answer)
-        && let Err(e) = hub.append_with(|v| Some(follow_up_message(v, &h.session_id, &text)))
-    {
-        log!("could not queue the user's words after #{id}: {e}");
+    // The answer and any follow-up were committed before the oneshot wakeup.
+    // Only the local socket's stdout acknowledgement may confirm the handoff.
+    if !has_ack {
+        if let Err(e) = crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("hook_transport_has_no_ack")) {
+            return internal(e);
+        }
     }
     let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
     let mut response = Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response();
+    response.headers_mut().insert("x-alondra-delivery-attempt", attempt.to_string().parse().expect("numeric attempt"));
     response.headers_mut().insert("x-alondra-hold-id", id.to_string().parse().expect("numeric hold id is an HTTP header"));
     guard.completed = true;
     response
@@ -2843,30 +2840,12 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let user = hub.config.name.clone();
     let by = b.by.clone().or_else(|| Some(user.clone()));
     let answer = Answer { text: b.text.clone(), option: b.option.clone(), by, device: Some(device), at: now_millis() };
-    let absorbed = hub.read(|v| v.question_reports(&q));
-    if let Err(e) = hub.append(Event::QuestionAnswered { id, answer: answer.clone() }) {
-        return internal(e);
-    }
-    for report in absorbed {
-        if let Err(e) = hub.append(Event::ReportRead { id: report }) {
-            log!("could not mark report #{report} read with question #{id}: {e}");
-        }
-    }
+    let held = hub.has_hold(id);
     let note = uploads::delivery_note(&user, &attachments);
-    let held = Answer { text: format!("{}{note}", answer.text), ..answer.clone() };
-    if hub.release_hold(id, held) {
-        return Json(json!({"id": id, "delivered": "hook"})).into_response();
-    }
+    let hook_answer = Answer { text: format!("{}{note}", answer.text), ..answer.clone() };
     let idle_close = upkeep::is_idle_close(&q);
-    if idle_close && matches!(b.option.as_deref(), Some(upkeep::KEEP | upkeep::DISCARD)) {
-        if let Err(e) = hub.append(Event::QuestionDelivered { id }) {
-            return internal(e);
-        }
-        if b.option.as_deref() == Some(upkeep::KEEP) {
-            return Json(json!({"id": id, "kept": true})).into_response();
-        }
-        return close_discarding(&hub, &q.session_id, &ClaudeAgents).await;
-    }
+    let local_keep = idle_close && b.option.as_deref() == Some(upkeep::KEEP);
+    let local_discard = idle_close && b.option.as_deref() == Some(upkeep::DISCARD);
     let reply = if idle_close && b.option.as_deref() == Some(upkeep::RESUME) {
         upkeep::resume_idle_text(&user, &q)
     } else if q.action {
@@ -2875,27 +2854,68 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
         let chosen = b.option.clone().filter(|o| o.trim() != b.text.trim()).map(|o| format!("{o}. ")).unwrap_or_default();
         format!("{chosen}{}", b.text)
     };
-    let other_open = hub.read(|v| v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open()));
-    let text = if other_open { format!("About \"{}\": {reply}{note}", q.title) } else { format!("{reply}{note}") };
-    log!("answer to #{id} from {user} {provenance}");
-    let res = hub.append_with(|v| {
-        Some(Event::MessageQueued(Message {
-            id: v.next_message_id(),
-            session_id: q.session_id.clone(),
-            from: MessageFrom::User,
-            text: text.clone(),
-            answers_question: Some(id),
-            created_at: now_millis(),
-            handed_at: None,
-            delivered_at: None,
-            about: None,
-            attachments: attachments.clone(),
-        }))
+    let recorded = hub.append_all(|v| {
+        let Some(current) = v.questions.get(&id) else { return Err(err(StatusCode::NOT_FOUND, "question not found")); };
+        if !current.status.is_open() {
+            return Err(if current.answer.as_ref().is_some_and(|a| a.text == b.text && a.option == b.option) {
+                Json(json!({"id": id, "already": true})).into_response()
+            } else { refused(StatusCode::CONFLICT, "question_closed", format!("question #{id} is no longer open")) });
+        }
+        if held && v.delivery_blocked(&q.session_id) {
+            return Err(refused(StatusCode::CONFLICT, "delivery_blocked", "Resolve the previous uncertain delivery before answering this hook."));
+        }
+        // Recheck under the writer: concurrent answers can never enqueue two intents.
+        let mut events = vec![Event::QuestionAnswered { id, answer: answer.clone() }];
+        events.extend(v.question_reports(current).into_iter().map(|id| Event::ReportRead { id }));
+        if local_keep || local_discard {
+            events.push(Event::QuestionDelivered { id });
+            return Ok(events);
+        }
+        let other_open = v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open());
+        let text = if other_open { format!("About \"{}\": {reply}{note}", q.title) } else { format!("{reply}{note}") };
+        let message_id = v.next_message_id();
+        events.push(Event::MessageQueued(Message {
+            id: message_id, session_id: q.session_id.clone(), from: MessageFrom::User,
+            text, answers_question: Some(id), created_at: now_millis(),
+            handed_at: None, delivered_at: None, about: None, attachments: attachments.clone(),
+        }));
+        if held {
+            events.push(Event::DeliveryAttemptRecorded(alondra_core::delivery::Attempt {
+                id: v.seq + 1, session_id: q.session_id.clone(),
+                channel: alondra_core::delivery::Channel::HookDecision,
+                message_ids: vec![message_id], state: alondra_core::delivery::State::Dispatching,
+                version: 1, reason: None, created_at: now_millis(), updated_at: now_millis(), resolved_from_version: None,
+            }));
+            if let Some(text) = held_follow_up(q.origin, &hook_answer) {
+                let mut follow = match follow_up_message(v, &q.session_id, &text) { Event::MessageQueued(m) => m, _ => unreachable!() };
+                follow.id = message_id + 1;
+                events.push(Event::MessageQueued(follow));
+            }
+        }
+        Ok(events)
     });
-    match res {
-        Ok(_) => Json(json!({"id": id, "delivered": "inbox"})).into_response(),
-        Err(e) => internal(e),
+    let events = match recorded {
+        Err(e) => return internal(e),
+        Ok(Err(response)) => return response,
+        Ok(Ok(events)) => events,
+    };
+    log!("answer to #{id} from {user} {provenance}");
+    if local_keep { return Json(json!({"id": id, "kept": true})).into_response(); }
+    if local_discard { return close_discarding(&hub, &q.session_id, &ClaudeAgents).await; }
+    if let Some(attempt) = events.iter().find_map(|(_, e)| match e { Event::DeliveryAttemptRecorded(a) => Some(a.id), _ => None }) {
+        return handoff_held_answer(&hub, id, hook_answer, attempt);
     }
+    Json(json!({"id": id, "delivered": "inbox"})).into_response()
+
+}
+
+fn handoff_held_answer(hub: &Hub, id: u64, answer: Answer, attempt: u64) -> Response {
+    if !hub.release_hold(id, answer, attempt) {
+        if let Err(e) = crate::delivery::cancel_held_question(hub, id, "hook_receiver_gone") { return internal(e); }
+        let state = hub.read(|v| v.delivery_attempts.get(&attempt).map(|a| a.state));
+        return Json(json!({"id": id, "delivery_state": state, "delivery_attempt": attempt})).into_response();
+    }
+    Json(json!({"id": id, "delivery_state": "dispatching", "delivery_attempt": attempt})).into_response()
 }
 
 /// What the node reads when the user resolves a "your turn" card.
@@ -5047,6 +5067,183 @@ mod tests {
             hub.append(Event::Hook(HookEvent { session_id: (*sid).into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
         }
         hub
+    }
+
+    #[tokio::test]
+    async fn answer_durable_outbox_failure_rolls_back_and_retry_survives_restart() {
+        let hub = started("answer-atomic", &["s"]);
+        let response = ask(State(hub.clone()), Json(ask_body("s", "Continue?"))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_answer_outbox BEFORE INSERT ON event_log WHEN NEW.kind='message_queued' BEGIN SELECT RAISE(ABORT,'injected outbox failure'); END;").unwrap();
+        let body = || AnswerBody { text: "Continue safely".into(), option: None, by: None, attachments: vec![] };
+        assert_eq!(answer(State(hub.clone()), None, Path(1), Json(body())).await.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(hub.read(|v| v.questions[&1].status.is_open() && v.messages.is_empty()));
+        db.execute_batch("DROP TRIGGER fail_answer_outbox").unwrap();
+        assert_eq!(answer(State(hub.clone()), None, Path(1), Json(body())).await.status(), StatusCode::OK);
+        assert_eq!(hub.read(|v| v.messages.values().filter(|m| m.answers_question == Some(1)).count()), 1);
+        let reopened = Arc::new(Hub::open(hub.config.clone(), false).unwrap());
+        let (_, reply) = status_and_body(answer(State(reopened.clone()), None, Path(1), Json(body())).await).await;
+        assert_eq!(reply["already"], true);
+        assert_eq!(reopened.read(|v| v.messages.values().filter(|m| m.answers_question == Some(1)).count()), 1);
+        assert!(reopened.read(|v| v.messages.values().all(|m| m.handed_at.is_none())));
+    }
+
+    #[test]
+    fn answer_durable_concurrent_answers_have_one_winner_and_one_outbox() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let hub = started("answer-race", &["s"]);
+        runtime.block_on(ask(State(hub.clone()), Json(ask_body("s", "Choose?"))));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8).map(|i| {
+            let (hub, barrier) = (hub.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                barrier.wait();
+                runtime.block_on(answer(State(hub), None, Path(1), Json(AnswerBody {
+                    text: format!("choice-{i}"), option: None, by: None, attachments: vec![],
+                }))).status()
+            })
+        }).collect();
+        let statuses: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(statuses.iter().filter(|s| **s == StatusCode::OK).count(), 1);
+        assert_eq!(statuses.iter().filter(|s| **s == StatusCode::CONFLICT).count(), 7);
+        hub.read(|v| {
+            let messages: Vec<_> = v.messages.values().filter(|m| m.answers_question == Some(1)).collect();
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].text, v.questions[&1].answer.as_ref().unwrap().text);
+        });
+    }
+
+    #[tokio::test]
+    async fn answer_durable_held_decision_cannot_bypass_an_uncertain_delivery() {
+        let hub = started("answer-held-blocked", &["s"]);
+        hub.append_with(|v| Some(follow_up_message(v, "s", "Previous instruction"))).unwrap();
+        let prior = crate::delivery::claim(&hub, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
+        crate::delivery::finish(&hub, prior.id, crate::delivery::Outcome::Uncertain("synthetic_missing_ack")).unwrap();
+        let hook = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), ..Default::default() };
+        let (id, mut receiver) = hub.register_question_hold(|v| held_question(v, &json!({"tool_name":"Bash"}), &hook, QuestionOrigin::Permission)).unwrap();
+        let response = answer(State(hub.clone()), None, Path(id), Json(AnswerBody {
+            text: "Allow".into(), option: Some(answer_option::ALLOW.into()), by: None, attachments: vec![],
+        })).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(hub.read(|v| v.questions[&id].status.is_open()));
+        assert_eq!(hub.read(|v| v.delivery_attempts.len()), 1);
+        assert_eq!(hub.read(|v| v.messages.len()), 1);
+        assert!(hub.has_hold(id));
+        assert!(matches!(receiver.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn answer_durable_held_decision_and_followup_are_committed_before_wakeup() {
+        let hub = started("answer-held", &["s"]);
+        let hook = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), ..Default::default() };
+        let (id, receiver) = hub.register_question_hold(|v| held_question(v, &json!({"tool_name":"Bash","tool_input":{"command":"echo test"}}), &hook, QuestionOrigin::Permission)).unwrap();
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_answer_attempt BEFORE INSERT ON event_log WHEN NEW.kind='delivery_attempt_recorded' BEGIN SELECT RAISE(ABORT,'injected claim failure'); END;").unwrap();
+        let body = || AnswerBody { text: "Use the staging environment".into(), option: Some(answer_option::DENY.into()), by: None, attachments: vec![] };
+        assert_eq!(answer(State(hub.clone()), None, Path(id), Json(body())).await.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(hub.has_hold(id));
+        assert!(hub.read(|v| v.questions[&id].status.is_open() && v.messages.is_empty() && v.delivery_attempts.is_empty()));
+        db.execute_batch("DROP TRIGGER fail_answer_attempt").unwrap();
+        assert_eq!(answer(State(hub.clone()), None, Path(id), Json(body())).await.status(), StatusCode::OK);
+        let (decision, attempt) = receiver.await.unwrap();
+        assert_eq!(decision.text, "Use the staging environment");
+        hub.read(|v| {
+            assert_eq!(v.messages.len(), 2, "fallback decision plus durable follow-up");
+            assert!(v.delivery_blocked("s"));
+            assert_eq!(v.delivery_attempts[&attempt].state, alondra_core::delivery::State::Dispatching);
+            assert!(v.messages.values().all(|m| m.handed_at.is_none()));
+        });
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        assert_eq!(reopened.read(|v| v.delivery_attempts[&attempt].state), alondra_core::delivery::State::Uncertain);
+        assert!(crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+        assert!(reopened.read(|v| v.messages.values().any(|m| m.answers_question.is_none() && m.text == "Use the staging environment")));
+    }
+
+    async fn committed_held_denial(tag: &str) -> (Arc<Hub>, u64, Answer, u64) {
+        let hub = started(tag, &["s"]);
+        let hook = HookEvent { session_id: "s".into(), event: "PermissionRequest".into(), ..Default::default() };
+        let (id, receiver) = hub.register_question_hold(|v| held_question(v, &json!({"tool_name":"Bash"}), &hook, QuestionOrigin::Permission)).unwrap();
+        let response = answer(State(hub.clone()), None, Path(id), Json(AnswerBody {
+            text: "Use staging instead".into(), option: Some(answer_option::DENY.into()), by: None, attachments: vec![],
+        })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let (decision, attempt) = receiver.await.unwrap();
+        assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), alondra_core::delivery::State::Dispatching);
+        (hub, id, decision, attempt)
+    }
+
+    #[tokio::test]
+    async fn answer_durable_cancellation_order_is_idempotent_after_commit() {
+        for waiter_first in [true, false] {
+            // The durable boundary has committed and no hook ACK exists. Both
+            // cancellation observers below run in the exact reviewed orders.
+            let (hub, id, decision, attempt) = committed_held_denial("answer-cancel-order").await;
+            let guard = HoldGuard { hub: hub.clone(), id, completed: false };
+            if waiter_first {
+                drop(guard);
+                let seq = hub.read(|v| v.seq);
+                let response = handoff_held_answer(&hub, id, decision, attempt);
+                assert_eq!(response.status(), StatusCode::OK, "committed cancellation is not HTTP 500");
+                assert_eq!(hub.read(|v| v.seq), seq, "second observer must not append another finalization");
+            } else {
+                let response = handoff_held_answer(&hub, id, decision, attempt);
+                assert_eq!(response.status(), StatusCode::OK);
+                let seq = hub.read(|v| v.seq);
+                drop(guard);
+                assert_eq!(hub.read(|v| v.seq), seq, "waiter must not orphan an answer with durable intent");
+            }
+            hub.read(|v| {
+                assert_eq!(v.questions[&id].status, QuestionStatus::Answered);
+                assert_eq!(v.delivery_attempts[&attempt].state, alondra_core::delivery::State::Uncertain);
+                assert_eq!(v.delivery_attempts[&attempt].version, 2);
+                assert!(v.delivery_blocked("s"));
+                assert!(v.messages.values().all(|m| m.handed_at.is_none()));
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_durable_ack_keeps_followup_independent_across_restart() {
+        let (hub, id, _, attempt) = committed_held_denial("answer-followup-ack").await;
+        crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Handed).unwrap();
+        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        assert_eq!(reopened.read(|v| v.questions[&id].status), QuestionStatus::Delivered);
+        let followup = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
+        reopened.read(|v| {
+            assert_eq!(followup.message_ids.len(), 1, "ACKed decision fallback must not replay");
+            let message = &v.messages[&followup.message_ids[0]];
+            assert_eq!(message.answers_question, None);
+            assert_eq!(message.text, "Use staging instead");
+        });
+        crate::delivery::finish(&reopened, followup.id, crate::delivery::Outcome::Handed).unwrap();
+        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn answer_durable_missing_ack_explicit_resolution_controls_fallback() {
+        for retry in [true, false] {
+            let (hub, id, _, attempt) = committed_held_denial("answer-followup-resolution").await;
+            crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("hook_ack_missing")).unwrap();
+            assert!(crate::delivery::claim(&hub, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+            let version = hub.read(|v| v.delivery_attempts[&attempt].version);
+            let result = crate::delivery::resolve(&hub, None, attempt, retry, crate::delivery::Resolution {
+                expected_version: version, terminal_checked: true, confirm_duplicate_risk: retry,
+            }).unwrap();
+            assert_eq!(result["status"], 200);
+            // A late waiter cancellation cannot undo the user's recorded choice.
+            crate::delivery::cancel_held_question(&hub, id, "late_waiter").unwrap();
+            assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), if retry { alondra_core::delivery::State::Retryable } else { alondra_core::delivery::State::Discarded });
+            let reopened = Hub::open(hub.config.clone(), false).unwrap();
+            let next = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
+            assert_eq!(next.message_ids.len(), if retry { 2 } else { 1 });
+            assert_eq!(reopened.read(|v| next.message_ids.iter().filter(|mid| v.messages.get(*mid).is_some_and(|m| m.answers_question == Some(id))).count()), usize::from(retry));
+            crate::delivery::finish(&reopened, next.id, crate::delivery::Outcome::Handed).unwrap();
+            let restarted = Hub::open(hub.config.clone(), false).unwrap();
+            assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
+        }
     }
 
     /// Report #136 (the day-one audit) and a question about it, 24 Sep: two cards for one decision.

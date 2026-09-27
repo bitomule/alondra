@@ -1,8 +1,10 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
 use alondra_core::{Event, Millis, View};
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 pub struct Store {
     conn: Connection,
@@ -10,7 +12,17 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut conn = Connection::open(path).with_context(|| format!("abriendo {}", path.display()))?;
+        // Resolve the containing directory once; SQLite must not follow a leaf symlink.
+        let parent = fs::canonicalize(path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
+        let path = parent.join(path.file_name().context("database filename required")?);
+        let original = match fs::symlink_metadata(&path) {
+            Ok(value) => Some(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let mut conn = Connection::open_with_flags(&path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NOFOLLOW)
+            .with_context(|| format!("abriendo {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         // An old writer must fail before replay, even after snapshots compact away new events.
@@ -18,7 +30,13 @@ impl Store {
         let kind: Option<String> = tx.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r|r.get(0)).optional()?;
         let new_kind: Option<String> = tx.query_row("SELECT type FROM sqlite_schema WHERE name='event_log'", [], |r|r.get(0)).optional()?;
         match (kind.as_deref(), new_kind.as_deref()) {
-            (Some("table"), None) => tx.execute_batch("DROP INDEX IF EXISTS events_session; ALTER TABLE events RENAME TO event_log;")?,
+            (Some("table"), None) => {
+                // Keep this write reservation until migration commits. A separate
+                // read connection copies committed WAL pages; backing up `tx`
+                // itself would be SQLITE_LOCKED because it is a writer.
+                backup_before_delivery_migration(&path, &tx, original.as_ref().context("legacy database appeared while opening")?)?;
+                tx.execute_batch("DROP INDEX IF EXISTS events_session; ALTER TABLE events RENAME TO event_log;")?;
+            },
             (None, None) => tx.execute_batch("CREATE TABLE event_log (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, session TEXT, body TEXT NOT NULL);")?,
             (Some("view"), Some("table")) => (),
             _ => anyhow::bail!("unsupported event storage layout; refusing delivery migration"),
@@ -138,11 +156,178 @@ impl Store {
     }
 }
 
+/// A completed generation is a standalone SQLite file in an owner-only directory.
+/// Never replace previous generations: a failed migration may be retried after new writes.
+fn backup_before_delivery_migration(path: &Path, _writer: &Transaction<'_>, before: &fs::Metadata) -> Result<PathBuf> {
+    let current = fs::symlink_metadata(path)?;
+    anyhow::ensure!((before.dev(), before.ino()) == (current.dev(), current.ino()), "migration source replaced after opening");
+    anyhow::ensure!(before.is_file() && before.nlink() == 1 && before.uid() == unsafe { libc::geteuid() }, "unsafe migration source");
+    let parent = path.parent().context("database parent required")?;
+    let mut name = path.file_name().context("database filename required")?.to_os_string();
+    name.push(".migration-backups");
+    let directory = parent.join(name);
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(error) => return Err(error.into()),
+    }
+    let directory_meta = fs::symlink_metadata(&directory)?;
+    anyhow::ensure!(directory_meta.is_dir() && directory_meta.uid() == unsafe { libc::geteuid() }
+        && directory_meta.mode() & 0o077 == 0, "migration backup directory must be private and owned");
+    let generation = directory.join(format!("pre-delivery-{}.sqlite", crate::auth::random_hex(16)));
+    let output = OpenOptions::new().write(true).read(true).create_new(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW).open(&generation)?;
+    let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW)?;
+    let mut destination = Connection::open_with_flags(&generation, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW)?;
+    destination.pragma_update(None, "synchronous", "FULL")?;
+    let result = (|| -> Result<()> {
+        let actual = fs::symlink_metadata(path)?;
+        anyhow::ensure!((before.dev(), before.ino()) == (actual.dev(), actual.ino()), "migration source replaced");
+        let legacy: String = source.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r| r.get(0))?;
+        anyhow::ensure!(legacy == "table", "backup source is not the legacy schema");
+        {
+            let backup = rusqlite::backup::Backup::new(&source, &mut destination)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                match backup.step(512)? {
+                    rusqlite::backup::StepResult::Done => break,
+                    rusqlite::backup::StepResult::More if std::time::Instant::now() < deadline => (),
+                    _ => anyhow::bail!("migration backup could not complete under write reservation"),
+                }
+            }
+        }
+        destination.pragma_update(None, "journal_mode", "DELETE")?;
+        let integrity: String = destination.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        anyhow::ensure!(integrity == "ok", "migration backup integrity check failed");
+        let legacy: String = destination.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r| r.get(0))?;
+        anyhow::ensure!(legacy == "table", "migration backup lost legacy layout");
+        let actual = fs::symlink_metadata(path)?;
+        let dir_after = fs::symlink_metadata(&directory)?;
+        let file_after = fs::symlink_metadata(&generation)?;
+        anyhow::ensure!((before.dev(), before.ino()) == (actual.dev(), actual.ino())
+            && (directory_meta.dev(), directory_meta.ino()) == (dir_after.dev(), dir_after.ino())
+            && (output.metadata()?.dev(), output.metadata()?.ino()) == (file_after.dev(), file_after.ino()),
+            "migration paths changed during backup");
+        Ok(())
+    })();
+    drop(destination);
+    result?;
+    // Completion marker is published only after DB bytes and directory entries are durable.
+    output.sync_all()?;
+    File::open(&directory)?.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    let marker = generation.with_extension("complete");
+    let complete = OpenOptions::new().write(true).create_new(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW).open(marker)?;
+    complete.sync_all()?;
+    File::open(&directory)?.sync_all()?;
+    log!("legacy database backup completed before delivery migration: {}", generation.display());
+    Ok(generation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alondra_core::{HookEvent, states, upkeep};
     use std::collections::BTreeSet;
+
+    fn legacy_backup_fixture() -> (PathBuf, Connection) {
+        let home = std::env::temp_dir().join(format!("alondra-migration-backup-{}", crate::auth::random_hex(8)));
+        fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
+        let db = Connection::open(home.join("alondra.db")).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+            CREATE TABLE events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL);
+            CREATE INDEX events_session ON events(session);
+            CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);
+            PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        db.execute("INSERT INTO events VALUES(7,42,'clock',NULL,?1)", [serde_json::to_string(&Event::Clock {machine_strained:false}).unwrap()]).unwrap();
+        db.execute("INSERT INTO snapshots VALUES(0,1,?1)", [serde_json::to_string(&View::default()).unwrap()]).unwrap();
+        (home, db)
+    }
+
+    #[test]
+    fn migration_backup_includes_wal_is_private_restorable_and_not_repeated() {
+        let (home, old) = legacy_backup_fixture();
+        let path = home.join("alondra.db");
+        assert!(fs::metadata(home.join("alondra.db-wal")).unwrap().len() > 0);
+        let store = Store::open(&path).unwrap();
+        let directory = home.join("alondra.db.migration-backups");
+        let backups: Vec<_> = fs::read_dir(&directory).unwrap().map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e == "sqlite")).collect();
+        assert_eq!(backups.len(), 1);
+        let backup = &backups[0];
+        assert!(backup.with_extension("complete").is_file());
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(backup).unwrap().mode() & 0o777, 0o600);
+        let restored = home.join("restored.sqlite");
+        fs::copy(backup, &restored).unwrap();
+        let restored = Connection::open(&restored).unwrap();
+        assert_eq!(restored.query_row("PRAGMA integrity_check", [], |r| r.get::<_,String>(0)).unwrap(), "ok");
+        assert_eq!(restored.query_row("SELECT count(*) FROM events WHERE seq=7", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+        assert_eq!(restored.query_row("SELECT count(*) FROM snapshots", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+        assert_eq!(restored.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r| r.get::<_,String>(0)).unwrap(), "table");
+        // The exact old layout accepts 0.1.4's index statement and remains writable.
+        restored.execute_batch("CREATE INDEX IF NOT EXISTS events_session ON events(session); INSERT INTO events VALUES(8,43,'clock',NULL,'restored-only');").unwrap();
+        drop(store);
+        let current = Store::open(&path).unwrap();
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2, "current schema must not create another generation");
+        assert_eq!(current.conn.query_row("SELECT count(*) FROM event_log WHERE seq=8", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        drop((current, restored, old));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn migration_backup_failure_or_foreign_path_never_alters_legacy_schema() {
+        use std::os::unix::fs::symlink;
+        for link in [false, true] {
+            let (home, db) = legacy_backup_fixture();
+            let directory = home.join("alondra.db.migration-backups");
+            if link { symlink(&home, &directory).unwrap(); }
+            else { File::create(&directory).unwrap(); }
+            assert!(Store::open(&home.join("alondra.db")).is_err());
+            assert_eq!(db.query_row("SELECT type FROM sqlite_schema WHERE name='events'", [], |r| r.get::<_,String>(0)).unwrap(), "table");
+            assert_eq!(db.query_row("SELECT count(*) FROM events", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+            assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name='event_log'", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+            drop(db); fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    fn migration_backup_reserves_writer_across_snapshot_and_ddl() {
+        let (home, competitor) = legacy_backup_fixture();
+        // Match Store::open's canonical-parent boundary before the NOFOLLOW
+        // helper. macOS temp_dir uses /var, a symlink to /private/var.
+        let path = fs::canonicalize(&home).unwrap().join("alondra.db");
+        assert_eq!(fs::metadata(&path).unwrap().ino(), fs::metadata(home.join("alondra.db")).unwrap().ino());
+        let before = fs::symlink_metadata(&path).unwrap();
+        let mut migration = Connection::open(&path).unwrap();
+        let tx = migration.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        competitor.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(competitor.execute("INSERT INTO events VALUES(8,43,'clock',NULL,'too-late')", []).is_err());
+        let backup = backup_before_delivery_migration(&path, &tx, &before).unwrap();
+        assert!(competitor.execute("INSERT INTO events VALUES(8,43,'clock',NULL,'too-late')", []).is_err());
+        tx.execute_batch("DROP INDEX events_session; ALTER TABLE events RENAME TO event_log; CREATE VIEW events AS SELECT * FROM event_log;").unwrap();
+        tx.commit().unwrap();
+        let saved = Connection::open(backup).unwrap();
+        assert_eq!(saved.query_row("SELECT count(*) FROM events", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+        assert!(competitor.execute("INSERT INTO events VALUES(8,43,'clock',NULL,'old-writer')", []).is_err());
+        drop((saved, competitor, migration)); fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn migration_backup_rejects_replaced_source_identity() {
+        let (home, original) = legacy_backup_fixture();
+        let path = home.join("alondra.db");
+        let before = fs::symlink_metadata(&path).unwrap();
+        // Passing metadata from another file models replacement between open and backup.
+        let replacement = home.join("replacement.sqlite");
+        let mut other = Connection::open(&replacement).unwrap();
+        other.execute_batch("CREATE TABLE events(x);").unwrap();
+        let tx = other.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+        assert!(backup_before_delivery_migration(&replacement, &tx, &before).is_err());
+        assert!(!home.join("replacement.sqlite.migration-backups").exists());
+        drop(tx); drop((other, original)); fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     #[ignore = "requires ALONDRA_LEGACY_DAEMON_TEST pointing to released 0.1.4 daemon"]
