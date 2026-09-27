@@ -162,16 +162,17 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
         store.load().unwrap().tasks[&TaskId::from("task-1")],
         task_before
     );
-    assert_eq!(count(&store, "domain_messages"), 0);
-    assert_eq!(count(&store, "domain_outbox"), 0);
+    assert_eq!(count(&store, "domain_messages"), 1);
+    assert_eq!(count(&store, "domain_message_user_targets"), 1);
+    assert_eq!(count(&store, "domain_outbox"), 1);
     assert_eq!(count(&store, "delivery_attempts"), 0);
     present(&mut store);
     let e = acceptance(&mut store);
     let committed = store
         .execute_authenticated(&user(), &e, Some(("phone", "request-x", &[1; 32])))
         .unwrap();
-    assert_eq!(count(&store, "domain_messages"), 1);
-    assert_eq!(count(&store, "domain_outbox"), 1);
+    assert_eq!(count(&store, "domain_messages"), 3);
+    assert_eq!(count(&store, "domain_outbox"), 3);
     let expected = store.load().unwrap();
     drop(store);
     let mut restarted = DomainStore::open(&fixture.path()).unwrap();
@@ -181,12 +182,12 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
         .unwrap();
     assert!(recovered.replayed);
     assert_eq!(recovered.outcome, committed.outcome);
-    assert_eq!(count(&restarted, "domain_messages"), 1);
+    assert_eq!(count(&restarted, "domain_messages"), 3);
     let reciphered = restarted
         .execute_authenticated(&user(), &e, Some(("phone", "request-y", &[2; 32])))
         .unwrap();
     assert!(reciphered.replayed);
-    assert_eq!(count(&restarted, "domain_messages"), 1);
+    assert_eq!(count(&restarted, "domain_messages"), 3);
     assert!(
         matches!(restarted.execute_authenticated(&user(),&e,Some(("phone","request-x",&[3;32]))),Err(StoreError::Domain(e)) if e.code=="idempotency_conflict")
     );
@@ -216,8 +217,8 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
         Err(StoreError::Storage(_))
     ));
     assert_eq!(store.load().unwrap(), before);
-    assert_eq!(count(&store, "domain_messages"), 0);
-    assert_eq!(count(&store, "domain_outbox"), 0);
+    assert_eq!(count(&store, "domain_messages"), 1);
+    assert_eq!(count(&store, "domain_outbox"), 1);
     assert_eq!(count(&store, "command_audit"), audits);
     assert_eq!(count(&store, "semantic_receipts"), receipts);
     store
@@ -227,7 +228,7 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
     store
         .execute_authenticated(&user(), &e, Some(("phone", "op", &[1; 32])))
         .unwrap();
-    assert_eq!(count(&store, "domain_messages"), 1);
+    assert_eq!(count(&store, "domain_messages"), 2);
 }
 
 #[test]
@@ -248,7 +249,7 @@ fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
     );
     assert_eq!(second.load().unwrap(), before);
     assert_eq!(count(&second, "semantic_receipts"), receipts);
-    assert_eq!(count(&second, "domain_messages"), 1);
+    assert_eq!(count(&second, "domain_messages"), 2);
     let mut old_epoch = e.clone();
     old_epoch.data_epoch = "retired-epoch".into();
     assert!(
@@ -326,12 +327,13 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
     let e = acceptance(&mut store);
     store.execute_authenticated(&user(), &e, None).unwrap();
     let pending = store.pending_messages().unwrap();
-    assert_eq!(pending.len(), 1);
-    let claim = store.claim_message(pending[0].id).unwrap().unwrap();
-    assert!(store.claim_message(pending[0].id).unwrap().is_none());
+    assert_eq!(pending.len(), 2);
+    let agent_message = pending.iter().find(|m| m.recipient_kind == "agent").unwrap();
+    let claim = store.claim_message(agent_message.id).unwrap().unwrap();
+    assert!(store.claim_message(agent_message.id).unwrap().is_none());
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
-    assert!(store.pending_messages().unwrap().is_empty());
+    assert_eq!(store.pending_messages().unwrap().len(), 1);
     let evidence = store.delivery_evidence().unwrap();
     assert_eq!(evidence[0].state, "uncertain");
     assert_eq!(evidence[0].version, 2);
@@ -347,7 +349,7 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
     );
     assert!(!store.resolve_uncertain(claim.attempt_id, 1, true).unwrap());
     assert!(store.resolve_uncertain(claim.attempt_id, 2, true).unwrap());
-    let retried = store.claim_message(pending[0].id).unwrap().unwrap();
+    let retried = store.claim_message(agent_message.id).unwrap().unwrap();
     assert_ne!(claim.attempt_id, retried.attempt_id);
     assert!(
         store
@@ -359,7 +361,7 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
             )
             .unwrap()
     );
-    assert!(store.pending_messages().unwrap().is_empty());
+    assert_eq!(store.pending_messages().unwrap().len(), 1);
     let evidence = store.delivery_evidence().unwrap();
     assert_eq!(evidence.len(), 2);
     assert_eq!(evidence[1].state, "handed");
@@ -370,24 +372,79 @@ fn future_schema_and_legacy_writer_are_rejected_and_migration_preserves_rows() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    present(&mut store);
     let expected = store.load().unwrap();
     assert!(crate::store::Store::open(&fixture.path()).is_err());
     store
         .conn
-        .execute_batch("DROP TABLE interaction_attachments; ALTER TABLE domain_meta DROP COLUMN migration_note; PRAGMA user_version=1;")
+        .execute_batch("DROP TABLE domain_message_user_targets; DROP TABLE interaction_attachments; ALTER TABLE domain_meta DROP COLUMN migration_note; PRAGMA user_version=1;")
         .unwrap();
     drop(store);
     let mut migrated = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(migrated.load().unwrap(), expected);
     assert_eq!(count(&migrated, "interaction_attachments"), 0);
+    assert_eq!(count(&migrated, "domain_message_user_targets"), 0);
     assert!(fixture.0.join("domain.sqlite.migration-backups").is_dir());
     migrated
         .conn
-        .pragma_update(None, "user_version", 3)
+        .pragma_update(None, "user_version", 4)
         .unwrap();
     drop(migrated);
     assert!(DomainStore::open(&fixture.path()).is_err());
+}
+
+#[test]
+fn v2_migration_preserves_existing_outbox_and_user_notifications_claim_normally() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    let before = store.load().unwrap();
+    let old_message_id = store.pending_messages().unwrap()[0].id;
+    // A version 2 database had no User-target relation. Its existing outbox
+    // and delivery references must survive the append-only schema upgrade.
+    store
+        .conn
+        .execute_batch("DROP TABLE domain_message_user_targets; PRAGMA user_version=2;")
+        .unwrap();
+    drop(store);
+    let mut upgraded = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(upgraded.load().unwrap(), before);
+    assert_eq!(upgraded.pending_messages().unwrap()[0].id, old_message_id);
+    assert_eq!(count(&upgraded, "domain_message_user_targets"), 0);
+    execute(
+        &mut upgraded,
+        &agent(),
+        "after-upgrade-info",
+        Command::PublishInformation {
+            interaction_id: "info-after-upgrade".into(),
+            scope: Scope::Task {
+                task_id: "task-1".into(),
+            },
+            recipient: Recipient::User,
+            body: "Ready".into(),
+            attachments: vec![],
+        },
+    );
+    let user_message = upgraded
+        .pending_messages()
+        .unwrap()
+        .into_iter()
+        .find(|message| message.recipient_kind == "user")
+        .unwrap();
+    assert_eq!(user_message.interaction_id.as_deref(), Some("info-after-upgrade"));
+    assert_eq!(user_message.task_id.as_deref(), Some("task-1"));
+    assert_eq!(count(&upgraded, "domain_message_user_targets"), 1);
+    let claim = upgraded.claim_message(user_message.id).unwrap().unwrap();
+    assert_eq!(claim.message.recipient_kind, "user");
+    assert!(upgraded
+        .finish_message(
+            claim.attempt_id,
+            claim.version,
+            alondra_core::delivery::State::Handed,
+            None,
+        )
+        .unwrap());
+    upgraded.integrity_check().unwrap();
 }
 
 #[test]
@@ -660,5 +717,5 @@ fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
     assert_eq!(store.load().unwrap(), before);
     assert_eq!(count(&store, "semantic_receipts"), receipts + 1);
     assert_eq!(count(&store, "command_audit"), audit);
-    assert_eq!(count(&store, "domain_messages"), 0);
+    assert_eq!(count(&store, "domain_messages"), 1);
 }

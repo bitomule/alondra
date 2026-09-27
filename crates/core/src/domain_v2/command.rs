@@ -200,6 +200,10 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DomainEffect {
+    NotifyUser {
+        task_id: Option<TaskId>,
+        interaction_id: InteractionId,
+    },
     NotifyAgent {
         agent_id: AgentId,
         task_id: Option<TaskId>,
