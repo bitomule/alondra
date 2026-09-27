@@ -387,6 +387,7 @@ pub struct App {
     loading: HashSet<String>,
     pub flash: Option<Flash>,
     pub help: bool,
+    pub delivery_help: bool,
     pub help_scroll: usize,
     pub help_view: View,
     pub focus: Pane,
@@ -740,6 +741,7 @@ impl App {
             loading: HashSet::new(),
             flash: None,
             help: false,
+            delivery_help: false,
             help_scroll: 0,
             help_view: View::default(),
             focus: Pane::List,
@@ -942,15 +944,8 @@ impl App {
         self.posted_keys.borrow_mut().push(key);
         self.spawn(move |tx| {
             let client = Client::for_tui(Duration::from_secs(15));
-            let mut result = Ok(ok);
-            for (i, (path, body)) in calls.into_iter().enumerate() {
-                if let Err(e) = client.post(&path, &body)
-                    && i == 0
-                {
-                    result = Err(e.to_string());
-                    break;
-                }
-            }
+            let result = crate::delivery::post_feedback(calls, ok, |path, body| client.post(path, body))
+                .map_err(|error| error.to_string());
             let _ = tx.send(Msg::Posted { key, result });
         });
     }
@@ -1081,7 +1076,7 @@ impl App {
                 if let Some(k) = key {
                     self.hidden.remove(&k);
                 }
-                self.fail(trf!("Not sent: {e}", "No se envió: {e}"));
+                self.fail(trf!("Request not confirmed: {e}. Inspect before repeating.", "Solicitud no confirmada: {e}. Revisa antes de repetir."));
             }
             Msg::Closed { name, result } => self.closed(&name, result),
             Msg::Uploaded { seq, result } => self.uploaded(seq, result),
@@ -1233,6 +1228,7 @@ impl App {
         {
             match k.code {
                 KeyCode::Char('?') => {
+                    self.delivery_help = false;
                     self.help = true;
                     self.help_scroll = 0;
                     return Flow::Go;
@@ -1403,8 +1399,14 @@ impl App {
                     return Flow::Quit;
                 }
             }
-            "h" | "help" => {
+            "deliveries" => {
+                self.delivery_help = true;
                 self.help = true;
+                self.help_scroll = 0;
+            }
+            "h" | "help" => {
+                self.delivery_help = false;
+                    self.help = true;
                 self.help_scroll = 0;
             }
             "inbox" | "i" => {

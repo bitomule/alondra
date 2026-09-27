@@ -162,6 +162,8 @@ impl std::ops::Deref for FleetNode {
 #[derive(Deserialize, Clone, Default)]
 pub struct Overview {
     #[serde(default)]
+    pub delivery_attempts: Vec<crate::delivery::Attempt>,
+    #[serde(default)]
     pub orchestrator: Option<OrchestratorRuntime>,
     pub tick: u64,
     pub nodes: Vec<FleetNode>,
