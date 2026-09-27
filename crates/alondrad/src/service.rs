@@ -994,14 +994,22 @@ struct Journal {
 }
 impl Journal {
     fn open(path: PathBuf) -> Result<Self> {
+        // Resolve only the parent (macOS temporary roots may themselves be
+        // aliases). Never canonicalize the final filename: that would erase
+        // evidence of a symlink before SQLite can enforce NOFOLLOW.
+        let path = path.parent().context("journal parent missing")?.canonicalize()?
+            .join(path.file_name().context("journal filename missing")?);
         #[cfg(unix)]
         {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             // Tighten the DB before SQLite creates WAL/SHM sidecars.
-            std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            let file = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false)
+                .mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK).open(&path)?;
+            anyhow::ensure!(file.metadata()?.is_file(), "service journal must be a regular file");
+            // Change only the opened inode, never follow a swapped path for chmod.
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
-        let mut c = Connection::open(&path)?;
+        let mut c = Self::connect(&path)?;
         c.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS service_receipts (
@@ -1029,8 +1037,14 @@ impl Journal {
         migration.commit()?;
         Ok(Self { path })
     }
+    fn connect(path: &Path) -> Result<Connection> {
+        // Enforce no-follow in SQLite itself as well, closing the race between
+        // file preparation and sqlite3_open. Reopens never create a missing DB.
+        Ok(Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW)?)
+    }
     fn db(&self) -> Result<Connection> {
-        let c = Connection::open(&self.path)?;
+        let c = Self::connect(&self.path)?;
         c.pragma_update(None, "synchronous", "FULL")?;
         Ok(c)
     }
@@ -1330,6 +1344,34 @@ mod tests {
         journal.executing("client-a", "external", &[3u8;32]).unwrap();
         assert!(matches!(Journal::open(path).unwrap().accept("client-a", "external", &[3u8;32]).unwrap(), Disposition::Executing),
             "legacy/external executing operations remain uncertain");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn journal_rejects_final_symlink_without_touching_target_on_open_or_reopen() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let home = std::env::temp_dir().join(format!("journal-no-follow-{}",crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let target = home.join("preserved-old.sqlite");
+        let db = Connection::open(&target).unwrap();
+        db.execute_batch("CREATE TABLE preserved(value TEXT); INSERT INTO preserved VALUES('old receipts');").unwrap();
+        drop(db);
+        std::fs::set_permissions(&target,std::fs::Permissions::from_mode(0o644)).unwrap();
+        let original = std::fs::read(&target).unwrap();
+        let path = home.join("new-generation.sqlite");
+        symlink(&target,&path).unwrap();
+        assert!(Journal::open(path.clone()).is_err(), "preparation must not follow the final symlink or chmod its target");
+        assert!(Journal::connect(&path).is_err(), "SQLite NOFOLLOW must reject a symlink swapped in after preparation");
+        assert_eq!(std::fs::read(&target).unwrap(),original);
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,0o644);
+        std::fs::remove_file(&path).unwrap();
+        let journal = Journal::open(path.clone()).unwrap();
+        journal.accept("client-new","request-new",&[7;32]).unwrap();
+        std::fs::rename(&path,home.join("actual-new.sqlite")).unwrap();
+        symlink(&target,&path).unwrap();
+        assert!(journal.db().is_err(), "every later connection must also reject a replaced symlink");
+        assert_eq!(std::fs::read(&target).unwrap(),original);
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,0o644);
         std::fs::remove_dir_all(home).unwrap();
     }
 
