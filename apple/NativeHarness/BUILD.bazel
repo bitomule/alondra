@@ -1,0 +1,52 @@
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
+load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+
+swift_library(
+    name = "AlondraNativeScenarios",
+    testonly = True,
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraNativeScenarios",
+    copts = ["-swift-version", "6", "-strict-concurrency=complete"],
+    deps = [
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Auth:AlondraAuth",
+        "//apple/Data/RelayOutbox:AlondraRelayOutbox",
+        "//apple/Data/RelaySession:AlondraRelaySession",
+    ],
+)
+
+swift_library(
+    name = "iOSEntry",
+    testonly = True,
+    srcs = ["iOS/Main.swift"],
+    deps = [":AlondraNativeScenarios"],
+)
+
+swift_library(
+    name = "MacEntry",
+    testonly = True,
+    srcs = ["macOS/Main.swift"],
+    deps = [":AlondraNativeScenarios"],
+)
+
+ios_application(
+    name = "AlondraNativeHarnessiOS",
+    testonly = True,
+    bundle_id = "com.bitomule.alondra.nativeharness",
+    bundle_name = "AlondraNativeHarness",
+    families = ["iphone"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "26.0",
+    deps = [":iOSEntry"],
+)
+
+macos_application(
+    name = "AlondraNativeHarnessMac",
+    testonly = True,
+    bundle_id = "com.bitomule.alondra.nativeharness",
+    bundle_name = "AlondraNativeHarness",
+    infoplists = ["Info.plist"],
+    minimum_os_version = "26.0",
+    deps = [":MacEntry"],
+)
