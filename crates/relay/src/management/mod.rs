@@ -3,6 +3,8 @@
 pub mod devices;
 pub mod http;
 pub mod keycloak;
+#[cfg(feature = "lab-waiter-metrics")]
+pub(crate) mod lab_metrics;
 pub mod worker;
 // PostgreSQL-only SQLx components avoid the optional SQLite native-link conflict
 // with the desktop workspace's newer rusqlite. Versions are pinned together.
