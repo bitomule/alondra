@@ -101,6 +101,33 @@ class VisualContracts(unittest.TestCase):
             self.assertEqual(json.loads((Path(directory) / 'assertions/failure-diagnostics.json').read_text()), [
                 'Failure receipt unavailable: ValueError', 'MAV cleanup failed: TimeoutError'])
 
+    def test_wait_failure_preserves_direct_ax_and_capture_without_replacing_cause(self):
+        for tree_fails in (False, True):
+            with self.subTest(tree_fails=tree_fails), tempfile.TemporaryDirectory() as directory:
+                project = Path(directory).resolve()
+                calls = []
+                def mav(*args):
+                    calls.append(args)
+                    if args[0] == 'open':
+                        return f'ok cmd=open dir={project}/.mav/runs/current run=current'
+                    if args[:2] == ('ui', 'wait'): raise RuntimeError('original wait failure')
+                    if args[:2] == ('ui', 'tree'):
+                        if tree_fails: raise ValueError('underlying AX failure')
+                        return 'actual accessibility tree'
+                    return 'recorded'
+                state = {'runID': 'current', 'scenario': 'reconnect', 'status': 'running',
+                         'savedConfiguration': True, 'restoring': True, 'ready': False}
+                with self.assertRaisesRegex(RuntimeError, 'original wait failure'):
+                    driver.exercise(mav, lambda: state, Mock(), project / 'assertions', 'current', 'reconnect', project)
+                self.assertIn(('evidence', 'step', '--name', 'failure', '--note', 'Failed synthetic visual scenario'), calls)
+                self.assertEqual(calls[-1], ('stop',))
+                self.assertTrue((project / 'assertions/failed-capture.txt').is_file())
+                if tree_fails:
+                    self.assertIn('failed-tree.txt unavailable: ValueError',
+                                  json.loads((project / 'assertions/failure-diagnostics.json').read_text()))
+                else:
+                    self.assertEqual((project / 'assertions/failed-tree.txt').read_text(), 'actual accessibility tree')
+
     def test_mac_host_runtime_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             visual_run.main(['--platform', 'mac', '--run', '--output', '/private/tmp/uncreated-visual'])

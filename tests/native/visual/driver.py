@@ -117,11 +117,13 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, proje
         steps.append(name)
     onboarding = ('pairing.screen', 'Your work.', 'A home for your work.', 'Connecting securely', 'pairing.signIn')
     failure = None
+    opened = False
     failure_diagnostics = []
     project = project or output.parent
     previous_runs = {path.name for path in (project / '.mav/runs').glob('*')}
     try:
         mav_run, mav_report = resolve_mav_run(mav('open', '--no-relaunch'), project, previous_runs)
+        opened = True
         mav('evidence', 'start')
         if scenario == 'reconnect':
             wait_state(read, run_id, scenario, lambda s: s.get('savedConfiguration') is True and s.get('restoring') is True and not s.get('ready'))
@@ -160,6 +162,16 @@ def exercise(mav, read, control, output: Path, run_id: str, scenario: str, proje
         return report
     except BaseException as error:
         failure = error
+        if opened:
+            # ui wait flattens driver errors to a timeout. Preserve a direct AX
+            # read and a screenshot before stop deletes the driver's inputs.
+            for name, arguments in (('failed-tree.txt', ('ui', 'tree', '--raw')),
+                                    ('failed-capture.txt', ('evidence', 'step', '--name', 'failure',
+                                                            '--note', 'Failed synthetic visual scenario'))):
+                try:
+                    (output / name).write_text(mav(*arguments))
+                except Exception as diagnostic_error:
+                    failure_diagnostics.append(name + ' unavailable: ' + type(diagnostic_error).__name__)
         try:
             value = read()
             if value is not None:
