@@ -1,6 +1,6 @@
 //! Create-only provisioning. A lost response is reconciled by an immutable internal
 //! username plus correlation attribute; a retry NEVER updates existing credentials.
-use super::{Acceptance, DomainError};
+use super::{Acceptance, DomainError, Reconciliation};
 use anyhow::{Context, Result, ensure};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Keycloak {
+    issuer: String,
     http: Client,
     admin_realm: Url,
     token_url: Url,
@@ -24,6 +25,7 @@ pub struct Provisioned {
 }
 impl Keycloak {
     pub fn new(
+        issuer: String,
         admin_realm: Url,
         token_url: Url,
         client_id: String,
@@ -48,11 +50,33 @@ impl Keycloak {
             admin_realm.path().ends_with('/'),
             "admin realm URL must end with slash"
         );
+        // The public issuer and private admin host deliberately differ. Their
+        // realm and the private token/admin authority must nevertheless agree.
+        let issuer_url = Url::parse(&issuer)?;
+        let realm = issuer_url
+            .path()
+            .strip_prefix("/realms/")
+            .filter(|realm| !realm.is_empty() && !realm.contains('/') && !realm.contains('%'))
+            .ok_or(DomainError::InvalidInput)?;
+        ensure!(
+            issuer_url.query().is_none()
+                && issuer_url.fragment().is_none()
+                && issuer_url.username().is_empty()
+                && issuer_url.password().is_none(),
+            DomainError::InvalidInput
+        );
+        ensure!(
+            admin_realm.path() == format!("/admin/realms/{realm}/")
+                && token_url.path() == format!("/realms/{realm}/protocol/openid-connect/token")
+                && admin_realm.origin() == token_url.origin(),
+            "Keycloak realm/authority mismatch"
+        );
         let http = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(10))
             .build()?;
         Ok(Self {
+            issuer,
             http,
             admin_realm,
             token_url,
@@ -267,9 +291,59 @@ impl Keycloak {
             },
         }
     }
-    pub async fn disable(&self, account_id: Uuid) -> Result<()> {
+    /// Persisted issuer/subject is the authority for admitted accounts. A
+    /// username is only a recovery index for an uncompleted provider create.
+    async fn reconciliation_subject(
+        &self,
+        token: &AdminToken,
+        job: &Reconciliation,
+    ) -> Result<Option<String>> {
+        ensure!(job.issuer == self.issuer, DomainError::Conflict);
+        let Some(subject) = job.subject.as_deref() else {
+            ensure!(job.allow_provisioning_lookup, DomainError::Conflict);
+            return self.lookup(token, job.account_id).await;
+        };
+        ensure!(
+            !subject.is_empty() && subject.len() <= 255 && !subject.chars().any(char::is_control),
+            DomainError::Conflict
+        );
+        let mut url = self.admin_realm.join("users/")?;
+        url.path_segments_mut()
+            .map_err(|_| DomainError::InvalidInput)?
+            .pop_if_empty()
+            .push(subject);
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&token.0)
+            .send()
+            .await
+            .map_err(|_| DomainError::ProviderUnavailable)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            // Never adopt another user that now owns a former username.
+            return Ok(None);
+        }
+        ensure!(
+            response.status() == StatusCode::OK,
+            DomainError::ProviderUnavailable
+        );
+        let user = bounded_json(response).await?;
+        ensure!(user["id"].as_str() == Some(subject), DomainError::Conflict);
+        if let Some(attributes) = user.get("attributes") {
+            let attributes = attributes.as_object().ok_or(DomainError::Conflict)?;
+            if let Some(correlation) = attributes.get("alondra_account_id") {
+                ensure!(
+                    correlation == &json!([job.account_id.to_string()]),
+                    DomainError::Conflict
+                );
+            }
+        }
+        Ok(Some(subject.into()))
+    }
+    pub async fn disable(&self, job: &Reconciliation) -> Result<()> {
+        ensure!(job.issuer == self.issuer, DomainError::Conflict);
         let token = self.token().await?;
-        let Some(subject) = self.lookup(&token, account_id).await? else {
+        let Some(subject) = self.reconciliation_subject(&token, job).await? else {
             return Ok(());
         };
         let mut url = self.admin_realm.join("users/")?;
@@ -311,9 +385,10 @@ impl Keycloak {
         );
         Ok(())
     }
-    pub async fn delete(&self, account_id: Uuid) -> Result<()> {
+    pub async fn delete(&self, job: &Reconciliation) -> Result<()> {
+        ensure!(job.issuer == self.issuer, DomainError::Conflict);
         let token = self.token().await?;
-        let Some(subject) = self.lookup(&token, account_id).await? else {
+        let Some(subject) = self.reconciliation_subject(&token, job).await? else {
             return Ok(());
         };
         let mut url = self.admin_realm.join("users/")?;
@@ -383,17 +458,17 @@ mod integration_tests {
         ));
         let router = Router::new()
             .route(
-                "/token",
+                "/realms/test/protocol/openid-connect/token",
                 post(|| async { Json(json!({"access_token":"synthetic"})) }),
             )
             .route(
-                "/realm/",
+                "/admin/realms/test/",
                 get(|State(state): State<Arc<Mutex<Value>>>| async move {
                     Json(state.lock().unwrap().clone())
                 }),
             )
             .route(
-                "/realm/users/profile",
+                "/admin/realms/test/users/profile",
                 get(|State(state): State<Arc<Mutex<Value>>>| async move {
                     Json(
                         state
@@ -410,8 +485,9 @@ mod integration_tests {
         let base = format!("http://{}", listener.local_addr()?);
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let kc = Keycloak::new(
-            format!("{base}/realm/").parse()?,
-            format!("{base}/token").parse()?,
+            "https://identity.example/realms/test".into(),
+            format!("{base}/admin/realms/test/").parse()?,
+            format!("{base}/realms/test/protocol/openid-connect/token").parse()?,
             "fixture".into(),
             "synthetic".into(),
         )?;
@@ -475,6 +551,133 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn management_bound_reconciliation_never_falls_back_or_mutates_mismatched_identity()
+    -> Result<()> {
+        use axum::{
+            Json, Router,
+            extract::State,
+            routing::{get, post},
+        };
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct StateData {
+            body: Option<Value>,
+            writes: usize,
+            searches: usize,
+        }
+        let state = Arc::new(Mutex::new(StateData::default()));
+        let router = Router::new()
+            .route(
+                "/realms/test/protocol/openid-connect/token",
+                post(|| async { Json(json!({"access_token":"synthetic"})) }),
+            )
+            .route(
+                "/admin/realms/test/users/bound",
+                get(|State(state): State<Arc<Mutex<StateData>>>| async move {
+                    let body = state.lock().unwrap().body.clone();
+                    (
+                        if body.is_some() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::NOT_FOUND
+                        },
+                        Json(body.unwrap_or(json!({}))),
+                    )
+                })
+                .put(|State(state): State<Arc<Mutex<StateData>>>| async move {
+                    state.lock().unwrap().writes += 1;
+                    StatusCode::NO_CONTENT
+                })
+                .delete(|State(state): State<Arc<Mutex<StateData>>>| async move {
+                    state.lock().unwrap().writes += 1;
+                    StatusCode::NO_CONTENT
+                }),
+            )
+            .route(
+                "/admin/realms/test/users/bound/logout",
+                post(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/admin/realms/test/users",
+                get(|State(state): State<Arc<Mutex<StateData>>>| async move {
+                    state.lock().unwrap().searches += 1;
+                    Json(json!([]))
+                }),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let issuer = "https://identity.example/realms/test";
+        let kc = Keycloak::new(
+            issuer.into(),
+            format!("{base}/admin/realms/test/").parse()?,
+            format!("{base}/realms/test/protocol/openid-connect/token").parse()?,
+            "fixture".into(),
+            "synthetic".into(),
+        )?;
+        let mut job = Reconciliation {
+            id: Uuid::new_v4(),
+            account_id: Uuid::new_v4(),
+            action: "keycloak_disable".into(),
+            issuer: issuer.into(),
+            subject: Some("bound".into()),
+            allow_provisioning_lookup: false,
+        };
+        for body in [
+            json!({"id":"bound","username":"legacy-david"}),
+            json!({"id":"bound","username":"renamed","attributes":{"alondra_account_id":[job.account_id.to_string()]}}),
+        ] {
+            state.lock().unwrap().body = Some(body);
+            kc.disable(&job).await?;
+            kc.delete(&job).await?;
+        }
+        assert_eq!(state.lock().unwrap().writes, 4);
+        for body in [
+            json!({"id":"other"}),
+            json!({"id":"bound","attributes":{"alondra_account_id":[Uuid::new_v4().to_string()]}}),
+            json!({"id":"bound","attributes":{"alondra_account_id":[job.account_id.to_string(),"extra"]}}),
+        ] {
+            state.lock().unwrap().body = Some(body);
+            assert!(kc.disable(&job).await.is_err());
+            assert!(kc.delete(&job).await.is_err());
+        }
+        state.lock().unwrap().body = None;
+        kc.disable(&job).await?;
+        kc.delete(&job).await?;
+        job.issuer = "https://other.example/realms/test".into();
+        assert!(kc.delete(&job).await.is_err());
+        job.issuer = issuer.into();
+        job.subject = None;
+        assert!(kc.delete(&job).await.is_err());
+        assert_eq!(state.lock().unwrap().writes, 4);
+        assert_eq!(
+            state.lock().unwrap().searches,
+            0,
+            "bound missing user or lost binding must not search by username"
+        );
+        job.allow_provisioning_lookup = true;
+        kc.delete(&job).await?;
+        assert_eq!(
+            state.lock().unwrap().searches,
+            1,
+            "ambiguous create retains strict provisioning lookup"
+        );
+        assert!(
+            Keycloak::new(
+                issuer.into(),
+                format!("{base}/admin/realms/other/").parse()?,
+                format!("{base}/realms/test/protocol/openid-connect/token").parse()?,
+                "fixture".into(),
+                "synthetic".into()
+            )
+            .is_err()
+        );
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires disposable local PostgreSQL and Keycloak fixture"]
     async fn management_real_keycloak_reissue_releases_unique_email_without_relinking_identity()
     -> Result<()> {
@@ -496,6 +699,7 @@ mod integration_tests {
             "fixture must be loopback"
         );
         let kc = Keycloak::new(
+            field("issuer")?,
             realm,
             field("token_url")?.parse()?,
             field("client_id")?,
@@ -526,14 +730,8 @@ mod integration_tests {
             .await?;
         while let Some(job) = db.next_reconciliation().await? {
             match job.action.as_str() {
-                "keycloak_disable" => kc
-                    .disable(job.account_id)
-                    .await
-                    .context("real fixture disable")?,
-                "keycloak_delete" => kc
-                    .delete(job.account_id)
-                    .await
-                    .context("real fixture delete")?,
+                "keycloak_disable" => kc.disable(&job).await.context("real fixture disable")?,
+                "keycloak_delete" => kc.delete(&job).await.context("real fixture delete")?,
                 "relay_revoke" => (), // no devices were admitted for an unactivated identity
                 _ => unreachable!(),
             }
@@ -556,7 +754,215 @@ mod integration_tests {
         assert!(!provisioned.already_existed);
         assert_ne!(provisioned.subject, first.subject);
         next.complete(&provisioned.subject).await?;
-        kc.delete(new_id).await?;
+        db.disable_account(admin.id, new_id, true).await?;
+        while let Some(job) = db.next_reconciliation().await? {
+            match job.action.as_str() {
+                "keycloak_disable" => kc.disable(&job).await?,
+                "keycloak_delete" => kc.delete(&job).await?,
+                "relay_revoke" => (),
+                _ => unreachable!(),
+            }
+            db.reconciliation_complete(&job).await?;
+        }
+        cleanup(db, schema).await
+    }
+    #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL and Keycloak fixture"]
+    async fn management_real_keycloak_legacy_subject_survives_rename_and_username_reuse()
+    -> Result<()> {
+        let fixture: Value = serde_json::from_slice(&std::fs::read(std::env::var(
+            "ALONDRA_MANAGEMENT_TEST_CONNECTIONS",
+        )?)?)?;
+        ensure!(
+            fixture["marker"] == "alondra-disposable-system-v1",
+            "disposable fixture required"
+        );
+        let field = |name: &str| -> Result<String> {
+            Ok(fixture[name]
+                .as_str()
+                .context("missing fixture field")?
+                .into())
+        };
+        let realm: Url = field("admin_realm")?.parse()?;
+        ensure!(
+            matches!(realm.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
+            "fixture must be loopback"
+        );
+        let issuer = field("issuer")?;
+        let kc = Keycloak::new(
+            issuer.clone(),
+            realm,
+            field("token_url")?.parse()?,
+            field("client_id")?,
+            field("client_secret")?,
+        )?;
+        kc.verify_realm().await?;
+        let token = kc.token().await?;
+        let legacy_name = format!("legacy-david-{}", Uuid::new_v4());
+        let response = kc.http.post(kc.admin_realm.join("users")?).bearer_auth(&token.0)
+            .json(&json!({"username":legacy_name,"email":format!("{legacy_name}@example.invalid"),"firstName":"Legacy","enabled":true})).send().await?;
+        ensure!(
+            response.status() == StatusCode::CREATED,
+            "legacy fixture user create failed"
+        );
+        let legacy_url = Url::parse(
+            response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .context("missing create location")?
+                .to_str()?,
+        )?;
+        // Keep subsequent requests pinned to the configured authority, not Location.
+        let subject = legacy_url
+            .path_segments()
+            .and_then(|s| s.last())
+            .context("missing created id")?
+            .to_string();
+        let user_url = |id: &str| -> Result<Url> {
+            let mut url = kc.admin_realm.join("users/")?;
+            url.path_segments_mut()
+                .map_err(|_| DomainError::InvalidInput)?
+                .pop_if_empty()
+                .push(id);
+            Ok(url)
+        };
+        let (db, legacy, schema) =
+            super::super::tests::fixture_for_identity(&issuer, &subject).await?;
+        let invitation = db
+            .create_invitation(
+                legacy.id,
+                &format!("operator-{}@example.invalid", Uuid::new_v4()),
+                300,
+            )
+            .await?;
+        let operator = db
+            .reserve_acceptance(&invitation.token, "Operator")
+            .await?
+            .complete("fixture-operator-sub")
+            .await?;
+        sqlx::query("UPDATE management_accounts SET is_admin=true WHERE id=$1")
+            .bind(operator.id)
+            .execute(&db.pool)
+            .await?;
+        db.disable_account(operator.id, legacy.id, false).await?;
+        while let Some(job) = db.next_reconciliation().await? {
+            assert_eq!(job.subject.as_deref(), Some(subject.as_str()));
+            assert!(!job.allow_provisioning_lookup);
+            if job.action == "keycloak_disable" {
+                kc.disable(&job).await?;
+            }
+            db.reconciliation_complete(&job).await?;
+        }
+        let user: Value = kc
+            .http
+            .get(user_url(&subject)?)
+            .bearer_auth(&token.0)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(
+            user["enabled"], false,
+            "legacy bootstrap identity must actually be disabled at Keycloak"
+        );
+        let renamed = format!("renamed-{}", Uuid::new_v4());
+        let response = kc
+            .http
+            .put(user_url(&subject)?)
+            .bearer_auth(&token.0)
+            .json(&json!({"username":renamed}))
+            .send()
+            .await?;
+        ensure!(
+            response.status() == StatusCode::NO_CONTENT,
+            "fixture rename failed"
+        );
+        let other_account = Uuid::new_v4();
+        let inherited_name = format!("alondra-{}", legacy.id);
+        let response = kc.http.post(kc.admin_realm.join("users")?).bearer_auth(&token.0)
+            .json(&json!({"username":inherited_name,"email":format!("{inherited_name}@example.invalid"),"firstName":"Other","enabled":true,
+                "attributes":{"alondra_account_id":[other_account.to_string()]}})).send().await?;
+        ensure!(
+            response.status() == StatusCode::CREATED,
+            "fixture name reuse failed"
+        );
+        let other_location = Url::parse(
+            response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .context("missing create location")?
+                .to_str()?,
+        )?;
+        let other_subject = other_location
+            .path_segments()
+            .and_then(|s| s.last())
+            .context("missing created id")?
+            .to_string();
+        let mut wrong = Reconciliation {
+            issuer: issuer.clone(),
+            id: Uuid::new_v4(),
+            account_id: legacy.id,
+            action: "keycloak_delete".into(),
+            subject: Some(other_subject.clone()),
+            allow_provisioning_lookup: false,
+        };
+        assert!(
+            kc.disable(&wrong).await.is_err(),
+            "another account correlation rejects stale/wrong binding"
+        );
+        assert!(kc.delete(&wrong).await.is_err());
+        wrong.subject = None;
+        assert!(
+            kc.delete(&wrong).await.is_err(),
+            "missing authoritative binding cannot adopt reused username"
+        );
+        wrong.subject = Some(subject.clone());
+        wrong.issuer = "https://wrong-issuer.example/realms/test".into();
+        assert!(kc.delete(&wrong).await.is_err());
+        db.disable_account(operator.id, legacy.id, true).await?;
+        while let Some(job) = db.next_reconciliation().await? {
+            match job.action.as_str() {
+                "keycloak_disable" => kc.disable(&job).await?,
+                "keycloak_delete" => {
+                    kc.delete(&job).await?;
+                    kc.delete(&job).await?;
+                }
+                "relay_revoke" => (),
+                _ => unreachable!(),
+            }
+            db.reconciliation_complete(&job).await?;
+        }
+        assert_eq!(
+            kc.http
+                .get(user_url(&subject)?)
+                .bearer_auth(&token.0)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let other: Value = kc
+            .http
+            .get(user_url(&other_subject)?)
+            .bearer_auth(&token.0)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(
+            other["enabled"], true,
+            "a user holding the predictable name must remain untouched"
+        );
+        assert_eq!(
+            other["attributes"]["alondra_account_id"],
+            json!([other_account.to_string()])
+        );
+        kc.http
+            .delete(user_url(&other_subject)?)
+            .bearer_auth(&token.0)
+            .send()
+            .await?
+            .error_for_status()?;
         cleanup(db, schema).await
     }
 }
