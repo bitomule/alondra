@@ -77,6 +77,7 @@ def main(argv=None):
                 'platform': args.platform, 'scenarioReports': [], 'cleanup': 'pending', 'buildConfiguration': 'dbg'}
     common.atomic_json(output / 'manifest.json', manifest)
     udid = None; reserved_name = None; lock = None
+    active_mav = None
     old_signals = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
     for s in old_signals: signal.signal(s, common.interrupted)
     try:
@@ -122,7 +123,9 @@ def main(argv=None):
                 def read():
                     if not result_file.is_file(): return None
                     return json.loads(result_file.read_text())
+                active_mav = (project, env)
                 report = driver.exercise(mav, read, lambda value: common.atomic_json(control_file, value), project / 'assertions', scenario_id, scenario)
+                active_mav = None
                 manifest['scenarioReports'].append({'scenario': scenario, 'runID': scenario_id, 'status': report['status'],
                     'sha256': common.hash_file(project / 'assertions/result.json')})
                 common.atomic_json(output / 'manifest.json', manifest)
@@ -132,7 +135,14 @@ def main(argv=None):
     finally:
         for s in old_signals: signal.signal(s, signal.SIG_IGN)
         try:
-            errors = common.cleanup_owned(commands, udid, args.build_cache, lock, False, reserved_name)
+            errors = []
+            if active_mav is not None:
+                project, env = active_mav
+                try:
+                    commands.run(['mav', 'stop'], env=env, cwd=project, timeout=30)
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    errors.append('mav_cleanup_failed')
+            errors += common.cleanup_owned(commands, udid, args.build_cache, lock, False, reserved_name)
             manifest['cleanup'] = 'failed' if errors else 'complete'
             if errors: manifest.update(status='failed', cleanupErrors=errors)
             common.atomic_json(output / 'manifest.json', manifest)
