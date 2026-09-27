@@ -102,7 +102,10 @@ def run():
     brew = '/opt/homebrew/bin/brew'; tap = Path('/opt/homebrew/Library/Taps/bitomule/homebrew-tap')
     prefix = Path('/opt/homebrew/opt/alondra')
     base_env = {**os.environ, 'HOMEBREW_NO_AUTO_UPDATE': '1', 'HOMEBREW_NO_ANALYTICS': '1',
-                'HOMEBREW_NO_INSTALL_CLEANUP': '1', 'HOMEBREW_NO_INSTALL_FROM_API': '1'}
+                'HOMEBREW_NO_INSTALL_CLEANUP': '1'}
+    # Disabling API installation forces a full homebrew/core clone even for
+    # this third-party formula (attempt1). Its own commit/blob remain pinned.
+    base_env.pop('HOMEBREW_NO_INSTALL_FROM_API', None)
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0)); port = reservation.getsockname()[1]
     env = {'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': str(home),
