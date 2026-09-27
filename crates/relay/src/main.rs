@@ -43,12 +43,14 @@ struct Server {
     change_waiters: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     device_gate: Arc<RwLock<()>>,
+    waitlist: management::waitlist::Limiter,
     epoch: String,
 }
 
 fn router(server: Arc<Server>) -> Router {
     Router::new()
         .merge(management::http::routes())
+        .merge(management::waitlist::routes())
         .merge(web_session::routes())
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
@@ -817,6 +819,7 @@ async fn main() -> anyhow::Result<()> {
         change_waiters: Arc::new(Semaphore::new(64)),
         requests: Arc::new(Semaphore::new(128)),
         device_gate: Arc::new(RwLock::new(())),
+        waitlist: management::waitlist::Limiter::from_env()?,
         epoch,
     });
     #[cfg(feature = "lab-waiter-metrics")]
@@ -834,7 +837,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
     println!("alondra-relay listening on {listen}");
-    axum::serve(listener, router(server)).await?;
+    axum::serve(
+        listener,
+        router(server).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -964,13 +971,19 @@ mod http_tests {
             change_waiters: Arc::new(Semaphore::new(64)),
             requests: Arc::new(Semaphore::new(128)),
             device_gate: Arc::new(RwLock::new(())),
+            waitlist: management::waitlist::Limiter::new(None),
             epoch,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let serving = server.clone();
         let join = tokio::spawn(async move {
-            axum::serve(listener, router(serving)).await.unwrap();
+            axum::serve(
+                listener,
+                router(serving).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
         (url, server, join)
     }
@@ -1250,6 +1263,94 @@ mod http_tests {
         assert_eq!(response.status(),StatusCode::UNPROCESSABLE_ENTITY);
         assert!(db.active_identity("https://id.example/realms/alondra","owner").await.is_ok());
         join.abort();management::tests::cleanup(db,schema).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable local PostgreSQL"]
+    async fn waitlist_http_is_uniform_bounded_and_only_admins_manage_it() -> anyhow::Result<()> {
+        let (db, admin, schema) =
+            management::tests::fixture_for_issuer("https://id.example/realms/alondra").await?;
+        let invitation = db.create_invitation(admin.id, "member@example.test", 300).await?;
+        db.reserve_acceptance(&invitation.token, "Member").await?.complete("member").await?;
+        let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
+        let (url, _server, join) = test_server_with_management(&key, None, Some(db.clone())).await;
+        let client = reqwest::Client::new();
+        let count = |table: &'static str| {
+            let pool = db.pool.clone();
+            async move {
+                sqlx_core::query_scalar::query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+            }
+        };
+        let (accounts, invitations) = (count("management_accounts").await?, count("management_invitations").await?);
+        let join_waitlist = |body: Vec<u8>, content_type: &'static str| {
+            client
+                .post(format!("{url}/api/waitlist"))
+                .header("content-type", content_type)
+                .body(body)
+                .send()
+        };
+        let mut accepted = Vec::new();
+        for email in ["new.person@example.test", "  NEW.Person@Example.TEST ", "member@example.test"] {
+            let response = join_waitlist(serde_json::to_vec(&json!({"email": email}))?, "application/json").await?;
+            let status = response.status();
+            let mut headers = response.headers().clone();
+            headers.remove("date");
+            accepted.push((status, headers, response.bytes().await?));
+        }
+        assert_eq!(accepted[0].0, StatusCode::ACCEPTED);
+        assert_eq!(serde_json::from_slice::<Value>(&accepted[0].2)?, json!({"status": "accepted"}));
+        assert!(accepted.iter().all(|r| r == &accepted[0]), "new, repeated and existing-account emails are indistinguishable");
+        let invalid = join_waitlist(br#"{"email":"not-an-address"}"#.to_vec(), "application/json").await?;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(invalid.json::<Value>().await?, json!({"error": "invalid_email"}));
+        let oversized = json!({"email": format!("{}@example.test", "a".repeat(2000))});
+        let oversized = join_waitlist(serde_json::to_vec(&oversized)?, "application/json").await?;
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let limited = join_waitlist(br#"{"email":"sixth@example.test"}"#.to_vec(), "application/json").await?;
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry: u64 = limited.headers()[header::RETRY_AFTER].to_str()?.parse()?;
+        assert!((1..=600).contains(&retry));
+        assert_eq!(limited.json::<Value>().await?, json!({"error": "rate_limited"}));
+        assert_eq!(count("management_waitlist").await?, 2);
+        assert_eq!(
+            (count("management_accounts").await?, count("management_invitations").await?),
+            (accounts, invitations),
+            "joining creates no account or invitation"
+        );
+
+        let list = |bearer: Option<String>, query: &str| {
+            let request = client.get(format!("{url}/v1/admin/waitlist{query}"));
+            match bearer { Some(token) => request.bearer_auth(token), None => request }.send()
+        };
+        assert_eq!(list(None, "").await?.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(list(Some(jwt("member", now_ms())), "").await?.status(), StatusCode::FORBIDDEN);
+        let first: Value = list(Some(jwt("stable-admin-sub", now_ms())), "?limit=1").await?.json().await?;
+        assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(first["entries"][0]["email"], "new.person@example.test");
+        assert!(first["entries"][0]["created_at_ms"].as_i64().unwrap() > 1_700_000_000_000);
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second: Value = list(Some(jwt("stable-admin-sub", now_ms())), &format!("?limit=1&after={cursor}")).await?.json().await?;
+        assert_eq!(second["entries"][0]["email"], "member@example.test");
+        assert!(second["next_cursor"].is_null());
+
+        let id = first["entries"][0]["id"].as_str().unwrap();
+        let remove = |bearer: Option<String>| {
+            let request = client.delete(format!("{url}/v1/admin/waitlist/{id}"));
+            match bearer { Some(token) => request.bearer_auth(token), None => request }.send()
+        };
+        assert_eq!(remove(None).await?.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(remove(Some(jwt("member", now_ms()))).await?.status(), StatusCode::FORBIDDEN);
+        assert_eq!(count("management_waitlist").await?, 2);
+        assert_eq!(remove(Some(jwt("stable-admin-sub", now_ms()))).await?.status(), StatusCode::NO_CONTENT);
+        assert_eq!(remove(Some(jwt("stable-admin-sub", now_ms()))).await?.status(), StatusCode::NOT_FOUND);
+        assert_eq!(count("management_waitlist").await?, 1);
+        let audited: i64 = sqlx_core::query_scalar::query_scalar("SELECT count(*) FROM management_audit WHERE action='waitlist_remove' AND actor_id=$1")
+            .bind(admin.id).fetch_one(&db.pool).await?;
+        assert_eq!(audited, 1);
+        join.abort();
+        management::tests::cleanup(db, schema).await
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ pub mod http;
 pub mod keycloak;
 #[cfg(feature = "lab-waiter-metrics")]
 pub(crate) mod lab_metrics;
+pub mod waitlist;
 pub mod worker;
 // PostgreSQL-only SQLx components avoid the optional SQLite native-link conflict
 // with the desktop workspace's newer rusqlite. Versions are pinned together.
@@ -250,6 +251,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
         include_str!("../../migrations/0003_device_revocations.sql"),
     ),
     (4, include_str!("../../migrations/0004_device_labels.sql")),
+    (5, include_str!("../../migrations/0005_waitlist.sql")),
 ];
 
 // One transaction and advisory lock cover version checks and every new DDL.
