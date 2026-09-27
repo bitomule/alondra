@@ -244,12 +244,15 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
 }
 
 fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool) -> Result<bool> {
+    service_file_at(home, identity, owner_sub, write, RELAY)
+}
+fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool, relay: &str) -> Result<bool> {
     let path = home.join(SERVICE_FILE);
     let base = identity_base(home)?;
     let prefix = base.strip_prefix(home)?.to_string_lossy();
     let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
     let expected = ServiceConfig {
-        relay_url: RELAY.into(),
+        relay_url: relay.into(),
         mac_id: identity.mac_id.clone(),
         owner_sub: owner_sub.into(),
         signing_key_path: format!("{prefix}service-keys/{SIGNING_FILE}"),
@@ -267,7 +270,7 @@ fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool)
         let existing: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
         if existing.mac_id != expected.mac_id
             || existing.owner_sub != expected.owner_sub
-            || existing.relay_url.trim_end_matches('/') != RELAY
+            || existing.relay_url.trim_end_matches('/') != relay
             || existing.signing_key_path != expected.signing_key_path
             || existing.agreement_key_path != expected.agreement_key_path
             || existing.journal_path != expected.journal_path
