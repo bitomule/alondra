@@ -9,6 +9,7 @@ pub enum Channel {
     HookStop,
     HookDecision,
     MenuDecision,
+    NodeDiscard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

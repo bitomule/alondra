@@ -2830,14 +2830,23 @@ impl AnswerBody {
     }
 }
 
-async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(mut b): Json<AnswerBody>) -> Response {
+async fn answer(state: State<AppState>, signed: Option<Extension<crate::auth::Signed>>, path: Path<u64>, body: Json<AnswerBody>) -> Response {
+    answer_with_discard(state, signed, path, body, |hub, session| async move {
+        close_discarding(&hub, &session, &ClaudeAgents).await
+    }).await
+}
+
+async fn answer_with_discard<F, Fut>(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(mut b): Json<AnswerBody>, discard: F) -> Response
+where F: FnOnce(Arc<Hub>, String) -> Fut + Send + 'static,
+      Fut: Future<Output = Response> + Send + 'static,
+{
     let signed = signed.map(|Extension(s)| s);
     b.canonicalize();
     let Some(q) = hub.read(|v| v.questions.get(&id).cloned()) else {
         return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
-        if crate::menus::is_menu_card(&q) {
+        if crate::menus::is_menu_card(&q) || upkeep::is_idle_close(&q) && q.answer.as_ref().is_some_and(|a| a.option.as_deref() == Some(upkeep::DISCARD)) {
             if let Some(attempt) = hub.read(|v| v.delivery_attempts.values().rev().find(|a| a.question_id == Some(id)).cloned()) {
                 if !q.answer.as_ref().is_some_and(|a| a.option == b.option) {
                     return refused(StatusCode::CONFLICT, "question_closed", "This menu already has another recorded decision.");
@@ -2886,18 +2895,34 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     let recorded = hub.append_all(|v| {
         let Some(current) = v.questions.get(&id) else { return Err(err(StatusCode::NOT_FOUND, "question not found")); };
         if !current.status.is_open() {
+            if local_discard && current.answer.as_ref().is_some_and(|a| a.option == b.option) {
+                if let Some(attempt) = v.delivery_attempts.values().rev().find(|a| a.question_id == Some(id)) {
+                    return Err(Json(json!({"id":id,"already":true,"delivery_state":attempt.state,
+                        "delivery_attempt":attempt.id,"delivery_version":attempt.version})).into_response());
+                }
+            }
             return Err(if current.answer.as_ref().is_some_and(|a| a.text == b.text && a.option == b.option) {
                 Json(json!({"id": id, "already": true})).into_response()
             } else { refused(StatusCode::CONFLICT, "question_closed", format!("question #{id} is no longer open")) });
         }
-        if held && v.delivery_blocked(&q.session_id) {
+        if (held || local_discard) && v.delivery_blocked(&q.session_id) {
             return Err(refused(StatusCode::CONFLICT, "delivery_blocked", "Resolve the previous uncertain delivery before answering this hook."));
         }
         // Recheck under the writer: concurrent answers can never enqueue two intents.
         let mut events = vec![Event::QuestionAnswered { id, answer: answer.clone() }];
         events.extend(v.question_reports(current).into_iter().map(|id| Event::ReportRead { id }));
-        if local_keep || local_discard {
+        if local_keep {
             events.push(Event::QuestionDelivered { id });
+            return Ok(events);
+        }
+        if local_discard {
+            events.push(Event::DeliveryAttemptRecorded(alondra_core::delivery::Attempt {
+                id: v.seq + 1, session_id: q.session_id.clone(),
+                channel: alondra_core::delivery::Channel::NodeDiscard,
+                message_ids: vec![], question_id: Some(id),
+                state: alondra_core::delivery::State::Dispatching, version: 1,
+                reason: None, created_at: now_millis(), updated_at: now_millis(), resolved_from_version: None,
+            }));
             return Ok(events);
         }
         let other_open = v.questions.values().any(|o| o.id != id && o.session_id == q.session_id && o.status.is_open());
@@ -2930,7 +2955,28 @@ async fn answer(State(hub): State<AppState>, signed: Option<Extension<crate::aut
     };
     log!("answer to #{id} from {user} {provenance}");
     if local_keep { return Json(json!({"id": id, "kept": true})).into_response(); }
-    if local_discard { return close_discarding(&hub, &q.session_id, &ClaudeAgents).await; }
+    if local_discard {
+        let attempt = events.iter().find_map(|(_, e)| match e {
+            Event::DeliveryAttemptRecorded(a) => Some(a.id), _ => None,
+        }).expect("discard transaction records its attempt");
+        let target = hub.clone();
+        let session = q.session_id.clone();
+        // This owned worker survives cancellation of the HTTP request. A process
+        // crash leaves Dispatching, recovered as Uncertain without automatic effects.
+        let worker = tokio::spawn(async move {
+            let response = discard(target.clone(), session).await;
+            let outcome = if response.status().is_success() { crate::delivery::Outcome::Handed }
+                else { crate::delivery::Outcome::Uncertain("node_discard_failed") };
+            crate::delivery::finish(&target, attempt, outcome)
+        });
+        match worker.await {
+            Ok(Ok(())) => {},
+            Ok(Err(e)) => return internal(e),
+            Err(_) => if let Err(e) = crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("node_discard_worker_failed")) { return internal(e); },
+        }
+        let current = hub.read(|v| v.delivery_attempts[&attempt].clone());
+        return Json(json!({"id":id,"delivery_state":current.state,"delivery_attempt":attempt,"delivery_version":current.version})).into_response();
+    }
     if let Some(attempt) = events.iter().find_map(|(_, e)| match e { Event::DeliveryAttemptRecorded(a) => Some(a.id), _ => None }) {
         return handoff_held_answer(&hub, id, hook_answer, attempt);
     }
@@ -3380,6 +3426,9 @@ pub(crate) async fn close(hub: &Hub, key: &str, force: bool) -> Response {
 /// `close`, and with `still_free` (Alondra closing a node free that long by itself) only if it
 /// is still free once it is marked as closing: a task handed to it meanwhile keeps it.
 pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Option<Duration>, claude: &impl Agents) -> Response {
+    close_with_mode(hub, key, force, still_free, claude, false).await
+}
+async fn close_with_mode(hub: &Hub, key: &str, force: bool, still_free: Option<Duration>, claude: &impl Agents, discard: bool) -> Response {
     let Some((short, session, busy, waiting_permission, in_daemon, name, orchestrator)) = hub.read(|v| {
         v.resolve_node(key).map(|n| (n.short_id.clone(), n.session_id.clone(), n.busy, n.waiting_permission, n.in_daemon, n.display_name().to_string(), n.is_orchestrator))
     }) else {
@@ -3395,7 +3444,18 @@ pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Op
         return forget_interactive(hub, &session, &name);
     }
     let _closing = hub.closing(&session);
+    if discard {
+        let permitted = || hub.read(|v| v.nodes.get(&session).is_some_and(|n|
+            n.in_daemon && !n.is_orchestrator && !n.busy && !n.waiting_permission));
+        if !permitted() { return err(StatusCode::CONFLICT, "node is no longer idle; worktree was not discarded"); }
+        if let Err(why) = crate::worktree::discard(&session, permitted).await {
+            return err(StatusCode::CONFLICT, format!("could not discard worktree: {why}"));
+        }
+    }
     let leftovers = crate::worktree::leftovers(&session).await;
+    let (busy, waiting_permission) = if discard {
+        hub.read(|v| v.nodes.get(&session).map(|n| (n.busy, n.waiting_permission))).unwrap_or((true, true))
+    } else { (busy, waiting_permission) };
     let reasons = close_reasons(busy, waiting_permission, leftovers);
     if !reasons.is_empty() {
         let msg = reasons.iter().map(|r| r.detail.clone().unwrap_or_else(|| r.kind.to_string())).collect::<Vec<_>>().join("; ");
@@ -3439,7 +3499,7 @@ pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Op
                 if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
                     return err(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display()));
                 }
-                let _ = hub.append(Event::NodeRemoved { session_id: session });
+                if let Err(e) = hub.append(Event::NodeRemoved { session_id: session }) { return internal(e); }
                 return Json(json!({"ok": true, "output": said})).into_response();
             }
             Ok(_) => continue,
@@ -3452,10 +3512,7 @@ pub(crate) async fn close_with(hub: &Hub, key: &str, force: bool, still_free: Op
 /// The user chose to close an idle node with unfinished work: its worktree goes, whatever it
 /// holds, and then the node closes the usual way.
 async fn close_discarding(hub: &Hub, session_id: &str, claude: &impl Agents) -> Response {
-    if let Err(why) = crate::worktree::discard(session_id).await {
-        return err(StatusCode::CONFLICT, format!("could not delete the node's worktree, so it was not closed: {why}"));
-    }
-    close_with(hub, session_id, false, None, claude).await
+    close_with_mode(hub, session_id, false, None, claude, true).await
 }
 
 /// An interactive session is not a job `claude rm` knows, and the user may be typing in it: Alondra
@@ -5834,6 +5891,114 @@ mod tests {
         let (status, said) = status_and_body(close_discarding(&hub, "zzidle00-1", &claude).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
         assert_eq!(claude.0.lock().unwrap().first().map(String::as_str), Some("rm zzidle00"));
+    }
+
+    fn discard_question(hub: &Arc<Hub>, session: &str) -> u64 {
+        let pending = vec!["unfinished work".to_string()];
+        hub.append_with(|v| upkeep::idle_close_question(v, &v.nodes[session], &pending, 7 * 86_400_000, now_millis()).map(Event::QuestionAsked))
+            .unwrap().map(|(_, e)| match e { Event::QuestionAsked(q) => q.id, _ => unreachable!() }).unwrap()
+    }
+    fn discard_body() -> Json<AnswerBody> {
+        Json(AnswerBody { text: upkeep::DISCARD.into(), option: Some(upkeep::DISCARD.into()), by: None, attachments: vec![] })
+    }
+
+    #[tokio::test]
+    async fn node_discard_real_answer_failure_reopens_uncertain_not_delivered_or_fake_success() {
+        // Short synthetic session cannot name a Claude job directory. The actual
+        // close handler deterministically refuses this busy node before Claude runs.
+        let hub = started("discard-failure", &["nd"]);
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "nd".into(), short_id: "nd".into(), pid: Some(1), ..Default::default() })).unwrap();
+        hub.append(Event::Hook(HookEvent { session_id: "nd".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
+        let id = discard_question(&hub, "nd");
+        let (_, body) = status_and_body(answer(State(hub.clone()), None, Path(id), discard_body()).await).await;
+        assert_eq!(body["delivery_state"], "uncertain");
+        assert_eq!(hub.read(|v| v.questions[&id].status), QuestionStatus::Answered);
+        assert!(hub.read(|v| v.messages.is_empty()));
+        let reopened = hub_at_home_of(&hub);
+        let (_, again) = status_and_body(answer(State(reopened.clone()), None, Path(id), discard_body()).await).await;
+        assert_eq!(again["delivery_state"], "uncertain");
+        assert_eq!(again["delivery_attempt"], body["delivery_attempt"]);
+        assert_eq!(reopened.read(|v| v.delivery_attempts.len()), 1);
+        let attempt = body["delivery_attempt"].as_u64().unwrap();
+        let version = again["delivery_version"].as_u64().unwrap();
+        let decision = || crate::delivery::Resolution { expected_version: version, terminal_checked: true, confirm_duplicate_risk: true };
+        let resolved = crate::delivery::resolve(&reopened, None, attempt, true, decision()).unwrap();
+        assert_eq!(resolved["status"], 200);
+        assert_eq!(reopened.read(|v| v.questions[&id].status), QuestionStatus::Open);
+        assert!(reopened.read(|v| v.messages.is_empty()), "retry must not enqueue deletion text");
+        assert_eq!(crate::delivery::resolve(&reopened, None, attempt, true, decision()).unwrap()["status"], 200);
+    }
+
+    #[tokio::test]
+    async fn node_discard_external_success_local_remove_failure_stays_uncertain() {
+        let hub = temp_hub("discard-local-failure");
+        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "nd".into(), short_id: "nd".into(), pid: Some(1), ..Default::default() })).unwrap();
+        let id = discard_question(&hub, "nd");
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_node_remove BEFORE INSERT ON event_log WHEN NEW.body LIKE '%node_removed%' BEGIN SELECT RAISE(ABORT,'injected removal commit failure'); END;").unwrap();
+        let (_, result) = status_and_body(answer_with_discard(State(hub.clone()), None, Path(id), discard_body(), |h, sid| async move {
+            close_with(&h, &sid, false, None, &FakeAgents::default()).await
+        }).await).await;
+        assert_eq!(result["delivery_state"], "uncertain");
+        assert!(hub.read(|v| v.nodes.contains_key("nd")));
+        assert_ne!(hub.read(|v| v.questions[&id].status), QuestionStatus::Delivered);
+    }
+
+    #[tokio::test]
+    async fn node_discard_claim_failure_has_no_effect_and_restart_requires_explicit_resolution() {
+        let hub = started("discard-claim", &["nd"]);
+        let id = discard_question(&hub, "nd");
+        let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_discard BEFORE INSERT ON event_log WHEN NEW.body LIKE '%node_discard%' BEGIN SELECT RAISE(ABORT,'injected discard claim failure'); END;").unwrap();
+        let response = answer_with_discard(State(hub.clone()), None, Path(id), discard_body(), |_, _| async { panic!("effect before claim") }).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(hub.read(|v| v.questions[&id].status), QuestionStatus::Open);
+        assert!(hub.read(|v| v.delivery_attempts.is_empty()));
+        db.execute_batch("DROP TRIGGER reject_discard").unwrap();
+        // Panic of the external worker leaves ambiguous evidence; no automatic retry.
+        let (_, body) = status_and_body(answer_with_discard(State(hub.clone()), None, Path(id), discard_body(), |_, _| async { panic!("synthetic external interruption") }).await).await;
+        assert_eq!(body["delivery_state"], "uncertain");
+        let reopened = hub_at_home_of(&hub);
+        let attempt = body["delivery_attempt"].as_u64().unwrap();
+        let version = body["delivery_version"].as_u64().unwrap();
+        reopened.append(Event::NodeRemoved { session_id: "nd".into() }).unwrap();
+        let decision = || crate::delivery::Resolution { expected_version: version, terminal_checked: true, confirm_duplicate_risk: true };
+        assert_eq!(crate::delivery::resolve(&reopened, None, attempt, true, decision()).unwrap()["status"], 409);
+        assert_eq!(crate::delivery::resolve(&reopened, None, attempt, false, decision()).unwrap()["status"], 200);
+        assert_eq!(reopened.read(|v| v.questions[&id].status), QuestionStatus::Withdrawn);
+        assert!(reopened.read(|v| v.messages.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn node_discard_owned_worker_survives_http_cancel_and_finishes_once() {
+        let hub = started("discard-owned", &["nd"]);
+        let id = discard_question(&hub, "nd");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let owner = hub.clone();
+        let (e, r, f) = (entered.clone(), release.clone(), finished.clone());
+        let request = tokio::spawn(async move {
+            answer_with_discard(State(owner), None, Path(id), discard_body(), move |h, _| async move {
+                assert_eq!(h.read(|v| v.questions[&id].status), QuestionStatus::Answered);
+                assert_eq!(h.read(|v| v.delivery_attempts.len()), 1);
+                e.notify_one(); r.notified().await;
+                f.notify_one(); Json(json!({"ok":true})).into_response()
+            }).await
+        });
+        entered.notified().await;
+        request.abort(); let _ = request.await;
+        let (_, pending) = status_and_body(answer(State(hub.clone()), None, Path(id), discard_body()).await).await;
+        assert_eq!(pending["delivery_state"], "dispatching");
+        release.notify_one(); finished.notified().await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while hub.read(|v| v.delivery_attempts.values().next().unwrap().state) == alondra_core::delivery::State::Dispatching { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(hub.read(|v| v.questions[&id].status), QuestionStatus::Delivered);
+        let reopened = hub_at_home_of(&hub);
+        let (_, done) = status_and_body(answer(State(reopened.clone()), None, Path(id), discard_body()).await).await;
+        assert_eq!(done["delivery_state"], "handed");
+        assert_eq!(reopened.read(|v| v.delivery_attempts.len()), 1);
     }
 
     /// Holds every report it reads until the test lets it go.

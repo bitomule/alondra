@@ -49,9 +49,10 @@ pub async fn unmerged_in(dir: &Path) -> Option<String> {
 
 /// Deletes the node's worktree with whatever it holds, so `claude rm` closes the node: its
 /// uncommitted changes are lost, its commits stay on its branch.
-pub async fn discard(session_id: &str) -> Result<(), String> {
+pub async fn discard(session_id: &str, permitted: impl Fn() -> bool) -> Result<(), String> {
     let Some(dir) = worktree_of(session_id) else { return Ok(()) };
     let common = git(&dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
+    if !permitted() { return Err("node changed while preparing discard".into()); }
     let out = Command::new("git")
         .arg(format!("--git-dir={common}"))
         .args(["worktree", "remove", "--force"])
