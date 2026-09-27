@@ -176,6 +176,7 @@ struct TaskGroupLabel: View {
 extension WorkTask.State {
     var color: Color {
         switch self {
+        case .notStarted: .secondary
         case .waitingDependency: .indigo
         case .running: .green
         case .needsYou: .orange

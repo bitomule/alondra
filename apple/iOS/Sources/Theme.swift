@@ -127,7 +127,7 @@ extension NodeState {
 extension WorkTask.State {
     var tint: Color {
         switch self {
-        case .waitingDependency, .cancelled: Palette.slate
+        case .notStarted, .waitingDependency, .cancelled: Palette.slate
         case .running: Palette.sky
         case .needsYou, .inReview: Palette.dawn
         case .closing, .done: Palette.sage
@@ -136,6 +136,7 @@ extension WorkTask.State {
 
     var symbol: String {
         switch self {
+        case .notStarted: "circle.dashed"
         case .waitingDependency: "link"
         case .running: "hammer.fill"
         case .needsYou: "hand.raised.fill"

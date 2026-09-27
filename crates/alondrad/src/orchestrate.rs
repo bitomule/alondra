@@ -559,6 +559,13 @@ pub(crate) fn orchestrator_message(v: &View, text: String) -> Option<Event> {
     }))
 }
 
+/// What the orchestrator is told of tasks nobody works on yet, which wait for it.
+pub(crate) fn unstarted_notice(ids: &[String]) -> String {
+    let list = ids.join(", ");
+    let (verb, pronoun) = if ids.len() == 1 { ("is", "it") } else { ("are", "each") };
+    format!("{list} {verb} not started and no node works on {}: launch {pronoun} or give {pronoun} to a node when it fits.", if ids.len() == 1 { "it" } else { "them" })
+}
+
 pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
     let told = hub.append_with(|v| orchestrator_message(v, text));
     if let Err(e) = told {

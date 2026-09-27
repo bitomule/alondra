@@ -1403,6 +1403,16 @@
         }
       }
     },
+    "not started": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "por empezar"
+          }
+        }
+      }
+    },
     "needs you": {
       "localizations": {
         "es": {
@@ -1525,6 +1535,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "En marcha"
+          }
+        }
+      }
+    },
+    "Not started": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Por empezar"
           }
         }
       }

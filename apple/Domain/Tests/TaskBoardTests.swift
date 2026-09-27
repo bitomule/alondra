@@ -109,6 +109,18 @@ import Testing
         #expect(Set(looped.map(\.id)) == ["x", "y"])
     }
 
+    /// t-67825: 15 tasks nobody worked on showed as running.
+    @Test func aTaskNobodyWorksOnIsNotStartedNotRunning() throws {
+        let tasks = [
+            try Self.task("run", state: "running", created: 1),
+            try Self.work("free", request: "r-1", state: "not_started", at: 2),
+        ]
+        let board = TaskBoard(requests: [try Self.request("r-1", tasks: tasks.map(\.id))], tasks: tasks)
+        #expect(board.task("free")?.state == .notStarted)
+        #expect(board.groups.map(\.kind) == [.task(.running), .task(.notStarted)])
+        #expect(board.groups[1].tasks.map(\.id) == ["free"])
+    }
+
     @Test func theSidebarGroupsWhatNeedsTheUserFirstAndCountsOpenWork() throws {
         let tasks = [
             try Self.task("run", state: "running", created: 1),

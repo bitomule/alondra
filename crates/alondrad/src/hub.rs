@@ -94,6 +94,9 @@ impl Hub {
         let launched_only = view.launched_only_since.is_none();
         let mut bootstrap: Vec<Event> = [record_tasks.then_some(Event::TasksRecorded), launched_only.then_some(Event::LaunchedOnly)]
             .into_iter().flatten().collect();
+        if view.board.splits_released_since.is_none() {
+            bootstrap.extend(released_splits(&view));
+        }
         bootstrap.extend(crate::delivery::recovery_events(&view));
         if !bootstrap.is_empty() {
             let at = now_millis();
@@ -478,6 +481,18 @@ async fn wait_past(counter: &watch::Sender<u64>, after: u64, wait: Duration) -> 
 }
 
 /// The machine's gauges and the subscription's usage as clients read them: in 5 % steps.
+/// What `new_task` gave its opener before it asked, and nobody touched: back to no node, once.
+fn released_splits(v: &View) -> Vec<Event> {
+    let ids = v.untouched_splits();
+    let mut events: Vec<Event> = ids.iter().map(|id| Event::TaskReleased { task: id.clone() }).collect();
+    events.push(Event::SplitsReleased);
+    if !ids.is_empty() {
+        log!("{} tasks new_task gave their opener untouched go back to no node: {}", ids.len(), ids.join(", "));
+        events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(&ids)));
+    }
+    events
+}
+
 fn gauges_digest(m: &Machine, usage: Option<&alondra_core::usage::Usage>) -> u64 {
     use std::hash::{Hash, Hasher};
     let step = |part: f64, whole: f64| if whole > 0.0 { (part / whole * 20.0).floor() as i64 } else { -1 };

@@ -90,6 +90,8 @@ works each task. The user follows tasks, not nodes.
 - After `define`, Alondra starts every task that can: it launches the new nodes, or types the
   brief into the node you named. It tells you when a waiting task starts, and when a start
   fails ("could not start"): then `launch` or `send` with `task`, or `cancel` it.
+- A task a node opens with `new_task` for someone else is `not_started`, with no node, and
+  Alondra tells you. Nobody starts it but you: `launch` or `send` with its `task`, or `cancel` it.
 - Later, anything about one task goes with `task` on `send`; `cancel` drops a task that should
   not go on, and `reopen` brings back a done one with more to do.
 - `machine` shows the machine's room and the subscription's `usage`. A launch is refused while

@@ -204,6 +204,12 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
     },
+    /// The node a task was given to let it go without working on it: nobody has it, and it
+    /// waits `not_started` for the orchestrator to launch it or give it to a node.
+    TaskReleased { task: String },
+    /// Written once, by the first daemon where `new_task` asks whether its opener works on it,
+    /// after the `TaskReleased` of what `new_task` had given away untouched before.
+    SplitsReleased,
     /// A task event applied to a recorded task, with the guards the view gives it then.
     TaskMoved { task: String, event: crate::tasks::TaskEvent },
     /// David archived finished tasks, and requests that finished without tasks.
@@ -311,6 +317,8 @@ impl Event {
             Event::TasksRecorded => "tasks_recorded",
             Event::TaskCreated(_) => "task_created",
             Event::TaskAssigned { .. } => "task_assigned",
+            Event::TaskReleased { .. } => "task_released",
+            Event::SplitsReleased => "splits_released",
             Event::TaskMoved { .. } => "task_moved",
             Event::TasksArchived(_) => "tasks_archived",
             Event::ArchivedPruned { .. } => "archived_pruned",

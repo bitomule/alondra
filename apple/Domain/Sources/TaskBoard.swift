@@ -55,10 +55,11 @@ public struct RequestTree: Identifiable, Hashable, Sendable {
 }
 
 extension WorkTask.State {
-    /// The state the user sees: running, waiting for them (a question, an action or a PR to
-    /// review), finished or cancelled. The steps in between are Alondra's, not theirs.
+    /// The state the user sees: not started, running, waiting for them (a question, an action or
+    /// a PR to review), finished or cancelled. The steps in between are Alondra's, not theirs.
     public var shown: WorkTask.State {
         switch self {
+        case .notStarted: .notStarted
         case .waitingDependency, .running, .closing: .running
         case .needsYou, .inReview: .needsYou
         case .done: .done
@@ -98,7 +99,7 @@ public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     }
 
     public static let order: [Kind] = [
-        .task(.needsYou), .task(.running), .defining, .task(.done), .task(.cancelled), .archived,
+        .task(.needsYou), .task(.running), .task(.notStarted), .defining, .task(.done), .task(.cancelled), .archived,
     ]
 }
 

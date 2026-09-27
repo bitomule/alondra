@@ -491,7 +491,7 @@ impl App {
                 None
             }
             TaskState::Closing => Some(tr!("merged; the node does what the merge unblocks", "fusionada; el nodo hace lo que desbloquea la fusión").into()),
-            TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
+            TaskState::NotStarted | TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
         }
     }
 

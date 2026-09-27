@@ -186,6 +186,7 @@ fn node_color(n: &FleetNode) -> Color {
 
 pub(super) fn state_glyph(s: TaskState) -> (&'static str, Color) {
     match s {
+        TaskState::NotStarted => ("○", DIM),
         TaskState::WaitingDependency => ("◌", DIM),
         TaskState::Running => ("●", Color::Green),
         TaskState::NeedsYou => ("?", Color::Yellow),
