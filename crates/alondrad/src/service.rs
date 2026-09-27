@@ -756,6 +756,23 @@ impl Service {
             }
             return Ok(response);
         }
+        // The compatibility read must also be bounded: otherwise a new client's
+        // legacy-first probe builds the unbounded legacy HTTP Value before fallback.
+        if request.method == "GET" && request.path == "/v1/overview" && request.body.is_none() {
+            if let Some(hub) = self.hub.clone() {
+                let device = self.devices.get(sender).context("unapproved device")?;
+                self.require_device_approval(sender,device)?;
+                let captured = tokio::task::spawn_blocking(move || crate::http::overview_snapshot(&hub,MAX_LOCAL_RESPONSE)).await?;
+                self.require_device_approval(sender,device)?;
+                let bytes = match captured {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.is::<crate::http::OverviewTooLarge>() => return Err(ResponseTooLarge.into()),
+                    Err(error) => return Err(error),
+                };
+                let body: Value = serde_json::from_slice(&bytes)?;
+                return Ok(json!({"status":200,"body":body}));
+            }
+        }
         if request.path.split('?').next() == Some("/v1/changes") && approved_method(request).is_err() {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
         }
@@ -1603,6 +1620,10 @@ agreement_key = "{}"
         let home=service.home.clone();
         let config=alondra_core::config::Config::resolve(home.clone(),&Default::default(), |_|None, ||Some("Synthetic".into()));
         let hub=Arc::new(crate::hub::Hub::open(config,false).unwrap());
+        service=service.with_hub(hub.clone());
+        let expected_small:Value=serde_json::from_slice(&crate::http::overview_snapshot(&hub,MAX_LOCAL_RESPONSE).unwrap()).unwrap();
+        let small=service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:"/v1/overview".into(),body:None}).await.unwrap();
+        assert_eq!(small,json!({"status":200,"body":expected_small}));
         hub.append(alondra_core::Event::Hook(alondra_core::HookEvent { session_id:"snapshot-session".into(),event:"UserPromptSubmit".into(),..Default::default() })).unwrap();
         let report=|id,body| alondra_core::Event::ReportPosted(alondra_core::Report {
             id,session_id:"snapshot-session".into(),node_name:None,title:"Synthetic report".into(),body:Some(body),links:vec![],attachments:vec![],kind:alondra_core::ReportKind::Notice,created_at:1,read:false,to_orchestrator:false,mission:None,looks_like_question:false,task:None,
@@ -1617,6 +1638,9 @@ agreement_key = "{}"
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         service.relay=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
         let relay_task=tokio::spawn(axum::serve(listener,relay).into_future());let epoch=[7;16];
+        service.handle(changes_work(&service,"bounded-legacy-overview",json!({"method":"GET","path":"/v1/overview"})),&epoch).await.unwrap();
+        let too_large=opened_results(&service,&phone,&responses).pop().unwrap();
+        assert_eq!(too_large["status"],502);assert_eq!(too_large["error"],"response_too_large");
         let begin_work=changes_work(&service,"snapshot-begin",json!({"method":"GET","path":"/v1/service/overview-snapshot"}));
         let old_generation_replay=repeat_work(&begin_work);
         service.handle(begin_work,&epoch).await.unwrap();
