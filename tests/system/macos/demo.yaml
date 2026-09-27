@@ -1,0 +1,19 @@
+name: alondra-macos-clean-demo
+steps:
+  - open: { skipBuild: true }
+  - wait: { text: Explore the demo, timeout: 30s }
+  - video.start: {}
+  - evidence.step: { name: clean-onboarding, note: A new VM reaches onboarding without a saved account. }
+  - tap: { text: Explore the demo }
+  - wait: { text: Demo · Sample data, timeout: 30s }
+  - wait: { text: Reset demo, timeout: 10s }
+  - evidence.step: { name: demo-open, note: The app opens the sample workspace without account login. }
+  - tap: { text: Reset demo }
+  - wait: { text: Demo · Sample data, timeout: 20s }
+  - evidence.step: { name: demo-reset, note: Reset returns to the sample workspace and retains its demo banner. }
+  - tap: { text: Exit demo }
+  - wait: { text: Explore the demo, timeout: 20s }
+  - evidence.step: { name: demo-exit, note: Leaving demo returns to the account onboarding entry. }
+  - video.stop: { note: "Fresh launch, enter demo, reset and exit in a disposable VM." }
+  - crashes: {}
+  - report: {}
