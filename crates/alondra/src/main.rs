@@ -105,12 +105,12 @@ enum Cmd {
         #[arg(long, help = tr!("Print a single value", "Imprime un solo valor"))]
         get: Option<String>,
     },
-    /// MCP server for the nodes (started by the plugin)
+    /// Node MCP server, started by the node plugin.
     #[command(hide = true)]
-    Mcp {
-        #[arg(long, env = "ALONDRA_ROLE", default_value = "node")]
-        role: String,
-    },
+    McpNode,
+    /// Orchestrator MCP server, started by its separate plugin.
+    #[command(hide = true)]
+    McpOrchestrator,
     /// Status line of the sessions Alondra launches: reports their context, then shows the user's own
     #[command(hide = true)]
     Statusline,
@@ -206,7 +206,8 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Setup(args)) => setup::run(*args),
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
-        Some(Cmd::Mcp { role }) => mcp::serve(if role == "orchestrator" { mcp::Role::Orchestrator } else { mcp::Role::Node }),
+        Some(Cmd::McpNode) => mcp::serve(mcp::Role::Node),
+        Some(Cmd::McpOrchestrator) => mcp::serve(mcp::Role::Orchestrator),
         Some(Cmd::Hook) => hook(),
         Some(Cmd::Statusline) => statusline::run(),
         Some(Cmd::Inbox) => Ok(()),
@@ -441,6 +442,18 @@ fn keys_probe() -> anyhow::Result<()> {
     result
 }
 
+
+#[cfg(test)]
+mod mcp_entrypoint_tests {
+    use super::*;
+    #[test]
+    fn node_and_orchestrator_have_fixed_separate_entrypoints() {
+        assert!(matches!(Cli::try_parse_from(["alondra", "mcp-node"]).unwrap().command, Some(Cmd::McpNode)));
+        assert!(matches!(Cli::try_parse_from(["alondra", "mcp-orchestrator"]).unwrap().command, Some(Cmd::McpOrchestrator)));
+        assert!(Cli::try_parse_from(["alondra", "mcp", "--role", "orchestrator"]).is_err());
+        assert!(Cli::try_parse_from(["alondra", "mcp-node", "--role", "orchestrator"]).is_err());
+    }
+}
 
 #[cfg(test)]
 mod destination_tests {

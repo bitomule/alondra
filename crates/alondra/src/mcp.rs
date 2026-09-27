@@ -689,7 +689,7 @@ pub fn serve(role: Role) -> Result<()> {
             "initialize" => Ok(json!({
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or(json!("2025-06-18")),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "alondra", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": match role { Role::Node => "alondra-node", Role::Orchestrator => "alondra-orchestrator" }, "version": env!("CARGO_PKG_VERSION")},
                 "instructions": instructions(role, &user),
             })),
             "ping" => Ok(json!({})),
@@ -718,6 +718,22 @@ pub fn serve(role: Role) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separate_servers_advertise_distinct_method_catalogs() {
+        let node = tools(Role::Node, "User");
+        let orchestrator = tools(Role::Orchestrator, "User");
+        fn names(tools: &Value) -> HashSet<&str> {
+            tools.as_array().unwrap().iter()
+                .filter_map(|tool| tool["name"].as_str()).collect()
+        }
+        let node_names = names(&node);
+        let orchestrator_names = names(&orchestrator);
+        assert!(!node_names.contains("fleet"));
+        assert!(!node_names.contains("launch"));
+        assert!(orchestrator_names.contains("fleet"));
+        assert!(orchestrator_names.contains("launch"));
+    }
 
     /// `launch` and `send` with a task wait for a start under way, then launch: the 30 s every
     /// call had gave up first, and the orchestrator's retry made a second node.

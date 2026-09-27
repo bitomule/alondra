@@ -192,7 +192,7 @@ shift
 done
 cat >/dev/null
 printf 'start\n' >> starts
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"alondra","status":"connected"}}],"tools":["mcp__alondra__fleet","mcp__alondra__ask"]}}'
+printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__fleet","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}}'
 {body}
 "#)).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
