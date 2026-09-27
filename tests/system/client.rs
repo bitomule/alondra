@@ -169,6 +169,19 @@ impl Driver {
         path: &str,
         body: Vec<u8>,
     ) -> Result<(u16, Value)> {
+        self.call_signed(epoch, &key(code), id, who, method, path, body)
+            .await
+    }
+    async fn call_signed(
+        &self,
+        epoch: &[u8; 16],
+        signing: &SigningKey,
+        id: &str,
+        who: Option<usize>,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<(u16, Value)> {
         ensure!(
             path.starts_with("/v1/") && !path.contains("#"),
             "invalid test path"
@@ -179,7 +192,7 @@ impl Driver {
             .map_err(|_| anyhow::anyhow!("nonce"))?;
         let timestamp = now();
         let signature = sign_http_challenge(
-            &key(code),
+            signing,
             id,
             method,
             path,
@@ -572,6 +585,7 @@ impl Driver {
     }
 }
 mod load;
+mod capacity;
 mod account_reset;
 
 #[tokio::main]
@@ -580,9 +594,12 @@ async fn main() -> Result<()> {
         .nth(1)
         .context("phase initial|restart|perf required")?;
     ensure!(
-        ["initial", "restart", "perf", "load", "account-reset-before", "account-reset-after"].contains(&phase.as_str()),
+        ["initial", "restart", "perf", "load", "capacity", "account-reset-before", "account-reset-after"].contains(&phase.as_str()),
         "invalid phase"
     );
+    if phase == "capacity" {
+        return capacity::entry().await;
+    }
     if phase == "load" {
         return load::entry().await;
     }
