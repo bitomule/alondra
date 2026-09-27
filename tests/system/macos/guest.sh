@@ -33,11 +33,6 @@ grep -q 'mac_semantic_tap_driver=cua' doctor.txt
 codesign --verify --deep --strict ../Alondra.app
 codesign -dvv ../Alondra.app 2> original-signature.txt
 shasum -a 256 ../Alondra.app/Contents/MacOS/Alondra > original-executable.sha256
-if [[ "${1:-}" == diagnostic-adhoc ]]; then
-  codesign --force --deep --sign - ../Alondra.app
-  codesign --verify --deep --strict ../Alondra.app
-  codesign -dvv ../Alondra.app 2> runtime-signature.txt
-fi
 shasum -a 256 ../Alondra.app/Contents/MacOS/Alondra > runtime-executable.sha256
 trap 'mav stop > stop.txt 2>&1 || true' EXIT
 mav flow lint demo.yaml > flow-lint.txt

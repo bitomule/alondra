@@ -94,6 +94,14 @@ class MacGateTests(unittest.TestCase):
             self.assertNotIn(('tart', 'delete', m.BASE_NAME), calls)
             self.assertEqual(json.loads((root / 'result/result.json').read_text())['failure']['step'], 'clone')
 
+    def test_app_store_bundle_is_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp) / 'Alondra.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/embedded.provisionprofile').write_text('synthetic profile')
+            with self.assertRaisesRegex(m.GateError, 'Debug app'):
+                m.validate_app(app)
+
     def test_existing_output_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp)

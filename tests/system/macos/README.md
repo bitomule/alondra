@@ -19,8 +19,9 @@ python3 tests/system/macos.py --run --brew-version 0.1.8 \
   --output-dir /private/tmp/alondra-cli-UNIQUE
 ```
 
-The Apple profile takes an already built `.app`, for example the bundle extracted
-from the final distribution PKG. It never builds or launches it on the host:
+The Apple profile takes an already built **Debug** `.app` from the source under
+test. Build `//apple:AlondraMac -c dbg` without `alondra_distribution`. Never pass
+the TestFlight/App Store bundle. The runner never builds or launches it on the host:
 
 ```sh
 python3 tests/system/macos.py --run --profile app \
@@ -28,11 +29,10 @@ python3 tests/system/macos.py --run --profile app \
   --output-dir /private/tmp/alondra-app-UNIQUE
 ```
 
-A distribution signature may prevent execution before TestFlight delivery. For
-**demo diagnostics only**, `--resign-for-demo` signs the guest copy ad hoc. The
-original package is preserved. This result does not verify APNs, App Groups,
-receipt/provisioning behaviour or the installed TestFlight binary. The report
-records this mode and the original/runtime executable hashes separately.
+The runner rejects bundles containing an embedded distribution provisioning
+profile and never re-signs the input. Debug runtime checks do not verify APNs,
+App Groups, receipt/provisioning behaviour or the installed TestFlight binary.
+Distribution packages are prepared and verified separately for upload to Apple.
 
 ## Prepared base
 
@@ -89,7 +89,7 @@ not coverage of every screen or authenticated transport.
 ## Results and failure handling
 
 Use a new output directory each time. `result.json` records runner commit/dirty
-state, app source supplied by the release manifest, executable/payload hashes,
+state, app source supplied by the Debug build receipt, executable/payload hashes,
 base metadata, commands, result and cleanup. Guest evidence is under `evidence/`;
 the Apple profile also retains MAV's report, video and named captures. Review the
 actual visual evidence before publishing. A missing/invalid video, crash, skipped

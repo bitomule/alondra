@@ -68,6 +68,8 @@ def validate_app(app):
     app = app.resolve(strict=True)
     if app.suffix != '.app' or not app.is_dir():
         raise GateError('--app must name an existing Alondra macOS .app')
+    if (app / 'Contents/embedded.provisionprofile').exists():
+        raise GateError('use the Debug app without an App Store provisioning profile, not the TestFlight package')
     with (app / 'Contents/Info.plist').open('rb') as stream:
         info = plistlib.load(stream)
     if info.get('CFBundleIdentifier') != BUNDLE or info.get('CFBundleExecutable') != 'Alondra':
@@ -124,7 +126,7 @@ class Gate:
         self.result = {'status': 'incomplete', 'vm': self.name, 'base': args.base,
                        'profile': args.profile,
                        'scope': 'disposable Mac acceptance; individual assertions below, no authenticated service/Claude/APNs/TestFlight installation',
-                       'signature_mode': 'diagnostic-adhoc' if args.resign_for_demo else 'original',
+                       'artifact_kind': 'debug-app' if args.profile == 'app' else 'public-brew',
                        'commands': [], 'cleanup': {}}
 
     def call(self, *args, timeout=60, input_file=None, output_file=None, check=True):
@@ -216,7 +218,7 @@ class Gate:
             with (self.out / 'payload.tar').open('rb') as payload:
                 self.call('tart', 'exec', '-i', self.name, '/usr/bin/tar', '-xf', '-', '-C', GUEST, timeout=120, input_file=payload)
             self.step = self.args.profile
-            parameter = self.result['signature_mode'] if self.args.profile == 'app' else self.args.brew_version
+            parameter = 'debug' if self.args.profile == 'app' else self.args.brew_version
             test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
             (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
             self.step = 'collect'
@@ -269,11 +271,10 @@ def main():
     p.add_argument('--app', type=Path)
     p.add_argument('--app-source', help='exact source SHA that produced the input app (recorded, not inferred from runner)')
     p.add_argument('--output-dir', required=True, type=Path)
-    p.add_argument('--resign-for-demo', action='store_true', help='ad-hoc sign only the disposable guest copy; never proves distribution/APNs signing')
     args = p.parse_args()
     if args.profile == 'app' and (not args.app or not re.fullmatch('[0-9a-f]{40}', args.app_source or '')):
         p.error('app profile requires --app and full --app-source commit SHA')
-    if args.profile == 'cli' and (args.app or args.app_source or args.resign_for_demo):
+    if args.profile == 'cli' and (args.app or args.app_source):
         p.error('Apple artifact/signature flags require --profile app')
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', args.brew_version):
         p.error('--brew-version must be a numeric release version')
