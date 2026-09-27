@@ -115,6 +115,7 @@ async fn task_actions(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Re
     }
 }
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RELAY_DIFF_RESPONSE: usize = 120 * 1024;
 
 async fn pull_request_diff(State(hub): State<Arc<Hub>>, Path(id): Path<String>) -> Response {
     let state = match hub.domain.state() {
@@ -155,11 +156,31 @@ async fn pull_request_diff(State(hub): State<Arc<Hub>>, Path(id): Path<String>) 
             diff.pop();
         }
     }
-    Json(
-        json!({"pr_id":pr.id,"host":pr.host,"repository":pr.repository,
-        "number":pr.number,"head":before,"diff":diff,"truncated":truncated}),
-    )
-    .into_response()
+    let mut body = json!({"pr_id":pr.id,"host":pr.host,"repository":pr.repository,
+        "number":pr.number,"head":before,"diff":diff,"truncated":truncated});
+    bound_diff_json(&mut body);
+    Json(body).into_response()
+}
+
+fn bound_diff_json(body: &mut Value) {
+    // Bound the *encoded JSON*, not source bytes: backslashes/control chars can
+    // expand substantially when relayed. All readers receive an explicit
+    // truncated flag rather than a transport-level 502.
+    while serde_json::to_vec(body).is_ok_and(|encoded| encoded.len() > MAX_RELAY_DIFF_RESPONSE) {
+        let Some(diff) = body.get("diff").and_then(Value::as_str) else {
+            break;
+        };
+        if diff.is_empty() {
+            break;
+        }
+        let mut cut = diff.len() * 3 / 4;
+        while cut > 0 && !diff.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let replacement = diff[..cut].to_owned();
+        body["diff"] = json!(replacement);
+        body["truncated"] = json!(true);
+    }
 }
 
 async fn bounded_diff(url: &str) -> Result<(Vec<u8>, bool), Response> {
@@ -365,13 +386,13 @@ async fn command(
                 "this producer must resume with a domain v2 capability",
             ));
         }
-        let user_id = match signed {
-            Some(Extension(signed)) => format!("device:{}", signed.device_id),
-            None if is_local(&peer, &headers) => "local-user".into(),
-            None => {
-                return domain_error(DomainError::new("forbidden", "authenticated user required"));
-            }
+        // Loopback reachability is not human authority: Agent processes run under
+        // the same UID and can omit producer headers. User writes require a
+        // verified device signature even when the TCP peer is local.
+        let Some(Extension(signed)) = signed else {
+            return domain_error(DomainError::new("forbidden", "signed user device required"));
         };
+        let user_id = format!("device:{}", signed.device_id);
         hub.domain
             .execute(&Actor::User { user_id }, &envelope, None, || Ok(()))
     };
@@ -450,9 +471,23 @@ fn store_error(error: StoreError) -> Response {
 mod tests {
     use super::*;
     use crate::domain_authority::Principal;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::{
+        Engine as _,
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    };
+    use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
+    #[test]
+    fn serialized_diff_fits_encrypted_relay_budget_and_reports_truncation() {
+        let mut body = json!({"pr_id":"pr-a","host":"github.com","repository":"owner/repo",
+            "number":1,"head":"a".repeat(40),"diff":"\\\n\t".repeat(100_000),
+            "truncated":false});
+        bound_diff_json(&mut body);
+        assert!(body["truncated"].as_bool().unwrap());
+        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
+        assert!(body["diff"].as_str().unwrap().chars().count() > 0);
+    }
     fn envelope(hub: &Hub, id: &str, command: Command) -> CommandEnvelope {
         let state = hub.domain.state().unwrap();
         CommandEnvelope {
@@ -534,8 +569,17 @@ mod tests {
         seeded(&hub);
         (home, hub)
     }
-    async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>) {
+    async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>, SigningKey, String) {
         let auth = Arc::new(crate::auth::Auth::open(&hub.home).unwrap());
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let code = auth.new_pairing_code();
+        let device = auth
+            .pair(
+                &code,
+                "Test iPhone",
+                &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
+            )
+            .unwrap();
         let app = crate::http::router(
             hub.clone(),
             auth.clone(),
@@ -555,12 +599,41 @@ mod tests {
             .await
             .unwrap();
         });
-        (base, handle)
+        (base, handle, key, device.id)
+    }
+    fn signed_post(
+        client: &reqwest::Client,
+        base: &str,
+        key: &SigningKey,
+        device_id: &str,
+        envelope: &CommandEnvelope,
+    ) -> reqwest::RequestBuilder {
+        static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let body = serde_json::to_vec(envelope).unwrap();
+        let timestamp =
+            alondra_core::now_millis() + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let message = crate::auth::signed_message(
+            "POST",
+            "/v2/domain/commands",
+            &timestamp.to_string(),
+            &body,
+        );
+        let signature: Signature = key.sign(message.as_bytes());
+        client
+            .post(format!("{base}/v2/domain/commands"))
+            .header("content-type", "application/json")
+            .header("x-alondra-device", device_id)
+            .header("x-alondra-timestamp", timestamp.to_string())
+            .header(
+                "x-alondra-signature",
+                STANDARD.encode(signature.to_der().as_bytes()),
+            )
+            .body(body)
     }
     #[tokio::test]
     async fn http_and_encrypted_dispatch_share_receipts_and_read_semantics() {
         let (home, hub) = fixture();
-        let (base, server) = server(hub.clone()).await;
+        let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let request = envelope(
             &hub,
@@ -569,18 +642,14 @@ mod tests {
                 interaction_id: "info-a".into(),
             },
         );
-        let first = client
-            .post(format!("{base}/v2/domain/commands"))
-            .json(&request)
+        let first = signed_post(&client, &base, &key, &device_id, &request)
             .send()
             .await
             .unwrap();
         assert_eq!(first.status(), reqwest::StatusCode::OK);
         let outcome: CommandOutcome = first.json().await.unwrap();
         assert!(outcome.effects.is_empty());
-        let retry: CommandOutcome = client
-            .post(format!("{base}/v2/domain/commands"))
-            .json(&request)
+        let retry: CommandOutcome = signed_post(&client, &base, &key, &device_id, &request)
             .send()
             .await
             .unwrap()
@@ -673,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn a_producer_cannot_choose_user_authority_or_spoof_an_actor() {
         let (home, hub) = fixture();
-        let (base, server) = server(hub.clone()).await;
+        let (base, server, _, _) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let token = hub
             .domain
@@ -691,6 +760,13 @@ mod tests {
             },
         );
         let before = hub.domain.state().unwrap();
+        let anonymous = client
+            .post(format!("{base}/v2/domain/commands"))
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), reqwest::StatusCode::FORBIDDEN);
         for bearer in [token.expose_for_child_environment(), "not-a-capability"] {
             let response = client
                 .post(format!("{base}/v2/domain/commands"))
@@ -762,7 +838,7 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
-        let (base, server) = server(hub.clone()).await;
+        let (base, server, _, _) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let actions: Value = client
             .get(format!("{base}/v2/domain/tasks/task-a/actions"))
