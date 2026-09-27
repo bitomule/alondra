@@ -197,6 +197,32 @@ class VisualContracts(unittest.TestCase):
                 reader.close()
             self.assertEqual(create.call_count, 1)
 
+    def test_mac_run_pointer_release_preserves_artifacts_and_rejects_other_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / '.mav/runs/owned'; artifacts.mkdir(parents=True)
+            video = artifacts / 'video.mp4'; video.write_bytes(b'synthetic artifact')
+            assertions = root / 'assertions'; assertions.mkdir()
+            receipt = assertions / 'driver.json'
+            receipt.write_text(json.dumps({'status': 'passed', 'mavRunID': 'owned'}))
+            pointer = root / '.mav/current-run'; pointer.write_text('owned\n')
+            visual_mac_guest.release_completed_run(root, assertions)
+            self.assertFalse(pointer.exists())
+            self.assertEqual(video.read_bytes(), b'synthetic artifact')
+            for invalid in ('other', 'x' * 101):
+                pointer.write_text(invalid)
+                with self.assertRaises(ValueError): visual_mac_guest.release_completed_run(root, assertions)
+                self.assertEqual(pointer.read_text(), invalid)
+            pointer.write_text('owned'); pointer.chmod(0o666)
+            with self.assertRaises(ValueError): visual_mac_guest.release_completed_run(root, assertions)
+            pointer.chmod(0o600)
+            pointer.unlink(); pointer.symlink_to(video)
+            with self.assertRaises(ValueError): visual_mac_guest.release_completed_run(root, assertions)
+            pointer.unlink(); pointer.write_text('owned')
+            receipt.write_text(json.dumps({'status': 'failed', 'mavRunID': 'owned'}))
+            with self.assertRaises(ValueError): visual_mac_guest.release_completed_run(root, assertions)
+            self.assertTrue(pointer.exists())
+
     def test_mac_host_runtime_refused(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             visual_run.main(['--platform', 'mac', '--run', '--output', '/private/tmp/uncreated-visual'])

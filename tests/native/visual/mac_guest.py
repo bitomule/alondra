@@ -9,6 +9,7 @@ import plistlib
 import re
 import resource
 import signal
+import stat
 import sys
 import subprocess
 import uuid
@@ -124,6 +125,23 @@ class OwnedTreeReader:
         self.call('end_session', {}, closing=True)
 
 
+def release_completed_run(project, assertions):
+    """Remove only our stopped run pointer; retain every evidence artifact."""
+    receipt = json.loads((assertions / 'driver.json').read_text())
+    run = receipt.get('mavRunID', '')
+    if receipt.get('status') != 'passed' or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', run):
+        raise ValueError('cannot release an unconfirmed MAV run')
+    pointer = project / '.mav/current-run'
+    if pointer.is_symlink() or not pointer.is_file() or pointer.stat().st_size > 100:
+        raise ValueError('invalid MAV run pointer')
+    info = pointer.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError('MAV pointer is not privately controlled by this guest')
+    if pointer.read_text() not in (run, run + '\n'):
+        raise ValueError('MAV pointer no longer belongs to the completed scenario')
+    pointer.unlink()
+
+
 def prepare():
     os.umask(0o077)
     if not subprocess.check_output(['/usr/sbin/sysctl', '-n', 'hw.model'], text=True).startswith('VirtualMac'):
@@ -205,6 +223,7 @@ def main():
                                 if failure is None: raise
                     finally:
                         if process is not None: stop_owned(process)
+            release_completed_run(PROJECT, directory / 'assertions')
             summary['scenarios'].append({'scenario': scenario, 'runID': run})
             driver.atomic_json(path, summary)
         summary.update(status='passed', cleanup=True)
