@@ -9,7 +9,10 @@ The optional package lifecycle reuses the same prepared base and runner:
 ```sh
 python3 tests/system/macos.py --brew-lifecycle --brew-version 0.1.9 \
   --output-dir /private/tmp/alondra-lifecycle-UNIQUE       # plan only
-# Add --run only after reserving the heavy slot.
+# After reserving the heavy slot, execute the complete gate:
+TART_HOME=/Volumes/Externo/.tart python3 tests/system/macos.py --run \
+  --brew-lifecycle --brew-version 0.1.9 \
+  --output-dir /absolute/persistent/evidence/lifecycle-UNIQUE
 ```
 
 It installs the signed public 0.1.8 package, then uses `brew upgrade` to 0.1.9.
@@ -37,6 +40,25 @@ Keychain/enrollment remain in the separate authenticated gate. Each completed
 phase is recorded before the next one, and the existing Tart collector preserves
 failed evidence before deleting only its owned clone. Do not mark the lifecycle
 accepted from fast tests or source review alone.
+
+The complete invocation needs the prepared base described below, `tart` and
+Python on the host, public package download access, and at least 8 GiB free on
+both the Tart and evidence volumes. No agent, browser clicks or manual decision
+is needed to execute the scenario or determine its verdict. Exit 0 requires all
+seven named lifecycle checks, the final guest receipt and successful cleanup;
+errors, missing checks, partial/finalizing receipts and cleanup failures exit
+nonzero. Read `result.json` plus `evidence/project/cli-result.json`; the latter
+contains phase details, pinned package hashes, backup/audit hashes and the
+expected old-reader rejection. Preserve the entire output directory.
+
+Owned stale hook sockets are retired by the scenario after daemon quiescence,
+with an exclusive state lock, exact path/type/owner checks, `ECONNREFUSED` and a
+separate durable receipt before unlink. Durable state hashes must remain equal.
+The evidence collector continues to reject all unsupported entries. Final guest
+status is `finalizing` until data synchronization finishes; a sync failure cannot
+produce PASS. A transport failure retains the stopped owned clone and produces
+`recovery.json`; use the scripted recovery command below without rerunning the
+scenario or changing the original verdict.
 
 ## Commands
 
