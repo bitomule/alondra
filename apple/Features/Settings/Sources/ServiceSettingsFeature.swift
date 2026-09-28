@@ -67,6 +67,7 @@ public extension DependencyValues {
         public let service: String
         public let device: String
         public let supportsNotifications: Bool
+        public let usesAccount: Bool
         public let automaticallySavesQuietHours: Bool
         public var autosaveRevision: UInt64 = 0
         public var autosaveDraft: ServiceQuietHours?
@@ -89,8 +90,10 @@ public extension DependencyValues {
         public var confirmLogout = false
         public var generation: UInt64 = 0
         public let cancellation = UUID()
-        public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false) {
+        public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false,
+                    usesAccount: Bool = true) {
             self.automaticallySavesQuietHours = automaticallySavesQuietHours
+            self.usesAccount = usesAccount
             self.service = service; self.device = device; self.supportsNotifications = supportsNotifications
         }
         public var canSave: Bool { editing && !saving && !conflict && draft.valid }

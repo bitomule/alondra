@@ -2,7 +2,7 @@ import AlondraCloudPairingFeature
 import ComposableArchitecture
 import SwiftUI
 
-/// The Mac is an account client, including when the executor runs on this machine.
+/// Connects this Mac, through the account, to Alondra running on another Mac.
 struct MacServicePairingScreen: View {
     @Bindable var store: StoreOf<CloudPairingFeature>
 

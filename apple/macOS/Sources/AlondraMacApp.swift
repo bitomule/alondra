@@ -9,19 +9,21 @@ import SwiftUI
 
 @main
 struct AlondraMacApp: App {
-    @State private var account: CloudPairingOwner
+    @State private var owner: MacWorkspaceOwner
 
     init() {
         let auth = AuthSession(browser: SystemAuthBrowser(anchor: {
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
         }))
-        _account = State(initialValue: CloudPairingOwner(auth: auth, displayName: "Mac",
-            storageDirectory: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")))
+        let storage = CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
+        let account = CloudPairingOwner(auth: auth, displayName: "Mac", storageDirectory: storage)
+        _owner = State(initialValue: MacWorkspaceOwner(account: account, storageDirectory: storage,
+            deviceName: "Mac (\(Host.current().localizedName ?? ProcessInfo.processInfo.hostName))"))
     }
 
     var body: some Scene {
         WindowGroup("Alondra", id: "main") {
-            MacServiceRoot(account: account)
+            MacServiceRoot(owner: owner)
                 .frame(minWidth: 860, minHeight: 540)
         }
         .defaultSize(width: 1240, height: 800)
