@@ -465,7 +465,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     let before = store.load().unwrap();
     let mut upgraded = store;
     assert_eq!(upgraded.load().unwrap(), before);
-    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
+    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
     upgraded.conn.execute_batch("INSERT INTO schedules
         (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
         VALUES ('schedule-1','Daily work','Do work',NULL,'{}','[]','daily',9,30,7,0,-1,1,2000000,2,NULL);
@@ -476,14 +476,26 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-weekly',title,text,project,options,disallowed_tools,'weekly',hour,minute,NULL,interval,start_at,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-once',title,text,project,options,disallowed_tools,'once',hour,minute,weekday,interval,NULL,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-interval',title,text,project,options,disallowed_tools,'every_hours',hour,minute,weekday,NULL,1000,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
-    let valid_run = r#"INSERT INTO schedule_runs
-        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
-        VALUES ('run-1','schedule-1','due',2,1000,1001,1002,'sent','request-1','task-1',NULL,'{"title":"Daily work","text":"Do work","project":null,"options":{},"disallowed_tools":[]}')"#;
+    let launch = serde_json::to_string(&ScheduleLaunch {
+        intent: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(), cwd: "/synthetic/Projects".into(),
+            prompt: "Do work".into(),
+            options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default()
+                .resolve(None, &Default::default()).unwrap()).unwrap(),
+        },
+        state: ScheduleLaunchState::Pending, claimed_at: None, finished_at: None,
+        session_id: None, error: None,
+    }).unwrap();
+    let valid_run = format!(r#"INSERT INTO schedule_runs
+        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot,launch)
+        VALUES ('run-1','schedule-1','due',2,1000,1001,1002,'sent','request-1','task-1',NULL,'{{"title":"Daily work","text":"Do work","project":null,"options":{{}},"disallowed_tools":[]}}','{launch}')"#);
     assert!(upgraded.conn.execute_batch(&valid_run.replace("'request-1'", "'request-2'")).is_err(),
         "Task must belong to the run Request");
     assert!(upgraded.conn.execute_batch(&valid_run.replace("'due',2", "'due',5")).is_err(),
         "a run cannot claim a future Schedule revision");
-    upgraded.conn.execute_batch(valid_run).unwrap();
+    assert!(upgraded.conn.execute_batch(&valid_run.replace("\"state\":\"pending\"", "\"state\":\"bogus\"")).is_err(),
+        "unknown technical launch states are rejected");
+    upgraded.conn.execute_batch(&valid_run).unwrap();
     upgraded.conn.execute("UPDATE schedules SET revision=3 WHERE id='schedule-1'", []).unwrap();
     upgraded.conn.execute_batch(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)

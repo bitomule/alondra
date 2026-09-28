@@ -152,6 +152,13 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             documents: BTreeMap::new(),
             archived: false,
         },
+        launch: ScheduleLaunchIntent {
+            name: format!("scheduled/{run}"),
+            cwd: "/synthetic/Projects".into(),
+            prompt: "Synthetic mission".into(),
+            options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default()
+                .resolve(None, &BTreeMap::new()).unwrap()).unwrap(),
+        },
         finished_at,
     }
 }

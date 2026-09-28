@@ -37,6 +37,16 @@ pub enum Command {
         run_id: ScheduleRunId,
         request: Request,
         task: Task,
+        launch: ScheduleLaunchIntent,
+        finished_at: i64,
+    },
+    ClaimScheduleLaunch {
+        run_id: ScheduleRunId,
+        now: i64,
+    },
+    RecordScheduleLaunchHanded {
+        run_id: ScheduleRunId,
+        session_id: Option<String>,
         finished_at: i64,
     },
     RecordScheduleRunFailed {

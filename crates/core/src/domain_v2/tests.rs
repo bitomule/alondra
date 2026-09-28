@@ -102,6 +102,17 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
     };
     (request, task)
 }
+fn scheduled_launch() -> ScheduleLaunchIntent {
+    let options = crate::options::OptionsFile::default()
+        .resolve(Some("alondra"), &BTreeMap::new())
+        .unwrap();
+    ScheduleLaunchIntent {
+        name: "scheduled/run-1".into(),
+        cwd: "/synthetic/Projects/alondra".into(),
+        prompt: "Review the project".into(),
+        options_json: serde_json::to_string(&options).unwrap(),
+    }
+}
 fn text() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::Text {
         text: "The result".into(),
@@ -181,6 +192,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
             run_id: "run-1".into(),
             request,
             task,
+            launch: scheduled_launch(),
             finished_at: 101,
         },
         "invalid_input",
@@ -193,10 +205,28 @@ fn schedule_commands_preserve_claim_and_result_history() {
             run_id: "run-1".into(),
             request,
             task,
+            launch: scheduled_launch(),
             finished_at: 101,
         },
     )
     .unwrap();
+    reject_unchanged(&mut state, user(), Command::AssignTask {
+        task_id: "scheduled-task".into(), agent_id: "a".into(),
+    }, "conflict");
+    reject_unchanged(&mut state, user(), Command::SetDependencies {
+        task_id: "scheduled-task".into(), dependencies: ["t".into()].into_iter().collect(), stack: None,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().agent_id = Some("a".into());
+    state.validate().unwrap();
+    reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch {
+        run_id: "run-1".into(), now: 102,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().agent_id = None;
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().dependencies = ["t".into()].into_iter().collect();
+    reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch {
+        run_id: "run-1".into(), now: 102,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().dependencies.clear();
     exec(
         &mut state,
         Actor::System,
@@ -320,7 +350,7 @@ fn schedule_state_deserializes_old_snapshots_and_rejects_broken_links() {
     let (request, mut task) = scheduled_request_task("scheduled-request", "scheduled-task");
     task.title = "Daily review".into();
     exec(&mut state, Actor::System, Command::RecordScheduleRunSent {
-        run_id: "run-1".into(), request, task, finished_at: 101,
+        run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
     }).unwrap();
     let encoded = serde_json::to_value(&state).unwrap();
     let decoded: DomainState = serde_json::from_value(encoded).unwrap();

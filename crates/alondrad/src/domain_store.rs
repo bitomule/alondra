@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
@@ -120,6 +120,7 @@ impl DomainStore {
         // A claimed schedule slot is consumed. Restart records uncertainty and
         // never dispatches the same run again solely because the daemon reopened.
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
+        tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
         tx.commit()?;
         let store = Self { conn };
         store.integrity_check()?;
@@ -185,6 +186,17 @@ impl DomainStore {
     }
     pub(crate) fn project(&mut self) -> Result<DomainProjection> {
         Ok(self.load()?.projection())
+    }
+    pub(crate) fn schedule_request_tools(&mut self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
+        let tx = self.conn.transaction()?;
+        check_schema(&tx)?;
+        let patterns = repository::load_schedule_request_tools(&tx, request_id)?;
+        tx.commit()?;
+        Ok(patterns)
+    }
+    pub(crate) fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
+        check_schema(&self.conn)?;
+        repository::was_schedule_launch_failed(&self.conn, request_id)
     }
     pub(crate) fn integrity_check(&self) -> Result<()> {
         ensure!(

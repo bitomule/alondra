@@ -57,6 +57,12 @@ impl DomainRuntime {
     pub fn state(&self) -> Result<DomainState> {
         self.store.lock().expect("domain store poisoned").load()
     }
+    pub(crate) fn schedule_request_tools(&self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
+        self.store.lock().expect("domain store poisoned").schedule_request_tools(request_id)
+    }
+    pub(crate) fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
+        self.store.lock().expect("domain store poisoned").was_schedule_launch_failed(request_id)
+    }
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
         self.changed.subscribe()
     }
@@ -225,6 +231,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::DeleteSchedule { .. }
         | Command::ClaimScheduleRun { .. }
         | Command::RecordScheduleRunSent { .. }
+        | Command::ClaimScheduleLaunch { .. }
+        | Command::RecordScheduleLaunchHanded { .. }
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }

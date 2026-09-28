@@ -567,6 +567,7 @@ impl DomainState {
                 run_id,
                 request,
                 task,
+                launch,
                 finished_at,
             } => {
                 system(actor)?;
@@ -583,6 +584,7 @@ impl DomainState {
                     .definition_snapshot
                     .as_ref()
                     .ok_or_else(|| DomainError::new("invalid_input", "Run has no claimed definition"))?;
+                launch.validate(definition)?;
                 if request.body != definition.text
                     || task.title != definition.title
                     || task.request_id != request.id
@@ -606,12 +608,34 @@ impl DomainState {
                     run_id,
                     request.id.clone(),
                     task.id.clone(),
+                    launch.clone(),
                     *finished_at,
                 )?;
                 self.requests.insert(request.id.clone(), request.clone());
                 self.tasks.insert(task.id.clone(), task.clone());
                 created.push(request.id.0.clone());
                 created.push(task.id.0.clone());
+            }
+            Command::ClaimScheduleLaunch { run_id, now } => {
+                system(actor)?;
+                let task_id = self.schedule.runs.get(run_id)
+                    .and_then(|run| run.task_id.as_ref())
+                    .ok_or_else(|| DomainError::new("conflict", "Scheduled Run has no Task"))?;
+                let task = self.tasks.get(task_id)
+                    .ok_or_else(|| DomainError::new("conflict", "Scheduled Task is missing"))?;
+                if task.agent_id.is_some()
+                    || task.state != TaskState::NotStarted
+                    || task.started
+                    || !task.dependencies.is_empty()
+                    || task.stack.is_some()
+                {
+                    return fail("conflict", "Scheduled Task is no longer ready to launch");
+                }
+                self.schedule.claim_launch(run_id, *now)?;
+            }
+            Command::RecordScheduleLaunchHanded { run_id, session_id, finished_at } => {
+                system(actor)?;
+                self.schedule.record_launch_handed(run_id, session_id.clone(), *finished_at)?;
             }
             Command::RecordScheduleRunFailed {
                 run_id,
@@ -740,6 +764,11 @@ impl DomainState {
             Command::AssignTask { task_id, agent_id } => {
                 self.manager(actor)?;
                 self.active(task_id)?;
+                if self.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(task_id)
+                    && run.launch.as_ref().is_some_and(|launch| matches!(launch.state,
+                        ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching))) {
+                    return fail("conflict", "Scheduled Task launch is pending or dispatching");
+                }
                 if !self.agents.contains_key(agent_id) {
                     return fail("not_found", "Agent missing");
                 };
@@ -755,6 +784,11 @@ impl DomainState {
             } => {
                 self.manager(actor)?;
                 self.active(task_id)?;
+                if self.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(task_id)
+                    && run.launch.as_ref().is_some_and(|launch| matches!(launch.state,
+                        ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching))) {
+                    return fail("conflict", "Scheduled Task launch is pending or dispatching");
+                }
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.dependencies = dependencies.clone();

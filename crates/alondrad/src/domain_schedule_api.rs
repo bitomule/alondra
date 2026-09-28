@@ -202,19 +202,43 @@ pub(crate) fn encrypted_mutation(
         return error("invalid_input", "invalid Schedule operation");
     }
     if method == "POST" && path.ends_with("/run") {
-        if authorize().is_err() {
-            return error("forbidden", "device approval was revoked");
-        }
+        let prior = match domain.transport_receipt(identity, || {
+            authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
+        }) {
+            Ok(prior) => prior,
+            Err(error_value) => return store_error(error_value),
+        };
+        if let Some(outcome) = prior { return run_response(&outcome); }
         let state = match domain.state() {
             Ok(state) => state,
             Err(_) => return error("storage_unavailable", "domain transaction could not be completed"),
         };
         let (schedule_id, _) = schedule_path(path).expect("approved Schedule path");
-        if !state.schedule.schedules.get(&d::ScheduleId(schedule_id.into()))
-            .is_some_and(|schedule| schedule.deleted_at.is_none()) {
+        let Some(schedule) = state.schedule.schedules.get(&d::ScheduleId(schedule_id.into()))
+            .filter(|schedule| schedule.deleted_at.is_none()) else {
             return error("not_found", "Schedule does not exist");
-        }
-        return error("launch_unavailable", "scheduled launch requires the v2 launch intent and runner");
+        };
+        let now = now_millis();
+        let envelope = d::CommandEnvelope {
+            protocol_version: d::PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: format!("schedule-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: state.revision,
+            command: d::Command::ClaimScheduleRun {
+                schedule_id: schedule.id.clone(),
+                run_id: format!("run-{}", crate::auth::random_hex(16)).into(),
+                origin: d::ScheduleRunOrigin::Manual,
+                now,
+                next_after_now: crate::domain_schedule_runner::next_after(schedule, now),
+            },
+        };
+        let outcome = match domain.execute(&d::Actor::System, &envelope, Some(identity), || {
+            authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
+        }) {
+            Ok(outcome) => outcome,
+            Err(error_value) => return store_error(error_value),
+        };
+        return run_response(&outcome);
     }
     let prior = match domain.transport_receipt(identity, || {
         authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
@@ -275,6 +299,10 @@ pub(crate) fn encrypted_mutation(
     mutation_response(method, path, body, &outcome)
 }
 
+fn run_response(outcome: &d::CommandOutcome) -> Value {
+    json!({"status":202,"body":{"ok":true,"run_id":outcome.created_ids.first()}})
+}
+
 fn mutation_response(method: &str, path: &str, body: Option<&Value>, outcome: &d::CommandOutcome) -> Value {
     let body = if method == "POST" {
         json!({"id":outcome.created_ids.first(),"revision":1})
@@ -317,8 +345,17 @@ mod tests {
         fn drop(&mut self) { fs::remove_dir_all(&self.root).unwrap(); }
     }
 
-    #[test]
-    fn encrypted_crud_replays_original_receipt_and_manual_run_never_claims() {
+    struct FakeClaude;
+    impl crate::orchestrate::Launcher for FakeClaude {
+        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            Ok("backgrounded · ab1234 · scheduled/manual".into())
+        }
+        fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+        fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
+    }
+
+    #[tokio::test]
+    async fn encrypted_crud_and_manual_run_replay_original_receipts() {
         let fixture = Fixture::new();
         let draft = Fixture::draft();
         let digest = [7u8; 32];
@@ -340,28 +377,60 @@ mod tests {
         assert_eq!(conflict["body"]["code"], "idempotency_conflict");
         let path = format!("/v2/domain/schedules/{schedule_id}");
         let run_path = format!("{path}/run");
-        let before_run = fixture.domain.state().unwrap();
         let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
             "POST", &run_path, None, ("phone", "run", &[8u8;32]), || Ok(()));
-        assert_eq!(run["status"], 503);
-        assert_eq!(run["body"]["code"], "launch_unavailable");
-        assert_eq!(fixture.domain.state().unwrap(), before_run);
+        assert_eq!(run["status"], 202);
+        let run_id = run["body"]["run_id"].as_str().unwrap();
+        assert_eq!(encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+            "POST", &run_path, None, ("phone", "run", &[8u8;32]), || Ok(())), run);
+        assert_eq!(fixture.domain.state().unwrap().schedule.runs.len(), 1);
         let detail = read(&fixture.domain, &path);
-        assert_eq!(detail["body"]["schedule"]["status"], "never_run");
-        assert_eq!(detail["body"]["schedule"]["revision"], 1);
+        assert_eq!(detail["body"]["schedule"]["status"], "launching");
+        assert_eq!(detail["body"]["schedule"]["revision"], 2);
+        crate::domain_schedule_runner::run_cycle(&fixture.domain, &fixture.home, false, &FakeClaude).await.unwrap();
+        let finished = fixture.domain.state().unwrap();
+        assert_eq!(finished.schedule.runs[&d::ScheduleRunId(run_id.into())].state, d::ScheduleRunState::Sent);
+        assert_eq!(read(&fixture.domain, &path)["body"]["schedule"]["status"], "sent");
         let mut update = draft.clone();
-        update["revision"] = json!(1);
+        update["revision"] = json!(3);
         update["title"] = json!("Updated review");
         let changed = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "PUT",
             &path, Some(&update), ("phone", "update", &[9u8;32]), || Ok(()));
         assert_eq!(changed["status"], 200);
-        assert_eq!(changed["body"]["revision"], 2);
+        assert_eq!(changed["body"]["revision"], 4);
         assert_eq!(read(&fixture.domain, &path)["body"]["schedule"]["title"], "Updated review");
         let deleted = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "DELETE",
             &path, None, ("phone", "delete", &[10u8;32]), || Ok(()));
         assert_eq!(deleted["body"]["ok"], true);
         assert_eq!(read(&fixture.domain, "/v2/domain/schedules")["body"]["schedules"].as_array().unwrap().len(), 0);
         assert_eq!(read(&fixture.domain, &path)["status"], 404);
+    }
+
+    #[tokio::test]
+    async fn disabled_manual_claim_replays_same_run_after_interrupted_restart() {
+        let fixture = Fixture::new();
+        let mut draft = Fixture::draft();
+        draft["enabled"] = json!(false);
+        let created = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+            "POST", "/v2/domain/schedules", Some(&draft),
+            ("phone", "create-disabled", &[11u8; 32]), || Ok(()));
+        let path = format!("/v2/domain/schedules/{}/run", created["body"]["id"].as_str().unwrap());
+        let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+            "POST", &path, None, ("phone", "manual-disabled", &[12u8; 32]), || Ok(()));
+        assert_eq!(run["status"], 202);
+        let run_id = d::ScheduleRunId(run["body"]["run_id"].as_str().unwrap().into());
+        let before = fixture.domain.state().unwrap();
+        assert_eq!(before.schedule.runs[&run_id].origin, d::ScheduleRunOrigin::Manual);
+        assert_eq!(before.schedule.schedules.values().next().unwrap().next_run, None);
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        assert_eq!(restarted.state().unwrap().schedule.runs[&run_id].state,
+            d::ScheduleRunState::Interrupted);
+        assert_eq!(encrypted_mutation(&restarted, &fixture.home, "phone",
+            "POST", &path, None, ("phone", "manual-disabled", &[12u8; 32]), || Ok(())), run);
+        assert_eq!(restarted.state().unwrap().schedule.runs.len(), 1);
+        let launcher = FakeClaude;
+        crate::domain_schedule_runner::run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        assert!(restarted.state().unwrap().requests.is_empty());
     }
 
     #[test]

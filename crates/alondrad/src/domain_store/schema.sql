@@ -118,6 +118,9 @@ CREATE TABLE schedule_runs (
  task_id TEXT UNIQUE REFERENCES tasks(id),
  error TEXT,
  definition_snapshot TEXT CHECK(definition_snapshot IS NULL OR (json_valid(definition_snapshot) AND json_type(definition_snapshot)='object')),
+ launch TEXT CHECK(launch IS NULL OR (json_valid(launch) AND json_type(launch)='object'
+   AND COALESCE(json_type(launch,'$.intent')='object',0)
+   AND COALESCE(json_extract(launch,'$.state') IN ('pending','dispatching','handed','failed','uncertain'),0))),
  UNIQUE(schedule_id,claim_revision),
  FOREIGN KEY(request_id,task_id) REFERENCES tasks(request_id,id),
  CHECK((request_id IS NULL)=(task_id IS NULL)),
@@ -127,7 +130,11 @@ CREATE TABLE schedule_runs (
  CHECK(origin='legacy_last_observed' OR (claim_revision IS NOT NULL AND claimed_at IS NOT NULL AND definition_snapshot IS NOT NULL)),
  CHECK(state!='sent' OR (request_id IS NOT NULL AND finished_at IS NOT NULL AND error IS NULL)),
  CHECK(state!='launching' OR (finished_at IS NULL AND error IS NULL AND request_id IS NULL)),
- CHECK(state NOT IN ('failed','interrupted') OR (error IS NOT NULL AND length(error)>0))
+ CHECK(state NOT IN ('failed','interrupted') OR (error IS NOT NULL AND length(error)>0)),
+ CHECK(launch IS NULL OR (origin!='legacy_last_observed' AND request_id IS NOT NULL AND task_id IS NOT NULL)),
+ CHECK(launch IS NULL OR (state='sent' AND json_extract(launch,'$.state')!='failed')
+   OR (state='failed' AND json_extract(launch,'$.state')='failed')),
+ CHECK(origin='legacy_last_observed' OR request_id IS NULL OR launch IS NOT NULL)
 );
 CREATE INDEX schedule_runs_recent ON schedule_runs(schedule_id,claim_revision DESC);
 CREATE UNIQUE INDEX schedule_one_launching ON schedule_runs(schedule_id) WHERE state='launching';
@@ -144,6 +151,7 @@ CREATE TRIGGER immutable_schedule_run_links BEFORE UPDATE ON schedule_runs
    OR (OLD.request_id IS NOT NULL AND NEW.request_id IS NOT OLD.request_id)
    OR (OLD.task_id IS NOT NULL AND NEW.task_id IS NOT OLD.task_id)
    OR NEW.definition_snapshot IS NOT OLD.definition_snapshot
+   OR (OLD.launch IS NOT NULL AND json_extract(NEW.launch,'$.intent') IS NOT json_extract(OLD.launch,'$.intent'))
  BEGIN SELECT RAISE(ABORT,'schedule run identity and claim are immutable'); END;
 CREATE TRIGGER schedule_run_result_transition BEFORE UPDATE ON schedule_runs
  WHEN NOT (
@@ -156,6 +164,16 @@ CREATE TRIGGER schedule_run_result_transition BEFORE UPDATE ON schedule_runs
       AND NEW.request_id IS OLD.request_id AND NEW.task_id IS OLD.task_id)
  )
  BEGIN SELECT RAISE(ABORT,'schedule run result transition is invalid'); END;
+CREATE TRIGGER schedule_launch_transition BEFORE UPDATE ON schedule_runs
+ WHEN OLD.launch IS NOT NEW.launch AND NOT (
+   (OLD.launch IS NULL AND NEW.launch IS NOT NULL AND OLD.state='launching'
+     AND NEW.state='sent' AND json_extract(NEW.launch,'$.state')='pending')
+   OR (json_extract(OLD.launch,'$.state')='pending'
+     AND json_extract(NEW.launch,'$.state') IN ('dispatching','failed'))
+   OR (json_extract(OLD.launch,'$.state')='dispatching'
+     AND json_extract(NEW.launch,'$.state') IN ('handed','failed','uncertain'))
+ )
+ BEGIN SELECT RAISE(ABORT,'schedule launch transition is invalid'); END;
 CREATE TRIGGER retain_schedule_run BEFORE DELETE ON schedule_runs
  BEGIN SELECT RAISE(ABORT,'schedule run is retained'); END;
 

@@ -61,6 +61,24 @@ fn run() -> ScheduleRun {
             options: BTreeMap::new(),
             disallowed_tools: vec!["Bash".into()],
         }),
+        launch: None,
+    }
+}
+
+fn launch() -> ScheduleLaunch {
+    ScheduleLaunch {
+        intent: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(),
+            cwd: "/synthetic/Projects/Alondra".into(),
+            prompt: "Review project".into(),
+            options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default()
+                .resolve(Some("Alondra"), &BTreeMap::new()).unwrap()).unwrap(),
+        },
+        state: ScheduleLaunchState::Pending,
+        claimed_at: None,
+        finished_at: None,
+        session_id: None,
+        error: None,
     }
 }
 
@@ -114,6 +132,7 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
             task_id: Some("task-2".into()),
             error: None,
             definition_snapshot: None,
+            launch: None,
         },
     );
     save_schedule_state(&c, &state).unwrap();
@@ -124,6 +143,7 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     claimed.finished_at = Some(1_500);
     claimed.request_id = Some("request-1".into());
     claimed.task_id = Some("task-1".into());
+    claimed.launch = Some(launch());
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
     assert_eq!(
@@ -134,6 +154,9 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     let sent = state.runs.get_mut(&ScheduleRunId::from("run-1")).unwrap();
     sent.state = ScheduleRunState::Failed;
     sent.error = Some("Task launch failed later".into());
+    sent.launch.as_mut().unwrap().state = ScheduleLaunchState::Failed;
+    sent.launch.as_mut().unwrap().finished_at = Some(1_600);
+    sent.launch.as_mut().unwrap().error = sent.error.clone();
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
     assert!(!was_schedule_launch_failed(&c, &RequestId::from("request-1")).unwrap());
@@ -161,6 +184,7 @@ fn schedule_state_rejects_wrong_request_task_relation() {
     sent.finished_at = Some(1_500);
     sent.request_id = Some("request-2".into());
     sent.task_id = Some("task-1".into());
+    sent.launch = Some(launch());
     state.runs.insert(sent.id.clone(), sent);
     assert!(save_schedule_state(&c, &state).is_err());
     assert!(load_schedule_state(&c).unwrap().runs.is_empty());
@@ -277,6 +301,17 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             stack: None,
             documents: BTreeMap::new(),
             archived: false,
+        },
+        launch: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(),
+            cwd: "/synthetic/Projects/Alondra".into(),
+            prompt: "Review project".into(),
+            options_json: serde_json::to_string(
+                &alondra_core::options::OptionsFile::default()
+                    .resolve(Some("Alondra"), &BTreeMap::new())
+                    .unwrap(),
+            )
+            .unwrap(),
         },
         finished_at: 1_500,
     };
