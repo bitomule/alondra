@@ -27,6 +27,8 @@ use std::{
 // Base64 adds ~33%; 180 KiB plus envelope metadata stays below the relay's 256 KiB cap.
 const MAX_LOCAL_RESPONSE: usize = 180 * 1024;
 const MAX_RELAY_RESPONSE: usize = 256 * 1024;
+// A 2 MiB diff whose every byte needs a six-byte JSON escape, plus the snapshot fields.
+const MAX_LOCAL_DIFF_SNAPSHOT: usize = 12 * 1024 * 1024 + 4096;
 // The relay wraps the envelope in a 4 KiB APNs alert. Leave room for its
 // generic aps fields, binding, JSON escaping, and future metadata.
 const MAX_PUSH_BODY: usize = 3_000;
@@ -960,6 +962,14 @@ impl Service {
         }
         let response = builder.send().await?;
         let status = response.status().as_u16();
+        let diff_snapshot = request.method == "GET" && id_action(&request.path, "/v1/prs/", "/diff-snapshot", true);
+        if diff_snapshot && status == 200 {
+            // The local diff may reach 2 MiB; cut it to the relay budget and flag it instead of failing.
+            let bytes = bounded_response_within(response, MAX_LOCAL_DIFF_SNAPSHOT).await?;
+            let mut body: Value = serde_json::from_slice(&bytes)?;
+            crate::domain_api::bound_diff_json(&mut body);
+            return Ok(json!({"status":status,"body":body}));
+        }
         let bytes = bounded_response(response).await?;
         let file_success = request.method == "GET"
             && request.path.split('?').next() == Some("/v1/file")
@@ -1106,10 +1116,14 @@ impl Service {
     }
 }
 
-async fn bounded_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
+async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>> {
+    bounded_response_within(response, MAX_LOCAL_RESPONSE).await
+}
+
+async fn bounded_response_within(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
+        if bytes.len().saturating_add(chunk.len()) > limit {
             return Err(ResponseTooLarge.into());
         }
         bytes.extend_from_slice(&chunk);
@@ -2960,6 +2974,42 @@ agreement_key = "{}"
                 method: "GET".into(), path: path.into(), body: None,
             }).await.unwrap(), expected);
         }
+        task.abort();
+        drop(service);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_diff_snapshot_is_cut_to_the_relay_budget_instead_of_failing() {
+        let large = "+".repeat(MAX_LOCAL_RESPONSE * 4);
+        let local = large.clone();
+        let router = Router::new().route("/v1/prs/7/diff-snapshot", get(move || {
+            let diff = local.clone();
+            async move { axum::Json(json!({"diff":diff,"head_sha":"a".repeat(40),"truncated":false})) }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(axum::serve(listener, router).into_future());
+        let home = std::env::temp_dir().join(format!("alondra-diff-budget-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&home).unwrap();
+        let service = Service {
+            relay: Url::parse("http://127.0.0.1:1/").unwrap(), client: Client::new(),
+            mac_id: "mac-test".into(), owner_sub: "owner".into(),
+            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
+            auth: Arc::new(Auth::open(&home).unwrap()),
+            journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
+        };
+        let response = service.dispatch("client-test", &LocalRequest {
+            method: "GET".into(), path: "/v1/prs/7/diff-snapshot".into(), body: None,
+        }).await.unwrap();
+        assert_eq!(response["status"], 200);
+        assert_eq!(response["body"]["truncated"], true);
+        assert_eq!(response["body"]["head_sha"], "a".repeat(40));
+        let diff = response["body"]["diff"].as_str().unwrap();
+        assert!(!diff.is_empty() && large.starts_with(diff));
+        assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_LOCAL_RESPONSE);
         task.abort();
         drop(service);
         std::fs::remove_dir_all(home).unwrap();

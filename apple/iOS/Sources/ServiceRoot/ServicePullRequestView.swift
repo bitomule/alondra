@@ -49,6 +49,10 @@ struct ServicePullRequestView: View {
                 }
                 if let files = store.diff.files {
                     Text("Tap a line to comment on it").font(.caption).foregroundStyle(.secondary)
+                    if store.diff.diffTruncated {
+                        Label("This diff is too long to show in full. Open the PR on GitHub for the rest.", systemImage: "scissors")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(files) { file in
                             Section {

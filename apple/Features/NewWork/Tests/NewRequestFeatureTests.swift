@@ -193,6 +193,76 @@ struct NewRequestFeatureTests {
         await store.finish()
     }
 
+    @Test
+    func failedCatalogStillSendsWithServerDefaults() async throws {
+        var initial = NewRequestFeature.State()
+        initial.selection.project = "A"
+        initial.isLoadingOptions = true
+        initial.canSubmit = true
+        initial.text = "Do work"
+        let sent = SentBody()
+        let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.newWorkOperations = operations(create: { body in await sent.record(body); return .confirmed })
+        }
+        #expect(!store.state.submitEnabled)
+        await store.send(.optionsFailed("catalog unavailable", 0, 0)) {
+            $0.isLoadingOptions = false
+            $0.optionsError = "catalog unavailable"
+        }
+        #expect(store.state.submitEnabled)
+        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.receive(\.submitFinished) {
+            $0.isSubmitting = false
+            $0.text = ""
+            $0.successfulSubmissionCount = 1
+        }
+        #expect(await sent.body?.project == "A")
+        #expect(await sent.body?.options.isEmpty == true)
+        await store.finish()
+    }
+
+    @Test
+    func catalogWithErrorStillSends() async throws {
+        let failing = try catalog(#"{"project":"A","options":[],"error":"repo unreadable"}"#)
+        var initial = NewRequestFeature.State()
+        initial.selection.project = "A"
+        initial.isLoadingOptions = true
+        initial.canSubmit = true
+        initial.text = "Do work"
+        let store = TestStore(initialState: initial) { NewRequestFeature() }
+        await store.send(.optionsLoaded(failing, 0, 0)) {
+            $0.selection.apply(failing)
+            $0.isLoadingOptions = false
+            $0.optionsError = "repo unreadable"
+        }
+        #expect(store.state.submitEnabled)
+    }
+
+    @Test
+    func uncertainDraftCanBeEditedAgainAfterChecking() async {
+        var initial = NewRequestFeature.State()
+        initial.catalogIsCurrent = true
+        let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.newWorkOperations = operations(create: { _ in .uncertain("no acknowledgement") })
+        }
+        await store.send(.availabilityChanged(true)) { $0.canSubmit = true }
+        await store.send(.textChanged("Do work")) { $0.text = "Do work" }
+        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.receive(\.submitFinished) {
+            $0.isSubmitting = false
+            $0.submissionError = "no acknowledgement"
+            $0.submissionUncertain = true
+        }
+        #expect(!store.state.submitEnabled)
+        await store.send(.editUncertainDraft) {
+            $0.submissionError = nil
+            $0.submissionUncertain = false
+        }
+        #expect(store.state.submitEnabled)
+        await store.send(.textChanged("Do work, again")) { $0.text = "Do work, again" }
+        await store.finish()
+    }
+
     private func catalog(_ json: String) throws -> OptionsCatalog {
         try JSONDecoder().decode(OptionsCatalog.self, from: Data(json.utf8))
     }

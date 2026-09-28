@@ -329,16 +329,19 @@ struct ServiceDocumentView: View {
             CardActions {} trailing: {
                 if report.primaryAction() == .review {
                     Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
-                    Button("Approve") { store.send(.reviewTapped(.approved)) }.help("Tell the node the artifact is approved (V)")
-                    if store.hasFeedback {
-                        SendButton(title: String(localized: "Send Comments")) { submit() }
-                    } else {
-                        Button("Rescue Comments") { store.send(.reviewTapped(.comments)) }.buttonStyle(.borderedProminent)
-                            .help("The node reads your comments on the artifact and applies them (C)")
-                    }
+                    Group {
+                        Button("Approve") { store.send(.reviewTapped(.approved)) }.help("Tell the node the artifact is approved (V)")
+                        if store.hasFeedback {
+                            SendButton(title: String(localized: "Send Comments")) { submit() }
+                        } else {
+                            Button("Rescue Comments") { store.send(.reviewTapped(.comments)) }.buttonStyle(.borderedProminent)
+                                .help("The node reads your comments on the artifact and applies them (C)")
+                        }
+                    }.disabled(!store.canReview)
                 } else if store.hasFeedback {
                     Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
                     SendButton(title: report.kind == "document" ? String(localized: "Send Comments") : String(localized: "Reply")) { submit() }
+                        .disabled(!store.canReview)
                 } else {
                     Button("Mark as Read") { markRead?() }.buttonStyle(.borderedProminent).help("Mark as read (L)")
                 }
@@ -347,9 +350,11 @@ struct ServiceDocumentView: View {
             CardActions {
                 Button { focus = .pane; store.send(.moreContextTapped(author: store.feedbackAuthor)) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
                     .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
+                    .disabled(!store.canReview)
             } trailing: {
                 if store.hasFeedback, store.draft.selectedOption != nil || !q.isPlan {
                     SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { submit() }
+                        .disabled(!store.canReview)
                 }
             }
         }

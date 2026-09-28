@@ -4,7 +4,11 @@ import Foundation
 public struct PRDiffSnapshot: Equatable, Sendable {
     public let diff: String
     public let headSHA: String
-    public init(diff: String, headSHA: String) { self.diff = diff; self.headSHA = headSHA }
+    /// The Mac cut the diff to fit the encrypted relay; the rest is only on GitHub.
+    public let truncated: Bool
+    public init(diff: String, headSHA: String, truncated: Bool = false) {
+        self.diff = diff; self.headSHA = headSHA; self.truncated = truncated
+    }
 }
 
 public enum PRMutationOutcome: Equatable, Sendable {
@@ -50,14 +54,15 @@ public struct PullRequestOperations: Sendable {
     public var merge: @Sendable (UInt64, String) async -> PRMutationOutcome
     public var resolveConflicts: @Sendable (UInt64) async -> PRMutationOutcome
     public var setAside: @Sendable (UInt64) async -> PRMutationOutcome
-    public var review: @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String) async -> PRMutationOutcome
+    /// A nil head sends a note that is not bound to a reviewed diff.
+    public var review: @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String?) async -> PRMutationOutcome
 
     public init(
         diff: @escaping @Sendable (UInt64) async throws -> PRDiffSnapshot,
         merge: @escaping @Sendable (UInt64, String) async -> PRMutationOutcome,
         resolveConflicts: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
         setAside: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
-        review: @escaping @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String) async -> PRMutationOutcome
+        review: @escaping @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String?) async -> PRMutationOutcome
     ) {
         self.diff = diff
         self.merge = merge
