@@ -18,6 +18,7 @@ pub mod startup;
 mod recorded;
 pub mod states;
 pub mod tasks;
+pub mod update;
 pub mod upkeep;
 pub mod usage;
 pub mod view;

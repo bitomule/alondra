@@ -59,6 +59,7 @@ impl V2Only {
 
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
     Router::new()
+        .route("/v2/daemon", get(daemon))
         .route("/v2/domain", get(projection))
         .route("/v2/domain/schedules", get(schedule_list).post(schedule_write_blocked))
         .route("/v2/domain/schedules/{id}", get(schedule_detail).put(schedule_write_blocked).delete(schedule_write_blocked))
@@ -196,6 +197,15 @@ fn store_error(error_value: StoreError) -> Response {
             "domain transaction could not be completed",
         ),
     }
+}
+
+/// The running version and update state, for `alondra update` and `alondra doctor` on this Mac.
+async fn daemon(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if !is_local(&peer, &headers) {
+        return error("forbidden", "local request required");
+    }
+    Json(json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
+        "preflight_rejected": crate::relaunch::rejected()})).into_response()
 }
 
 async fn projection(
@@ -374,6 +384,9 @@ mod tests {
             .unwrap();
         });
         let client = reqwest::Client::new();
+        let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
         assert_eq!(
             client
                 .get(format!("{base}/v1/overview"))

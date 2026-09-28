@@ -23,6 +23,7 @@ On a new Mac, follow [`INSTALL.md`](INSTALL.md) (written for an agent to execute
 make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
 alondra setup       # config.toml, launchd service, plugin marketplace and iPhone pairing (--help, --dry-run)
 alondra doctor      # what works and what is missing, with how to fix it
+alondra update      # Homebrew installs: upgrade, then wait until the daemon runs the new version (--check only looks)
 alondra             # the TUI
 alondra status      # the same as text
 ```
@@ -40,7 +41,7 @@ claude --bg --name "app/fix" --plugin-dir ~/Projects/alondra/plugin \
 
 Settings live in `~/.alondra/config.toml` (`name`, `port`, `listen`, `public_url`,
 `legacy_bridge`, `wake`, `retention_hours`, `service_label`, `resume_dead_nodes`,
-`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `archived_tasks_days`). An `ALONDRA_*` environment
+`close_free_nodes_after`, `compact_idle_nodes_at`, `compact_orchestrator_at`, `archived_tasks_days`, `auto_update`). An `ALONDRA_*` environment
 variable overrides the file; `alondra config` shows the values in effect. What Alondra does with
 idle nodes (compact at 30 % before a new task, close or ask after 7 days) is in
 [docs/idle-nodes.md](docs/idle-nodes.md).

@@ -49,6 +49,9 @@ pub struct FileConfig {
     /// Days an archived task is kept before Alondra forgets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_tasks_days: Option<f64>,
+    /// Install a newer release with Homebrew as soon as the daemon sees it. Off unless set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_update: Option<bool>,
 }
 
 impl FileConfig {
@@ -75,7 +78,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, auto_update);
         self
     }
 }
@@ -126,6 +129,7 @@ pub struct Config {
     pub compact_idle_nodes_at: Option<f64>,
     pub compact_orchestrator_at: Option<f64>,
     pub archived_tasks_days: f64,
+    pub auto_update: bool,
 }
 
 pub fn home_dir(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
@@ -212,6 +216,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .or(file.archived_tasks_days)
                 .unwrap_or(DEFAULT_ARCHIVED_TASKS_DAYS),
+            auto_update: var("ALONDRA_AUTO_UPDATE").map(flag).or(file.auto_update).unwrap_or(false),
             home,
         }
     }
@@ -363,6 +368,10 @@ mod tests {
         assert_eq!(resolve(&file, &[]).archived_tasks_days, 7.0);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "0.5")]).archived_tasks_days, 0.5);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "soon")]).archived_tasks_days, 7.0, "a broken env value falls through to the file");
+        assert!(!resolve(&FileConfig::default(), &[]).auto_update, "updates are only installed when asked");
+        let file = FileConfig::parse("auto_update = true\n").unwrap();
+        assert!(resolve(&file, &[]).auto_update);
+        assert!(!resolve(&file, &[("ALONDRA_AUTO_UPDATE", "0")]).auto_update);
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 

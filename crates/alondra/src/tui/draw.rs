@@ -441,6 +441,10 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::raw(" "));
         left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
+    if let Some(notice) = app.data.update.as_ref().and_then(update_notice) {
+        left.push(Span::raw(" "));
+        left.push(notice);
+    }
     let working = app.data.nodes.iter().filter(|n| n.state == NodeState::Working).count();
     let lw: usize = left.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
@@ -453,6 +457,16 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     if let Some(right) = right {
         f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
     }
+}
+
+/// A newer release, or one that was installed but refused to start: one quiet mark in the header.
+fn update_notice(update: &alondra_core::update::Status) -> Option<Span<'static>> {
+    if let Some(rejected) = &update.rejected {
+        let version = rejected.version.clone().unwrap_or_default();
+        return Some(Span::styled(trf!("{version} did not start · alondra doctor", "{version} no arrancó · alondra doctor"), Style::new().fg(ACCENT)));
+    }
+    let latest = update.latest.as_deref().filter(|_| update.available)?;
+    Some(Span::styled(trf!("↑ {latest} · alondra update", "↑ {latest} · alondra update"), Style::new().fg(DIM)))
 }
 
 /// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
@@ -2004,6 +2018,21 @@ mod tests {
         t.draw(|f| draw(f, app)).unwrap();
         let buf = t.backend().buffer().clone();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn the_header_mentions_a_newer_release_or_one_that_did_not_start() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let (mut app, _rx) = app_with(vec![]);
+        app.loaded = true;
+        let status = |value: serde_json::Value| Some(serde_json::from_value(value).unwrap());
+        app.data.update = status(serde_json::json!({"current": "0.1.12", "latest": "0.1.12", "available": false}));
+        assert!(!screen(&mut app, 140, 20).lines().next().unwrap().contains("alondra update"));
+        app.data.update = status(serde_json::json!({"current": "0.1.12", "latest": "0.1.13", "available": true}));
+        assert!(screen(&mut app, 140, 20).lines().next().unwrap().contains("↑ 0.1.13 · alondra update"));
+        app.data.update = status(serde_json::json!({"current": "0.1.12", "latest": "0.1.13", "available": true,
+            "rejected": {"version": "0.1.13", "reason": "bootstrap failed integrity audit"}}));
+        assert!(screen(&mut app, 140, 20).lines().next().unwrap().contains("0.1.13 did not start · alondra doctor"));
     }
 
     #[test]

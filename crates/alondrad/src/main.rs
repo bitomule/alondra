@@ -41,6 +41,7 @@ mod relaunch;
 mod sentinel;
 mod start_guard;
 mod store;
+mod updates;
 mod uploads;
 mod usage;
 mod wake;
@@ -192,6 +193,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     tokio::spawn(notifier::run(hub.clone()));
     tokio::spawn(retention(hub.clone(), config.retention_hours));
+    tokio::spawn(updates::updater(&config).run());
     tokio::spawn(sentinel::run(hub.clone()));
     tokio::spawn(prs::run(hub.clone()));
     tokio::spawn(orchestrate::run(hub.clone()));
@@ -402,6 +404,7 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
         domain.clone(), config.home.clone(), push, service.clone()));
     let scheduler = tokio::spawn(domain_schedule_runner::run(domain, config.home.clone(), config.wake));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
+    tokio::spawn(updates::updater(config).run());
     start_guard::served();
     tokio::select! {
         stopped = supervise_v2_workers(server, outbox, scheduler, connector) => stopped,
