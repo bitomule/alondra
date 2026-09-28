@@ -45,9 +45,9 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
     }
 }
 
-/// V2-only dispatcher: all receipts live in domain-v2.db. Producer transport
-/// has no v2 runner yet, so those attempts stay explicitly retryable instead
-/// of passing through the legacy Hub or reporting a false handoff.
+/// V2-only dispatcher: all receipts live in domain-v2.db. Producer messages
+/// stay pending until a v2 Agent transport exists; nothing claims them, so
+/// nothing is marked retryable and then filtered out.
 pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
     push: Arc<Push>, service: Option<Arc<Service>>) -> Result<()> {
     let mut changed = domain.subscribe();
@@ -74,6 +74,9 @@ pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
 
 async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
     service: Option<&Service>, message: OutboxMessage) -> Result<()> {
+    if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") {
+        return Ok(());
+    }
     let claim = {
         let mut store = domain.store.lock().expect("domain store poisoned");
         store.claim_message(message.id)?
@@ -81,7 +84,6 @@ async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
     let Some(claim) = claim else { return Ok(()) };
     let outcome = match claim.message.recipient_kind.as_str() {
         "user" => deliver_user_runtime(domain, home, push, service, &claim.message).await,
-        "agent" | "orchestrator" => Err((State::Retryable, "v2_producer_transport_unavailable")),
         _ => Err((State::Uncertain, "unknown_recipient")),
     };
     let (state, reason) = match outcome {
@@ -96,11 +98,14 @@ async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
     Ok(())
 }
 
+/// User hints and producer messages are limited separately, so a backlog of
+/// one kind never hides the other and a retryable producer message is retried.
 fn ready_messages_v2(messages: Vec<OutboxMessage>, retry_after: &HashMap<i64, Instant>) -> Vec<OutboxMessage> {
-    let eligible = messages.into_iter()
-        .filter(|message| message.recipient_kind == "user" || message.state == "pending")
-        .collect();
-    ready_messages(eligible, retry_after)
+    let (user, producer): (Vec<_>, Vec<_>) = messages.into_iter()
+        .partition(|message| message.recipient_kind == "user");
+    let mut ready = ready_messages(user, retry_after);
+    ready.extend(ready_messages(producer, retry_after));
+    ready
 }
 
 fn ready_messages(
@@ -257,7 +262,10 @@ mod tests {
         messages.push(OutboxMessage { id: 66, recipient_kind: "user".into(),
             agent_id: None, task_id: None, interaction_id: None, message: String::new(), state: "pending".into() });
         let ready = ready_messages_v2(messages, &HashMap::new());
-        assert_eq!(ready.iter().map(|message| message.id).collect::<Vec<_>>(), vec![66]);
+        let ids: Vec<_> = ready.iter().map(|message| message.id).collect();
+        assert_eq!(ids[0], 66, "the user hint is never behind the producer backlog");
+        assert_eq!(&ids[1..], (1..=64).collect::<Vec<_>>().as_slice(),
+            "retryable producer messages are retried, not filtered forever");
     }
 
     fn v2_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
@@ -269,7 +277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_only_outbox_hands_user_hint_and_keeps_producer_retryable_without_hub() {
+    async fn v2_only_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
         let home = std::env::temp_dir().join(format!("alondra-v2-only-outbox-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
@@ -306,10 +314,10 @@ mod tests {
             .find(|message| message.recipient_kind == "agent").unwrap();
         deliver_one_v2(&domain, &home, &push, None, producer.clone()).await.unwrap();
         let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
-        assert!(evidence.iter().any(|item| item.message_id == producer.id
-            && item.state == "retryable" && item.reason.as_deref() == Some("v2_producer_transport_unavailable")));
+        assert!(!evidence.iter().any(|item| item.message_id == producer.id),
+            "without an Agent transport the producer message is not claimed");
         assert!(domain.store.lock().unwrap().pending_messages().unwrap().iter()
-            .any(|message| message.id == producer.id && message.state == "retryable"));
+            .any(|message| message.id == producer.id && message.state == "pending"));
         // A retry claim has a fresh version. A stale finisher cannot complete it,
         // and restart makes the ambiguous claim uncertain rather than redelivering.
         let claim = domain.store.lock().unwrap().claim_message(producer.id).unwrap().unwrap();

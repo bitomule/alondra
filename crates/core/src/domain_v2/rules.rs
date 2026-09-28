@@ -271,6 +271,7 @@ impl DomainState {
         Ok(())
     }
     fn invalidate(&mut self, task: &TaskId) {
+        let next = self.revision + 1;
         for p in self.interactions.values_mut() {
             if p.scope
                 == (Scope::Task {
@@ -282,7 +283,10 @@ impl DomainState {
                     ..
                 } = &mut p.payload
                 {
-                    a.valid = false;
+                    if a.valid {
+                        a.valid = false;
+                        p.revision = next;
+                    }
                 }
             }
         }
@@ -483,6 +487,117 @@ impl DomainState {
             self.tasks.get_mut(&id).unwrap().state = state;
         }
     }
+    /// Everything a Task's revision answers for: its row, its decisions and
+    /// deliveries, its PR, authorizations, stack readiness, reviews and linked
+    /// document versions. Information neither blocks nor dates a decision (R07).
+    #[allow(clippy::type_complexity)]
+    fn aggregate(
+        &self,
+        id: &TaskId,
+    ) -> (
+        Option<&Task>,
+        Vec<&Interaction>,
+        Option<&PullRequest>,
+        Vec<&MergeAuthorization>,
+        Option<&StackReadiness>,
+        Vec<&DocumentReview>,
+        Vec<&DocumentRevisionId>,
+    ) {
+        let scope = Scope::Task {
+            task_id: id.clone(),
+        };
+        let task = self.tasks.get(id);
+        (
+            task,
+            self.interactions
+                .values()
+                .filter(|i| {
+                    i.scope == scope && !matches!(i.payload, InteractionPayload::Information { .. })
+                })
+                .collect(),
+            task.and_then(|t| t.pr_id.as_ref())
+                .and_then(|p| self.pull_requests.get(p)),
+            self.merge_authorizations
+                .values()
+                .filter(|a| &a.task_id == id)
+                .collect(),
+            self.stack_readiness.get(id),
+            self.document_reviews
+                .iter()
+                .filter(|r| &r.task_id == id)
+                .collect(),
+            task.map(|t| {
+                t.documents
+                    .keys()
+                    .filter_map(|d| self.documents.get(d).map(|d| &d.current_revision))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        )
+    }
+    /// The revision a command's expected_revision must reach: its Task for
+    /// Task-directed commands, the Interaction for decisions on one, and the
+    /// whole state for commands without a narrower subject.
+    fn subject_revision(&self, c: &Command) -> Option<Revision> {
+        let task = |id: &TaskId| Some(self.tasks.get(id).map_or(0, |t| t.revision));
+        let interaction =
+            |id: &InteractionId| Some(self.interactions.get(id).map_or(0, |i| i.revision));
+        match c {
+            Command::AssignTask { task_id, .. }
+            | Command::SetDependencies { task_id, .. }
+            | Command::StartTask { task_id }
+            | Command::CreateDocument { task_id, .. }
+            | Command::ReviseDocument { task_id, .. }
+            | Command::LinkTaskDocument { task_id, .. }
+            | Command::DecideDocumentReview { task_id, .. }
+            | Command::RegisterPr { task_id, .. }
+            | Command::PresentResult { task_id, .. }
+            | Command::PublishStackReadiness { task_id, .. }
+            | Command::CompleteTask { task_id, .. }
+            | Command::CancelTask { task_id }
+            | Command::ReopenTask { task_id }
+            | Command::ArchiveTask { task_id, .. } => task(task_id),
+            Command::PublishInformation { scope, .. }
+            | Command::AskQuestion { scope, .. }
+            | Command::RequestAction { scope, .. } => match scope {
+                Scope::Task { task_id } => task(task_id),
+                Scope::Orchestrator { .. } => None,
+            },
+            Command::MarkRead { interaction_id }
+            | Command::AnswerQuestion { interaction_id, .. }
+            | Command::LinkInteractionSubject { interaction_id, .. }
+            | Command::SubmitFeedback {
+                presentation_id: interaction_id,
+                ..
+            }
+            | Command::AcceptDelivery {
+                presentation_id: interaction_id,
+                ..
+            }
+            | Command::AuthorizeMerge {
+                presentation_id: interaction_id,
+                ..
+            } => interaction(interaction_id),
+            Command::ClaimMergeAuthorization {
+                authorization_id, ..
+            }
+            | Command::ObserveMergeAttempt {
+                authorization_id, ..
+            } => Some(
+                self.merge_authorizations
+                    .get(authorization_id)
+                    .and_then(|a| self.tasks.get(&a.task_id))
+                    .map_or(0, |t| t.revision),
+            ),
+            Command::ObservePrState { pr_id, .. } => Some(
+                self.pull_requests
+                    .get(pr_id)
+                    .and_then(|p| self.tasks.get(&p.task_id))
+                    .map_or(0, |t| t.revision),
+            ),
+            _ => None,
+        }
+    }
     /// Clone, validate, swap: even an error discovered after preparing several changes is atomic.
     /// Semantic receipts belong to the SQL transaction and are looked up before this method.
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
@@ -495,7 +610,13 @@ impl DomainState {
         };
         id(&envelope.command_id.0)?;
         self.fence(actor)?;
-        if envelope.expected_revision != self.revision {
+        // §5: staleness is judged against the subject being decided. A client
+        // may act on a snapshot that predates unrelated changes, never on one
+        // that predates the last change to this subject or the future.
+        let floor = self
+            .subject_revision(&envelope.command)
+            .unwrap_or(self.revision);
+        if envelope.expected_revision < floor || envelope.expected_revision > self.revision {
             let mut e = DomainError::new("stale_revision", "Refresh before applying this decision");
             e.current_revision = Some(self.revision);
             return Err(e);
@@ -508,10 +629,14 @@ impl DomainState {
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
         next.derive_states();
-        for (id, t) in &mut next.tasks {
-            if self.tasks.get(id) != Some(t) {
-                t.revision = self.revision + 1;
-            }
+        let touched: Vec<_> = next
+            .tasks
+            .keys()
+            .filter(|id| self.aggregate(id) != next.aggregate(id))
+            .cloned()
+            .collect();
+        for id in touched {
+            next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
         }
         let changed = next != *self;
         if changed {
