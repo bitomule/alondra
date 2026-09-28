@@ -213,6 +213,21 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+/// Once approval is checked, revocation cannot complete until the encrypted
+/// response has been accepted by the relay. The lease is independent of the
+/// SQLite receipt transaction, which has already committed at this point.
+async fn approval_bound_delivery<T, F, C, D>(home: &Path, check: C, deliver: D) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+    C: FnOnce() -> Result<()>,
+    D: FnOnce() -> F,
+{
+    let _lease = crate::approval_lease::ApprovalLease::shared(home)?;
+    check()?;
+    deliver().await
+}
+
 fn decoded(s: &str) -> Result<Vec<u8>> {
     Ok(URL_SAFE_NO_PAD.decode(s.trim())?)
 }
@@ -697,13 +712,12 @@ impl Service {
                 }
             }
         };
-        self.require_device_approval(&e.sender, device)?;
         let response_path = format!("/v1/work/{}/response", e.request_id);
-        Self::drain_ack(
-            self.signed(Method::POST, &response_path, response, epoch)
-                .await?,
-        )
-        .await?;
+        approval_bound_delivery(&self.home,
+            || self.require_device_approval(&e.sender, device),
+            || async {
+                Self::drain_ack(self.signed(Method::POST, &response_path, response, epoch).await?).await
+            }).await?;
         Ok(())
     }
 
@@ -1476,6 +1490,59 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    #[tokio::test]
+    async fn revocation_waits_until_approved_response_ack_finishes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let home = std::env::temp_dir().join(format!("alondra-response-lease-{}", crate::auth::random_hex(16)));
+        std::fs::create_dir_all(&home).unwrap();
+        let phone = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&json!([{
+            "id":"phone-response","name":"Phone",
+            "public_key":STANDARD.encode(phone.verifying_key().to_sec1_bytes()),
+            "created_at":0,"last_seen":null
+        }])).unwrap()).unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let delivery_home = home.clone();
+        let delivery = tokio::spawn(async move {
+            approval_bound_delivery(&delivery_home,
+                || {
+                    anyhow::ensure!(Auth::open(&delivery_home)?.list().iter().any(|device| device.id == "phone-response"));
+                    Ok(())
+                },
+                || async {
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap(); // stand-in for relay response acknowledgement
+                    Ok(())
+                }).await
+        });
+        entered_rx.await.unwrap();
+        let (revoked_tx, revoked_rx) = mpsc::channel();
+        let revoke_home = home.clone();
+        let revoker = std::thread::spawn(move || {
+            revoked_tx.send(Auth::open(&revoke_home).unwrap().revoke("phone-response").unwrap()).unwrap();
+        });
+        assert!(revoked_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "revocation returned before the relay acknowledged the response");
+        release_tx.send(()).unwrap();
+        delivery.await.unwrap().unwrap();
+        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        let started = AtomicBool::new(false);
+        assert!(approval_bound_delivery(&home,
+            || {
+                anyhow::ensure!(Auth::open(&home)?.list().iter().any(|device| device.id == "phone-response"));
+                Ok(())
+            },
+            || async {
+                started.store(true, Ordering::SeqCst);
+                Ok(())
+            }).await.is_err());
+        assert!(!started.load(Ordering::SeqCst), "revoked response was uploaded");
+        std::fs::remove_dir_all(home).unwrap();
+    }
     #[test]
     fn legacy_receipt_schema_migrates_without_reexecuting_ambiguous_work() {
         let home = std::env::temp_dir().join(format!("alondra-legacy-receipts-{}-{}", std::process::id(), now_ms()));
