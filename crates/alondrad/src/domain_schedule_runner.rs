@@ -3,11 +3,13 @@
 //! a technical launch claim can call Claude.
 use alondra_core::domain_v2::{ScheduleDefinitionSnapshot, ScheduleFrequency, ScheduleId, ScheduleLaunchIntent, ScheduleRunId};
 use alondra_core::options::{self, OptionsFile};
-use alondra_core::domain_v2::{Actor, Command, CommandEnvelope, CommandOutcome, DomainState, Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task, TaskState, PROTOCOL_VERSION};
+use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task, TaskId, TaskState, PROTOCOL_VERSION};
+use alondra_core::options::Resolved;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use anyhow::{Context, Result};
 use axum::http::StatusCode;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -77,11 +79,60 @@ pub(crate) fn prepare_intent(
     Ok(launch)
 }
 
+/// The Claude session one Run launches. Derived from the Run, so a crash between
+/// registering the Agent and spawning never leaves a second identity behind.
+pub(crate) fn session_for_run(run_id: &ScheduleRunId) -> String {
+    let digest = Sha256::digest(format!("alondra-schedule-session:{}", run_id.0).as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+pub(crate) struct ProducerLaunch<'a> {
+    pub session: &'a str,
+    pub capability: &'a str,
+    pub task_id: &'a TaskId,
+    pub request_id: &'a RequestId,
+    pub state: &'a DomainState,
+}
+
+/// The mission a scheduled v2 node starts with: the Schedule text, its identity and
+/// cursor in the domain, and the options the Request's policy picked.
+pub(crate) fn producer_prompt(text: &str, resolved: &Resolved, producer: &ProducerLaunch<'_>) -> String {
+    let mut lines = vec![
+        text.trim_end().to_owned(),
+        String::new(),
+        "## Alondra domain v2".into(),
+        String::new(),
+        format!("Load the alondra-domain-v2 skill. This session is Agent {} assigned to Task {} of Request {}.",
+            producer.session, producer.task_id, producer.request_id),
+        format!("Cursor: data_epoch={} revision={}. Send an expected_revision of 0 when you hold no newer cursor; the daemon fills the current revision for a producer.",
+            producer.state.data_epoch.0, producer.state.revision),
+        String::new(),
+        "## Launch options".into(),
+        String::new(),
+        format!("The user chose these for this work (request {}):", producer.request_id),
+    ];
+    for picked in resolved.picked.iter().filter(|p| p.id != alondra_core::options::PR && p.id != alondra_core::options::EFFORT) {
+        lines.push(match &picked.mission {
+            Some(mission) => format!("- {}: {}. {mission}", picked.label, picked.value_label),
+            None => format!("- {}: {}.", picked.label, picked.value_label),
+        });
+    }
+    if let Some(issue) = &resolved.issue {
+        lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
+    }
+    lines.join("\n")
+}
+
 /// Invoke only after the technical intent has been claimed durably. The caller
 /// records the result against that claim; this function never retries Claude.
 async fn invoke_claimed(
     launch: &ScheduleLaunchIntent,
-    request_id: &str,
+    producer: &ProducerLaunch<'_>,
     disallowed_tools: &[String],
     launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<Option<String>, crate::orchestrate::Refusal> {
@@ -94,16 +145,22 @@ async fn invoke_claimed(
     let Some(plugin) = launcher.plugin() else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, "Alondra's Claude plugin is unavailable".into()));
     };
-    let resolved: alondra_core::options::Resolved = serde_json::from_str(&launch.options_json)
+    let resolved: Resolved = serde_json::from_str(&launch.options_json)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    let mut args = crate::options::launch_args(
-        &launch.name, None, None, &launch.prompt, &resolved, Some(request_id), &plugin,
-    );
+    let mut args: Vec<String> = ["--bg", "--name", &launch.name, "--permission-mode", "auto",
+        "--session-id", producer.session].map(String::from).into();
+    args.extend(resolved.launch_flags(None));
+    args.extend(crate::plugins::launch_flags(&[plugin.as_path()]));
     if !disallowed_tools.is_empty() {
-        let separator = args.iter().position(|arg| arg == "--").expect("launch separator");
-        args.splice(separator..separator, ["--disallowedTools".into(), disallowed_tools.join(" ")]);
+        args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
     }
-    let output = launcher.run(&launch.cwd, &args).await?;
+    args.push("--".into());
+    args.push(producer_prompt(&launch.prompt, &resolved, producer));
+    let env = [
+        ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
+        ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), producer.capability.to_owned()),
+    ];
+    let output = launcher.run_with_env(&launch.cwd, &args, &env).await?;
     Ok(alondra_core::sessions::launched_short(&output))
 }
 
@@ -227,6 +284,7 @@ async fn dispatch_pending(
     };
     let intent = launch.intent.clone();
     let request_id = request_id.clone();
+    let task_id = run.task_id.clone().context("sent run has no Task")?;
     match execute_system(domain, Command::ClaimScheduleLaunch {
         run_id: run_id.clone(), now: alondra_core::now_millis(),
     }) {
@@ -234,13 +292,45 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    match invoke_claimed(&intent, &request_id.0, &policy, launcher).await {
-        Ok(session_id) => {
-            execute_system(domain, Command::RecordScheduleLaunchHanded {
-                run_id: run_id.clone(), session_id, finished_at: alondra_core::now_millis(),
+    // The session is an Agent with a bearer before Claude starts, so its first
+    // command can already be authorized; nothing is inferred from the process.
+    let session = session_for_run(run_id);
+    let agent_id = AgentId(session.clone());
+    match execute_system(domain, Command::RegisterAgent { agent_id: agent_id.clone(), name: intent.name.clone() }) {
+        Ok(_) => (),
+        Err(StoreError::Domain(error)) if error.code == "invalid_input" => (),
+        Err(error) => return Err(error.into()),
+    }
+    let capability = match domain.bind_agent(&session) {
+        Ok(capability) => capability,
+        Err(error) => {
+            fail_run(domain, run_id, format!("Could not issue the session's domain capability: {error}"))?;
+            return Ok(());
+        }
+    };
+    let state = domain.state()?;
+    let producer = ProducerLaunch {
+        session: &session, capability: capability.expose_for_child_environment(),
+        task_id: &task_id, request_id: &request_id, state: &state,
+    };
+    let launched = invoke_claimed(&intent, &producer, &policy, launcher).await;
+    let handed = match launched {
+        Ok(short_id) => execute_system(domain, Command::RecordScheduleLaunchHanded {
+            run_id: run_id.clone(), session_id: short_id, agent_id: Some(agent_id),
+            finished_at: alondra_core::now_millis(),
+        }).map(|_| ()),
+        Err((_, reason)) => Err(StoreError::Domain(alondra_core::domain_v2::DomainError::new("conflict", reason))),
+    };
+    match handed {
+        Ok(()) => (),
+        Err(error) if ordinary_conflict(&error) => {
+            domain.revoke_agent(&session)?;
+            fail_run(domain, run_id, match error {
+                StoreError::Domain(error) => error.message,
+                error => error.to_string(),
             })?;
         }
-        Err((_, reason)) => fail_run(domain, run_id, reason)?,
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -267,6 +357,7 @@ pub(crate) async fn run_cycle(
                 schedule_id: schedule.id.clone(), run_id: run_id.clone(),
                 origin: ScheduleRunOrigin::Due, now,
                 next_after_now: next_after(&schedule, now),
+                expected_schedule_revision: None,
             });
             match claim {
                 Ok(_) => finish_claim(domain, home, &run_id)?,
@@ -298,10 +389,13 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    struct FakeLauncher(Mutex<Vec<(String, Vec<String>)>>);
+    struct FakeLauncher(Mutex<Vec<(String, Vec<String>, Vec<(String, String)>)>>);
     impl crate::orchestrate::Launcher for FakeLauncher {
-        async fn run(&self, cwd: &str, args: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            self.0.lock().unwrap().push((cwd.into(), args.to_vec()));
+        async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            panic!("a v2 producer launch must carry its environment");
+        }
+        async fn run_with_env(&self, cwd: &str, args: &[String], env: &[(String, String)]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            self.0.lock().unwrap().push((cwd.into(), args.to_vec(), env.to_vec()));
             Ok("backgrounded · ab1234 · scheduled/run-1".into())
         }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
@@ -343,15 +437,27 @@ mod tests {
             &definition, &OptionsFile::default(), &root,
         ).unwrap();
         let fake = FakeLauncher(Mutex::new(vec![]));
-        let session = invoke_claimed(&intent, "request-1", &definition.disallowed_tools, &fake).await.unwrap();
-        assert_eq!(session.as_deref(), Some("ab1234"));
+        let state = DomainState::new("epoch");
+        let session = session_for_run(&ScheduleRunId::from("run-1"));
+        assert_eq!(session, session_for_run(&ScheduleRunId::from("run-1")));
+        assert_ne!(session, session_for_run(&ScheduleRunId::from("run-2")));
+        let producer = ProducerLaunch { session: &session, capability: &"c".repeat(64),
+            task_id: &"task-1".into(), request_id: &"request-1".into(), state: &state };
+        let short = invoke_claimed(&intent, &producer, &definition.disallowed_tools, &fake).await.unwrap();
+        assert_eq!(short.as_deref(), Some("ab1234"));
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, project.to_str().unwrap());
         let args = &calls[0].1;
         assert!(args.windows(2).any(|pair| pair == ["--name", "scheduled/schedule-run-1"]));
+        assert!(args.windows(2).any(|pair| pair == ["--session-id", session.as_str()]));
         assert!(args.windows(2).any(|pair| pair == ["--disallowedTools", "Bash"]));
-        assert!(args.last().unwrap().contains("request-1"));
+        let prompt = args.last().unwrap();
+        assert!(prompt.starts_with("Review project\n") && prompt.contains("request-1") && prompt.contains("task-1")
+            && prompt.contains(&session) && prompt.contains("data_epoch=epoch"), "{prompt}");
+        assert!(!prompt.contains("auto-merge"), "{prompt}");
+        assert_eq!(calls[0].2, vec![("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
+            ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), "c".repeat(64))]);
         drop(calls);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -381,6 +487,7 @@ mod tests {
                 schedule_id: "schedule-1".into(), run_id: id.into(),
                 origin: ScheduleRunOrigin::Manual, now: alondra_core::now_millis(),
                 next_after_now: None,
+                expected_schedule_revision: None,
             }).unwrap();
         }
     }
@@ -391,7 +498,11 @@ mod tests {
     struct CountingLauncher { calls: Mutex<usize>, fail: bool }
     impl crate::orchestrate::Launcher for CountingLauncher {
         async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            panic!("a v2 producer launch must carry its environment");
+        }
+        async fn run_with_env(&self, _: &str, _: &[String], env: &[(String, String)]) -> std::result::Result<String, crate::orchestrate::Refusal> {
             *self.calls.lock().unwrap() += 1;
+            assert!(env.iter().any(|(key, value)| key == "ALONDRA_DOMAIN_CAPABILITY" && value.len() == 64));
             tokio::task::yield_now().await;
             if self.fail { Err((StatusCode::BAD_GATEWAY, "synthetic Claude failure".into())) }
             else { Ok("backgrounded · ab1234 · scheduled/run".into()) }
@@ -417,6 +528,13 @@ mod tests {
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
         assert_eq!(state.tasks.len(), 1);
         assert_eq!(state.requests.len(), 1);
+        let session = session_for_run(&ScheduleRunId::from("manual-1"));
+        let task = state.tasks.values().next().unwrap();
+        assert_eq!(task.agent_id.as_ref().map(|id| id.0.as_str()), Some(session.as_str()));
+        assert_eq!(run.launch.as_ref().unwrap().agent_id.as_ref().map(|id| id.0.as_str()), Some(session.as_str()));
+        assert_eq!(state.agents[&AgentId(session.clone())].name, run.launch.as_ref().unwrap().intent.name);
+        let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
+        assert!(registry.contains(&session), "the launched session holds a durable bearer");
         run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
     }
@@ -451,11 +569,16 @@ mod tests {
         let launcher = CountingLauncher { calls: Mutex::new(0), fail: true };
         run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
-        let run = &fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("failed")];
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("failed")];
         assert_eq!(run.state, ScheduleRunState::Failed);
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
         let request_id = run.request_id.as_ref().unwrap();
         assert!(fixture.domain.was_schedule_launch_failed(request_id).unwrap());
+        let session = session_for_run(&ScheduleRunId::from("failed"));
+        assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none(), "a failed launch assigns nothing");
+        let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
+        assert!(!registry.contains(&session), "a failed launch revokes the bearer it issued");
     }
 
     #[tokio::test]

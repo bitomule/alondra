@@ -390,6 +390,34 @@ impl DomainState {
     fn accepted(&self, p: &Interaction) -> bool {
         matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
     }
+    /// An invalid acceptance the user did not withdraw: no feedback on that
+    /// delivery and no document rejection on its Task after it was given.
+    pub(super) fn superseded(&self, p: &Interaction) -> Option<SupersededAcceptance> {
+        let (
+            Scope::Task { task_id },
+            InteractionPayload::Delivery {
+                acceptance: Some(a),
+                feedback,
+                ..
+            },
+        ) = (&p.scope, &p.payload)
+        else {
+            return None;
+        };
+        let withdrawn = feedback.iter().any(|f| f.at_revision > a.at_revision)
+            || self.document_reviews.iter().any(|r| {
+                &r.task_id == task_id
+                    && r.decisions
+                        .iter()
+                        .any(|d| !d.accepted && d.at_revision > a.at_revision)
+            });
+        (!a.valid && !withdrawn).then(|| SupersededAcceptance {
+            task_id: task_id.clone(),
+            presentation_id: p.id.clone(),
+            user_id: a.user_id.clone(),
+            accepted_at: a.at_revision,
+        })
+    }
     /// D04: a package is accepted only when every piece carries its own current
     /// decision. A merge authorization covers its PR and the presentation text;
     /// a document approval covers only that revision; feedback dates both out.
@@ -550,6 +578,22 @@ impl DomainState {
         }
         touched
     }
+    fn schedule_unchanged(&self, id: &ScheduleId, expected: Option<i64>) -> Result<()> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        if self
+            .schedule
+            .schedules
+            .get(id)
+            .is_some_and(|s| s.revision != expected)
+        {
+            let mut e = DomainError::new("stale_revision", "Schedule changed; refresh before applying");
+            e.current_revision = Some(self.revision);
+            return Err(e);
+        }
+        Ok(())
+    }
     /// The revision a command's expected_revision must reach: its Task for
     /// Task-directed commands, the Interaction for decisions on one, and the
     /// whole state for commands without a narrower subject.
@@ -610,6 +654,17 @@ impl DomainState {
                     .and_then(|p| self.tasks.get(&p.task_id))
                     .map_or(0, |t| t.revision),
             ),
+            // A Schedule's own revision is its subject: Update carries the next
+            // one, Delete and Claim the one they read. The rule checks it.
+            Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
+            Command::DeleteSchedule {
+                expected_schedule_revision: Some(_),
+                ..
+            }
+            | Command::ClaimScheduleRun {
+                expected_schedule_revision: Some(_),
+                ..
+            } => Some(0),
             _ => None,
         }
     }
@@ -655,11 +710,18 @@ impl DomainState {
             created.clear();
         }
         next.validate()?;
+        let superseded_acceptances = self
+            .interactions
+            .values()
+            .filter(|p| self.accepted(p))
+            .filter_map(|p| next.superseded(&next.interactions[&p.id]))
+            .collect();
         let outcome = CommandOutcome {
             revision: next.revision,
             changed,
             effects,
             created_ids: created,
+            superseded_acceptances,
         };
         *self = next;
         Ok(outcome)
@@ -714,11 +776,13 @@ impl DomainState {
             Command::DeleteSchedule {
                 schedule_id,
                 deleted_at,
+                expected_schedule_revision,
             } => {
                 system(actor)?;
                 if *deleted_at < 0 {
                     return fail("invalid_input", "Invalid deletion time");
                 }
+                self.schedule_unchanged(schedule_id, *expected_schedule_revision)?;
                 let schedule = self
                     .schedule
                     .schedules
@@ -746,9 +810,11 @@ impl DomainState {
                 origin,
                 now,
                 next_after_now,
+                expected_schedule_revision,
             } => {
                 system(actor)?;
                 id(&run_id.0)?;
+                self.schedule_unchanged(schedule_id, *expected_schedule_revision)?;
                 self.schedule.claim(
                     schedule_id,
                     run_id.clone(),
@@ -828,9 +894,24 @@ impl DomainState {
                 }
                 self.schedule.claim_launch(run_id, *now)?;
             }
-            Command::RecordScheduleLaunchHanded { run_id, session_id, finished_at } => {
+            Command::RecordScheduleLaunchHanded { run_id, session_id, agent_id, finished_at } => {
                 system(actor)?;
-                self.schedule.record_launch_handed(run_id, session_id.clone(), *finished_at)?;
+                if let Some(agent_id) = agent_id {
+                    if !self.agents.contains_key(agent_id) {
+                        return fail("not_found", "Agent missing");
+                    }
+                    let task_id = self.schedule.runs.get(run_id)
+                        .and_then(|run| run.task_id.clone())
+                        .ok_or_else(|| DomainError::new("conflict", "Scheduled Run has no Task"))?;
+                    let task = self.active(&task_id)?;
+                    if task.agent_id.is_some() {
+                        return fail("conflict", "Scheduled Task is already assigned");
+                    }
+                    self.schedule.record_launch_handed(run_id, session_id.clone(), Some(agent_id.clone()), *finished_at)?;
+                    self.tasks.get_mut(&task_id).unwrap().agent_id = Some(agent_id.clone());
+                } else {
+                    self.schedule.record_launch_handed(run_id, session_id.clone(), None, *finished_at)?;
+                }
             }
             Command::RecordScheduleRunFailed {
                 run_id,

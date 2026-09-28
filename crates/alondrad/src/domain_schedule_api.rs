@@ -54,10 +54,6 @@ pub(crate) fn response(value: Value) -> Response {
     (status, Json(value["body"].clone())).into_response()
 }
 
-pub(crate) fn local_write_blocked() -> Response {
-    response(error("forbidden", "local user presence is required for domain commands"))
-}
-
 fn store_error(error_value: StoreError) -> Value {
     match error_value {
         StoreError::Domain(value) => error(&value.code, &value.message),
@@ -198,13 +194,31 @@ pub(crate) fn encrypted_mutation(
     method: &str, path: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl Fn() -> anyhow::Result<()>,
 ) -> Value {
-    if sender != identity.0 || !approved_mutation_path(method, path, body.is_some()) {
+    if sender != identity.0 {
         return error("invalid_input", "invalid Schedule operation");
     }
-    if method == "POST" && path.ends_with("/run") {
-        let prior = match domain.transport_receipt(identity, || {
+    mutation(domain, home, method, path, body, Some(identity), authorize)
+}
+
+/// One Schedule write for a verified user device. The relay supplies a
+/// transport identity whose receipt replays a retry; a loopback request has
+/// none, so its retry is a new command like any local HTTP call.
+pub(crate) fn mutation(
+    domain: &DomainRuntime, home: &Path,
+    method: &str, path: &str, body: Option<&Value>,
+    identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>,
+) -> Value {
+    if !approved_mutation_path(method, path, body.is_some()) {
+        return error("invalid_input", "invalid Schedule operation");
+    }
+    let receipt = |domain: &DomainRuntime| match identity {
+        Some(identity) => domain.transport_receipt(identity, || {
             authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
-        }) {
+        }),
+        None => Ok(None),
+    };
+    if method == "POST" && path.ends_with("/run") {
+        let prior = match receipt(domain) {
             Ok(prior) => prior,
             Err(error_value) => return store_error(error_value),
         };
@@ -230,9 +244,10 @@ pub(crate) fn encrypted_mutation(
                 origin: d::ScheduleRunOrigin::Manual,
                 now,
                 next_after_now: crate::domain_schedule_runner::next_after(schedule, now),
+                expected_schedule_revision: Some(schedule.revision),
             },
         };
-        let outcome = match domain.execute(&d::Actor::System, &envelope, Some(identity), || {
+        let outcome = match domain.execute(&d::Actor::System, &envelope, identity, || {
             authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
         }) {
             Ok(outcome) => outcome,
@@ -240,9 +255,7 @@ pub(crate) fn encrypted_mutation(
         };
         return run_response(&outcome);
     }
-    let prior = match domain.transport_receipt(identity, || {
-        authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
-    }) {
+    let prior = match receipt(domain) {
         Ok(prior) => prior,
         Err(error_value) => return store_error(error_value),
     };
@@ -255,8 +268,11 @@ pub(crate) fn encrypted_mutation(
     };
     let command = if method == "DELETE" {
         let (schedule_id, _) = schedule_path(path).expect("approved Schedule path");
+        let schedule_id = d::ScheduleId(schedule_id.into());
+        let expected_schedule_revision =
+            state.schedule.schedules.get(&schedule_id).map(|schedule| schedule.revision);
         d::Command::DeleteSchedule {
-            schedule_id: schedule_id.into(), deleted_at: now_millis(),
+            schedule_id, deleted_at: now_millis(), expected_schedule_revision,
         }
     } else {
         let draft: ScheduleDraft = match body.cloned().and_then(|body| serde_json::from_value(body).ok()) {
@@ -290,7 +306,7 @@ pub(crate) fn encrypted_mutation(
         expected_revision: state.revision,
         command,
     };
-    let outcome = match domain.execute(&d::Actor::System, &envelope, Some(identity), || {
+    let outcome = match domain.execute(&d::Actor::System, &envelope, identity, || {
         authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
     }) {
         Ok(outcome) => outcome,
@@ -348,6 +364,9 @@ mod tests {
     struct FakeClaude;
     impl crate::orchestrate::Launcher for FakeClaude {
         async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            panic!("a v2 producer launch must carry its environment");
+        }
+        async fn run_with_env(&self, _: &str, _: &[String], _: &[(String, String)]) -> Result<String, crate::orchestrate::Refusal> {
             Ok("backgrounded · ab1234 · scheduled/manual".into())
         }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
@@ -456,6 +475,5 @@ mod tests {
         let rejected = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "POST",
             "/v2/domain/schedules", Some(&bad_interval), ("phone", "bad-interval", &[2u8;32]), || Ok(()));
         assert_eq!(rejected["status"], 422);
-        assert_eq!(local_write_blocked().status(), StatusCode::FORBIDDEN);
     }
 }

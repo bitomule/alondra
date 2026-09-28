@@ -124,6 +124,7 @@ fn claim(
             origin,
             now,
             next_after_now,
+            expected_schedule_revision: None,
         },
     )
 }
@@ -218,6 +219,7 @@ fn v54_cs_crud_revision_and_transport_receipts() {
         Command::DeleteSchedule {
             schedule_id: update.id.clone(),
             deleted_at: 4_000,
+            expected_schedule_revision: None,
         },
     );
     let deleted = store
@@ -538,4 +540,65 @@ fn schedule_catalog_has_explicit_partial_cs_evidence_and_pending_layers() {
         );
         assert_ne!(case["remaining"], json!([]));
     }
+}
+
+#[test]
+fn schedule_mutations_are_judged_by_their_schedule_not_by_unrelated_writes() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    create(&mut store, schedule());
+    let mut edited = schedule();
+    edited.title = "Edited mission".into();
+    edited.revision = 2;
+    let update = envelope(
+        &mut store,
+        "update-from-old-snapshot",
+        Command::UpdateSchedule { schedule: edited },
+    );
+    let run = envelope(
+        &mut store,
+        "run-from-old-snapshot",
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-acceptance".into(),
+            run_id: "manual-run".into(),
+            origin: ScheduleRunOrigin::Manual,
+            now: 500,
+            next_after_now: Some(1000),
+            expected_schedule_revision: Some(2),
+        },
+    );
+    let unrelated = envelope(
+        &mut store,
+        "unrelated",
+        Command::CreateRequest {
+            request_id: "unrelated-request".into(),
+            body: "Unrelated work".into(),
+        },
+    );
+    store
+        .execute_authenticated(&Actor::User { user_id: "user-1".into() }, &unrelated, None)
+        .unwrap();
+    store
+        .execute_authenticated(&Actor::System, &update, None)
+        .unwrap();
+    store
+        .execute_authenticated(&Actor::System, &run, None)
+        .unwrap();
+    let stale_delete = envelope(
+        &mut store,
+        "delete-from-before-the-edit",
+        Command::DeleteSchedule {
+            schedule_id: "schedule-acceptance".into(),
+            deleted_at: 4_000,
+            expected_schedule_revision: Some(1),
+        },
+    );
+    let before = store.load().unwrap();
+    assert_domain_code(
+        store
+            .execute_authenticated(&Actor::System, &stale_delete, None)
+            .unwrap_err(),
+        "stale_revision",
+    );
+    assert_eq!(store.load().unwrap(), before);
 }

@@ -22,9 +22,13 @@ pub enum Command {
     UpdateSchedule {
         schedule: Schedule,
     },
+    /// With `expected_schedule_revision`, staleness is judged against that
+    /// Schedule alone (§5), so unrelated commits cannot refuse it.
     DeleteSchedule {
         schedule_id: ScheduleId,
         deleted_at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_schedule_revision: Option<i64>,
     },
     ClaimScheduleRun {
         schedule_id: ScheduleId,
@@ -32,6 +36,8 @@ pub enum Command {
         origin: ScheduleRunOrigin,
         now: i64,
         next_after_now: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_schedule_revision: Option<i64>,
     },
     RecordScheduleRunSent {
         run_id: ScheduleRunId,
@@ -44,9 +50,13 @@ pub enum Command {
         run_id: ScheduleRunId,
         now: i64,
     },
+    /// `agent_id` is the launched Claude session the daemon registered before
+    /// spawning it; the scheduled Task is assigned to it in this same commit.
     RecordScheduleLaunchHanded {
         run_id: ScheduleRunId,
         session_id: Option<String>,
+        #[serde(default)]
+        agent_id: Option<AgentId>,
         finished_at: i64,
     },
     RecordScheduleRunFailed {
@@ -262,6 +272,19 @@ pub struct CommandOutcome {
     pub changed: bool,
     pub effects: Vec<DomainEffect>,
     pub created_ids: Vec<String>,
+    /// Valid acceptances this command made obsolete without the user revoking
+    /// them (§2.1: a new final, revision, dependency or head supersedes one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded_acceptances: Vec<SupersededAcceptance>,
+}
+/// A user acceptance that no longer applies because something other than
+/// that user's own feedback or rejection changed the delivery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupersededAcceptance {
+    pub task_id: TaskId,
+    pub presentation_id: InteractionId,
+    pub user_id: String,
+    pub accepted_at: Revision,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainError {

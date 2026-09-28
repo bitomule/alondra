@@ -521,7 +521,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
                 .resolve(None, &Default::default()).unwrap()).unwrap(),
         },
         state: ScheduleLaunchState::Pending, claimed_at: None, finished_at: None,
-        session_id: None, error: None,
+        session_id: None, agent_id: None, error: None,
     }).unwrap();
     let valid_run = format!(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot,launch)
@@ -1086,4 +1086,163 @@ fn second_merge_authorization_from_the_same_snapshot_is_stale() {
     assert_eq!(store.load().unwrap(), authorized);
     let kept = &authorized.merge_authorizations[&"squash-on-device-a".into()];
     assert!(kept.valid && kept.method == MergeMethod::Squash);
+}
+
+#[test]
+fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
+    let fixture = Fixture::new();
+    let mut first = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut first);
+    let mut second = DomainStore::open(&fixture.path()).unwrap();
+    let foreign = envelope(
+        &mut second,
+        "foreign-request",
+        Command::CreateRequest {
+            request_id: "request-2".into(),
+            body: "Written by another connection".into(),
+        },
+    );
+    let mut foreign_writer = Some((second, foreign));
+    first.on_commit(move || {
+        if let Some((mut second, foreign)) = foreign_writer.take() {
+            let mut foreign = foreign;
+            foreign.expected_revision += 1;
+            second.execute_authenticated(&user(), &foreign, None).unwrap();
+        }
+    });
+    let own = envelope(
+        &mut first,
+        "own-request",
+        Command::CreateRequest {
+            request_id: "request-3".into(),
+            body: "Written by this connection".into(),
+        },
+    );
+    first.execute_authenticated(&user(), &own, None).unwrap();
+    let served = first.load().unwrap();
+    let persisted = DomainStore::open_readonly(&fixture.path())
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(persisted.requests.contains_key(&"request-2".into()));
+    assert_eq!(served, persisted);
+}
+
+#[test]
+fn import_replaces_a_projection_cached_before_it() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let empty = store.load().unwrap();
+    let before = store.project_bounded(1 << 20).unwrap();
+    let mut imported = empty.clone();
+    imported.requests.insert(
+        "legacy-request".into(),
+        Request {
+            id: "legacy-request".into(),
+            body: "Imported mission".into(),
+            closed: false,
+        },
+    );
+    assert_eq!(imported.revision, empty.revision);
+    store
+        .import_initial(
+            &imported,
+            &[],
+            1,
+            &crate::domain_migration::LegacyScheduleInventory::default(),
+        )
+        .unwrap();
+    let after = store.project_bounded(1 << 20).unwrap();
+    assert_ne!(after, before);
+    assert_eq!(after, serde_json::to_vec(&imported.projection()).unwrap());
+}
+
+#[test]
+fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    let e = acceptance(&mut store);
+    let accepted_at = store
+        .execute_authenticated(&user(), &e, None)
+        .unwrap()
+        .outcome
+        .revision;
+    let mut represent = envelope(
+        &mut store,
+        "represent-without-reading",
+        Command::PresentResult {
+            task_id: "task-1".into(),
+            interaction_id: "delivery-2".into(),
+            body: "A different answer".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+            is_final: true,
+            attachments: vec![],
+        },
+    );
+    represent.expected_revision = 0;
+    let superseded = SupersededAcceptance {
+        task_id: "task-1".into(),
+        presentation_id: "delivery-1".into(),
+        user_id: "user-1".into(),
+        accepted_at,
+    };
+    let committed = store.execute_filling_revision(&agent(), &represent).unwrap();
+    assert_eq!(committed.outcome.superseded_acceptances, vec![superseded.clone()]);
+    assert_eq!(store.project().unwrap().superseded_acceptances, vec![superseded]);
+    let audited: String = store
+        .conn
+        .query_row(
+            "SELECT r.result FROM command_audit a JOIN semantic_receipts r
+               USING(actor,command_id,data_epoch) WHERE a.revision=?1",
+            [committed.outcome.revision as i64],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audited.contains("\"superseded_acceptances\""), "{audited}");
+
+    let accept_again = envelope(
+        &mut store,
+        "accept-new-final",
+        Command::AcceptDelivery {
+            presentation_id: "delivery-2".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+        },
+    );
+    store.execute_authenticated(&user(), &accept_again, None).unwrap();
+    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+    let feedback = envelope(
+        &mut store,
+        "user-withdraws",
+        Command::SubmitFeedback {
+            attachments: vec![],
+            presentation_id: "delivery-2".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+            body: "Not quite".into(),
+        },
+    );
+    let withdrawn = store.execute_authenticated(&user(), &feedback, None).unwrap();
+    assert!(withdrawn.outcome.superseded_acceptances.is_empty());
+    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+}
+
+#[test]
+fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let before = store.load().unwrap();
+    let mut after = before.clone();
+    after.agents.remove(&"agent-1".into());
+    after.revision += 1;
+    let tx = store.conn.transaction().unwrap();
+    let error = repository::save_changes(&tx, &before, &after).unwrap_err();
+    assert!(error.to_string().contains("cannot remove agent"), "{error}");
 }

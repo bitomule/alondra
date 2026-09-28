@@ -3,6 +3,7 @@ mod log;
 mod auth;
 mod approval_lease;
 mod domain_cutover;
+mod domain_agent_lifecycle;
 mod domain_authority;
 mod domain_content;
 mod domain_delivery;
@@ -10,7 +11,11 @@ mod domain_migration;
 mod domain_runtime;
 mod domain_schedule_runner;
 mod domain_store;
+mod domain_transport;
+#[cfg(test)]
+mod domain_e2e_tests;
 mod domain_api;
+mod domain_reads;
 mod domain_schedule_api;
 mod domain_bootstrap;
 mod classify;
@@ -59,7 +64,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
@@ -105,6 +110,12 @@ fn main() -> Result<()> {
         [flag, backup, digest, target] if flag == "--restore-domain-rehearsal" => {
             let result = domain_migration::restore_rehearsal(std::path::Path::new(backup), digest, std::path::Path::new(target))?;
             println!("Verified rollback rehearsal: legacy seq {}", result.source_seq);
+            return Ok(());
+        }
+        [flag, live, work, legacy, report] if flag == "--rehearse-domain-cutover" => {
+            let passed = domain_migration::rehearsal::run_and_write(
+                Path::new(live), Path::new(work), Path::new(legacy), Path::new(report))?;
+            if !passed { std::process::exit(1); }
             return Ok(());
         }
         [flag, source, backup, digest] if flag == "--abort-domain-cutover" => {
@@ -273,9 +284,17 @@ fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
 /// Critical v2 workers must not disappear while the local listener remains healthy.
 async fn supervise_v2_workers<S>(server: S, outbox: tokio::task::JoinHandle<Result<()>>,
     scheduler: tokio::task::JoinHandle<Result<()>>,
+    transport: tokio::task::JoinHandle<Result<()>>,
     connector: Option<tokio::task::JoinHandle<()>>) -> Result<()>
 where S: std::future::Future<Output = std::io::Result<()>> {
     tokio::select! {
+        result = transport => {
+            match result {
+                Ok(Ok(())) => anyhow::bail!("v2 producer transport stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("v2 producer transport failed: {error:#}"),
+                Err(error) => anyhow::bail!("v2 producer transport panicked: {error}"),
+            }
+        },
         result = server => {
             result?;
             anyhow::bail!("v2-only domain listener stopped unexpectedly")
@@ -396,18 +415,22 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
+    // The producer transport owns the per-home hook socket before any outbox
+    // message can be claimed for a session.
+    let hooks = hook_socket::bind(&config.home).await?;
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!("v2-only domain listener on http://{addr}, data in {}", config.home.display());
     let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future();
     let outbox = tokio::spawn(domain_delivery::run_v2(
         domain.clone(), config.home.clone(), push, service.clone()));
-    let scheduler = tokio::spawn(domain_schedule_runner::run(domain, config.home.clone(), config.wake));
+    let scheduler = tokio::spawn(domain_schedule_runner::run(domain.clone(), config.home.clone(), config.wake));
+    let transport = tokio::spawn(domain_transport::run(hooks, domain, config.home.clone()));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
     tokio::select! {
-        stopped = supervise_v2_workers(server, outbox, scheduler, connector) => stopped,
+        stopped = supervise_v2_workers(server, outbox, scheduler, transport, connector) => stopped,
         () = replaced(config) => relaunch_now(),
     }
 }
@@ -419,25 +442,26 @@ mod v2_worker_supervision_tests {
     #[tokio::test]
     async fn unexpected_connector_or_outbox_exit_stops_listener() {
         let server = || std::future::pending::<std::io::Result<()>>();
-        let exit = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
-            tokio::spawn(std::future::pending::<Result<()>>()),
+        let pending = || tokio::spawn(std::future::pending::<Result<()>>());
+        let exit = supervise_v2_workers(server(), pending(), pending(), pending(),
             Some(tokio::spawn(async {}))).await.unwrap_err();
         assert!(exit.to_string().contains("connector stopped unexpectedly"));
-        let panic = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
-            tokio::spawn(std::future::pending::<Result<()>>()),
+        let panic = supervise_v2_workers(server(), pending(), pending(), pending(),
             Some(tokio::spawn(async { panic!("synthetic failure") }))).await.unwrap_err();
         assert!(panic.to_string().contains("connector failed"));
         let stopped_outbox = supervise_v2_workers(server(), tokio::spawn(async { Ok(()) }),
-            tokio::spawn(std::future::pending::<Result<()>>()), None).await.unwrap_err();
+            pending(), pending(), None).await.unwrap_err();
         assert!(stopped_outbox.to_string().contains("outbox worker stopped unexpectedly"));
         let failed_outbox = supervise_v2_workers(server(),
             tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }),
-            tokio::spawn(std::future::pending::<Result<()>>()), None).await.unwrap_err();
+            pending(), pending(), None).await.unwrap_err();
         assert!(failed_outbox.to_string().contains("synthetic SQL failure"));
-        let failed_scheduler = supervise_v2_workers(server(),
-            tokio::spawn(std::future::pending::<Result<()>>()),
-            tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }), None).await.unwrap_err();
+        let failed_scheduler = supervise_v2_workers(server(), pending(),
+            tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }), pending(), None).await.unwrap_err();
         assert!(failed_scheduler.to_string().contains("synthetic Schedule failure"));
+        let failed_transport = supervise_v2_workers(server(), pending(), pending(),
+            tokio::spawn(async { anyhow::bail!("synthetic hook failure") }), None).await.unwrap_err();
+        assert!(failed_transport.to_string().contains("synthetic hook failure"));
     }
 
 }

@@ -18,6 +18,10 @@ pub struct DomainProjection {
     pub document_reviews: Vec<DocumentReview>,
     pub merge_authorizations: Vec<MergeAuthorization>,
     pub stack_readiness: Vec<StackReadiness>,
+    /// Per active Task, its latest acceptance when that no longer applies
+    /// and the user did not withdraw it: "your acceptance no longer applies".
+    #[serde(default)]
+    pub superseded_acceptances: Vec<SupersededAcceptance>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxCounts {
@@ -419,6 +423,27 @@ impl DomainState {
             document_reviews: self.document_reviews.clone(),
             merge_authorizations: self.merge_authorizations.values().cloned().collect(),
             stack_readiness: self.stack_readiness.values().cloned().collect(),
+            superseded_acceptances: self.superseded_acceptances(),
         }
+    }
+    fn superseded_acceptances(&self) -> Vec<SupersededAcceptance> {
+        self.tasks
+            .values()
+            .filter(|t| !t.state.terminal())
+            .filter_map(|t| {
+                self.interactions
+                    .values()
+                    .filter(|p| p.scope == (Scope::Task { task_id: t.id.clone() }))
+                    .filter_map(|p| match &p.payload {
+                        InteractionPayload::Delivery {
+                            acceptance: Some(a),
+                            ..
+                        } => Some((a.at_revision, p)),
+                        _ => None,
+                    })
+                    .max_by_key(|(at, _)| *at)
+                    .and_then(|(_, p)| self.superseded(p))
+            })
+            .collect()
     }
 }

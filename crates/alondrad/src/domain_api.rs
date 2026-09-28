@@ -8,6 +8,7 @@ use crate::hub::Hub;
 use crate::domain_runtime::DomainRuntime;
 use std::path::Path as FsPath;
 use alondra_core::domain_v2::*;
+use alondra_core::domain_v2::reads;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -41,11 +42,11 @@ impl DomainHost for Hub {
 }
 
 pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
-    Router::new()
+    let router = Router::new()
         .route("/v2/domain", get(projection::<H>))
-        .route("/v2/domain/schedules", get(schedule_list::<H>).post(schedule_write_blocked))
-        .route("/v2/domain/schedules/{id}", get(schedule_detail::<H>).put(schedule_write_blocked).delete(schedule_write_blocked))
-        .route("/v2/domain/schedules/{id}/run", post(schedule_write_blocked))
+        .route("/v2/domain/schedules", get(schedule_list::<H>).post(schedule_mutation::<H>))
+        .route("/v2/domain/schedules/{id}", get(schedule_detail::<H>).put(schedule_mutation::<H>).delete(schedule_mutation::<H>))
+        .route("/v2/domain/schedules/{id}/run", post(schedule_mutation::<H>))
         .route("/v2/domain/capabilities", get(capabilities::<H>))
         .route("/v2/domain/delivery-attempts", get(delivery_evidence::<H>))
         .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization::<H>))
@@ -59,7 +60,53 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route(
             "/v2/domain/commands",
             post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
-        )
+        );
+    let sectioned = [
+        "/v2/domain/summary",
+        "/v2/domain/inbox",
+        "/v2/domain/inbox/{id}",
+        "/v2/domain/tasks",
+        "/v2/domain/tasks/{id}",
+        "/v2/domain/tasks/{id}/interactions",
+        "/v2/domain/interactions",
+        "/v2/domain/interactions/{id}",
+        "/v2/domain/interactions/{id}/body",
+        "/v2/domain/requests",
+        "/v2/domain/requests/{id}",
+        "/v2/domain/requests/{id}/body",
+        "/v2/domain/agents",
+        "/v2/domain/pull-requests",
+        "/v2/domain/pull-requests/{id}",
+        "/v2/domain/documents",
+        "/v2/domain/documents/{id}",
+        "/v2/domain/merge-authorizations",
+        "/v2/domain/stack-readiness",
+        "/v2/domain/superseded-acceptances",
+    ];
+    sectioned.into_iter().fold(router, |router, path| router.route(path, get(sectioned_read::<H>)))
+}
+
+/// Every sectioned read goes through the same grammar as the relay allowlist.
+async fn sectioned_read<H: DomainHost>(
+    State(host): State<Arc<H>>,
+    signed: Option<Extension<Signed>>,
+    uri: axum::http::Uri,
+) -> Response {
+    if !signed_read(&*host, &signed) {
+        return unsigned_read();
+    }
+    let path = match uri.query() {
+        Some(query) => format!("{}?{query}", uri.path()),
+        None => uri.path().to_owned(),
+    };
+    let response = match crate::domain_reads::parse(&path) {
+        Some(route) => crate::domain_reads::respond(host.domain(), &route),
+        None => domain_error(DomainError::new("invalid_input", "unsupported read query")),
+    };
+    if !signed_read(&*host, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
     if !host.cutover_committed() {
@@ -79,8 +126,33 @@ async fn schedule_detail<H: DomainHost>(State(host): State<Arc<H>>, signed: Opti
     if !signed_read(&*host, &signed) { return unsigned_read(); }
     response
 }
-async fn schedule_write_blocked() -> Response {
-    crate::domain_schedule_api::local_write_blocked()
+/// A paired device speaking over loopback is the user, exactly as it is over
+/// the relay. The device's approval is rechecked under the writer lock.
+async fn schedule_mutation<H: DomainHost>(
+    State(host): State<Arc<H>>,
+    signed: Option<Extension<Signed>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let Some(device) = signed_device(&*host, &signed) else {
+        return unsigned_read();
+    };
+    if !host.cutover_committed() {
+        return domain_error(legacy_write_blocked());
+    }
+    let bodyless = method == axum::http::Method::DELETE
+        || (method == axum::http::Method::POST && uri.path().ends_with("/run"));
+    let body = match body {
+        Ok(Json(body)) => Some(body),
+        Err(_) if bodyless => None,
+        Err(_) => return domain_error(DomainError::new("invalid_input", "invalid Schedule draft")),
+    };
+    let home = host.home().to_owned();
+    crate::domain_schedule_api::response(crate::domain_schedule_api::mutation(
+        host.domain(), host.home(), method.as_str(), uri.path(), body.as_ref(), None,
+        || approved(&home, &device),
+    ))
 }
 async fn merge_authorization<H: DomainHost>(
     State(host): State<Arc<H>>,
@@ -469,12 +541,19 @@ async fn changes_inner(domain: &DomainRuntime, query: Option<String>) -> Respons
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(wait), receiver.changed()).await;
     }
-    let state = match domain.state() {
-        Ok(state) => state,
+    let snapshot = match domain.reads.snapshot(domain) {
+        Ok(snapshot) => snapshot,
         Err(_) => return storage_error(),
     };
-    Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,"revision":state.revision,
-        "changed":state.data_epoch.0 != epoch || state.revision != after})).into_response()
+    let (data_epoch, revision) = snapshot.envelope_ids();
+    Json(reads::Changes {
+        protocol_version: PROTOCOL_VERSION,
+        changed: data_epoch.0 != epoch || revision != after,
+        data_epoch,
+        revision,
+        sections: snapshot.section_tokens(),
+    })
+    .into_response()
 }
 async fn capabilities<H: DomainHost>(
     State(host): State<Arc<H>>,
@@ -567,6 +646,8 @@ pub(crate) async fn encrypted_read_runtime(
     } else if let Some((id, query)) = path.strip_prefix("/v2/domain/document-revisions/")
         .and_then(|suffix| suffix.split_once("/content?")) {
         document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
+    } else if let Some(route) = crate::domain_reads::parse(path) {
+        crate::domain_reads::respond(domain, &route)
     } else {
         anyhow::bail!("unapproved encrypted domain read path")
     };
@@ -712,16 +793,40 @@ async fn command<H: DomainHost>(
             "this producer must resume with a domain v2 capability",
         ));
     }
-    // A same-UID Agent can call local pairing and create its own signing
-    // key. Signed loopback writes must remain closed until a user-presence
-    // enrollment channel exists. Apps use the encrypted service path.
-    if signed.is_none() {
-        return domain_error(DomainError::new("forbidden", "signed user device required"));
+    // A device paired over loopback is the user, locally as over the relay.
+    let Some(device) = signed_device(&*host, &signed) else {
+        return unsigned_read();
+    };
+    if !host.cutover_committed() {
+        return domain_error(legacy_write_blocked());
     }
-    domain_error(DomainError::new(
-        "forbidden",
-        "local user presence is required for domain commands",
-    ))
+    let home = host.home().to_owned();
+    let result = host.domain().execute(
+        &Actor::User { user_id: format!("device:{}", device.device_id) },
+        &envelope,
+        None,
+        || approved(&home, &device)
+            .map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
+    );
+    match result {
+        Ok(outcome) => Json(outcome).into_response(),
+        Err(error) => store_error(error),
+    }
+}
+
+/// The exact device the middleware verified, only while its approval persists.
+fn signed_device<H: DomainHost>(host: &H, signed: &Option<Extension<Signed>>) -> Option<Signed> {
+    let Some(Extension(signed)) = signed else {
+        return None;
+    };
+    approved(host.home(), signed).ok().map(|()| signed.clone())
+}
+
+fn approved(home: &FsPath, device: &Signed) -> anyhow::Result<()> {
+    let auth = crate::auth::Auth::open(home)?;
+    anyhow::ensure!(auth.list().iter().any(|entry| entry.id == device.device_id
+        && entry.public_key == device.public_key), "device approval was revoked");
+    Ok(())
 }
 
 /// Sender is the verified envelope identity; a body cannot change this principal.
@@ -780,14 +885,7 @@ fn unsigned_read() -> Response {
     domain_error(DomainError::new("forbidden", "signed user device required"))
 }
 fn signed_read<H: DomainHost>(host: &H, signed: &Option<Extension<Signed>>) -> bool {
-    let Some(Extension(signed)) = signed else {
-        return false;
-    };
-    crate::auth::Auth::open(host.home()).ok().is_some_and(|auth| {
-        auth.list()
-            .iter()
-            .any(|device| device.id == signed.device_id && device.public_key == signed.public_key)
-    })
+    signed_device(host, signed).is_some()
 }
 fn storage_error() -> Response {
     domain_error(DomainError::new(
@@ -1097,7 +1195,7 @@ mod tests {
             )
     }
     #[tokio::test]
-    async fn local_user_write_fails_closed_while_encrypted_receipts_and_reads_work() {
+    async fn local_user_write_waits_for_cutover_while_encrypted_receipts_and_reads_work() {
         let (home, hub) = fixture();
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
@@ -1112,7 +1210,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(first.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(first.status(), reqwest::StatusCode::CONFLICT, "no v2 writes before cutover");
         let body = serde_json::to_value(&request).unwrap();
         let result = encrypted_command_runtime(
             &hub.domain,
@@ -1215,6 +1313,24 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(projection, hub.domain.projection().unwrap());
+        assert_eq!(
+            client.get(format!("{base}/v2/domain/summary?include=inbox")).send().await.unwrap().status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/v2/domain/summary?include=inbox")
+            .send().await.unwrap().json().await.unwrap();
+        assert_eq!(summary.revision, projection.revision);
+        assert_eq!(summary.sections["inbox"].count as usize, projection.inbox.len());
+        assert_eq!(summary.expansions["inbox"].items.len(), projection.inbox.len());
+        let changes: reads::Changes = signed_get(&client, &base, &key, &device_id,
+            &format!("/v2/domain/changes?data_epoch={}&after={}&wait=0", projection.data_epoch, projection.revision))
+            .send().await.unwrap().json().await.unwrap();
+        assert!(!changes.changed);
+        assert_eq!(changes.sections, summary.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect());
+        assert_eq!(
+            signed_get(&client, &base, &key, &device_id, "/v2/domain/inbox?filter=all").send().await.unwrap().status(),
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY
+        );
         crate::auth::Auth::open(&home)
             .unwrap()
             .revoke(&device_id)

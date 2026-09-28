@@ -9,7 +9,7 @@ use alondra_core::{Event, now_millis, upkeep};
 use crate::hub::Hub;
 use crate::uploads;
 
-type Pending = Vec<(u64, String, Option<u64>)>;
+pub(crate) type Pending = Vec<(u64, String, Option<u64>)>;
 
 const RETRY_AFTER: Duration = Duration::from_secs(120);
 const PAINT_TIMEOUT: Duration = Duration::from_secs(25);
@@ -23,7 +23,7 @@ const PASTE_MARKERS: &[&str] = &["[Pasted text #", "paste again to expand"];
 
 /// The single line typed into the node for these messages: the messages themselves when they
 /// fit, or a pointer to a file holding them whole, paragraphs included.
-fn turn_for(home: &Path, msgs: &Pending) -> std::io::Result<String> {
+pub(crate) fn turn_for(home: &Path, msgs: &Pending) -> std::io::Result<String> {
     let typed = msgs.iter().map(|(_, t, _)| t.replace('\n', " ")).collect::<Vec<_>>().join(" · ");
     let Some((first, _, _)) = msgs.first().filter(|_| typed.len() > MAX_TYPED_BYTES) else {
         return Ok(typed);
@@ -325,7 +325,7 @@ fn folded_into_a_paste(screen: &str) -> bool {
 #[derive(Debug)]
 pub(crate) enum WriteFailure { NotStarted, Uncertain }
 
-fn type_into(short: &str, text: &str) -> Result<(), WriteFailure> {
+pub(crate) fn type_into(short: &str, text: &str) -> Result<(), WriteFailure> {
     let session=attach(short).map_err(|_|WriteFailure::NotStarted)?;
     write_terminal(&session.0,text,tmux,std::thread::sleep)
 }

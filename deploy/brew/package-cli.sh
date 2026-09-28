@@ -15,8 +15,8 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo 'version must be numeric, e.g. 0.1' >&2
   exit 2
 fi
-if [[ $target != aarch64-apple-darwin && $target != x86_64-apple-darwin ]]; then
-  echo 'target must be a supported macOS Rust target' >&2
+if [[ $target != aarch64-apple-darwin ]]; then
+  echo 'target must be aarch64-apple-darwin; Alondra ships Apple Silicon only' >&2
   exit 2
 fi
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)

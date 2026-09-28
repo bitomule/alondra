@@ -28,6 +28,14 @@ pub trait Launcher: Sync {
     /// Runs `claude` with `args` in `cwd`: what it printed, or why it did not start.
     fn run(&self, cwd: &str, args: &[String]) -> impl Future<Output = Result<String, Refusal>> + Send;
 
+    /// Runs `claude` for a domain v2 producer, whose capability travels only in
+    /// `env`. A launcher that cannot carry it refuses instead of launching a
+    /// session that could never act.
+    fn run_with_env(&self, cwd: &str, args: &[String], env: &[(String, String)]) -> impl Future<Output = Result<String, Refusal>> + Send {
+        let _ = (cwd, args, env);
+        async { Err((StatusCode::SERVICE_UNAVAILABLE, "this launcher cannot carry a producer capability".into())) }
+    }
+
     /// The subscription's usage, which can refuse a launch.
     fn usage(&self) -> Option<alondra_core::usage::Usage> {
         crate::usage::current(&crate::watcher::claude_home())
@@ -43,8 +51,14 @@ pub struct ClaudeCli;
 
 impl Launcher for ClaudeCli {
     async fn run(&self, cwd: &str, args: &[String]) -> Result<String, Refusal> {
+        self.run_with_env(cwd, args, &[]).await
+    }
+
+    async fn run_with_env(&self, cwd: &str, args: &[String], env: &[(String, String)]) -> Result<String, Refusal> {
         let mut cmd = tokio::process::Command::new("claude");
         cmd.current_dir(cwd).args(args).kill_on_drop(true);
+        cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY").env_remove("ALONDRA_DOMAIN_PROTOCOL");
+        cmd.envs(env.iter().map(|(key, value)| (key.as_str(), value.as_str())));
         match tokio::time::timeout(alondra_core::LAUNCH_TIMEOUT, cmd.output()).await {
             Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).to_string()),
             Ok(Ok(out)) => Err((StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&out.stderr).to_string())),

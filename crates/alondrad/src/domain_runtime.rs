@@ -13,6 +13,7 @@ pub struct DomainRuntime {
     approval_home: PathBuf,
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
+    pub(crate) reads: crate::domain_reads::Cache,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -30,12 +31,14 @@ impl DomainRuntime {
         let mut store = DomainStore::open(&home.join("domain-v2.db"))?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
+        let authority = capabilities::load(home, state.data_epoch.0)?;
         Ok(Self {
             home: home.to_path_buf(),
             store: Mutex::new(store),
             approval_home: home.to_path_buf(),
-            authority: Mutex::new(Authority::new(state.data_epoch.0)),
+            authority: Mutex::new(authority),
             changed,
+            reads: Default::default(),
         })
     }
     pub fn projection(&self) -> Result<DomainProjection> {
@@ -67,23 +70,63 @@ impl DomainRuntime {
         self.changed.subscribe()
     }
 
-    pub fn issue(&self, principal: Principal) -> Result<Capability, &'static str> {
-        self.authority
-            .lock()
-            .expect("domain authority poisoned")
+    /// Issued capabilities outlive this process: the Claude session keeps its
+    /// bearer across daemon restarts, so the digest is persisted before the
+    /// token is handed out.
+    pub fn issue(&self, principal: Principal) -> Result<Capability, StoreError> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let capability = authority
             .issue(principal)
+            .map_err(|message| DomainError::new("forbidden", message))?;
+        capabilities::persist(&self.home, &authority)?;
+        Ok(capability)
     }
-    pub fn revoke_agent(&self, session: &str) {
-        self.authority
-            .lock()
-            .expect("domain authority poisoned")
-            .revoke_agent(session);
+
+    /// Bind a Claude session that the domain already knows as an Agent, such as
+    /// one imported at cutover or resumed after a restart. Any earlier bearer
+    /// for that session stops working the moment the new one is issued.
+    pub fn bind_agent(&self, session_id: &str) -> Result<Capability, StoreError> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let state = self.store.lock().expect("domain store poisoned").load()?;
+        if !state.agents.contains_key(&AgentId(session_id.to_owned())) {
+            return Err(DomainError::new("not_found", "Agent does not exist").into());
+        }
+        authority.revoke_agent(session_id);
+        let capability = authority
+            .issue(Principal::Agent {
+                session_id: session_id.to_owned(),
+                task_binding: None,
+                provider_agent_id: None,
+            })
+            .map_err(|message| DomainError::new("forbidden", message))?;
+        capabilities::persist(&self.home, &authority)?;
+        Ok(capability)
     }
-    pub fn revoke_execution(&self, execution: &str) {
-        self.authority
-            .lock()
-            .expect("domain authority poisoned")
-            .revoke_execution(execution);
+
+    /// Bind one orchestrator execution to the current generation.
+    pub fn bind_orchestrator(&self, execution_id: &str) -> Result<Capability, StoreError> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        let state = self.store.lock().expect("domain store poisoned").load()?;
+        authority.revoke_execution(execution_id);
+        let capability = authority
+            .issue(Principal::Orchestrator {
+                generation: state.orchestrator_generation,
+                execution_id: execution_id.to_owned(),
+            })
+            .map_err(|message| DomainError::new("forbidden", message))?;
+        capabilities::persist(&self.home, &authority)?;
+        Ok(capability)
+    }
+
+    pub fn revoke_agent(&self, session: &str) -> Result<()> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        authority.revoke_agent(session);
+        capabilities::persist(&self.home, &authority).map_err(anyhow::Error::from)
+    }
+    pub fn revoke_execution(&self, execution: &str) -> Result<()> {
+        let mut authority = self.authority.lock().expect("domain authority poisoned");
+        authority.revoke_execution(execution);
+        capabilities::persist(&self.home, &authority).map_err(anyhow::Error::from)
     }
 
     /// Expose only the public protocol cursor to a daemon-authorized producer.
@@ -409,6 +452,8 @@ mod producer_revision_tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 }
+
+mod capabilities;
 
 #[cfg(test)]
 mod mcp_flow_tests;

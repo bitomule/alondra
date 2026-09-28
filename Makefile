@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -69,6 +69,12 @@ mac:
 e2e-sandbox:
 	bazelisk build //crates/alondrad //crates/alondra
 	tools/e2e-sandbox.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null)
+
+# Full cutover rehearsal on a read-only snapshot of the live HOME; keeps only the report.
+# REHEARSAL_ROOT, LIVE_HOME and LEGACY override the defaults (tools/rehearse-cutover.sh).
+rehearse-cutover:
+	bazelisk build //crates/alondrad
+	tools/rehearse-cutover.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
 
 soak:
 	bazelisk build //crates/alondrad

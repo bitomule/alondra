@@ -38,7 +38,7 @@ fn outline(blocks: &[Block]) -> Vec<String> {
         let (depth, text) = (b.depth, escaped(&b.plain()));
         let line = match &b.kind {
             Kind::Heading(level) => format!("heading:{level} {depth} | {text}"),
-            Kind::Para | Kind::Label => format!("para {depth} | {text}"),
+            Kind::Para => format!("para {depth} | {text}"),
             Kind::Item(marker) => {
                 let marker = match marker.as_str() {
                     "•" => "-",
