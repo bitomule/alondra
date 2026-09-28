@@ -35,7 +35,7 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     };
-    if let Err(e) = recover(&hub).await {
+    if let Err(e) = recover(&hub, true).await {
         log!("orchestrator recovery failed; executor stopped: {e}");
         return;
     }
@@ -44,14 +44,18 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
         if let Err(e) = tick(&hub, &claude_home, &directory, &ownership).await {
             log!("orchestrator: {e}");
             // A persistence failure after spawning is ambiguous. Do not consume another batch.
-            if let Err(e) = recover(&hub).await { log!("orchestrator recovery failed: {e}"); }
+            if let Err(e) = recover(&hub, false).await { log!("orchestrator recovery failed: {e}"); }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
         hub.wait_changes(before, Duration::from_secs(5)).await;
     }
 }
 
-async fn recover(hub: &Hub) -> Result<()> {
+/// An execution the daemon did not see finish is ambiguous. At startup, once the
+/// old process is proven gone, the run is also resolved: the orchestrator does
+/// not wait for Retry or Acknowledge, and its next run is told which batch was
+/// interrupted so it never replays it.
+async fn recover(hub: &Hub, resolve_on_startup: bool) -> Result<()> {
     let _commands = hub.orchestrator_commands.write().await;
     let interrupted = hub.read(|v| v.orchestrator.as_ref().filter(|r| r.phase != Phase::Failed).and_then(|r| r.active_run.clone()));
     if let Some(run) = interrupted {
@@ -60,6 +64,12 @@ async fn recover(hub: &Hub) -> Result<()> {
             error: Some("The daemon stopped during an orchestrator execution. Its effects must be checked before retrying.".into()),
             retry_at: None, compact_pending: false,
         })?;
+    }
+    if resolve_on_startup {
+        let unresolved = hub.read(|v| v.orchestrator.as_ref().and_then(|r| r.active_run.as_ref().map(|run| run.id.clone())));
+        if let Some(run_id) = unresolved {
+            transition(hub, Transition::Acknowledged { run_id })?;
+        }
     }
     Ok(())
 }
@@ -261,30 +271,47 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         std::fs::remove_dir_all(&hub.home).unwrap();
     }
     #[tokio::test]
-    async fn interrupted_execution_stays_claimed_across_restart_without_replay() {
+    async fn an_ambiguous_execution_is_resolved_at_restart_and_the_next_run_is_told() {
         let (hub, ch, dir, exe, lock) = fixture("exit 1");
         enqueue(&hub, 1);
         execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
+        hub.read(|v| assert_eq!(v.orchestrator.as_ref().unwrap().phase, Phase::Failed));
         let restarted = Hub::open(hub.config.clone(), false).unwrap();
-        recover(&restarted).await.unwrap();
-        execute_tick(&restarted, &ch, &dir, &lock, &exe).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1);
+        recover(&restarted, false).await.unwrap();
+        assert!(restarted.read(|v| !orchestrator::can_start(v, now_millis())),
+            "a failure inside one daemon life still waits for the user");
+        recover(&restarted, true).await.unwrap();
         restarted.read(|v| {
             let r = v.orchestrator.as_ref().unwrap();
-            assert_eq!(r.phase, Phase::Failed);
-            assert!(r.active_run.is_some());
-            assert!(v.messages[&1].handed_at.is_none());
+            assert_eq!(r.phase, Phase::Idle);
+            assert!(r.active_run.is_none());
+            assert_eq!(r.pending_resolutions.len(), 1);
+            assert_eq!(r.pending_resolutions[0].message_ids, vec![1]);
         });
+        enqueue(&restarted, 2);
+        let script = std::fs::read_to_string(&exe).unwrap().replace("cat >/dev/null", "cat > received-prompt").replace("exit 1", SUCCESS);
+        std::fs::write(&exe, script).unwrap();
+        execute_tick(&restarted, &ch, &dir, &lock, &exe).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2);
+        let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
+        assert!(prompt.contains("do not replay inbox message IDs [1]"), "{prompt}");
+        assert!(prompt.contains("inbox message 2") && !prompt.contains("--- Alondra inbox message 1 ---"), "{prompt}");
+        restarted.read(|v| assert!(v.orchestrator.as_ref().unwrap().pending_resolutions.is_empty()));
         std::fs::remove_dir_all(&hub.home).unwrap();
     }
     #[tokio::test]
-    async fn startup_before_result_commit_is_ambiguous_even_if_no_pid_remains() {
+    async fn startup_during_an_execution_resolves_it_without_replaying_its_batch() {
         let (hub, _, _, _, _) = fixture(SUCCESS);
         enqueue(&hub, 1);
         transition(&hub, Transition::Started { run_id: "interrupted".into(), kind: RunKind::Work, message_ids: vec![1] }).unwrap();
         let restarted = Hub::open(hub.config.clone(), false).unwrap();
-        recover(&restarted).await.unwrap();
-        assert!(restarted.read(|v| !orchestrator::can_start(v, now_millis())));
+        recover(&restarted, true).await.unwrap();
+        restarted.read(|v| {
+            assert!(orchestrator::can_start(v, now_millis()));
+            let r = v.orchestrator.as_ref().unwrap();
+            assert_eq!(r.pending_resolutions.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(), vec!["interrupted"]);
+            assert!(orchestrator::pending_message_ids(v).is_empty(), "the interrupted batch is not offered again");
+        });
         std::fs::remove_dir_all(&hub.home).unwrap();
     }
     #[tokio::test]
