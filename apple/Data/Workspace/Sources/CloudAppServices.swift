@@ -204,10 +204,10 @@ public actor CloudAppServices {
 
     public func documentText(_ path: String) async throws -> String {
         try checkActive()
-        let body = try await api.send(AlondraEndpoints.fileText(path))
+        // Chunked so documents larger than one encrypted relay response still load.
+        let bytes = try await api.downloadAttachment(path: path, downloadID: UUID())
         try checkActive()
-        struct DocumentResponse: Decodable { let text: String }
-        return try JSONDecoder().decode(DocumentResponse.self, from: body).text
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public func checkActive() throws {

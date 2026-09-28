@@ -16,10 +16,38 @@ pub(crate) const SCHEMA_VERSION: i64 = 5;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
+#[cfg(test)]
+pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
 
+/// The last state this connection loaded or committed, valid while no other
+/// connection committed (`data_version`) and this one wrote nothing outside
+/// the paths that refresh it (`total_changes`). Any miss falls back to a full
+/// load, so a stale copy is never served.
+struct Cached {
+    state: DomainState,
+    data_version: i64,
+    total_changes: u64,
+}
 pub(crate) struct DomainStore {
     conn: Connection,
+    cached: Option<Cached>,
+    projection: Option<(DataEpoch, Revision, usize, Vec<u8>)>,
+}
+fn data_version(c: &Connection) -> Result<i64> {
+    Ok(c.pragma_query_value(None, "data_version", |r| r.get(0))?)
+}
+/// The state as of this transaction: the cached copy when it is still current,
+/// otherwise a full load. The flag says whether the cache served it.
+fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(DomainState, bool)> {
+    let version = data_version(tx)?;
+    let changes = tx.total_changes();
+    match cached {
+        Some(c) if c.data_version == version && c.total_changes == changes => {
+            Ok((c.state.clone(), true))
+        }
+        _ => Ok((repository::load(tx)?, false)),
+    }
 }
 #[derive(Debug)]
 pub(crate) enum StoreError {
@@ -122,15 +150,37 @@ impl DomainStore {
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
         tx.commit()?;
-        let store = Self { conn };
+        let store = Self { conn, cached: None, projection: None };
         store.integrity_check()?;
         Ok(store)
+    }
+    #[cfg(test)]
+    /// Rows this connection has written since it was opened.
+    pub(crate) fn rows_written(&self) -> u64 {
+        self.conn.total_changes()
+    }
+    fn remember(&mut self, state: DomainState) -> Result<()> {
+        self.cached = Some(Cached {
+            state,
+            data_version: data_version(&self.conn)?,
+            total_changes: self.conn.total_changes(),
+        });
+        Ok(())
+    }
+    /// Delivery and receipt rows are not domain state; writing them keeps the cache.
+    fn note_side_write(&mut self) {
+        if let Some(cached) = &mut self.cached {
+            cached.total_changes = self.conn.total_changes();
+        }
     }
     pub(crate) fn load(&mut self) -> Result<DomainState> {
         let tx = self.conn.transaction()?;
         check_schema(&tx)?;
-        let state = repository::load(&tx)?;
+        let (state, hit) = state_in(&self.cached, &tx)?;
         tx.commit()?;
+        if !hit {
+            self.remember(state.clone())?;
+        }
         Ok(state)
     }
     /// Offline one-shot cutover. The imported state carries a freshly created
@@ -182,6 +232,7 @@ impl DomainStore {
         let mapped: i64 = tx.query_row("SELECT count(*) FROM legacy_import_map", [], |r|r.get(0))?;
         ensure!(mapped as usize == links.len(), "legacy mapping count changed during import");
         tx.commit()?;
+        self.remember(state.clone())?;
         Ok(())
     }
     pub(crate) fn legacy_schedule_inventory(
@@ -281,7 +332,7 @@ impl DomainStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
-        let state = repository::load(&tx)?;
+        let (state, hit) = state_in(&self.cached, &tx)?;
         if envelope.protocol_version != PROTOCOL_VERSION {
             return Err(
                 DomainError::new("incompatible_protocol", "domain protocol 2 is required").into(),
@@ -311,6 +362,9 @@ impl DomainStore {
                 }
                 let outcome = serde_json::from_str(&result)?;
                 tx.commit()?;
+                if !hit {
+                    self.remember(state.clone())?;
+                }
                 return Ok(Commit {
                     state,
                     outcome,
@@ -329,12 +383,14 @@ impl DomainStore {
             }
             let outcome = serde_json::from_str(&result)?;
             if let Some((sender, id, ciphertext_digest)) = transport {
-                tx.execute(
+                repository::exec(
+                    &tx,
                     "INSERT INTO local_command_results VALUES(?1,?2,?3,?4)",
                     params![sender, id, ciphertext_digest.as_slice(), result],
                 )?;
             }
             tx.commit()?;
+            self.remember(state.clone())?;
             return Ok(Commit {
                 state,
                 outcome,
@@ -354,13 +410,13 @@ impl DomainStore {
         let mut next = state.clone();
         let outcome = next.execute(actor, envelope)?;
         if outcome.changed {
-            repository::save(&tx, &next)?;
+            repository::save_changes(&tx, &state, &next)?;
             if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command
                 && let Some(request_id) = &next.schedule.runs[run_id].request_id
             {
                 repository::remember_schedule_failed_launch(&tx, request_id)?;
             }
-            tx.execute("INSERT INTO command_audit(revision,actor,command_id,data_epoch,command) VALUES(?1,?2,?3,?4,?5)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?])?;
+            repository::exec(&tx, "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command) VALUES(?1,?2,?3,?4,?5)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?])?;
             for (index, effect) in outcome.effects.iter().enumerate() {
                 let (kind, agent, task, interaction, message) = match effect {
                     DomainEffect::NotifyUser {
@@ -393,11 +449,12 @@ impl DomainStore {
                         "A domain interaction requires your response.",
                     ),
                 };
-                tx.execute("INSERT INTO domain_messages(revision,ordinal,recipient_kind,agent_id,task_id,interaction_id,message) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![outcome.revision as i64,index as i64,kind,agent,task,interaction,message])?;
+                repository::exec(&tx, "INSERT INTO domain_messages(revision,ordinal,recipient_kind,agent_id,task_id,interaction_id,message) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![outcome.revision as i64,index as i64,kind,agent,task,interaction,message])?;
                 if matches!(effect, DomainEffect::NotifyUser { .. }) {
-                    tx.execute("INSERT INTO domain_message_user_targets(message_id) VALUES(?1)", [tx.last_insert_rowid()])?;
+                    repository::exec(&tx, "INSERT INTO domain_message_user_targets(message_id) VALUES(?1)", [tx.last_insert_rowid()])?;
                 }
-                tx.execute(
+                repository::exec(
+                    &tx,
                     "INSERT INTO domain_outbox(message_id,state) VALUES(?1,'pending')",
                     [tx.last_insert_rowid()],
                 )?;
@@ -406,14 +463,16 @@ impl DomainStore {
             ensure_no_effects(&outcome)?;
         }
         let result = serde_json::to_string(&outcome)?;
-        tx.execute("INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result) VALUES(?1,?2,?3,?4,?5)",params![actor_key,envelope.command_id.0,envelope.data_epoch.0,digest.as_slice(),result])?;
+        repository::exec(&tx, "INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result) VALUES(?1,?2,?3,?4,?5)",params![actor_key,envelope.command_id.0,envelope.data_epoch.0,digest.as_slice(),result])?;
         if let Some((sender, id, ciphertext_digest)) = transport {
-            tx.execute(
+            repository::exec(
+                &tx,
                 "INSERT INTO local_command_results VALUES(?1,?2,?3,?4)",
                 params![sender, id, ciphertext_digest.as_slice(), result],
             )?;
         }
         tx.commit()?;
+        self.remember(next.clone())?;
         Ok(Commit {
             state: next,
             outcome,
@@ -486,6 +545,7 @@ impl DomainStore {
             [id],
         )?;
         tx.commit()?;
+        self.note_side_write();
         Ok(Some(DeliveryClaim {
             attempt_id,
             version: 1,
@@ -519,6 +579,7 @@ impl DomainStore {
             params![id, status],
         )?;
         tx.commit()?;
+        self.note_side_write();
         Ok(true)
     }
 }
@@ -608,6 +669,7 @@ impl DomainStore {
         tx.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
             params![sender,request_id,ciphertext_digest.as_slice(),serde_json::to_string(&result)?])?;
         tx.commit()?;
+        self.note_side_write();
         Ok(result)
     }
 
@@ -648,6 +710,7 @@ impl DomainStore {
             params![id, status],
         )?;
         tx.commit()?;
+        self.note_side_write();
         Ok(true)
     }
 }

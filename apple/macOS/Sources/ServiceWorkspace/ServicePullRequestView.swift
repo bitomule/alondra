@@ -110,6 +110,7 @@ struct ServicePullRequestView: View {
                 if hasChanges {
                     Button(requestChangesTitle) { store.send(.diff(.requestChangesTapped)) }
                         .buttonStyle(.borderedProminent)
+                        .disabled(!store.diff.canReview)
                 } else {
                     Button(requestChangesTitle) { store.send(.diff(.requestChangesTapped)) }
                         .disabled(true)
@@ -170,6 +171,10 @@ struct ServicePullRequestView: View {
             Text("Changes").font(.title3.weight(.semibold))
             if store.diff.files != nil {
                 Text("Hover over a line to comment on it").font(.caption).foregroundStyle(.secondary)
+                if store.diff.diffTruncated {
+                    Label("This diff is too long to show in full. Open the PR on GitHub for the rest.", systemImage: "scissors")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 ServicePRDiffReview(store: store.scope(state: \.diff, action: \.diff), focus: $focus)
                     .disabled(store.diff.isSending || store.diff.mutationOutcome?.uncertainID != nil)
             } else if let error = store.diff.loadError {

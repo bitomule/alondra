@@ -162,9 +162,9 @@ public actor DemoWorkspace {
         report(message)
         do { try publish(); return .confirmed } catch { return .rejected(error.localizedDescription) }
     }
-    private func reviewPR(_ id: UInt64, text: String, attachments: [PRReviewAttachment], kind: PRReviewKind, head: String) -> PRMutationOutcome {
+    private func reviewPR(_ id: UInt64, text: String, attachments: [PRReviewAttachment], kind: PRReviewKind, head: String?) -> PRMutationOutcome {
         guard active else { return .obsolete }
-        guard head == String(repeating: "d", count: 40) else { return .rejected("The example diff changed; reload it") }
+        guard head == nil || head == String(repeating: "d", count: 40) else { return .rejected("The example diff changed; reload it") }
         do {
             for file in attachments { _ = try storeAttachment(id: file.id, name: file.name, data: file.data) }
         } catch { return .rejected(error.localizedDescription) }

@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Edit Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Editar de nuevo"}}}},
+    "Discard Draft": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar borrador"}}}},
+    "This diff is too long to show in full. Open the PR on GitHub for the rest.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado largo para mostrarlo entero. Abre la PR en GitHub para ver el resto."}}}},
     "No internet connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin conexión a internet"}}}},
     "Can’t reach the Alondra server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se puede contactar con el servidor de Alondra"}}}},
     "Your Mac isn’t answering": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no responde"}}}},

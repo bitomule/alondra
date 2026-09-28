@@ -487,53 +487,58 @@ impl DomainState {
             self.tasks.get_mut(&id).unwrap().state = state;
         }
     }
-    /// Everything a Task's revision answers for: its row, its decisions and
-    /// deliveries, its PR, authorizations, stack readiness, reviews and linked
-    /// document versions. Information neither blocks nor dates a decision (R07).
-    #[allow(clippy::type_complexity)]
-    fn aggregate(
-        &self,
-        id: &TaskId,
-    ) -> (
-        Option<&Task>,
-        Vec<&Interaction>,
-        Option<&PullRequest>,
-        Vec<&MergeAuthorization>,
-        Option<&StackReadiness>,
-        Vec<&DocumentReview>,
-        Vec<&DocumentRevisionId>,
-    ) {
-        let scope = Scope::Task {
-            task_id: id.clone(),
-        };
-        let task = self.tasks.get(id);
-        (
-            task,
-            self.interactions
-                .values()
-                .filter(|i| {
-                    i.scope == scope && !matches!(i.payload, InteractionPayload::Information { .. })
-                })
-                .collect(),
-            task.and_then(|t| t.pr_id.as_ref())
-                .and_then(|p| self.pull_requests.get(p)),
-            self.merge_authorizations
-                .values()
-                .filter(|a| &a.task_id == id)
-                .collect(),
-            self.stack_readiness.get(id),
-            self.document_reviews
-                .iter()
-                .filter(|r| &r.task_id == id)
-                .collect(),
-            task.map(|t| {
-                t.documents
-                    .keys()
-                    .filter_map(|d| self.documents.get(d).map(|d| &d.current_revision))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        )
+    /// Tasks whose revision must move: their row, their decisions and
+    /// deliveries, PR, authorizations, stack readiness, reviews or linked
+    /// document versions differ in `next`. Information neither blocks nor dates
+    /// a decision (R07), so it never moves a Task's revision.
+    fn touched_tasks(&self, next: &DomainState) -> BTreeSet<TaskId> {
+        let mut touched = BTreeSet::new();
+        for (id, task) in &next.tasks {
+            if self.tasks.get(id) != Some(task) {
+                touched.insert(id.clone());
+            }
+        }
+        for (id, interaction) in &next.interactions {
+            if matches!(interaction.payload, InteractionPayload::Information { .. }) {
+                continue;
+            }
+            if let Scope::Task { task_id } = &interaction.scope
+                && self.interactions.get(id) != Some(interaction)
+            {
+                touched.insert(task_id.clone());
+            }
+        }
+        for (id, pr) in &next.pull_requests {
+            if self.pull_requests.get(id) != Some(pr) {
+                touched.insert(pr.task_id.clone());
+            }
+        }
+        for (id, authorization) in &next.merge_authorizations {
+            if self.merge_authorizations.get(id) != Some(authorization) {
+                touched.insert(authorization.task_id.clone());
+            }
+        }
+        for (id, readiness) in &next.stack_readiness {
+            if self.stack_readiness.get(id) != Some(readiness) {
+                touched.insert(id.clone());
+            }
+        }
+        for review in &next.document_reviews {
+            if !self.document_reviews.contains(review) {
+                touched.insert(review.task_id.clone());
+            }
+        }
+        for (id, document) in &next.documents {
+            if self.documents.get(id) != Some(document) {
+                touched.extend(
+                    next.tasks
+                        .values()
+                        .filter(|task| task.documents.contains_key(id))
+                        .map(|task| task.id.clone()),
+                );
+            }
+        }
+        touched
     }
     /// The revision a command's expected_revision must reach: its Task for
     /// Task-directed commands, the Interaction for decisions on one, and the
@@ -599,9 +604,9 @@ impl DomainState {
         }
     }
     /// Clone, validate, swap: even an error discovered after preparing several changes is atomic.
+    /// The current state was validated when it was loaded or committed; only the result is checked.
     /// Semantic receipts belong to the SQL transaction and are looked up before this method.
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
-        self.validate()?;
         if envelope.protocol_version != PROTOCOL_VERSION {
             return fail("incompatible_protocol", "Protocol version 2 is required");
         };
@@ -629,13 +634,7 @@ impl DomainState {
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
         next.derive_states();
-        let touched: Vec<_> = next
-            .tasks
-            .keys()
-            .filter(|id| self.aggregate(id) != next.aggregate(id))
-            .cloned()
-            .collect();
-        for id in touched {
+        for id in self.touched_tasks(&next) {
             next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
         }
         let changed = next != *self;

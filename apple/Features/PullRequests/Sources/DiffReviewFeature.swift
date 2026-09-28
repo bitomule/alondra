@@ -16,6 +16,7 @@ public struct DiffReviewFeature {
         public var loadedHeadSHA: String?
         public var commentsHeadSHA: String?
         public var loadedDiffText: String?
+        public var diffTruncated = false
         public var commentsDiffText: String?
         public var collapsed: Set<String> = []
         public var highlightedLines: [String: AttributedString] = [:]
@@ -55,9 +56,9 @@ public struct DiffReviewFeature {
 
         public init(prID: UInt64) { self.prID = prID }
 
+        /// A note needs no diff; line comments are checked against the loaded diff when sending.
         public var canReview: Bool {
-            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && isOpen && !isStale && !isLoading && !isSending && files != nil && loadedDiffText != nil
-                && loadedHeadSHA != nil
+            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && isOpen && !isStale && !isLoading && !isSending
                 && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
         }
         public var hasDraft: Bool {
@@ -164,6 +165,7 @@ public struct DiffReviewFeature {
                 state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
                 state.loadedHeadSHA = nil
+                state.diffTruncated = false
                 state.commentsDiffText = nil
                 state.commentsHeadSHA = nil
                 state.collapsed = []
@@ -202,6 +204,7 @@ public struct DiffReviewFeature {
                 state.files = files
                 state.loadedDiffText = text.diff
                 state.loadedHeadSHA = text.headSHA
+                state.diffTruncated = text.truncated
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.loadError = nil
                 return highlight(&state)
@@ -214,6 +217,7 @@ public struct DiffReviewFeature {
                 state.highlightGeneration &+= 1
                 state.loadedDiffText = nil
                 state.loadedHeadSHA = nil
+                state.diffTruncated = false
                 state.collapsed = []
                 return .none
             case .toggleFile(let id):
@@ -293,6 +297,7 @@ public struct DiffReviewFeature {
                 state.files = files
                 state.loadedDiffText = text.diff
                 state.loadedHeadSHA = text.headSHA
+                state.diffTruncated = text.truncated
                 state.collapsed = Set(files.filter(\.startsCollapsed).map(\.id))
                 state.validationErrorIsSubmissionFailure = false
                 state.validationError = "The PR changed; review the new diff before sending"
@@ -405,7 +410,9 @@ public struct DiffReviewFeature {
                 }
                 return .send(.attachmentPicker(.prepareForSubmission))
             }
-            guard let expectedDiff = state.loadedDiffText, let expectedHead = state.loadedHeadSHA else { return .none }
+            let expected: PRDiffSnapshot? = if let diff = state.loadedDiffText, let head = state.loadedHeadSHA {
+                PRDiffSnapshot(diff: diff, headSHA: head, truncated: state.diffTruncated)
+            } else { nil }
             state.isSending = true
             state.validationErrorIsSubmissionFailure = false
             state.validationError = nil
@@ -417,7 +424,6 @@ public struct DiffReviewFeature {
             let attachments = state.attachments
             let epoch = state.presentationEpoch
             let useCase = SubmitPRReviewUseCase(operations: operations)
-            let expected = PRDiffSnapshot(diff: expectedDiff, headSHA: expectedHead)
             return .run { send in
                 do {
                     switch try await useCase.execute(prID: id, text: text, attachments: attachments,

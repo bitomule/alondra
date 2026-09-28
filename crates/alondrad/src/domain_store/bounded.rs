@@ -1,4 +1,4 @@
-use super::{DomainStore, check_schema, repository};
+use super::{DomainStore, check_schema};
 use anyhow::{Result, ensure};
 use rusqlite::Connection;
 use std::io::{self, Write};
@@ -226,6 +226,14 @@ impl Write for BoundedWriter {
 impl DomainStore {
     pub(crate) fn project_bounded(&mut self, max_bytes: usize) -> Result<Vec<u8>> {
         ensure!(max_bytes > 0, "projection byte budget must be positive");
+        let current = self.load()?;
+        if let Some((epoch, revision, limit, bytes)) = &self.projection
+            && *epoch == current.data_epoch
+            && *revision == current.revision
+            && *limit == max_bytes
+        {
+            return Ok(bytes.clone());
+        }
         let tx = self.conn.transaction()?;
         check_schema(&tx)?;
         if count_entities(&tx)? > MAX_ENTITIES {
@@ -242,7 +250,7 @@ impl DomainStore {
             }
             .into());
         }
-        let state = repository::load(&tx)?;
+        let (state, _) = super::state_in(&self.cached, &tx)?;
         let projection = state.projection();
         let mut writer = BoundedWriter {
             bytes: Vec::new(),
@@ -258,6 +266,7 @@ impl DomainStore {
         }
         serialized?;
         tx.commit()?;
+        self.projection = Some((state.data_epoch.clone(), state.revision, max_bytes, writer.bytes.clone()));
         Ok(writer.bytes)
     }
 }

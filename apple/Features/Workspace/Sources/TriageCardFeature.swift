@@ -45,8 +45,10 @@ public struct TriageCardFeature {
         }
         public var canSend: Bool {
             let hasAttachments = !(question?.attachmentPicker.entries.isEmpty ?? document?.attachmentPicker.entries.isEmpty ?? pullRequest?.diff.attachmentPicker.entries.isEmpty ?? true)
-            return !busy && (!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments)
+            return !busy && reviewReady && (!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments)
         }
+        /// A document or diff that is still loading, or failed to load, cannot take a review yet.
+        public var reviewReady: Bool { document?.canReview ?? pullRequest?.diff.canReview ?? true }
         public var retainsPendingDelivery: Bool {
             question?.isSubmitting == true || question?.needsReconciliation == true
                 || document?.isSubmitting == true || document?.needsReconciliation == true
@@ -110,13 +112,16 @@ public struct TriageCardFeature {
                 return .send(.question(.optionTapped(option.label)))
             case .clearOption: return .send(.question(.optionSelected(nil)))
             case .send:
-                guard !state.busy else { return .none }
+                guard !state.busy, state.reviewReady else { return .none }
                 if let question = state.question { state.pendingStamp = .answer(question.draft.selectedOption); return .send(.question(.answerTapped)) }
                 if state.document != nil { state.pendingStamp = .sent; return .send(.document(.sendFeedbackTapped(author: state.document?.feedbackAuthor ?? ""))) }
                 state.pendingStamp = .changesRequested
                 state.requestingChanges = true
                 return .send(.pullRequest(.diff(.requestChangesTapped)))
-            case .ask: state.requestingChanges = false; return .send(.pullRequest(.diff(.askTapped)))
+            case .ask:
+                guard state.reviewReady else { return .none }
+                state.requestingChanges = false
+                return .send(.pullRequest(.diff(.askTapped)))
             case .contextPresented(let shown): state.askingContext = shown; return .none
             case .contextChanged(let text): state.contextNote = text; return .none
             case .requestContext:

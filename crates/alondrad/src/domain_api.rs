@@ -299,7 +299,7 @@ pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) 
     Json(body).into_response()
 }
 
-fn bound_diff_json(body: &mut Value) {
+pub(crate) fn bound_diff_json(body: &mut Value) {
     // Bound the *encoded JSON*, not source bytes: backslashes/control chars can
     // expand substantially when relayed. All readers receive an explicit
     // truncated flag rather than a transport-level 502.

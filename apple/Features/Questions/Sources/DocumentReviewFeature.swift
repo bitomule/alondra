@@ -115,6 +115,11 @@ public struct DocumentReviewFeature {
         public var composingText = ""
         public var commentPositions: [String: String] = [:]
         public var generalFocusRequest: UInt64 = 0
+        /// Feedback anchors on the loaded document, so review actions wait for it.
+        public var canReview: Bool {
+            !isLoading && loadError == nil && sourceText != nil &&
+                !isSubmitting && pendingSubmission == nil && !completed && !needsReconciliation
+        }
         public var hasFeedback: Bool {
             !draft.comments.isEmpty || !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentPicker.entries.isEmpty
         }
@@ -318,7 +323,7 @@ public struct DocumentReviewFeature {
                 }
                 return .none
             case .chooseReviewOption(let option, let author):
-                guard canReview(state) else { return .none }
+                guard state.canReview else { return .none }
                 state.draft.selectedOption = option.label
                 let hasExplanation = state.explanationPolicy == .phone ? state.hasFeedback
                     : !ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author).isEmpty
@@ -329,13 +334,13 @@ public struct DocumentReviewFeature {
                 state.draft.selectedOption = option.label
                 return .send(.sendFeedbackTapped(author: author))
             case .submitFeedback(let author):
-                guard canReview(state), state.hasFeedback else { return .none }
+                guard state.canReview, state.hasFeedback else { return .none }
                 state.draft.selectedOption = state.draft.selectedOption ?? state.changeOption
                 return .send(.sendFeedbackTapped(author: author))
             case .moreContextTapped(let author):
                 return prepare(.moreContext(author), state: &state)
             case .approveQuestion:
-                guard canReview(state), case .question(let question) = state.subject, let option = state.approveOption else { return .none }
+                guard state.canReview, case .question(let question) = state.subject, let option = state.approveOption else { return .none }
                 var draft = QuestionDraft()
                 draft.selectedOption = option
                 do { return submit(try answerUseCase.answer(question, draft: draft, explanationPolicy: state.explanationPolicy), state: &state) }
@@ -386,7 +391,7 @@ public struct DocumentReviewFeature {
                     state.notice = "Send feedback to include your attachments before approving the artifact."
                     return .none
                 }
-                guard canReview(state) else { return .none }
+                guard state.canReview else { return .none }
                 guard case .report(let report) = state.subject else { return .none }
                 do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
                 catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
@@ -539,7 +544,7 @@ public struct DocumentReviewFeature {
     private func clearPending(_ state: inout State) { state.cancelPendingSubmission() }
 
     private func prepare(_ review: PendingReview, state: inout State) -> Effect<Action> {
-        guard canReview(state), state.attachmentPicker.canPrepareSubmission else { return .none }
+        guard state.canReview, state.attachmentPicker.canPrepareSubmission else { return .none }
         if !state.attachmentPicker.allReady {
             state.pendingSubmission = .awaitingReceipts
             state.pendingReview = review
@@ -549,7 +554,7 @@ public struct DocumentReviewFeature {
     }
 
     private func submitReady(_ review: PendingReview, state: inout State) -> Effect<Action> {
-        guard canReview(state), state.attachmentPicker.allReady else { return .none }
+        guard state.canReview, state.attachmentPicker.allReady else { return .none }
         switch review {
         case .moreContext(let author):
             guard case .question(let question) = state.subject else { return .none }
@@ -591,11 +596,6 @@ public struct DocumentReviewFeature {
                 return .none
             }
         }
-    }
-
-    private func canReview(_ state: State) -> Bool {
-        !state.isLoading && state.loadError == nil && state.sourceText != nil &&
-            !state.isSubmitting && state.pendingSubmission == nil && !state.completed && !state.needsReconciliation
     }
 
     private func submit(_ operation: QuestionOperation, state: inout State) -> Effect<Action> {
