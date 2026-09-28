@@ -60,7 +60,10 @@ fn original_request_exists(view: &View, imported: &d::DomainState, request: &d::
         && imported.requests.contains_key(request)
 }
 
-fn only_task_for_request(
+/// The run links the legacy Task the schedule launched, under its original ID.
+/// Tasks the importer derives for extra PRs share its Request but were never
+/// launched by the schedule, so they do not make the link ambiguous.
+fn original_task_for_request(
     view: &View,
     state: &d::DomainState,
     request: &d::RequestId,
@@ -93,18 +96,6 @@ fn only_task_for_request(
     ensure!(
         &task.request_id == request,
         "imported schedule Task belongs to another Request"
-    );
-    let mut tasks = state
-        .tasks
-        .values()
-        .filter(|task| &task.request_id == request);
-    ensure!(
-        tasks.next().is_some(),
-        "schedule Request has no imported Task"
-    );
-    ensure!(
-        tasks.next().is_none(),
-        "schedule Request has ambiguous imported Tasks"
     );
     Ok(task.id.clone())
 }
@@ -249,7 +240,7 @@ pub(crate) fn read_legacy_schedules_readonly(
                     let (request_id, task_id) = match old.last_request {
                         Some(request) => {
                             let request_id = d::RequestId(request);
-                            let task_id = only_task_for_request(view, imported, &request_id)?;
+                            let task_id = original_task_for_request(view, imported, &request_id)?;
                             (Some(request_id), Some(task_id))
                         }
                         None => (None, None),

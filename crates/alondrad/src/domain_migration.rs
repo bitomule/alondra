@@ -1562,4 +1562,92 @@ mod tests {
         assert!(Path::new(&path).with_file_name("domain-v2.db-wal").exists());
         unsafe { libc::_exit(0) };
     }
+
+    #[test]
+    fn scheduled_run_links_the_original_task_when_its_request_split_into_pr_tasks() {
+        let root = std::env::temp_dir().join(format!(
+            "alondra-schedule-split-{}",
+            crate::auth::random_hex(8)
+        ));
+        let source = root.join("source");
+        let stage = root.join("stage");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&source).unwrap();
+        let mut view = View::default();
+        view.seq = 1;
+        view.board.recorded_since = Some(1);
+        view.nodes.insert(
+            "session-1".into(),
+            alondra_core::model::Node::new("session-1", 1),
+        );
+        view.board.requests.insert(
+            "request-sched".into(),
+            serde_json::from_value(json!({
+                "id":"request-sched","text":"Scheduled mission","created_at":1
+            }))
+            .unwrap(),
+        );
+        view.board.tasks.insert(
+            "task-sched".into(),
+            serde_json::from_value(json!({
+                "id":"task-sched","request":"request-sched","title":"Scheduled Task",
+                "state":"in_review","state_since":1,"created_at":1,"recorded":true,
+                "assignee":{"session_id":"session-1"},"prs":[1,2]
+            }))
+            .unwrap(),
+        );
+        for number in [1, 2] {
+            let mut item = pr::PullRequest::opened(
+                number,
+                &format!("https://github.com/owner/repo/pull/{number}"),
+                "session-1",
+                None,
+                1,
+            )
+            .unwrap();
+            item.task = Some("task-sched".into());
+            item.head_sha = Some(format!("{number:040x}"));
+            item.head = Some(format!("feature-{number}"));
+            item.base = Some("main".into());
+            item.merge_methods = vec![pr::MergeMethod::Merge];
+            view.prs.insert(number, item);
+        }
+        let db = Connection::open(source.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
+        db.execute(
+            "INSERT INTO snapshots(seq,at,body) VALUES(1,1,?1)",
+            [serde_json::to_string(&view).unwrap()],
+        )
+        .unwrap();
+        drop(db);
+        let schedules = Connection::open(source.join("schedules.db")).unwrap();
+        schedules.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);").unwrap();
+        let body = json!({
+            "id":"sched-sent","title":"Nightly review","text":"Review the project","project":null,
+            "options":{},"disallowed_tools":[],"frequency":"daily","hour":9,"minute":0,
+            "weekday":null,"interval":null,"start_at":null,"enabled":true,"next_run":2000,
+            "last_run":1000,"last_request":"request-sched","last_error":null,"status":"sent",
+            "revision":3
+        });
+        schedules
+            .execute(
+                "INSERT INTO schedules(id,body) VALUES('sched-sent',?1)",
+                [body.to_string()],
+            )
+            .unwrap();
+        drop(schedules);
+
+        let result = rehearse(&source, &stage).unwrap();
+        assert_eq!(result.imported.split_pr_tasks, 1);
+        let mut domain =
+            crate::domain_store::DomainStore::open(&stage.join("domain-v2.db")).unwrap();
+        let imported = domain.load().unwrap();
+        let split = &imported.tasks[&d::TaskId("legacy-pr-task-2".into())];
+        assert_eq!(split.request_id, d::RequestId("request-sched".into()));
+        let inventory = domain.legacy_schedule_inventory().unwrap();
+        let run = &inventory.state.runs[&d::ScheduleRunId("legacy-last-sched-sent".into())];
+        assert_eq!(run.request_id, Some(d::RequestId("request-sched".into())));
+        assert_eq!(run.task_id, Some(d::TaskId("task-sched".into())));
+        fs::remove_dir_all(root).unwrap();
+    }
 }
