@@ -15,6 +15,7 @@ mod domain_transport;
 #[cfg(test)]
 mod domain_e2e_tests;
 mod domain_api;
+mod domain_reads;
 mod domain_schedule_api;
 mod domain_bootstrap;
 mod classify;
