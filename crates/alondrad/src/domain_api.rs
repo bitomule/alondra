@@ -48,11 +48,15 @@ async fn merge_authorization(
         .and_then(|value| value.strip_prefix("Bearer ")) else {
         return domain_error(DomainError::new("forbidden", "Agent capability required"));
     };
-    let Ok(principal @ Principal::Agent { .. }) = hub.domain.resolve_bearer(token) else {
+    merge_authorization_inner(&hub.domain, token, id)
+}
+
+pub(crate) fn merge_authorization_inner(domain: &DomainRuntime, token: &str, id: String) -> Response {
+    let Ok(principal @ Principal::Agent { .. }) = domain.resolve_bearer(token) else {
         return domain_error(DomainError::new("forbidden", "Agent capability required"));
     };
     let Principal::Agent { session_id, task_binding, .. } = &principal else { unreachable!() };
-    let state = match hub.domain.state() { Ok(state) => state, Err(_) => return storage_error() };
+    let state = match domain.state() { Ok(state) => state, Err(_) => return storage_error() };
     let Some(authorization) = state.merge_authorizations.get(&AuthorizationId(id)) else {
         return domain_error(DomainError::new("not_found", "Merge authorization missing"));
     };
@@ -62,7 +66,7 @@ async fn merge_authorization(
         return domain_error(DomainError::new("forbidden", "Authorization belongs to another Agent"));
     }
     let Some(pr) = state.pull_requests.get(&authorization.pr_id) else { return storage_error() };
-    if hub.domain.resolve_bearer(token).ok().as_ref() != Some(&principal) {
+    if domain.resolve_bearer(token).ok().as_ref() != Some(&principal) {
         return domain_error(DomainError::new("forbidden", "Agent capability was revoked"));
     }
     let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
@@ -89,7 +93,7 @@ async fn document_content(
     response
 }
 
-async fn document_content_inner(domain: &DomainRuntime, home: &FsPath, id: String, query: Option<String>) -> Response {
+pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath, id: String, query: Option<String>) -> Response {
     let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
@@ -168,7 +172,7 @@ async fn task_actions(
     task_actions_inner(&hub.domain, id)
 }
 
-fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response {
+pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response {
     let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -199,7 +203,7 @@ async fn pull_request_diff(
     response
 }
 
-async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
+pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
     let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -522,7 +526,7 @@ pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
     value.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
-fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
+pub(crate) fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
     let Some(after) = delivery_evidence_query(query) else {
         return domain_error(DomainError::new("invalid_input", "after cursor is invalid"));
     };
