@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 rust_binary(
     name = "alondrad",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/domain_store/schema.sql", "src/domain_store/attachments_v2.sql", "src/domain_store/user_targets_v3.sql"],
+    compile_data = ["src/domain_store/schema.sql"],
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
@@ -16,6 +16,7 @@ rust_test(
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
+        "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",
     edition = "2024",
