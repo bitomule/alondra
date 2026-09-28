@@ -92,12 +92,19 @@ impl Report {
     }
 }
 
-/// Legacy counts computed from the snapshot alone, without the importer.
-#[derive(Debug, Serialize)]
+/// What the cutover must import, computed from the legacy snapshot alone.
+#[derive(Debug, Default, Serialize)]
 pub(crate) struct LegacyExpectations {
     pub inventory: LegacyInventory,
-    pub document_reports: usize,
-    pub final_reports: usize,
+    pub active_tasks: usize,
+    pub requests: usize,
+    pub assignees: usize,
+    pub open_prs: Vec<u64>,
+    pub active_tasks_with_prs: Vec<String>,
+    pub open_questions: usize,
+    pub unread_reports: usize,
+    pub documents: usize,
+    pub uncertain_deliveries: usize,
     pub schedules: usize,
     pub schedules_enabled: usize,
     pub schedule_runs: usize,
@@ -173,19 +180,41 @@ fn local_midnight_ms(now_ms: i64) -> i64 {
     (unsafe { libc::mktime(&mut tm) }) as i64 * 1000
 }
 
+fn valid_pr(pr: &alondra_core::pr::PullRequest) -> bool {
+    pr.head_sha.as_ref().is_some_and(|v| !v.trim().is_empty())
+        && pr.base.as_ref().is_some_and(|v| !v.trim().is_empty())
+        && !pr.merge_methods.is_empty()
+}
+
 pub(crate) fn legacy_expectations(home: &Path, view: &View, midnight_ms: i64) -> Result<LegacyExpectations> {
+    use alondra_core::{delivery::State, model::QuestionStatus, pr::PrState};
+    let active: BTreeMap<&String, &alondra_core::tasks::Task> =
+        view.board.tasks.iter().filter(|(_, task)| import::in_flight(task)).collect();
+    let requests: BTreeSet<&String> = view.board.requests.iter()
+        .filter(|(_, request)| import::open_request(request)).map(|(id, _)| id)
+        .chain(active.values().map(|task| &task.request)).collect();
+    let assignees: BTreeSet<&str> = active.values()
+        .filter_map(|task| task.assignee.as_ref().map(|a| a.session_id.as_str())).collect();
+    let on_active = |task: &Option<String>| task.as_ref().is_some_and(|id| active.contains_key(id));
     let mut expectations = LegacyExpectations {
         inventory: inventory(view),
-        document_reports: view
-            .reports
-            .values()
-            .filter(|report| report.kind == alondra_core::model::ReportKind::Document)
+        active_tasks: active.len(),
+        requests: requests.len(),
+        assignees: assignees.len(),
+        open_prs: view.prs.values().filter(|pr| valid_pr(pr) && pr.state == PrState::Open).map(|pr| pr.id).collect(),
+        active_tasks_with_prs: active.keys()
+            .filter(|id| view.prs.values().any(|pr| valid_pr(pr) && pr.task.as_ref() == Some(*id)))
+            .map(|id| (*id).clone()).collect(),
+        open_questions: view.questions.values()
+            .filter(|q| q.status == QuestionStatus::Open && on_active(&q.task)).count(),
+        unread_reports: view.reports.values().filter(|r| !r.read && on_active(&r.task)).count(),
+        documents: view.reports.values()
+            .filter(|r| r.kind == alondra_core::model::ReportKind::Document && on_active(&r.task)).count(),
+        uncertain_deliveries: view.delivery_attempts.values()
+            .filter(|attempt| matches!(attempt.state, State::Uncertain | State::Dispatching)
+                && active.values().any(|task| task.assignee.as_ref().is_some_and(|a| a.session_id == attempt.session_id)))
             .count(),
-        final_reports: view.board.tasks.values().filter(|task| task.final_report.is_some()).count(),
-        schedules: 0,
-        schedules_enabled: 0,
-        schedule_runs: 0,
-        schedule_runs_today: 0,
+        ..LegacyExpectations::default()
     };
     if !home.join("schedules.db").exists() {
         return Ok(expectations);
@@ -243,40 +272,6 @@ pub(crate) fn delivery_blockers(view: &View, now_ms: i64) -> Value {
         .into()
 }
 
-/// Each unresolved legacy delivery arrives as one conserved Interaction:
-/// retryable ones for an imported Agent unread for that Agent, uncertain or
-/// dispatching ones unread for the user, the rest read history.
-pub(crate) fn conserved_delivery_checks(report: &mut Report, view: &View, imported: &Value, state: &d::DomainState) {
-    let unresolved = unresolved_deliveries(view);
-    let retryable_for_agent = unresolved
-        .iter()
-        .filter(|attempt| attempt.state == alondra_core::delivery::State::Retryable
-            && state.agents.contains_key(&d::AgentId(attempt.session_id.clone())))
-        .count() as u64;
-    let retryable = unresolved.iter().filter(|attempt| attempt.state == alondra_core::delivery::State::Retryable).count() as u64;
-    report.equal("conserved undelivered for their Agent", retryable_for_agent, import_number(imported, "conserved_undelivered"));
-    report.equal("conserved uncertain for the user", unresolved.len() as u64 - retryable, import_number(imported, "conserved_uncertain"));
-    report.equal("conserved historical", retryable - retryable_for_agent, import_number(imported, "conserved_historical"));
-    let wrong: Vec<_> = unresolved
-        .iter()
-        .filter(|attempt| {
-            let Some(interaction) = state.interactions.get(&d::InteractionId(format!("legacy-delivery-{}", attempt.id))) else {
-                return true;
-            };
-            let unread = matches!(&interaction.payload, d::InteractionPayload::Information { read_by } if read_by.is_empty());
-            let for_agent = interaction.recipient == d::Recipient::Agent { agent_id: d::AgentId(attempt.session_id.clone()) };
-            match attempt.state {
-                alondra_core::delivery::State::Retryable => unread != for_agent,
-                _ => !unread || interaction.recipient != d::Recipient::User,
-            }
-        })
-        .map(|attempt| attempt.id)
-        .collect();
-    report.check("conserved deliveries have their recipient and read state", wrong.is_empty(), format!("{wrong:?}"));
-    let queued = state.interactions.values().filter(|interaction| interaction.id.0.starts_with("legacy-delivery-")).count();
-    report.equal("conserved deliveries", unresolved.len(), queued);
-}
-
 /// Where each schedule run and each legacy Task that held several PRs landed.
 fn links(legacy: &LegacyExpectations, state: &d::DomainState, midnight_ms: i64) -> Value {
     let runs: Vec<_> = state.schedule.runs.values().map(|run| json!({
@@ -319,52 +314,37 @@ pub(crate) fn count_checks(
     home: &Path,
     midnight_ms: i64,
 ) {
-    let inventory = &legacy.inventory;
-    let synthetic_requests = state
-        .requests
-        .keys()
-        .filter(|id| id.0.starts_with("legacy-pr-request-"))
+    let unowned = d::RequestId(import::UNOWNED_PR_REQUEST.into());
+    let synthetic = u64::from(state.requests.contains_key(&unowned));
+    report.equal("open Requests and Requests of work in flight", legacy.requests as u64,
+        state.requests.len() as u64 - synthetic);
+    report.equal("Tasks in flight", legacy.active_tasks as u64, import_number(imported, "tasks"));
+    report.equal("Tasks in flight + derived PR Tasks",
+        (legacy.active_tasks as u64).saturating_add(import_number(imported, "derived_pr_tasks")),
+        state.tasks.len() as u64);
+    report.check("only work in flight is imported",
+        state.tasks.values().all(|task| !task.archived && !task.state.terminal()),
+        format!("{} Tasks", state.tasks.len()));
+    report.equal("Agents are the assignees of work in flight", legacy.assignees as u64, state.agents.len() as u64);
+    let missing: Vec<_> = legacy.open_prs.iter()
+        .filter(|id| !state.pull_requests.contains_key(&d::PrId(format!("legacy-pr-{id}")))).collect();
+    report.check("every open PR is imported", missing.is_empty(), format!("{} open, missing {missing:?}", legacy.open_prs.len()));
+    let unregistered: Vec<_> = legacy.active_tasks_with_prs.iter()
+        .filter(|id| state.tasks.get(&d::TaskId((*id).clone())).is_none_or(|task| task.pr_id.is_none())).collect();
+    report.check("every active Task keeps its registered PR", unregistered.is_empty(), format!("{unregistered:?}"));
+    let stray: Vec<_> = state.pull_requests.values()
+        .filter(|pr| pr.state != d::PrState::Open
+            && state.tasks.get(&pr.task_id).is_none_or(|task| task.id.0.starts_with("legacy-pr-task-")))
+        .map(|pr| pr.id.0.clone()).collect();
+    report.check("closed PRs only as an active Task's registered PR", stray.is_empty(), format!("{stray:?}"));
+    report.equal("open questions of work in flight", legacy.open_questions as u64,
+        import_number(imported, "questions_reopened").saturating_add(import_number(imported, "questions_unread")));
+    let reopened = state.interactions.values()
+        .filter(|interaction| matches!(&interaction.payload, d::InteractionPayload::Question { answer: None, .. }))
         .count() as u64;
-    report.equal("requests", inventory.requests as u64, state.requests.len() as u64 - synthetic_requests);
-    report.check(
-        "synthetic Requests only for derived PR Tasks",
-        synthetic_requests <= import_number(imported, "split_pr_tasks"),
-        format!("{synthetic_requests} synthetic Requests for {} derived PR Tasks", import_number(imported, "split_pr_tasks")),
-    );
-    report.numbers.insert("synthetic_pr_requests".into(), json!(synthetic_requests));
-    report.equal("original tasks imported", inventory.tasks as u64, import_number(imported, "tasks"));
-    report.equal(
-        "tasks original + derived",
-        (inventory.tasks as u64).saturating_add(import_number(imported, "split_pr_tasks")),
-        state.tasks.len() as u64,
-    );
-    report.equal("agents", import_number(imported, "agents"), state.agents.len() as u64);
-    report.equal("questions", inventory.questions as u64, import_number(imported, "questions"));
-    report.equal(
-        "open questions reopened + historical",
-        inventory.open_questions as u64,
-        import_number(imported, "open_questions_reopened")
-            .saturating_add(import_number(imported, "open_questions_requiring_reconciliation")),
-    );
-    let reopened = state
-        .interactions
-        .values()
-        .filter(|interaction| {
-            interaction.id.0.starts_with("legacy-question-")
-                && matches!(&interaction.payload, d::InteractionPayload::Question { answer: None, .. })
-        })
-        .count() as u64;
-    report.equal("open questions reopened in v2", import_number(imported, "open_questions_reopened"), reopened);
-    report.equal("reports", inventory.reports as u64, import_number(imported, "reports"));
-    report.equal("messages", inventory.messages as u64, import_number(imported, "messages"));
-    report.equal("documents", legacy.document_reports as u64, state.documents.len() as u64);
-    let historical_prs = imported["reference_only_prs"].as_array().map_or(0, Vec::len) as u64;
-    report.equal(
-        "PRs formal + historical",
-        inventory.prs as u64,
-        (state.pull_requests.len() as u64).saturating_add(historical_prs),
-    );
-    report.equal("formal PRs", import_number(imported, "formal_prs"), state.pull_requests.len() as u64);
+    report.equal("reopened questions in v2", import_number(imported, "questions_reopened"), reopened);
+    report.equal("unread reports of work in flight", legacy.unread_reports as u64, import_number(imported, "reports_unread"));
+    report.equal("documents of work in flight", legacy.documents, state.documents.len());
     let stacks = imported["stacked_prs"].as_array().cloned().unwrap_or_default();
     let open_heads: BTreeMap<u64, (&str, &str)> = state
         .pull_requests
@@ -381,11 +361,10 @@ pub(crate) fn count_checks(
         })
         .collect();
     report.check(
-        "stacked PRs are open formal PRs based on each other",
+        "stacked PRs are open PRs based on each other",
         broken.is_empty(),
         format!("{} stacks, unresolved {broken:?}", stacks.len()),
     );
-    report.equal("attachments", inventory.attachments as u64, import_number(imported, "attachments"));
     let mut references = BTreeMap::new();
     for interaction in state.interactions.values() {
         let answered = match &interaction.payload {
@@ -427,8 +406,13 @@ pub(crate) fn count_checks(
         legacy.schedules_enabled,
         state.schedule.schedules.values().filter(|schedule| schedule.enabled).count(),
     );
-    report.equal("schedule runs", legacy.schedule_runs, state.schedule.runs.len());
-    report.equal("schedule runs today", legacy.schedule_runs_today, runs_today);
+    report.equal("schedule runs imported + dropped with their finished Task", legacy.schedule_runs as u64,
+        (state.schedule.runs.len() as u64).saturating_add(import_number(imported, "schedule_runs_dropped")));
+    report.numbers.insert("schedule_runs_today".into(), json!({"legacy": legacy.schedule_runs_today, "imported": runs_today}));
+    let dangling: Vec<_> = state.schedule.runs.values()
+        .filter(|run| run.task_id.as_ref().is_some_and(|task| !state.tasks.contains_key(task)))
+        .map(|run| run.id.0.clone()).collect();
+    report.check("schedule runs link only imported Tasks", dangling.is_empty(), format!("{dangling:?}"));
     let pending_launch = state.schedule.runs.values().filter(|run| run.launch.is_some()).count();
     report.check(
         "no imported schedule run can launch",
@@ -437,8 +421,21 @@ pub(crate) fn count_checks(
     );
 }
 
+/// Only unknown-outcome deliveries to an active Task's assignee arrive, unread
+/// for the user; retries and everything else stay behind and are never resent.
+pub(crate) fn delivery_checks(report: &mut Report, legacy: &LegacyExpectations, imported: &Value, state: &d::DomainState) {
+    report.equal("unknown-outcome deliveries shown to the user", legacy.uncertain_deliveries as u64,
+        import_number(imported, "deliveries_uncertain"));
+    let cards: Vec<_> = state.interactions.values().filter(|i| i.id.0.starts_with("legacy-delivery-")).collect();
+    report.equal("delivery cards", legacy.uncertain_deliveries, cards.len());
+    let wrong: Vec<_> = cards.iter().filter(|card| !is_unread_information(card)).map(|card| card.id.0.clone()).collect();
+    report.check("delivery cards are unread for the user", wrong.is_empty(), format!("{wrong:?}"));
+    report.check("nothing waits in the outbox", state.revision > 0, "the import queues no delivery");
+}
+
 /// Structural rules of the inbox plus the counts the importer promises: only
-/// historical open questions arrive unread and only live ones stay answerable.
+/// unanswerable questions, unread reports and unknown-outcome deliveries arrive
+/// unread, and only questions of an active Task's assignee stay answerable.
 pub(crate) fn projection_checks(report: &mut Report, state: &d::DomainState, imported: &Value) {
     let projection = state.projection();
     let visible = |task: Option<&d::TaskId>| task.is_none_or(|id| state.tasks.get(id).is_none_or(|t| !t.archived));
@@ -497,20 +494,21 @@ pub(crate) fn projection_checks(report: &mut Report, state: &d::DomainState, imp
         })
         .count() as u64;
     report.equal("unread information", unread, projection.counts.unread_information);
-    let expected_unread = import_number(imported, "open_questions_requiring_reconciliation")
-        .saturating_add(import_number(imported, "conserved_uncertain"));
+    let expected_unread = import_number(imported, "questions_unread")
+        .saturating_add(import_number(imported, "reports_unread"))
+        .saturating_add(import_number(imported, "deliveries_uncertain"));
     report.check(
-        "only historical open questions and uncertain deliveries arrive unread",
+        "only unanswerable questions, unread reports and uncertain deliveries arrive unread",
         unread <= expected_unread,
-        format!("{unread} unread, {expected_unread} historical open questions and uncertain deliveries"),
+        format!("{unread} unread, {expected_unread} expected"),
     );
     let questions = leaves.iter().filter(|leaf| leaf.kind == "question" && leaf.pending).count() as u64;
     report.check(
         "reopened questions are answerable",
-        questions <= import_number(imported, "open_questions_reopened")
+        questions <= import_number(imported, "questions_reopened")
             && leaves.iter().filter(|leaf| leaf.kind == "question" && leaf.pending)
                 .all(|leaf| leaf.available_actions[0].enabled),
-        format!("{questions} pending question items, {} reopened", import_number(imported, "open_questions_reopened")),
+        format!("{questions} pending question items, {} reopened", import_number(imported, "questions_reopened")),
     );
     let deliveries = leaves.iter().filter(|leaf| leaf.kind == "delivery").count();
     let presented = state
@@ -671,9 +669,20 @@ pub(crate) async fn command_checks(report: &mut Report, label: &str, base: &str,
             ));
         }
     }
-    report.check(format!("{label}: safe commands available"), !commands.is_empty(), format!("{} commands", commands.len()));
     let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let mut revision = state.revision;
+    let draft = serde_json::to_vec(&json!({"title":"Cutover rehearsal","text":"Never runs","project":null,
+        "options":{},"disallowed_tools":[],"frequency":"daily","hour":3,"minute":0,"weekday":null,
+        "interval":null,"start_at":null,"enabled":false,"revision":0}))?;
+    let (status, created, elapsed) = signed_request(&client, base, signer, "POST", "/v2/domain/schedules", &draft).await?;
+    report.time(&format!("{label}: create a disabled schedule"), elapsed);
+    report.check(format!("{label}: create a disabled schedule"), status == 201, String::from_utf8_lossy(&created));
+    let id = serde_json::from_slice::<Value>(&created).unwrap_or_default()["id"].as_str().unwrap_or_default().to_owned();
+    let path = format!("/v2/domain/schedules/{id}");
+    let (status, deleted, elapsed) = signed_request(&client, base, signer, "DELETE", &path, b"").await?;
+    report.time(&format!("{label}: delete it"), elapsed);
+    report.check(format!("{label}: delete the disabled schedule"), status == 200, String::from_utf8_lossy(&deleted));
+    let (_, capabilities, _) = signed_request(&client, base, signer, "GET", "/v2/domain/capabilities", b"").await?;
+    let mut revision = serde_json::from_slice::<Value>(&capabilities)?["revision"].as_u64().context("no revision")?;
     for (index, (name, command)) in commands.into_iter().enumerate() {
         let body = serde_json::to_vec(&d::CommandEnvelope {
             protocol_version: d::PROTOCOL_VERSION,
@@ -757,40 +766,6 @@ pub(crate) fn content_digests(home: &Path) -> Result<BTreeMap<String, String>> {
     }
     digests.extend(files.into_iter().map(|file| (file.path, file.sha256)));
     Ok(digests)
-}
-
-/// The restored HOME must hold exactly the pre-cutover content plus the retained legacy binary.
-pub(crate) fn restored_differences(
-    reference: &BTreeMap<String, String>,
-    restored: &Path,
-    legacy_binary_sha256: &str,
-) -> Result<Vec<String>> {
-    let mut observed = BTreeMap::new();
-    let mut files = BTreeSet::new();
-    collect_backup_files(restored, restored, &mut files)?;
-    for path in files {
-        let digest = if BACKUP_DATABASES.contains(&path.as_str()) {
-            sqlite_content_digest(&restored.join(&path))?
-        } else {
-            digest_file(&restored.join(&path))?
-        };
-        observed.insert(path, digest);
-    }
-    let mut differences = Vec::new();
-    match observed.remove("legacy-alondrad") {
-        Some(digest) if digest == legacy_binary_sha256 => (),
-        Some(_) => differences.push("legacy-alondrad differs from the retained binary".into()),
-        None => differences.push("legacy-alondrad missing".into()),
-    }
-    for (path, digest) in reference {
-        match observed.remove(path) {
-            Some(found) if &found == digest => (),
-            Some(_) => differences.push(format!("{path} changed")),
-            None => differences.push(format!("{path} missing")),
-        }
-    }
-    differences.extend(observed.into_keys().map(|path| format!("{path} unexpected")));
-    Ok(differences)
 }
 
 struct Sandbox {
@@ -956,7 +931,7 @@ pub(crate) fn run(live: &Path, work: &Path, legacy: &Path) -> Result<Report> {
     fs::DirBuilder::new().mode(0o700).create(work)?;
     let work = &work.canonicalize()?;
     let live = &live.canonicalize()?;
-    for directory in ["tmp", "fakehome"] {
+    for directory in ["tmp", "fakehome", "fakehome/Projects"] {
         fs::DirBuilder::new().mode(0o700).create(work.join(directory))?;
     }
     write_stubs(work)?;
@@ -996,6 +971,31 @@ pub(crate) fn run_and_write(live: &Path, work: &Path, legacy: &Path, prefix: &Pa
     Ok(report.passed())
 }
 
+/// Differences between the restored HOME and the content digests taken before the cutover.
+pub(crate) fn home_differences(reference: &BTreeMap<String, String>, home: &Path) -> Result<Vec<String>> {
+    let mut differences = Vec::new();
+    for (path, digest) in reference {
+        let file = home.join(path);
+        if !file.exists() {
+            differences.push(format!("{path} missing"));
+            continue;
+        }
+        let found = if BACKUP_DATABASES.contains(&path.as_str()) {
+            sqlite_content_digest(&file)?
+        } else {
+            digest_file(&file)?
+        };
+        if &found != digest {
+            differences.push(format!("{path} changed"));
+        }
+    }
+    Ok(differences)
+}
+
+fn legacy_cli(legacy: &Path) -> PathBuf {
+    legacy.with_file_name("alondra")
+}
+
 fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path, midnight: i64) -> Result<()> {
     let home = &sandbox.home;
     let view = load_legacy_readonly(&home.join("alondra.db"))?;
@@ -1015,42 +1015,37 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path, midn
     report.check("snapshot integrity", integrity.is_empty(), integrity.join("; "));
 
     let backup = sandbox.work.join("backup");
-    let stage = sandbox.work.join("stage");
-    let (prepared, elapsed) = sandbox.cli(
+    let (output, elapsed) = sandbox.cli(
         &sandbox.exe,
-        &[Path::new("--prepare-domain-cutover"), home, &backup, &stage, legacy],
+        &[Path::new("--cutover-domain-v2"), &backup, legacy, &legacy_cli(legacy)],
     )?;
-    report.time("prepare", elapsed);
-    let prepared: Value = serde_json::from_str(&prepared)?;
-    let imported = prepared["rehearsal"]["imported"].clone();
-    let digest = prepared["backup_manifest_sha256"].as_str().context("prepare printed no manifest digest")?.to_owned();
+    report.time("cutover", elapsed);
+    let cutover: Value = serde_json::from_str(&output)?;
+    let imported = cutover["imported"].clone();
     report.numbers.insert("imported".into(), imported.clone());
-    report.numbers.insert("backup_files".into(), prepared["backup_files"].clone());
-    report.numbers.insert("projection_bytes".into(), prepared["rehearsal"]["projection_bytes"].clone());
-
-    let (_, elapsed) = sandbox.cli(
+    report.check("cutover committed", cutover["marker"]["phase"] == "committed", cutover["marker"].to_string());
+    report.check("legacy stores archived inside HOME",
+        !home.join("alondra.db").exists() && home.join(crate::domain_cutover::ARCHIVE).join("alondra.db").exists(),
+        crate::domain_cutover::ARCHIVE);
+    report.check("legacy binaries kept in the backup",
+        backup.join(LEGACY_BINARIES).join("alondrad").exists() && backup.join(LEGACY_BINARIES).join("alondra").exists(),
+        LEGACY_BINARIES);
+    let (again, _) = sandbox.cli(
         &sandbox.exe,
-        &[Path::new("--commit-domain-cutover"), home, &backup, Path::new(&digest), &stage],
+        &[Path::new("--cutover-domain-v2"), &backup, legacy, &legacy_cli(legacy)],
     )?;
-    report.time("commit", elapsed);
-    let marker = crate::domain_cutover::read_marker(home)?.context("commit left no marker")?;
-    report.check("commit marker", marker.phase == crate::domain_cutover::Phase::Committed, format!("{marker:?}"));
+    report.check("a second cutover run only reports",
+        serde_json::from_str::<Value>(&again)?["already_committed"] == true, "already committed");
 
     let connection = Connection::open_with_flags(home.join("domain-v2.db"), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     let foreign: i64 = connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0))?;
     report.check("committed store integrity", integrity == "ok" && foreign == 0, format!("{integrity}, {foreign} foreign key errors"));
-    let mut mapping = connection.prepare("SELECT source_kind||'/'||role,count(*) FROM legacy_import_map GROUP BY 1 ORDER BY 1")?;
-    let mapped: BTreeMap<String, i64> = mapping
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    report.numbers.insert("legacy_import_map".into(), serde_json::to_value(mapped)?);
-    drop(mapping);
     drop(connection);
 
     let state = DomainRuntime::open(home)?.state()?;
     count_checks(report, &expectations, &imported, &state, home, midnight);
-    conserved_delivery_checks(report, &view, &imported, &state);
+    delivery_checks(report, &expectations, &imported, &state);
     report.numbers.insert("links".into(), links(&expectations, &state, midnight));
     projection_checks(report, &state, &imported);
 
@@ -1070,28 +1065,26 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path, midn
     report.equal("revision after commands", revision, Some(after.revision));
     run_daemon(report, sandbox, &runtime, "restart", &signer, &after, false)?;
 
-    let restored = sandbox.work.join("restored");
-    let (_, elapsed) = sandbox.cli(
-        &sandbox.exe,
-        &[Path::new("--restore-domain-rehearsal"), &backup, Path::new(&digest), &restored],
-    )?;
-    report.time("restore", elapsed);
-    let differences = restored_differences(&reference, &restored, &digest_file(legacy)?)?;
+    let (_, elapsed) = sandbox.cli(&sandbox.exe, &[Path::new("--rollback-domain-v2"), &backup])?;
+    report.time("rollback", elapsed);
+    let differences = home_differences(&reference, home)?;
     report.check("rollback restores the legacy snapshot exactly", differences.is_empty(), differences.join("; "));
+    report.check("rollback removes the marker", crate::domain_cutover::read_marker(home)?.is_none(), "marker");
     report.equal(
         "rollback legacy inventory",
         serde_json::to_value(&expectations.inventory)?,
-        serde_json::to_value(inventory(&load_legacy_readonly(&restored.join("alondra.db"))?))?,
+        serde_json::to_value(inventory(&load_legacy_readonly(&home.join("alondra.db"))?))?,
     );
-    if fs::read(legacy)?.windows(b"--preflight".len()).any(|window| window == b"--preflight") {
-        let restored_sandbox = Sandbox { live: sandbox.live.clone(), home: restored.clone(), work: sandbox.work.clone(), exe: legacy.to_owned() };
-        match restored_sandbox.cli(legacy, &[Path::new("--preflight")]) {
-            Ok((out, _)) => report.check("legacy binary starts on the restored HOME", out.contains("preflight ok"), out.trim()),
-            Err(error) => report.check("legacy binary starts on the restored HOME", false, format!("{error:#}")),
-        };
-    } else {
-        report.check("legacy binary starts on the restored HOME", false, "legacy binary has no --preflight");
-    }
+    let restored = Sandbox { live: sandbox.live.clone(), home: home.clone(), work: sandbox.work.clone(), exe: legacy.to_owned() };
+    match restored.cli(legacy, &[Path::new("--preflight")]) {
+        Ok((out, _)) => report.check("legacy binary starts on the restored HOME", out.contains("preflight ok"), out.trim()),
+        Err(error) => report.check("legacy binary starts on the restored HOME", false, format!("{error:#}")),
+    };
+    match sandbox.cli(&sandbox.exe, &[Path::new("--preflight")]) {
+        Ok(_) => report.check("the v2 binary refuses the restored legacy HOME", false, "preflight passed"),
+        Err(error) => report.check("the v2 binary refuses the restored legacy HOME",
+            format!("{error:#}").contains("still holds legacy data"), format!("{error:#}")),
+    };
     Ok(())
 }
 
@@ -1170,72 +1163,58 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn prepared_live_shaped(root: &Path) -> (PathBuf, PathBuf, PathBuf, String, Value) {
+    /// A live-shaped HOME, snapshotted and cut over in place, as the rehearsal does.
+    fn cut_over_live_shaped(root: &Path) -> (PathBuf, PathBuf, BTreeMap<String, String>, LegacyExpectations, Value) {
         let live = root.join("live");
         fs::DirBuilder::new().mode(0o700).create(&live).unwrap();
         synthetic::write_live_shaped_home(&live);
-        let legacy = root.join("legacy-daemon");
+        let legacy = root.join("alondrad");
         fs::write(&legacy, b"legacy daemon --preflight").unwrap();
         let home = root.join("home");
         snapshot_live_home(&live, &home).unwrap();
+        let view = load_legacy_readonly(&home.join("alondra.db")).unwrap();
+        let expectations = legacy_expectations(&home, &view, 0).unwrap();
+        let reference = content_digests(&home).unwrap();
         let backup = root.join("backup");
-        let stage = root.join("stage");
-        let prepared = prepare_cutover_recorded(&home, &live, &backup, &stage, &legacy).unwrap();
-        let imported = serde_json::to_value(&prepared.rehearsal.imported).unwrap();
-        crate::domain_cutover::promote_stage_offline(&home, &backup, &prepared.backup_manifest_sha256, &stage).unwrap();
-        (home, backup, legacy, prepared.backup_manifest_sha256, imported)
+        let wait = crate::domain_cutover::LockWait { attempts: 1, interval: Duration::ZERO };
+        let cutover = crate::domain_cutover::cutover_offline(&home, &backup, &live, &[&legacy], &wait, |_| ()).unwrap();
+        let imported = serde_json::to_value(cutover.imported.unwrap()).unwrap();
+        (home, backup, reference, expectations, imported)
     }
 
     #[test]
     fn live_shaped_cutover_passes_count_projection_and_rollback_checks() {
         let root = root("checks");
-        let (home, backup, legacy, digest, imported) = prepared_live_shaped(&root);
-        let view = load_legacy_readonly(&backup.join("alondra.db")).unwrap();
-        let expectations = legacy_expectations(&backup, &view, 0).unwrap();
+        let (home, backup, reference, expectations, imported) = cut_over_live_shaped(&root);
         let state = DomainRuntime::open(&home).unwrap().state().unwrap();
         let mut report = Report::default();
         count_checks(&mut report, &expectations, &imported, &state, &home, 0);
-        conserved_delivery_checks(&mut report, &view, &imported, &state);
+        delivery_checks(&mut report, &expectations, &imported, &state);
         projection_checks(&mut report, &state, &imported);
         assert!(report.passed(), "{}", report.text());
-        assert!(report.checks.iter().any(|check| check.name == "conserved deliveries" && check.detail == "legacy 4, v2 4"));
+        assert!(report.checks.iter().any(|check| check.name == "delivery cards" && check.detail == "legacy 2, v2 2"));
 
         let mut broken = imported.clone();
-        broken["split_pr_tasks"] = json!(imported["split_pr_tasks"].as_u64().unwrap() + 1);
+        broken["derived_pr_tasks"] = json!(imported["derived_pr_tasks"].as_u64().unwrap() + 1);
         let mut report = Report::default();
         count_checks(&mut report, &expectations, &broken, &state, &home, 0);
         assert!(!report.passed());
-        assert!(report.text().contains("tasks original + derived"), "{}", report.text());
+        assert!(report.text().contains("Tasks in flight + derived PR Tasks"), "{}", report.text());
 
-        let mut reference = BTreeMap::new();
-        let manifest = verify_backup(&backup).unwrap();
-        for file in &manifest.files {
-            if file.path == "legacy-daemon" || file.path == "legacy-alondrad" {
-                continue;
-            }
-            let digest = if BACKUP_DATABASES.contains(&file.path.as_str()) {
-                sqlite_content_digest(&backup.join(&file.path)).unwrap()
-            } else {
-                file.sha256.clone()
-            };
-            reference.insert(file.path.clone(), digest);
-        }
-        let restored = root.join("restored");
-        restore_rehearsal(&backup, &digest, &restored).unwrap();
-        let legacy_sha = digest_file(&legacy).unwrap();
-        assert_eq!(restored_differences(&reference, &restored, &legacy_sha).unwrap(), Vec::<String>::new());
-        Connection::open(restored.join("alondra.db")).unwrap().execute("UPDATE snapshots SET at=at+1", []).unwrap();
-        fs::write(restored.join("extra"), b"x").unwrap();
-        let differences = restored_differences(&reference, &restored, &legacy_sha).unwrap();
+        let wait = crate::domain_cutover::LockWait { attempts: 1, interval: Duration::ZERO };
+        crate::domain_cutover::rollback_offline(&home, &backup, &wait, |_| ()).unwrap();
+        assert_eq!(home_differences(&reference, &home).unwrap(), Vec::<String>::new());
+        Connection::open(home.join("alondra.db")).unwrap().execute("UPDATE snapshots SET at=at+1", []).unwrap();
+        fs::remove_file(home.join("config.toml")).ok();
+        let differences = home_differences(&reference, &home).unwrap();
         assert!(differences.contains(&"alondra.db changed".to_owned()), "{differences:?}");
-        assert!(differences.contains(&"extra unexpected".to_owned()), "{differences:?}");
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn projection_checks_catch_a_grouping_that_breaks_its_rules() {
         let root = root("projection");
-        let (home, _, _, _, imported) = prepared_live_shaped(&root);
+        let (home, _, _, _, imported) = cut_over_live_shaped(&root);
         let mut state = DomainRuntime::open(&home).unwrap().state().unwrap();
         let unread = state.interactions.values().filter(|i| is_unread_information(i)).count();
         let read = state
@@ -1248,14 +1227,16 @@ mod tests {
         let mut report = Report::default();
         projection_checks(&mut report, &state, &imported);
         assert!(!report.passed(), "an extra unread card must exceed the historical open questions ({unread})");
-        assert!(report.text().contains("only historical open questions and uncertain deliveries arrive unread"), "{}", report.text());
+        assert!(report.text().contains("only unanswerable questions, unread reports and uncertain deliveries arrive unread"), "{}", report.text());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn signed_reads_match_the_store_and_commands_return_receipts() {
         let root = root("reads");
-        let (home, _, _, _, _) = prepared_live_shaped(&root);
+        let (home, _, _, _, _) = cut_over_live_shaped(&root);
+        fs::create_dir(root.join("projects")).unwrap();
+        fs::write(home.join("options.toml"), format!("projects_root = \"{}\"\n", root.join("projects").display())).unwrap();
         let (signer, identity) = Signer::for_home(&home).unwrap();
         assert_eq!(identity, "rehearsal device");
         let epoch = DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;

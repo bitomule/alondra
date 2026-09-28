@@ -40,12 +40,36 @@ impl Fixture {
     }
 
     fn health(&self) -> Option<String> {
+        self.get("/v1/health").filter(|body| body.contains("version")).or_else(|| self.get("/v2/daemon"))
+    }
+
+    fn get(&self, path: &str) -> Option<String> {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).ok()?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-        stream.write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").ok()?;
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).ok()?;
         let mut response = String::new();
         stream.read_to_string(&mut response).ok()?;
         response.split_once("\r\n\r\n").map(|(_, body)| body.to_string())
+    }
+
+    /// A HOME with legacy data, as a legacy daemon leaves it once it has served.
+    fn legacy_home(&self) {
+        let mut legacy = Running(self.command(false).spawn().unwrap());
+        serving(self, &mut legacy);
+        drop(legacy);
+    }
+
+    /// The one-command cutover, keeping a copy of the binary as the legacy pair.
+    fn cut_over(&self) -> std::process::Output {
+        let legacy = self.root.join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        for name in ["alondrad", "alondra"] {
+            install(&legacy.join(name), Path::new(env!("CARGO_BIN_EXE_alondrad")));
+        }
+        self.command(false)
+            .args(["--cutover-domain-v2"]).arg(self.root.join("backup"))
+            .arg(legacy.join("alondrad")).arg(legacy.join("alondra"))
+            .output().unwrap()
     }
 }
 
@@ -118,6 +142,9 @@ fn preflight_checks_the_home_without_changing_it() {
 #[test]
 fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() {
     let fixture = Fixture::new("relaunch");
+    fixture.legacy_home();
+    let out = fixture.cut_over();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let mut daemon = Running(fixture.command(true).spawn().unwrap());
     serving(&fixture, &mut daemon);
     assert!(!fixture.home.join("startup-failures.json").exists(), "a start that serves clears its record");
@@ -188,4 +215,33 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
     assert!(!out.status.success());
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.home.join("startup-failures.json")).unwrap()).unwrap();
     assert_eq!(record["failures"], 3, "a start by hand does not count");
+}
+
+#[test]
+fn a_refusing_daemon_backs_off_without_the_lock_and_serves_once_home_is_cut_over() {
+    let fixture = Fixture::new("cutover");
+    fixture.legacy_home();
+    for attempt in 1..=2 {
+        let out = fixture.command(true).output().unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("still holds legacy data"));
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.home.join("startup-failures.json")).unwrap()).unwrap();
+        assert_eq!(record["failures"], attempt);
+    }
+    let mut third = Running(fixture.command(true).spawn().unwrap());
+    until(Duration::from_secs(10), "the third refusal to back off", || {
+        std::fs::read_to_string(fixture.home.join("startup-failures.json")).ok()
+            .filter(|t| t.contains("\"failures\":3") && t.contains("still holds legacy data"))
+    });
+    assert!(third.0.try_wait().unwrap().is_none(), "the third refusal in a row waits instead of exiting at once");
+    let out = fixture.cut_over();
+    assert!(out.status.success(), "the refuser must not hold HOME: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--rollback-domain-v2"), "the rollback steps are printed");
+    let status = until(Duration::from_secs(15), "the waiting refusal to exit after the cutover", || third.0.try_wait().unwrap());
+    let log = stderr(&mut third.0);
+    assert!(!status.success());
+    assert!(log.contains("HOME was cut over"), "{log}");
+    let mut daemon = Running(fixture.command(true).spawn().unwrap());
+    serving(&fixture, &mut daemon);
+    assert!(fixture.get("/v2/daemon").is_some_and(|body| body.contains("version")));
 }

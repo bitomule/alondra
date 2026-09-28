@@ -59,3 +59,20 @@ fn help_and_version_exit_before_config_runtime_and_daemon_side_effects() {
     assert_eq!(files, ["config.toml"]);
     assert_eq!(fs::read_to_string(fixture.0.join("config.toml")).unwrap(), "not valid TOML {{{");
 }
+
+#[test]
+fn a_legacy_home_is_refused_before_the_daemon_takes_its_lock() {
+    let root = std::env::temp_dir().join(format!("alondrad-legacy-refusal-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let fixture = Fixture(root.clone());
+    fs::write(root.join("alondra.db"), b"").unwrap();
+    let cutover = fs::OpenOptions::new().create(true).truncate(false).write(true)
+        .open(root.join("service-home.lock")).unwrap();
+    cutover.lock().unwrap();
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (success, _, err) = fixture.output(&[], port);
+    assert!(!success);
+    assert!(err.contains("still holds legacy data"), "{err}");
+    assert!(!err.contains("busy"), "the refusal must come before the HOME lock: {err}");
+    cutover.unlock().unwrap();
+}
