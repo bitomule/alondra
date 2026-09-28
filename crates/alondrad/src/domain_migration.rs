@@ -307,7 +307,7 @@ fn backup_locked(
     Ok(manifest)
 }
 
-fn sqlite_backup(source: &Path, target: &Path) -> Result<()> {
+pub(crate) fn sqlite_backup(source: &Path, target: &Path) -> Result<()> {
     let source = canonical_leaf(source)?;
     let target = canonical_leaf(target)?;
     let meta = fs::symlink_metadata(&source)?;
@@ -350,7 +350,7 @@ fn sqlite_backup(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_regular(source: &Path, target: &Path) -> Result<()> {
+pub(crate) fn copy_regular(source: &Path, target: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(source)?;
     ensure!(
         meta.is_file() && meta.nlink() == 1 && meta.uid() == unsafe { libc::geteuid() },
@@ -596,7 +596,7 @@ pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehears
     })
 }
 
-fn verify_content(home: &Path, reference: &str, digest: &str) -> Result<()> {
+pub(crate) fn verify_content(home: &Path, reference: &str, digest: &str) -> Result<()> {
     let path = Path::new(reference);
     ensure!(
         path.components()
@@ -888,6 +888,44 @@ mod tests {
                 .len(),
             2,
             "the runtime must open the same filename populated by migration"
+        );
+        let marker = crate::domain_cutover::promote_stage_offline(
+            &source,
+            &backup,
+            &manifest_digest,
+            &target,
+        )
+        .unwrap();
+        assert_eq!(marker.phase, crate::domain_cutover::Phase::Committed);
+        assert_eq!(marker.source_seq, 2);
+        assert_eq!(
+            crate::domain_cutover::read_marker(&source)
+                .unwrap()
+                .unwrap(),
+            marker
+        );
+        assert_eq!(
+            crate::domain_runtime::DomainRuntime::open(&source)
+                .unwrap()
+                .state()
+                .unwrap(),
+            imported,
+            "the promoted HOME must load the staged domain without losing legacy config"
+        );
+        assert_eq!(
+            fs::read(source.join("tui-device")).unwrap(),
+            b"private device identity",
+            "promotion must preserve the existing identity and configuration"
+        );
+        assert!(
+            crate::domain_cutover::promote_stage_offline(
+                &source,
+                &backup,
+                &manifest_digest,
+                &target,
+            )
+            .is_err(),
+            "a committed HOME cannot be promoted twice"
         );
         assert_eq!(
             restore_rehearsal(&backup, &manifest_digest, &restored)
