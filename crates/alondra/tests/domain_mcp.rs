@@ -63,6 +63,8 @@ fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, 
                 Err(error) => panic!("MCP did not contact local domain peer: {error}"),
             }
         };
+        // BSD sockets inherit O_NONBLOCK from the listener; the reads below rely on their timeout.
+        stream.set_nonblocking(false).unwrap();
         let body = request_body(&stream);
         let response = br#"{"revision":2,"changed":true,"effects":[],"created_ids":[]}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();

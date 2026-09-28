@@ -4,6 +4,22 @@ load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 
+sh_test(
+    name = "no_sleep_wording_test",
+    srcs = ["no_sleep_wording_test.sh"],
+    args = ["$(rootpaths :localization_catalogs)"],
+    data = [":localization_catalogs"],
+)
+
+filegroup(
+    name = "localization_catalogs",
+    srcs = [
+        "Shared/Resources/AlondraShared.xcstrings",
+        "iOS/Resources/Localizable.xcstrings",
+        "macOS/Resources/Localizable.xcstrings",
+    ],
+)
+
 swift_library(
     name = "AlondraShared",
     srcs = glob(["Shared/Sources/**/*.swift"]),

@@ -21,3 +21,13 @@ rust_test(
     crate = ":alondrad",
     edition = "2024",
 )
+
+rust_test(
+    name = "info_commands_test",
+    srcs = ["tests/info_commands.rs"],
+    data = [":alondrad"],
+    edition = "2024",
+    rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True, normal_dev = True),
+)
