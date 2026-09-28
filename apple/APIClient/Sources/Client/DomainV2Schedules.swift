@@ -69,14 +69,23 @@ extension AlondraAPIClient {
         guard result.ok else { throw Self.invalidScheduleResponse("Invalid Schedule delete receipt") }
     }
 
-    /// P3 currently returns `launch_unavailable` without mutation. A later success
-    /// body has no agreed DTO yet, so callers must not infer Claude execution.
+    /// HTTP 202 confirms a durable run claim, not Request/Task creation or Claude execution.
     public func requestDomainScheduleRun(_ id: DomainV2.ScheduleId,
-                                         operationID: String) async throws -> Data {
-        let endpoint = Endpoint<Data>.data(.post,
+                                         operationID: String) async throws -> DomainV2.ScheduleRunClaimReceipt {
+        let endpoint = Endpoint<DomainV2.ScheduleRunClaimReceipt>(.post,
             path: ["v2", "domain", "schedules", id.rawValue, "run"],
-            requiresJSONObjectResponse: true)
-        return try await send(endpoint, operationID: operationID)
+            requiresJSONObjectResponse: true) {
+                try DomainV2.decode(DomainV2.ScheduleRunClaimReceipt.self, from: $0)
+            }
+        let result = try await send(endpoint, operationID: operationID)
+        let bytes = Array(result.runId.rawValue.utf8)
+        guard result.ok, bytes.count == 36, bytes.starts(with: Array("run-".utf8)),
+              bytes.dropFirst(4).allSatisfy({ byte in
+                  (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+              }) else {
+            throw Self.invalidScheduleResponse("Invalid Schedule run claim receipt")
+        }
+        return result
     }
 
     private static func validateScheduleRead(_ version: UInt32, revision: DomainV2.Revision) throws {
