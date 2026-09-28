@@ -90,14 +90,46 @@ final class DomainV2ScheduleWireTests: XCTestCase {
             from: Data(#"{"id":"schedule-1","revision":2}"#.utf8)), changed)
     }
 
-    func testManualRunKeepsEmptyBodyAndLaunchUnavailableAsTypedError() async throws {
-        let operations = ScheduleOperations([.completed(status: 503,
-            body: Data(#"{"code":"launch_unavailable","message":"runner pending","current_revision":null,"subject":null}"#.utf8))])
+    func testManualRunDecodesClaimAndPreservesOperationIdentity() async throws {
+        let runID = "run-0123456789abcdef0123456789abcdef"
+        let receipt = Data(#"{"ok":true,"run_id":"run-0123456789abcdef0123456789abcdef"}"#.utf8)
+        let operations = ScheduleOperations([.completed(status: 202, body: receipt),
+                                             .completed(status: 202, body: receipt)])
+        let api = client(operations)
+        let first = try await api.requestDomainScheduleRun("schedule-1", operationID: "run-1")
+        let replay = try await api.requestDomainScheduleRun("schedule-1", operationID: "run-1")
+        XCTAssertTrue(first.ok)
+        XCTAssertEqual(first.runId.rawValue, runID)
+        XCTAssertEqual(replay.runId, first.runId)
+        let requests = await operations.recorded()
+        XCTAssertEqual(requests.map(\.method), ["POST", "POST"])
+        XCTAssertEqual(requests.map(\.path), ["/v2/domain/schedules/schedule-1/run",
+                                             "/v2/domain/schedules/schedule-1/run"])
+        XCTAssertEqual(requests.map(\.operationID), ["run-1", "run-1"])
+        XCTAssertTrue(requests.allSatisfy { $0.body == nil })
+    }
+
+    func testManualRunRejectsMalformedClaimReceipt() async throws {
+        for body in [#"{"ok":false,"run_id":"run-0123456789abcdef0123456789abcdef"}"#,
+                     #"{"ok":true,"run_id":"run-not-a-claim"}"#] {
+            let operations = ScheduleOperations([.completed(status: 202, body: Data(body.utf8))])
+            do {
+                _ = try await client(operations).requestDomainScheduleRun("schedule-1", operationID: "run-1")
+                XCTFail("Malformed Schedule claim receipt was accepted")
+            } catch let error as DomainV2.DomainError {
+                XCTAssertEqual(error.code, "incompatible_protocol")
+            }
+        }
+    }
+
+    func testManualRunKeepsEmptyBodyAndConflictAsTypedError() async throws {
+        let operations = ScheduleOperations([.completed(status: 409,
+            body: Data(#"{"code":"conflict","message":"claim already active","current_revision":null,"subject":null}"#.utf8))])
         do {
             _ = try await client(operations).requestDomainScheduleRun("schedule-1", operationID: "run-1")
-            XCTFail("P3 cannot claim or launch a Schedule")
+            XCTFail("Claim conflict must remain a typed error")
         } catch let error as DomainV2.DomainError {
-            XCTAssertEqual(error.code, "launch_unavailable")
+            XCTAssertEqual(error.code, "conflict")
         }
         let recorded = await operations.recorded()
         let request = try XCTUnwrap(recorded.first)

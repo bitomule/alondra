@@ -122,4 +122,15 @@ extension DomainV2 {
     public struct ScheduleDeleteReceipt: Decodable, Equatable, Sendable {
         public let ok: Bool
     }
+
+    /// A durable manual claim; Request/Task creation and Claude dispatch happen later.
+    public struct ScheduleRunClaimReceipt: Decodable, Equatable, Sendable {
+        public let ok: Bool
+        public let runId: ScheduleRunId
+
+        enum CodingKeys: String, CodingKey {
+            case ok
+            case runId = "run_id"
+        }
+    }
 }
