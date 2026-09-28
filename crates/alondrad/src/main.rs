@@ -243,6 +243,17 @@ where S: std::future::Future<Output = std::io::Result<()>> {
 /// A markerless database may be reused by legacy only while it contains no
 /// commands, entities, receipts, deliveries, or migration metadata.
 pub(crate) fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
+    empty_domain_sidecar(path, false)
+}
+
+/// Cutover may replace a markerless experimental sidecar only after proving it
+/// contains no business, receipt, delivery, or migration rows. The final store
+/// is installed from the verified legacy backup, not upgraded in place.
+pub(crate) fn replaceable_cutover_sidecar_is_empty(path: &Path) -> Result<bool> {
+    empty_domain_sidecar(path, true)
+}
+
+fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<bool> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
@@ -252,7 +263,10 @@ pub(crate) fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
     let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    anyhow::ensure!(version == domain_store::SCHEMA_VERSION && application == 0x414c4432,
+    anyhow::ensure!(
+        application == 0x414c4432
+            && (version == domain_store::SCHEMA_VERSION
+                || (allow_older_empty_schema && version >= 3 && version < domain_store::SCHEMA_VERSION)),
         "markerless domain database has unknown schema");
     let (revision, generation): (i64, i64) = conn.query_row(
         "SELECT revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
@@ -354,6 +368,28 @@ mod argument_tests {
         let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
         conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", []).unwrap();
         assert!(protocol_mode(&home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn cutover_replaces_only_an_empty_older_domain_sidecar() {
+        let home = std::env::temp_dir().join(format!("alondra-empty-sidecar-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        let path = home.join("domain-v2.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA application_id=1095517234; PRAGMA user_version=3;
+            CREATE TABLE domain_meta(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL,
+                orchestrator_generation INTEGER NOT NULL);
+            INSERT INTO domain_meta VALUES(1,0,0);
+            CREATE TABLE command_receipts(id TEXT PRIMARY KEY);").unwrap();
+        assert!(legacy_sidecar_is_empty(&path).is_err());
+        assert!(replaceable_cutover_sidecar_is_empty(&path).unwrap());
+        conn.execute("INSERT INTO command_receipts(id) VALUES('existing')", []).unwrap();
+        assert!(!replaceable_cutover_sidecar_is_empty(&path).unwrap());
+        conn.execute("DELETE FROM command_receipts", []).unwrap();
+        conn.execute_batch("PRAGMA application_id=0").unwrap();
+        assert!(replaceable_cutover_sidecar_is_empty(&path).is_err());
+        drop(conn);
         std::fs::remove_dir_all(home).unwrap();
     }
 

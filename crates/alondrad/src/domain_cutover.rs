@@ -497,7 +497,7 @@ pub(crate) fn promote_stage_offline(
     } else {
         validate_owned_sqlite_files(&home.join("domain-v2.db"))?;
         ensure!(
-            crate::legacy_sidecar_is_empty(&home.join("domain-v2.db"))?,
+            crate::replaceable_cutover_sidecar_is_empty(&home.join("domain-v2.db"))?,
             "HOME already has domain data"
         );
         write_marker(&home, &marker, true)?;
@@ -507,7 +507,7 @@ pub(crate) fn promote_stage_offline(
     let database = home.join("domain-v2.db");
     let next = home.join("domain-v2.db.next");
     validate_owned_sqlite_files(&database)?;
-    if crate::legacy_sidecar_is_empty(&database)? {
+    if crate::replaceable_cutover_sidecar_is_empty(&database)? {
         remove_owned_sqlite_files(&database)?;
     }
     if !database.exists() {
@@ -613,7 +613,7 @@ pub(crate) fn abort_prepared_offline(
                 meta.is_file() && meta.nlink() == 1 && meta.uid() == unsafe { libc::geteuid() },
                 "unsafe prepared domain database"
             );
-            if !crate::legacy_sidecar_is_empty(&database)? {
+            if !crate::replaceable_cutover_sidecar_is_empty(&database)? {
                 verify_no_stage_effects(&database)?;
                 let state = crate::domain_runtime::DomainRuntime::open(&home)?.state()?;
                 ensure!(
