@@ -252,7 +252,7 @@ pub(crate) fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
     let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    anyhow::ensure!(version == 3 && application == 0x414c4432,
+    anyhow::ensure!(version == domain_store::SCHEMA_VERSION && application == 0x414c4432,
         "markerless domain database has unknown schema");
     let (revision, generation): (i64, i64) = conn.query_row(
         "SELECT revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
