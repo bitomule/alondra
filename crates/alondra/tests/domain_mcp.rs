@@ -3,16 +3,12 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
 const BEARER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn request_body(mut stream: &std::net::TcpStream) -> Value {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 4096];
@@ -47,24 +43,11 @@ fn request_body(mut stream: &std::net::TcpStream) -> Value {
 
 fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, Value) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
+    // No wall-clock deadline: under Rosetta the MCP process can take seconds to start. If it
+    // exits without calling, the assertions below fail before this thread is joined.
     let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("MCP did not contact local domain peer: {error}"),
-            }
-        };
-        // BSD sockets inherit O_NONBLOCK from the listener; the reads below rely on their timeout.
-        stream.set_nonblocking(false).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
         let body = request_body(&stream);
         let response = br#"{"revision":2,"changed":true,"effects":[],"created_ids":[]}"#;
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();
