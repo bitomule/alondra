@@ -14,12 +14,15 @@ struct OverviewSnapshotAssembly {
     }
     static let root = "/v1/service/overview-snapshot"
     static let maximum = 8 * 1024 * 1024
+    let snapshotRoot: String
     let first: Chunk
     private(set) var bytes = Data()
-    var path: String { Self.root + "/" + first.snapshot_id }
+    var path: String { snapshotRoot + "/" + first.snapshot_id }
     var complete: Bool { bytes.count == first.total_bytes }
 
-    init(_ body: Data) throws {
+    init(_ body: Data, root: String = Self.root) throws {
+        guard [Self.root, "/v2/domain/snapshot"].contains(root) else { throw RelaySessionError.invalidRequest }
+        snapshotRoot = root
         guard body.count <= 100_000 else { throw RelaySessionError.invalidResponse }
         let chunk = try JSONDecoder().decode(Chunk.self, from: body)
         guard Self.hex(chunk.snapshot_id, count: 32), Self.hex(chunk.sha256, count: 64),

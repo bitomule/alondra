@@ -11,8 +11,15 @@ swift_library(
 swift_test(
     name = "AlondraAPIClientTests",
     srcs = glob(["Tests/**/*.swift"]),
+    data = ["Tests/domain-v2-wire-fixtures.json"],
     deps = [
         ":AlondraAPIClient",
         "//apple/Contracts:AlondraContracts",
     ],
+)
+
+filegroup(
+    name = "domain_v2_wire_fixtures",
+    srcs = ["Tests/domain-v2-wire-fixtures.json"],
+    visibility = ["//visibility:public"],
 )

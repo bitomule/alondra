@@ -104,6 +104,31 @@ final class OverviewSnapshotTests: XCTestCase {
         }
     }
 
+    func testDomainSnapshotUsesV2RootAndRejectsBadHashWithoutPublishing() async throws {
+        let content = Data(#"{"protocol_version":2,"data_epoch":"epoch","revision":0,"inbox":[],"counts":{"roots":0,"pending":0,"unread_information":0},"tasks":[],"agents":[],"requests":[],"interactions":[],"pull_requests":[],"documents":[],"document_revisions":[],"document_reviews":[],"merge_authorizations":[],"stack_readiness":[]}"#.utf8)
+        let root = "/v2/domain/snapshot"
+        let fixture = try SnapshotFixture(documentOverride: content, root: root)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let projection = try await fixture.api.domainProjection()
+        XCTAssertEqual(projection.protocolVersion, 2)
+        XCTAssertEqual(projection.dataEpoch.rawValue, "epoch")
+        let paths = await fixture.http.paths
+        XCTAssertEqual(paths, ["/v2/domain", root, root + "/" + SnapshotHTTP.id])
+        let methods = await fixture.http.methods
+        XCTAssertEqual(methods.last, "DELETE")
+        let credentials = await fixture.credentials.counts
+        XCTAssertEqual(credentials.normal, 1)
+        XCTAssertGreaterThan(credentials.cached, 0)
+
+        let bad = try SnapshotFixture(mode: .wrongHash, documentOverride: content, root: root)
+        defer { try? FileManager.default.removeItem(at: bad.directory) }
+        do { _ = try await bad.api.domainProjection(); XCTFail("Accepted invalid domain snapshot hash") }
+        catch { }
+        let badPaths = await bad.http.paths
+        XCTAssertEqual(badPaths.first, "/v2/domain")
+        XCTAssertTrue(badPaths.contains(root))
+    }
+
     private struct Tick: Decodable { let tick: UInt64 }
 }
 
@@ -132,12 +157,12 @@ private struct SnapshotFixture {
     let http: SnapshotHTTP
     let session: RelaySession
     let api: AlondraAPIClient
-    init(mode: SnapshotHTTP.Mode = .normal,
+    init(mode: SnapshotHTTP.Mode = .normal, documentOverride: Data? = nil, root: String = OverviewSnapshotAssembly.root,
          readDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { try await ContinuousClock().sleep(until: $0) }) throws {
         let phoneSign = P256.Signing.PrivateKey(), macSign = P256.Signing.PrivateKey()
         let phoneAgreement = P256.KeyAgreement.PrivateKey(), macAgreement = P256.KeyAgreement.PrivateKey()
-        document = try JSONSerialization.data(withJSONObject: ["tick": 42, "reports": [String(repeating: "á🦜", count: 40_000)]], options: [.sortedKeys])
-        http = SnapshotHTTP(document: document, mode: mode, macSign: macSign,
+        document = try documentOverride ?? JSONSerialization.data(withJSONObject: ["tick": 42, "reports": [String(repeating: "á🦜", count: 40_000)]], options: [.sortedKeys])
+        http = SnapshotHTTP(document: document, mode: mode, root: root, macSign: macSign,
             macAgreement: macAgreement, phoneSign: phoneSign.publicKey, phoneAgreement: phoneAgreement.publicKey)
         let credentials = credentials
         session = try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
@@ -156,6 +181,7 @@ private actor SnapshotHTTP: ServiceHTTPTransport {
     static let path = OverviewSnapshotAssembly.root + "/" + id
     let document: Data
     let mode: Mode
+    let root: String
     let macSign: P256.Signing.PrivateKey
     let macAgreement: P256.KeyAgreement.PrivateKey
     let phoneSign: P256.Signing.PublicKey
@@ -166,9 +192,9 @@ private actor SnapshotHTTP: ServiceHTTPTransport {
     private var pendingBody: Data?
     private var pendingID = ""
     private var gate: SnapshotGate?
-    init(document: Data, mode: Mode, macSign: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey,
+    init(document: Data, mode: Mode, root: String, macSign: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey,
          phoneSign: P256.Signing.PublicKey, phoneAgreement: P256.KeyAgreement.PublicKey) {
-        self.document = document; self.mode = mode; self.macSign = macSign; self.macAgreement = macAgreement
+        self.document = document; self.mode = mode; self.root = root; self.macSign = macSign; self.macAgreement = macAgreement
         self.phoneSign = phoneSign; self.phoneAgreement = phoneAgreement
     }
     func holdFirst(_ gate: SnapshotGate) { self.gate = gate }
@@ -196,14 +222,14 @@ private actor SnapshotHTTP: ServiceHTTPTransport {
         let path = try XCTUnwrap(operation["path"] as? String), method = try XCTUnwrap(operation["method"] as? String)
         paths.append(path); methods.append(method)
         let payload: [String: Any]
-        if path == "/v1/overview" {
+        if path == "/v1/overview" || path == "/v2/domain" {
             payload = mode == .small ? ["status": 200, "body": ["tick": 42]] :
                 ["status": 502, "error": mode == .generic502 ? "unavailable" : "response_too_large"]
         } else if method == "DELETE" { payload = ["status": 200, "body": ["released": true]] }
         else {
-            if path == OverviewSnapshotAssembly.root, let gate { try await gate.wait() }
+            if path == root, let gate { try await gate.wait() }
             if mode == .denied { return ServiceHTTPResponse(status: 401, body: Data()) }
-            let offset = path == OverviewSnapshotAssembly.root ? 0 : try XCTUnwrap(Int(path.components(separatedBy: "offset=").last!))
+            let offset = path == root ? 0 : try XCTUnwrap(Int(path.components(separatedBy: "offset=").last!))
             let bytes = mode == .malformedJSON ? Data(repeating: 65, count: document.count) : document
             var chunk = bytes.subdata(in: offset..<min(offset + 65_536, bytes.count))
             if mode == .wrongSize && offset > 0 { chunk.removeLast() }
@@ -219,13 +245,13 @@ private actor SnapshotHTTP: ServiceHTTPTransport {
             payload = ["status": 200, "body": body]
         }
         let response = try EnvelopeV1.seal(route: "mac-test", sender: "mac-test", recipient: "phone-test",
-            requestID: envelope.requestID, kind: "response", expiresAtMilliseconds: mode == .expired && path != "/v1/overview" ? 999 : 5000,
+            requestID: envelope.requestID, kind: "response", expiresAtMilliseconds: mode == .expired && path != "/v1/overview" && path != "/v2/domain" ? 999 : 5000,
             plaintext: JSONSerialization.data(withJSONObject: payload),
-            senderKey: ((mode == .forged && path != "/v1/overview") || mode == .forgedInitial) ? P256.Signing.PrivateKey() : macSign, recipientKey: phoneAgreement)
+            senderKey: ((mode == .forged && path != "/v1/overview" && path != "/v2/domain") || mode == .forgedInitial) ? P256.Signing.PrivateKey() : macSign, recipientKey: phoneAgreement)
         let body = try JSONSerialization.data(withJSONObject: [
             "request_id": envelope.requestID, "status": "completed", "revision": mode == .pending ? 1002 : paths.count,
             "response": JSONSerialization.jsonObject(with: JSONEncoder().encode(response))])
-        if mode == .pending, path == OverviewSnapshotAssembly.root {
+        if mode == .pending, path == root {
             pendingBody = body; pendingID = envelope.requestID
             return try pendingReceipt()
         }
