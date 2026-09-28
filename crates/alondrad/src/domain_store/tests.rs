@@ -438,49 +438,107 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
 }
 
 #[test]
-fn future_schema_and_legacy_writer_are_rejected_and_migration_preserves_rows() {
+fn incompatible_schema_and_legacy_writer_are_rejected_without_rewriting_rows() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     let expected = store.load().unwrap();
     assert!(crate::store::Store::open(&fixture.path()).is_err());
-    store
-        .conn
-        .execute_batch("DROP TABLE domain_message_user_targets; DROP TABLE interaction_attachments; ALTER TABLE domain_meta DROP COLUMN migration_note; PRAGMA user_version=1;")
-        .unwrap();
+    store.conn.pragma_update(None, "user_version", 3).unwrap();
     drop(store);
-    let mut migrated = DomainStore::open(&fixture.path()).unwrap();
-    assert_eq!(migrated.load().unwrap(), expected);
-    assert_eq!(count(&migrated, "interaction_attachments"), 0);
-    assert_eq!(count(&migrated, "domain_message_user_targets"), 0);
-    assert!(fixture.0.join("domain.sqlite.migration-backups").is_dir());
-    migrated
-        .conn
-        .pragma_update(None, "user_version", 4)
-        .unwrap();
-    drop(migrated);
+    assert!(DomainStore::open(&fixture.path()).is_err());
+    let conn = Connection::open(fixture.path()).unwrap();
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
+    drop(conn);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), expected);
+    store.conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
+    drop(store);
     assert!(DomainStore::open(&fixture.path()).is_err());
 }
 
 #[test]
-fn v2_migration_preserves_existing_outbox_and_user_notifications_claim_normally() {
+fn schedule_schema_enforces_run_relations_and_survives_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let before = store.load().unwrap();
+    let mut upgraded = store;
+    assert_eq!(upgraded.load().unwrap(), before);
+    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 4);
+    upgraded.conn.execute_batch("INSERT INTO schedules
+        (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
+        VALUES ('schedule-1','Daily work','Do work',NULL,'{}','[]','daily',9,30,7,0,-1,1,2000000,2,NULL);
+        INSERT INTO requests(id,body,closed) VALUES ('request-2','Older scheduled work',0);
+        INSERT INTO schedule_request_tools(request_id,patterns) VALUES ('request-2','[\"Bash\"]');").unwrap();
+    assert!(upgraded.conn.execute("UPDATE schedules SET enabled=0 WHERE id='schedule-1'", []).is_err(),
+        "paused schedules cannot retain a due time");
+    assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-weekly',title,text,project,options,disallowed_tools,'weekly',hour,minute,NULL,interval,start_at,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
+    assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-once',title,text,project,options,disallowed_tools,'once',hour,minute,weekday,interval,NULL,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
+    assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-interval',title,text,project,options,disallowed_tools,'every_hours',hour,minute,weekday,NULL,1000,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
+    let valid_run = "INSERT INTO schedule_runs
+        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
+        VALUES ('run-1','schedule-1','due',2,1000,1001,1002,'sent','request-1','task-1',NULL,'{}')";
+    assert!(upgraded.conn.execute_batch(&valid_run.replace("'request-1'", "'request-2'")).is_err(),
+        "Task must belong to the run Request");
+    assert!(upgraded.conn.execute_batch(&valid_run.replace("'due',2", "'due',5")).is_err(),
+        "a run cannot claim a future Schedule revision");
+    upgraded.conn.execute_batch(valid_run).unwrap();
+    upgraded.conn.execute("UPDATE schedules SET revision=3 WHERE id='schedule-1'", []).unwrap();
+    upgraded.conn.execute_batch("INSERT INTO schedule_runs
+        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
+        VALUES ('run-2','schedule-1','manual',3,NULL,2000,NULL,'launching',NULL,NULL,NULL,'{}')").unwrap();
+    assert!(upgraded.conn.execute_batch("INSERT INTO schedule_runs
+        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
+        VALUES ('run-3','schedule-1','manual',4,NULL,2001,NULL,'launching',NULL,NULL,NULL,'{}')").is_err(),
+        "one schedule cannot have simultaneous claims");
+    assert!(upgraded.conn.execute("UPDATE schedule_runs SET error='premature' WHERE id='run-2'", []).is_err());
+    upgraded.conn.execute("UPDATE schedule_runs SET state='failed',finished_at=2002,error='launch failed' WHERE id='run-2'", []).unwrap();
+    assert!(upgraded.conn.execute("UPDATE schedule_runs SET state='launching',finished_at=NULL,error=NULL WHERE id='run-2'", []).is_err(),
+        "a terminal run cannot lose its failure evidence");
+    upgraded.conn.execute("UPDATE schedules SET revision=4 WHERE id='schedule-1'", []).unwrap();
+    upgraded.conn.execute_batch("INSERT INTO schedule_runs
+        (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
+        VALUES ('run-3','schedule-1','manual',4,NULL,3000,NULL,'launching',NULL,NULL,NULL,'{}')").unwrap();
+    assert!(upgraded.conn.execute("DELETE FROM schedules WHERE id='schedule-1'", []).is_err());
+    assert!(upgraded.conn.execute("UPDATE schedules SET frequency='weekly' WHERE id='schedule-1'", []).is_err(),
+        "an irrelevant legacy weekday may not become an invalid weekly rule");
+    assert!(upgraded.conn.execute("UPDATE schedule_runs SET task_id=NULL WHERE id='run-1'", []).is_err());
+    assert!(upgraded.conn.execute("UPDATE schedule_request_tools SET patterns='[]' WHERE request_id='request-2'", []).is_err());
+    upgraded.conn.execute_batch("INSERT INTO legacy_schedule_receipts(sender,request_id,digest,result)
+        VALUES ('phone','schedule-command',X'00','{\"ok\":true}');").unwrap();
+    upgraded.integrity_check().unwrap();
+    drop(upgraded);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let reloaded = reopened.load().unwrap();
+    assert_eq!(reloaded.tasks, before.tasks);
+    assert_eq!(reloaded.requests.len(), 2);
+    assert!(reloaded.requests.contains_key(&RequestId::from("request-2")));
+    assert_eq!(count(&reopened, "schedules"), 1);
+    assert_eq!(count(&reopened, "schedule_runs"), 3);
+    let (state, reason): (String, String) = reopened.conn.query_row(
+        "SELECT state,error FROM schedule_runs WHERE id='run-3'", [],
+        |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!(state, "interrupted");
+    assert!(reason.contains("stopped"));
+    assert_eq!(count(&reopened, "schedule_request_tools"), 1);
+    assert_eq!(count(&reopened, "legacy_schedule_receipts"), 1);
+}
+
+#[test]
+fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     present(&mut store);
     let before = store.load().unwrap();
     let old_message_id = store.pending_messages().unwrap()[0].id;
-    // A version 2 database had no User-target relation. Its existing outbox
-    // and delivery references must survive the append-only schema upgrade.
-    store
-        .conn
-        .execute_batch("DROP TABLE domain_message_user_targets; PRAGMA user_version=2;")
-        .unwrap();
+    let existing_targets = count(&store, "domain_message_user_targets");
     drop(store);
     let mut upgraded = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(upgraded.load().unwrap(), before);
     assert_eq!(upgraded.pending_messages().unwrap()[0].id, old_message_id);
-    assert_eq!(count(&upgraded, "domain_message_user_targets"), 0);
+    assert_eq!(count(&upgraded, "domain_message_user_targets"), existing_targets);
     execute(
         &mut upgraded,
         &agent(),
@@ -499,11 +557,11 @@ fn v2_migration_preserves_existing_outbox_and_user_notifications_claim_normally(
         .pending_messages()
         .unwrap()
         .into_iter()
-        .find(|message| message.recipient_kind == "user")
+        .find(|message| message.interaction_id.as_deref() == Some("info-after-upgrade"))
         .unwrap();
     assert_eq!(user_message.interaction_id.as_deref(), Some("info-after-upgrade"));
     assert_eq!(user_message.task_id.as_deref(), Some("task-1"));
-    assert_eq!(count(&upgraded, "domain_message_user_targets"), 1);
+    assert_eq!(count(&upgraded, "domain_message_user_targets"), existing_targets + 1);
     let claim = upgraded.claim_message(user_message.id).unwrap().unwrap();
     assert_eq!(claim.message.recipient_kind, "user");
     assert!(upgraded
@@ -518,7 +576,7 @@ fn v2_migration_preserves_existing_outbox_and_user_notifications_claim_normally(
 }
 
 #[test]
-fn v2_migration_preserves_decisions_documents_and_relations() {
+fn restart_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -640,27 +698,15 @@ fn v2_migration_preserves_decisions_documents_and_relations() {
     );
     let audits = count(&store, "command_audit");
     let receipts = count(&store, "semantic_receipts");
-    let mut pending = store.pending_messages().unwrap();
-    for message in &mut pending {
-        if message.recipient_kind == "user" {
-            message.recipient_kind = "orchestrator".into();
-        }
-    }
-    // These decisions and cross-entity references were already valid in v2.
-    // Its user notifications used the underlying orchestrator recipient; only
-    // v3 introduced the user-target relation that changes their projection.
-    store
-        .conn
-        .execute_batch("DROP TABLE domain_message_user_targets; PRAGMA user_version=2;")
-        .unwrap();
+    let pending = store.pending_messages().unwrap();
+    let user_targets = count(&store, "domain_message_user_targets");
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap(), before);
     assert_eq!(store.pending_messages().unwrap(), pending);
     assert_eq!(count(&store, "command_audit"), audits);
     assert_eq!(count(&store, "semantic_receipts"), receipts);
-    assert_eq!(count(&store, "domain_message_user_targets"), 0);
-    assert!(fixture.0.join("domain.sqlite.migration-backups").is_dir());
+    assert_eq!(count(&store, "domain_message_user_targets"), user_targets);
     store.integrity_check().unwrap();
     assert!(
         store

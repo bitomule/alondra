@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
@@ -64,14 +64,12 @@ pub(crate) struct Commit {
 
 impl DomainStore {
     pub(crate) fn open(path: &Path) -> Result<Self> {
-        let (mut conn, path) = connection::open(path)?;
+        let (mut conn, _) = connection::open(path)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        ensure!(
-            version <= SCHEMA_VERSION,
-            "domain schema is newer than this daemon"
-        );
+        ensure!(version == 0 || version == SCHEMA_VERSION,
+            "domain database has an incompatible schema; prepare a fresh cutover store");
         if version == 0 {
             let existing: i64 = tx.query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
@@ -91,20 +89,6 @@ impl DomainStore {
                 "not an Alondra domain database"
             );
         }
-        if version == 1 || version == 2 {
-            connection::backup(&path)?;
-        }
-        if version < 2 {
-            tx.execute_batch("ALTER TABLE domain_meta ADD COLUMN migration_note TEXT;")?;
-            // v1 predates attachment rows. Build the relation in the same transaction
-            // after a coherent WAL-aware backup, before publishing user_version=2.
-            tx.execute_batch(include_str!("domain_store/attachments_v2.sql"))?;
-        }
-        if version == 1 || version == 2 {
-            // Add a logical User target without rebuilding the message table,
-            // whose ids are referenced by the outbox and delivery attempts.
-            tx.execute_batch(include_str!("domain_store/user_targets_v3.sql"))?;
-        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         // A process can die after terminal write and before recording its outcome.
         // Never redeliver a claim merely because the daemon restarted.
@@ -113,6 +97,9 @@ impl DomainStore {
             "UPDATE domain_outbox SET state='uncertain' WHERE state='dispatching'",
             [],
         )?;
+        // A claimed schedule slot is consumed. Restart records uncertainty and
+        // never dispatches the same run again solely because the daemon reopened.
+        tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.commit()?;
         let store = Self { conn };
         store.integrity_check()?;
