@@ -83,7 +83,7 @@ def disk_guard(path):
 
 def manifest(ver, source, output):
     return {'schema': 1, 'version': ver, 'source': source,
-            'validation': 'ARM native and Intel under Rosetta; no physical Intel verification',
+            'validation': 'ARM native only; Apple Silicon exclusive release',
             'archives': {f'alondra-{ver}-{target}.tar.gz': release.sha(output / f'alondra-{ver}-{target}.tar.gz')
                          for target in release.TARGETS}}
 
@@ -115,14 +115,15 @@ def smoke(ver, target, archive):
         opt = prefix / 'opt/alondra'
         opt.parent.mkdir()
         opt.symlink_to(keg, target_is_directory=True)
-        arch = 'arm64' if target.startswith('aarch64') else 'x86_64'
+        if target != 'aarch64-apple-darwin':
+            raise RuntimeError(f'Unsupported release target: {target}; Alondra ships Apple Silicon only')
+        arch = 'arm64'
         for name in ('alondra', 'alondrad'):
             binary = binaries / name
             if run('lipo', '-archs', binary, capture=True).strip() != arch:
                 raise RuntimeError(f'Wrong architecture for {name}: expected {arch}')
             run('codesign', '--verify', '--strict', binary)
             run('/usr/bin/arch', f'-{arch}', binary, '--help')
-        # The Intel CLI runs via Rosetta automatically; this is not a physical Intel test.
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
 
 
@@ -190,9 +191,7 @@ def build_cache(target_dir, ephemeral, phase):
 
 def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
-        raise RuntimeError('Preparation requires this Apple Silicon Mac with Rosetta')
-    if run('/usr/bin/arch', '-x86_64', 'uname', '-m', capture=True).strip() != 'x86_64':
-        raise RuntimeError('Rosetta must be installed before preparing the Intel package')
+        raise RuntimeError('Preparation requires this Apple Silicon Mac')
     toolchain_name, tools = rust_toolchain()
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
@@ -226,7 +225,6 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
     verify_prepared(ver, source, output)
     print(f'Prepared immutable release artifacts: {output}')
-    print('Intel validation ran under Rosetta, not on physical Intel hardware.')
 
 
 def publish(ver, source, output, retry=False):

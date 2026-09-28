@@ -1,10 +1,12 @@
 //! Private capabilities for domain writers. Public session/run identifiers are not credentials.
 //! Tokens stay in the child environment; only hashes are retained by this registry.
 use ring::rand::{SecureRandom, SystemRandom};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Principal {
     Agent {
         session_id: String,
@@ -36,6 +38,23 @@ impl Authority {
             epoch,
             entries: BTreeMap::new(),
         }
+    }
+
+    /// Rebuild the registry from persisted digests. Entries of another epoch
+    /// were fenced by that epoch change and are dropped here.
+    pub fn restore(epoch: String, entries: impl IntoIterator<Item = ([u8; 32], Principal)>) -> Self {
+        let mut authority = Self::new(epoch);
+        authority.entries.extend(entries);
+        authority
+    }
+
+    /// Digest and principal of every live capability; bearer tokens are never retained.
+    pub fn entries(&self) -> impl Iterator<Item = (&[u8; 32], &Principal)> {
+        self.entries.iter()
+    }
+
+    pub fn epoch(&self) -> &str {
+        &self.epoch
     }
 
     pub fn issue(&mut self, principal: Principal) -> Result<Capability, &'static str> {

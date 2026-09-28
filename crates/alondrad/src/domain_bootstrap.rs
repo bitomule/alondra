@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["code"], "not_found", "handler must answer merge authorization read");
-        domain.revoke_agent("test-agent");
+        domain.revoke_agent("test-agent").unwrap();
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {bearer}"))
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);

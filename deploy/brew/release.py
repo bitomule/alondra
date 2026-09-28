@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 REPO = 'bitomule/homebrew-tap'
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-TARGETS = ('aarch64-apple-darwin', 'x86_64-apple-darwin')
+TARGETS = ('aarch64-apple-darwin',)
 PUBLIC_FILES = {
     'alondra', 'alondrad', '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
@@ -69,7 +69,7 @@ def validate_archive(path):
 def render(ver, directory):
     version(ver)
     values = {'VERSION': ver}
-    for target, key in zip(TARGETS, ('ARM_SHA256', 'INTEL_SHA256')):
+    for target, key in zip(TARGETS, ('ARM_SHA256',)):
         archive = directory / f'alondra-{ver}-{target}.tar.gz'
         validate_archive(archive)
         values[key] = sha(archive)
