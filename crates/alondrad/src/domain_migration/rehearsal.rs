@@ -29,7 +29,6 @@ const STUBBED_COMMANDS: [&str; 11] = [
     "claude", "gh", "git", "tmux", "brew", "launchctl", "osascript", "open", "curl",
     "terminal-notifier", "ssh",
 ];
-const REHEARSAL_SENDER: &str = "cutover-rehearsal";
 const SLOW: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Serialize)]
@@ -559,11 +558,11 @@ impl Signer {
         Ok((Self { device: device.id, key }, "rehearsal device"))
     }
 
-    fn headers(&self, method: &str, path: &str) -> [(&'static str, String); 3] {
+    fn headers(&self, method: &str, path: &str, body: &[u8]) -> [(&'static str, String); 3] {
         use base64::Engine as _;
         use p256::ecdsa::signature::Signer as _;
         let timestamp = alondra_core::now_millis().to_string();
-        let message = crate::auth::signed_message(method, path, &timestamp, b"");
+        let message = crate::auth::signed_message(method, path, &timestamp, body);
         let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
         [
             ("x-alondra-device", self.device.clone()),
@@ -576,10 +575,15 @@ impl Signer {
     }
 }
 
-async fn signed_get(client: &reqwest::Client, base: &str, signer: &Signer, path: &str) -> Result<(u16, Vec<u8>, Duration)> {
+async fn signed_request(
+    client: &reqwest::Client, base: &str, signer: &Signer, method: &str, path: &str, body: &[u8],
+) -> Result<(u16, Vec<u8>, Duration)> {
     let started = Instant::now();
-    let mut request = client.get(format!("{base}{path}"));
-    for (name, value) in signer.headers("GET", path) {
+    let mut request = client
+        .request(reqwest::Method::from_bytes(method.as_bytes())?, format!("{base}{path}"))
+        .header("content-type", "application/json")
+        .body(body.to_vec());
+    for (name, value) in signer.headers(method, path, body) {
         request = request.header(name, value);
     }
     let response = request.send().await?;
@@ -607,7 +611,7 @@ pub(crate) async fn read_checks(report: &mut Report, label: &str, base: &str, si
     let mut slowest = (Duration::ZERO, String::new());
     let mut failed = Vec::new();
     for path in &paths {
-        let (status, body, elapsed) = signed_get(&client, base, signer, path).await?;
+        let (status, body, elapsed) = signed_request(&client, base, signer, "GET", path, b"").await?;
         if elapsed > slowest.0 {
             slowest = (elapsed, path.clone());
         }
@@ -643,11 +647,9 @@ pub(crate) async fn read_checks(report: &mut Report, label: &str, base: &str, si
     Ok(())
 }
 
-/// User commands through the function the encrypted service connector calls,
-/// on a stopped daemon's store: the loopback HTTP listener accepts no user writes.
-pub(crate) fn command_checks(report: &mut Report, home: &Path) -> Result<u64> {
-    let domain = DomainRuntime::open(home)?;
-    let state = domain.state()?;
+/// Safe user commands through the running daemon, signed by the paired
+/// device like the TUI: each must succeed, stay fast and replay its receipt.
+pub(crate) async fn command_checks(report: &mut Report, label: &str, base: &str, signer: &Signer, state: &d::DomainState) -> Result<u64> {
     let mut commands: Vec<(String, d::Command)> = state
         .interactions
         .values()
@@ -669,36 +671,27 @@ pub(crate) fn command_checks(report: &mut Report, home: &Path) -> Result<u64> {
             ));
         }
     }
-    report.check("safe commands available", !commands.is_empty(), format!("{} commands", commands.len()));
+    report.check(format!("{label}: safe commands available"), !commands.is_empty(), format!("{} commands", commands.len()));
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let mut revision = state.revision;
     for (index, (name, command)) in commands.into_iter().enumerate() {
-        let state = domain.state()?;
-        let envelope = serde_json::to_value(d::CommandEnvelope {
+        let body = serde_json::to_vec(&d::CommandEnvelope {
             protocol_version: d::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("cutover-rehearsal-{index}").into(),
-            expected_revision: state.revision,
+            expected_revision: revision,
             command,
         })?;
-        let digest: [u8; 32] = Sha256::digest(serde_json::to_vec(&envelope)?).into();
-        let request = format!("cutover-rehearsal-request-{index}");
-        let execute = || {
-            crate::domain_api::encrypted_command_runtime(
-                &domain,
-                REHEARSAL_SENDER,
-                Some(&envelope),
-                (REHEARSAL_SENDER, &request, &digest),
-                || Ok(()),
-            )
-        };
-        let started = Instant::now();
-        let first = execute()?;
-        let elapsed = started.elapsed();
-        report.time(&format!("command {name}"), elapsed);
-        report.check(format!("command {name}"), first["status"] == 200, first["body"].to_string());
-        report.check(format!("command {name} under {} ms", SLOW.as_millis()), elapsed < SLOW, format!("{} ms", elapsed.as_millis()));
-        report.check(format!("command {name} retry returns its receipt"), execute()? == first, "same transport request");
+        let (status, first, elapsed) = signed_request(&client, base, signer, "POST", "/v2/domain/commands", &body).await?;
+        let outcome: Value = serde_json::from_slice(&first).unwrap_or_default();
+        revision = outcome["revision"].as_u64().unwrap_or(revision);
+        report.time(&format!("{label}: command {name}"), elapsed);
+        report.check(format!("{label}: command {name}"), status == 200, String::from_utf8_lossy(&first));
+        report.check(format!("{label}: command {name} under {} ms", SLOW.as_millis()), elapsed < SLOW, format!("{} ms", elapsed.as_millis()));
+        let (_, retry, _) = signed_request(&client, base, signer, "POST", "/v2/domain/commands", &body).await?;
+        report.check(format!("{label}: command {name} retry returns its receipt"), retry == first, String::from_utf8_lossy(&retry));
     }
-    Ok(domain.state()?.revision)
+    Ok(revision)
 }
 
 fn digest_file(path: &Path) -> Result<String> {
@@ -917,7 +910,8 @@ fn run_daemon(
     label: &str,
     signer: &Signer,
     state: &d::DomainState,
-) -> Result<()> {
+    commands: bool,
+) -> Result<Option<u64>> {
     let port = free_port()?;
     let base = format!("http://127.0.0.1:{port}");
     let log = sandbox.work.join(format!("{label}.log"));
@@ -925,14 +919,18 @@ fn run_daemon(
     let result = runtime.block_on(async {
         let startup = wait_listening(&mut child, &base).await?;
         report.time(&format!("{label}: startup"), startup);
-        read_checks(report, label, &base, signer, state).await
+        read_checks(report, label, &base, signer, state).await?;
+        if commands {
+            return command_checks(report, label, &base, signer, state).await.map(Some);
+        }
+        Ok(None)
     });
     let stopped = stop(&mut child);
-    result?;
+    let revision = result?;
     report.time(&format!("{label}: stop"), stopped?);
     let problems = log_problems(&log);
     report.check(format!("{label}: log has no errors"), problems.is_empty(), problems.join(" | "));
-    Ok(())
+    Ok(revision)
 }
 
 fn write_stubs(work: &Path) -> Result<()> {
@@ -1067,12 +1065,10 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path, midn
     let (signer, identity) = Signer::for_home(home)?;
     report.numbers.insert("read_identity".into(), json!(identity));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    run_daemon(report, sandbox, &runtime, "first start", &signer, &state)?;
-
-    let revision = command_checks(report, home)?;
+    let revision = run_daemon(report, sandbox, &runtime, "first start", &signer, &state, true)?;
     let after = DomainRuntime::open(home)?.state()?;
-    report.equal("revision after commands", revision, after.revision);
-    run_daemon(report, sandbox, &runtime, "restart", &signer, &after)?;
+    report.equal("revision after commands", revision, Some(after.revision));
+    run_daemon(report, sandbox, &runtime, "restart", &signer, &after, false)?;
 
     let restored = sandbox.work.join("restored");
     let (_, elapsed) = sandbox.cli(
@@ -1278,12 +1274,12 @@ mod tests {
         let reads: Vec<_> = report.checks.iter().filter(|check| !check.name.contains("under")).collect();
         assert!(reads.iter().all(|check| check.ok), "{}", report.text());
         assert!(report.checks.iter().any(|check| check.name.contains("served projection")));
-        server.abort();
-
         let mut report = Report::default();
-        let revision = command_checks(&mut report, &home).unwrap();
+        let revision = command_checks(&mut report, "fixture", &base, &signer, &expected).await.unwrap();
+        server.abort();
         let commands: Vec<_> = report.checks.iter().filter(|check| !check.name.contains("under")).collect();
         assert!(commands.iter().all(|check| check.ok), "{}", report.text());
+        assert!(commands.len() > 3, "{}", report.text());
         assert!(revision > expected.revision);
         fs::remove_dir_all(root).unwrap();
     }
