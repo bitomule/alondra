@@ -404,7 +404,8 @@ impl DomainState {
                 {
                     if self.accepted(p) {
                         TaskState::Closing
-                    } else if matches!(&p.payload, InteractionPayload::Delivery { feedback, .. } if !feedback.is_empty()) {
+                    } else if matches!(&p.payload, InteractionPayload::Delivery { acceptance, feedback, .. }
+                        if feedback.last().is_some_and(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))) {
                         TaskState::Running
                     } else {
                         TaskState::InReview
@@ -1395,7 +1396,8 @@ impl DomainState {
                 };
                 if !self.accepted(p) {
                     return fail(
-                        if matches!(&p.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if !a.valid)
+                        if matches!(&p.payload, InteractionPayload::Delivery { acceptance: Some(a), feedback, .. }
+                            if !a.valid && feedback.last().is_some_and(|f| f.at_revision > a.at_revision))
                         {
                             "acceptance_stale"
                         } else {
