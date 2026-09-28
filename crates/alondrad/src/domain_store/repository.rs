@@ -1,6 +1,6 @@
 use alondra_core::domain_v2::*;
-use anyhow::{Context, Result};
-use rusqlite::{Connection, params, types::Value as SqlValue};
+use anyhow::{Context, Result, ensure};
+use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
@@ -105,6 +105,169 @@ fn take(row: &mut Value, name: &str) -> Value {
 fn s(v: &Value) -> Result<&str> {
     v.as_str().context("missing relation ID")
 }
+
+/// Save schedule definitions before their runs so the run FK and claim-revision
+/// guard see the current definition. Callers own the transaction containing any
+/// Request/Task rows linked by a newly sent run.
+pub(super) fn save_schedule_state(c: &Connection, schedule: &ScheduleState) -> Result<()> {
+    schedule.validate()?;
+    for definition in schedule.schedules.values() {
+        upsert(c, "schedules", &["id"], object(definition)?)?;
+    }
+    for run in schedule.runs.values() {
+        upsert(c, "schedule_runs", &["id"], object(run)?)?;
+        if let (Some(request_id), Some(snapshot)) = (&run.request_id, &run.definition_snapshot) {
+            remember_schedule_request_tools(c, request_id, &snapshot.disallowed_tools)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn load_schedule_state(c: &Connection) -> Result<ScheduleState> {
+    let mut state = ScheduleState::default();
+    for row in rows(
+        c,
+        "schedules",
+        &["enabled"],
+        &["options", "disallowed_tools"],
+    )? {
+        let definition: Schedule = decode(row)?;
+        ensure!(
+            state
+                .schedules
+                .insert(definition.id.clone(), definition)
+                .is_none(),
+            "duplicate schedule identity"
+        );
+    }
+    for row in rows(c, "schedule_runs", &[], &["definition_snapshot"])? {
+        let run: ScheduleRun = decode(row)?;
+        ensure!(
+            state.runs.insert(run.id.clone(), run).is_none(),
+            "duplicate schedule run identity"
+        );
+    }
+    state.validate()?;
+    Ok(state)
+}
+
+/// Immutable launch-time policy belongs to the Request, even if the Schedule
+/// definition is subsequently edited or tombstoned. An exact replay is safe.
+pub(super) fn remember_schedule_request_tools(
+    c: &Connection,
+    request_id: &RequestId,
+    patterns: &[String],
+) -> Result<()> {
+    let encoded = serde_json::to_string(patterns)?;
+    let stored: Option<String> = c
+        .query_row(
+            "SELECT patterns FROM schedule_request_tools WHERE request_id=?1",
+            [&request_id.0],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(stored) = stored {
+        ensure!(
+            serde_json::from_str::<Vec<String>>(&stored)? == patterns,
+            "schedule Request tool policy is immutable"
+        );
+    } else {
+        c.execute(
+            "INSERT INTO schedule_request_tools(request_id,patterns) VALUES(?1,?2)",
+            params![request_id.0, encoded],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn load_schedule_request_tools(
+    c: &Connection,
+    request_id: &RequestId,
+) -> Result<Option<Vec<String>>> {
+    c.query_row(
+        "SELECT patterns FROM schedule_request_tools WHERE request_id=?1",
+        [&request_id.0],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|patterns| serde_json::from_str(&patterns).map_err(Into::into))
+    .transpose()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegacyScheduleReceipt {
+    pub sender: String,
+    pub request_id: String,
+    pub digest: Vec<u8>,
+    /// Original JSON text is retained byte for byte for legacy idempotency replies.
+    pub result: String,
+}
+
+pub(super) fn save_legacy_schedule_receipt(
+    c: &Connection,
+    receipt: &LegacyScheduleReceipt,
+) -> Result<()> {
+    serde_json::from_str::<Value>(&receipt.result).context("invalid legacy receipt JSON")?;
+    let stored = load_legacy_schedule_receipt(c, &receipt.sender, &receipt.request_id)?;
+    if let Some(stored) = stored {
+        ensure!(stored == *receipt, "legacy schedule receipt is immutable");
+    } else {
+        c.execute(
+            "INSERT INTO legacy_schedule_receipts(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
+            params![receipt.sender, receipt.request_id, receipt.digest, receipt.result],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn load_legacy_schedule_receipt(
+    c: &Connection,
+    sender: &str,
+    request_id: &str,
+) -> Result<Option<LegacyScheduleReceipt>> {
+    let stored: Option<(Vec<u8>, String)> = c
+        .query_row(
+            "SELECT digest,result FROM legacy_schedule_receipts WHERE sender=?1 AND request_id=?2",
+            params![sender, request_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    stored
+        .map(|(digest, result)| {
+            Ok(LegacyScheduleReceipt {
+                sender: sender.into(),
+                request_id: request_id.into(),
+                digest,
+                result,
+            })
+        })
+        .transpose()
+}
+
+pub(super) fn remember_schedule_failed_launch(
+    c: &Connection,
+    request_id: &RequestId,
+) -> Result<()> {
+    c.execute(
+        "INSERT OR IGNORE INTO schedule_failed_launches(request_id) VALUES(?1)",
+        [&request_id.0],
+    )?;
+    Ok(())
+}
+
+pub(super) fn was_schedule_launch_failed(c: &Connection, request_id: &RequestId) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT 1 FROM schedule_failed_launches WHERE request_id=?1",
+        [&request_id.0],
+        |_| Ok(()),
+    )
+    .optional()?
+    .is_some())
+}
+
+#[cfg(test)]
+#[path = "repository/schedule_tests.rs"]
+mod schedule_tests;
 
 fn save_attachments(
     c: &Connection,
@@ -355,6 +518,7 @@ pub(super) fn save(c: &Connection, state: &DomainState) -> Result<()> {
     for r in state.stack_readiness.values() {
         upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
     }
+    save_schedule_state(c, &state.schedule)?;
     Ok(())
 }
 
@@ -602,6 +766,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         let x: StackReadiness = decode(row)?;
         state.stack_readiness.insert(x.task_id.clone(), x);
     }
+    state.schedule = load_schedule_state(c)?;
     state.validate()?;
     Ok(state)
 }

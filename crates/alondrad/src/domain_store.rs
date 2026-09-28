@@ -243,6 +243,11 @@ impl DomainStore {
         let outcome = next.execute(actor, envelope)?;
         if outcome.changed {
             repository::save(&tx, &next)?;
+            if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command
+                && let Some(request_id) = &next.schedule.runs[run_id].request_id
+            {
+                repository::remember_schedule_failed_launch(&tx, request_id)?;
+            }
             tx.execute("INSERT INTO command_audit(revision,actor,command_id,data_epoch,command) VALUES(?1,?2,?3,?4,?5)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?])?;
             for (index, effect) in outcome.effects.iter().enumerate() {
                 let (kind, agent, task, interaction, message) = match effect {
