@@ -194,6 +194,56 @@ final class RelaySessionTests: XCTestCase {
         }
     }
 
+    func testV2ScheduleRoutesMatchMacBodyAndIdentifierRules() {
+        for (method, path, body) in [
+            ("GET", "/v2/domain/schedules", false),
+            ("GET", "/v2/domain/schedules/schedule-1", false),
+            ("POST", "/v2/domain/schedules", true),
+            ("PUT", "/v2/domain/schedules/schedule-1", true),
+            ("DELETE", "/v2/domain/schedules/schedule-1", false),
+            ("POST", "/v2/domain/schedules/schedule-1/run", false),
+        ] {
+            XCTAssertTrue(RelaySession.validDomainSchedulePath(method: method, path: path, hasBody: body), path)
+        }
+        for (method, path, body) in [
+            ("GET", "/v2/domain/schedules/schedule-1/run", false),
+            ("POST", "/v2/domain/schedules/schedule-1/run", true),
+            ("POST", "/v2/domain/schedules", false),
+            ("DELETE", "/v2/domain/schedules/schedule-1", true),
+            ("GET", "/v2/domain/schedules/bad%2Fid", false),
+            ("GET", "/v2/domain/schedules/id/extra", false),
+            ("GET", "/v2/domain/schedules/", false),
+        ] {
+            XCTAssertFalse(RelaySession.validDomainSchedulePath(method: method, path: path, hasBody: body), path)
+        }
+    }
+
+    func testV2ScheduleReadIsEphemeralAndCreateRetryReusesSealedOperation() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let session = fixture.session()
+        let read = try await session.execute(requestID: "caller-read", method: "GET", path: "/v2/domain/schedules")
+        XCTAssertEqual(read, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
+
+        let body = Data(#"{"title":"Review","text":"Review project","frequency":"daily","hour":9,"minute":0,"revision":0}"#.utf8)
+        let first = try await session.execute(requestID: "schedule-create-1", method: "POST",
+            path: "/v2/domain/schedules", body: body, statusPolls: 0)
+        XCTAssertEqual(first, .unknown)
+        let recovered = try await fixture.session().execute(requestID: "schedule-create-1", method: "POST",
+            path: "/v2/domain/schedules", body: body)
+        XCTAssertEqual(recovered, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        let sealed = await fixture.http.mutations
+        XCTAssertEqual(sealed.count, 2, "one ephemeral read and one durable create; no replay POST")
+        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(sealed.last))
+        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
+            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(request["path"] as? String, "/v2/domain/schedules")
+        XCTAssertEqual(request["method"] as? String, "POST")
+        XCTAssertEqual((request["body"] as? [String: Any])?["revision"] as? Int, 0)
+    }
+
     func testRestartRefreshesChallengeForStatusWithoutRepostingMutation() async throws {
         let fixture = try Fixture(mode: .restart)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }

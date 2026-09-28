@@ -37,7 +37,9 @@ public struct ServiceRequest: Sendable, Equatable {
             || (endpoint.method == .post && endpoint.path.count == 5
                 && endpoint.path.starts(with: ["v2", "domain", "delivery-attempts"])
                 && (Int64(endpoint.path[3]).map { $0 > 0 } ?? false) && endpoint.path[4] == "resolve")
-        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2 || domainDetail || domainDelivery),
+        let domainSchedule = endpoint.query.isEmpty && Self.validDomainScheduleRoute(method: endpoint.method,
+            path: endpoint.path, hasBody: endpoint.body != nil)
+        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2 || domainDetail || domainDelivery || domainSchedule),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
         }
@@ -52,5 +54,23 @@ public struct ServiceRequest: Sendable, Equatable {
         self.method = endpoint.method.rawValue
         self.path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
         self.body = endpoint.body
+    }
+
+    private static func validDomainScheduleRoute(method: HTTPMethod, path: [String], hasBody: Bool) -> Bool {
+        guard path.starts(with: ["v2", "domain", "schedules"]) else { return false }
+        if path.count == 3 {
+            return (method == .get && !hasBody) || (method == .post && hasBody)
+        }
+        guard path.count == 4 || path.count == 5,
+              (1...256).contains(path[3].utf8.count),
+              path[3].utf8.allSatisfy({ byte in
+                  (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+                    || (byte >= 48 && byte <= 57) || byte == 45 || byte == 95
+              }) else { return false }
+        if path.count == 5 {
+            return path[4] == "run" && method == .post && !hasBody
+        }
+        return (method == .get && !hasBody) || (method == .put && hasBody)
+            || (method == .delete && !hasBody)
     }
 }
