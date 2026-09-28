@@ -12,7 +12,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AgentId, AvailableAction, Command, CommandEnvelope, CommandOutcome, DeliveryTarget, DomainProjection, InteractionId, Revision, TaskId,
+    AgentId, AvailableAction, Command, CommandEnvelope, CommandOutcome, DeliveryTarget, DomainProjection, Interaction, InteractionId, Revision, TaskId,
 };
 use alondra_core::now_millis;
 use anyhow::Result;
@@ -265,6 +265,7 @@ enum Msg {
     Command { slot: String, result: Result<CommandOutcome, CommandFailure> },
     Diff { key: Key, result: Result<Value, String> },
     TaskActions { task: TaskId, revision: Revision, result: Result<Vec<AvailableAction>, String> },
+    Interaction { id: InteractionId, asked_at: Revision, result: Result<Interaction, String> },
 }
 
 pub enum Flow {
@@ -334,6 +335,9 @@ pub struct App {
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
     pub task_actions: HashMap<TaskId, (Revision, Vec<AvailableAction>)>,
     task_actions_asked: HashSet<(TaskId, Revision)>,
+    /// Interactions read one by one as the user opens them; the projection no longer carries them.
+    pub interactions: HashMap<InteractionId, Interaction>,
+    interactions_asked: HashSet<(InteractionId, Revision)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
     last_clock: i64,
@@ -365,8 +369,9 @@ fn background_sync_error(error: &anyhow::Error, prefix: &str) -> Msg {
 /// Reads the projection, then waits on the daemon until it moves past that revision.
 fn sync_loop(tx: SyncSender<Msg>, quick: Client, waiter: Client) {
     let mut was_online = true;
+    let mut sections = crate::client::Sections::default();
     loop {
-        let (epoch, revision) = match quick.domain() {
+        let (epoch, revision) = match quick.sync(&mut sections) {
             Ok(p) => {
                 was_online = true;
                 let at = (p.data_epoch.clone(), p.revision);
@@ -384,7 +389,7 @@ fn sync_loop(tx: SyncSender<Msg>, quick: Client, waiter: Client) {
                 continue;
             }
         };
-        if let Err(error) = waiter.domain_changed(&epoch, revision, 50) {
+        if let Err(error) = waiter.domain_changes(&epoch, revision, 50) {
             let _ = tx.send(background_sync_error(&error, tr!("Waiting for changes failed: ", "Falló la espera de cambios: ")));
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -573,6 +578,8 @@ impl App {
             finished_open: false,
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
+            interactions: HashMap::new(),
+            interactions_asked: HashSet::new(),
             cmdline: None,
             keymap: Keymap::default(),
             last_clock: now_millis(),
@@ -691,11 +698,32 @@ impl App {
         }
         self.reconcile_agents();
         self.reconcile_tasks();
+        self.load_selected_interaction();
+    }
+
+    /// The selected item's interaction, read when it is first shown and again when it changes.
+    fn load_selected_interaction(&mut self) {
+        let Some((id, revision)) = self.sel.as_ref().and_then(|k| self.item(k)).and_then(|i| Some((inbox::interaction_of(i)?.clone(), i.revision))) else { return };
+        self.load_interaction(id, revision);
+    }
+
+    pub(crate) fn load_interaction(&mut self, id: InteractionId, asked_at: Revision) {
+        if self.interactions.get(&id).is_some_and(|i| i.revision >= asked_at) || !self.interactions_asked.insert((id.clone(), asked_at)) {
+            return;
+        }
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(10)).interaction(&id).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Interaction { id, asked_at, result });
+        });
     }
 
     fn on_msg(&mut self, m: Msg) {
         match m {
-            Msg::Data(p) => {
+            Msg::Data(mut p) => {
+                self.interactions.extend(std::mem::take(&mut p.interactions).into_iter().map(|i| (i.id.clone(), i)));
+                let current: HashMap<&InteractionId, Revision> = p.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children))
+                    .filter_map(|i| Some((inbox::interaction_of(i)?, i.revision))).collect();
+                self.interactions.retain(|id, i| current.get(id).is_none_or(|at| *at <= i.revision));
                 self.domain = Some(*p);
                 self.connected = true;
                 self.loaded = true;
@@ -722,6 +750,15 @@ impl App {
                     self.rebuild_reader();
                 }
                 Ok(_) => {}
+            },
+            Msg::Interaction { id, asked_at, result } => match result {
+                Ok(interaction) => {
+                    self.interactions.insert(id, interaction);
+                }
+                Err(error) => {
+                    self.interactions_asked.remove(&(id, asked_at));
+                    self.fail(error);
+                }
             },
             Msg::TaskActions { task, revision, result } => match result {
                 Ok(actions) => {

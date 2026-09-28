@@ -393,3 +393,46 @@ fn reader_navigation_search_and_comments_survive() {
     assert!(app.reviews.is_empty(), "sent comments are cleared once the daemon has them");
 }
 
+
+/// What the sectioned reads deliver: no interactions, and a body the daemon cut to fit.
+fn sectioned(world: &World, cut: &str) -> DomainProjection {
+    let mut p = world.state.projection();
+    p.interactions.clear();
+    fn shorten(item: &mut InboxItem, cut: usize) {
+        if let Some(body) = item.body.as_mut() {
+            body.truncate(cut);
+        }
+        for child in &mut item.children {
+            shorten(child, cut);
+        }
+    }
+    for root in &mut p.inbox {
+        shorten(root, cut.len());
+    }
+    p
+}
+
+#[test]
+fn a_cut_body_is_replaced_by_the_interaction_once_it_is_read() {
+    let mut world = World::base(false);
+    world.information("info-1", "Tests pass and the migration replays every fixture without a diff");
+    let (tx, _rx) = mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    select(&mut app, "interaction:info-1");
+    let before = screen(&mut app, 120, 24);
+    assert!(before.contains("Tests pass") && !before.contains("without a diff"), "{before}");
+    let full = world.state.interactions[&InteractionId::from("info-1")].clone();
+    let revision = full.revision;
+    app.on_msg(Msg::Interaction { id: "info-1".into(), asked_at: revision, result: Ok(full) });
+    let after = screen(&mut app, 120, 24);
+    assert!(after.contains("without a diff"), "{after}");
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    assert!(app.interaction(&"info-1".into()).is_some(), "an unchanged item keeps its interaction");
+    world.run("user-a", Command::MarkRead { interaction_id: "info-1".into() });
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    assert!(app.interaction(&"info-1".into()).is_none(), "a changed item drops the stale interaction");
+}
