@@ -125,6 +125,38 @@ impl DomainStore {
         tx.commit()?;
         Ok(state)
     }
+    /// Offline one-shot cutover. The imported state carries a freshly created
+    /// epoch from this empty store; no legacy command or delivery is replayed.
+    pub(crate) fn import_initial(&mut self, state: &DomainState,
+        links: &[crate::domain_migration::ImportLink], source_seq: u64) -> Result<()> {
+        state.validate()?;
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_schema(&tx)?;
+        let (epoch, revision): (String, i64) = tx.query_row(
+            "SELECT data_epoch,revision FROM domain_meta WHERE singleton=1", [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        ensure!(revision == 0 && epoch == state.data_epoch.0,
+            "domain import requires an empty store and its fresh data epoch");
+        let existing: i64 = tx.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
+        ensure!(existing == 0, "domain import target already has business rows");
+        repository::save(&tx, state)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS legacy_import_map (
+            source_kind TEXT NOT NULL,source_id TEXT NOT NULL,role TEXT NOT NULL,
+            target_kind TEXT NOT NULL,target_id TEXT NOT NULL,
+            source_digest TEXT NOT NULL CHECK(length(source_digest)=64),source_seq INTEGER NOT NULL,
+            PRIMARY KEY(source_kind,source_id,role),UNIQUE(target_kind,target_id,role)
+        );")?;
+        for link in links {
+            tx.execute("INSERT INTO legacy_import_map(source_kind,source_id,role,target_kind,target_id,source_digest,source_seq)
+                VALUES(?1,?2,?3,?4,?5,?6,?7)", params![link.source_kind,link.source_id,link.role,
+                link.target_kind,link.target_id,link.source_digest,i64::try_from(source_seq)?])?;
+        }
+        let mapped: i64 = tx.query_row("SELECT count(*) FROM legacy_import_map", [], |r|r.get(0))?;
+        ensure!(mapped as usize == links.len(), "legacy mapping count changed during import");
+        tx.commit()?;
+        Ok(())
+    }
     pub(crate) fn project(&mut self) -> Result<DomainProjection> {
         Ok(self.load()?.projection())
     }

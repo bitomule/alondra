@@ -5,6 +5,7 @@ mod approval_lease;
 mod domain_authority;
 mod domain_content;
 mod domain_delivery;
+mod domain_migration;
 mod domain_runtime;
 mod domain_store;
 mod domain_api;
@@ -49,11 +50,40 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged.\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
             println!("alondrad {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        [flag, source] if flag == "--inspect-domain-migration" => {
+            let view = domain_migration::load_legacy_readonly(&std::path::Path::new(source).join("alondra.db"))?;
+            println!("{}", serde_json::to_string_pretty(&domain_migration::inventory(&view))?);
+            return Ok(());
+        }
+        [flag, source, target] if flag == "--rehearse-domain-migration" => {
+            let result = domain_migration::rehearse(std::path::Path::new(source), std::path::Path::new(target))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            return Ok(());
+        }
+        [flag, source, target, old_binary] if flag == "--backup-domain-offline" => {
+            let destination = std::path::Path::new(target);
+            let result = domain_migration::backup_offline(std::path::Path::new(source), destination, std::path::Path::new(old_binary))?;
+            println!("Verified private backup: {} files; legacy seq {}; manifest SHA256 {}",
+                result.files.len(), result.source_seq, domain_migration::backup_manifest_digest(destination)?);
+            return Ok(());
+        }
+        [flag, source, backup, stage, old_binary] if flag == "--prepare-domain-cutover" => {
+            let result = domain_migration::prepare_cutover_offline(
+                std::path::Path::new(source), std::path::Path::new(backup),
+                std::path::Path::new(stage), std::path::Path::new(old_binary))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            return Ok(());
+        }
+        [flag, backup, digest, target] if flag == "--restore-domain-rehearsal" => {
+            let result = domain_migration::restore_rehearsal(std::path::Path::new(backup), digest, std::path::Path::new(target))?;
+            println!("Verified rollback rehearsal: legacy seq {}", result.source_seq);
             return Ok(());
         }
         _ => (),
