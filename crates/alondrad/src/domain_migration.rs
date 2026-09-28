@@ -37,7 +37,9 @@ fn destination_outside(home: &Path, destination: &Path) -> Result<()> {
 }
 
 mod import;
+mod schedules;
 pub(crate) use import::{ImportLink, ImportReport, materialize_legacy};
+pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow, read_legacy_schedules_readonly};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct LegacyInventory {
