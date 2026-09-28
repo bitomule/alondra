@@ -199,7 +199,7 @@ async fn deliver_user_runtime(
     let state = domain.state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
     let item_id = message.interaction_id.as_ref().map(|id| format!("interaction:{id}"));
-    let payload = json!({"aps":{"alert":{"title":"Alondra","body":"Hay actividad nueva en Alondra"},
+    let payload = json!({"aps":{"alert":{"title":"Alondra","body":"New activity in Alondra"},
         "sound":"default"},"alondra":{"protocol_version":2,"data_epoch":state.data_epoch,
         "item_id":item_id}});
     if let Some(service) = service {

@@ -1,4 +1,6 @@
-//! Versioned domain commands. Both local HTTP and encrypted transport call the same runtime.
+//! Versioned domain commands. Both local HTTP and encrypted transport call the
+//! same runtime, and the legacy Hub and the committed v2 daemon share one set of
+//! handlers through `DomainHost`.
 use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
@@ -18,41 +20,70 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
-pub fn routes() -> Router<Arc<Hub>> {
+/// What a domain router needs from its daemon. The legacy Hub keeps v2
+/// read-only until cutover; the committed daemon serves schedule reads and
+/// producer writes.
+pub(crate) trait DomainHost: Send + Sync + 'static {
+    fn domain(&self) -> &DomainRuntime;
+    fn home(&self) -> &FsPath;
+    fn cutover_committed(&self) -> bool;
+}
+impl DomainHost for Hub {
+    fn domain(&self) -> &DomainRuntime {
+        &self.domain
+    }
+    fn home(&self) -> &FsPath {
+        &self.home
+    }
+    fn cutover_committed(&self) -> bool {
+        false
+    }
+}
+
+pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
     Router::new()
-        .route("/v2/domain", get(projection))
-        .route("/v2/domain/schedules", get(schedule_list).post(schedule_write_blocked))
-        .route("/v2/domain/schedules/{id}", get(schedule_detail).put(schedule_write_blocked).delete(schedule_write_blocked))
+        .route("/v2/domain", get(projection::<H>))
+        .route("/v2/domain/schedules", get(schedule_list::<H>).post(schedule_write_blocked))
+        .route("/v2/domain/schedules/{id}", get(schedule_detail::<H>).put(schedule_write_blocked).delete(schedule_write_blocked))
         .route("/v2/domain/schedules/{id}/run", post(schedule_write_blocked))
-        .route("/v2/domain/capabilities", get(capabilities))
-        .route("/v2/domain/delivery-attempts", get(delivery_evidence))
-        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
-        .route("/v2/domain/changes", get(changes))
-        .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff))
-        .route("/v2/domain/tasks/{id}/actions", get(task_actions))
+        .route("/v2/domain/capabilities", get(capabilities::<H>))
+        .route("/v2/domain/delivery-attempts", get(delivery_evidence::<H>))
+        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization::<H>))
+        .route("/v2/domain/changes", get(changes::<H>))
+        .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff::<H>))
+        .route("/v2/domain/tasks/{id}/actions", get(task_actions::<H>))
         .route(
             "/v2/domain/document-revisions/{id}/content",
-            get(document_content),
+            get(document_content::<H>),
         )
         .route(
             "/v2/domain/commands",
-            post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
+            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
         )
 }
-async fn schedule_list(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
-    if !signed_read(&hub, &signed) { return unsigned_read(); }
-    domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"))
+fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
+    if !host.cutover_committed() {
+        return domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"));
+    }
+    crate::domain_schedule_api::response(crate::domain_schedule_api::read(host.domain(), path))
 }
-async fn schedule_detail(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>, Path(id): Path<String>) -> Response {
-    if !signed_read(&hub, &signed) { return unsigned_read(); }
-    let _ = id;
-    domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"))
+async fn schedule_list<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    let response = schedule_read(&*host, "/v2/domain/schedules");
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    response
+}
+async fn schedule_detail<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>, Path(id): Path<String>) -> Response {
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    let response = schedule_read(&*host, &format!("/v2/domain/schedules/{id}"));
+    if !signed_read(&*host, &signed) { return unsigned_read(); }
+    response
 }
 async fn schedule_write_blocked() -> Response {
     crate::domain_schedule_api::local_write_blocked()
 }
-async fn merge_authorization(
-    State(hub): State<Arc<Hub>>,
+async fn merge_authorization<H: DomainHost>(
+    State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -64,7 +95,7 @@ async fn merge_authorization(
         .and_then(|value| value.strip_prefix("Bearer ")) else {
         return domain_error(DomainError::new("forbidden", "Agent capability required"));
     };
-    merge_authorization_inner(&hub.domain, token, id)
+    merge_authorization_inner(host.domain(), token, id)
 }
 
 pub(crate) fn merge_authorization_inner(domain: &DomainRuntime, token: &str, id: String) -> Response {
@@ -93,17 +124,17 @@ pub(crate) fn merge_authorization_inner(domain: &DomainRuntime, token: &str, id:
         "valid":authorization.valid,"attempt":authorization.attempt,
         "at_revision":authorization.at_revision})).into_response()
 }
-async fn document_content(
-    State(hub): State<Arc<Hub>>,
+async fn document_content<H: DomainHost>(
+    State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if !signed_read(&hub, &signed) {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = document_content_inner(&hub.domain, &hub.home, id, query).await;
-    if !signed_read(&hub, &signed) {
+    let response = document_content_inner(host.domain(), host.home(), id, query).await;
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
     response
@@ -177,15 +208,19 @@ pub(crate) fn document_content_query(query: &str) -> Option<(u64, Option<String>
     }
     Some((offset, version))
 }
-async fn task_actions(
-    State(hub): State<Arc<Hub>>,
+async fn task_actions<H: DomainHost>(
+    State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
 ) -> Response {
-    if !signed_read(&hub, &signed) {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    task_actions_inner(&hub.domain, id)
+    let response = task_actions_inner(host.domain(), id);
+    if !signed_read(&*host, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response {
@@ -204,16 +239,16 @@ pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RELAY_DIFF_RESPONSE: usize = 120 * 1024;
 
-async fn pull_request_diff(
-    State(hub): State<Arc<Hub>>,
+async fn pull_request_diff<H: DomainHost>(
+    State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     Path(id): Path<String>,
 ) -> Response {
-    if !signed_read(&hub, &signed) {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = pull_request_diff_inner(&hub.domain, id).await;
-    if !signed_read(&hub, &signed) {
+    let response = pull_request_diff_inner(host.domain(), id).await;
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
     response
@@ -403,16 +438,16 @@ pub(crate) fn changes_query(query: &str) -> Option<(String, Revision, u64)> {
     }
     Some((epoch?, after?, wait?))
 }
-async fn changes(
-    State(hub): State<Arc<Hub>>,
+async fn changes<H: DomainHost>(
+    State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if !signed_read(&hub, &signed) {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = changes_inner(&hub.domain, query).await;
-    if !signed_read(&hub, &signed) {
+    let response = changes_inner(host.domain(), query).await;
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
     response
@@ -441,21 +476,25 @@ async fn changes_inner(domain: &DomainRuntime, query: Option<String>) -> Respons
     Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,"revision":state.revision,
         "changed":state.data_epoch.0 != epoch || state.revision != after})).into_response()
 }
-async fn capabilities(
-    State(hub): State<Arc<Hub>>,
+async fn capabilities<H: DomainHost>(
+    State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     signed: Option<Extension<Signed>>,
     headers: HeaderMap,
 ) -> Response {
     let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    let producer = bearer.is_some_and(|token| signed.is_none()
+    let producer_current = || bearer.is_some_and(|token| signed.is_none()
         && is_local(&peer, &headers)
-        && hub.domain.resolve_bearer(token).is_ok());
-    if !signed_read(&hub, &signed) && !producer {
-        return unsigned_read();
+        && host.domain().resolve_bearer(token).is_ok());
+    if !signed_read(&*host, &signed) && !producer_current() {
+        return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
     }
-    capabilities_inner(&hub.domain)
+    let response = capabilities_inner(host.domain());
+    if !signed_read(&*host, &signed) && !producer_current() {
+        return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
+    }
+    response
 }
 
 fn capabilities_inner(domain: &DomainRuntime) -> Response {
@@ -464,11 +503,15 @@ fn capabilities_inner(domain: &DomainRuntime) -> Response {
         Err(_) => storage_error(),
     }
 }
-async fn projection(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
-    if !signed_read(&hub, &signed) {
+async fn projection<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    projection_inner(&hub.domain)
+    let response = projection_inner(host.domain());
+    if !signed_read(&*host, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 fn projection_inner(domain: &DomainRuntime) -> Response {
@@ -548,16 +591,16 @@ pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
     value.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
-async fn delivery_evidence(
-    State(hub): State<Arc<Hub>>,
+async fn delivery_evidence<H: DomainHost>(
+    State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if !signed_read(&hub, &signed) {
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = delivery_evidence_inner(&hub.domain, query.as_deref().unwrap_or_default());
-    if !signed_read(&hub, &signed) {
+    let response = delivery_evidence_inner(host.domain(), query.as_deref().unwrap_or_default());
+    if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
     response
@@ -630,26 +673,36 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
 pub(crate) fn legacy_write_blocked() -> DomainError {
     DomainError::new("incompatible_protocol", "domain v2 writes require the committed cutover")
 }
-async fn command(
+async fn command<H: DomainHost>(
+    State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     signed: Option<Extension<Signed>>,
     headers: HeaderMap,
     body: Result<Json<CommandEnvelope>, JsonRejection>,
 ) -> Response {
-    if body.is_err() {
+    let Ok(Json(envelope)) = body else {
         return domain_error(DomainError::new(
             "invalid_input",
             "invalid domain command envelope",
         ));
-    }
-    if headers.contains_key("authorization") {
+    };
+    if let Some(header) = headers.get("authorization") {
         if signed.is_some() || !is_local(&peer, &headers) {
             return domain_error(DomainError::new(
                 "forbidden",
                 "producer capabilities are local only",
             ));
         }
-        return domain_error(legacy_write_blocked());
+        if !host.cutover_committed() {
+            return domain_error(legacy_write_blocked());
+        }
+        let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {
+            return domain_error(DomainError::new("forbidden", "invalid domain capability"));
+        };
+        return match host.domain().execute_bearer(token, &envelope) {
+            Ok(outcome) => Json(outcome).into_response(),
+            Err(error) => store_error(error),
+        };
     }
     if headers.contains_key("x-alondra-session")
         || headers.contains_key("x-alondra-orchestrator-execution")
@@ -716,6 +769,7 @@ fn status_for(error: &DomainError) -> StatusCode {
         "not_found" => StatusCode::NOT_FOUND,
         "invalid_input" | "invalid_action_for_kind" => StatusCode::UNPROCESSABLE_ENTITY,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+        "storage_unavailable" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,
     }
 }
@@ -725,25 +779,27 @@ fn domain_error(error: DomainError) -> Response {
 fn unsigned_read() -> Response {
     domain_error(DomainError::new("forbidden", "signed user device required"))
 }
-fn signed_read(hub: &Hub, signed: &Option<Extension<Signed>>) -> bool {
+fn signed_read<H: DomainHost>(host: &H, signed: &Option<Extension<Signed>>) -> bool {
     let Some(Extension(signed)) = signed else {
         return false;
     };
-    crate::auth::Auth::open(&hub.home).ok().is_some_and(|auth| {
+    crate::auth::Auth::open(host.home()).ok().is_some_and(|auth| {
         auth.list()
             .iter()
             .any(|device| device.id == signed.device_id && device.public_key == signed.public_key)
     })
 }
 fn storage_error() -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(DomainError::new(
-            "storage_unavailable",
-            "domain transaction could not be completed",
-        )),
-    )
-        .into_response()
+    domain_error(DomainError::new(
+        "storage_unavailable",
+        "domain transaction could not be completed",
+    ))
+}
+fn store_error(error: StoreError) -> Response {
+    match error {
+        StoreError::Domain(error) => domain_error(error),
+        StoreError::Storage(_) => storage_error(),
+    }
 }
 #[cfg(test)]
 mod tests {

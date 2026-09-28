@@ -1,7 +1,10 @@
 //! Local HTTP producer/read integration over a fresh SQL store. User decisions use
 //! the runtime boundary because local HTTP user mutations require user presence.
 use super::*;
+use crate::auth::Auth;
 use crate::domain_authority::Principal;
+use axum::http::StatusCode;
+use std::net::SocketAddr;
 use alondra_core::domain_v2::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskState};
 use base64::{
     Engine as _,

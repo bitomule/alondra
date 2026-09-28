@@ -389,7 +389,15 @@ impl DomainState {
                 })
                 .sum()
         }
-        let unread_information=self.interactions.values().filter(|i|i.recipient==Recipient::User && matches!(&i.payload,InteractionPayload::Information{read_by} if read_by.is_empty())).count() as u64;
+        let unread_information = self
+            .interactions
+            .values()
+            .filter(|i| {
+                i.recipient == Recipient::User
+                    && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty())
+                    && !matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.archived))
+            })
+            .count() as u64;
         let counts = InboxCounts {
             roots: inbox.len() as u64,
             pending: pending(&inbox),

@@ -2292,6 +2292,33 @@ fn answer_reaches_the_current_assignee_after_reassignment() {
 }
 
 #[test]
+fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
+    let mut s = fixture();
+    exec(
+        &mut s,
+        agent(),
+        Command::PublishInformation {
+            attachments: vec![],
+            interaction_id: "info".into(),
+            scope: Scope::Task { task_id: "t".into() },
+            recipient: Recipient::User,
+            body: "Progress".into(),
+        },
+    )
+    .unwrap();
+    present(&mut s, "d", text());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
+    exec(&mut s, agent(), Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }).unwrap();
+    assert_eq!(s.projection().counts.unread_information, 1);
+    exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true }).unwrap();
+    let projection = s.projection();
+    assert_eq!(projection.counts.unread_information, 0);
+    assert!(projection.inbox.iter().all(|item| item.id != "info"));
+    exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: false }).unwrap();
+    assert_eq!(s.projection().counts.unread_information, 1);
+}
+
+#[test]
 fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     let mut s = fixture();
     let run = |s: &mut DomainState, actor: Actor, id: &str, expected: Revision, command: Command| {
