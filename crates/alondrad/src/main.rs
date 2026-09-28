@@ -417,10 +417,11 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
 async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let state = domain_bootstrap::V2Only::open(&config.home, expected_epoch)?;
-    let auth = Arc::new(auth::Auth::open(&config.home)?);
+    let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?
         .map(|service| Arc::new(service.with_domain(state.domain())));
     let domain = state.domain();
+    let gauges = state.gauges();
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
@@ -436,6 +437,7 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let scheduler = tokio::spawn(domain_schedule_runner::run(domain.clone(), config.home.clone(), config.wake));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone(), config.home.clone()));
     let github = tokio::spawn(domain_github::run(domain, Arc::new(domain_github::GhCli::new())));
+    tokio::spawn(machine::run_v2(gauges));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();

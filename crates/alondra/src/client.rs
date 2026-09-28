@@ -63,10 +63,10 @@ impl Signer {
         let mut seed = [0u8; 32];
         std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
         let key = p256::ecdsa::SigningKey::from_slice(&seed).map_err(|e| anyhow!("key: {e}"))?;
-        let code = unsigned.post("/v1/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
+        let code = unsigned.post("/v2/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
         let public = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
         let host = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "Mac".into());
-        let paired = unsigned.post("/v1/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
+        let paired = unsigned.post("/v2/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
         let device = paired.get("device_id").and_then(Value::as_str).context("no device id")?.to_string();
         let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| anyhow!("key: {e}"))?;
         std::fs::create_dir_all(home)?;
