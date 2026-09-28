@@ -476,30 +476,30 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-weekly',title,text,project,options,disallowed_tools,'weekly',hour,minute,NULL,interval,start_at,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-once',title,text,project,options,disallowed_tools,'once',hour,minute,weekday,interval,NULL,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
     assert!(upgraded.conn.execute_batch("INSERT INTO schedules SELECT 'bad-interval',title,text,project,options,disallowed_tools,'every_hours',hour,minute,weekday,NULL,1000,enabled,next_run,revision,deleted_at FROM schedules WHERE id='schedule-1'").is_err());
-    let valid_run = "INSERT INTO schedule_runs
+    let valid_run = r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
-        VALUES ('run-1','schedule-1','due',2,1000,1001,1002,'sent','request-1','task-1',NULL,'{}')";
+        VALUES ('run-1','schedule-1','due',2,1000,1001,1002,'sent','request-1','task-1',NULL,'{"title":"Daily work","text":"Do work","project":null,"options":{},"disallowed_tools":[]}')"#;
     assert!(upgraded.conn.execute_batch(&valid_run.replace("'request-1'", "'request-2'")).is_err(),
         "Task must belong to the run Request");
     assert!(upgraded.conn.execute_batch(&valid_run.replace("'due',2", "'due',5")).is_err(),
         "a run cannot claim a future Schedule revision");
     upgraded.conn.execute_batch(valid_run).unwrap();
     upgraded.conn.execute("UPDATE schedules SET revision=3 WHERE id='schedule-1'", []).unwrap();
-    upgraded.conn.execute_batch("INSERT INTO schedule_runs
+    upgraded.conn.execute_batch(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
-        VALUES ('run-2','schedule-1','manual',3,NULL,2000,NULL,'launching',NULL,NULL,NULL,'{}')").unwrap();
-    assert!(upgraded.conn.execute_batch("INSERT INTO schedule_runs
+        VALUES ('run-2','schedule-1','manual',3,NULL,2000,NULL,'launching',NULL,NULL,NULL,'{"title":"Daily work","text":"Do work","project":null,"options":{},"disallowed_tools":[]}')"#).unwrap();
+    assert!(upgraded.conn.execute_batch(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
-        VALUES ('run-3','schedule-1','manual',4,NULL,2001,NULL,'launching',NULL,NULL,NULL,'{}')").is_err(),
+        VALUES ('run-3','schedule-1','manual',4,NULL,2001,NULL,'launching',NULL,NULL,NULL,'{"title":"Daily work","text":"Do work","project":null,"options":{},"disallowed_tools":[]}')"#).is_err(),
         "one schedule cannot have simultaneous claims");
     assert!(upgraded.conn.execute("UPDATE schedule_runs SET error='premature' WHERE id='run-2'", []).is_err());
     upgraded.conn.execute("UPDATE schedule_runs SET state='failed',finished_at=2002,error='launch failed' WHERE id='run-2'", []).unwrap();
     assert!(upgraded.conn.execute("UPDATE schedule_runs SET state='launching',finished_at=NULL,error=NULL WHERE id='run-2'", []).is_err(),
         "a terminal run cannot lose its failure evidence");
     upgraded.conn.execute("UPDATE schedules SET revision=4 WHERE id='schedule-1'", []).unwrap();
-    upgraded.conn.execute_batch("INSERT INTO schedule_runs
+    upgraded.conn.execute_batch(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot)
-        VALUES ('run-3','schedule-1','manual',4,NULL,3000,NULL,'launching',NULL,NULL,NULL,'{}')").unwrap();
+        VALUES ('run-3','schedule-1','manual',4,NULL,3000,NULL,'launching',NULL,NULL,NULL,'{"title":"Daily work","text":"Do work","project":null,"options":{},"disallowed_tools":[]}')"#).unwrap();
     assert!(upgraded.conn.execute("DELETE FROM schedules WHERE id='schedule-1'", []).is_err());
     assert!(upgraded.conn.execute("UPDATE schedules SET frequency='weekly' WHERE id='schedule-1'", []).is_err(),
         "an irrelevant legacy weekday may not become an invalid weekly rule");
