@@ -376,6 +376,65 @@ impl DomainState {
     fn accepted(&self, p: &Interaction) -> bool {
         matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
     }
+    /// D04: a package is accepted only when every piece carries its own current
+    /// decision. A merge authorization covers its PR and the presentation text;
+    /// a document approval covers only that revision; feedback dates both out.
+    fn covered(&self, presentation: &InteractionId) -> bool {
+        let Some(p) = self.interactions.get(presentation) else {
+            return false;
+        };
+        let (Scope::Task { task_id }, InteractionPayload::Delivery { targets, feedback, .. }) =
+            (&p.scope, &p.payload)
+        else {
+            return false;
+        };
+        let after = feedback.iter().map(|f| f.at_revision).max().unwrap_or(0);
+        let mut text_covered = !targets
+            .iter()
+            .any(|t| matches!(t, DeliveryTarget::Text { .. }));
+        for target in targets {
+            match target {
+                DeliveryTarget::Text { .. } => {}
+                DeliveryTarget::DocumentRevision {
+                    document_id,
+                    revision_id,
+                } => {
+                    let decided = self
+                        .document_reviews
+                        .iter()
+                        .find(|r| &r.task_id == task_id && &r.document_id == document_id)
+                        .and_then(|r| r.decisions.last())
+                        .is_some_and(|d| {
+                            d.accepted
+                                && &d.revision_id == revision_id
+                                && d.presentation_id.as_ref() == Some(presentation)
+                                && d.at_revision > after
+                        });
+                    if !decided {
+                        return false;
+                    }
+                }
+                DeliveryTarget::PullRequest { pr_id, head } => {
+                    let authorized = self.merge_authorizations.values().any(|a| {
+                        a.valid
+                            && &a.presentation_id == presentation
+                            && &a.pr_id == pr_id
+                            && &a.head == head
+                    });
+                    if !authorized {
+                        return false;
+                    }
+                    text_covered = true;
+                }
+            }
+        }
+        text_covered
+    }
+    fn settle(&mut self, presentation: &InteractionId, u: &str) {
+        if self.covered(presentation) {
+            self.record_acceptance(presentation, u);
+        }
+    }
     fn blockers(&self, t: &TaskId) -> bool {
         self.interactions.values().any(|i| {
             i.scope == (Scope::Task { task_id: t.clone() })
@@ -958,20 +1017,16 @@ impl DomainState {
                     _ => unreachable!(),
                 };
                 i.revision = self.revision + 1;
-                match &i.author {
-                    Author::Agent { agent_id } => effects.push(DomainEffect::NotifyAgent {
-                        agent_id: agent_id.clone(),
-                        task_id: match &i.scope {
-                            Scope::Task { task_id } => Some(task_id.clone()),
-                            _ => None,
-                        },
-                        interaction_id: Some(interaction_id.clone()),
-                        message: "Question answered".into(),
-                    }),
-                    Author::Orchestrator { .. } => effects.push(DomainEffect::NotifyOrchestrator {
+                // D05: the answer reaches whoever holds the Task now, not the
+                // session that asked and may since have been replaced.
+                match (i.author.clone(), i.scope.clone()) {
+                    (Author::Agent { .. }, Scope::Task { task_id }) => {
+                        self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
+                    }
+                    (Author::Orchestrator { .. }, _) => effects.push(DomainEffect::NotifyOrchestrator {
                         interaction_id: interaction_id.clone(),
                     }),
-                    Author::System => {}
+                    _ => {}
                 }
             }
             Command::CreateDocument {
@@ -1124,25 +1179,19 @@ impl DomainState {
                 {
                     return fail("acceptance_stale", "Document revision changed");
                 };
-                let sole_final = self.task(task_id)?.final_presentation.clone().filter(|id| {
+                let presentation = self.task(task_id)?.final_presentation.clone().filter(|id| {
                     self.presentation(id).is_ok_and(|(_, _, targets)| {
-                        targets.as_slice()
-                            == [DeliveryTarget::DocumentRevision {
-                                document_id: document_id.clone(),
-                                revision_id: revision_id.clone(),
-                            }]
+                        targets.contains(&DeliveryTarget::DocumentRevision {
+                            document_id: document_id.clone(),
+                            revision_id: revision_id.clone(),
+                        })
                     })
                 });
-                if *accepted && let Some(presentation) = &sole_final {
-                    // The document approval is the one click on an exact, sole
-                    // final delivery. A mixed delivery needs its own full-package
-                    // decision, so approving one component cannot accept another.
-                    self.accept(presentation, &u)?;
-                } else {
-                    self.document_decision(task_id, document_id, revision_id, None, *accepted, &u)?;
-                }
+                self.document_decision(task_id, document_id, revision_id, presentation.clone(), *accepted, &u)?;
                 if !accepted {
                     self.invalidate(task_id);
+                } else if let Some(presentation) = &presentation {
+                    self.settle(presentation, &u);
                 }
                 self.notify(task_id, None, "Document decision recorded", effects)?;
             }
@@ -1406,7 +1455,7 @@ impl DomainState {
                         at_revision: self.revision + 1,
                     });
                 }
-                self.accept(presentation_id, &u)?;
+                self.settle(presentation_id, &u);
                 self.notify(
                     &task,
                     Some(presentation_id.clone()),
@@ -1614,6 +1663,26 @@ impl DomainState {
                         // observation itself never grants that conformity.
                     }
                 }
+                if let Some(pr_id) = &t.pr_id {
+                    let presented = targets
+                        .iter()
+                        .any(|x| matches!(x, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id));
+                    match self.pull_requests[pr_id].state {
+                        PrState::Open => {
+                            return fail(
+                                "merge_not_confirmed",
+                                "The Task's registered PR is still open",
+                            );
+                        }
+                        PrState::Merged if !presented => {
+                            return fail(
+                                "acceptance_missing",
+                                "The merged PR was never presented for acceptance",
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
             }
             Command::CancelTask { task_id } => {
@@ -1722,6 +1791,10 @@ impl DomainState {
                 )?;
             }
         }
+        self.record_acceptance(presentation, u);
+        Ok(())
+    }
+    fn record_acceptance(&mut self, presentation: &InteractionId, u: &str) {
         let p = self.interactions.get_mut(presentation).unwrap();
         if let InteractionPayload::Delivery { acceptance, .. } = &mut p.payload {
             *acceptance = Some(Acceptance {
@@ -1731,7 +1804,6 @@ impl DomainState {
             });
         }
         p.revision = self.revision + 1;
-        Ok(())
     }
     /// Structural validation is also required after loading relational rows.
     /// Historical presentations retain old document revisions and heads deliberately.

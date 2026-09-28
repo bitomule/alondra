@@ -697,8 +697,21 @@ fn restart_preserves_decisions_documents_and_relations() {
             method: MergeMethod::Squash,
         },
     );
+    execute(
+        &mut store,
+        &user(),
+        "decide-document",
+        Command::DecideDocumentReview {
+            task_id: "task-1".into(),
+            document_id: "doc-1".into(),
+            revision_id: "revision-1".into(),
+            accepted: true,
+        },
+    );
     let before = store.load().unwrap();
     assert_eq!(before.document_reviews[0].decisions.len(), 1);
+    assert!(matches!(&before.interactions[&InteractionId::from("delivery-1")].payload,
+        InteractionPayload::Delivery { acceptance: Some(acceptance), .. } if acceptance.valid));
     assert_eq!(
         before.pull_requests[&PrId::from("pr-1")]
             .review

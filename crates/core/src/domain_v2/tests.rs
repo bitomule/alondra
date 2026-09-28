@@ -1966,7 +1966,7 @@ fn information_read_is_shared_across_authorized_devices() {
 }
 
 #[test]
-fn one_authorization_accepts_exact_joint_pr_text_and_document_delivery() {
+fn mixed_package_needs_merge_authorization_and_document_decision() {
     let mut s = fixture();
     register(&mut s);
     exec(
@@ -1996,21 +1996,92 @@ fn one_authorization_accepts_exact_joint_pr_text_and_document_delivery() {
             head: "head1".into(),
         },
     ];
-    present(&mut s, "d", targets);
-    authorize(&mut s);
-    assert!(
+    present(&mut s, "d", targets.clone());
+    let accepted = |s: &DomainState| {
         matches!(&s.interactions[&"d".into()].payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
+    };
+    let decide = |s: &mut DomainState, accepted: bool| {
+        exec(
+            s,
+            user(),
+            Command::DecideDocumentReview {
+                task_id: "t".into(),
+                document_id: "doc".into(),
+                revision_id: "v1".into(),
+                accepted,
+            },
+        )
+        .unwrap()
+    };
+    let complete = |s: &mut DomainState| {
+        exec(
+            s,
+            agent(),
+            Command::CompleteTask {
+                task_id: "t".into(),
+                presentation_id: "d".into(),
+            },
+        )
+    };
+    // The merge authorization covers the PR and the text, never the document.
+    authorize(&mut s);
+    assert!(!accepted(&s));
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    assert!(s.document_reviews[0].decisions.is_empty());
+    assert_eq!(complete(&mut s).unwrap_err().code, "acceptance_missing");
+    // A rejection invalidates the authorization; a later approval alone is not enough.
+    decide(&mut s, false);
+    assert!(!s.merge_authorizations[&"auth".into()].valid);
+    decide(&mut s, true);
+    assert!(!accepted(&s));
+    assert_eq!(s.document_reviews[0].decisions.len(), 2);
+    assert_eq!(
+        s.document_reviews[0].decisions[1].presentation_id,
+        Some("d".into())
     );
-    assert_eq!(s.document_reviews[0].decisions.len(), 1);
-    reject_unchanged(
+    exec(
         &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
+        user(),
+        Command::AuthorizeMerge {
+            authorization_id: "auth2".into(),
             presentation_id: "d".into(),
+            pr_id: "pr".into(),
+            expected_head: "head1".into(),
+            method: MergeMethod::Squash,
         },
-        "merge_not_confirmed",
-    );
+    )
+    .unwrap();
+    assert!(accepted(&s), "PR authorized and document approved: package accepted");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(complete(&mut s).unwrap_err().code, "merge_not_confirmed");
+    // Feedback dates the document approval; re-authorizing the PR is not enough.
+    exec(
+        &mut s,
+        user(),
+        Command::SubmitFeedback {
+            attachments: vec![],
+            presentation_id: "d".into(),
+            targets: targets.clone(),
+            body: "Tighten the summary".into(),
+        },
+    )
+    .unwrap();
+    assert!(!accepted(&s));
+    exec(
+        &mut s,
+        user(),
+        Command::AuthorizeMerge {
+            authorization_id: "auth3".into(),
+            presentation_id: "d".into(),
+            pr_id: "pr".into(),
+            expected_head: "head1".into(),
+            method: MergeMethod::Squash,
+        },
+    )
+    .unwrap();
+    assert!(!accepted(&s));
+    decide(&mut s, true);
+    assert!(accepted(&s));
     exec(
         &mut s,
         Actor::System,
@@ -2023,6 +2094,131 @@ fn one_authorization_accepts_exact_joint_pr_text_and_document_delivery() {
         },
     )
     .unwrap();
+    complete(&mut s).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn authorization_covers_pr_and_text_but_not_a_document_only_package() {
+    let mut s = fixture();
+    register(&mut s);
+    present(
+        &mut s,
+        "d",
+        vec![
+            DeliveryTarget::Text {
+                text: "Summary".into(),
+            },
+            DeliveryTarget::PullRequest {
+                pr_id: "pr".into(),
+                head: "head1".into(),
+            },
+        ],
+    );
+    authorize(&mut s);
+    assert!(
+        matches!(&s.interactions[&"d".into()].payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
+    );
+    let mut s = fixture();
+    exec(
+        &mut s,
+        agent(),
+        Command::CreateDocument {
+            task_id: "t".into(),
+            document_id: "doc".into(),
+            title: "Design".into(),
+            revision_id: "v1".into(),
+            content_digest: "a".repeat(64),
+            content_reference: "files/design".into(),
+            role: "result".into(),
+        },
+    )
+    .unwrap();
+    present(
+        &mut s,
+        "d",
+        vec![
+            DeliveryTarget::Text {
+                text: "Summary".into(),
+            },
+            DeliveryTarget::DocumentRevision {
+                document_id: "doc".into(),
+                revision_id: "v1".into(),
+            },
+        ],
+    );
+    exec(
+        &mut s,
+        user(),
+        Command::DecideDocumentReview {
+            task_id: "t".into(),
+            document_id: "doc".into(),
+            revision_id: "v1".into(),
+            accepted: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&s.interactions[&"d".into()].payload,InteractionPayload::Delivery{acceptance:None,..}),
+        "a document approval does not accept the text piece"
+    );
+}
+#[test]
+fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", text());
+    exec(
+        &mut s,
+        user(),
+        Command::AcceptDelivery {
+            presentation_id: "d".into(),
+            targets: text(),
+        },
+    )
+    .unwrap();
+    reject_unchanged(
+        &mut s,
+        agent(),
+        Command::CompleteTask {
+            task_id: "t".into(),
+            presentation_id: "d".into(),
+        },
+        "merge_not_confirmed",
+    );
+    let mut merged_unpresented = s.clone();
+    exec(
+        &mut merged_unpresented,
+        Actor::System,
+        Command::ObservePrState {
+            pr_id: "pr".into(),
+            head: "head1".into(),
+            base: "main".into(),
+            state: PrState::Merged,
+            merged_head: Some("head1".into()),
+        },
+    )
+    .unwrap();
+    reject_unchanged(
+        &mut merged_unpresented,
+        agent(),
+        Command::CompleteTask {
+            task_id: "t".into(),
+            presentation_id: "d".into(),
+        },
+        "acceptance_missing",
+    );
+    exec(
+        &mut s,
+        Actor::System,
+        Command::ObservePrState {
+            pr_id: "pr".into(),
+            head: "head1".into(),
+            base: "main".into(),
+            state: PrState::Closed,
+            merged_head: None,
+        },
+    )
+    .unwrap();
     exec(
         &mut s,
         agent(),
@@ -2032,6 +2228,67 @@ fn one_authorization_accepts_exact_joint_pr_text_and_document_delivery() {
         },
     )
     .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn answer_reaches_the_current_assignee_after_reassignment() {
+    let mut s = fixture();
+    exec(
+        &mut s,
+        agent(),
+        Command::AskQuestion {
+            attachments: vec![],
+            interaction_id: "q".into(),
+            scope: Scope::Task { task_id: "t".into() },
+            recipient: Recipient::User,
+            body: "Which colour?".into(),
+            blocking: true,
+            options: vec![],
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        Actor::System,
+        Command::RegisterAgent {
+            agent_id: "b".into(),
+            name: "Instance B".into(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        user(),
+        Command::AssignTask {
+            task_id: "t".into(),
+            agent_id: "b".into(),
+        },
+    )
+    .unwrap();
+    let outcome = exec(
+        &mut s,
+        user(),
+        Command::AnswerQuestion {
+            attachments: vec![],
+            interaction_id: "q".into(),
+            option_id: String::new(),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text("Blue".into()))]),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.effects,
+        vec![DomainEffect::NotifyAgent {
+            agent_id: "b".into(),
+            task_id: Some("t".into()),
+            interaction_id: Some("q".into()),
+            message: "Question answered".into(),
+        }]
+    );
+    assert_eq!(
+        s.interactions[&"q".into()].author,
+        Author::Agent { agent_id: "a".into() }
+    );
 }
 
 struct Ids {
