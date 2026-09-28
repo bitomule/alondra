@@ -1,4 +1,5 @@
 import AlondraCloudPairingFeature
+import AlondraContracts
 import ComposableArchitecture
 import Foundation
 
@@ -37,6 +38,7 @@ public struct ServiceSettingsClient: Sendable {
     public var openSystemSettings: @Sendable () async -> Void
     public var checkConnection: @Sendable () async throws -> Void
     public var selectMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
+    public var problem: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
     public var logout: @Sendable () async -> Void
     public init(observe: @escaping @Sendable () async -> AsyncStream<ServiceNotificationSettings>,
                 save: @escaping @Sendable (ServiceQuietHours, ServiceQuietHours) async throws -> Void,
@@ -79,7 +81,7 @@ public extension DependencyValues {
         public var saving = false
         public var checking = false
         public var connected = false
-        public var connectionError: String?
+        public var connectionError: ConnectionProblem?
         public var error: String?
         public var pairingCleanup = false
         @Presents public var pairing: CloudPairingFeature.State?
@@ -105,7 +107,7 @@ public extension DependencyValues {
         case useCurrent, save, saved(UInt64), failed(String, UInt64)
         case autosaveFinished(ServiceQuietHours, UInt64, String?)
         case refreshPermission, requestPermission, openSystemSettings
-        case checkConnection, checked(UInt64), checkFailed(String, UInt64)
+        case checkConnection, checked(UInt64), checkFailed(ConnectionProblem, UInt64)
         case linkMac, pairingCleanupFinished, pairing(PresentationAction<CloudPairingFeature.Action>)
         case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(String, UInt64)
         case logoutTapped, cancelLogout, confirmLogout
@@ -198,14 +200,14 @@ public extension DependencyValues {
                 let generation = state.generation
                 return .run { send in
                     do { try await client.checkConnection(); await send(.checked(generation)) }
-                    catch { await send(.checkFailed(error.localizedDescription, generation)) }
+                    catch { await send(.checkFailed(client.problem(error), generation)) }
                 }.cancellable(id: state.cancellation)
             case .checked(let generation):
                 guard generation == state.generation else { return .none }
                 state.checking = false; state.connected = true; return .none
-            case .checkFailed(let message, let generation):
+            case .checkFailed(let problem, let generation):
                 guard generation == state.generation else { return .none }
-                state.checking = false; state.connectionError = message
+                state.checking = false; state.connectionError = problem
                 return .none
             case .linkMac:
                 guard state.selectingMacID == nil, !state.pairingCleanup else { return .none }

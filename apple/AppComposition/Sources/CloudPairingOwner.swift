@@ -1,4 +1,5 @@
 import AlondraWorkspace
+import AlondraSync
 import AlondraAuth
 import AlondraServicePairing
 import AlondraCloudPairingFeature
@@ -45,6 +46,9 @@ public final class CloudPairingOwner {
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = self.prepareCamera
+        $0.cloudPairing.classify = {
+            ConnectionClassifier.problem(for: $0, local: false, networkOffline: NetworkReachability.shared.isOffline)
+        }
         $0.cloudPairing.hasSavedConfiguration = { [self] in
             if try await auth.requiresRevocation() { return true }
             return try await pairing.approvedPairing() != nil

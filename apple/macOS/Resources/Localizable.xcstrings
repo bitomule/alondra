@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "No internet connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin conexión a internet"}}}},
+    "Can’t reach the Alondra server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se puede contactar con el servidor de Alondra"}}}},
+    "Your Mac isn’t answering": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no responde"}}}},
+    "Your session has expired": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu sesión ha caducado"}}}},
+    "This device was disconnected from your Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo se ha desconectado de tu Mac"}}}},
+    "Can’t connect right now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora mismo no se puede conectar"}}}},
+    "This device is offline. Alondra reconnects as soon as the network is back.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo no tiene conexión. Alondra se reconectará en cuanto vuelva la red."}}}},
+    "You’re online, but the server isn’t answering. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tienes conexión, pero el servidor no responde. Alondra lo sigue intentando."}}}},
+    "It may be off, or Alondra may not be running on it. Alondra reconnects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que esté apagado o que Alondra no esté en marcha en él. Alondra se reconectará en cuanto responda."}}}},
+    "Sign in again to reconnect. Your pairing and saved work are kept.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vuelve a iniciar sesión para reconectar. Se conservan la vinculación y tu trabajo guardado."}}}},
+    "Your Mac no longer accepts this device. Open Settings and link your Mac again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac ya no acepta este dispositivo. Abre Ajustes y vuelve a vincular tu Mac."}}}},
+    "Something unexpected went wrong. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Algo inesperado ha fallado. Alondra lo sigue intentando."}}}},
+    "Sign In Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Volver a iniciar sesión"}}}},
+    "Open Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir Ajustes"}}}},
+    "Try Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar"}}}},
+    "Trying again automatically…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentando automáticamente…"}}}},
+    "Connecting to the fleet…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectando con la flota…"}}}},
     "Looking for Alondra on this Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscando Alondra en este Mac…"}}}},
     "Alondra isn’t running on this Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no está en marcha en este Mac"}}}},
     "Run `alondra setup` in Terminal to start it. This window connects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta `alondra setup` en Terminal para ponerlo en marcha. Esta ventana se conecta en cuanto responda."}}}},
@@ -834,16 +851,6 @@
         }
       }
     },
-    "No connection to alondrad": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sin conexión con alondrad"
-          }
-        }
-      }
-    },
     "No node needs you right now. Anything new will show up in Waiting for You.": {
       "localizations": {
         "es": {
@@ -1180,16 +1187,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Resolver conflictos"
-          }
-        }
-      }
-    },
-    "Retrying every few seconds.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reintento cada pocos segundos."
           }
         }
       }

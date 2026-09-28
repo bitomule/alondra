@@ -13,7 +13,8 @@ import Observation
 /// URLSession, Keychain, notification delegate, or configurable service endpoint.
 @MainActor @Observable
 final class VisualFixture {
-    nonisolated static let scenarios = ["reconnect", "account-settings", "mac-selection"]
+    nonisolated static let scenarios = ["reconnect", "account-settings", "mac-selection",
+                                        "offline-restore", "mac-not-answering", "stale-offline"]
     nonisolated static let alpha = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
     nonisolated static let beta = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
     let runID: String
@@ -41,6 +42,7 @@ final class VisualFixture {
         }, login: { throw CancellationError() }, begin: { _ in throw CancellationError() },
         approve: { throw CancellationError() }, cancel: {}, logout: { throw CancellationError() })
         client.hasSavedConfiguration = { true }
+        client.classify = { _ in .noInternet }
         $0.cloudPairing = client
     }
     @ObservationIgnored lazy var settings = makeSettings()
@@ -78,8 +80,8 @@ final class VisualFixture {
         let pending = AsyncStream<Void>.makeStream()
         restoration = pending.stream; releaseRestoration = pending.continuation
         demo = try DemoWorkspace(now: Date(timeIntervalSince1970: 1_700_000_000))
-        feed = try VisualFeed()
-        workspace = makeWorkspace(identity: Self.alpha, settingsPresented: scenario != "reconnect")
+        feed = try VisualFeed(scenario: scenario)
+        workspace = makeWorkspace(identity: Self.alpha, settingsPresented: !Self.showsWorkspaceFirst(scenario))
     }
 
     private func makeWorkspace(identity: UUID, settingsPresented: Bool) -> StoreOf<ServiceRootFeature> {
@@ -97,7 +99,12 @@ final class VisualFixture {
         return store
     }
 
+    nonisolated private static func showsWorkspaceFirst(_ scenario: String) -> Bool {
+        ["reconnect", "offline-restore", "mac-not-answering", "stale-offline"].contains(scenario)
+    }
+
     private func restore() async throws -> Bool {
+        if scenario == "offline-restore" { throw URLError(.notConnectedToInternet) }
         if scenario == "reconnect" {
             for await _ in restoration { break }
             try Task.checkCancellation()
@@ -172,6 +179,14 @@ final class VisualFixture {
                     "workspace_remained_selected": pairing.showsWorkspace,
                     "restoration_completed": ready && pairing.phase == .approved,
                     "alpha_content_loaded": alpha && workspace.triage.triage.hasSnapshot]
+        case "offline-restore":
+            return ["restore_failed_offline": pairing.restoreProblem == .noInternet, "workspace_not_ready": !ready]
+        case "mac-not-answering":
+            return ["offline_without_snapshot": workspace.triage.triage.connection == .offline(.macNotAnswering)
+                && !workspace.triage.triage.hasSnapshot]
+        case "stale-offline":
+            return ["offline_with_snapshot": workspace.triage.triage.connection == .offline(.macNotAnswering)
+                && workspace.triage.triage.hasSnapshot]
         case "account-settings":
             return ["settings_sheet_presented": workspace.settingsPresented,
                     "real_settings_account": settings.service == "synthetic.invalid" && settings.macs.count == 2,
@@ -204,7 +219,17 @@ private actor VisualFeed {
     private var current: TriageInboxUpdate
     private var triageObservers: [UUID: AsyncStream<TriageInboxUpdate>.Continuation] = [:]
     private var snapshotsObservers: [UUID: AsyncStream<Overview?>.Continuation] = [:]
-    init() throws { current = try Self.update(VisualFixture.alpha) }
+    init(scenario: String) throws {
+        let update = try Self.update(VisualFixture.alpha)
+        switch scenario {
+        case "mac-not-answering":
+            current = TriageInboxUpdate(identity: update.identity, overview: nil, connection: .offline(.macNotAnswering))
+        case "stale-offline":
+            current = TriageInboxUpdate(identity: update.identity, overview: update.overview, connection: .offline(.macNotAnswering))
+        default:
+            current = update
+        }
+    }
     nonisolated static func identity(_ id: UUID) -> TriageIdentity {
         TriageIdentity(server: URL(string: "https://synthetic.invalid")!, deviceID: id.uuidString,
             credentialRevision: "visual-fixture", generation: id == VisualFixture.alpha ? 1 : 2)

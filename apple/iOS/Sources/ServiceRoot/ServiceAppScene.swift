@@ -6,6 +6,8 @@ import AlondraFleetFeature
 import AlondraNewWorkFeature
 import AlondraAppComposition
 import AlondraCloudPairingFeature
+import AlondraConnectionFeature
+import AlondraSync
 import AlondraPullRequestsFeature
 import AlondraQuestionsFeature
 import AlondraTasksFeature
@@ -18,7 +20,6 @@ struct ServiceAppScene: View {
     let owner: CloudPairingOwner
     let notifications: ServiceNotificationRuntime
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
-    @State private var restoringWorkspace = StoreOf<ServiceRootFeature>(initialState: ServiceRootFeature.State()) { EmptyReducer() }
     var body: some View {
         Group {
         if demo.sessionID != nil {
@@ -32,7 +33,8 @@ struct ServiceAppScene: View {
                         .id(ObjectIdentifier(services))
                 }
             } restoring: {
-                ServiceRestoringWorkspace(store: restoringWorkspace, pairing: owner.store)
+                RestoreConnectionView(store: owner.store, networkChanges: { NetworkReachability.shared.changes() })
+                    .background(DawnBackground())
             } onboarding: {
                 NavigationStack { CloudPairingScreen(store: owner.store) }
                     .safeAreaInset(edge: .bottom) {
@@ -100,8 +102,15 @@ private struct ApprovedServiceScene: View {
     @State private var context = ServiceSceneContext()
     var body: some View {
         Group {
-            if let store = context.store { ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications, context: context.settings)) }
+            if let store = context.store {
+                ServiceRootView(store: store, accountContent: ServiceSettingsScene(services: services, owner: owner, notifications: notifications, context: context.settings))
+                    .connectionLostOverlay(store: store, retry: retry, signIn: { owner.store.send(.reauthenticate) })
+            }
             else { ProgressView("Opening workspace…") }
+        }
+        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() }) { retry() }
+        .onChange(of: owner.store.restorationInFlight) { wasSigningIn, signingIn in
+            if wasSigningIn && !signingIn { retry() }
         }
         .safeAreaInset(edge: .bottom) {
             if let error = notifications.statusError { Text(error).font(.footnote).padding().accessibilityLabel("Notifications: " + error) }
@@ -117,15 +126,9 @@ private struct ApprovedServiceScene: View {
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }
     }
-}
 
-struct ServiceRestoringWorkspace: View {
-    let store: StoreOf<ServiceRootFeature>
-    let pairing: StoreOf<CloudPairingFeature>
-    var body: some View {
-        ServiceRootView(store: store, accountContent: WorkspaceRestorationView(store: pairing))
-            .disabled(true)
-            .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: pairing) }
+    private func retry() {
+        Task { await services.retryConnection() }
     }
 }
 
@@ -138,7 +141,7 @@ struct ServiceRootView<AccountContent: View>: View {
         TabView(selection: Binding<ServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: ServiceRootFeature.State.Tab.inbox) {
                 NavigationStack {
-                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), showSettings: { store.send(.settingsPresented(true)) }, zoom: triageZoom)
+                    ServiceTriageView(store: store.scope(state: \.triage, action: \.triage), zoom: triageZoom)
                         .navigationDestination(isPresented: Binding(get: { store.pullRequestID != nil }, set: { if !$0, let presentedPRID { store.send(.pullRequestDismissed(presentedPRID)) } })) {
                             if let id = store.pullRequestID,
                                let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == id }) {
@@ -150,7 +153,7 @@ struct ServiceRootView<AccountContent: View>: View {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
                 }
-            }.badge(store.triage.triage.connection == .unpaired ? 0 : store.triage.triage.queue.count)
+            }.badge(store.triage.triage.connection.problem == .deviceRevoked ? 0 : store.triage.triage.queue.count)
             Tab("Tasks", systemImage: "checklist", value: ServiceRootFeature.State.Tab.tasks) {
                 ServiceTasksView(store: store.scope(state: \.tasks, action: \.tasks), focusInbox: { store.send(.focusInbox($0)) }, showSettings: { store.send(.settingsPresented(true)) })
             }

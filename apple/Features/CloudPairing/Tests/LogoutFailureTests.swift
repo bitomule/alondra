@@ -53,6 +53,7 @@ struct LogoutFailureTests {
         await store.receive(\.revocationRequired) {
             $0.restorationInFlight = false
             $0.logoutIncomplete = true
+            $0.restoreProblem = .unexpected
             $0.error = "Incomplete logout"
         }
         await store.send(.reauthenticate)

@@ -1,4 +1,5 @@
 import AlondraAttachmentsFeature
+import AlondraConnectionFeature
 import AlondraWorkspaceFeature
 import AlondraQuestionsFeature
 import AlondraShared
@@ -8,7 +9,6 @@ import SwiftUI
 
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
-    let showSettings: () -> Void
     let zoom: Namespace.ID
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -56,10 +56,9 @@ struct ServiceTriageView: View {
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             HStack(spacing: 8) {
-                if case .offline(let reason) = store.triage.connection {
-                    Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
-                } else if store.triage.connection == .unpaired {
-                    Label("Not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
+                if let problem = store.triage.connection.problem {
+                    Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
+                        .foregroundStyle(Palette.rose)
                 } else {
                     Text(summary).contentTransition(.numericText())
                 }
@@ -78,15 +77,9 @@ struct ServiceTriageView: View {
     private var loading: some View {
         VStack(spacing: 16) {
             ProgressView().controlSize(.large).tint(Palette.dawn)
-            Text(store.triage.connection == .connecting ? String(localized: "Connecting to the fleet…") : String(localized: "Retrying every few seconds…"))
+            Text("Connecting to the fleet…")
                 .font(.subheadline).foregroundStyle(.secondary)
-            if case .offline = store.triage.connection {
-                Button("Check the Server", systemImage: "gearshape", action: showSettings)
-                    .buttonStyle(.glass).padding(.top, 8)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            }
         }
-        .animation(.smooth, value: store.triage.connection)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -324,7 +317,7 @@ struct ServiceMachineBadge: View {
         switch connection {
         case .online: machine?.unreliable == true ? Palette.dawn : Palette.sage
         case .connecting: Palette.slate
-        case .offline, .unpaired: Palette.rose
+        case .offline: Palette.rose
         }
     }
 }
@@ -365,12 +358,11 @@ private struct ServiceMachineDetail: View {
             Text("Mac")
                 .font(.display(.title3, weight: .bold))
             switch connection {
-            case .offline(let reason):
-                Label(reason, systemImage: "wifi.slash").foregroundStyle(Palette.rose)
+            case .offline(let problem):
+                Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
+                    .foregroundStyle(Palette.rose)
             case .connecting:
                 Label("Connecting…", systemImage: "antenna.radiowaves.left.and.right")
-            case .unpaired:
-                Label("This device is not paired", systemImage: "lock.slash").foregroundStyle(Palette.rose)
             case .online:
                 if let machine = machine {
                     ForEach(StatusReadings.of(machine: machine, usage: usage)) { reading in

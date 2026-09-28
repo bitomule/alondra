@@ -1,4 +1,5 @@
 import AlondraCloudPairingFeature
+import AlondraConnectionFeature
 import ComposableArchitecture
 import SwiftUI
 
@@ -163,7 +164,7 @@ public struct ServiceSettingsView<PairingContent: View>: View {
     @ViewBuilder private var checkBadge: some View {
         if store.checking { ProgressView() }
         else if store.connected { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(success) }
-        else if let error = store.connectionError { Text(error).foregroundStyle(failure).lineLimit(1) }
+        else if let problem = store.connectionError { Text(problem.title).foregroundStyle(failure).lineLimit(1) }
     }
 
     @ViewBuilder private func registration(_ delivery: ServiceNotificationSettings.Delivery) -> some View {

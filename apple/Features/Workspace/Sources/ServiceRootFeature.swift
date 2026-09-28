@@ -1,3 +1,4 @@
+import AlondraConnectionFeature
 import AlondraAttachmentsFeature
 import AlondraFleetFeature
 import AlondraDomain
@@ -50,8 +51,9 @@ public struct ServiceRootFeature {
         public var pendingInboxID: String?
         public var feedbackResolutions: [ReportFeedbackRecoveryEvent] = []
         public var macSubtitle: String {
+            if let problem = triage.triage.connection.problem { return String(localized: problem.title) }
             guard triage.triage.hasSnapshot, let overview = fleet.overview else {
-                return String(localized: "No connection to alondrad")
+                return String(localized: "Connecting to the fleet…")
             }
             let count = triage.triage.queue.count
             let pending = count == 0 ? String(localized: "All caught up") : String(localized: "\(count) pending")

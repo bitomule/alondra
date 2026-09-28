@@ -5,7 +5,7 @@ swift_library(
     srcs = glob(["Sources/*.swift"]),
     module_name = "AlondraSettingsFeature",
     visibility = ["//visibility:public"],
-    deps = ["//apple/Features/CloudPairing:AlondraCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+    deps = ["//apple/Contracts:AlondraContracts", "//apple/Features/Connection:AlondraConnectionFeature", "//apple/Features/CloudPairing:AlondraCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )
 
 swift_test(
