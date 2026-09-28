@@ -76,7 +76,21 @@ pub fn recovery_events(view: &View) -> Vec<Event> {
         next.updated_at = now_millis();
         events.push(Event::DeliveryAttemptRecorded(next));
     }
+    events.extend(view.questions.values().filter(|q| held_by_a_hook(q)).map(|q| Event::QuestionClosed {
+        id: q.id,
+        status: alondra_core::QuestionStatus::Orphaned,
+        note: Some("held by a hook before the daemon restarted".into()),
+    }));
     events
+}
+
+/// A hook's hold lives in the daemon process. After a restart nothing can answer it, and the
+/// open card would hide the menu Claude now shows in the node's terminal.
+fn held_by_a_hook(question: &alondra_core::Question) -> bool {
+    use alondra_core::QuestionOrigin::{AskUserQuestion, Elicitation, Permission, Plan};
+    question.status == alondra_core::QuestionStatus::Open
+        && matches!(question.origin, AskUserQuestion | Permission | Plan | Elicitation)
+        && !question.tool_use_id.as_deref().is_some_and(|id| id.starts_with("menu:"))
 }
 
 fn new_attempt(id: u64, sid: &str, channel: Channel, message_ids: Vec<u64>) -> Attempt {
@@ -410,6 +424,27 @@ mod tests {
         let closed: Vec<Attempt> = recovery_events(&view).into_iter().filter_map(|e| match e { Event::DeliveryAttemptRecorded(a) => Some(a), _ => None }).collect();
         assert_eq!(closed.len(), 1, "{closed:?}");
         assert_eq!((closed[0].id, closed[0].state, closed[0].version), (1, State::Discarded, 2));
+    }
+    #[test]
+    fn restart_orphans_cards_that_a_hook_was_holding() {
+        let mut view = View::default();
+        view.delivery_protocol = true;
+        let card = |id: u64, origin: &str, tool: Option<&str>, status: &str| -> alondra_core::Question {
+            serde_json::from_value(serde_json::json!({"id": id, "session_id": "s", "node_name": null,
+                "title": "t", "blocking": true, "origin": origin, "tool_use_id": tool,
+                "status": status, "asked_at": 1})).unwrap()
+        };
+        for q in [card(1, "permission", Some("toolu_1"), "open"), card(2, "ask_user_question", None, "open"),
+                  card(3, "plan", None, "open"), card(4, "elicitation", None, "open"),
+                  card(5, "permission", Some("menu:ab12"), "open"), card(6, "ask", None, "open"),
+                  card(7, "classifier", None, "open"), card(8, "permission", None, "answered")] {
+            view.questions.insert(q.id, q);
+        }
+        let orphaned: Vec<u64> = recovery_events(&view).into_iter().filter_map(|e| match e {
+            Event::QuestionClosed { id, status: alondra_core::QuestionStatus::Orphaned, .. } => Some(id),
+            _ => None,
+        }).collect();
+        assert_eq!(orphaned, vec![1, 2, 3, 4]);
     }
     fn fixture() -> Arc<Hub> {
         let home = std::env::temp_dir().join(format!("delivery-{}", crate::auth::random_hex(8)));

@@ -245,7 +245,6 @@ fn show_config(get: Option<&str>) -> Result<()> {
 
 fn hook() -> Result<()> {
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
 
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
@@ -269,32 +268,74 @@ fn hook() -> Result<()> {
     if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") {
         payload["_alondra_run"] = json!(run);
     }
-    let critical = matches!(payload.get("hook_event_name").and_then(serde_json::Value::as_str),
-        Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
+    let event = payload.get("hook_event_name").and_then(serde_json::Value::as_str).map(str::to_string);
+    let critical = matches!(event.as_deref(), Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
     let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
-    let send = (|| -> Result<()> {
-        let body = serde_json::to_vec(&json!({"launched": launched, "payload": payload}))?;
-        let path = client::config().home.join("hooks.sock");
+    let subagent = event.as_deref() == Some("PreToolUse")
+        && payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("Agent");
+    let body = serde_json::to_vec(&json!({"launched": launched, "payload": payload}))?;
+    match send_hook(&body) {
+        HookReply::Answered => Ok(()),
+        HookReply::Refused(reason) if critical => {
+            eprintln!("Alondra cannot validate this action: {reason}");
+            std::process::exit(2);
+        }
+        HookReply::Refused(reason) => Err(anyhow::anyhow!(reason)),
+        // Only a subagent of a launched session needs Alondra now: without its task token,
+        // every tool it runs is refused as soon as Alondra is back.
+        HookReply::Unreachable(_) if launched && subagent => {
+            let output = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Alondra is not answering, so this subagent cannot receive its task token. Launch it again in a moment, or do the work in this thread."}});
+            println!("{output}");
+            Ok(())
+        }
+        HookReply::Unreachable(error) => {
+            eprintln!("Alondra did not answer; continuing without it: {error:#}");
+            Ok(())
+        }
+    }
+}
+
+enum HookReply {
+    Answered,
+    Refused(String),
+    Unreachable(anyhow::Error),
+}
+
+/// A reply already printed stands even if its acknowledgement is lost: the daemon records
+/// that delivery as uncertain. A 5xx, like no answer at all, lets Claude continue; a 4xx is
+/// a deliberate refusal.
+fn send_hook(body: &[u8]) -> HookReply {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let path = client::config().home.join("hooks.sock");
+    let exchange = (|| -> Result<Vec<u8>> {
         let mut stream = UnixStream::connect(&path)
             .map_err(|e| anyhow::anyhow!("cannot send hook to {}: {e}", path.display()))?;
         anyhow::ensure!(body.len() <= u32::MAX as usize, "hook input is too large");
         stream.write_all(&(body.len() as u32).to_be_bytes())?;
-        stream.write_all(&body)?;
+        stream.write_all(body)?;
         let mut response = Vec::new();
         stream.read_to_end(&mut response)?;
         anyhow::ensure!(response.len() >= 2, "daemon closed the hook connection without a reply");
-        let status = u16::from_be_bytes([response[0], response[1]]);
-        anyhow::ensure!(status < 400, "daemon rejected hook ({status}): {}", String::from_utf8_lossy(&response[2..]));
-        std::io::stdout().write_all(&response[2..])?;
-        std::io::stdout().flush()?;
-        stream.write_all(&[6])?;
-        Ok(())
+        if u16::from_be_bytes([response[0], response[1]]) < 400 {
+            let mut stdout = std::io::stdout();
+            if stdout.write_all(&response[2..]).and_then(|()| stdout.flush()).is_ok() {
+                let _ = stream.write_all(&[6]);
+            }
+        }
+        Ok(response)
     })();
-    if critical && let Err(error) = &send {
-        eprintln!("Alondra cannot validate this action: {error:#}");
-        std::process::exit(2);
+    let response = match exchange {
+        Ok(response) => response,
+        Err(error) => return HookReply::Unreachable(error),
+    };
+    let detail = String::from_utf8_lossy(&response[2..]);
+    match u16::from_be_bytes([response[0], response[1]]) {
+        status @ 500.. => HookReply::Unreachable(anyhow::anyhow!("daemon failed ({status}): {detail}")),
+        status @ 400..=499 => HookReply::Refused(format!("daemon rejected hook ({status}): {detail}")),
+        _ => HookReply::Answered,
     }
-    send
 }
 
 /// Alondra schedules start at one-hour intervals. Keep shorter session polling in Claude.
