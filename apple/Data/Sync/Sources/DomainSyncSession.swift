@@ -24,7 +24,10 @@ public struct DomainSyncState: Equatable, Sendable {
 /// changes the UI-facing v1 SyncSession or its mutation routes.
 public actor DomainSyncSession {
     private var transport: any DomainSyncTransport
-    private let retryDelay: Duration
+    private let backoff: ConnectionBackoff
+    private let classify: @Sendable (any Error) -> ConnectionProblem
+    private let random: @Sendable () -> Double
+    private var failures = 0
     private var generation: UInt64 = 0
     private var publicationRevision: UInt64 = 0
     private var loop: Task<Void, Never>?
@@ -32,9 +35,13 @@ public actor DomainSyncSession {
     public private(set) var state: DomainSyncState
 
     public init(transport: any DomainSyncTransport, identity: SyncIdentity,
-                retryDelay: Duration = .seconds(2)) {
+                backoff: ConnectionBackoff = .standard,
+                classify: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected },
+                random: @escaping @Sendable () -> Double = { Double.random(in: 0...1) }) {
         self.transport = transport
-        self.retryDelay = retryDelay
+        self.backoff = backoff
+        self.classify = classify
+        self.random = random
         state = DomainSyncState(identity: identity, generation: 0,
                                 publicationRevision: 0, connection: .connecting, projection: nil)
     }
@@ -101,6 +108,11 @@ public actor DomainSyncSession {
         for continuation in subscribers.values { continuation.yield(state) }
     }
 
+    private func nextDelay() -> Duration {
+        defer { failures += 1 }
+        return backoff.delay(attempt: failures, random: random())
+    }
+
     private func run(transport: any DomainSyncTransport, generation current: UInt64) async {
         while !Task.isCancelled && generation == current && !subscribers.isEmpty {
             do {
@@ -113,6 +125,7 @@ public actor DomainSyncSession {
                         message: "Domain revision moved backwards within one epoch",
                         currentRevision: projection.revision, subject: nil)
                 }
+                failures = 0
                 publish(identity: state.identity, connection: .online, projection: projection)
                 while !Task.isCancelled && generation == current && !subscribers.isEmpty {
                     let changes = try await transport.domainChanges(
@@ -129,13 +142,13 @@ public actor DomainSyncSession {
             } catch let error as DomainV2.DomainError where error.code == "incompatible_protocol" {
                 guard !Task.isCancelled, generation == current else { return }
                 // A mismatched 200 response cannot keep an old projection visible.
-                publish(identity: state.identity, connection: .offline(error.message), projection: nil)
-                do { try await Task.sleep(for: retryDelay) } catch { return }
+                publish(identity: state.identity, connection: .offline(.unexpected), projection: nil)
+                do { try await Task.sleep(for: nextDelay()) } catch { return }
             } catch {
                 guard !Task.isCancelled, generation == current else { return }
-                publish(identity: state.identity, connection: .offline(String(describing: error)),
+                publish(identity: state.identity, connection: .offline(classify(error)),
                         projection: state.projection)
-                do { try await Task.sleep(for: retryDelay) } catch { return }
+                do { try await Task.sleep(for: nextDelay()) } catch { return }
             }
         }
     }

@@ -42,16 +42,16 @@ struct TriageFeatureTests {
             $0.snapshotRevision = 1
             $0.items = ObserveInboxUseCase().execute(snapshot).items
         }
-        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .offline("Connection lost")))
+        updates.continuation.yield(TriageInboxUpdate(identity: a, overview: snapshot, connection: .offline(.macNotAnswering)))
         await store.receive(\.inboxUpdated) {
-            $0.connection = .offline("Connection lost")
+            $0.connection = .offline(.macNotAnswering)
             $0.snapshotRevision = 2
         }
         #expect(store.state.hasSnapshot)
         #expect(store.state.queue.map(\.id) == ["q1"])
         updates.continuation.yield(TriageInboxUpdate(identity: b, overview: snapshot, connection: .online))
         await store.receive(\.inboxUpdated)
-        #expect(store.state.connection == .offline("Connection lost"))
+        #expect(store.state.connection == .offline(.macNotAnswering))
         await store.send(.disappeared)
         updates.continuation.finish()
         await store.finish()

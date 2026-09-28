@@ -25,22 +25,22 @@ struct AlondraVisualHarness: App {
 
 private struct VisualScene: View {
     let fixture: VisualFixture
-    @State private var restoring: StoreOf<ServiceRootFeature> = Store(initialState: ServiceRootFeature.State()) { EmptyReducer() }
     var body: some View {
         CloudWorkspaceGate(store: fixture.pairing, hasServices: fixture.ready) {
             #if os(iOS)
             ServiceRootView(store: fixture.workspace, accountContent: settings)
+                .connectionLostOverlay(store: fixture.workspace, retry: {}, signIn: nil)
                 .id(ObjectIdentifier(fixture.workspace)).tint(Palette.dawn)
             #else
             MacServiceWorkspace(store: fixture.workspace, accountContent: settings)
+                .connectionLostOverlay(store: fixture.workspace, retry: {}, signIn: nil)
                 .id(ObjectIdentifier(fixture.workspace))
             #endif
         } restoring: {
-            #if os(iOS)
-            ServiceRestoringWorkspace(store: restoring, pairing: fixture.pairing).tint(Palette.dawn)
-            #else
-            MacRestoringWorkspace(store: restoring, pairing: fixture.pairing)
-            #endif
+            RestoreConnectionView(store: fixture.pairing, networkChanges: { AsyncStream { $0.yield(true) } })
+                #if os(iOS)
+                .background(DawnBackground()).tint(Palette.dawn)
+                #endif
         } onboarding: {
             #if os(iOS)
             NavigationStack { CloudPairingScreen(store: fixture.pairing) }

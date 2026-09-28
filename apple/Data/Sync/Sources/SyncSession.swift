@@ -1,4 +1,5 @@
 import AlondraAPIClient
+import AlondraContracts
 import Foundation
 
 /// The caller must change `credentialRevision` when a signing key changes, including rotation
@@ -29,9 +30,8 @@ public struct SyncSnapshot: Equatable, Sendable {
 public enum SyncConnection: Equatable, Sendable {
     case connecting
     case online
-    case offline(String)
+    case offline(ConnectionProblem)
     case invalidConfiguration(String)
-    case unpaired
 }
 
 /// A complete renderable value. Every emission identifies the credential generation that owns
@@ -62,27 +62,34 @@ public actor SyncSession {
     private static let changeWaitSeconds = 10
 
     private var transport: any SyncTransport
-    private var isUnauthorized: @Sendable (any Error) -> Bool
+    private var classify: @Sendable (any Error) -> ConnectionProblem
     public var identity: SyncIdentity { state.identity }
     public private(set) var state: SyncState
-    private let retryDelay: Duration
+    private let backoff: ConnectionBackoff
+    private let sleep: @Sendable (Duration) async throws -> Void
+    private let random: @Sendable () -> Double
+    private var failures = 0
     private var generation: UInt64 = 0
     private var publicationRevision: UInt64 = 0
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<SyncState>.Continuation] = [:]
 
     public init(transport: any SyncTransport, identity: SyncIdentity,
-                retryDelay: Duration = .seconds(2), initialInvalidConfiguration: String? = nil,
-                isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
+                backoff: ConnectionBackoff = .standard, initialInvalidConfiguration: String? = nil,
+                classify: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected },
+                sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+                random: @escaping @Sendable () -> Double = { Double.random(in: 0...1) }) {
         self.transport = transport
-        self.isUnauthorized = isUnauthorized
+        self.classify = classify
+        self.sleep = sleep
+        self.random = random
         self.state = SyncState(
             identity: identity,
             generation: 0,
             connection: initialInvalidConfiguration.map(SyncConnection.invalidConfiguration) ?? .connecting,
             snapshot: nil
         )
-        self.retryDelay = retryDelay
+        self.backoff = backoff
     }
 
     public func subscribe() -> AsyncStream<SyncState> {
@@ -99,12 +106,13 @@ public actor SyncSession {
 
     /// Replaces the service transport and invalidates in-flight reads under an explicit identity.
     public func use(transport next: any SyncTransport, identity: SyncIdentity,
-                    isUnauthorized: @escaping @Sendable (any Error) -> Bool = { _ in false }) {
+                    classify: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }) {
         generation &+= 1
         loop?.cancel()
         loop = nil
+        failures = 0
         transport = next
-        self.isUnauthorized = isUnauthorized
+        self.classify = classify
         publish(SyncState(identity: identity, generation: generation, connection: .connecting, snapshot: nil))
         startIfNeeded()
     }
@@ -126,6 +134,13 @@ public actor SyncSession {
         loop?.cancel()
         loop = nil
         startIfNeeded()
+    }
+
+    /// Skips the rest of the current backoff wait, for when the network returns or the app comes
+    /// back to the foreground. A healthy session keeps its long poll.
+    public func retryNow() {
+        guard case .offline = state.connection else { return }
+        refresh()
     }
 
     /// Ends all subscriptions and cancels the active long poll.
@@ -158,10 +173,9 @@ public actor SyncSession {
         if case .invalidConfiguration = state.connection { return }
         let currentGeneration = generation
         let currentTransport = transport
-        let unauthorized = isUnauthorized
+        let currentClassify = classify
         loop = Task { [weak self] in
-            await self?.run(transport: currentTransport, generation: currentGeneration,
-                            isUnauthorized: unauthorized)
+            await self?.run(transport: currentTransport, generation: currentGeneration, classify: currentClassify)
         }
     }
 
@@ -192,13 +206,14 @@ public actor SyncSession {
     }
 
     private func run(transport: any SyncTransport, generation current: UInt64,
-                     isUnauthorized: @Sendable (any Error) -> Bool) async {
+                     classify: @Sendable (any Error) -> ConnectionProblem) async {
         while !Task.isCancelled && generation == current && !subscribers.isEmpty {
             do {
                 // Always fetch the complete state after a change, reconnection, or daemon restart.
                 let body = try await transport.fetchOverview()
                 let snapshot = try SyncSnapshot(body: body)
                 guard !Task.isCancelled, generation == current else { return }
+                failures = 0
                 publish(.online, snapshot: snapshot)
                 do {
                     try await transport.waitForChange(afterSnapshotTick: snapshot.tick,
@@ -210,12 +225,10 @@ public actor SyncSession {
                 return
             } catch {
                 guard !Task.isCancelled, generation == current else { return }
-                if isUnauthorized(error) {
-                    publish(.unpaired)
-                } else {
-                    publish(.offline(String(describing: error)))
-                }
-                do { try await Task.sleep(for: retryDelay) } catch { return }
+                publish(.offline(classify(error)))
+                let delay = backoff.delay(attempt: failures, random: random())
+                failures += 1
+                do { try await sleep(delay) } catch { return }
             }
         }
     }

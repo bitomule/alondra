@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
     name = "AlondraWorkspace",
@@ -20,5 +20,19 @@ swift_library(
         "//apple/Data/Sync:AlondraSync",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/NotificationPayload:AlondraNotificationPayload",
+    ],
+)
+
+swift_test(
+    name = "AlondraWorkspaceTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [
+        ":AlondraWorkspace",
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Auth:AlondraAuth",
+        "//apple/Contracts:AlondraContracts",
+        "//apple/Domain:AlondraDomain",
+        "//apple/Data/LoopbackSession:AlondraLoopbackSession",
+        "//apple/Data/RelaySession:AlondraRelaySession",
     ],
 )

@@ -16,8 +16,13 @@ public struct TriageIdentity: Equatable, Sendable {
 }
 
 public enum TriageConnection: Equatable, Sendable {
-    case connecting, online, unpaired
-    case offline(String)
+    case connecting, online
+    case offline(ConnectionProblem)
+
+    public var problem: ConnectionProblem? {
+        if case .offline(let problem) = self { return problem }
+        return nil
+    }
 }
 
 public struct TriageInboxUpdate: Sendable {

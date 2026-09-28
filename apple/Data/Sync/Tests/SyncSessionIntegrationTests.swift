@@ -263,14 +263,14 @@ final class SyncSessionIntegrationTests: XCTestCase {
         let transport = ControlledTransport(lateResponses: [0])
         let old = identity("key-1")
         let new = identity("key-2", server: URL(string: "https://new.example")!)
-        let session = SyncSession(transport: transport, identity: old, isUnauthorized: { _ in
+        let session = SyncSession(transport: transport, identity: old, classify: { _ in
             XCTFail("The cancelled old read reached error presentation after identity replacement")
-            return true
+            return .deviceRevoked
         })
         var observer = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
-        await session.use(transport: transport, identity: new, isUnauthorized: {
-            ($0 as? URLError)?.code == .userAuthenticationRequired
+        await session.use(transport: transport, identity: new, classify: {
+            ($0 as? URLError)?.code == .userAuthenticationRequired ? .deviceRevoked : .unexpected
         })
         await transport.waitForRequests(2)
         await transport.waitForCancellations(1)
@@ -288,7 +288,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
         await transport.fail(2, error: URLError(.userAuthenticationRequired))
         let unauthorized = await observer.next()
         XCTAssertEqual(unauthorized?.identity, new)
-        XCTAssertEqual(unauthorized?.connection, .unpaired)
+        XCTAssertEqual(unauthorized?.connection, .offline(.deviceRevoked))
         XCTAssertEqual(unauthorized?.snapshot?.tick, 2)
         await session.stop()
     }
@@ -320,7 +320,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
 
     func testOfflineSubscriberReplaysSnapshotThenStatusAndIdentitySwitchClearsIt() async throws {
         let transport = ControlledTransport()
-        let session = SyncSession(transport: transport, identity: identity("local"), retryDelay: .seconds(60))
+        let session = SyncSession(transport: transport, identity: identity("local"), backoff: ConnectionBackoff(initial: .seconds(60)))
         var first = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         await transport.respond(0, body: try overview(8))
@@ -356,7 +356,7 @@ final class SyncSessionIntegrationTests: XCTestCase {
         let transport = ControlledTransport()
         let old = identity("old")
         let new = identity("new", server: URL(string: "https://new.example")!)
-        let session = SyncSession(transport: transport, identity: old, retryDelay: .milliseconds(1))
+        let session = SyncSession(transport: transport, identity: old, backoff: ConnectionBackoff(initial: .milliseconds(1), maximum: .milliseconds(1)))
         var slow = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         await transport.respond(0, body: try overview(80))
