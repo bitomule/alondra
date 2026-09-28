@@ -584,3 +584,6 @@ mod tests;
 #[cfg(test)]
 #[path = "domain_store/acceptance_tests.rs"]
 mod acceptance_tests;
+#[cfg(test)]
+#[path = "domain_store/schedule_acceptance_tests.rs"]
+mod schedule_acceptance_tests;

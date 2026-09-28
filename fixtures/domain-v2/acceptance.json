@@ -101,6 +101,25 @@
     "outbox": [],
     "delivery_attempts": []
   },
+  "schedule_base": {
+    "id": "schedule-acceptance",
+    "title": "Synthetic schedule",
+    "text": "Synthetic mission",
+    "project": null,
+    "options": {},
+    "disallowed_tools": ["Bash"],
+    "frequency": "daily",
+    "hour": 9,
+    "minute": 0,
+    "weekday": null,
+    "interval": null,
+    "start_at": null,
+    "enabled": true,
+    "next_run": 1000,
+    "revision": 1,
+    "deleted_at": null
+  },
+  "schedule_acceptance_status_note": "cs_evidence_status=passed applies only to the named synthetic C/S evidence. execution_status=specified_not_executed keeps the complete scenario pending, including A/U, runner, and cutover gates listed in remaining.",
   "variants": {
     "unaccepted-text-final": {
       "task_id": "task-1",
@@ -3490,6 +3509,105 @@
           "value": []
         }
       ],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V54",
+      "title": "Schedule CRUD revisions and transport receipt retry",
+      "layers": ["C", "S", "A", "U"],
+      "base": "schedule_base",
+      "cs_expected": {"schedule_rows": 1, "transport_receipts": 3},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v54_cs_crud_revision_and_transport_receipts"],
+      "cs_evidence_status": "passed",
+      "remaining": ["API transport matrix", "Apple client", "runner"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V55",
+      "title": "Observed due claim skips missed slots",
+      "layers": ["C", "S", "A"],
+      "base": "schedule_base",
+      "cs_expected": {"due_at": 1000, "next_run": 11000, "run_rows": 1},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v55_cs_overdue_claim_consumes_one_observed_slot"],
+      "cs_evidence_status": "passed",
+      "remaining": ["local calendar and DST adapter", "poller runner"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V56",
+      "title": "Manual disabled Schedule records two linked Request and Task pairs",
+      "layers": ["C", "S", "A", "U"],
+      "base": "schedule_base",
+      "cs_expected": {"run_rows": 2, "request_rows": 2, "task_rows": 2},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v56_cs_manual_disabled_runs_have_distinct_links"],
+      "cs_evidence_status": "passed",
+      "remaining": ["manual run API", "runner", "Apple client"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V57",
+      "title": "Restart after claim interrupts without replay",
+      "layers": ["C", "S", "A"],
+      "base": "schedule_base",
+      "cs_expected": {"next_run": 2000, "request_rows": 0, "task_rows": 0},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v57_cs_restart_interrupts_claim_without_replaying_due_slot"],
+      "cs_evidence_status": "passed",
+      "remaining": ["runner restart under process crash"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V58",
+      "title": "Sent Request Task policy and receipt are atomic",
+      "layers": ["C", "S", "A"],
+      "base": "schedule_base",
+      "cs_expected": {"request_rows": 1, "task_rows": 1, "policy_rows": 1},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v58_cs_sent_links_policy_and_receipt_commit_together"],
+      "cs_evidence_status": "passed",
+      "remaining": ["runner launch receipt", "process crash windows"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V59",
+      "title": "Import 11 definitions and five observed runs without history invention",
+      "layers": ["C", "S", "A"],
+      "base": "synthetic_offline_backup",
+      "cs_expected": {"schedule_rows": 11, "run_rows": 5},
+      "cs_evidence": ["domain_migration::schedules::tests::offline_import_roundtrips_schedule_rows_and_exact_side_tables"],
+      "cs_evidence_status": "passed",
+      "remaining": ["live cutover with runner and consumers"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V60",
+      "title": "Orphan ambiguous or uncertain legacy link blocks import",
+      "layers": ["S", "A"],
+      "base": "synthetic_offline_backup",
+      "cs_expected": {"blocked": true},
+      "cs_evidence": ["domain_migration::schedules::tests::orphan_ambiguous_and_uncertain_links_fail_without_rewriting_source"],
+      "cs_evidence_status": "passed",
+      "remaining": ["full offline cutover rehearsal"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V61",
+      "title": "Cutover guard remains closed while Schedule runner is incomplete",
+      "layers": ["S", "A", "U"],
+      "base": "synthetic_offline_backup",
+      "cs_expected": {"guard_blocks": true},
+      "cs_evidence": ["domain_migration::tests::cutover_rejects_unmigrated_schedules_and_receipts_before_creating_stage"],
+      "cs_evidence_status": "passed",
+      "remaining": ["runner and consumer validation", "locked cutover", "rollback smoke"],
+      "execution_status": "specified_not_executed"
+    },
+    {
+      "id": "V62",
+      "title": "Late failure of an older run leaves latest Schedule revision intact",
+      "layers": ["C", "S", "A"],
+      "base": "schedule_base",
+      "cs_expected": {"failure_markers": 1, "semantic_receipts": 6},
+      "cs_evidence": ["domain_store::schedule_acceptance_tests::v62_cs_older_launch_failure_does_not_replace_latest_run"],
+      "cs_evidence_status": "passed",
+      "remaining": ["runner late failure ordering"],
       "execution_status": "specified_not_executed"
     }
   ]
