@@ -38,8 +38,10 @@ fn destination_outside(home: &Path, destination: &Path) -> Result<()> {
 
 mod import;
 mod schedules;
+#[cfg(test)]
+mod synthetic;
 pub(crate) use import::{ImportLink, ImportReport, materialize_legacy};
-pub(crate) use schedules::{LegacyScheduleInventory, read_legacy_schedules_readonly};
+pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow, read_legacy_schedules_readonly};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct LegacyInventory {
@@ -192,10 +194,10 @@ fn ensure_legacy_delivery_reconciled(view: &View) -> Result<()> {
     Ok(())
 }
 
-/// The v2-only daemon does not yet open the legacy schedule store. Until its
-/// jobs, run links and command receipts have a v2 home, a cutover must not
-/// strand even a disabled schedule or a receipt in this separate database.
-pub(crate) fn ensure_legacy_schedules_reconciled(home: &Path) -> Result<()> {
+/// The legacy schedule store is imported at cutover. Before any backup is
+/// taken, refuse a source whose schedules.db is unsafe, corrupt or holds
+/// tables the importer does not know; rows themselves are welcome.
+pub(crate) fn ensure_legacy_schedules_readable(home: &Path) -> Result<()> {
     let path = home.join("schedules.db");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -229,25 +231,32 @@ pub(crate) fn ensure_legacy_schedules_reconciled(home: &Path) -> Result<()> {
     let names = tables.query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(tables);
-    let mut occupied = Vec::new();
     for name in names {
-        let count_sql = match name.as_str() {
-            "schedules" => "SELECT COUNT(*) FROM schedules",
-            "local_command_results" => "SELECT COUNT(*) FROM local_command_results",
-            "schedule_failed_launches" => "SELECT COUNT(*) FROM schedule_failed_launches",
-            "schedule_launch_tools" => "SELECT COUNT(*) FROM schedule_launch_tools",
-            _ => anyhow::bail!("schedules.db contains an unknown table: {name}"),
-        };
-        let count: i64 = database.query_row(count_sql, [], |row| row.get(0))?;
-        if count > 0 {
-            occupied.push(format!("{name}={count}"));
-        }
+        ensure!(
+            matches!(
+                name.as_str(),
+                "schedules" | "local_command_results" | "schedule_failed_launches" | "schedule_launch_tools"
+            ),
+            "schedules.db contains an unknown table: {name}"
+        );
     }
     database.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+/// The promoted store must carry exactly the schedule rows, run links, tool
+/// policies, failed launches and receipts that the verified backup holds.
+pub(crate) fn verify_staged_schedules(backup: &Path, stage: &Path) -> Result<()> {
+    let view = load_legacy_readonly(&backup.join("alondra.db"))?;
+    let mut store = crate::domain_store::DomainStore::open(&stage.join("domain-v2.db"))?;
+    let staged = store.load()?;
+    let expected = read_legacy_schedules_readonly(backup, &view, &staged)?;
+    let imported = store.legacy_schedule_inventory()?;
     ensure!(
-        occupied.is_empty(),
-        "schedules.db contains {}; migrate schedules, run links and receipts before v2 cutover",
-        occupied.join(", ")
+        imported == expected,
+        "staged schedule import differs from the verified backup: staged {:?}, backup {:?}",
+        imported.counts(),
+        expected.counts()
     );
     Ok(())
 }
@@ -707,7 +716,7 @@ pub(crate) fn prepare_cutover_offline(
     destination_outside(home, backup)?;
     destination_outside(home, stage)?;
     let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
-    ensure_legacy_schedules_reconciled(home)?;
+    ensure_legacy_schedules_readable(home)?;
     let manifest = backup_locked(&lock, home, backup, legacy_daemon)?;
     let digest = backup_manifest_digest(backup)?;
     let rehearsal = rehearse(backup, stage)?;
@@ -731,7 +740,23 @@ fn materialize_with_schedules(
     view: &View, source_home: &Path, target_home: &Path, epoch: d::DataEpoch,
 ) -> Result<(d::DomainState, ImportReport, LegacyScheduleInventory)> {
     let (mut state, imported) = materialize_legacy(view, source_home, target_home, epoch)?;
-    let schedules = read_legacy_schedules_readonly(source_home, view, &state)?;
+    // A verified backup already holds a rollback-journal copy. A rehearsal
+    // straight from a HOME snapshots the live WAL database the same way first.
+    let schedules = if source_home.join("manifest.json").exists()
+        || !source_home.join("schedules.db").exists()
+    {
+        read_legacy_schedules_readonly(source_home, view, &state)?
+    } else {
+        let snapshot = std::env::temp_dir().join(format!(
+            "alondra-domain-schedule-snapshot-{}",
+            crate::auth::random_hex(8)
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&snapshot)?;
+        let result = sqlite_backup(&source_home.join("schedules.db"), &snapshot.join("schedules.db"))
+            .and_then(|()| read_legacy_schedules_readonly(&snapshot, view, &state));
+        fs::remove_dir_all(&snapshot)?;
+        result?
+    };
     state.schedule = schedules.state.clone();
     state.validate().map_err(anyhow::Error::new)?;
     Ok((state, imported, schedules))
@@ -741,7 +766,7 @@ fn materialize_with_schedules(
 /// never writes the legacy source, and leaves the target for human inspection.
 pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehearsal> {
     destination_outside(source_home, target_home)?;
-    ensure_legacy_schedules_reconciled(source_home)?;
+    ensure_legacy_schedules_readable(source_home)?;
     let backup_digest = if source_home.join("manifest.json").exists() {
         let digest = backup_manifest_digest(source_home)?;
         verify_backup_expected(source_home, &digest)?;
@@ -858,7 +883,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn cutover_rejects_unmigrated_schedules_and_receipts_before_creating_stage() {
+    fn populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused() {
         let root = std::env::temp_dir().join(format!(
             "alondra-schedule-cutover-{}",
             crate::auth::random_hex(8)
@@ -867,48 +892,36 @@ mod tests {
         let stage = root.join("stage");
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         fs::DirBuilder::new().mode(0o700).create(&source).unwrap();
-        ensure_legacy_schedules_reconciled(&source).unwrap();
+        ensure_legacy_schedules_readable(&source).unwrap();
 
         let database = Connection::open(source.join("schedules.db")).unwrap();
         database.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);
             CREATE TABLE local_command_results(sender TEXT,request_id TEXT,digest BLOB,result TEXT);
             CREATE TABLE schedule_failed_launches(request TEXT PRIMARY KEY);
-            CREATE TABLE schedule_launch_tools(request TEXT PRIMARY KEY,patterns TEXT NOT NULL);").unwrap();
-        ensure_legacy_schedules_reconciled(&source).unwrap();
-
-        database.execute("INSERT INTO schedules(id,body) VALUES('disabled','{\"enabled\":false}')", []).unwrap();
+            CREATE TABLE schedule_launch_tools(request TEXT PRIMARY KEY,patterns TEXT NOT NULL);
+            INSERT INTO schedules(id,body) VALUES('disabled','{\"enabled\":false}');
+            INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','old',X'00','{}');
+            INSERT INTO schedule_failed_launches(request) VALUES('request-1');
+            INSERT INTO schedule_launch_tools(request,patterns) VALUES('request-1','[]');").unwrap();
+        ensure_legacy_schedules_readable(&source).unwrap();
+        database.execute("CREATE TABLE unexpected_schedule_data(value TEXT)", []).unwrap();
+        assert!(ensure_legacy_schedules_readable(&source).unwrap_err().to_string().contains("unknown table"));
         let error = rehearse(&source, &stage).unwrap_err().to_string();
-        assert!(error.contains("schedules=1"), "{error}");
+        assert!(error.contains("unknown table"), "{error}");
         assert!(!stage.exists(), "failed rehearsal must leave no stage");
         let backup = root.join("backup");
         let error = prepare_cutover_offline(&source, &backup, &stage, &source.join("legacy-daemon"))
             .unwrap_err().to_string();
-        assert!(error.contains("schedules=1"), "{error}");
+        assert!(error.contains("unknown table"), "{error}");
         assert!(!backup.exists(), "failed preparation must leave no backup");
-        database.execute("DELETE FROM schedules", []).unwrap();
-
-        database.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','old',X'00','{}')", []).unwrap();
-        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
-        assert!(error.contains("local_command_results=1"), "{error}");
-        database.execute("DELETE FROM local_command_results", []).unwrap();
-        database.execute("INSERT INTO schedule_failed_launches(request) VALUES('request-1')", []).unwrap();
-        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
-        assert!(error.contains("schedule_failed_launches=1"), "{error}");
-        database.execute("DELETE FROM schedule_failed_launches", []).unwrap();
-        database.execute("INSERT INTO schedule_launch_tools(request,patterns) VALUES('request-1','[]')", []).unwrap();
-        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
-        assert!(error.contains("schedule_launch_tools=1"), "{error}");
-        database.execute("DELETE FROM schedule_launch_tools", []).unwrap();
-        database.execute("CREATE TABLE unexpected_schedule_data(value TEXT)", []).unwrap();
-        assert!(ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string().contains("unknown table"));
         drop(database);
         fs::remove_file(source.join("schedules.db")).unwrap();
         fs::write(source.join("schedules.db"), b"not a SQLite database").unwrap();
-        assert!(ensure_legacy_schedules_reconciled(&source).is_err());
+        assert!(ensure_legacy_schedules_readable(&source).is_err());
         fs::remove_file(source.join("schedules.db")).unwrap();
         for sidecar in ["schedules.db-wal", "schedules.db-shm", "schedules.db-journal"] {
             fs::write(source.join(sidecar), b"orphaned SQLite sidecar").unwrap();
-            let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
+            let error = ensure_legacy_schedules_readable(&source).unwrap_err().to_string();
             assert!(error.contains(sidecar), "{error}");
             let error = rehearse(&source, &stage).unwrap_err().to_string();
             assert!(error.contains(sidecar), "{error}");
@@ -991,6 +1004,7 @@ mod tests {
         let mut idle_node = alondra_core::model::Node::new("idle-session", 1);
         idle_node.name = Some("Idle node".into());
         idle_node.pid = Some(123);
+        idle_node.alive = false;
         view.nodes.insert(idle_node.session_id.clone(), idle_node);
         let mut orchestrator_node = alondra_core::model::Node::new("orchestrator-session", 1);
         orchestrator_node.is_orchestrator = true;
@@ -1018,7 +1032,22 @@ mod tests {
                 "id":"task-1","request":"request-1","title":"Migration Task",
                 "state":"in_review","state_since":1,"created_at":1,"recorded":true,
                 "assignee":{"session_id":"session-1"},
-                "prs":[1,2]
+                "prs":[1,2],"final_report":1
+            }))
+            .unwrap(),
+        );
+        view.board.requests.insert(
+            "request-sched".into(),
+            serde_json::from_value(json!({
+                "id":"request-sched","text":"Scheduled mission","created_at":1
+            }))
+            .unwrap(),
+        );
+        view.board.tasks.insert(
+            "task-sched".into(),
+            serde_json::from_value(json!({
+                "id":"task-sched","request":"request-sched","title":"Scheduled Task",
+                "state":"not_started","state_since":1,"created_at":1,"recorded":true
             }))
             .unwrap(),
         );
@@ -1033,7 +1062,8 @@ mod tests {
             .unwrap();
             item.task = Some("task-1".into());
             item.head_sha = Some(format!("{number:040x}"));
-            item.base = Some("main".into());
+            item.head = Some(format!("feature-{number}"));
+            item.base = Some(if number == 2 { "feature-1".into() } else { "main".into() });
             item.merge_methods = vec![pr::MergeMethod::Merge];
             view.prs.insert(number, item);
         }
@@ -1058,6 +1088,14 @@ mod tests {
             }))
             .unwrap(),
         );
+        view.questions.insert(
+            3,
+            serde_json::from_value(json!({
+                "id":3,"session_id":"idle-session","node_name":null,"title":"Still there?",
+                "blocking":false,"origin":"ask","status":"open","asked_at":1,"task":"task-1"
+            }))
+            .unwrap(),
+        );
         view.reports.insert(
             1,
             serde_json::from_value(json!({
@@ -1067,6 +1105,29 @@ mod tests {
             }))
             .unwrap(),
         );
+        let schedules = Connection::open(source.join("schedules.db")).unwrap();
+        schedules.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);
+            CREATE TABLE local_command_results(sender TEXT NOT NULL,request_id TEXT NOT NULL,digest BLOB NOT NULL,result TEXT NOT NULL,PRIMARY KEY(sender,request_id));
+            CREATE TABLE schedule_failed_launches(request TEXT PRIMARY KEY);
+            CREATE TABLE schedule_launch_tools(request TEXT PRIMARY KEY,patterns TEXT NOT NULL);
+            INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','sched-old',zeroblob(32),'{}');
+            INSERT INTO schedule_failed_launches(request) VALUES('request-sched');
+            INSERT INTO schedule_launch_tools(request,patterns) VALUES('request-sched','[\"Bash\"]');").unwrap();
+        for (id, status) in [("sched-sent", "sent"), ("sched-never", "never_run")] {
+            let sent = status == "sent";
+            let body = json!({
+                "id":id,"title":"Nightly review","text":"Review the project","project":null,
+                "options":{},"disallowed_tools":[],"frequency":"daily","hour":9,"minute":0,
+                "weekday":null,"interval":null,"start_at":null,"enabled":sent,
+                "next_run":if sent { Some(2000) } else { None },
+                "last_run":if sent { Some(1000) } else { None },
+                "last_request":if sent { Some("request-sched") } else { None },
+                "last_error":null,"status":status,"revision":if sent { 3 } else { 1 }
+            });
+            schedules.execute("INSERT INTO schedules(id,body) VALUES(?1,?2)",
+                rusqlite::params![id, body.to_string()]).unwrap();
+        }
+        drop(schedules);
         let db = Connection::open(source.join("alondra.db")).unwrap();
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
         db.execute(
@@ -1110,15 +1171,22 @@ mod tests {
         let manifest = verify_backup_expected(&backup, &manifest_digest).unwrap();
         assert_eq!(manifest.source_seq, 2);
         let result = prepared.rehearsal;
-        assert_eq!(result.source.requests, 2);
-        assert_eq!(result.source.tasks, 1);
+        assert_eq!(result.source.requests, 3);
+        assert_eq!(result.source.tasks, 2);
         assert_eq!(result.imported.agents, 2, "Task assignee and idle node are distinct Agents");
         assert_eq!(result.imported.split_pr_tasks, 1);
         assert_eq!(result.imported.formal_prs, 2);
-        assert_eq!(result.imported.questions, 2);
+        assert_eq!(result.imported.questions, 3);
         assert_eq!(result.imported.request_closures, 1);
         assert_eq!(result.imported.request_attachments, 1);
-        assert_eq!(result.imported.open_questions_requiring_reconciliation, 1);
+        assert_eq!(result.imported.open_questions_requiring_reconciliation, 1,
+            "an open question from a dead session stays historical");
+        assert_eq!(result.imported.open_questions_reopened, 1,
+            "an open question from a live session stays answerable");
+        assert_eq!(result.imported.final_presentations, 2,
+            "task-1 and its split PR Task keep their review context");
+        assert_eq!(result.imported.stacked_prs, vec![(2, 1)],
+            "a PR train is reported, not converted into a stack dependency");
         assert_eq!(result.imported.documents, 1);
         assert_eq!(result.imported.attachments, 2);
         assert_eq!(result.imported.attachment_size_discrepancies, 2);
@@ -1127,11 +1195,11 @@ mod tests {
         let provenance = Connection::open(target.join("domain-v2.db")).unwrap();
         let agent_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
             WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
-            AND target_id='legacy-session-session-1'", [], |row| row.get(0)).unwrap();
+            AND target_id='session-1'", [], |row| row.get(0)).unwrap();
         assert_eq!(agent_session, "session-1");
         let idle_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
             WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
-            AND target_id='legacy-session-idle-session'", [], |row| row.get(0)).unwrap();
+            AND target_id='idle-session'", [], |row| row.get(0)).unwrap();
         assert_eq!(idle_session, "idle-session");
         let node_rows: i64 = provenance.query_row("SELECT COUNT(*) FROM legacy_import_map
             WHERE source_kind='node' AND role='entity' AND target_kind='agent'", [], |row| row.get(0)).unwrap();
@@ -1142,8 +1210,8 @@ mod tests {
         assert_eq!(orchestrator_session, "orchestrator-session");
         let imported = domain.load().unwrap();
         assert_eq!(imported.agents.len(), 2);
-        assert_eq!(imported.agents[&alondra_core::domain_v2::AgentId("legacy-session-session-1".into())].name, "Assigned node");
-        let idle = &imported.agents[&alondra_core::domain_v2::AgentId("legacy-session-idle-session".into())];
+        assert_eq!(imported.agents[&alondra_core::domain_v2::AgentId("session-1".into())].name, "Assigned node");
+        let idle = &imported.agents[&alondra_core::domain_v2::AgentId("idle-session".into())];
         assert_eq!(idle.name, "Idle node");
         assert!(!idle.connected, "legacy PID must not become v2 connection state");
         assert!(
@@ -1158,12 +1226,38 @@ mod tests {
                 .values()
                 .any(|i| i.body.contains("\"option\":\"Choice A\""))
         );
-        assert!(matches!(
-            imported.interactions
-                [&alondra_core::domain_v2::InteractionId("legacy-question-1".into())]
-                .payload,
-            alondra_core::domain_v2::InteractionPayload::Information { .. }
-        ));
+        {
+            use alondra_core::domain_v2::*;
+            let reopened = &imported.interactions[&InteractionId("legacy-question-1".into())];
+            assert!(matches!(reopened.payload, InteractionPayload::Question { answer: None, .. }));
+            assert_eq!(reopened.author, Author::Agent { agent_id: "session-1".into() });
+            assert!(reopened.blocking);
+            assert!(matches!(
+                imported.interactions[&InteractionId("legacy-question-3".into())].payload,
+                InteractionPayload::Information { .. }
+            ));
+            let task = &imported.tasks[&TaskId("task-1".into())];
+            assert_eq!(task.state, TaskState::NeedsYou, "derived at import from the reopened blocking question");
+            assert_eq!(task.final_presentation, Some(InteractionId("legacy-final-task-1".into())));
+            assert!(task.documents.contains_key(&DocumentId("legacy-document-1".into())));
+            assert!(imported.document_reviews.iter().any(|r| r.task_id.0 == "task-1" && r.document_id.0 == "legacy-document-1"));
+            let presentation = &imported.interactions[&InteractionId("legacy-final-task-1".into())];
+            assert_eq!(presentation.author, Author::Agent { agent_id: "session-1".into() });
+            assert!(matches!(&presentation.payload, InteractionPayload::Delivery { targets, is_final: true, acceptance: None, .. }
+                if targets == &vec![
+                    DeliveryTarget::PullRequest { pr_id: "legacy-pr-1".into(), head: format!("{:040x}", 1) },
+                    DeliveryTarget::DocumentRevision { document_id: "legacy-document-1".into(), revision_id: "legacy-document-revision-1".into() },
+                ]));
+            assert_eq!(imported.tasks[&TaskId("legacy-pr-task-2".into())].state, TaskState::InReview);
+            assert_eq!(imported.tasks[&TaskId("task-sched".into())].state, TaskState::NotStarted);
+            let stacked: String = provenance.query_row("SELECT target_id FROM legacy_import_map
+                WHERE source_kind='pr' AND source_id='2' AND role='stacked_on'", [], |row| row.get(0)).unwrap();
+            assert_eq!(stacked, "legacy-pr-1");
+            let inventory = domain.legacy_schedule_inventory().unwrap();
+            assert_eq!(inventory.counts(), (2, 1, 1, 1, 1), "schedules, runs, tools, receipts and failed launches are imported");
+            let run = inventory.state.runs.values().next().unwrap();
+            assert_eq!(run.task_id, Some(TaskId("task-sched".into())));
+        }
         let bad_attachment = alondra_core::model::Attachment {
             name: "question.txt".into(),
             source_path: "/synthetic/question.txt".into(),
@@ -1202,9 +1296,9 @@ mod tests {
             2,
             "the runtime must open the same filename populated by migration"
         );
+        let schedule_bytes = fs::read(source.join("schedules.db")).unwrap();
         let late_schedules = Connection::open(source.join("schedules.db")).unwrap();
-        late_schedules.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);
-            INSERT INTO schedules(id,body) VALUES('late','{\"enabled\":true}');").unwrap();
+        late_schedules.execute_batch("INSERT INTO schedules(id,body) VALUES('late','{\"enabled\":true}');").unwrap();
         drop(late_schedules);
         let error = crate::domain_cutover::promote_stage_offline(
             &source,
@@ -1215,7 +1309,19 @@ mod tests {
         .unwrap_err().to_string();
         assert!(error.contains("current HOME differs from verified cutover backup"), "{error}");
         assert!(crate::domain_cutover::read_marker(&source).unwrap().is_none());
-        fs::remove_file(source.join("schedules.db")).unwrap();
+        fs::write(source.join("schedules.db"), &schedule_bytes).unwrap();
+        let staged_schedules = Connection::open(target.join("domain-v2.db")).unwrap();
+        staged_schedules.execute("DELETE FROM schedule_failed_launches", []).unwrap();
+        let error = crate::domain_cutover::promote_stage_offline(
+            &source,
+            &backup,
+            &manifest_digest,
+            &target,
+        )
+        .unwrap_err().to_string();
+        assert!(error.contains("staged schedule import differs"), "{error}");
+        staged_schedules.execute("INSERT INTO schedule_failed_launches(request_id) VALUES('request-sched')", []).unwrap();
+        drop(staged_schedules);
         let provenance = target.join("domain-v2-stage.json");
         let original_provenance = fs::read(&provenance).unwrap();
         fs::write(&provenance, b"mismatched backup").unwrap();
@@ -1349,6 +1455,47 @@ mod tests {
             imported,
             "the promoted HOME must load the staged domain without losing legacy config"
         );
+        {
+            use alondra_core::domain_v2::*;
+            assert_eq!(
+                crate::domain_store::DomainStore::open(&source.join("domain-v2.db")).unwrap()
+                    .legacy_schedule_inventory().unwrap().counts(),
+                (2, 1, 1, 1, 1)
+            );
+            let runtime = crate::domain_runtime::DomainRuntime::open(&source).unwrap();
+            let before = runtime.state().unwrap();
+            let envelope = |id: &str, command| CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: before.data_epoch.clone(),
+                command_id: id.into(),
+                expected_revision: runtime.state().unwrap().revision,
+                command,
+            };
+            runtime.execute(&Actor::Agent { agent_id: "session-1".into() }, &envelope("live-info",
+                Command::PublishInformation {
+                    attachments: vec![],
+                    interaction_id: "live-info".into(),
+                    scope: Scope::Task { task_id: "task-1".into() },
+                    recipient: Recipient::User,
+                    body: "Still working after cutover".into(),
+                }), None, || Ok(())).unwrap();
+            assert_eq!(runtime.state().unwrap().tasks, before.tasks,
+                "the first live command must not rewrite imported Task states or revisions");
+            let answered = runtime.execute(&Actor::User { user_id: "device:phone".into() }, &envelope("answer",
+                Command::AnswerQuestion {
+                    attachments: vec![],
+                    interaction_id: "legacy-question-1".into(),
+                    option_id: String::new(),
+                    inputs: std::collections::BTreeMap::from([("text".to_string(), InputValue::Text("Go ahead".into()))]),
+                }), None, || Ok(())).unwrap();
+            assert_eq!(answered.effects, vec![DomainEffect::NotifyAgent {
+                agent_id: "session-1".into(),
+                task_id: Some("task-1".into()),
+                interaction_id: Some("legacy-question-1".into()),
+                message: "Question answered".into(),
+            }]);
+            assert_eq!(runtime.state().unwrap().tasks[&TaskId("task-1".into())].state, TaskState::InReview);
+        }
         assert_eq!(
             fs::read(source.join("tui-device")).unwrap(),
             b"private device identity",
