@@ -2030,6 +2030,7 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
     let c = &hub.config;
     let integrity = hub.read(View::integrity_issues);
     Json(json!({"ok": integrity.is_empty(), "integrity_issues": integrity, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
+                "preflight_rejected": crate::relaunch::rejected(),
                 "config": {"name": c.name, "port": c.port, "listen": c.listen.to_string(), "public_url": c.public_url,
                            "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
                            "resume_dead_nodes": c.resume_dead_nodes,

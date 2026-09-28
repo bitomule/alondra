@@ -30,13 +30,16 @@ mod notifier;
 mod options;
 mod orchestrate;
 mod plugins;
+mod preflight;
 mod prs;
 mod schedules;
 mod service;
 mod service_files;
 mod service_overview;
 mod push;
+mod relaunch;
 mod sentinel;
+mod start_guard;
 mod store;
 mod uploads;
 mod usage;
@@ -55,11 +58,23 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
             println!("alondrad {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        [flag] if flag == "--preflight" => {
+            let checked = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))
+                .and_then(|config| preflight::run(&config));
+            match checked {
+                Ok(summary) => println!("preflight ok: {summary}"),
+                Err(e) => {
+                    eprintln!("preflight failed: {}", format!("{e:#}").lines().collect::<Vec<_>>().join(" "));
+                    std::process::exit(1);
+                }
+            }
             return Ok(());
         }
         [flag, source] if flag == "--inspect-domain-migration" => {
@@ -106,7 +121,23 @@ fn main() -> Result<()> {
         }
         _ => (),
     }
-    run(diagnostic_device(args)?)
+    let diagnostic = diagnostic_device(args)?;
+    let env = |k: &str| std::env::var(k).ok();
+    let label = Config::load().map(|c| c.service_label).unwrap_or_else(|_| Config::defaults().service_label);
+    start_guard::begin(alondra_core::config::alondra_home(&env), relaunch::supervised(&label, env));
+    let error = match run(diagnostic) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    if let Some((record, wait)) = start_guard::failed(&error) {
+        log!("start failed {} times in a row ({}); waiting {}s before exiting so launchd does not restart it every 10s",
+            record.failures, record.reason, wait.as_secs());
+        let watcher = relaunch::watcher(&label);
+        if start_guard::wait(wait, std::time::Duration::from_secs(2), || watcher.as_ref().is_some_and(|w| w.replaced())) {
+            log!("the binary was replaced; exiting now so launchd starts it");
+        }
+    }
+    Err(error)
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -144,7 +175,8 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     std::fs::create_dir_all(&config.home)?;
     let hooks = hook_socket::bind(&config.home).await?;
     let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
-    tokio::spawn(hook_socket::serve(hooks, hub.clone()));
+    let (drain, draining) = tokio::sync::watch::channel(false);
+    let hooks = tokio::spawn(hook_socket::serve(hooks, hub.clone(), draining));
     tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
     if config.legacy_bridge {
         tokio::spawn(legacy::run(hub.clone(), claude_home.clone()));
@@ -188,9 +220,32 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         if config.legacy_bridge { "yes" } else { "no" },
         if config.wake { "yes" } else { "no" },
     );
-    let app = http::router(hub, auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    let app = http::router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, auth::guard));
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future();
+    start_guard::served();
+    tokio::select! {
+        served = server => served?,
+        () = replaced(&config) => {
+            drain.send_replace(true);
+            let _ = hooks.await;
+            hub.read_settled(|_| ());
+            relaunch_now();
+        }
+    }
     Ok(())
+}
+
+/// Resolves once the launchd job's binary was replaced by one that passed preflight.
+async fn replaced(config: &Config) {
+    match relaunch::watcher(&config.service_label) {
+        Some(watcher) => relaunch::watch(watcher, relaunch::every()).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn relaunch_now() -> ! {
+    log!("exiting with {} so launchd starts the new binary", relaunch::RELAUNCH);
+    std::process::exit(relaunch::RELAUNCH)
 }
 
 enum ProtocolMode {
@@ -347,7 +402,11 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
         domain.clone(), config.home.clone(), push, service.clone()));
     let scheduler = tokio::spawn(domain_schedule_runner::run(domain, config.home.clone(), config.wake));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
-    supervise_v2_workers(server, outbox, scheduler, connector).await
+    start_guard::served();
+    tokio::select! {
+        stopped = supervise_v2_workers(server, outbox, scheduler, connector) => stopped,
+        () = replaced(config) => relaunch_now(),
+    }
 }
 
 #[cfg(test)]
