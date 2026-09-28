@@ -342,3 +342,6 @@ mod approval_tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 }
+
+#[cfg(test)]
+mod mcp_flow_tests;
