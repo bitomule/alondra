@@ -845,9 +845,20 @@ mod tests {
         .unwrap();
         let mut view = View::default();
         view.seq = 1;
+        view.board.recorded_since = Some(1);
         view.apply(1, 1, &Event::Orchestrator(alondra_core::orchestrator::Transition::Enabled {
             session_id: Some("orchestrator-session".into()),
         }));
+        let mut assigned_node = alondra_core::model::Node::new("session-1", 1);
+        assigned_node.name = Some("Assigned node".into());
+        view.nodes.insert(assigned_node.session_id.clone(), assigned_node);
+        let mut idle_node = alondra_core::model::Node::new("idle-session", 1);
+        idle_node.name = Some("Idle node".into());
+        idle_node.pid = Some(123);
+        view.nodes.insert(idle_node.session_id.clone(), idle_node);
+        let mut orchestrator_node = alondra_core::model::Node::new("orchestrator-session", 1);
+        orchestrator_node.is_orchestrator = true;
+        view.nodes.insert(orchestrator_node.session_id.clone(), orchestrator_node);
         view.board.requests.insert(
             "request-1".into(),
             serde_json::from_value(json!({
@@ -965,6 +976,7 @@ mod tests {
         let result = prepared.rehearsal;
         assert_eq!(result.source.requests, 2);
         assert_eq!(result.source.tasks, 1);
+        assert_eq!(result.imported.agents, 2, "Task assignee and idle node are distinct Agents");
         assert_eq!(result.imported.split_pr_tasks, 1);
         assert_eq!(result.imported.formal_prs, 2);
         assert_eq!(result.imported.questions, 2);
@@ -981,11 +993,23 @@ mod tests {
             WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
             AND target_id='legacy-session-session-1'", [], |row| row.get(0)).unwrap();
         assert_eq!(agent_session, "session-1");
+        let idle_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
+            WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
+            AND target_id='legacy-session-idle-session'", [], |row| row.get(0)).unwrap();
+        assert_eq!(idle_session, "idle-session");
+        let node_rows: i64 = provenance.query_row("SELECT COUNT(*) FROM legacy_import_map
+            WHERE source_kind='node' AND role='entity' AND target_kind='agent'", [], |row| row.get(0)).unwrap();
+        assert_eq!(node_rows, 2, "Orchestrator is not imported as an Agent");
         let orchestrator_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
             WHERE source_kind='session' AND role='orchestrator_conversation' AND target_kind='orchestrator'
             AND target_id='generation-0'", [], |row| row.get(0)).unwrap();
         assert_eq!(orchestrator_session, "orchestrator-session");
         let imported = domain.load().unwrap();
+        assert_eq!(imported.agents.len(), 2);
+        assert_eq!(imported.agents[&alondra_core::domain_v2::AgentId("legacy-session-session-1".into())].name, "Assigned node");
+        let idle = &imported.agents[&alondra_core::domain_v2::AgentId("legacy-session-idle-session".into())];
+        assert_eq!(idle.name, "Idle node");
+        assert!(!idle.connected, "legacy PID must not become v2 connection state");
         assert!(
             imported
                 .interactions

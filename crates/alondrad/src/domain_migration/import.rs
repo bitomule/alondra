@@ -15,6 +15,7 @@ pub(crate) struct ImportReport {
     pub request_closures: usize,
     pub request_attachments: usize,
     pub tasks: usize,
+    pub agents: usize,
     pub split_pr_tasks: usize,
     pub formal_prs: usize,
     pub reference_only_prs: Vec<u64>,
@@ -76,6 +77,7 @@ pub(crate) fn materialize_legacy(
         request_closures: 0,
         request_attachments: 0,
         tasks: 0,
+        agents: 0,
         split_pr_tasks: 0,
         formal_prs: 0,
         reference_only_prs: vec![],
@@ -114,6 +116,32 @@ pub(crate) fn materialize_legacy(
             &request.id,
         )?);
         report.requests += 1;
+    }
+    // A node may have no Task. Preserve its identity and conversation as
+    // historical data without importing transient process or connection state.
+    let orchestrator_session = view
+        .orchestrator
+        .as_ref()
+        .and_then(|runtime| runtime.session_id.as_deref());
+    for (session, node) in &view.nodes {
+        if node.is_orchestrator || Some(session.as_str()) == orchestrator_session {
+            continue;
+        }
+        let agent_id = d::AgentId(format!("legacy-session-{session}"));
+        state.agents.insert(
+            agent_id.clone(),
+            d::Agent {
+                id: agent_id.clone(),
+                name: node
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or(session)
+                    .to_owned(),
+                connected: false,
+            },
+        );
+        report.links.push(link(node, "node", session, "entity", "agent", &agent_id.0)?);
     }
     // A few very old cards precede durable Request records. Give them a
     // clearly synthetic request rather than silently dropping their Task.
@@ -194,8 +222,19 @@ pub(crate) fn materialize_legacy(
     // Preserve the Claude conversation identifiers as import provenance. The
     // imported Agent rows use a prefixed ID, so a later protocol adapter can
     // look up the original session without replaying legacy commands.
-    let sessions: BTreeSet<_> = view.board.tasks.values()
+    let sessions: BTreeSet<_> = view
+        .board
+        .tasks
+        .values()
         .filter_map(|task| task.assignee.as_ref().map(|a| a.session_id.as_str()))
+        .chain(
+            view.nodes
+                .iter()
+                .filter(|(session, node)| {
+                    !node.is_orchestrator && Some(session.as_str()) != orchestrator_session
+                })
+                .map(|(session, _)| session.as_str()),
+        )
         .collect();
     for session in sessions {
         report.links.push(link(&session, "session", session, "agent_conversation",
@@ -205,6 +244,7 @@ pub(crate) fn materialize_legacy(
         report.links.push(link(&session, "session", session, "orchestrator_conversation",
             "orchestrator", "generation-0")?);
     }
+    report.agents = state.agents.len();
     // A legacy Task could own many PRs. Keep one on the original Task and
     // create explicit derived Tasks for the others. Ineligible PRs still get
     // a historical Information card carrying URL/title/state and old ID.
