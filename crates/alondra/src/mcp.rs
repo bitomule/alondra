@@ -30,14 +30,18 @@ fn legacy_instructions(role: Role, user: &str) -> String {
 
 
 fn instructions(role: Role, user: &str) -> String {
-    if !domain_v2_mode() { return legacy_instructions(role, user); }
+    instructions_for_mode(role, user, domain_v2_mode())
+}
+
+fn instructions_for_mode(role: Role, user: &str, v2: bool) -> String {
+    if !v2 { return legacy_instructions(role, user); }
     let language = match crate::i18n::lang() {
         crate::i18n::Lang::Es => "Spanish",
         crate::i18n::Lang::En => "English",
     };
     let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
     match role {
-        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result, wait for explicit User acceptance, then call complete_task; ending a Claude turn does not complete it. If a merge is authorized, inspect its exact PR/head/method/revision, claim it, then use gh pr merge --match-head-commit with that approved head. After a timeout, reconcile GitHub before any retry. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
+        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result, wait for explicit User acceptance, then call complete_task; ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
         Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
     }
 }
@@ -130,10 +134,6 @@ fn tools(role: Role, user: &str) -> Value {
 
 fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
     let mut list = vec![
-        json!({"name":"domain_cursor", "description":"Read domain v2 protocol version, data epoch and revision. Requires a daemon-issued producer capability; old sessions must resume with the current plugin.",
-            "inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
-        json!({"name":"merge_authorization", "description":"Read the exact PR, head, base, method, revision and claim state authorized for this assigned Agent. Requires an Agent capability.",
-            "inputSchema":{"type":"object","properties":{"authorization_id":{"type":"string"}},"required":["authorization_id"],"additionalProperties":false}}),
         json!({"name":"domain_command", "description":"Submit a typed domain v2 command. The daemon derives Agent or Orchestrator identity from a private capability and verifies assignment and revision. Publication never completes a task; use complete_task after accepted delivery.",
             "inputSchema":{"type":"object","properties":{
                 "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
@@ -215,26 +215,14 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
     } else {
         // A HOME without a committed cutover marker keeps the old MCP catalog.
         list.retain(|tool| !matches!(tool["name"].as_str().unwrap_or_default(),
-            "domain_cursor" | "domain_command" | "register_pr" | "merge_authorization"));
+            "domain_command" | "register_pr"));
     }
     Value::Array(list)
 }
 
 fn v2_tool_allowed(role: Role, name: &str) -> bool {
-    matches!(name, "domain_cursor" | "domain_command" | "ask")
-        || (role == Role::Node && matches!(name, "register_pr" | "merge_authorization"))
-}
-
-fn v2_read_path(role: Role, name: &str, args: &Value) -> Result<String> {
-    match name {
-        "domain_cursor" => Ok("/v2/domain/capabilities".into()),
-        "merge_authorization" if role == Role::Node => {
-            let id = args.get("authorization_id").and_then(Value::as_str)
-                .filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("authorization_id is required"))?;
-            Ok(format!("/v2/domain/merge-authorizations/{}", urlencode(id)))
-        }
-        _ => anyhow::bail!("domain read is unavailable to this role"),
-    }
+    matches!(name, "domain_command" | "ask")
+        || (role == Role::Node && name == "register_pr")
 }
 
 pub fn caller() -> Value {
@@ -333,10 +321,6 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
                 anyhow::bail!("ask requires a typed ask_question domain command");
             }
             serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
-        }
-        "domain_cursor" | "merge_authorization" => {
-            let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_get(&v2_read_path(role, name, args)?, &bearer)?)?
         }
         "domain_command" | "register_pr" => {
             let bearer = domain_bearer()?;
@@ -882,33 +866,26 @@ mod tests {
             }
         }
         assert!(v2_tool_allowed(Role::Node, "register_pr"));
-        assert!(v2_tool_allowed(Role::Node, "domain_cursor"));
-        assert!(v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
+        assert!(!v2_tool_allowed(Role::Node, "domain_cursor"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "launch"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "fleet"));
-        assert!(v2_tool_allowed(Role::Node, "merge_authorization"));
+        assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Node, "launch"));
     }
 
     #[test]
-    fn v2_reads_use_existing_get_routes_and_keep_authorization_node_only() {
-        let empty = json!({});
+    fn v2_catalog_and_instructions_do_not_offer_unplanned_reads() {
         for role in [Role::Node, Role::Orchestrator] {
-            assert_eq!(v2_read_path(role, "domain_cursor", &empty).unwrap(), "/v2/domain/capabilities");
             let catalog = tools_for_mode(role, "User", true);
-            assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "domain_cursor"));
+            assert!(catalog.as_array().unwrap().iter().all(|tool|
+                tool["name"] != "domain_cursor" && tool["name"] != "merge_authorization"));
+            let instructions = instructions_for_mode(role, "User", true);
+            assert!(!instructions.contains("domain_cursor"));
+            assert!(!instructions.contains("merge_authorization"));
         }
-        let authorization = json!({"authorization_id":"auth/one"});
-        assert_eq!(v2_read_path(Role::Node, "merge_authorization", &authorization).unwrap(),
-            "/v2/domain/merge-authorizations/auth%2Fone");
-        assert!(v2_read_path(Role::Orchestrator, "merge_authorization", &authorization).is_err());
-        assert!(v2_read_path(Role::Node, "merge_authorization", &empty).is_err());
-        assert!(tools_for_mode(Role::Node, "User", true).as_array().unwrap()
-            .iter().any(|tool| tool["name"] == "merge_authorization"));
-        assert!(tools_for_mode(Role::Orchestrator, "User", true).as_array().unwrap()
-            .iter().all(|tool| tool["name"] != "merge_authorization"));
     }
 
     #[test]
