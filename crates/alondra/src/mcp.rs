@@ -13,7 +13,7 @@ pub enum Role {
     Orchestrator,
 }
 
-fn instructions(role: Role, user: &str) -> String {
+fn legacy_instructions(role: Role, user: &str) -> String {
     let language = match crate::i18n::lang() {
         crate::i18n::Lang::Es => "Spanish",
         crate::i18n::Lang::En => "English",
@@ -25,6 +25,20 @@ fn instructions(role: Role, user: &str) -> String {
     match role {
         Role::Node => format!("Alondra connects this node with {user} and with the orchestrator. Your terminal does not reach {user}; these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user} (or, with to_orchestrator: true, in front of the orchestrator instead — use that only for a real question that needs an answer, never a handoff); end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra (test on a device, get a key, check a console). `report` with kind final says you are done; other kinds deliver a result {user} should read now. If someone else should pick up follow-up work and you have nothing left of your own pending, that is not a question: `report(kind: final, to_orchestrator: true)` hands it to the orchestrator and you are done. Alondra rejects reports that only say you are still working, so while you work on your own there is nothing to send. `withdraw` removes a question that no longer needs {user}. Your work is a task in Alondra: its questions, reports and PR show as one card, and it puts one question at a time in front of {user} (another is refused until that one is answered, unless it `replaces` it); if you work on several tasks, name it with `task`. When delegating to Agent while this node has several tasks, begin its prompt with `Alondra task: t-…` for the intended task. Alondra inserts a unique claim token into that Agent prompt. The child calls `claim_task` with that token before any other tool; Alondra binds it to the parent's task and prevents switching. Call `focus` when the main thread works on one of several tasks itself. A PR you open gets its own card where {user} decides the merge; with auto-merge Alondra merges it once its checks pass. While it waits for review, that PR is the task's one pending point: a question whose answer changes what the PR contains or how it ships carries `about_pr` with its number and shows in its card; anything else goes in a task of its own (`new_task`), and you ask there. If nothing is left for you after the merge, report final with the PR in links: the merge then finishes your task and no notice comes. If something is left (deploy, verify), do not report final yet: the merge notice is typed into this session. An `ask` about merging would be a second card for the same decision. `wait_for_machine` says you are stopped for machine resources. Run each git command in its own Bash call, without `&&`, `;` or pipes: chained commands reach {user} as a permission card even when each part is allowed. {who}"),
         Role::Orchestrator => format!("Alondra gives you the fleet's state (`fleet`, `node`), the machine's capacity (`machine`), and hands (`define`, `candidates`, `launch`, `send`, `interrupt`, `cancel`, `reopen`, `close_request`). Every request of {user}'s is kept as a request, defining until you `define` its tasks: each task has a brief, depends_on, options and a node (a live one with the context, found with `candidates`, or a new one), and Alondra starts it as soon as nothing it depends on holds it back. A request that needs no work (a question or a status check you answered, or one {user} withdrew) is closed with `close_request`. Give every request and every task a short title of a few words: it is what {user} reads. The nodes' questions reach {user} directly; what is meant for you arrives in a durable inbox batch. Finish after handling the batch; Alondra resumes this conversation for later work. Always use Alondra ask; terminal questions and permission prompts are unavailable. `ask` asks {user} something and `report` informs {user}. {who}"),
+    }
+}
+
+
+fn instructions(role: Role, user: &str) -> String {
+    if !domain_v2_mode() { return legacy_instructions(role, user); }
+    let language = match crate::i18n::lang() {
+        crate::i18n::Lang::Es => "Spanish",
+        crate::i18n::Lang::En => "English",
+    };
+    let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
+    match role {
+        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result, wait for explicit User acceptance, then call complete_task; ending a Claude turn does not complete it. If a merge is authorized, inspect its exact PR/head/method/revision, claim it, then use gh pr merge --match-head-commit with that approved head. After a timeout, reconcile GitHub before any retry. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
+        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
     }
 }
 
@@ -111,8 +125,39 @@ fn define_schema(user: &str) -> Value {
 }
 
 fn tools(role: Role, user: &str) -> Value {
+    tools_for_mode(role, user, domain_v2_mode())
+}
+
+fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
     let mut list = vec![
-        json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)}),
+        json!({"name":"domain_cursor", "description":"Read domain v2 protocol version, data epoch and revision. Requires a daemon-issued producer capability; old sessions must resume with the current plugin.",
+            "inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({"name":"merge_authorization", "description":"Read the exact PR, head, base, method, revision and claim state authorized for this assigned Agent. Requires an Agent capability.",
+            "inputSchema":{"type":"object","properties":{"authorization_id":{"type":"string"}},"required":["authorization_id"],"additionalProperties":false}}),
+        json!({"name":"domain_command", "description":"Submit a typed domain v2 command. The daemon derives Agent or Orchestrator identity from a private capability and verifies assignment and revision. Publication never completes a task; use complete_task after accepted delivery.",
+            "inputSchema":{"type":"object","properties":{
+                "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
+                "command_id":{"type":"string","description":"Stable unique id; reuse unchanged only for retrying this exact command"},
+                "expected_revision":{"type":"integer","minimum":0},
+                "command":{"type":"object","description":"One domain v2 Command with its kind and typed fields"}
+            },"required":["protocol_version","data_epoch","command_id","expected_revision","command"],"additionalProperties":false}}),
+        json!({"name":"register_pr", "description":"Associate exactly one canonical PR with the assigned Task. A hook can only observe GitHub; it cannot associate a PR.",
+            "inputSchema":{"type":"object","properties":{
+                "data_epoch":{"type":"string"},"command_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
+                "task_id":{"type":"string"},"pr_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},
+                "number":{"type":"integer","minimum":1},"head":{"type":"string"},"base":{"type":"string"},
+                "allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}
+            },"required":["data_epoch","command_id","expected_revision","task_id","pr_id","host","repository","number","head","base","allowed_methods"],"additionalProperties":false}}),
+        if v2 {
+            json!({"name":"ask", "description":format!("Ask {user} or the logical orchestrator using a typed domain v2 ask_question command. The question retains its Request or Task scope; the answer is durable."),
+                "inputSchema":{"type":"object","properties":{
+                    "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
+                    "command_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
+                    "command":{"type":"object","properties":{"kind":{"const":"ask_question"}},"required":["kind"],"description":"Typed ask_question with interaction_id, scope, recipient, body, blocking and options"}
+                },"required":["protocol_version","data_epoch","command_id","expected_revision","command"],"additionalProperties":false}})
+        } else {
+            json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)})
+        },
         json!({"name": "request_action", "description": format!("Hand {user} something to do outside Alondra (test on the iPhone, get a key, check App Store Connect). {user} sees a \"Your turn\" card with the steps and answers \"Done\" or explains why they cannot; Alondra types that into this session."), "inputSchema": action_schema(user)}),
         json!({"name": "report", "description": format!("The answer goes as kind final with the file in attachments: {user} sees you are done and the task closes. A short finding goes as notice, which changes nothing for the task. document is only for a claude.ai artifact you want {user} to review, its URL in links; a decision for {user} is never a report, it is ask, with the file attached and the options. With to_orchestrator: true it is a handoff for the orchestrator instead — use it for \"someone should continue this\" when you have nothing left of your own pending. Alondra rejects reports that only give progress. Any comment from {user} is typed into this session."), "inputSchema": report_schema(user)}),
         json!({"name": "withdraw", "description": format!("Withdraw a question you asked that no longer needs {user}: it was settled another way, or the work moved on. Its card leaves every client."), "inputSchema": {"type": "object", "properties": {"id": {"type": "integer", "description": "The question number `ask` returned"}, "task": {"type": "string", "description": "The task the question is for, when you work on several"}}, "required": ["id"]}}),
@@ -163,7 +208,21 @@ fn tools(role: Role, user: &str) -> Value {
             }, "required": ["request"]}}),
         ]);
     }
+    if v2 {
+        // A v2 producer must not see the old business mutators, whose final-report
+        // and automatic-merge semantics contradict the durable domain contract.
+        list.retain(|tool| v2_tool_allowed(role, tool["name"].as_str().unwrap_or_default()));
+    } else {
+        // A HOME without a committed cutover marker keeps the old MCP catalog.
+        list.retain(|tool| !matches!(tool["name"].as_str().unwrap_or_default(),
+            "domain_cursor" | "domain_command" | "register_pr" | "merge_authorization"));
+    }
     Value::Array(list)
+}
+
+fn v2_tool_allowed(role: Role, name: &str) -> bool {
+    matches!(name, "domain_command" | "ask")
+        || (role == Role::Node && name == "register_pr")
 }
 
 pub fn caller() -> Value {
@@ -242,6 +301,9 @@ fn call_timeout(tool: &str) -> Duration {
 }
 
 fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Result<String> {
+    if domain_v2_mode() && !v2_tool_allowed(role, name) {
+        anyhow::bail!("incompatible_protocol: this tool is unavailable to a v2 producer");
+    }
     let waiting;
     let client = match call_timeout(name) {
         CALL_TIMEOUT => client,
@@ -252,6 +314,30 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
     };
     let who = caller();
     Ok(match name {
+        "ask" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            let envelope = domain_envelope("domain_command", args)?;
+            if envelope["command"]["kind"] != "ask_question" {
+                anyhow::bail!("ask requires a typed ask_question domain command");
+            }
+            serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
+        }
+        "domain_cursor" => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_get("/v2/domain/capabilities", &bearer)?)?
+        }
+        "merge_authorization" if role == Role::Node => {
+            let bearer = domain_bearer()?;
+            let id = args.get("authorization_id").and_then(Value::as_str)
+                .filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("authorization_id is required"))?;
+            serde_json::to_string_pretty(&client.domain_get(
+                &format!("/v2/domain/merge-authorizations/{}", urlencode(id)), &bearer)?)?
+        }
+        "domain_command" | "register_pr" => {
+            let bearer = domain_bearer()?;
+            let envelope = domain_envelope(name, args)?;
+            serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
+        }
         "ask" => {
             let r = client.post("/v1/questions", &merge(args.clone(), &who))?;
             let id = r.get("id").and_then(Value::as_u64).unwrap_or(0);
@@ -370,6 +456,54 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
         }
         other => anyhow::bail!("unknown tool: {other}"),
     })
+}
+
+fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
+    let envelope = if name == "register_pr" {
+        json!({"protocol_version":2,"data_epoch":args.get("data_epoch"),
+            "command_id":args.get("command_id"),"expected_revision":args.get("expected_revision"),
+            "command":{"kind":"register_pr","task_id":args.get("task_id"),"pr_id":args.get("pr_id"),
+                "host":args.get("host"),"repository":args.get("repository"),"number":args.get("number"),
+                "head":args.get("head"),"base":args.get("base"),"allowed_methods":args.get("allowed_methods")}})
+    } else { args.clone() };
+    let _: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope.clone())?;
+    Ok(envelope)
+}
+
+fn domain_bearer() -> Result<String> {
+    if !domain_v2_mode() {
+        anyhow::bail!("incompatible_protocol: this session has no domain v2 MCP channel")
+    }
+    domain_mcp_bearer()
+}
+
+fn domain_v2_mode() -> bool {
+    std::env::var("ALONDRA_DOMAIN_PROTOCOL").ok().as_deref() == Some("2")
+}
+
+fn domain_mcp_bearer() -> Result<String> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::OnceLock;
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    if let Some(token) = TOKEN.get() { return Ok(token.clone()); }
+    let home = std::env::var_os("ALONDRA_HOME")
+        .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: missing Alondra HOME"))?;
+    let path = std::path::PathBuf::from(home).join("domain-mcp.sock");
+    let mut stream = UnixStream::connect(path)
+        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain MCP handoff unavailable"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.write_all(&[2])?;
+    let mut bytes = [0u8; 64];
+    stream.read_exact(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain MCP handoff denied"))?;
+    let token = std::str::from_utf8(&bytes)?;
+    if !token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        anyhow::bail!("incompatible_protocol: invalid domain MCP handoff");
+    }
+    let _ = TOKEN.set(token.to_owned());
+    Ok(token.to_owned())
 }
 
 fn flag(args: &Value, key: &str) -> bool {
@@ -667,7 +801,7 @@ pub fn urlencode(s: &str) -> String {
 pub fn serve(role: Role) -> Result<()> {
     let user = crate::client::config().name.clone();
     let client = Client::new(CALL_TIMEOUT);
-    let mut registered = role != Role::Orchestrator;
+    let mut registered = role != Role::Orchestrator || domain_v2_mode();
     let mut register = |client: &Client| {
         if !registered {
             registered = client.post("/v1/orchestrator", &caller()).is_ok();
@@ -718,6 +852,46 @@ pub fn serve(role: Role) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_pr_tool_constructs_a_typed_v2_command() {
+        let args = json!({"data_epoch":"epoch","command_id":"register-one","expected_revision":4,
+            "task_id":"task-a","pr_id":"pr-a","host":"github.com","repository":"org/repo",
+            "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
+        let envelope = domain_envelope("register_pr", &args).unwrap();
+        assert_eq!(envelope["command"]["kind"], "register_pr");
+        assert_eq!(envelope["command"]["task_id"], "task-a");
+        assert_eq!(envelope["protocol_version"], 2);
+        assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"})).is_err());
+        assert!(tools_for_mode(Role::Node, "User", true).as_array().unwrap().iter()
+            .any(|tool| tool["name"] == "register_pr"));
+    }
+
+    #[test]
+    fn v2_catalog_excludes_legacy_business_mutations_and_separates_roles() {
+        for role in [Role::Node, Role::Orchestrator] {
+            assert!(v2_tool_allowed(role, "domain_command"));
+            assert!(v2_tool_allowed(role, "ask"));
+            for legacy in ["report", "define", "new_task", "schedule_create", "claim_task"] {
+                assert!(!v2_tool_allowed(role, legacy), "{legacy}");
+            }
+        }
+        assert!(v2_tool_allowed(Role::Node, "register_pr"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "launch"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "fleet"));
+        assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
+        assert!(!v2_tool_allowed(Role::Node, "launch"));
+    }
+
+    #[test]
+    fn v2_catalog_is_selected_before_a_bearer_handoff() {
+        let catalog = tools_for_mode(Role::Orchestrator, "User", true);
+        let tools = catalog.as_array().unwrap();
+        let ask = tools.iter().find(|tool| tool["name"] == "ask").unwrap();
+        assert_eq!(ask["inputSchema"]["properties"]["command"]["properties"]["kind"]["const"], "ask_question");
+        assert!(tools.iter().all(|tool| tool["name"] != "report" && tool["name"] != "define"));
+    }
 
     #[test]
     fn separate_servers_advertise_distinct_method_catalogs() {

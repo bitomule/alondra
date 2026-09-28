@@ -108,6 +108,7 @@ pub fn terminate_orphan(directory: &Path, active_run: Option<&str>) -> Result<()
 
 #[derive(Default, Debug)]
 pub struct Stream {
+    restricted: bool,
     pub initialized: bool,
     pub result: bool,
     pub success: bool,
@@ -147,6 +148,23 @@ impl Stream {
                 });
                 if !available {
                     bail!("required Alondra MCP tools are unavailable");
+                }
+                let servers = v["mcp_servers"].as_array().expect("checked above");
+                if self.restricted && servers.iter().any(|server| {
+                    let name = server["name"].as_str().unwrap_or_default();
+                    server["status"] == "connected"
+                        && name != "alondra-orchestrator"
+                        && name != "plugin:alondra-orchestrator:alondra-orchestrator"
+                }) {
+                    bail!("an unrelated MCP server is connected to the orchestrator");
+                }
+                if self.restricted && tools.expect("checked above").iter().any(|tool| {
+                    let name = tool.as_str().unwrap_or_default();
+                    name != "Skill" && name != "Read"
+                        && !name.starts_with("mcp__alondra-orchestrator__")
+                        && !name.starts_with("mcp__plugin_alondra-orchestrator_alondra-orchestrator__")
+                }) {
+                    bail!("orchestrator has an unexpected built-in or MCP tool");
                 }
                 self.initialized = true;
                 self.model = v["model"].as_str().map(str::to_owned);
@@ -212,7 +230,8 @@ pub struct Invocation<'a> {
     pub executable: &'a Path,
     pub cwd: &'a Path,
     pub home: &'a Path,
-    pub plugins: [&'a Path; 2],
+    pub plugins: Vec<&'a Path>,
+    pub domain_v2: bool,
     pub session: &'a str,
     pub resume: bool,
     pub execution: &'a str,
@@ -222,7 +241,19 @@ pub struct Invocation<'a> {
 impl Invocation<'_> {
     fn command(&self) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(self.executable);
-        cmd.current_dir(self.cwd).args(["-p", "--output-format", "stream-json", "--verbose", "--model", "opus", "--permission-mode", "auto", "--permission-prompts", "none", "--setting-sources", "user", "--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
+        // `--strict-mcp-config` discards user/managed MCP servers. Supply only
+        // Alondra's server, with no credential in the command line or config.
+        cmd.current_dir(self.cwd).args(["-p", "--output-format", "stream-json", "--verbose", "--model", "opus", "--permission-mode", "auto", "--permission-prompts", "none"]);
+        if self.domain_v2 {
+            let mcp_config = serde_json::json!({"mcpServers":{"alondra-orchestrator":{
+                "command":self.plugins[0].join("bin/alondra"), "args":["mcp-orchestrator"]
+            }}}).to_string();
+            cmd.args(["--restricted", "--tools", "Skill,Read", "--strict-mcp-config"])
+                .args(["--mcp-config", &mcp_config]);
+        } else {
+            cmd.args(["--setting-sources", "user"]);
+        }
+        cmd.args(["--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
             .args(crate::plugins::orchestrator_flags(&self.plugins))
             .args([if self.resume { "--resume" } else { "--session-id" }, self.session])
             .env("ALONDRA_HOME", self.home)
@@ -231,6 +262,9 @@ impl Invocation<'_> {
             .env("ALONDRA_SESSION_ID", alondra_core::orchestrator::NODE_ID)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
+        cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY");
+        if self.domain_v2 { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
+        else { cmd.env_remove("ALONDRA_DOMAIN_PROTOCOL"); }
         let fd = self.ownership.0.as_raw_fd();
         // Only async-signal-safe libc operations may run between fork and exec.
         unsafe { cmd.pre_exec(move || {
@@ -252,8 +286,9 @@ impl Drop for ProcessGroup {
 
 pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: bool, pub spawned: bool }
 
-pub async fn execute(invocation: Invocation<'_>, mut initialized: impl FnMut() -> Result<()>, cancel: impl std::future::Future<Output = ()>) -> Output {
+pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) -> Result<()>, mut initialized: impl FnMut() -> Result<()>, cancel: impl std::future::Future<Output = ()>) -> Output {
     let mut stream = Stream::default();
+    stream.restricted = invocation.domain_v2;
     let mut child = match invocation.command().spawn() {
         Ok(child) => child,
         Err(e) => return Output { stream, diagnostic: bounded(format!("cannot launch Claude: {e}")), exit_ok: false, spawned: false },
@@ -263,6 +298,17 @@ pub async fn execute(invocation: Invocation<'_>, mut initialized: impl FnMut() -
         group.kill();
         let _ = child.kill().await;
         return Output { stream, diagnostic: bounded(format!("cannot persist process ownership: {error:#}")), exit_ok: false, spawned: true };
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        if let Err(error) = spawned(group.0 as u32) {
+            // A one-shot fake or a failed launch can exit before macOS exposes
+            // its process identity. It cannot subsequently host an MCP child.
+            if child.try_wait().ok().flatten().is_none() {
+                group.kill();
+                let _ = child.kill().await;
+                return Output { stream, diagnostic: bounded(format!("cannot register MCP process: {error:#}")), exit_ok: false, spawned: true };
+            }
+        }
     }
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
@@ -382,6 +428,21 @@ mod tests {
         assert!(stream.initialized);
     }
     #[test]
+    fn restricted_init_rejects_shell_agent_and_foreign_mcp() {
+        for extra in [
+            r#""Bash""#,
+            r#""Agent""#,
+            r#""mcp__foreign__shell""#,
+        ] {
+            let mut stream = Stream { restricted: true, ..Stream::default() };
+            let init = format!(r#"{{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{{"name":"alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask",{extra}]}}"#);
+            assert!(stream.accept(init.as_bytes(), "s").is_err(), "{extra}");
+        }
+        let mut stream = Stream { restricted: true, ..Stream::default() };
+        let foreign = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"},{"name":"foreign","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        assert!(stream.accept(foreign, "s").is_err());
+    }
+    #[test]
     fn ownership_is_exclusive() {
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let a = Ownership::acquire(&dir).unwrap().unwrap();
@@ -399,7 +460,7 @@ mod tests {
         path
     }
     fn invocation<'a>(dir: &'a Path, exe: &'a Path, lock: &'a Ownership) -> Invocation<'a> {
-        Invocation { executable: exe, cwd: dir, home: dir, plugins: [dir, dir], session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
+        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
     }
     #[tokio::test]
     async fn real_process_drains_stderr_and_checks_terminal_result() {
@@ -412,7 +473,7 @@ while [ "$i" -lt 10000 ]; do printf 'bounded diagnostics\n' >&2; i=$((i+1)); don
 printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":31}}}'
 printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
         let mut starts = 0;
-        let output = execute(invocation(&dir, &exe, &lock), || { starts += 1; Ok(()) }, std::future::pending()).await;
+        let output = execute(invocation(&dir, &exe, &lock), |_| Ok(()), || { starts += 1; Ok(()) }, std::future::pending()).await;
         assert!(output.exit_ok);
         assert!(output.stream.success);
         assert_eq!(output.stream.input_tokens, Some(31));
@@ -425,7 +486,7 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, "cat >/dev/null\nprintf 'invalid-json\\n'\nexec sleep 30");
-        let output = tokio::time::timeout(std::time::Duration::from_secs(5), execute(invocation(&dir, &exe, &lock), || Ok(()), std::future::pending())).await.unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await.unwrap();
         assert!(!output.exit_ok);
         assert!(output.stream.error.unwrap().contains("JSONL"));
         std::fs::remove_dir_all(dir).unwrap();

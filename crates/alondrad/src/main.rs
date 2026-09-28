@@ -11,6 +11,7 @@ mod domain_runtime;
 mod domain_store;
 mod domain_api;
 mod domain_bootstrap;
+mod domain_mcp_socket;
 mod classify;
 mod http;
 mod hook_socket;
@@ -187,8 +188,8 @@ fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
         Some(marker) => Ok(ProtocolMode::Committed(marker.data_epoch)),
         None => {
             anyhow::ensure!(
-                !home.join("domain-v2.db").exists(),
-                "domain database exists without cutover marker; refusing legacy startup"
+                legacy_sidecar_is_empty(&home.join("domain-v2.db"))?,
+                "domain database contains v2 state without cutover marker; refusing legacy startup"
             );
             Ok(ProtocolMode::Legacy)
         }
@@ -223,6 +224,36 @@ where S: std::future::Future<Output = std::io::Result<()>> {
             }
         },
     }
+}
+
+/// Before cutover, the legacy Hub creates an empty v2 sidecar for its API.
+/// A markerless database may be reused by legacy only while it contains no
+/// commands, entities, receipts, deliveries, or migration metadata.
+fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(metadata.is_file(), "markerless domain database must be a regular file");
+    let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    anyhow::ensure!(version == 3 && application == 0x414c4432,
+        "markerless domain database has unknown schema");
+    let (revision, generation): (i64, i64) = conn.query_row(
+        "SELECT revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
+        [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    if revision != 0 || generation != 0 { return Ok(false); }
+    let mut tables = conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'domain_meta'")?;
+    let names = tables.query_map([], |row| row.get::<_, String>(0))?;
+    for name in names {
+        let escaped = name?.replace('"', "\"\"");
+        let statement = format!("SELECT EXISTS(SELECT 1 FROM \"{escaped}\" LIMIT 1)");
+        let has_row: bool = conn.query_row(&statement, [], |row| row.get(0))?;
+        if has_row { return Ok(false); }
+    }
+    Ok(true)
 }
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
@@ -294,6 +325,21 @@ mod argument_tests {
         std::fs::create_dir(&home).unwrap();
         assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Legacy));
         std::fs::write(home.join("domain-v2.db"), b"stage left behind").unwrap();
+        assert!(protocol_mode(&home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn empty_legacy_sidecar_survives_two_boots_but_v2_rows_require_marker() {
+        let home = std::env::temp_dir().join(format!("alondra-mode-sidecar-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        let config = Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
+        drop(hub::Hub::open(config.clone(), false).unwrap());
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Legacy));
+        drop(hub::Hub::open(config, false).unwrap());
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Legacy));
+        let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
+        conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", []).unwrap();
         assert!(protocol_mode(&home).is_err());
         std::fs::remove_dir_all(home).unwrap();
     }

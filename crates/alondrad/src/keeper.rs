@@ -70,6 +70,8 @@ async fn tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership: &Owner
 }
 
 async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership: &Ownership, executable: &Path) -> Result<()> {
+    anyhow::ensure!(crate::domain_cutover::read_marker(&hub.home)?.is_none(),
+        "legacy orchestrator cannot run after domain cutover");
     let run_id = process::uuid()?;
     let claimed = hub.append_all(|v| {
         if !orchestrator::can_start(v, now_millis()) { return Err(()); }
@@ -92,11 +94,15 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
     let resume = runtime.session_id.is_some();
     let session = match runtime.session_id.as_ref() { Some(id) => id.clone(), None => process::uuid()? };
     if !resume { transition(hub, Transition::SessionBound { run_id: run_id.clone(), session_id: session.clone() })?; }
-    let found = plugins::dir(claude_home, plugins::NODE).zip(plugins::dir(claude_home, plugins::ORCHESTRATOR));
-    let Some((node, orchestrator_plugin)) = found else {
+    let Some(orchestrator_plugin) = plugins::dir(claude_home, plugins::ORCHESTRATOR) else {
         let _commands = hub.orchestrator_commands.write().await;
         return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra setup".into(), false);
     };
+    let Some(node_plugin) = plugins::dir(claude_home, plugins::NODE) else {
+        let _commands = hub.orchestrator_commands.write().await;
+        return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra setup".into(), false);
+    };
+    let plugins = vec![node_plugin.as_path(), orchestrator_plugin.as_path()];
     let prompt = if run.kind == RunKind::Compact { "/compact".into() } else {
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this durable inbox batch; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
@@ -120,7 +126,9 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
         text
     };
     let output = process::execute(Invocation { executable, cwd: directory, home: &hub.home,
-        plugins: [&node, &orchestrator_plugin], session: &session, resume, execution: &run_id, prompt: &prompt, ownership },
+        plugins, domain_v2: false, session: &session, resume, execution: &run_id,
+        prompt: &prompt, ownership },
+        |_| Ok(()),
         || transition(hub, Transition::Running { run_id: run_id.clone() }), async {
             loop {
                 let before = hub.changes();
@@ -186,6 +194,12 @@ mod tests {
         let ownership = Ownership::acquire(&dir).unwrap().unwrap();
         let executable = home.join("fake-claude");
         std::fs::write(&executable, format!(r#"#!/bin/sh
+test -z "$ALONDRA_DOMAIN_CAPABILITY" || exit 88
+if [ -f "$ALONDRA_HOME/domain-v2-cutover.json" ]; then
+  test "$ALONDRA_DOMAIN_PROTOCOL" = 2 || exit 89
+else
+  test -z "$ALONDRA_DOMAIN_PROTOCOL" || exit 90
+fi
 while [ "$#" -gt 0 ]; do
 case "$1" in --session-id|--resume) shift; session="$1";; esac
 shift
@@ -203,6 +217,22 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
     }
     const SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":25,"cache_read_input_tokens":75}}}'
 printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
+
+    #[tokio::test]
+    async fn committed_marker_blocks_the_legacy_orchestrator() {
+        let (hub, ch, dir, exe, lock) = fixture(SUCCESS);
+        let epoch = hub.domain.state().unwrap().data_epoch.0;
+        let marker = serde_json::json!({"format":1,"phase":"committed",
+            "backup_manifest_sha256":"a".repeat(64),"source_seq":1,"data_epoch":epoch});
+        let path = hub.home.join(crate::domain_cutover::MARKER);
+        std::fs::write(&path, marker.to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        enqueue(&hub, 1);
+        assert!(execute_tick(&hub, &ch, &dir, &lock, &exe).await.is_err());
+        assert!(!dir.join("starts").exists());
+        assert!(hub.read(|v| v.messages[&1].handed_at.is_none()));
+        std::fs::remove_dir_all(&hub.home).unwrap();
+    }
 
     #[tokio::test]
     async fn duplicate_wakeups_and_late_messages_do_not_share_a_claim() {

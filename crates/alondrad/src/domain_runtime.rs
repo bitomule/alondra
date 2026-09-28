@@ -69,6 +69,15 @@ impl DomainRuntime {
             .revoke_execution(execution);
     }
 
+    /// Expose only the public protocol cursor to a daemon-authorized producer.
+    /// Commands recheck the capability while holding the writer lock.
+    pub fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
+        let authority = self.authority.lock().expect("domain authority poisoned");
+        let state = self.store.lock().expect("domain store poisoned").load()?;
+        authority.resolve(&state.data_epoch.0, bearer)
+            .map_err(|message| DomainError::new("forbidden", message).into())
+    }
+
     /// `authorize` rechecks mutable transport approval while holding the writer lock.
     /// The actor is constructed by trusted adapters, never decoded from client JSON.
     pub fn execute(

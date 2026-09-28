@@ -1,5 +1,6 @@
 //! Versioned domain commands. Both local HTTP and encrypted transport call the same runtime.
 use crate::auth::{Signed, is_local};
+use crate::domain_authority::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
 use crate::hub::Hub;
 use crate::domain_runtime::DomainRuntime;
@@ -21,6 +22,7 @@ pub fn routes() -> Router<Arc<Hub>> {
     Router::new()
         .route("/v2/domain", get(projection))
         .route("/v2/domain/capabilities", get(capabilities))
+        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
         .route("/v2/domain/changes", get(changes))
         .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff))
         .route("/v2/domain/tasks/{id}/actions", get(task_actions))
@@ -32,6 +34,44 @@ pub fn routes() -> Router<Arc<Hub>> {
             "/v2/domain/commands",
             post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
         )
+}
+async fn merge_authorization(
+    State(hub): State<Arc<Hub>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if !is_local(&peer, &headers) {
+        return domain_error(DomainError::new("forbidden", "local Agent capability required"));
+    }
+    let Some(token) = headers.get("authorization").and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ")) else {
+        return domain_error(DomainError::new("forbidden", "Agent capability required"));
+    };
+    let Ok(principal @ Principal::Agent { .. }) = hub.domain.resolve_bearer(token) else {
+        return domain_error(DomainError::new("forbidden", "Agent capability required"));
+    };
+    let Principal::Agent { session_id, task_binding, .. } = &principal else { unreachable!() };
+    let state = match hub.domain.state() { Ok(state) => state, Err(_) => return storage_error() };
+    let Some(authorization) = state.merge_authorizations.get(&AuthorizationId(id)) else {
+        return domain_error(DomainError::new("not_found", "Merge authorization missing"));
+    };
+    let Some(task) = state.tasks.get(&authorization.task_id) else { return storage_error() };
+    if task.agent_id.as_ref().map(|agent| agent.0.as_str()) != Some(session_id.as_str())
+        || task_binding.as_deref().is_some_and(|binding| binding != authorization.task_id.0.as_str()) {
+        return domain_error(DomainError::new("forbidden", "Authorization belongs to another Agent"));
+    }
+    let Some(pr) = state.pull_requests.get(&authorization.pr_id) else { return storage_error() };
+    if hub.domain.resolve_bearer(token).ok().as_ref() != Some(&principal) {
+        return domain_error(DomainError::new("forbidden", "Agent capability was revoked"));
+    }
+    let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
+    Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,
+        "revision":state.revision,"authorization_id":authorization.id,
+        "task_id":authorization.task_id,"pr_id":authorization.pr_id,"pr_url":url,
+        "head":authorization.head,"base":pr.base,"method":authorization.method,
+        "valid":authorization.valid,"attempt":authorization.attempt,
+        "at_revision":authorization.at_revision})).into_response()
 }
 async fn document_content(
     State(hub): State<Arc<Hub>>,
@@ -381,8 +421,18 @@ async fn changes_inner(domain: &DomainRuntime, query: Option<String>) -> Respons
     Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,"revision":state.revision,
         "changed":state.data_epoch.0 != epoch || state.revision != after})).into_response()
 }
-async fn capabilities(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
-    if !signed_read(&hub, &signed) {
+async fn capabilities(
+    State(hub): State<Arc<Hub>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    signed: Option<Extension<Signed>>,
+    headers: HeaderMap,
+) -> Response {
+    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let producer = bearer.is_some_and(|token| signed.is_none()
+        && is_local(&peer, &headers)
+        && hub.domain.resolve_bearer(token).is_ok());
+    if !signed_read(&hub, &signed) && !producer {
         return unsigned_read();
     }
     capabilities_inner(&hub.domain)
@@ -960,7 +1010,19 @@ mod tests {
         device_id: &str,
         path: &str,
     ) -> reqwest::RequestBuilder {
-        let timestamp = alondra_core::now_millis();
+        // The verifier rejects replayed signatures. Two GETs in the same
+        // millisecond otherwise sign identical bytes and make this test flaky.
+        static LAST_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let now = alondra_core::now_millis();
+        let timestamp = loop {
+            let previous = LAST_TIMESTAMP.load(std::sync::atomic::Ordering::SeqCst);
+            let next = now.max(previous + 1);
+            if LAST_TIMESTAMP.compare_exchange(
+                previous, next,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ).is_ok() { break next; }
+        };
         let message = crate::auth::signed_message("GET", path, &timestamp.to_string(), b"");
         let signature: Signature = key.sign(message.as_bytes());
         client
@@ -1121,6 +1183,18 @@ mod tests {
                 provider_agent_id: None,
             })
             .unwrap();
+        let cursor = client.get(format!("{base}/v2/domain/capabilities"))
+            .bearer_auth(token.expose_for_child_environment()).send().await.unwrap();
+        assert_eq!(cursor.status(), reqwest::StatusCode::OK);
+        assert_eq!(cursor.json::<Value>().await.unwrap()["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+            .bearer_auth("not-a-capability").send().await.unwrap().status(),
+            reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(client.get(format!("{base}/v2/domain/merge-authorizations/missing"))
+            .send().await.unwrap().status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(client.get(format!("{base}/v2/domain/merge-authorizations/missing"))
+            .bearer_auth(token.expose_for_child_environment()).send().await.unwrap().status(),
+            reqwest::StatusCode::NOT_FOUND);
         let request = envelope(
             &hub,
             "bad-read",

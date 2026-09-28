@@ -508,6 +508,27 @@ impl Client {
         Ok(serde_json::from_str(&body)?)
     }
 
+    /// Domain producers use their daemon-issued bearer, never a locally paired User key.
+    pub fn domain_get(&self, path: &str, bearer: &str) -> Result<Value> {
+        let url = format!("http://127.0.0.1:{}{path}", config().port);
+        let resp = self.agent.get(url)
+            .header("authorization", format!("Bearer {bearer}"))
+            .call()?;
+        let (_, body) = Self::check(resp)?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    pub fn domain_post(&self, path: &str, bearer: &str, body: &Value) -> Result<Value> {
+        let bytes = serde_json::to_vec(body)?;
+        let url = format!("http://127.0.0.1:{}{path}", config().port);
+        let resp = self.agent.post(url)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .send(&bytes[..])?;
+        let (_, body) = Self::check(resp)?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
     pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
         if self.service.is_some() { return self.service_result("POST", path, Some(body)).map(|(_, v)| v); }
         let bytes = serde_json::to_vec(body)?;
