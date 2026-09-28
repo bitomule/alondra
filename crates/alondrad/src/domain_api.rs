@@ -973,6 +973,7 @@ mod tests {
             )
             .unwrap()
         );
+        let pending_before_mismatch = hub.domain.store.lock().unwrap().pending_messages().unwrap();
         let mismatch = encrypted_command(
             &hub,
             "phone-a",
@@ -982,14 +983,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
-        assert!(
-            hub.domain
-                .store
-                .lock()
-                .unwrap()
-                .pending_messages()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            hub.domain.store.lock().unwrap().pending_messages().unwrap(),
+            pending_before_mismatch,
         );
         assert!(
             hub.domain
