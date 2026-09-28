@@ -404,6 +404,8 @@ impl DomainState {
                 {
                     if self.accepted(p) {
                         TaskState::Closing
+                    } else if matches!(&p.payload, InteractionPayload::Delivery { feedback, .. } if !feedback.is_empty()) {
+                        TaskState::Running
                     } else {
                         TaskState::InReview
                     }
@@ -1393,8 +1395,13 @@ impl DomainState {
                 };
                 if !self.accepted(p) {
                     return fail(
-                        "acceptance_missing",
-                        "Current delivery needs user acceptance",
+                        if matches!(&p.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if !a.valid)
+                        {
+                            "acceptance_stale"
+                        } else {
+                            "acceptance_missing"
+                        },
+                        "Current delivery needs valid user acceptance",
                     );
                 };
                 if self.blockers(task_id) {

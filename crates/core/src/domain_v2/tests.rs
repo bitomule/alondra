@@ -146,6 +146,7 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
         },
     )
     .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
     reject_unchanged(
         &mut s,
         agent(),
@@ -153,7 +154,7 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
             task_id: "t".into(),
             presentation_id: "delivery".into(),
         },
-        "acceptance_missing",
+        "acceptance_stale",
     );
     exec(
         &mut s,

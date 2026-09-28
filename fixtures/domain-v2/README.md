@@ -51,3 +51,10 @@ Write results outside these input specifications, recording source SHA, dirty
 flag, adapter/layer, actual assertions, doubles and resource cleanup. A catalog
 parser or schema check proves fixture structure only. Do not mark V01–V53 or P7
 passed until their required layers have actually run.
+
+`cargo test -p alondrad --bin alondrad domain_store::acceptance_tests` executes
+V01, V03, V06, V07, V23, V24, V25 and V45 against fresh SQLite stores. It sends
+the catalog's command steps through the production domain command/store path,
+compares every listed assertion for those cases, checks rejected writes and SQL
+integrity, then reloads each store. This is C/S coverage only. It does not exercise
+HTTP, the encrypted relay, clients, Claude or the other catalog scenarios.
