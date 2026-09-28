@@ -1,6 +1,6 @@
 //! Pure scheduled-work state. Calendar arithmetic and external launching belong to adapters.
 //! The v2 repository must commit these transitions with Request/Task and receipts before use.
-use super::{DomainError, RequestId, ScheduleId, ScheduleRunId, TaskId};
+use super::{DomainError, MAX_REVISION, RequestId, ScheduleId, ScheduleRunId, TaskId};
 use crate::options::Choice;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,6 +93,7 @@ impl Schedule {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.id.0.is_empty()
             || self.revision < 1
+            || self.revision > MAX_REVISION as i64
             || self.title.trim().is_empty()
             || self.title.len() > 120
             || self.text.trim().is_empty()
@@ -142,8 +143,9 @@ impl Schedule {
         {
             return Err(invalid("invalid schedule timestamp"));
         }
-        if !self.enabled && self.next_run.is_some() {
-            return Err(invalid("disabled schedule cannot be due"));
+        if (!self.enabled && self.next_run.is_some()) || (self.deleted_at.is_some() && self.enabled)
+        {
+            return Err(invalid("disabled or deleted schedule cannot be due"));
         }
         if self.disallowed_tools.len() > 100
             || self.disallowed_tools.iter().any(|pattern| {
@@ -174,6 +176,14 @@ impl ScheduleRun {
         if self.id.0.is_empty() || self.schedule_id.0.is_empty() {
             return Err(invalid("invalid schedule run identity"));
         }
+        if self.due_at.is_some_and(|at| at < 0)
+            || self.claimed_at.is_some_and(|at| at < 0)
+            || self.finished_at.is_some_and(|at| at < 0)
+            || self.request_id.as_ref().is_some_and(|id| id.0.is_empty())
+            || self.task_id.as_ref().is_some_and(|id| id.0.is_empty())
+        {
+            return Err(invalid("invalid schedule run timestamp or linked identity"));
+        }
         if self.origin == ScheduleRunOrigin::Due && self.due_at.is_none()
             || self.origin != ScheduleRunOrigin::Due && self.due_at.is_some()
         {
@@ -189,7 +199,9 @@ impl ScheduleRun {
                 ));
             }
         } else if self.claimed_at.is_none()
-            || self.claim_revision.is_none_or(|revision| revision < 1)
+            || self
+                .claim_revision
+                .is_none_or(|revision| revision < 1 || revision > MAX_REVISION as i64)
             || self.definition_snapshot.is_none()
         {
             return Err(invalid(
@@ -197,7 +209,10 @@ impl ScheduleRun {
             ));
         }
         if self.state == ScheduleRunState::Sent
-            && (self.request_id.is_none() || self.task_id.is_none() || self.finished_at.is_none())
+            && (self.request_id.is_none()
+                || self.task_id.is_none()
+                || self.finished_at.is_none()
+                || self.error.is_some())
         {
             return Err(invalid("sent run needs Request, Task, and finish time"));
         }
@@ -317,7 +332,7 @@ impl ScheduleState {
         } else if next_after_now.is_some() {
             return Err(invalid("disabled schedule has no next run"));
         }
-        if schedule.revision == i64::MAX {
+        if schedule.revision >= MAX_REVISION as i64 {
             return Err(invalid("schedule revision overflow"));
         }
         schedule.revision += 1;
@@ -378,10 +393,10 @@ impl ScheduleState {
             .schedules
             .get_mut(&run.schedule_id)
             .ok_or_else(|| invalid("schedule run has no Schedule"))?;
-        schedule.revision = schedule
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| invalid("schedule revision overflow"))?;
+        if schedule.revision >= MAX_REVISION as i64 {
+            return Err(invalid("schedule revision overflow"));
+        }
+        schedule.revision += 1;
         let run = self.runs.get_mut(run_id).expect("run checked above");
         run.state = ScheduleRunState::Sent;
         run.finished_at = Some(finished_at);
@@ -424,10 +439,10 @@ impl ScheduleState {
                 .schedules
                 .get_mut(&run.schedule_id)
                 .ok_or_else(|| invalid("schedule run has no Schedule"))?;
-            schedule.revision = schedule
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| invalid("schedule revision overflow"))?;
+            if schedule.revision >= MAX_REVISION as i64 {
+                return Err(invalid("schedule revision overflow"));
+            }
+            schedule.revision += 1;
         }
         let run = self.runs.get_mut(run_id).expect("run checked above");
         match run.state {
@@ -663,6 +678,17 @@ mod tests {
             .runs
             .get_mut(&ScheduleRunId::from("legacy"))
             .unwrap()
+            .error = Some("not sent".into());
+        assert!(state.validate().is_err());
+        state
+            .runs
+            .get_mut(&ScheduleRunId::from("legacy"))
+            .unwrap()
+            .error = None;
+        state
+            .runs
+            .get_mut(&ScheduleRunId::from("legacy"))
+            .unwrap()
             .claimed_at = Some(99);
         assert!(state.validate().is_err());
     }
@@ -747,5 +773,40 @@ mod tests {
             ScheduleRunState::Sent
         );
         state.validate().unwrap();
+    }
+
+    #[test]
+    fn tombstone_and_revision_bounds_match_store_constraints() {
+        let mut deleted = schedule(true, Some(100));
+        deleted.deleted_at = Some(0);
+        assert!(deleted.validate().is_err());
+        deleted.enabled = false;
+        deleted.next_run = None;
+        deleted.validate().unwrap();
+
+        let mut state = state(false, None);
+        state
+            .schedules
+            .get_mut(&ScheduleId::from("s"))
+            .unwrap()
+            .revision = MAX_REVISION as i64;
+        assert!(
+            state
+                .claim(
+                    &"s".into(),
+                    "overflow".into(),
+                    ScheduleRunOrigin::Manual,
+                    100,
+                    None
+                )
+                .is_err()
+        );
+        assert!(state.runs.is_empty());
+        state
+            .schedules
+            .get_mut(&ScheduleId::from("s"))
+            .unwrap()
+            .revision += 1;
+        assert!(state.validate().is_err());
     }
 }
