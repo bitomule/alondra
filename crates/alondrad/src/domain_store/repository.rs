@@ -140,7 +140,7 @@ pub(super) fn load_schedule_state(c: &Connection) -> Result<ScheduleState> {
             "duplicate schedule identity"
         );
     }
-    for row in rows(c, "schedule_runs", &[], &["definition_snapshot"])? {
+    for row in rows(c, "schedule_runs", &[], &["definition_snapshot", "launch"])? {
         let run: ScheduleRun = decode(row)?;
         ensure!(
             state.runs.insert(run.id.clone(), run).is_none(),

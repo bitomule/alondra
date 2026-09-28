@@ -65,6 +65,23 @@ fn run() -> ScheduleRun {
     }
 }
 
+fn launch() -> ScheduleLaunch {
+    ScheduleLaunch {
+        intent: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(),
+            cwd: "/synthetic/Projects/Alondra".into(),
+            prompt: "Review project".into(),
+            options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default()
+                .resolve(Some("Alondra"), &BTreeMap::new()).unwrap()).unwrap(),
+        },
+        state: ScheduleLaunchState::Pending,
+        claimed_at: None,
+        finished_at: None,
+        session_id: None,
+        error: None,
+    }
+}
+
 fn linked_request_and_task(c: &Connection) {
     c.execute_batch("INSERT INTO requests(id,body,closed) VALUES ('request-1','Review project',0),('request-2','Other project',0);
         INSERT INTO tasks(id,request_id,agent_id,title,state,revision,started,review_prs,final_presentation,pr_id,archived)
@@ -126,6 +143,7 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     claimed.finished_at = Some(1_500);
     claimed.request_id = Some("request-1".into());
     claimed.task_id = Some("task-1".into());
+    claimed.launch = Some(launch());
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
     assert_eq!(
@@ -136,6 +154,9 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     let sent = state.runs.get_mut(&ScheduleRunId::from("run-1")).unwrap();
     sent.state = ScheduleRunState::Failed;
     sent.error = Some("Task launch failed later".into());
+    sent.launch.as_mut().unwrap().state = ScheduleLaunchState::Failed;
+    sent.launch.as_mut().unwrap().finished_at = Some(1_600);
+    sent.launch.as_mut().unwrap().error = sent.error.clone();
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
     assert!(!was_schedule_launch_failed(&c, &RequestId::from("request-1")).unwrap());
@@ -163,6 +184,7 @@ fn schedule_state_rejects_wrong_request_task_relation() {
     sent.finished_at = Some(1_500);
     sent.request_id = Some("request-2".into());
     sent.task_id = Some("task-1".into());
+    sent.launch = Some(launch());
     state.runs.insert(sent.id.clone(), sent);
     assert!(save_schedule_state(&c, &state).is_err());
     assert!(load_schedule_state(&c).unwrap().runs.is_empty());
