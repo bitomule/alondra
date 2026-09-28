@@ -191,6 +191,20 @@ pub(crate) fn materialize_legacy(
             .push(link(task, "task", &task.id, "entity", "task", &task.id)?);
         report.tasks += 1;
     }
+    // Preserve the Claude conversation identifiers as import provenance. The
+    // imported Agent rows use a prefixed ID, so a later protocol adapter can
+    // look up the original session without replaying legacy commands.
+    let sessions: BTreeSet<_> = view.board.tasks.values()
+        .filter_map(|task| task.assignee.as_ref().map(|a| a.session_id.as_str()))
+        .collect();
+    for session in sessions {
+        report.links.push(link(&session, "session", session, "agent_conversation",
+            "agent", format!("legacy-session-{session}"))?);
+    }
+    if let Some(session) = view.orchestrator.as_ref().and_then(|runtime| runtime.session_id.as_deref()) {
+        report.links.push(link(&session, "session", session, "orchestrator_conversation",
+            "orchestrator", "generation-0")?);
+    }
     // A legacy Task could own many PRs. Keep one on the original Task and
     // create explicit derived Tasks for the others. Ineligible PRs still get
     // a historical Information card carrying URL/title/state and old ID.
@@ -692,6 +706,11 @@ fn validate_links(state: &d::DomainState, links: &[ImportLink]) -> Result<()> {
             "pr" => state
                 .pull_requests
                 .contains_key(&d::PrId(item.target_id.clone())),
+            "agent" => state
+                .agents
+                .contains_key(&d::AgentId(item.target_id.clone())),
+            "orchestrator" => item.target_id == "generation-0"
+                && state.orchestrator_generation == 0,
             "interaction" => state
                 .interactions
                 .contains_key(&d::InteractionId(item.target_id.clone())),

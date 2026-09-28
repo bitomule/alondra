@@ -845,6 +845,9 @@ mod tests {
         .unwrap();
         let mut view = View::default();
         view.seq = 1;
+        view.apply(1, 1, &Event::Orchestrator(alondra_core::orchestrator::Transition::Enabled {
+            session_id: Some("orchestrator-session".into()),
+        }));
         view.board.requests.insert(
             "request-1".into(),
             serde_json::from_value(json!({
@@ -867,6 +870,7 @@ mod tests {
             serde_json::from_value(json!({
                 "id":"task-1","request":"request-1","title":"Migration Task",
                 "state":"in_review","state_since":1,"created_at":1,"recorded":true,
+                "assignee":{"session_id":"session-1"},
                 "prs":[1,2]
             }))
             .unwrap(),
@@ -972,6 +976,15 @@ mod tests {
         assert_eq!(result.imported.attachment_size_discrepancies, 2);
         let mut domain =
             crate::domain_store::DomainStore::open(&target.join("domain-v2.db")).unwrap();
+        let provenance = Connection::open(target.join("domain-v2.db")).unwrap();
+        let agent_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
+            WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
+            AND target_id='legacy-session-session-1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(agent_session, "session-1");
+        let orchestrator_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
+            WHERE source_kind='session' AND role='orchestrator_conversation' AND target_kind='orchestrator'
+            AND target_id='generation-0'", [], |row| row.get(0)).unwrap();
+        assert_eq!(orchestrator_session, "orchestrator-session");
         let imported = domain.load().unwrap();
         assert!(
             imported
