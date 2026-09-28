@@ -1064,7 +1064,7 @@ impl Service {
         with_sound: bool, epoch: &mut Option<[u8; 16]>) -> Result<()> {
         self.require_device_approval(id, device)?;
         let (payload, with_sound) = self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes());
-        let body = self.encode_push(id, device, binding, &payload, with_sound)?;
+        let body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound)?;
         let current_epoch = match *epoch {
             Some(epoch) => epoch,
             None => {
@@ -1084,6 +1084,18 @@ impl Service {
             bail!("relay did not accept encrypted push (HTTP {status}, error {code})");
         }
         Ok(())
+    }
+
+    /// Content that does not fit Apple's encrypted budget is never dropped: the
+    /// device gets a generic alert with the same item reference and fetches the
+    /// content when the notification is opened or acted on.
+    fn encode_push_or_minimal(&self, id: &str, device: &Device, binding: &str, payload: &Value, with_sound: bool) -> Result<Vec<u8>> {
+        match self.encode_push(id, device, binding, payload, with_sound) {
+            Err(error) if error.to_string().contains("APNs budget") => {
+                self.encode_push(id, device, binding, &minimal_push(payload), with_sound)
+            }
+            result => result,
+        }
     }
 
     fn encode_push(&self, id: &str, device: &Device, binding: &str, payload: &Value, with_sound: bool) -> Result<Vec<u8>> {
@@ -1114,6 +1126,18 @@ impl Service {
         if body.len() > MAX_PUSH_BODY { bail!("envelope exceeds APNs budget"); }
         Ok(body)
     }
+}
+
+/// The generic alert that stands in for content too large to push, keeping the
+/// `alondra` reference (kind, id, cursor) the app needs to fetch it.
+fn minimal_push(payload: &Value) -> Value {
+    let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"}});
+    for key in ["sound", "category", "interruption-level", "thread-id"] {
+        if let Some(value) = payload.pointer(&format!("/aps/{key}")) {
+            aps[key] = value.clone();
+        }
+    }
+    json!({"aps": aps, "alondra": payload.get("alondra").cloned().unwrap_or(json!({}))})
 }
 
 async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>> {
@@ -2356,8 +2380,22 @@ agreement_key = "{}"
         let opened: Value = serde_json::from_slice(&opened).unwrap();
         assert_eq!(opened["payload"]["aps"]["interruption-level"], "passive");
         assert_eq!(opened["with_sound"], false);
-        let huge = json!({"aps":{"alert":{"body":"x".repeat(MAX_PUSH_PLAINTEXT)}}});
+        let huge = json!({"aps":{"alert":{"title":"Long question","body":"x".repeat(MAX_PUSH_PLAINTEXT)},
+            "sound":"default","category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":7}});
         assert!(service.encode_push("phone-1", &device, &binding, &huge, true).is_err());
+        let minimal = service.encode_push_or_minimal("phone-1", &device, &binding, &huge, true)
+            .expect("oversized content becomes a generic alert instead of being dropped");
+        assert!(minimal.len() <= MAX_PUSH_BODY);
+        let envelope: EnvelopeV1 = serde_json::from_value(serde_json::from_slice::<Value>(&minimal).unwrap()["envelope"].clone()).unwrap();
+        let opened: Value = serde_json::from_slice(&envelope.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-1", "mac-1", now_ms()).unwrap()).unwrap();
+        assert_eq!(opened["payload"]["aps"]["alert"]["body"], "New activity in Alondra");
+        assert_eq!(opened["payload"]["aps"]["category"], "ALONDRA_QUESTION");
+        assert_eq!(opened["payload"]["alondra"], json!({"kind":"question","id":7}), "the item reference survives");
+        assert!(!String::from_utf8_lossy(&minimal).contains("Long question"));
+        let unshrinkable = json!({"aps":{"alert":{"body":"x"}},"alondra":{"kind":"question","id":"y".repeat(MAX_PUSH_PLAINTEXT)}});
+        assert!(service.encode_push_or_minimal("phone-1", &device, &binding, &unshrinkable, true).is_err(),
+            "a reference that itself exceeds the budget cannot be pushed");
     }
     fn activate_push(service: &Service) {
         let key = service.devices["phone-1"].signing.to_sec1_bytes();
