@@ -251,6 +251,25 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
     ) -> std::result::Result<Commit, StoreError> {
+        self.execute_envelope(actor, envelope, transport, false)
+    }
+    /// Producers have no protocol read for the cursor: an expected_revision of
+    /// zero is filled with the current revision under the writer lock, while
+    /// the semantic receipt still keys on the bytes the producer sent.
+    pub(crate) fn execute_filling_revision(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+    ) -> std::result::Result<Commit, StoreError> {
+        self.execute_envelope(actor, envelope, None, true)
+    }
+    fn execute_envelope(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        fill_revision: bool,
+    ) -> std::result::Result<Commit, StoreError> {
         let actor_key = String::from_utf8(canonical::bytes(&match actor {
             Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
             _ => serde_json::to_value(actor)?,
@@ -322,6 +341,16 @@ impl DomainStore {
                 replayed: true,
             });
         }
+        let filled;
+        let envelope = if fill_revision && envelope.expected_revision == 0 {
+            filled = CommandEnvelope {
+                expected_revision: state.revision,
+                ..envelope.clone()
+            };
+            &filled
+        } else {
+            envelope
+        };
         let mut next = state.clone();
         let outcome = next.execute(actor, envelope)?;
         if outcome.changed {

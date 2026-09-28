@@ -162,7 +162,7 @@ impl DomainRuntime {
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
-        let commit = store.execute_authenticated(&actor, &prepared.envelope, None);
+        let commit = store.execute_filling_revision(&actor, &prepared.envelope);
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
@@ -346,6 +346,65 @@ mod approval_tests {
                 .iter()
                 .any(|entry| entry.id == device.id)
         );
+        drop(runtime);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod producer_revision_tests {
+    use super::*;
+
+    #[test]
+    fn a_bearer_producer_may_omit_the_revision_and_retries_replay_its_receipt() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-domain-producer-revision-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let runtime = DomainRuntime::open(&home).unwrap();
+        let envelope = |runtime: &DomainRuntime, id: &str, expected: Option<Revision>, command| {
+            let state = runtime.state().unwrap();
+            CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: state.data_epoch,
+                command_id: id.into(),
+                expected_revision: expected.unwrap_or(state.revision),
+                command,
+            }
+        };
+        runtime.execute(&Actor::System, &envelope(&runtime, "agent", None,
+            Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() }), None, || Ok(())).unwrap();
+        let user = Actor::User { user_id: "u".into() };
+        runtime.execute(&user, &envelope(&runtime, "request", None,
+            Command::CreateRequest { request_id: "request-a".into(), body: "Work".into() }), None, || Ok(())).unwrap();
+        runtime.execute(&user, &envelope(&runtime, "task", None, Command::CreateTask {
+            task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false,
+            dependencies: Default::default(), stack: None,
+        }), None, || Ok(())).unwrap();
+        let token = runtime.issue(Principal::Agent {
+            session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
+        }).unwrap();
+        let bearer = token.expose_for_child_environment();
+        let publish = envelope(&runtime, "producer-info", Some(0), Command::PublishInformation {
+            attachments: vec![],
+            interaction_id: "info-a".into(),
+            scope: Scope::Task { task_id: "task-a".into() },
+            recipient: Recipient::User,
+            body: "Progress".into(),
+        });
+        let revision = runtime.state().unwrap().revision;
+        let first = runtime.execute_bearer(bearer, &publish).unwrap();
+        assert!(first.changed);
+        assert_eq!(first.revision, revision + 1);
+        assert_eq!(runtime.execute_bearer(bearer, &publish).unwrap(), first,
+            "a retry with the bytes the producer sent replays its receipt");
+        assert_eq!(runtime.state().unwrap().revision, revision + 1);
+        let stale = runtime.execute(&user, &CommandEnvelope { expected_revision: 0, ..envelope(&runtime, "user-zero", None,
+            Command::CreateRequest { request_id: "request-b".into(), body: "More".into() }) }, None, || Ok(()));
+        assert!(matches!(stale, Err(StoreError::Domain(error)) if error.code == "stale_revision"),
+            "a user command is never filled");
         drop(runtime);
         std::fs::remove_dir_all(home).unwrap();
     }
