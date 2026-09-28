@@ -179,65 +179,6 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
-fn keep_flagged(home: &std::path::Path, title: &str, body: Option<&str>) {
-    use std::io::Write;
-    let line = json!({"at": now_millis(), "title": title, "body": body}).to_string();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("flagged-reports.jsonl")) {
-        let _ = writeln!(f, "{line}");
-    }
-}
-
-fn stored_report_kind(kind: Option<ReportKind>, looks_like_question: bool) -> ReportKind {
-    if looks_like_question && kind == Some(ReportKind::Final) {
-        ReportKind::Notice
-    } else {
-        kind.unwrap_or(ReportKind::Notice)
-    }
-}
-
-fn question_from_report(v: &View, report: &Report, at: i64) -> Question {
-    let text = format!("{}\n{}", report.title, report.body.as_deref().unwrap_or(""));
-    let request = crate::markdown::prose_lines(&text).into_iter().rev()
-        .find(|line| crate::classify::judge_report(line) == crate::classify::ReportVerdict::Asks)
-        .unwrap_or(&report.title);
-    let title: String = request.chars().take(110).collect();
-    let action = crate::classify::what_node_expects(request) == crate::classify::Expects::Act;
-    let about_pr = if ["pr #", "pull request", "merge", "fusion"].iter().any(|marker| request.to_lowercase().contains(marker)) {
-        v.report_pr(report).and_then(|id| v.prs.get(&id)).map(|p| p.number)
-    } else { None };
-    Question {
-        id: v.next_question_id(),
-        session_id: report.session_id.clone(),
-        node_name: report.node_name.clone(),
-        title,
-        detail: report.body.clone(),
-        options: if action { answer_option::for_action() } else { vec![] },
-        links: report.links.clone(),
-        attachments: report.attachments.clone(),
-        blocking: true,
-        origin: QuestionOrigin::Ask,
-        tool_use_id: Some(format!("report:{}", report.id)),
-        to_orchestrator: report.to_orchestrator,
-        node_context: None,
-        status: QuestionStatus::Open,
-        answer: None,
-        asked_at: at,
-        action,
-        steps: vec![],
-        mission: report.mission.clone(),
-        task: report.task.clone(),
-        replaces: None,
-        about_pr,
-    }
-}
-
-fn flagged_note(user: &str) -> String {
-    format!(
-        "Delivered, marked as possibly asking {user} for something. If it does, send each decision as its own question \
-         with ask (a one-line title, context in detail, options); if that question is already open, do not repeat it."
-    )
-}
-
 fn shown_in_pr_note(number: u64, user: &str) -> String {
     format!(
         "Shown inside the card of PR #{number}, not as a card of its own: {user} reads it there when they review the PR. \
@@ -3228,7 +3169,7 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
     texts.extend([b.title.clone(), b.body.clone().unwrap_or_default()]);
     note_prs(&hub, &b.caller, &texts, task.clone()).await;
     let stamp = now_millis();
-    let report = |v: &View, attachments: Vec<Attachment>, looks_like_question: bool| Report {
+    let report = |v: &View, attachments: Vec<Attachment>| Report {
         id: v.next_report_id(),
         session_id: sid.clone(),
         node_name: name.clone(),
@@ -3236,65 +3177,40 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         body: b.body.clone(),
         links: b.links.clone(),
         attachments,
-        kind: stored_report_kind(b.kind, looks_like_question),
+        kind: b.kind.unwrap_or(ReportKind::Notice),
         created_at: stamp,
         read: false,
         to_orchestrator: b.to_orchestrator,
         mission: None,
-        looks_like_question,
+        looks_like_question: false,
         task: task.clone(),
     };
-    if let Some((refused_task, anomaly)) = hub.read(|v| v.refusal(stamp, &Event::ReportPosted(report(v, vec![], false)))) {
+    if let Some((refused_task, anomaly)) = hub.read(|v| v.refusal(stamp, &Event::ReportPosted(report(v, vec![])))) {
         log!("report refused for {refused_task}: {}", anomaly.reason);
         return task_refused(&refused_task, &anomaly, &hub.config.name);
     }
-    let looks_like_question = hub.report_judge.judge(&format!("{}\n\n{}", b.title, b.body.as_deref().unwrap_or("")), &hub.config.name).await == crate::classify::ReportVerdict::Asks;
-    if looks_like_question {
-        log!("report gate: a report reads like it asks for something, posted flagged: {}", b.title);
-        keep_flagged(&hub.home, &b.title, b.body.as_deref());
-    }
     let attachments = store_attachments(&hub.home, &format!("r-{stamp}"), &b.attachments);
     let res = hub.append_all(|v| {
-        let mut report = report(v, attachments.clone(), looks_like_question);
-        let asked = if looks_like_question {
-            let asked = Event::QuestionAsked(question_from_report(v, &report, stamp));
-            v.refusal(stamp, &asked).is_none().then_some(asked)
-        } else { None };
-        if asked.is_some() && !v.awaits_review(&report) {
-            report.read = true;
+        let posted = Event::ReportPosted(report(v, attachments.clone()));
+        match v.refusal(stamp, &posted) {
+            Some(refused) => Err(refused),
+            None => Ok(vec![posted]),
         }
-        let posted = Event::ReportPosted(report);
-        if let Some(refused) = v.refusal(stamp, &posted) {
-            return Err(refused);
-        }
-        let mut events = vec![posted];
-        events.extend(asked);
-        Ok(events)
     });
     let res = match res {
         Ok(Err((refused_task, anomaly))) => {
             discard_stored(&attachments);
-            log!("report refused for {refused_task} once it was judged: {}", anomaly.reason);
+            log!("report refused for {refused_task}: {}", anomaly.reason);
             return task_refused(&refused_task, &anomaly, &hub.config.name);
         }
-        Ok(Ok(recorded)) => Ok(recorded.into_iter().find(|(_, e)| matches!(e, Event::ReportPosted(_)))),
+        Ok(Ok(recorded)) => Ok(recorded.into_iter().next()),
         Err(e) => Err(e),
     };
     match res {
         Ok(Some((_, Event::ReportPosted(r)))) => {
             let card = hub.read(|v| v.report_pr(&r).and_then(|id| v.prs.get(&id)).map(|p| (p.id, p.number)));
             let mut body = json!({"id": r.id, "to_orchestrator": r.to_orchestrator, "task": task});
-            if looks_like_question {
-                body["looks_like_question"] = json!(true);
-                let marker = format!("report:{}", r.id);
-                let raised = hub.read(|v| v.questions.values().find(|q| q.tool_use_id.as_deref() == Some(marker.as_str())).map(|q| q.id));
-                if let Some(id) = raised {
-                    body["question"] = json!(id);
-                    body["note"] = json!(format!("Delivered and opened question #{id} for the request in this report."));
-                } else {
-                    body["note"] = json!(flagged_note(&hub.config.name));
-                }
-            } else if let Some((id, number)) = card {
+            if let Some((id, number)) = card {
                 body["shown_in_pr"] = json!(id);
                 body["note"] = json!(shown_in_pr_note(number, &hub.config.name));
             }
@@ -6089,50 +6005,6 @@ mod tests {
         assert_eq!(reopened.read(|v| v.delivery_attempts.len()), 1);
     }
 
-    /// Holds every report it reads until the test lets it go.
-    struct SlowJudge {
-        reading: Arc<tokio::sync::Notify>,
-        done: Arc<tokio::sync::Notify>,
-    }
-
-    impl crate::classify::JudgesReports for SlowJudge {
-        fn judge<'a>(&'a self, _text: &'a str, _user: &'a str) -> std::pin::Pin<Box<dyn Future<Output = crate::classify::ReportVerdict> + Send + 'a>> {
-            Box::pin(async move {
-                self.reading.notify_one();
-                self.done.notified().await;
-                crate::classify::ReportVerdict::Fine
-            })
-        }
-    }
-
-    /// A document checked against its task, then checked for a question: the task was cancelled
-    /// meanwhile, and the document went in anyway, refused by the machine, while the node heard
-    /// it was delivered.
-    #[tokio::test]
-    async fn a_report_whose_task_moved_while_it_was_read_is_refused_not_recorded() {
-        let (reading, done) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
-        let home = std::env::temp_dir().join(format!("alondra-http-slow-judge-{}-{}", std::process::id(), now_millis()));
-        let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
-        let hub = Arc::new(Hub::open(config, false).unwrap().with_github(FakeGithub::default()).with_report_judge(SlowJudge { reading: reading.clone(), done: done.clone() }));
-        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-        hub.append(Event::ReportPosted(Report {
-            id: 1, session_id: "s".into(), node_name: None, title: "Antes".into(), body: None, links: vec![], attachments: vec![],
-            kind: ReportKind::Notice, created_at: 0, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
-        }))
-        .unwrap();
-        let posting = tokio::spawn({
-            let hub = hub.clone();
-            async move { status_and_body(report(State(hub), Json(report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]))).await).await }
-        });
-        reading.notified().await;
-        let (status, _) = status_and_body(cancel_task(State(hub.clone()), Path("t-s".into()), None).await).await;
-        assert_eq!(status, StatusCode::OK);
-        done.notify_one();
-        let (status, said) = posting.await.unwrap();
-        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("task_refused")), "{said}");
-        assert_eq!(hub.read(|v| (v.reports.len(), v.board.anomalies.values().sum::<u64>())), (1, 0), "nothing recorded, no anomaly");
-    }
-
     /// Cancelling a task twice at once: both passed the check, the second cancel was recorded as
     /// an anomaly and its caller told it worked.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -7020,88 +6892,44 @@ mod tests {
         assert_eq!(found["sessions"], json!(["s"]));
     }
 
-    #[test]
-    fn a_final_report_with_a_request_cannot_finish_the_task() {
-        assert_eq!(stored_report_kind(Some(ReportKind::Final), true), ReportKind::Notice);
-        assert_eq!(stored_report_kind(Some(ReportKind::Final), false), ReportKind::Final);
-    }
-
-    #[test]
-    fn flagged_final_report_produces_an_answerable_question() {
-        let v = View::default();
-        let report = Report {
-            id: 1, session_id: "s".into(), node_name: None, title: "Shipped".into(),
-            body: Some("Should I merge the PR?".into()), links: vec![], attachments: vec![],
-            kind: ReportKind::Notice, created_at: 1, read: false, to_orchestrator: false,
-            mission: None, looks_like_question: true, task: None,
-        };
-        let q = question_from_report(&v, &report, 2);
-        assert_eq!(q.title, "Should I merge the PR?");
-        assert!(q.blocking);
-        assert_eq!(q.origin, QuestionOrigin::Ask);
+    /// R2: a final report whose body had a line such as "Test plan: ..." was turned into a
+    /// question, and its task went to needs-you instead of done. A report is a report; a node
+    /// that wants a decision uses `ask`.
+    #[tokio::test]
+    async fn reports_are_never_turned_into_questions() {
+        let bodies = [
+            "Test plan: tests unitarios en verde",
+            "Should I merge the PR?",
+            "¿Lo apruebas?",
+            "Please test it on your iPhone.",
+            "Revisa el PR cuando puedas.",
+        ];
+        let kinds = [ReportKind::Final, ReportKind::Notice, ReportKind::Progress, ReportKind::Document];
+        for (i, kind) in kinds.into_iter().enumerate() {
+            for (j, text) in bodies.iter().enumerate() {
+                let hub = started(&format!("report-stays-{i}-{j}"), &["s"]);
+                let links: &[&str] = if kind == ReportKind::Document { &["https://claude.ai/code/artifact/plan-1"] } else { &[] };
+                let mut body = report_body("s", kind, links);
+                body.body = Some((*text).into());
+                let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
+                assert_eq!(status, StatusCode::OK, "{kind:?} {text}: {said}");
+                assert!(said.get("looks_like_question").is_none() && said.get("question").is_none(), "{kind:?} {text}: {said}");
+                assert_eq!(hub.read(|v| v.questions.len()), 0, "{kind:?} {text}");
+                let (stored_kind, flagged) = hub.read(|v| v.reports.values().next().map(|r| (r.kind, r.looks_like_question)).unwrap());
+                assert_eq!((stored_kind, flagged), (kind, false), "{kind:?} {text}");
+            }
+        }
     }
 
     #[tokio::test]
-    async fn final_report_request_is_a_visible_question_not_a_final() {
-        let hub = started("report-request", &["s"]);
+    async fn a_final_report_with_a_test_plan_line_finishes_its_task() {
+        let hub = started("final-test-plan", &["s"]);
         let mut body = report_body("s", ReportKind::Final, &[]);
-        body.title = "Shipped".into();
-        body.body = Some("Should I merge the PR?".into());
+        body.title = "Permiso de cámara arreglado".into();
+        body.body = Some("Cambios en CameraView.\n\nTest plan: tests unitarios en verde".into());
         let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{said}");
-        let id = said["question"].as_u64().expect("request becomes an answerable question");
-        let Json(o) = overview(State(hub.clone())).await;
-        assert!(o["open_questions"].as_array().unwrap().iter().any(|q| q["id"] == id));
-        assert!(o["news"].as_array().unwrap().is_empty(), "request and source report form one card");
-        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().kind), ReportKind::Notice);
-    }
-
-    #[tokio::test]
-    async fn report_request_about_open_pr_raises_one_card() {
-        const PR: &str = "https://github.com/bitomule/alondra/pull/102";
-        let hub = started("report-pr-request", &["s"]);
-        hub.append(Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None }).unwrap();
-        let mut body = report_body("s", ReportKind::Final, &[PR]);
-        body.body = Some("Should I merge PR #102?".into());
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        let id = said["question"].as_u64().expect("request on reviewed PR must be answerable");
-        let Json(o) = overview(State(hub.clone())).await;
-        assert!(o["open_questions"].as_array().unwrap().iter().any(|q| q["id"] == id));
-        assert_eq!(hub.read(|v| v.questions[&id].about_pr), Some(102));
-        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().read), true);
-        assert!(o["news"].as_array().unwrap().is_empty(), "request and source report form one card");
-    }
-
-    #[tokio::test]
-    async fn a_document_request_keeps_its_review_card() {
-        let hub = started("document-request", &["s"]);
-        let mut body = report_body("s", ReportKind::Document, &["https://claude.ai/code/artifact/plan-1"]);
-        body.body = Some("Can you review this plan?".into());
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert!(said["question"].is_number());
-        assert_eq!(hub.read(|v| v.reviews_awaiting_user().count()), 1);
-        assert!(!hub.read(|v| v.reports.values().next().unwrap().read));
-    }
-
-    #[tokio::test]
-    async fn unrelated_request_is_not_bound_to_a_pr() {
-        const PR: &str = "https://github.com/bitomule/alondra/pull/102";
-        let hub = started("unrelated-report-request", &["s"]);
-        hub.append(Event::PrOpened { url: PR.into(), session_id: "s".into(), task: None }).unwrap();
-        let mut body = report_body("s", ReportKind::Final, &[]);
-        body.body = Some("Please send me the API key for the separate campaign.".into());
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert!(said["question"].is_null(), "a separate request needs its own task: {said}");
-        assert_eq!(hub.read(|v| v.questions.len()), 0);
-        assert!(!hub.read(|v| v.reports.values().next().unwrap().read));
-        assert_eq!(hub.read(|v| v.reports.values().next().unwrap().kind), ReportKind::Notice);
-        hub.append(Event::PrMerged { id: 1, method: alondra_core::pr::MergeMethod::Merge }).unwrap();
-        assert!(!hub.read(|v| v.reports.values().next().unwrap().read), "unanswered request survives an unrelated PR merge");
-        let Json(o) = overview(State(hub.clone())).await;
-        assert!(!o["news"].as_array().unwrap().is_empty(), "the request remains visible after merge");
+        assert_eq!(hub.read(|v| v.board.tasks["t-s"].state), alondra_core::tasks::TaskState::Done);
     }
 
     #[test]
@@ -7987,10 +7815,10 @@ mod managed_orchestrator_tests {
         assert_eq!(again, first); assert_eq!(reopened.read(|v| v.seq), seq);
         assert_eq!(retry_orchestrator(State(hub), Json(RetryOrchestratorBody {run_id:"run-1".into()})).await.status(), StatusCode::CONFLICT);
     }
-    struct BlockingJudge { entered: Arc<tokio::sync::Notify>, release: Arc<tokio::sync::Notify> }
-    impl crate::classify::JudgesReports for BlockingJudge {
-        fn judge<'a>(&'a self, _: &'a str, _: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::classify::ReportVerdict> + Send + 'a>> {
-            Box::pin(async move { self.entered.notify_one(); self.release.notified().await; crate::classify::ReportVerdict::Fine })
+    struct BlockingGithub { entered: Arc<tokio::sync::Notify>, release: Arc<tokio::sync::Notify> }
+    impl crate::prs::FindsPrs for BlockingGithub {
+        fn finds<'a>(&'a self, _: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move { self.entered.notify_one(); self.release.notified().await; true })
         }
     }
     async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>) {
@@ -8025,13 +7853,13 @@ mod managed_orchestrator_tests {
     async fn cancellation_linearizes_after_accepted_rpc_finishes_its_bookkeeping() {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
-        let hub = Arc::new(Arc::try_unwrap(enabled("managed-barrier")).ok().unwrap().with_report_judge(BlockingJudge {entered:entered.clone(),release:release.clone()}));
+        let hub = Arc::new(Arc::try_unwrap(enabled("managed-barrier")).ok().unwrap().with_github(BlockingGithub {entered:entered.clone(),release:release.clone()}));
         start(&hub);
         let (url, server) = server(hub.clone()).await;
         let post_url = url.clone();
         let posting = tokio::spawn(async move { reqwest::Client::new().post(format!("{post_url}/v1/reports"))
             .header("x-alondra-orchestrator-execution", "run-1").header("x-alondra-session", NODE_ID)
-            .json(&json!({"session_id":NODE_ID,"orchestrator_run":"run-1","launched":true,"title":"Result","body":"Completed the analysis","kind":"notice"})).send().await.unwrap().status() });
+            .json(&json!({"session_id":NODE_ID,"orchestrator_run":"run-1","launched":true,"title":"Result","body":"Completed the analysis","kind":"notice","links":[{"url":"https://github.com/a/b/pull/7"}]})).send().await.unwrap().status() });
         tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
         let cancelling = tokio::spawn(async move { reqwest::Client::new().post(format!("{url}/v1/orchestrator/cancel")).json(&json!({"run_id":"run-1"})).send().await.unwrap().status() });
         tokio::task::yield_now().await;

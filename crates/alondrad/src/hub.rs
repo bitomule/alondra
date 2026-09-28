@@ -60,8 +60,6 @@ pub struct Hub {
     pub config: Config,
     pub hold_enabled: bool,
     pub pr_lookup: crate::prs::Lookup,
-    /// Reads a node's report for a question hidden in it.
-    pub report_judge: Box<dyn crate::classify::JudgesReports>,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
     /// Accepted orchestrator RPCs finish before lifecycle changes revoke their authority.
@@ -143,7 +141,6 @@ impl Hub {
             config,
             hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
-            report_judge: Box::new(crate::classify::LocalJudge),
             starts: tokio::sync::Mutex::new(()),
             orchestrator_commands: tokio::sync::RwLock::new(()),
             schedules,
@@ -155,11 +152,6 @@ impl Hub {
     #[cfg(test)]
     pub fn with_github(self, gh: impl crate::prs::FindsPrs + 'static) -> Self {
         Hub { pr_lookup: crate::prs::Lookup::new(gh), ..self }
-    }
-
-    #[cfg(test)]
-    pub fn with_report_judge(self, judge: impl crate::classify::JudgesReports + 'static) -> Self {
-        Hub { report_judge: Box::new(judge), ..self }
     }
 
     #[cfg(test)]
