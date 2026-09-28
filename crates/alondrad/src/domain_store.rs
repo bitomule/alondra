@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
