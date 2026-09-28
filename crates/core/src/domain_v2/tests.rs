@@ -146,6 +146,7 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
         },
     )
     .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
     reject_unchanged(
         &mut s,
         agent(),
@@ -153,7 +154,7 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
             task_id: "t".into(),
             presentation_id: "delivery".into(),
         },
-        "acceptance_missing",
+        "acceptance_stale",
     );
     exec(
         &mut s,
@@ -184,6 +185,71 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
     )
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn reaccepted_feedback_then_reassignment_needs_fresh_acceptance() {
+    let mut s = fixture();
+    present(&mut s, "delivery", text());
+    exec(
+        &mut s,
+        user(),
+        Command::AcceptDelivery {
+            presentation_id: "delivery".into(),
+            targets: text(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        user(),
+        Command::SubmitFeedback {
+            attachments: vec![],
+            presentation_id: "delivery".into(),
+            targets: text(),
+            body: "Please revise".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    exec(
+        &mut s,
+        user(),
+        Command::AcceptDelivery {
+            presentation_id: "delivery".into(),
+            targets: text(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        Actor::System,
+        Command::RegisterAgent {
+            agent_id: "b".into(),
+            name: "Instance B".into(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        user(),
+        Command::AssignTask {
+            task_id: "t".into(),
+            agent_id: "b".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    reject_unchanged(
+        &mut s,
+        Actor::Agent {
+            agent_id: "b".into(),
+        },
+        Command::CompleteTask {
+            task_id: "t".into(),
+            presentation_id: "delivery".into(),
+        },
+        "acceptance_missing",
+    );
 }
 #[test]
 fn typed_option_ids_and_open_question_guard() {
